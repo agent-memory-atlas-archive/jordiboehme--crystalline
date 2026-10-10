@@ -266,6 +266,20 @@ macro_rules! filter_only_entry {
     };
 }
 
+/// The scope and the one term clause `scored_lexical` builds for a scoped
+/// one-word search in the default mode: `build_scalar_filters` puts the domain
+/// first, then each term is one `lower(column) LIKE` per column, ORed. A search
+/// always carries a term (`run_lexical` and the hybrid path send a search
+/// without one to `filter_only`), so the term is part of the statement's shape:
+/// without it half of a two-domain table matches, and walking `engram_pkey`
+/// until the `LIMIT` fills is the cheapest plan for a statement no search sends.
+const LEXICAL_SCOPE_AND_TERM_TURSO: &str = "AND d.name IN (?1) AND (lower(e.title) LIKE ?2 ESCAPE '\\' \
+     OR lower(e.description) LIKE ?3 ESCAPE '\\' OR lower(ec.content) LIKE ?4 ESCAPE '\\')";
+
+/// [`LEXICAL_SCOPE_AND_TERM_TURSO`] in the postgres dialect.
+const LEXICAL_SCOPE_AND_TERM_PG: &str = "AND d.name IN ($1) AND (lower(e.title) LIKE $2 ESCAPE '\\' \
+     OR lower(e.description) LIKE $3 ESCAPE '\\' OR lower(ec.content) LIKE $4 ESCAPE '\\')";
+
 pub fn registry() -> Vec<HotStatement> {
     vec![
         HotStatement {
@@ -350,27 +364,32 @@ pub fn registry() -> Vec<HotStatement> {
             postgres_must_seek: &[],
         },
         HotStatement {
+            // A scoped one-word search: the statement `scored_lexical` sends.
+            // The term is in 21 of the 200 seed engrams of each domain (titles
+            // and bodies of engram 7, 70 to 79 and 170 to 179) and in none of
+            // the grown fixture's bulk rows, so it is selective at scale, the
+            // case where a walk in id order reads the whole table.
             issued_by: "search::scored_lexical",
             turso: || {
                 crystalline_index::turso::lexical_candidate_sql(
                     BASE_SCREEN,
-                    "AND d.name IN (?1)",
+                    LEXICAL_SCOPE_AND_TERM_TURSO,
                     500,
                 )
             },
             postgres: || {
                 crystalline_index::postgres::lexical_candidate_sql(
                     BASE_SCREEN,
-                    "AND d.name IN ($1)",
+                    LEXICAL_SCOPE_AND_TERM_PG,
                     500,
                 )
             },
-            literals: &["'d'"],
+            literals: &["'d'", "'%engram 7%'", "'%engram 7%'", "'%engram 7%'"],
             literals_pg: None,
             scan_expected: &[],
             scan_expected_pg: None,
             turso_must_seek: &[],
-            postgres_must_seek: &[],
+            postgres_must_seek: &["idx_engram_domain"],
         },
         filter_only_entry!(
             "search::filter_only (recorded, newest first)",
@@ -1931,12 +1950,12 @@ mod postgres_plans {
 
     /// The entries planned on the grown fixture rather than the plain one: the
     /// four `$contains` statements, whose claim is the side table driving the
-    /// join, which postgres only prefers once `engram` is too big to walk.
-    /// Every other entry keeps the plain fixture its claim was measured on; at
-    /// 20,400 engrams `search::scored_lexical` turns into an `engram_pkey` walk
-    /// bounded by its `LIMIT`, which is a different question from this task's.
+    /// join, and the scoped lexical scan, whose claim is the seek of the
+    /// domain. Postgres only prefers either once `engram` is too big to walk.
+    /// Every other entry keeps the plain fixture its claim was measured on.
     fn planned_at_scale(entry: &HotStatement) -> bool {
         entry.issued_by.starts_with("search::metadata_clause")
+            || entry.issued_by == "search::scored_lexical"
     }
 
     /// Every hot statement reaches its rows through an index, on postgres.
@@ -1957,7 +1976,11 @@ mod postgres_plans {
         let store = open_seeded(&url, &schema).await;
         let (at_scale, plain): (Vec<HotStatement>, Vec<HotStatement>) =
             registry().into_iter().partition(planned_at_scale);
-        assert_eq!(at_scale.len(), 4, "the four $contains entries");
+        assert_eq!(
+            at_scale.len(),
+            5,
+            "the four $contains entries and the scoped lexical scan"
+        );
 
         for (pass, entries) in [plain, at_scale].into_iter().enumerate() {
             if pass == 1 {
@@ -2000,6 +2023,23 @@ mod postgres_plans {
                          the plan read {seen:?}. Statement: {sql}"
                     );
                 }
+                // The scoped lexical scan's own claim at scale: `engram` is
+                // reached through the domain, never walked in id order with the
+                // domain as a filter. A walk of `engram_pkey` carries no `Index
+                // Cond` of its own (the domain test sits in a `Filter` or in the
+                // `Join Filter` of the loop above it), so `unseeked_reads` alone
+                // does not see it.
+                if entry.issued_by == "search::scored_lexical" {
+                    let mut all = Vec::new();
+                    nodes(&plan, &mut all);
+                    for node in all.iter().filter(|node| node["Relation Name"] == "engram") {
+                        assert!(
+                            node["Index Name"] != "engram_pkey" || node.get("Index Cond").is_some(),
+                            "search::scored_lexical walks engram in id order instead of seeking \
+                             the domain: {node}. Whole plan: {plan}"
+                        );
+                    }
+                }
                 // The lexical prefilter's real claim, the same one the turso leg
                 // makes: bounded whenever it is sorted.
                 if entry.issued_by == "search::scored_lexical"
@@ -2031,7 +2071,10 @@ mod postgres_plans {
         let schema = unique_schema();
         let store = open_seeded(&url, &schema).await;
         grow_to_scale(&store, &url, &schema).await;
-        let entries: Vec<HotStatement> = registry().into_iter().filter(planned_at_scale).collect();
+        let entries: Vec<HotStatement> = registry()
+            .into_iter()
+            .filter(|entry| entry.issued_by.starts_with("search::metadata_clause"))
+            .collect();
         assert_eq!(entries.len(), 4, "two operators, unscoped and scoped");
         for entry in entries {
             let sql = bind_literals(
