@@ -1801,7 +1801,32 @@ impl From<HarnessArg> for HarnessKind {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+/// A refusal already printed in full as the one JSON object on stdout:
+/// `main` exits 1 and prints nothing more.
+#[derive(Debug)]
+struct PrintedRefusal;
+
+impl std::fmt::Display for PrintedRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the refusal was printed as JSON")
+    }
+}
+
+impl std::error::Error for PrintedRefusal {}
+
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) if e.is::<PrintedRefusal>() => std::process::ExitCode::from(1),
+        // What `fn main() -> anyhow::Result<()>` printed, unchanged.
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     // No arguments at all falls through to this hidden default: print help
     // rather than doing nothing silently.
     if std::env::args_os().len() <= 1 {
@@ -3904,13 +3929,13 @@ where
 /// is not this command's to close, and making a shared domain private is its
 /// own verb. Called before anything is printed. With `--json` the refusal is
 /// the one object on stdout, `{"ok": false, "error": ...}` (the shape of the
-/// daemon's ctl replies), and the process exits 1; without it the message is
-/// returned as the command's error.
+/// daemon's ctl replies), and the error is [`PrintedRefusal`], which exits
+/// 1; without it the message is returned as the command's error.
 fn refuse_private_on_adopted(name: &str, owner: &str, json: bool) -> anyhow::Error {
     let message = private_on_adopted_message(name, owner);
     if json {
         println!("{}", serde_json::json!({ "ok": false, "error": message }));
-        std::process::exit(1);
+        return anyhow::Error::new(PrintedRefusal);
     }
     anyhow::anyhow!(message)
 }
@@ -3921,7 +3946,8 @@ fn refuse_private_on_adopted(name: &str, owner: &str, json: bool) -> anyhow::Err
 /// read as if nothing happened. The connect report comes first: printed as
 /// usual without `--json`, then the refusal as the command's error; with
 /// `--json` the one object on stdout is `{"ok": false, "error": ...,
-/// "connected": <the report>}` and the process exits 1.
+/// "connected": <the report>}` and the error is [`PrintedRefusal`], which
+/// exits 1.
 fn refuse_private_after_connect(
     repo: &str,
     name: &str,
@@ -3935,7 +3961,7 @@ fn refuse_private_after_connect(
             "{}",
             serde_json::json!({ "ok": false, "error": message, "connected": data })
         );
-        std::process::exit(1);
+        return anyhow::Error::new(PrintedRefusal);
     }
     cmd::print_origin_add(repo, data, false);
     anyhow::anyhow!(message)

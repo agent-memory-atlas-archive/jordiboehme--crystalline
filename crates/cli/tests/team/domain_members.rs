@@ -348,7 +348,12 @@ fn private_on_an_adopted_domain_is_refused_before_any_output() {
     );
 
     let json = add(true);
-    assert!(!json.status.success());
+    assert_eq!(json.status.code(), Some(1), "{json:?}");
+    assert!(
+        !String::from_utf8_lossy(&json.stderr).contains("Error:"),
+        "the JSON object is the whole answer: {}",
+        String::from_utf8_lossy(&json.stderr)
+    );
     let value: serde_json::Value =
         serde_json::from_slice(&json.stdout).expect("stdout is exactly one JSON document");
     assert_eq!(value["ok"], false, "{value}");

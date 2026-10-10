@@ -5,7 +5,8 @@ impl Engine {
 
     /// Create or adopt a local file domain and bring it into the index, the
     /// non-GitHub half of `add_domain`. Resolves the on-disk root (an explicit
-    /// `folder`, otherwise `<domains_root>/<name>`), decides the registration and only then creates it, scaffolds a
+    /// `folder`, otherwise `<domains_root>/<name>`), decides the registration
+    /// and only then creates it, scaffolds a
     /// `MANIFEST.md` when the folder does not already carry one (so a fresh
     /// folder becomes a domain and an existing one is adopted in place, its
     /// files untouched), registers it in the global config and syncs.

@@ -1070,6 +1070,11 @@ fn domain_add_origin_with_no_name_adopting_an_origin_less_domain_refuses_private
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("Error:"),
+        "the JSON object is the whole answer: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let reply: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(reply["ok"], false, "{reply}");
     assert!(
