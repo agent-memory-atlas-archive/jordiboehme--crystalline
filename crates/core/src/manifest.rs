@@ -517,10 +517,11 @@ impl GeneratedIndexes {
 /// [`Sharing::Direct`] is the deliberate choice of a team that wants no
 /// review step in front of its knowledge repository: a share then commits the
 /// selected files onto the branch in one commit and answers a protected
-/// branch with the way out. A direct share is refused while a proposal is
-/// open, except one that names your own open proposal (it amends it) and one
-/// made with `as_proposal` true or after a recorded refusal (it stacks on
-/// your open proposal or amends it).
+/// branch with the way out. A direct share is refused while one of your own
+/// proposals is open, except one that names it (it amends it) and one made
+/// with `as_proposal` true or after the branch refused a share (it stacks on
+/// your open proposal or amends it). "Your own" means the GitHub login the
+/// share goes out on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Sharing {
     /// A share opens (or stacks, amends, updates) a proposal for review.

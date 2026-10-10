@@ -3155,6 +3155,8 @@ fn ahead_line(d: &serde_json::Value) -> String {
 /// `origin share`'s flags as the share takes them: `(as_proposal, amend)`.
 /// A bare `--proposal` asks for a proposal; `--proposal <n>` amends that
 /// layer, as it always did; `--direct` asks for the direct commit only.
+/// The two arms with `--proposal` ignore `direct`: clap refuses the pair
+/// (`conflicts_with = "proposal"` on `--direct`), so it never reaches here.
 fn share_choice(proposal: Option<Option<u64>>, direct: bool) -> (Option<bool>, Option<u64>) {
     match (proposal, direct) {
         (Some(None), _) => (Some(true), None),
@@ -3164,8 +3166,9 @@ fn share_choice(proposal: Option<Option<u64>>, direct: bool) -> (Option<bool>, O
     }
 }
 
-/// The line a domain prints while this machine has a refused direct commit
-/// on record, and nothing otherwise; an older daemon sends no key.
+/// The line a domain prints while a refused direct commit is on record for
+/// the GitHub login its shares go out on, and nothing otherwise; an older
+/// daemon sends no key.
 fn direct_refused_line(d: &serde_json::Value) -> Option<String> {
     d["direct_refused"]["line"]
         .as_str()
