@@ -46,14 +46,26 @@ pub fn load_domain_config(root: &Path) -> DomainConfigLoad {
     if !path.is_file() {
         return DomainConfigLoad::default();
     }
-    // A file of blank lines, comments and document markers sets nothing. YAML
-    // reads it as no document at all, and that is an empty file, not one that
-    // does not parse.
-    if std::fs::read_to_string(&path).is_ok_and(|text| is_blank_yaml(&text)) {
-        return DomainConfigLoad::default();
-    }
-    match crate::config::load_yaml::<DomainConfig>(&path) {
-        Ok(config) => {
+    // One read: the blank check and the parse judge the same text, even when
+    // the file is written in between. A file of blank lines, comments and
+    // document markers sets nothing. YAML reads it as no document at all,
+    // and that is an empty file, not one that does not parse.
+    let parsed = std::fs::read_to_string(&path)
+        .map_err(|source| crate::config::ConfigError::Io {
+            path: path.display().to_string(),
+            source,
+        })
+        .and_then(|text| {
+            if is_blank_yaml(&text) {
+                return Ok(None);
+            }
+            serde_yaml_ng::from_str::<DomainConfig>(&text)
+                .map(Some)
+                .map_err(|e| crate::config::ConfigError::Yaml(e.to_string()))
+        });
+    match parsed {
+        Ok(None) => DomainConfigLoad::default(),
+        Ok(Some(config)) => {
             let problems = config_problems(&config);
             DomainConfigLoad { config, problems }
         }
@@ -468,6 +480,68 @@ mod order_tests {
   token_budget: 5000
 "
             )
+        );
+    }
+}
+
+#[cfg(test)]
+mod load_tests {
+    use super::*;
+
+    /// T2-b: the loader reads the file once, so the blank check and the
+    /// parse always judge the same text. A source scan, because a second read
+    /// leaves no other trace a test can see.
+    #[test]
+    fn load_domain_config_reads_the_file_once() {
+        let source = include_str!("domain_config.rs");
+        let body = source
+            .split("pub fn load_domain_config(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("the loader is in this file");
+        let reads = body.matches("read_to_string(").count() + body.matches("load_yaml").count();
+        assert_eq!(reads, 1, "the loader reads the file {reads} times:\n{body}");
+    }
+
+    /// The answers stay what they were: a blank file sets nothing, a good
+    /// one sets its rules, a broken one is one problem.
+    #[test]
+    fn a_blank_a_good_and_a_broken_file_load_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DOMAIN_CONFIG_FILE);
+
+        std::fs::write(&path, "---\n# nothing here\n").unwrap();
+        let blank = load_domain_config(dir.path());
+        assert!(blank.problems.is_empty(), "{:?}", blank.problems);
+        assert!(blank.config.verify.is_none());
+
+        std::fs::write(&path, "verify:\n  rules:\n    E007: off\n").unwrap();
+        let good = load_domain_config(dir.path());
+        assert!(good.problems.is_empty(), "{:?}", good.problems);
+        assert_eq!(
+            good.config
+                .verify
+                .unwrap()
+                .rules
+                .get("E007")
+                .map(String::as_str),
+            Some("off")
+        );
+
+        std::fs::write(&path, "verify: [unclosed\n").unwrap();
+        let broken = load_domain_config(dir.path());
+        assert_eq!(broken.problems.len(), 1);
+        assert!(
+            broken.problems[0].message.starts_with(
+                "`.crystalline.yaml` does not parse, so none of its verify settings apply"
+            ),
+            "{}",
+            broken.problems[0].message
+        );
+        assert!(
+            broken.problems[0].message.contains("config yaml error: "),
+            "the parse error keeps its wording: {}",
+            broken.problems[0].message
         );
     }
 }
