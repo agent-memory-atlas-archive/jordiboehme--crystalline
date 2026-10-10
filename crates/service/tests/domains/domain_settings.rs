@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crystalline_core::config::{AuthConfig, DomainEntry, GlobalConfig, ReviewMode};
 use crystalline_index::TursoStore;
 use crystalline_service::engine::PolicyEdit;
+use crystalline_service::params::DeleteParams;
 use crystalline_service::rest::{AuthStore, Role};
 use crystalline_service::{DomainAccess, Engine, Scope};
 use serde_json::{Value, json};
@@ -479,5 +480,52 @@ async fn a_hidden_private_domain_is_not_found_and_never_a_view() {
     assert!(
         matches!(err, crystalline_service::EngineError::UnknownDomain { .. }),
         "{err}"
+    );
+}
+
+/// T5-a: an actor whose draft deletes the MANIFEST sees a domain with no
+/// MANIFEST, the way read_engram answers them. The folder and every other
+/// reader still see the domain's MANIFEST.
+#[tokio::test]
+async fn a_draft_that_deletes_the_manifest_shows_it_missing_to_its_actor() {
+    let (tmp, engine) = settings_engine(EVERY_SECTION, |cfg, _| {
+        cfg.domains.get_mut("eng").unwrap().review = Some(ReviewMode::Overlay);
+    })
+    .await;
+    let receipt = engine
+        .delete_engram_as(
+            &DeleteParams {
+                identifier: "manifest".to_string(),
+                domain: "eng".to_string(),
+                expected_checksum: None,
+            },
+            None,
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt["draft"], true, "{receipt}");
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/MANIFEST.md")).unwrap();
+    assert_eq!(on_disk, EVERY_SECTION, "the folder is unchanged");
+
+    let mine = engine
+        .domain_settings("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(mine["manifest"], "missing", "{mine}");
+    assert_eq!(
+        row(&mine["policies"], "key", "sharing")["declared"],
+        Value::Null,
+        "the deleted MANIFEST declares nothing: {mine}"
+    );
+
+    let base = engine
+        .domain_settings("eng", &Scope::Anonymous)
+        .await
+        .unwrap();
+    assert_eq!(base["manifest"], "present");
+    assert_eq!(
+        row(&base["policies"], "key", "sharing")["declared"],
+        "direct"
     );
 }

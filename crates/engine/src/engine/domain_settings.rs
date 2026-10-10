@@ -497,7 +497,14 @@ impl Engine {
                         .domain_settings_view(domain, &text.content, false, scope)
                         .await;
                 }
-                Err(EngineError::NotFound(_)) => {}
+                // The caller's own draft deletes the MANIFEST: their view has
+                // none, so it shows as missing rather than as the folder's.
+                Err(EngineError::NotFound(_)) => {
+                    let (domain_id, _) = self.domain_source(domain).await?;
+                    if view.deletes(domain_id, "MANIFEST.md").await? {
+                        return self.domain_settings_view(domain, "", true, scope).await;
+                    }
+                }
                 Err(e) => return Err(e),
             }
         }
