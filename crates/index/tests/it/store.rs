@@ -203,6 +203,56 @@ parity!(
     full_sync_counts
 );
 
+/// A rewritten engram keeps the tags of the observations it has now and none
+/// of the ones it had, on both backends.
+async fn a_rewrite_replaces_the_observation_tags(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.md");
+    std::fs::write(
+        &path,
+        engram(
+            "A",
+            "a",
+            "engram",
+            "",
+            "- [fact] one #old\n- [fact] two #old #both",
+        ),
+    )
+    .unwrap();
+    sync_domain(store, "d", dir.path()).await.unwrap();
+    // Longer, so the size moves and the stamp prefilter cannot skip it.
+    std::fs::write(
+        &path,
+        engram(
+            "A",
+            "a",
+            "engram",
+            "",
+            "- [fact] one again #new\n- [fact] two #both",
+        ),
+    )
+    .unwrap();
+    let report = sync_domain(store, "d", dir.path()).await.unwrap();
+    assert_eq!(report.updated, 1, "the engram was rewritten: {report:?}");
+    let vocab = store.vocabulary(Some("d"), None).await.unwrap();
+    let on_observations = |name: &str| {
+        vocab
+            .tags
+            .iter()
+            .find(|t| t.name == name)
+            .map(|t| t.observations)
+            .unwrap_or(0)
+    };
+    assert_eq!(on_observations("old"), 0, "{:?}", vocab.tags);
+    assert_eq!(on_observations("new"), 1, "{:?}", vocab.tags);
+    assert_eq!(on_observations("both"), 1, "{:?}", vocab.tags);
+}
+
+parity!(
+    a_rewrite_replaces_the_observation_tags_on_both_backends,
+    a_rewrite_replaces_the_observation_tags
+);
+
 /// A MANIFEST body with a `## Provisioning` section declaring `decl`, so the
 /// exclusion tests can point sync at a real domain root.
 fn provisioning_manifest(decl: &str) -> String {
@@ -10489,10 +10539,11 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
         census.failures.join("\n")
     );
     assert_eq!(
-        census.sites, 172,
+        census.sites, 174,
         "the engram statement census moved; every new one needs a predicate or a waiver. \
-         70 per backend in mod.rs (the `engram_meta_value` delete of `clear_domain` is the \
-         newest, waived below with the rest of that clear; before it the two unbinding \
+         71 per backend in mod.rs (the permalink arm of `UPSERT_PROBE_SQL` is the \
+         newest, on the caller's own actor; before it the `engram_meta_value` delete of \
+         `clear_domain`, waived below with the rest of that clear; before that the two unbinding \
          statements of `clear_domain`, also waived; before them the guarded compare \
          of `upsert_engram_checked` is the \
          newest, on the base row; before it the two `EXISTS` probes of the contradiction \

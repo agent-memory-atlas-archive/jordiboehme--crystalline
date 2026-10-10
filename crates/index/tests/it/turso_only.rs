@@ -192,6 +192,28 @@ fn a_body_projection_never_reaches_an_unbounded_sorter() {
     );
 }
 
+/// Every statement the child delete of an upsert runs is a seek, and none
+/// carries an `IN (SELECT ...)` list. turso builds such a list in an
+/// ephemeral table, and an ephemeral table is a temp directory and a temp
+/// file, created and removed per statement: once per rewritten engram in a
+/// full reindex, about 43% of its apply when measured on 2026-10-10.
+#[tokio::test]
+async fn the_child_delete_runs_no_subquery_list() {
+    let store = TursoStore::open_in_memory().await.unwrap();
+    for sql in crystalline_index::turso::child_delete_statements() {
+        let bound = sql.replace("?1", "1");
+        let plan = store.explain_query_plan(&bound).await.unwrap();
+        assert!(
+            plan.iter().all(|line| !line.contains("SUBQUERY")),
+            "{sql} runs a subquery list, a temp file per engram: {plan:?}"
+        );
+        assert!(
+            plan.iter().any(|line| line.starts_with("SEARCH ")),
+            "{sql} does not seek: {plan:?}"
+        );
+    }
+}
+
 /// The inbound reference query must never widen its projection to a body.
 ///
 /// A source scan rather than a plan assertion, in the style of the Postgres

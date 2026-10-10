@@ -456,7 +456,7 @@ impl TursoStore {
         // duplicate means no failing statement aborts the batch transaction.
         let probe = query_all(
             &self.conn,
-            "SELECT id, path FROM engram WHERE domain_id=?1 AND actor=?4 AND (path=?2 OR permalink=?3)",
+            UPSERT_PROBE_SQL,
             vec![
                 Value::Integer(domain.0),
                 Value::Text(record.path.clone()),
@@ -652,19 +652,20 @@ impl TursoStore {
     /// clears its chunks explicitly in [`Store::delete_engram`].
     async fn delete_children(&self, engram_id: i64) -> Result<()> {
         let eid = vec![Value::Integer(engram_id)];
-        self.conn
-            .execute(
-                "DELETE FROM observation_tag WHERE observation_id IN (SELECT id FROM observation WHERE engram_id=?1)",
-                eid.clone(),
-            )
-            .await?;
-        for sql in [
-            "DELETE FROM observation WHERE engram_id=?1",
-            "DELETE FROM engram_tag WHERE engram_id=?1",
-            "DELETE FROM engram_meta_value WHERE engram_id=?1",
-            "DELETE FROM relation WHERE engram_id=?1",
-            "DELETE FROM link WHERE engram_id=?1",
-        ] {
+        // The observation tags first, while their observations still name
+        // them; none at all for an engram without observations.
+        let observations = query_all(&self.conn, OBSERVATION_IDS_SQL, eid.clone()).await?;
+        for row in &observations {
+            if let Some(observation) = cell_i64(row, 0) {
+                self.conn
+                    .execute(
+                        DELETE_OBSERVATION_TAGS_SQL,
+                        vec![Value::Integer(observation)],
+                    )
+                    .await?;
+            }
+        }
+        for sql in CHILD_ROWS_DELETE_SQL {
             self.conn.execute(sql, eid.clone()).await?;
         }
         Ok(())
@@ -1055,6 +1056,50 @@ fn resolve_pending_sql(table: &str) -> String {
 #[doc(hidden)]
 pub const FILE_STAMPS_SQL: &str =
     "SELECT path, mtime, size, sha256 FROM engram WHERE domain_id=?1 AND actor = ''";
+
+/// The probe behind every upsert: the row of this actor at this path (an
+/// update), and any row of this actor that already holds this permalink
+/// under another path (a duplicate the batch reports instead of failing on).
+///
+/// Two arms, each a full-key seek of its own unique index. One `OR` over the
+/// two is planned as a walk of `idx_engram_domain`, which every upsert then
+/// paid in full: quadratic over a first index, twice that over a full
+/// reindex. A row that matches both arms comes back twice, which the caller
+/// reads as the same id.
+#[doc(hidden)]
+pub const UPSERT_PROBE_SQL: &str = "SELECT id, path FROM engram WHERE domain_id=?1 AND path=?2 AND actor=?4 \
+     UNION ALL SELECT id, path FROM engram WHERE domain_id=?1 AND permalink=?3 AND actor=?4";
+
+/// The ids of one engram's observations, read before their tags are deleted.
+#[doc(hidden)]
+pub const OBSERVATION_IDS_SQL: &str = "SELECT id FROM observation WHERE engram_id=?1";
+
+/// The tags of one observation. One statement per observation rather than one
+/// `IN (SELECT ...)` or `IN (?, ?, ...)` for the engram: turso builds either
+/// list in an ephemeral table, which is a temp directory and a temp file per
+/// statement, and an engram without observations then pays nothing at all.
+#[doc(hidden)]
+pub const DELETE_OBSERVATION_TAGS_SQL: &str = "DELETE FROM observation_tag WHERE observation_id=?1";
+
+/// The other child rows of one engram, each through its `engram_id` index.
+#[doc(hidden)]
+pub const CHILD_ROWS_DELETE_SQL: [&str; 5] = [
+    "DELETE FROM observation WHERE engram_id=?1",
+    "DELETE FROM engram_tag WHERE engram_id=?1",
+    "DELETE FROM engram_meta_value WHERE engram_id=?1",
+    "DELETE FROM relation WHERE engram_id=?1",
+    "DELETE FROM link WHERE engram_id=?1",
+];
+
+/// Every statement `delete_children` can run, with the engram id
+/// (or, for the tag delete, an observation id) as `?1`. Named so
+/// `tests/it/turso_only.rs` can explain each one.
+#[doc(hidden)]
+pub fn child_delete_statements() -> Vec<&'static str> {
+    let mut all = vec![OBSERVATION_IDS_SQL, DELETE_OBSERVATION_TAGS_SQL];
+    all.extend(CHILD_ROWS_DELETE_SQL);
+    all
+}
 
 /// The read behind [`Store::contradiction_pairs_scored`], one domain's pair
 /// rows for one model through `idx_contradiction_pair_domain`.

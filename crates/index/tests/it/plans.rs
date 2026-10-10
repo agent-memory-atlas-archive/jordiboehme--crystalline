@@ -280,6 +280,27 @@ pub fn registry() -> Vec<HotStatement> {
             postgres_must_seek: &[],
         },
         HotStatement {
+            // Every upsert asks this before it writes, so a walk here is paid
+            // once per engram: quadratic in a first index, twice that in a
+            // full reindex (10 to 12 minutes at 50,000 engrams before it
+            // seeked, 2026-10-10). The claim is that each arm is a full-key
+            // seek of its own unique index, so both are named in full on turso,
+            // where an `OR` over the two collapsed into a walk of
+            // `idx_engram_domain` that still reads as a SEARCH.
+            issued_by: "Store::upsert_engram (probe)",
+            turso: || crystalline_index::turso::UPSERT_PROBE_SQL.to_string(),
+            postgres: || crystalline_index::postgres::UPSERT_PROBE_SQL.to_string(),
+            literals: &["1", "'notes/e1.md'", "'p1'", "''"],
+            literals_pg: None,
+            scan_expected: &[],
+            scan_expected_pg: None,
+            turso_must_seek: &[
+                "idx_engram_path_actor (domain_id=? AND path=? AND actor=?)",
+                "idx_engram_permalink_actor (domain_id=? AND permalink=? AND actor=?)",
+            ],
+            postgres_must_seek: &["idx_engram_path_actor", "idx_engram_permalink_actor"],
+        },
+        HotStatement {
             // The one entry whose tie-break differs from `reference_match`'s:
             // this ties by path (`COLLATE "C"` on postgres) where the resolve
             // pass ties by `e.id`, so where two engrams in a domain share a
@@ -2095,4 +2116,44 @@ mod postgres_plans {
         );
         store.drop_schema().await.unwrap();
     }
+}
+
+/// The postgres upsert probe is planned on every call, never from a cached
+/// generic plan. sqlx prepares each statement, and postgres moves a prepared
+/// statement to a generic plan after five calls. A generic plan made while
+/// `engram` was empty (the first index of a new database) seeks the path index
+/// on `(domain_id, actor)` and filters path or permalink, which walks the whole
+/// domain on every probe: 9.9 ms and 19,999 rows removed at 20,000 engrams
+/// (2026-10-10). `persistent(false)` plans it against the table as it is.
+#[test]
+fn the_postgres_upsert_probe_is_planned_per_call() {
+    let src = include_str!("../../src/postgres/mod.rs");
+    let at = src
+        .find("sqlx::query(UPSERT_PROBE_SQL)")
+        .expect("upsert_row runs the shared probe");
+    let end = at + src[at..].find(".await").expect("the probe is awaited");
+    let call = &src[at..end];
+    assert!(
+        call.contains(".persistent(false)"),
+        "the upsert probe is prepared and can be cached as a generic plan: {call}"
+    );
+}
+
+/// The child rows of a postgres upsert are deleted in one round trip. Each
+/// statement is a round trip to the server, and a full reindex runs the child
+/// delete once per engram, so six statements here made the full reindex six
+/// round trips per engram slower than the first index, which never runs it.
+#[test]
+fn the_postgres_child_delete_is_one_statement() {
+    let src = include_str!("../../src/postgres/mod.rs");
+    let start = src
+        .find("async fn delete_children(")
+        .expect("delete_children exists");
+    let end = start + src[start..].find("\n}\n").expect("delete_children ends");
+    let body = &src[start..end];
+    assert_eq!(
+        body.matches("sqlx::query(").count(),
+        1,
+        "one statement for the six child tables: {body}"
+    );
 }
