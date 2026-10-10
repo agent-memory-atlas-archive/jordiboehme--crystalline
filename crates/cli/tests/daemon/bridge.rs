@@ -364,3 +364,65 @@ fn status_names_the_variable_a_task_started_daemon_did_not_get() {
         "nothing set here, nothing said"
     );
 }
+
+/// The doctor half of the same line: `check_service` asks the holder and
+/// compares it with what this shell would have started, so a variable set
+/// here that the daemon did not get is a warning in the service section, and
+/// with `--json` a `config_mismatch` row. A shell that sets none says
+/// nothing.
+#[test]
+fn doctor_names_the_variable_a_task_started_daemon_did_not_get() {
+    let home = short_home();
+    // HTTP off in the file, as in the status twin above.
+    let config = isolated_config_path(home.path());
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "service:\n  http: false\n").unwrap();
+    let mut bridge = Bridge::start_with(
+        home.path(),
+        "system",
+        &[("CRYSTALLINE_SERVICE_HTTP", "127.0.0.1:7499")],
+    );
+    let opened = bridge.open();
+    assert_eq!(
+        opened["result"]["serverInfo"]["name"], "crystalline",
+        "{opened}"
+    );
+    let run = |extra: &[(&str, &str)], args: &[&str]| {
+        let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("crystalline"));
+        for (name, value) in crate::common::isolation_env(home.path()) {
+            cmd.env(name, value);
+        }
+        cmd.env_remove("RUST_LOG")
+            .env_remove("CRYSTALLINE_SERVICE_HTTP");
+        for name in crystalline_service::shaping::shaping_set_here() {
+            cmd.env_remove(name);
+        }
+        for (name, value) in extra {
+            cmd.env(name, value);
+        }
+        cmd.args(args).output().unwrap()
+    };
+    let shell = [("CRYSTALLINE_SERVICE_HTTP", "127.0.0.1:7499")];
+    let with_variable = run(&shell, &["doctor"]);
+    let as_json = run(&shell, &["--json", "doctor"]);
+    let without = run(&[], &["doctor"]);
+    bridge.finish();
+    let _ = run(&[], &["ctl", "shutdown"]);
+
+    let said = String::from_utf8_lossy(&with_variable.stdout);
+    let expected = if cfg!(windows) {
+        "  [warning] The daemon serves no HTTP endpoint, not 127.0.0.1:7499 from CRYSTALLINE_SERVICE_HTTP: a daemon the sign-in task started reads the system environment. Set CRYSTALLINE_SERVICE_HTTP as a user environment variable, or stop the daemon (`crystalline ctl shutdown`) and start it from this shell."
+    } else {
+        "  [warning] The daemon serves no HTTP endpoint, not 127.0.0.1:7499 from CRYSTALLINE_SERVICE_HTTP: the daemon was started without this shell's environment. Stop it (`crystalline ctl shutdown`) and start it from this shell, or set CRYSTALLINE_SERVICE_HTTP where it starts."
+    };
+    assert!(said.contains(expected), "{said}");
+    let json: Value = serde_json::from_slice(&as_json.stdout).unwrap();
+    assert_eq!(
+        json["service"]["config_mismatch"][0]["variable"], "CRYSTALLINE_SERVICE_HTTP",
+        "{json}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&without.stdout).contains("The daemon serves"),
+        "nothing set here, nothing said"
+    );
+}
