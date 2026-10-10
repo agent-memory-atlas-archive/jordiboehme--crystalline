@@ -670,6 +670,17 @@ jobs:
             $sequence[$name] = $record.GetType().InvokeMember('IntegerData', 'GetProperty', $null, $record, @(2))
           }
           $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
+          # Let go of the package before msiexec opens it again for the
+          # removal below: the database object holds the .msi open until it
+          # is released.
+          [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($view)
+          [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($db)
+          [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($installer)
+          $view = $null
+          $db = $null
+          $installer = $null
+          [GC]::Collect()
+          [GC]::WaitForPendingFinalizers()
           $end = $sequence['EndDaemonTasks']
           "InstallInitialize $($sequence['InstallInitialize']), EndDaemonTasks $end, RemoveExistingProducts $($sequence['RemoveExistingProducts']), RemoveFiles $($sequence['RemoveFiles'])"
           if (-not ($end -gt $sequence['RemoveExistingProducts'] -and $end -lt $sequence['RemoveFiles'])) {
@@ -678,10 +689,9 @@ jobs:
           $sysPath = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').Path
           if ($sysPath -notlike '*Crystalline\bin*') { throw 'install dir not on the system PATH' }
           # The daemon task: registered by the installed binary, defined for
-          # the Users group, removed on uninstall. Run once on a best-effort
-          # basis: a hosted runner may have no interactive session for a group
-          # task, so a run that starts no daemon is a warning here and a check
-          # on a real machine before the release.
+          # the Users group, removed on uninstall. Run once, and a run that
+          # starts no daemon fails the step, as it does in the upgrade test
+          # below: the hosted runner does start a group task.
           $task = '\Crystalline\Daemon'
           schtasks /Query /TN $task *> $null
           if ($LASTEXITCODE -ne 0) { throw "the MSI did not register $task" }
@@ -761,8 +771,9 @@ jobs:
           & $exe daemon-task show | Set-Content -Path $definition -Encoding Unicode
           schtasks /Create /TN $oldUserTask /XML $definition /F | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "could not plant $oldUserTask" }
-          $said = & $exe daemon-task register
-          if ($LASTEXITCODE -ne 0) { throw "daemon-task register failed: $said" }
+          # Both streams, as text: the reason for a refusal is on stderr.
+          $said = @(& $exe daemon-task register 2>&1 | ForEach-Object { "$_" })
+          if ($LASTEXITCODE -ne 0) { throw "daemon-task register failed: $($said -join ' | ')" }
           $said
           schtasks /Query /TN $newUserTask *> $null
           if ($LASTEXITCODE -ne 0) { throw "$newUserTask was not registered" }
@@ -781,12 +792,16 @@ jobs:
             if ($LASTEXITCODE -eq 0) { $up = $true; break }
             Start-Sleep -Milliseconds 500
           }
-          if ($up) {
-            # Left running: the uninstall below must end it itself.
-            "the task started a daemon that answers"
-          } else {
-            "::warning::the task did not start a daemon on this runner; the real-machine check covers it"
+          if (-not $up) {
+            Write-Host '--- ctl status'
+            & $exe ctl status 2>&1 | Write-Host
+            $daemonLog = Join-Path (Join-Path $env:APPDATA 'crystalline') 'daemon.log'
+            Write-Host "--- tail of $daemonLog"
+            if (Test-Path $daemonLog) { Get-Content $daemonLog -Tail 40 | Write-Host } else { Write-Host 'no daemon.log' }
+            throw 'the task started no daemon that answers'
           }
+          # Left running: the uninstall below must end it itself.
+          "the task started a daemon that answers"
           $removeLog = Join-Path $env:RUNNER_TEMP 'msi-uninstall.log'
           $p = Start-Process msiexec -ArgumentList "/x `"$msi`" /qn /norestart /L*v `"$removeLog`"" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Show-MsiFailure $removeLog; throw "uninstall failed: $($p.ExitCode) (3010 means a file stayed in use)" }
@@ -798,11 +813,12 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw 'the task is still registered after uninstall' }
           $global:LASTEXITCODE = 0
 
-      # Install v0.24.1 from its release, then this build over it: the task
+      # Install v0.24.3 from its release, then this build over it: the task
       # must survive the major upgrade, start the new binary and start a
-      # daemon of the new version. The smoke test above uninstalled, so this
-      # starts from a clean machine.
-      - name: Upgrade test of the .msi from v0.24.1
+      # daemon of the new version. The old product's removal ends its own
+      # daemon (EndDaemonTasks, since v0.24.2), so no file stays in use. The
+      # smoke test above uninstalled, so this starts from a clean machine.
+      - name: Upgrade test of the .msi from v0.24.3
         if: matrix.msi
         shell: pwsh
         env:
@@ -813,8 +829,8 @@ jobs:
           # package" gave the MSI and the one crystalline --version prints.
           $built = $env:RELEASE_VERSION.TrimStart('v').Split('-')[0]
           if ($built -eq '0.0.0') { $built = (Select-String -Path Cargo.toml -Pattern '^version = "([0-9.]+)"$' | Select-Object -First 1).Matches[0].Groups[1].Value }
-          if ([version]$built -le [version]'0.24.1') {
-            "::warning::this build is $built, not newer than 0.24.1, so there is nothing to upgrade from; the upgrade test runs on a release tag"
+          if ([version]$built -le [version]'0.24.3') {
+            "::warning::this build is $built, not newer than 0.24.3, so there is nothing to upgrade from; the upgrade test runs on a release tag"
             exit 0
           }
           function Show-MsiFailure($log) {
@@ -823,7 +839,7 @@ jobs:
             Select-String -Path $log -Pattern 'Error \d{4}|error code|CustomAction .* returned actual error|Product: Crystalline -- ' | Select-Object -First 40
           }
           # The smoke test's daemon left an index at this build's schema in the
-          # state directory, and v0.24.1 refuses a schema newer than it knows.
+          # state directory, and v0.24.3 refuses a schema newer than it knows.
           Get-Process -Name crystalline -ErrorAction SilentlyContinue | Stop-Process -Force
           $profileDir = Join-Path $env:APPDATA 'crystalline'
           Remove-Item -Recurse -Force $profileDir -ErrorAction SilentlyContinue
@@ -835,8 +851,8 @@ jobs:
             $daemonLog = Join-Path $profileDir 'daemon.log'
             if (Test-Path $daemonLog) { Get-Content $daemonLog -Tail 40 | Write-Host } else { Write-Host 'no daemon.log' }
           }
-          $old = Join-Path $env:RUNNER_TEMP "crystalline-v0.24.1-$env:LEG_PLATFORM.msi"
-          Invoke-WebRequest -Uri "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v0.24.1/crystalline-v0.24.1-$env:LEG_PLATFORM.msi" -OutFile $old
+          $old = Join-Path $env:RUNNER_TEMP "crystalline-v0.24.3-$env:LEG_PLATFORM.msi"
+          Invoke-WebRequest -Uri "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v0.24.3/crystalline-v0.24.3-$env:LEG_PLATFORM.msi" -OutFile $old
           $new = (Get-Item dist/*.msi).FullName
           $exe = 'C:\Program Files\Crystalline\bin\crystalline.exe'
           $task = '\Crystalline\Daemon'
@@ -845,15 +861,15 @@ jobs:
             $p = Start-Process msiexec -ArgumentList "/i `"$msi`" /qn /norestart /L*v `"$log`"" -Wait -PassThru
             $p.ExitCode
           }
-          $oldLog = Join-Path $env:RUNNER_TEMP 'msi-install-0.24.1.log'
+          $oldLog = Join-Path $env:RUNNER_TEMP 'msi-install-0.24.3.log'
           $code = & $install $old $oldLog
-          if ($code -notin 0, 3010) { Show-MsiFailure $oldLog; throw "the v0.24.1 install failed: $code" }
+          if ($code -notin 0, 3010) { Show-MsiFailure $oldLog; throw "the v0.24.3 install failed: $code" }
           $was = & $exe --version
-          if ("$was" -notlike '*0.24.1*') { throw "v0.24.1 did not install: $was" }
+          if ("$was" -notlike '*0.24.3*') { throw "v0.24.3 did not install: $was" }
           schtasks /Query /TN $task *> $null
-          if ($LASTEXITCODE -ne 0) { throw 'v0.24.1 registered no task' }
-          # A v0.24.1 daemon from the task holds the old crystalline.exe
-          # open; the new MSI must end it before the old product goes.
+          if ($LASTEXITCODE -ne 0) { throw 'v0.24.3 registered no task' }
+          # A v0.24.3 daemon from the task holds the old crystalline.exe
+          # open; the old product's removal must end it before its files go.
           schtasks /Run /TN $task | Out-Null
           $oldUp = $false
           for ($i = 0; $i -lt 30; $i++) {
@@ -861,12 +877,18 @@ jobs:
             if ($LASTEXITCODE -eq 0) { $oldUp = $true; break }
             Start-Sleep -Milliseconds 500
           }
-          if (-not $oldUp) { Show-DaemonFailure; throw 'the v0.24.1 task started no daemon that answers' }
+          if (-not $oldUp) { Show-DaemonFailure; throw 'the v0.24.3 task started no daemon that answers' }
           $upgradeLog = Join-Path $env:RUNNER_TEMP 'msi-upgrade.log'
           $code = & $install $new $upgradeLog
           if ($code -notin 0, 3010) { Show-MsiFailure $upgradeLog; throw "the upgrade failed: $code" }
-          # No EndDaemonTasks assertion: the old v0.24.1 product has no end
-          # step. From 0.24.2 on the old product's removal ends its daemons.
+          # v0.24.3's removal ends its own daemon (EndDaemonTasks). Whether
+          # that nested removal is written to this log is not confirmed, so
+          # the line is reported, not required.
+          if (Select-String -Path $upgradeLog -Pattern 'ActionStart\(Name=EndDaemonTasks' -Quiet) {
+            "the old product's removal ran EndDaemonTasks"
+          } else {
+            "::notice::msi-upgrade.log shows no EndDaemonTasks line; the nested removal may log elsewhere"
+          }
           $is = & $exe --version
           if ("$is" -notlike "*$built*") { throw "after the upgrade $exe is $is, not $built" }
           $t = Get-ScheduledTask -TaskPath '\Crystalline\' -TaskName 'Daemon' -ErrorAction SilentlyContinue
