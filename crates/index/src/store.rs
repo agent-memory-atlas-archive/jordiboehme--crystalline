@@ -2317,6 +2317,9 @@ pub trait Store: Send + Sync {
     /// `(engram id, key, value)`, sorted by id and then byte-wise. The
     /// parity tests read it to prove that both backends write and remove
     /// the same rows on every write path.
+    ///
+    /// For tests only: it reads the whole table, so no product path may call
+    /// it.
     #[doc(hidden)]
     async fn meta_values(&self) -> Result<Vec<(EngramId, String, String)>>;
 

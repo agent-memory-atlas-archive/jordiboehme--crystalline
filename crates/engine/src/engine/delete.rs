@@ -244,22 +244,20 @@ impl Engine {
     /// ([`DomainView::tombstone_file`]), and so does the join screen that
     /// asks whether anybody holds an attachment.
     ///
-    /// **Deliberately not [`Engine::attachment_read`], and the difference is a
-    /// bug rather than a preference.** That read refuses a file over
-    /// [`crystalline_core::MAX_ATTACHMENT_BYTES`] and, on a virtual domain,
-    /// insists on both a row and a blob. The delete does neither: it reads no
-    /// bytes and succeeds when either half is there. A preview built on the
-    /// read would therefore fail round one - and so refuse the delete outright
-    /// for a peer that gets asked - on exactly the files this verb is the
-    /// escape hatch for: the stray oversized file the walker skipped and so
-    /// never gave a row, and the half-present pair a hand-edited domain leaves
-    /// behind. **A preview must never be stricter than the act it previews.**
+    /// **Deliberately not [`Engine::attachment_read`].** That read refuses a
+    /// file over [`crystalline_core::MAX_ATTACHMENT_BYTES`] and, on a virtual
+    /// domain, insists on both a row and a blob. The delete does neither: it
+    /// reads no bytes and succeeds when either half is there. A presence
+    /// check built on the read would answer "not there" for exactly the files
+    /// the delete is the escape hatch for: the stray oversized file the walker
+    /// skipped and so never gave a row, and the half-present pair a
+    /// hand-edited domain leaves behind. **A check must never be stricter than
+    /// the act it answers for.**
     ///
     /// So the size is looked up rather than measured: the file's own metadata
     /// where there is a file, the recorded row where the file is already gone
-    /// and only the row stands. No bytes are read and nothing is written -
-    /// unlike the read, which heals the row it serves, so round one no longer
-    /// mutates the derived layer at all.
+    /// and only the row stands. No bytes are read and nothing is written,
+    /// unlike the read, which heals the row it serves.
     pub(crate) async fn attachment_delete_size(&self, domain: &str, path: &str) -> Result<u64> {
         validate_attachment_path(path)?;
         let (domain_id, source) = self.domain_source(domain).await?;
