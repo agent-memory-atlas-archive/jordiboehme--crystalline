@@ -2690,6 +2690,12 @@ fn a_sync_without_a_daemon_reparses_a_virtual_domain() {
             .block_on(store.upsert_domain("notes", None, DomainKind::Virtual))
             .unwrap();
         let rows = rt.block_on(store.all_engram_contents(domain)).unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "the virtual domain holds its MANIFEST and Wrapped: {:?}",
+            rows.iter().map(|r| r.path.as_str()).collect::<Vec<_>>()
+        );
         let row = rows.iter().find(|r| r.permalink == "wrapped").unwrap();
         assert_eq!(purge_count(&store), 1, "written by the current parser");
         let stamp = rt.block_on(store.file_stamps(domain)).unwrap()[&row.path].clone();
@@ -2708,9 +2714,8 @@ fn a_sync_without_a_daemon_reparses_a_virtual_domain() {
     let text = String::from_utf8_lossy(&out.get_output().stdout).to_string()
         + &String::from_utf8_lossy(&out.get_output().stderr);
     assert!(
-        text.contains("reparsed 1 engram of 'notes' after a parser change")
-            || text.contains("engrams of 'notes' after a parser change"),
-        "the sync says what it did: {text}"
+        text.contains("reparsed 2 engrams of 'notes' after a parser change"),
+        "the sync says what it did, every row of the domain: {text}"
     );
 
     let store = rt.block_on(TursoStore::open(&db)).unwrap();

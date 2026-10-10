@@ -2997,7 +2997,7 @@ async fn an_admin_over_http_cannot_change_an_operator_setting() {
     let refused = session
         .call_tool(
             "configure",
-            serde_json::json!({ "set": { "auth.mcp": "false", "recall.limit": "7" } }),
+            serde_json::json!({ "set": { "auth.mcp": "false", "recall.limit": "4" } }),
         )
         .await;
     refusal_is_readable(&refused, "an operator setting refusal");
@@ -3006,13 +3006,31 @@ async fn an_admin_over_http_cannot_change_an_operator_setting() {
         serde_json::json!("This setting is changed only with the crystalline CLI."),
         "{refused}"
     );
+    // The file carries the proof for the operator key: the running state
+    // would answer the same whatever the call wrote.
     assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
-    assert!(ctx.engine.auth_mcp(), "token checks stay on");
 
     let shown = session.call_tool("configure", serde_json::json!({})).await;
     assert!(
         !shown.contains("auth.mcp"),
         "and the key is not listed:\n{shown}"
+    );
+    // A valid ordinary key in the same call was not applied either.
+    let snapshot: serde_json::Value = serde_json::from_str(
+        payload_of(&shown)["result"]["content"][0]["text"]
+            .as_str()
+            .expect("configure answers with text"),
+    )
+    .unwrap();
+    let limit = snapshot["settings"]
+        .as_array()
+        .and_then(|s| s.iter().find(|v| v["key"] == "recall.limit"))
+        .cloned()
+        .expect("recall.limit is an agent setting");
+    assert_ne!(
+        limit["value"],
+        serde_json::json!("4"),
+        "the ordinary key in the refused call was not applied: {limit}"
     );
 }
 

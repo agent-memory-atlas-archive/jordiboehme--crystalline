@@ -463,6 +463,11 @@ async fn the_setup_token_is_required_and_compared_for_a_non_local_caller() {
         missing["detail"], wrong["detail"],
         "one message for both, so nothing says whether the token was close"
     );
+    assert_eq!(
+        missing["detail"],
+        "this request did not come from the machine that serves this instance, so first-run setup needs the setup token: the one `crystalline serve` printed at startup, or the one set in CRYSTALLINE_SETUP_TOKEN",
+        "both ways to a token are named"
+    );
     for doc in [&missing, &wrong] {
         assert_eq!(
             doc["token_required"], true,
