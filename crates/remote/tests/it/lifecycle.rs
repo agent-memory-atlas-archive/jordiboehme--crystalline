@@ -11532,6 +11532,40 @@ async fn a_withdrawn_share_keeps_its_branch_while_a_pull_request_is_based_on_it(
     assert_eq!(kept_as(entry), Some((KeptKind::Base, Some(suggestion))));
 }
 
+/// M32: a layer the forge declined is queued by the repair as declined, with
+/// its pull requests belonging on the layer below it. A suggestion based on its branch keeps the branch, so the entry
+/// stays to be read.
+#[tokio::test]
+async fn a_repair_queues_a_declined_layer_as_declined() {
+    let mock = MockProvider::new();
+    mock.enable_stacks();
+    mock.close_proposals_when_their_base_is_deleted();
+    let (sub, layers) = stacked_three_layers(&mock).await;
+    let suggestion = stacked_layer(&mock, "suggest-62", &layers[1].branch).await;
+
+    mock.set_proposal_state(layers[1].number, ProposalState::Declined);
+    pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .unwrap();
+    assert!(
+        load_state(&sub.state_dir)
+            .retire_queue
+            .iter()
+            .all(|entry| entry.branch != layers[1].branch),
+        "the pull alone queues nothing"
+    );
+    stacked_withdraw(&mock, &sub, Some(layers[0].number), false).await;
+
+    let state = load_state(&sub.state_dir);
+    let entry = queued(&state, &layers[1].branch);
+    assert_eq!(entry.why, RetireWhy::Declined);
+    assert_eq!(
+        entry.onto, layers[0].branch,
+        "the layer below, read before the withdraw's first call"
+    );
+    assert_eq!(kept_as(entry), Some((KeptKind::Base, Some(suggestion))));
+}
+
 /// The branch is queued before the revert, so a revert that fails cannot
 /// lose it, and a withdraw tried again queues it once.
 #[cfg(unix)]
