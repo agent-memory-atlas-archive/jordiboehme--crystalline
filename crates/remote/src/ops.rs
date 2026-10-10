@@ -2671,8 +2671,10 @@ pub async fn propose_preview(
         }
         return Ok(plan);
     }
-    // The same guard [`propose`] runs before any proposal work.
-    if options.sharing == Sharing::Direct {
+    // The same guard [`propose`] runs before any proposal work, and in the
+    // same order: the share refuses for pending conflicts before it looks at
+    // anybody's proposal, so with conflicts the plan below reports them.
+    if options.sharing == Sharing::Direct && state.conflicts.is_empty() {
         refuse_foreign_amend(&state, &options)?;
         if let Some(open) = foreign_proposal_block(&state, options.author_login) {
             return Ok(SharePlan {

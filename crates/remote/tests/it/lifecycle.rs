@@ -2742,6 +2742,51 @@ async fn as_proposal_does_not_reach_another_logins_open_proposal() {
     assert_eq!(st.proposals[0].author_login.as_deref(), Some("alice"));
 }
 
+/// N1: with conflicts pending and only another person's proposal open, the
+/// preview answers the conflicts, the way the share does.
+#[tokio::test]
+async fn the_preview_reports_conflicts_before_another_logins_open_proposal() {
+    let mock = MockProvider::new();
+    let (sub, c1) = direct_domain(&mock).await;
+    let alice = match share_direct(&mock, &sub, by("alice", choosing(Some(true)))).await {
+        ProposeOutcome::Proposed(report) => report.number,
+        other => panic!("expected Proposed, got {other:?}"),
+    };
+    // A same-line conflict, recorded by the pull the preview runs.
+    write(&sub.domain_root.join("notes/keep.md"), b"keep LOCAL\n");
+    let c2 = mock.add_commit(
+        sub_commit_files(&[
+            ("MANIFEST.md", DIRECT_MANIFEST),
+            ("notes/keep.md", b"keep UPSTREAM\n"),
+            ("notes/edit.md", b"before\n"),
+            ("notes/gone.md", b"bye\n"),
+        ]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+
+    let plan = preview_direct_share(&mock, &sub, by("bob", choosing(Some(true)))).await;
+    assert!(
+        matches!(plan.action, PlannedAction::ConflictsPending { count: 1 }),
+        "the conflicts come first, not proposal #{alice}: {:?}",
+        plan.action
+    );
+    let err = propose(
+        &mock,
+        &share_spec(),
+        &sub.domain_root,
+        "Brand Team",
+        &sub.state_dir,
+        by("bob", choosing(Some(true))),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, RemoteError::ConflictsPending { count: 1 }),
+        "{err}"
+    );
+}
+
 /// A named proposal of another login is not amended on a direct domain,
 /// with `as_proposal: true` as without it, on a forge with stacks too.
 #[tokio::test]
