@@ -1187,6 +1187,13 @@ export interface SharePlan {
    */
   title: string | null;
   /**
+   * On a `proposal_open` plan: whether the proposal in the way is the
+   * caller's own (merge or withdraw it) or another person's (share again
+   * once it is merged or closed). True when the server names nobody, as an
+   * older server's `proposal_open` was always the caller's own.
+   */
+  own: boolean;
+  /**
    * How a direct domain's share will go when it is not the plain commit:
    * the server's own sentences, shown as given, for example that it opens a
    * proposal if the branch refuses it again. Null otherwise, and from an
@@ -1268,6 +1275,7 @@ export async function fetchShareChanges(domain: string): Promise<SharePlan> {
     sharing: asString(record?.sharing) === "direct" ? "direct" : "proposal",
     branch: asString(record?.branch),
     title: asString(record?.title),
+    own: record?.own !== false,
     note: asString(record?.note),
   };
 }

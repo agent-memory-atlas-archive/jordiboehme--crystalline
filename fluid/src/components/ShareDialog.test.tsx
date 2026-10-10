@@ -1595,6 +1595,34 @@ describe("the share dialog", () => {
     ).toBeDisabled();
   });
 
+  it("says to share again later when another person's proposal blocks the share", async () => {
+    serve({
+      "/domains/eng/sync": () => syncResponse({ sharing: "direct" }),
+      "/domains/eng/sync/changes": () => ({
+        action: "proposal_open",
+        number: 5,
+        url: "https://github.com/acme/knowledge/pull/5",
+        title: "Theirs",
+        own: false,
+        sharing: "direct",
+        effective_title: "",
+        changes: [{ path: "notes/a.md", kind: "modified" }],
+      }),
+    });
+
+    renderApp("/d/eng");
+    const dialog = await openShareDialog();
+
+    expect(
+      await within(dialog).findByText(
+        "Proposal #5 (Theirs) is another person's and is still open; share again once it is merged or closed.",
+      ),
+    ).toBeVisible();
+    expect(
+      within(dialog).getByRole("button", { name: "Share" }),
+    ).toBeDisabled();
+  });
+
   const PROTECTED_GUIDANCE =
     "The branch main does not accept direct commits from you (Changes must be made through a pull request.). Share the same changes as a proposal instead: share_changes with as_proposal: true (crystalline origin share --proposal).";
   // What a person reads beside the button: no tool syntax.

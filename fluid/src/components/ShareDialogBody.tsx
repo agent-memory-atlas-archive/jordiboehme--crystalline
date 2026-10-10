@@ -912,6 +912,7 @@ function actionLine(plan: SharePlan | null): string {
     layersAbove = null,
     branch = null,
     title = null,
+    own = true,
   } = plan ?? {};
   const named =
     number === null ? "the proposal" : `proposal #${String(number)}`;
@@ -945,6 +946,11 @@ function actionLine(plan: SharePlan | null): string {
     case "proposal_open":
       // The one state a direct domain adds: the branch this share would
       // commit onto is the one a proposal is still waiting to land on.
+      if (!own) {
+        return number === null
+          ? "Another person's proposal is still open; share again once it is merged or closed."
+          : `Proposal #${String(number)} (${title ?? "untitled"}) is another person's and is still open; share again once it is merged or closed.`;
+      }
       return number === null
         ? "A proposal is still open; merge or withdraw it before sharing directly."
         : `Proposal #${String(number)} (${title ?? "untitled"}) is still open; merge or withdraw it before sharing directly.`;

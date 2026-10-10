@@ -1946,7 +1946,13 @@ async fn an_open_proposal_refuses_a_direct_share_and_writes_nothing() {
     mock.set_proposal_state(7, ProposalState::Open);
     let before = mock.calls().len();
     match share_direct(&mock, &sub, direct()).await {
-        ProposeOutcome::ProposalOpen { number, url, title } => {
+        ProposeOutcome::ProposalOpen {
+            number,
+            url,
+            title,
+            own,
+        } => {
+            assert!(own, "an unattributed proposal counts as every login's own");
             assert_eq!(number, 7);
             assert_eq!(url, "https://example.test/pull/7");
             assert_eq!(title, "Share proposal 7");
@@ -2727,13 +2733,16 @@ async fn as_proposal_does_not_reach_another_logins_open_proposal() {
     }
     let plan = preview_direct_share(&mock, &sub, by("bob", choosing(Some(true)))).await;
     assert!(
-        matches!(plan.action, PlannedAction::ProposalOpen { number, .. } if number == alice),
+        matches!(plan.action, PlannedAction::ProposalOpen { number, own: false, .. } if number == alice),
         "{:?}",
         plan.action
     );
     let before = mock.calls().len();
     match share_direct(&mock, &sub, by("bob", choosing(Some(true)))).await {
-        ProposeOutcome::ProposalOpen { number, .. } => assert_eq!(number, alice),
+        ProposeOutcome::ProposalOpen { number, own, .. } => {
+            assert_eq!(number, alice);
+            assert!(!own, "Alice's proposal is not Bob's own");
+        }
         other => panic!("expected ProposalOpen, got {other:?}"),
     }
     assert!(!mock.calls()[before..].iter().any(|c| is_write_call(c)));
@@ -3000,7 +3009,8 @@ async fn propose_preview_on_a_direct_domain_names_the_commit_and_the_refusals() 
         PlannedAction::ProposalOpen {
             number: 9,
             url: "https://example.test/pull/9".to_string(),
-            title: "Share proposal 9".to_string()
+            title: "Share proposal 9".to_string(),
+            own: true
         }
     );
     assert_eq!(plan.effective_title, "");
