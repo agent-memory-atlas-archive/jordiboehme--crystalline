@@ -3986,7 +3986,8 @@ impl McpServer {
             Err(
                 EngineError::Invalid(text)
                 | EngineError::Forbidden(text)
-                | EngineError::Refused(text),
+                | EngineError::Refused(text)
+                | EngineError::Conflict(text),
             ) => refuse(text),
             Err(e) => Err(to_error(e)),
         }

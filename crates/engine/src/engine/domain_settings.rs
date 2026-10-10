@@ -391,18 +391,7 @@ impl Engine {
                 return Err(match &written {
                     Some(written) => {
                         let keys: Vec<&str> = policy_edits.iter().map(PolicyEdit::key).collect();
-                        let how = if written["draft"] == Value::Bool(true) {
-                            " as a draft"
-                        } else {
-                            ""
-                        };
-                        // A refusal rather than an internal error, so the
-                        // model reads the one sentence that says the policy
-                        // did land.
-                        EngineError::Refused(format!(
-                            "applied [{}]{how}; {DOMAIN_CONFIG_FILE} was not changed: {e}",
-                            keys.join(", ")
-                        ))
+                        half_applied(e, &keys, written["draft"] == Value::Bool(true))
                     }
                     None => e,
                 });
@@ -436,6 +425,34 @@ impl Engine {
     }
 }
 
+/// The answer of a configure call whose policy keys landed and whose
+/// `.crystalline.yaml` step then failed: the keys that landed, then why the
+/// file was not changed. A conflict stays a conflict, so a caller that reads
+/// the class knows to send the call again. Everything else is a refusal the
+/// model reads, never an internal error.
+fn half_applied(error: EngineError, keys: &[&str], draft: bool) -> EngineError {
+    let how = if draft { " as a draft" } else { "" };
+    let head = format!(
+        "applied [{}]{how}; {DOMAIN_CONFIG_FILE} was not changed",
+        keys.join(", ")
+    );
+    match error {
+        EngineError::Conflict(text) => EngineError::Conflict(format!("{head}: {text}")),
+        other => EngineError::Refused(format!("{head}: {other}")),
+    }
+}
+
+/// A failed write of `.crystalline.yaml`: an IO error keeps its path, and
+/// anything else is a refusal that says the file was not written.
+fn config_write_error(path: &Path, error: crystalline_core::config::ConfigError) -> EngineError {
+    match error {
+        crystalline_core::config::ConfigError::Io { path, source } => {
+            EngineError::Io { path, source }
+        }
+        other => EngineError::Refused(format!("{} was not written: {other}", path.display())),
+    }
+}
+
 impl Engine {
     /// Write `edited` to the domain's `.crystalline.yaml` at `path`, or
     /// remove the file when no key is left: the write a rename waits for,
@@ -449,14 +466,8 @@ impl Engine {
         self.refuse_shadowed(domain)?;
         let _writing = self.enter_write(domain).await?;
         match &edited.text {
-            Some(text) => {
-                crystalline_core::config::save_bytes(path, text.as_bytes()).map_err(|e| match e {
-                    crystalline_core::config::ConfigError::Io { path, source } => {
-                        EngineError::Io { path, source }
-                    }
-                    other => EngineError::Internal(format!("writing {}: {other}", path.display())),
-                })
-            }
+            Some(text) => crystalline_core::config::save_bytes(path, text.as_bytes())
+                .map_err(|e| config_write_error(path, e)),
             None if path.exists() => std::fs::remove_file(path).map_err(|source| EngineError::Io {
                 path: path.display().to_string(),
                 source,
@@ -647,5 +658,84 @@ fn override_row(rule: &str, word: &str) -> Value {
         None => {
             json!({ "rule": rule, "severity": word, "default": "unknown", "meaning": OVERRIDE_UNKNOWN })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T6-b: a conflict on the yaml step (a rename began between the two
+    /// writes) stays a conflict, with the keys that did land in front.
+    #[test]
+    fn a_half_applied_conflict_keeps_its_class() {
+        let error = half_applied(
+            EngineError::Conflict("domain 'eng' is being renamed; send it again".to_string()),
+            &["sharing"],
+            false,
+        );
+        match error {
+            EngineError::Conflict(text) => assert_eq!(
+                text,
+                "applied [sharing]; .crystalline.yaml was not changed: domain 'eng' is being renamed; send it again"
+            ),
+            other => panic!("expected a Conflict, got {other:?}"),
+        }
+    }
+
+    /// Every other failure of the yaml step is a refusal the model reads,
+    /// as 9724dca5 made it.
+    #[test]
+    fn a_half_applied_io_error_is_a_refusal() {
+        let error = half_applied(
+            EngineError::Io {
+                path: "/d/.crystalline.yaml".to_string(),
+                source: std::io::Error::other("disk full"),
+            },
+            &["sharing", "generated_indexes"],
+            false,
+        );
+        match error {
+            EngineError::Refused(text) => assert!(
+                text.starts_with(
+                    "applied [sharing, generated_indexes]; .crystalline.yaml was not changed: "
+                ),
+                "{text}"
+            ),
+            other => panic!("expected a Refused, got {other:?}"),
+        }
+    }
+
+    /// T6-a: when the policy keys became a draft, the answer says so.
+    #[test]
+    fn a_half_applied_draft_says_as_a_draft() {
+        let error = half_applied(EngineError::Refused("no".to_string()), &["sharing"], true);
+        assert_eq!(
+            error.to_string(),
+            "applied [sharing] as a draft; .crystalline.yaml was not changed: no"
+        );
+    }
+
+    /// T6-b: a failed write of .crystalline.yaml that is not an IO error is
+    /// a refusal, never an internal error a client may hide.
+    #[test]
+    fn a_non_io_config_write_error_is_a_refusal() {
+        let error = config_write_error(
+            Path::new("/d/.crystalline.yaml"),
+            crystalline_core::config::ConfigError::Yaml("bad".to_string()),
+        );
+        assert!(matches!(error, EngineError::Refused(_)), "{error:?}");
+        assert_eq!(
+            error.to_string(),
+            "/d/.crystalline.yaml was not written: config yaml error: bad"
+        );
+        let io = config_write_error(
+            Path::new("/d/.crystalline.yaml"),
+            crystalline_core::config::ConfigError::Io {
+                path: "/d/.crystalline.yaml".to_string(),
+                source: std::io::Error::other("disk full"),
+            },
+        );
+        assert!(matches!(io, EngineError::Io { .. }), "{io:?}");
     }
 }
