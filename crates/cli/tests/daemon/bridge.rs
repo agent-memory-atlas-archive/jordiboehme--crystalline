@@ -343,6 +343,7 @@ fn status_names_the_variable_a_task_started_daemon_did_not_get() {
     let with_variable = run(&shell, &["status"]);
     let as_json = run(&shell, &["status", "--json"]);
     let without = run(&[], &["status"]);
+    let without_json = run(&[], &["status", "--json"]);
     bridge.finish();
     let _ = run(&[], &["ctl", "shutdown"]);
 
@@ -362,6 +363,11 @@ fn status_names_the_variable_a_task_started_daemon_did_not_get() {
     assert!(
         !String::from_utf8_lossy(&without.stderr).contains("The daemon serves"),
         "nothing set here, nothing said"
+    );
+    let quiet: Value = serde_json::from_slice(&without_json.stdout).unwrap();
+    assert!(
+        quiet.get("config_mismatch").is_none(),
+        "no mismatch, no key, as doctor --json: {quiet}"
     );
 }
 

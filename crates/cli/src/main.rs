@@ -2268,10 +2268,13 @@ async fn status_dispatch(
                     "desktop_states".to_string(),
                     serde_json::to_value(desktop_state::scan_here())?,
                 );
-                map.insert(
-                    "config_mismatch".to_string(),
-                    serde_json::to_value(&mismatches)?,
-                );
+                // Present only when something differs, as doctor --json does.
+                if !mismatches.is_empty() {
+                    map.insert(
+                        "config_mismatch".to_string(),
+                        serde_json::to_value(&mismatches)?,
+                    );
+                }
             }
             println!("{data}");
         } else {
