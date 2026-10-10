@@ -1637,7 +1637,7 @@ async fn configure_with_a_hidden_domain_answers_the_unregistered_not_found() {
         rest[..rest.find("}}").expect("end of error")].to_string()
     };
     assert_eq!(
-        message(&hidden).replace("lab", "nowhere"),
+        message(&hidden).replace("'lab'", "'nowhere'"),
         message(&unregistered),
         "a hidden domain is the unregistered answer"
     );
