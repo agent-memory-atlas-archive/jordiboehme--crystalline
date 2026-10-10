@@ -158,10 +158,17 @@ fn without_verbatim(path: &str) -> &str {
     path.strip_prefix(r"\\?\").unwrap_or(path)
 }
 
+/// Whether `a` and `b` name the same config file. The verbatim prefix never
+/// counts, and with `fold_case` (Windows) neither does the case of any
+/// letter: a path that does not exist yet cannot be canonicalized, so it is
+/// compared as typed, and `C:\Users\ÖZLEM` and `c:\users\özlem` are one
+/// folder there.
 fn same_path(a: &str, b: &str, fold_case: bool) -> bool {
     let (a, b) = (without_verbatim(a), without_verbatim(b));
     if fold_case {
-        a.eq_ignore_ascii_case(b)
+        a.chars()
+            .flat_map(char::to_lowercase)
+            .eq(b.chars().flat_map(char::to_lowercase))
     } else {
         a == b
     }
@@ -470,6 +477,31 @@ mod tests {
         assert!(
             !shown.daemon.starts_with(r"\\?\"),
             "shown without the verbatim prefix: {shown:?}"
+        );
+    }
+
+    /// A config path that does not exist yet is compared as it is spelled,
+    /// so on Windows the case of every letter folds, not of ASCII alone: a
+    /// user folder named with an umlaut is still one file in two spellings.
+    #[test]
+    fn case_folds_beyond_ascii_on_windows() {
+        let daemon = facts(
+            Some(r"C:\Users\ÖZLEM\AppData\Roaming\crystalline\config.yaml"),
+            Some(HttpBinding::Off),
+        );
+        let lower = here(
+            r"c:\users\özlem\appdata\roaming\crystalline\config.yaml",
+            HttpBinding::Off,
+            &["CRYSTALLINE_CONFIG"],
+        );
+        assert!(
+            mismatches_with(&daemon, &lower, true).is_empty(),
+            "Windows folds Ö and ö like O and o"
+        );
+        assert_eq!(
+            mismatches_with(&daemon, &lower, false).len(),
+            1,
+            "elsewhere case is still a difference"
         );
     }
 }

@@ -28,8 +28,9 @@ pub fn user_task_name(user: &str, sid: &str) -> String {
 }
 
 /// The name 0.24.0 gave the per-user task, without the SID. Found, run,
-/// moved and removed only when its definition runs as this account
-/// ([`runs_as`]); another account's task under it is left alone.
+/// moved and removed only when its definition runs as this account (its
+/// principal names this account's SID or its full `DOMAIN\name`); another
+/// account's task under it is left alone.
 pub fn legacy_user_task_name(user: &str) -> String {
     format!(r"\Crystalline Daemon for {user}")
 }
@@ -273,18 +274,47 @@ pub fn utf16_with_bom(xml: &str) -> Vec<u8> {
     out
 }
 
-/// `DOMAIN\name` of the signed-in user, from the environment Windows sets.
+/// `DOMAIN\name` of the account this process runs as: from the process
+/// token on Windows, which a changed `USERDOMAIN` or `USERNAME` cannot move,
+/// and from those two variables when the token cannot be read.
 pub fn current_account() -> String {
-    match (std::env::var("USERDOMAIN"), std::env::var("USERNAME")) {
-        (Ok(domain), Ok(name)) if !domain.is_empty() => format!(r"{domain}\{name}"),
-        (_, Ok(name)) => name,
-        _ => String::new(),
+    account_from(
+        token_account(),
+        std::env::var("USERDOMAIN").ok(),
+        std::env::var("USERNAME").ok(),
+    )
+}
+
+/// The account from the token's `(domain, name)` when it names one, else
+/// from the environment's domain and name.
+pub(crate) fn account_from(
+    token: Option<(String, String)>,
+    env_domain: Option<String>,
+    env_name: Option<String>,
+) -> String {
+    match token {
+        Some((domain, name)) if !name.is_empty() => qualified_account(&domain, &name),
+        _ => match (env_domain, env_name) {
+            (Some(domain), Some(name)) => qualified_account(&domain, &name),
+            (None, Some(name)) => name,
+            _ => String::new(),
+        },
+    }
+}
+
+/// `DOMAIN\name`, or the name alone when there is no domain.
+pub(crate) fn qualified_account(domain: &str, name: &str) -> String {
+    if domain.is_empty() {
+        name.to_string()
+    } else {
+        format!(r"{domain}\{name}")
     }
 }
 
 /// Who this process runs as, for the per-user task: the user name Windows
-/// sets (`USERNAME`), the account (`DOMAIN\name`, [`current_account`]) and
-/// its SID ([`current_sid`]).
+/// sets (`USERNAME`), which names the tasks, the account (`DOMAIN\name`
+/// from the process token, [`current_account`]), which proves a task is
+/// this user's, and its SID ([`current_sid`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ThisUser {
     pub name: String,
@@ -320,10 +350,13 @@ pub fn current_sid() -> Option<String> {
     }
 }
 
+/// Run `read` on the SID of this process's token user. `None` when the
+/// token cannot be opened or read.
 #[cfg(windows)]
-fn token_user_sid() -> Option<String> {
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
-    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+fn with_token_user<T>(
+    read: impl FnOnce(windows_sys::Win32::Security::PSID) -> Option<T>,
+) -> Option<T> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     let mut token: HANDLE = std::ptr::null_mut();
@@ -352,24 +385,87 @@ fn token_user_sid() -> Option<String> {
         return None;
     }
     // SAFETY: the call filled the buffer with a TOKEN_USER, whose SID points
-    // into the same buffer, which lives to the end of this function.
+    // into the same buffer, which lives until `read` returns.
     let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
-    let mut text: windows_sys::core::PWSTR = std::ptr::null_mut();
-    // SAFETY: a valid SID and an out pointer the call fills with a string it
-    // allocates with LocalAlloc.
-    if unsafe { ConvertSidToStringSidW(user.User.Sid, &mut text) } == 0 || text.is_null() {
-        return None;
-    }
-    let mut len = 0usize;
-    // SAFETY: the call returned a NUL-terminated wide string.
-    while unsafe { *text.add(len) } != 0 {
-        len += 1;
-    }
-    // SAFETY: `len` wide chars before the NUL, all initialized.
-    let sid = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len) });
-    // SAFETY: frees what ConvertSidToStringSidW allocated.
-    unsafe { LocalFree(text.cast()) };
-    Some(sid)
+    read(user.User.Sid)
+}
+
+#[cfg(windows)]
+fn token_user_sid() -> Option<String> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    with_token_user(|sid| {
+        let mut text: windows_sys::core::PWSTR = std::ptr::null_mut();
+        // SAFETY: a valid SID and an out pointer the call fills with a string
+        // it allocates with LocalAlloc.
+        if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 || text.is_null() {
+            return None;
+        }
+        let mut len = 0usize;
+        // SAFETY: the call returned a NUL-terminated wide string.
+        while unsafe { *text.add(len) } != 0 {
+            len += 1;
+        }
+        // SAFETY: `len` wide chars before the NUL, all initialized.
+        let sid = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len) });
+        // SAFETY: frees what ConvertSidToStringSidW allocated.
+        unsafe { LocalFree(text.cast()) };
+        Some(sid)
+    })
+}
+
+/// The token user's `(domain, name)`, as `LookupAccountSidW` names it.
+#[cfg(windows)]
+fn token_account() -> Option<(String, String)> {
+    use windows_sys::Win32::Security::{LookupAccountSidW, SID_NAME_USE};
+    with_token_user(|sid| {
+        let (mut name_len, mut domain_len) = (0u32, 0u32);
+        let mut kind: SID_NAME_USE = 0;
+        // SAFETY: a size query: null buffers, the sizes in characters
+        // (with the NUL) are written back.
+        unsafe {
+            LookupAccountSidW(
+                std::ptr::null(),
+                sid,
+                std::ptr::null_mut(),
+                &mut name_len,
+                std::ptr::null_mut(),
+                &mut domain_len,
+                &mut kind,
+            )
+        };
+        if name_len == 0 {
+            return None;
+        }
+        let mut name = vec![0u16; name_len as usize];
+        let mut domain = vec![0u16; domain_len.max(1) as usize];
+        // SAFETY: buffers of the sizes the query asked for.
+        let found = unsafe {
+            LookupAccountSidW(
+                std::ptr::null(),
+                sid,
+                name.as_mut_ptr(),
+                &mut name_len,
+                domain.as_mut_ptr(),
+                &mut domain_len,
+                &mut kind,
+            )
+        };
+        if found == 0 {
+            return None;
+        }
+        // On success the lengths are the characters written, without the NUL.
+        Some((
+            String::from_utf16_lossy(&domain[..domain_len as usize]),
+            String::from_utf16_lossy(&name[..name_len as usize]),
+        ))
+    })
+}
+
+/// Off Windows there is no token account; the environment answers.
+#[cfg(not(windows))]
+fn token_account() -> Option<(String, String)> {
+    None
 }
 
 /// The task names a bridge looks for, in order: the machine task, then this
@@ -1001,11 +1097,31 @@ pub fn unregister(principal: &TaskPrincipal) -> Removal {
         TaskPrincipal::AllUsers if cfg!(windows) => listed_per_user_tasks(),
         _ => Vec::new(),
     };
-    let me = ThisUser::here();
-    let names = unregistration_names(principal, &me, &per_user, |name| {
-        registered_xml(name).is_some_and(|xml| runs_as(&xml, &me))
+    unregister_using(
+        principal,
+        &ThisUser::here(),
+        &per_user,
+        registered_xml,
+        query_task,
+        delete_task,
+    )
+}
+
+/// [`unregister`] with Task Scheduler passed in: `definition` reads a
+/// task's definition, `query` asks whether a task is there and `delete`
+/// removes it. Split out so the wiring is tested on every platform.
+pub(crate) fn unregister_using(
+    principal: &TaskPrincipal,
+    me: &ThisUser,
+    per_user: &[String],
+    mut definition: impl FnMut(&str) -> Option<String>,
+    query: impl FnMut(&str) -> Query,
+    delete: impl FnMut(&str) -> Result<(), String>,
+) -> Removal {
+    let names = unregistration_names(principal, me, per_user, |name| {
+        definition(name).is_some_and(|xml| runs_as(&xml, me))
     });
-    unregister_with(&names, query_task, delete_task)
+    unregister_with(&names, query, delete)
 }
 
 /// The definition of a registered task, as Task Scheduler holds it now.
@@ -1086,6 +1202,53 @@ mod tests {
         assert!(!runs_as("\u{fffd}\u{fffd}", &me), "unreadable is not ours");
         let no_sid = ThisUser { sid: None, ..ada() };
         assert!(!runs_as(&principal_xml(ADA_SID), &no_sid));
+    }
+
+    /// The account a task must run as is read from the process token on
+    /// Windows, so a `USERDOMAIN` changed in the shell cannot make another
+    /// account's task look like this user's. The environment is the
+    /// fallback when the token cannot be read, with the rules it had.
+    #[test]
+    fn the_account_comes_from_the_token_before_the_environment() {
+        let some = |text: &str| Some(text.to_string());
+        assert_eq!(
+            account_from(some_pair("WORK", "ada"), some("EVIL"), some("ada")),
+            r"WORK\ada",
+            "the token wins over a changed USERDOMAIN"
+        );
+        assert_eq!(
+            account_from(None, some("WORK"), some("ada")),
+            r"WORK\ada",
+            "no token: the environment, as before"
+        );
+        assert_eq!(account_from(None, some(""), some("ada")), "ada");
+        assert_eq!(account_from(None, None, some("ada")), "ada");
+        assert_eq!(account_from(None, None, None), "");
+        assert_eq!(
+            account_from(some_pair("", "ada"), None, None),
+            "ada",
+            "a token account without a domain is the name alone"
+        );
+        assert_eq!(
+            account_from(some_pair("WORK", ""), some("WORK"), some("ada")),
+            r"WORK\ada",
+            "an empty token name is no answer: the environment decides"
+        );
+
+        let me = ThisUser {
+            name: "ada".to_string(),
+            account: account_from(some_pair("WORK", "ada"), some("EVIL"), some("ada")),
+            sid: None,
+        };
+        assert!(runs_as(&principal_xml(r"WORK\ada"), &me));
+        assert!(
+            !runs_as(&principal_xml(r"EVIL\ada"), &me),
+            "the environment's domain proves nothing"
+        );
+    }
+
+    fn some_pair(domain: &str, name: &str) -> Option<(String, String)> {
+        Some((domain.to_string(), name.to_string()))
     }
 
     /// Two accounts share the user name bob: the local bob and CORP\bob.
@@ -1705,5 +1868,87 @@ mod tests {
             "a file already at the path is never written through"
         );
         assert_eq!(std::fs::read(&first).unwrap(), b"one");
+    }
+
+    /// An unregistration asks Task Scheduler about every name before it
+    /// deletes, so a refused query is reported with Windows' words and
+    /// deletes nothing, and the 0.24.0 name is asked about only when its
+    /// definition runs as this user.
+    #[test]
+    fn an_unregistration_asks_about_every_name_and_reports_a_refused_query() {
+        let me = ada();
+        let principal = TaskPrincipal::User {
+            account: me.account.clone(),
+        };
+        let own = user_task_name(&me.name, ADA_SID);
+        let legacy = legacy_user_task_name(&me.name);
+        let mut asked: Vec<String> = Vec::new();
+        let mut deleted: Vec<String> = Vec::new();
+        let removal = unregister_using(
+            &principal,
+            &me,
+            &[],
+            |_| Some(principal_xml(ADA_SID)),
+            |name| {
+                asked.push(name.to_string());
+                if name == own {
+                    Query::Refused("ERROR: Access is denied.".to_string())
+                } else {
+                    Query::Present
+                }
+            },
+            |name| {
+                deleted.push(name.to_string());
+                Ok(())
+            },
+        );
+        assert_eq!(
+            asked,
+            [own.clone(), legacy.clone()],
+            "every name is asked first"
+        );
+        assert_eq!(
+            deleted,
+            std::slice::from_ref(&legacy),
+            "a refused query deletes nothing"
+        );
+        assert_eq!(
+            removal.refused,
+            [(own, "ERROR: Access is denied.".to_string())]
+        );
+        assert_eq!(removal.removed, [legacy]);
+
+        let mut asked: Vec<String> = Vec::new();
+        unregister_using(
+            &principal,
+            &me,
+            &[],
+            |_| Some(principal_xml(r"OTHER\ada")),
+            |name| {
+                asked.push(name.to_string());
+                Query::Absent
+            },
+            |_| panic!("nothing is there to delete"),
+        );
+        assert_eq!(
+            asked,
+            [user_task_name(&me.name, ADA_SID)],
+            "another account's 0.24.0-named task is not even asked about"
+        );
+    }
+
+    /// `unregister` asks through `query_task`, which keeps a refused query
+    /// apart from a missing task. `task_exists` reads a refused query as
+    /// absent, so a task that is there would be skipped without a word.
+    #[test]
+    fn unregister_asks_task_scheduler_through_query_task() {
+        let source = include_str!("daemon_task.rs");
+        let body = source
+            .split("pub fn unregister(principal: &TaskPrincipal) -> Removal {")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("unregister is in this file");
+        assert!(body.contains("query_task"), "{body}");
+        assert!(!body.contains("task_exists"), "{body}");
     }
 }
