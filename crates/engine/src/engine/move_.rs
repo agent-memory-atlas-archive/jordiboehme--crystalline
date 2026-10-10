@@ -321,7 +321,15 @@ impl Engine {
                 }
             }
             let store = self.store.lock().await;
-            store.delete_engram(src.domain_id, &src.path).await?;
+            // One transaction for the source row, as the index half of a
+            // delete has: the row, its children and the unbinding of every
+            // reference that named it land together.
+            store.begin().await?;
+            if let Err(e) = store.delete_engram(src.domain_id, &src.path).await {
+                let _ = store.rollback().await;
+                return Err(e.into());
+            }
+            store.commit().await?;
         } else {
             // Same-domain rename: move the file when file-backed, then give the
             // row its new path and permalink in place, keeping its id. A move

@@ -2583,10 +2583,29 @@ async fn check_domain_checks(
         // Only the direct route can delete. Over a daemon the orphans are
         // still reported, with the render saying plainly what removing them
         // takes, rather than being silently left in place.
-        if let (true, Some(store), Some(domain_id)) = (fix, store, domain_id) {
-            for p in &orphans {
-                store.delete_engram(domain_id, p).await?;
-                d.orphans_removed += 1;
+        if let (true, Some(store), Some(domain_id)) = (fix, store, domain_id)
+            && !orphans.is_empty()
+        {
+            // One transaction for the whole removal: each row, its children
+            // and the unbinding of every reference that named it land
+            // together or not at all.
+            store.begin().await?;
+            let removed = async {
+                for p in &orphans {
+                    store.delete_engram(domain_id, p).await?;
+                }
+                Ok::<usize, crystalline_index::IndexError>(orphans.len())
+            }
+            .await;
+            match removed {
+                Ok(n) => {
+                    store.commit().await?;
+                    d.orphans_removed += n;
+                }
+                Err(e) => {
+                    let _ = store.rollback().await;
+                    return Err(e.into());
+                }
             }
         }
         d.orphans = orphans;

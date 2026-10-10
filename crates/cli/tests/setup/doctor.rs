@@ -3107,3 +3107,56 @@ fn skill_dirs(folder: &Path) -> usize {
         .filter(|e| e.as_ref().unwrap().path().join("SKILL.md").is_file())
         .count()
 }
+
+/// Every caller of `Store::delete_engram` outside the index crate runs it in a
+/// transaction of its own: a delete is the row, its children and the
+/// unbinding of every reference that named it, and on turso those land
+/// together only inside `begin`/`commit`. A source scan, because an
+/// interruption between those statements is not something a test can
+/// provoke on purpose. Three callers: `Engine::delete`, the cross-domain
+/// move and `doctor --fix`'s orphan removal.
+#[test]
+fn every_delete_engram_caller_holds_a_transaction() {
+    let files: &[(&str, &str)] = &[
+        ("cli/src/doctor.rs", include_str!("../../src/doctor.rs")),
+        (
+            "engine/src/engine/move_.rs",
+            include_str!("../../../engine/src/engine/move_.rs"),
+        ),
+        (
+            "engine/src/engine/delete.rs",
+            include_str!("../../../engine/src/engine/delete.rs"),
+        ),
+    ];
+    let mut sites = 0;
+    for (name, source) in files {
+        let lines: Vec<&str> = source.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains(".delete_engram(") || line.trim_start().starts_with("//") {
+                continue;
+            }
+            sites += 1;
+            let before = &lines[i.saturating_sub(12)..i];
+            let after = &lines[i + 1..(i + 16).min(lines.len())];
+            assert!(
+                before.iter().any(|l| l.contains(".begin().await")),
+                "{name}:{}: delete_engram runs with no begin() in the 12 lines above it",
+                i + 1
+            );
+            assert!(
+                after.iter().any(|l| l.contains(".commit().await")),
+                "{name}:{}: delete_engram has no commit() in the 15 lines below it",
+                i + 1
+            );
+            assert!(
+                after.iter().any(|l| l.contains(".rollback().await")),
+                "{name}:{}: delete_engram has no rollback() in the 15 lines below it",
+                i + 1
+            );
+        }
+    }
+    assert_eq!(
+        sites, 3,
+        "the delete_engram callers moved; a new one needs its own transaction"
+    );
+}
