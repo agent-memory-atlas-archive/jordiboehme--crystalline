@@ -40,10 +40,13 @@ test("flowchart labels fit their nodes under a 125 percent page zoom", async ({
     Array.from(svg.querySelectorAll("g.node")).map((node) => {
       const shape = node.querySelector("rect, polygon, path, circle, ellipse");
       // SVG text when labels are SVG; the text's own element inside the
-      // foreignObject when they are HTML, which is what overflows.
+      // foreignObject when they are HTML. The boxes below cannot see a
+      // foreignObject clip (a clipped label still reports its whole box), so
+      // the HTML shape is refused outright by the foreignObject count.
       const text =
         node.querySelector(".label text") ??
         node.querySelector(".label foreignObject span, .label foreignObject p");
+      const foreignObjects = node.querySelectorAll("foreignObject").length;
       const box = (el: Element | null) => {
         const r = el?.getBoundingClientRect();
         return r
@@ -57,6 +60,7 @@ test("flowchart labels fit their nodes under a 125 percent page zoom", async ({
         id: node.id,
         label: node.textContent?.trim() ?? "",
         lines,
+        foreignObjects,
         shape: box(shape),
         text: box(text),
       };
@@ -64,7 +68,11 @@ test("flowchart labels fit their nodes under a 125 percent page zoom", async ({
   );
 
   expect(nodes.length).toBe(4);
+  // Labels are SVG text, never HTML in a foreignObject: anywhere in the
+  // diagram, and on every node below.
+  expect(await diagram.locator("foreignObject").count()).toBe(0);
   for (const node of nodes) {
+    expect(node.foreignObjects, node.label).toBe(0);
     expect(node.shape, node.id).not.toBeNull();
     expect(node.text, node.id).not.toBeNull();
     if (node.shape === null || node.text === null) {

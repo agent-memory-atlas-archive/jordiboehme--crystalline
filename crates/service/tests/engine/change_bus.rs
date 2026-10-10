@@ -661,6 +661,32 @@ async fn a_manifest_save_announces_the_manifest() {
     );
 }
 
+/// A save into a domain that had no MANIFEST creates the file, and the bus
+/// says so: Added, not the Modified an edit of an existing MANIFEST announces.
+#[tokio::test]
+async fn a_manifest_create_announces_added() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let path = tmp.path().join("notes/MANIFEST.md");
+    let original = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let mut rx = engine.changes().subscribe();
+    engine
+        .save_manifest("notes", &original, &support::sha256_hex(b""))
+        .await
+        .unwrap();
+    let heard = drain(&mut rx);
+    assert_eq!(heard.len(), 1, "{heard:?}");
+    let change = engram_of(&heard[0]);
+    assert_eq!(
+        (change.path.as_str(), change.kind),
+        ("MANIFEST.md", ChangeKind::Added)
+    );
+    assert_eq!(
+        change.checksum.as_deref(),
+        Some(support::sha256_hex(original.as_bytes()).as_str())
+    );
+}
+
 #[tokio::test]
 async fn a_domain_removal_and_a_rename_announce_domain_events() {
     let (_tmp, engine, _scratch) = engine_fixture(false).await;

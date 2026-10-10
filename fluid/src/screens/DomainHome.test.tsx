@@ -1039,6 +1039,32 @@ describe("the domain screen", () => {
     ).toBeVisible();
   });
 
+  it("keeps the editor link for an admin when an older daemon answers 404", async () => {
+    serve(
+      {
+        "/domains/eng/manifest": () => {
+          throw new ApiProblem(404, "not found", "no MANIFEST in domain 'eng'");
+        },
+      },
+      "admin",
+    );
+
+    renderApp("/d/eng");
+
+    // The daemon predates `missing: true`, so the gap arrives as a 404. That
+    // reader still gets the sentence and the way to the editor; the starter
+    // button needs the registry the 404 did not carry, so it is not drawn.
+    const section = await screen.findByRole("region", { name: "Manifest" });
+    expect(await within(section).findByText(/no MANIFEST yet/)).toBeVisible();
+    expect(
+      within(section).getByRole("link", { name: "Edit MANIFEST" }),
+    ).toHaveAttribute("href", "/d/eng/manifest/edit");
+    expect(
+      within(section).queryByRole("button", { name: "Create a MANIFEST" }),
+    ).toBeNull();
+    expect(within(section).queryByRole("alert")).toBeNull();
+  });
+
   it("offers an admin the editor over a manifest that is not there yet", async () => {
     const empty =
       "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";

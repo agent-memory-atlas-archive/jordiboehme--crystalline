@@ -469,8 +469,14 @@ pnpm build
 # A missing browser otherwise reports only that an executable is not at a path,
 # and the useful half of that story is which path was resolved and why.
 browsers=$(pnpm exec playwright install --dry-run chromium webkit 2>/dev/null \
-    | awk '/Install location/ { print $3; exit }')
-echo "smoke: playwright browsers at ${browsers:-an unknown location}"
+    | awk '/Install location/ { print $3 }')
+if [ -n "$browsers" ]; then
+    for location in $browsers; do
+        echo "smoke: playwright browser at $location"
+    done
+else
+    echo "smoke: playwright browsers at an unknown location"
+fi
 
 if [ -n "$FLUID_E2E_BASE_PATH" ]; then
     export FLUID_E2E_BASE_URL="http://$DAEMON_ADDR$FLUID_E2E_BASE_PATH/"

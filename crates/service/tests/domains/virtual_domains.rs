@@ -1188,10 +1188,25 @@ async fn virtual_manifest_create(store: Arc<Mutex<dyn Store>>) {
     );
 
     let empty = crate::support::sha256_hex(b"");
+    let mut rx = engine.changes().subscribe();
     engine
         .save_manifest("notes", manifest, &empty)
         .await
         .unwrap();
+    // The create is announced as one, on both backends.
+    let mut kinds = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if let crystalline_service::changes::Change::Engram(change) = envelope.change {
+            kinds.push((change.path, change.kind));
+        }
+    }
+    assert_eq!(
+        kinds,
+        vec![(
+            "MANIFEST.md".to_string(),
+            crystalline_service::changes::ChangeKind::Added
+        )]
+    );
     let read = engine.manifest_markdown("notes").await.unwrap();
     assert_eq!(read, manifest);
     assert!(
