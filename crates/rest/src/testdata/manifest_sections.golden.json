@@ -71,6 +71,136 @@
     "tag_aliases": null,
     "when_to_use": []
   },
+  "every_problem": {
+    "missing": [
+      "When to Use"
+    ],
+    "policies": [
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "local",
+        "effective": "local",
+        "key": "generated_indexes",
+        "kind": "choice",
+        "meaning": "Whether the generated folder listings travel with a share.",
+        "values": [
+          "local",
+          "shared"
+        ]
+      },
+      {
+        "changed_by": "owner",
+        "declared": "sometimes",
+        "default": "proposal",
+        "effective": "proposal",
+        "key": "sharing",
+        "kind": "choice",
+        "meaning": "Whether a share opens a proposal for review or commits straight to the branch.",
+        "values": [
+          "proposal",
+          "direct"
+        ]
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "",
+        "effective": "eng",
+        "key": "domain_name",
+        "kind": "text",
+        "meaning": "The name this domain is known by everywhere; links from other domains use it.",
+        "values": []
+      }
+    ],
+    "provisioning": {
+      "decls": [
+        {
+          "kind": "commands",
+          "path": "cmds"
+        }
+      ],
+      "problems": [
+        {
+          "bullet": "skills",
+          "kind": "malformed",
+          "reason": "expected a `type: path` shape, no colon found in `skills`"
+        },
+        {
+          "bullet": "agents: /etc/agents",
+          "kind": "invalid_path",
+          "reason": "path `/etc/agents` is absolute or home-relative, provisioning paths are relative to the MANIFEST"
+        },
+        {
+          "bullet": "commands: more",
+          "kind": "duplicate_type",
+          "reason": "duplicate `commands` declaration, the first one wins"
+        }
+      ]
+    },
+    "routing": "scope",
+    "scope": [
+      "Everything about eng"
+    ],
+    "starter_document": "<masked>",
+    "starters": [
+      {
+        "example": "## When to Use\n\n- Route here for questions about how our deployment pipeline works",
+        "meaning": "Agents pick this domain by these bullets. Without one, nothing routes here.",
+        "section": "When to Use"
+      },
+      {
+        "example": "## Scope\n\n- Infrastructure and deployment, not application code",
+        "meaning": "What belongs in this domain and what does not. Read for routing only when When to Use is empty.",
+        "section": "Scope"
+      },
+      {
+        "example": "## Provisioning\n\n- skills: skills",
+        "meaning": "Folders this domain installs into an AI harness: skills, commands, agents or MCP configs.",
+        "section": "Provisioning"
+      },
+      {
+        "example": "## Tag Aliases\n\n- k8s -> kubernetes",
+        "meaning": "Spellings that fold into one canonical tag, so a search for either finds both.",
+        "section": "Tag Aliases"
+      }
+    ],
+    "tag_aliases": {
+      "decls": [
+        {
+          "alias": "ops",
+          "canonical": "operations"
+        },
+        {
+          "alias": "Docs",
+          "canonical": "Docs_Team"
+        }
+      ],
+      "problems": [
+        {
+          "bullet": "k8s kubernetes",
+          "kind": "malformed",
+          "reason": "expected an `old -> canonical` shape, no `->` arrow found in `k8s kubernetes`"
+        },
+        {
+          "bullet": "Kube -> kube",
+          "kind": "self_alias",
+          "reason": "`Kube` is aliased to itself, nothing to merge"
+        },
+        {
+          "bullet": "ops -> devops",
+          "kind": "duplicate_alias",
+          "reason": "`ops` is already aliased to `operations`, the first mapping wins"
+        },
+        {
+          "bullet": "Docs -> Docs_Team",
+          "kind": "non_canonical_target",
+          "reason": "canonical `Docs_Team` is not a lowercase-with-hyphens tag"
+        }
+      ]
+    },
+    "when_to_use": []
+  },
   "every_section": {
     "missing": [],
     "policies": [
