@@ -10426,6 +10426,65 @@ parity!(
     reresolution_follows_the_row
 );
 
+/// Dropping a draft unbinds every reference that named it, wherever that
+/// reference lives, the way deleting a base row does.
+///
+/// Alice's page `plan` exists only as her draft in `d`, and her draft in `e`
+/// links to it across domains. The engine's own pass after a discard
+/// re-resolves her references in `d` alone, so the link in `e` goes back to
+/// pending only if the store unbinds it as the row goes. Before that it read
+/// as bound to a row nobody holds.
+async fn dropping_a_draft_unbinds_what_named_it(store: &dyn Store) {
+    let d_dir = tempfile::tempdir().unwrap();
+    let e_dir = tempfile::tempdir().unwrap();
+    let d = store
+        .upsert_domain("d", Some(&d_dir.path().to_string_lossy()), DomainKind::File)
+        .await
+        .unwrap();
+    let e = store
+        .upsert_domain("e", Some(&e_dir.path().to_string_lossy()), DomainKind::File)
+        .await
+        .unwrap();
+    let plan = draft(
+        store,
+        d,
+        "alice",
+        "plan.md",
+        &engram("Rollout plan", "plan", "engram", "", "plain\n"),
+    )
+    .await;
+    let pointer = draft(
+        store,
+        e,
+        "alice",
+        "pointer.md",
+        &engram("Pointer", "pointer", "engram", "", "See [[d:plan]].\n"),
+    )
+    .await;
+    store.reresolve_actor_references(e, "alice").await.unwrap();
+    assert!(all_bound(store, pointer).await, "her link starts out bound");
+    assert!(
+        binds_to(store, pointer, Some("alice"), plan).await,
+        "to her own draft of the plan"
+    );
+
+    assert!(
+        store
+            .clear_overlay_entry(d, "alice", "plan.md")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !all_bound(store, pointer).await,
+        "the link that named the dropped draft reads as pending again, not as bound \
+         to a row nobody holds"
+    );
+}
+parity!(
+    dropping_a_draft_unbinds_every_reference_that_named_it,
+    dropping_a_draft_unbinds_what_named_it
+);
+
 /// The vocabulary is the team's everywhere a person is shown it, and the
 /// reader's own only where a finding is about what they wrote.
 ///
