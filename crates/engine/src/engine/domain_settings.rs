@@ -195,7 +195,7 @@ const YAML_COMMENTS_DROPPED: &str =
 const REVIEW_NO_RULES: &str = "This domain reviews changes before they land, and .crystalline.yaml is not an engram, so a rule override cannot be a draft. Change it in the domain's files instead.";
 
 /// Why a token budget other than a positive number is refused.
-const TOKEN_BUDGET_POSITIVE: &str = "token_budget takes a positive whole number of tokens. To turn the size rule off, set rules.Q002: off.";
+const TOKEN_BUDGET_POSITIVE: &str = "token_budget takes a positive whole number of tokens. Two rules read it: verify's Q002 and the evolve sweep's V105. To turn Q002 off, set rules.Q002: off.";
 
 /// What one key of a configure call with a domain is.
 enum DomainKey {

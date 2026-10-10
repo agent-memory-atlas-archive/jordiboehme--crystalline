@@ -699,6 +699,28 @@ async fn the_descriptions_of_the_call_time_gated_tools_state_their_condition() {
     );
 }
 
+/// T8-a: configure says up front which domain calls it refuses, so an agent
+/// does not learn them one refusal at a time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_configure_description_names_its_domain_refusals() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let tools = client.peer().list_tools(Default::default()).await.unwrap();
+    let configure = tools
+        .tools
+        .iter()
+        .find(|t| t.name == "configure")
+        .expect("configure tool present");
+    let text = configure.description.as_deref().unwrap_or("");
+    for needle in [
+        "a domain that reviews changes",
+        "a virtual domain",
+        "a mounted domain",
+    ] {
+        assert!(text.contains(needle), "configure names {needle}: {text}");
+    }
+}
+
 /// The salience prior (Tasks 1-4) is invisible to an agent unless the tool
 /// copy teaches it: `write_engram` documents the `salience` metadata key an
 /// agent sets to mark exceptionally valuable knowledge, and `search_engrams`
