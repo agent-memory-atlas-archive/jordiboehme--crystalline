@@ -3368,7 +3368,16 @@ async fn commit_direct(
                     message: message.clone(),
                     refused_at: Utc::now(),
                 });
-                state.save(state_dir)?;
+                // Remembering the refusal only spares the next share a try at
+                // the branch. A save that fails must not cost the person the
+                // answer, so it is logged and the refusal is answered anyway.
+                // The fallback below saves again through
+                // `open_proposal_on_commit` and reports its own failure.
+                if let Err(e) = state.save(state_dir) {
+                    tracing::warn!(
+                        "the refused direct commit on {branch} could not be remembered: {e}"
+                    );
+                }
                 if !fall_back {
                     let offers_proposal =
                         foreign_proposal_block(&state, options.author_login).is_none();

@@ -2246,6 +2246,47 @@ async fn a_refused_direct_share_records_the_refusal_and_opens_nothing() {
     );
 }
 
+/// T9-b: a refusal that cannot be remembered is still answered. The state
+/// save fails after the branch refused the commit, and the share answers
+/// BranchProtected instead of an error. Nothing is recorded, so the next
+/// share tries the direct commit again.
+#[tokio::test]
+async fn a_refusal_that_cannot_be_saved_still_answers_branch_protected() {
+    let mock = MockProvider::new();
+    let (sub, c1) = direct_domain(&mock).await;
+    mock.protect_branch("main", "Changes must be made through a pull request.");
+    let blocker = sub
+        .state_dir
+        .join(format!("state.json.tmp.{}", std::process::id()));
+    mock.make_dir_when_refused(&blocker);
+    let outcome = propose(
+        &mock,
+        &share_spec(),
+        &sub.domain_root,
+        "Brand Team",
+        &sub.state_dir,
+        direct(),
+    )
+    .await;
+    match outcome {
+        Ok(ProposeOutcome::BranchProtected {
+            branch,
+            message,
+            offers_proposal,
+        }) => {
+            assert_eq!(branch, "main");
+            assert_eq!(message, "Changes must be made through a pull request.");
+            assert!(offers_proposal);
+        }
+        other => panic!("expected BranchProtected, got {other:?}"),
+    }
+    assert!(blocker.is_dir(), "the save really was blocked");
+    std::fs::remove_dir(&blocker).unwrap();
+    let st = load_state(&sub.state_dir);
+    assert!(st.direct_refused.is_empty(), "the refusal was not saved");
+    assert_eq!(st.base_commit, c1);
+}
+
 fn choosing(as_proposal: Option<bool>) -> ShareOptions<'static> {
     ShareOptions {
         as_proposal,
