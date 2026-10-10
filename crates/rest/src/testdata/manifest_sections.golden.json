@@ -40,6 +40,19 @@
         "kind": "text",
         "meaning": "The name this domain is known by everywhere; links from other domains use it.",
         "values": []
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "read_only",
+        "kind": "choice",
+        "meaning": "Whether every change to this domain through Crystalline is refused; pulls from the team still apply.",
+        "values": [
+          "off",
+          "on"
+        ]
       }
     ],
     "provisioning": null,
@@ -111,6 +124,19 @@
         "kind": "text",
         "meaning": "The name this domain is known by everywhere; links from other domains use it.",
         "values": []
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "read_only",
+        "kind": "choice",
+        "meaning": "Whether every change to this domain through Crystalline is refused; pulls from the team still apply.",
+        "values": [
+          "off",
+          "on"
+        ]
       }
     ],
     "provisioning": {
@@ -239,6 +265,19 @@
         "kind": "text",
         "meaning": "The name this domain is known by everywhere; links from other domains use it.",
         "values": []
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "read_only",
+        "kind": "choice",
+        "meaning": "Whether every change to this domain through Crystalline is refused; pulls from the team still apply.",
+        "values": [
+          "off",
+          "on"
+        ]
       }
     ],
     "provisioning": {
@@ -347,6 +386,19 @@
         "kind": "text",
         "meaning": "The name this domain is known by everywhere; links from other domains use it.",
         "values": []
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "read_only",
+        "kind": "choice",
+        "meaning": "Whether every change to this domain through Crystalline is refused; pulls from the team still apply.",
+        "values": [
+          "off",
+          "on"
+        ]
       }
     ],
     "provisioning": null,

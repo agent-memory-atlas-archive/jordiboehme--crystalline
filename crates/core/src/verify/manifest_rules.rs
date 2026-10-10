@@ -2,7 +2,7 @@
 //!
 //! `MANIFEST.md` is checked with a hardcoded shape (`## Scope` and
 //! `## When to Use`, `M001`-`M004`, `M101`-`M103`), plus the frontmatter
-//! switches it declares (`M006`, `M007`, `M008`). Every entry under a
+//! switches it declares (`M006`, `M007`, `M008`, `M009`). Every entry under a
 //! domain's `.crystalline.yaml` `verify.required_files` is checked with the
 //! same rule ids against its own configured sections, so a domain can apply
 //! the identical structural checks to any other file it wants enforced (a
@@ -16,7 +16,8 @@ use crate::config::registration::validate_domain_name;
 use crate::engram::{Engram, Heading};
 use crate::manifest::{
     DOMAIN_NAME_KEY, GENERATED_INDEXES_KEY, GeneratedIndexes, Manifest, ProblemKind,
-    ProvisioningSection, SHARING_KEY, Sharing, TagAliasSection, in_root_artifact_dirs,
+    ProvisioningSection, READ_ONLY_KEY, ReadOnly, SHARING_KEY, Sharing, TagAliasSection,
+    in_root_artifact_dirs,
 };
 
 use super::scanner::Domain;
@@ -53,7 +54,7 @@ fn check_manifest(domain: &Domain, sink: &mut Sink) {
 }
 
 /// Every MANIFEST rule that reads the MANIFEST's own text, over one parsed
-/// MANIFEST: `M002`-`M008`, `M101`-`M104`, `M106`, `M107`, and `M105` when
+/// MANIFEST: `M002`-`M009`, `M101`-`M104`, `M106`, `M107`, and `M105` when
 /// `root` names a folder to look in.
 ///
 /// The one body both callers share, so what validate reports about a
@@ -236,6 +237,31 @@ pub(crate) fn check_manifest_text(
                  underscores and dots, for example domain_name: 'platform'"
                     .to_string(),
             ),
+        );
+    }
+
+    // `M009`: a `read_only` value that spells neither switch. An error for the
+    // reason `M006` is: the domain is not doing what its MANIFEST says. An
+    // unrecognized value is read as `off`, so the domain still takes changes,
+    // and saying so is the only way the owner finds out.
+    if let Some(declared) = manifest.declared_read_only()
+        && ReadOnly::parse(declared).is_none()
+    {
+        sink.emit(
+            path,
+            None,
+            "M009",
+            Severity::Error,
+            format!(
+                "`{READ_ONLY_KEY}: {declared}` is neither `{}` nor `{}`",
+                ReadOnly::Off.as_str(),
+                ReadOnly::On.as_str()
+            ),
+            Some(format!(
+                "read as `{}`, so the domain still takes changes; write `{}` to make it read-only",
+                ReadOnly::Off.as_str(),
+                ReadOnly::On.as_str()
+            )),
         );
     }
 

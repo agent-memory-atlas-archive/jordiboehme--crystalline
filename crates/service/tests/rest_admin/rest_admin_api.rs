@@ -1334,7 +1334,8 @@ async fn the_manifest_read_carries_the_policies_and_the_patch_writes_one() {
         serde_json::json!([
             { "key": "generated_indexes", "kind": "choice", "declared": null, "effective": "local", "values": ["local", "shared"], "default": "local", "meaning": "Whether the generated folder listings travel with a share.", "changed_by": "owner" },
             { "key": "sharing", "kind": "choice", "declared": null, "effective": "proposal", "values": ["proposal", "direct"], "default": "proposal", "meaning": "Whether a share opens a proposal for review or commits straight to the branch.", "changed_by": "owner" },
-            { "key": "domain_name", "kind": "text", "declared": null, "effective": "kb", "values": [], "default": "", "meaning": "The name this domain is known by everywhere; links from other domains use it.", "changed_by": "owner" }
+            { "key": "domain_name", "kind": "text", "declared": null, "effective": "kb", "values": [], "default": "", "meaning": "The name this domain is known by everywhere; links from other domains use it.", "changed_by": "owner" },
+            { "key": "read_only", "kind": "choice", "declared": null, "effective": "off", "values": ["off", "on"], "default": "off", "meaning": "Whether every change to this domain through Crystalline is refused; pulls from the team still apply.", "changed_by": "owner" }
         ]),
         "{body}"
     );

@@ -5200,6 +5200,7 @@ fn mounted_row(name: &str, bullets: &[String]) -> Option<crystalline_core::Promp
         name: name.to_string(),
         bullets: crystalline_remote::routing_bullets(bullets),
         preferred: false,
+        read_only: false,
     })
 }
 

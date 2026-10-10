@@ -70,6 +70,19 @@ pub fn can_declare_name(source: &str) -> bool {
         .is_none_or(|parts| crate::frontmatter::key_blocks(parts.yaml).is_some())
 }
 
+/// The MANIFEST frontmatter key a domain declares itself read-only under. A
+/// switch, like [`SHARING_KEY`]: while it says `on`, every change to the
+/// domain through Crystalline is refused, whoever asks, and the only change
+/// accepted is its owner switching it back to `off`. Pulls from the team
+/// still apply, since the team repository stays the authority.
+pub const READ_ONLY_KEY: &str = "read_only";
+
+/// The `read_only` value that leaves the domain open: the default.
+const READ_ONLY_OFF: &str = "off";
+
+/// The `read_only` value that refuses every change.
+const READ_ONLY_ON: &str = "on";
+
 /// The starter MANIFEST engram for a new domain: valid frontmatter and the two
 /// required routing sections (`Scope`, `When to Use`) plus a `Notes for Agents`
 /// section, all as prompts to fill in. `today` is a pre-formatted `%Y-%m-%d`
@@ -122,6 +135,11 @@ pub struct Manifest {
     /// through [`Manifest::sharing`] for the policy in force and through
     /// [`Manifest::declared_sharing`] only to report on the text.
     sharing: Option<String>,
+    /// The [`READ_ONLY_KEY`] frontmatter value as written, or `None` when the
+    /// key is absent. Private for the reason `sharing` is: go through
+    /// [`Manifest::read_only`] for the switch in force and through
+    /// [`Manifest::declared_read_only`] only to report on the text.
+    read_only: Option<String>,
     /// The [`DOMAIN_NAME_KEY`] frontmatter value as written, rendered to
     /// text, or `None` when the key is absent. Private for the reason
     /// `generated_indexes` is: go through [`Manifest::domain_name`] for the
@@ -158,6 +176,7 @@ impl Manifest {
             .get(GENERATED_INDEXES_KEY)
             .map(scalar_text);
         let sharing = engram.frontmatter.extra.get(SHARING_KEY).map(scalar_text);
+        let read_only = engram.frontmatter.extra.get(READ_ONLY_KEY).map(scalar_text);
         let domain_name_extra = engram.frontmatter.extra.get(DOMAIN_NAME_KEY);
         let declared_domain_name = domain_name_extra.map(scalar_text);
         let domain_name_is_string = matches!(domain_name_extra, Some(YamlValue::String(_)));
@@ -201,6 +220,7 @@ impl Manifest {
             sections,
             generated_indexes,
             sharing,
+            read_only,
             declared_domain_name,
             domain_name,
             domain_name_is_string,
@@ -416,6 +436,26 @@ impl Manifest {
         }
     }
 
+    /// The `read_only` declaration exactly as the frontmatter writes it, or
+    /// `None` when the key is absent. For reporting only, never for deciding
+    /// behaviour: [`Manifest::read_only`] is what decides.
+    pub fn declared_read_only(&self) -> Option<&str> {
+        self.read_only.as_deref()
+    }
+
+    /// Whether this domain refuses every change through Crystalline.
+    ///
+    /// [`ReadOnly::On`] only when the frontmatter says `on` in exactly that
+    /// spelling. An absent key is `off`, and so is a value nobody recognizes:
+    /// the registry's rule for every key, reported by verify rule `M009`
+    /// instead of being obeyed.
+    pub fn read_only(&self) -> ReadOnly {
+        match self.read_only.as_deref() {
+            Some(READ_ONLY_ON) => ReadOnly::On,
+            _ => ReadOnly::Off,
+        }
+    }
+
     /// The `domain_name` declaration exactly as the frontmatter writes it,
     /// rendered to text whatever YAML shape it took, or `None` when the key
     /// is absent. For reporting only - a verify finding naming what a reader
@@ -456,6 +496,7 @@ impl Manifest {
                 self.declared_domain_name(),
                 self.domain_name().unwrap_or(""),
             )),
+            READ_ONLY_KEY => Some((self.declared_read_only(), self.read_only().as_str())),
             _ => None,
         }
     }
@@ -551,6 +592,42 @@ impl Sharing {
     }
 }
 
+/// Whether a domain refuses every change made through Crystalline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReadOnly {
+    /// The domain takes changes. The default, including for every MANIFEST
+    /// that declares nothing.
+    #[default]
+    Off,
+    /// Every write into the domain is refused, whoever asks.
+    On,
+}
+
+impl ReadOnly {
+    /// The value's spelling in the MANIFEST frontmatter.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReadOnly::Off => READ_ONLY_OFF,
+            ReadOnly::On => READ_ONLY_ON,
+        }
+    }
+
+    /// Parse a declared value, `None` when it spells neither. Exact and case
+    /// sensitive, like every other declaration a MANIFEST carries.
+    pub fn parse(value: &str) -> Option<ReadOnly> {
+        match value {
+            READ_ONLY_OFF => Some(ReadOnly::Off),
+            READ_ONLY_ON => Some(ReadOnly::On),
+            _ => None,
+        }
+    }
+
+    /// Whether this is [`ReadOnly::On`].
+    pub fn is_on(self) -> bool {
+        self == ReadOnly::On
+    }
+}
+
 /// The [`GeneratedIndexes`] policy the domain rooted at `root` declares, read
 /// from its `MANIFEST.md`.
 ///
@@ -584,6 +661,25 @@ pub fn sharing_at(root: &Path) -> Sharing {
         return Sharing::Proposal;
     };
     Manifest::from_engram(&engram, &source).sharing()
+}
+
+/// The [`ReadOnly`] switch a MANIFEST source declares. [`ReadOnly::Off`]
+/// whenever the source does not parse or declares nothing.
+pub fn read_only_of_source(markdown: &str) -> ReadOnly {
+    match parse_engram(markdown) {
+        Ok(engram) => Manifest::from_engram(&engram, markdown).read_only(),
+        Err(_) => ReadOnly::Off,
+    }
+}
+
+/// The [`ReadOnly`] switch the domain rooted at `root` declares in its
+/// `MANIFEST.md`. [`ReadOnly::Off`] whenever the MANIFEST is missing,
+/// unreadable, unparseable or declares nothing - the shape of [`sharing_at`].
+pub fn read_only_at(root: &Path) -> ReadOnly {
+    match std::fs::read_to_string(root.join("MANIFEST.md")) {
+        Ok(source) => read_only_of_source(&source),
+        Err(_) => ReadOnly::Off,
+    }
 }
 
 /// This domain's declared canonical [`Manifest::domain_name`], parsed from a
@@ -717,6 +813,14 @@ pub fn policy_registry() -> &'static [PolicyKey] {
             values: &[],
             default: "",
             meaning: "The name this domain is known by everywhere; links from other domains use it.",
+            changed_by: PolicyRole::Owner,
+        },
+        PolicyKey {
+            key: READ_ONLY_KEY,
+            kind: PolicyKind::Choice,
+            values: &[READ_ONLY_OFF, READ_ONLY_ON],
+            default: READ_ONLY_OFF,
+            meaning: "Whether every change to this domain through Crystalline is refused; pulls from the team still apply.",
             changed_by: PolicyRole::Owner,
         },
     ]

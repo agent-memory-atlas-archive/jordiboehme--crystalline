@@ -73,9 +73,10 @@ pub use line_endings::{NotUtf8, to_lf, utf8_to_lf};
 pub use manifest::{
     ArtifactType, DOMAIN_NAME_KEY, GENERATED_INDEXES_KEY, GeneratedIndexes, Manifest, PolicyKey,
     PolicyKind, PolicyRole, ProblemKind, ProvisioningDecl, ProvisioningProblem,
-    ProvisioningSection, SHARING_KEY, Sharing, StarterStanza, TagAliasDecl, TagAliasProblem,
-    TagAliasProblemKind, TagAliasSection, append_tag_alias, domain_name_at, domain_name_of_source,
-    generated_indexes_at, in_root_artifact_dirs, manifest_template, policy_registry, sharing_at,
+    ProvisioningSection, READ_ONLY_KEY, ReadOnly, SHARING_KEY, Sharing, StarterStanza,
+    TagAliasDecl, TagAliasProblem, TagAliasProblemKind, TagAliasSection, append_tag_alias,
+    domain_name_at, domain_name_of_source, generated_indexes_at, in_root_artifact_dirs,
+    manifest_template, policy_registry, read_only_at, read_only_of_source, sharing_at,
     starter_stanzas, tag_alias_pairs,
 };
 pub use names::{NameInput, NameTable};

@@ -70,7 +70,10 @@ async fn the_view_of_a_file_domain_names_every_policy_section_and_part() {
         .iter()
         .map(|p| p["key"].as_str().unwrap())
         .collect();
-    assert_eq!(keys, ["generated_indexes", "sharing", "domain_name"]);
+    assert_eq!(
+        keys,
+        ["generated_indexes", "sharing", "domain_name", "read_only"]
+    );
     let sharing = row(&view["policies"], "key", "sharing");
     assert_eq!(sharing["declared"], "direct");
     assert_eq!(sharing["can_change"], true);
@@ -103,7 +106,7 @@ async fn the_view_of_a_file_domain_names_every_policy_section_and_part() {
     assert_eq!(view["rules"]["available"], true);
     assert_eq!(view["rules"]["file_present"], false);
     assert_eq!(view["rules"]["overrides"], json!([]));
-    assert_eq!(view["rules"]["catalog"].as_array().unwrap().len(), 59);
+    assert_eq!(view["rules"]["catalog"].as_array().unwrap().len(), 60);
     assert_eq!(view["how"].as_array().unwrap().len(), 4);
 }
 

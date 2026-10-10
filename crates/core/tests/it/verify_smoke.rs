@@ -920,6 +920,55 @@ fn a_valid_or_absent_domain_name_is_clean() {
     }
 }
 
+// --- The read_only frontmatter switch (M009) ---------------------------------
+
+fn manifest_declaring_read_only(value: &str) -> String {
+    format!(
+        "---\ntype: manifest\ntitle: MANIFEST\npermalink: manifest\ntags:\n- manifest\nstatus: current\nrecorded_at: 2026-01-01\nread_only: {value}\n---\n\n## Scope\n\n- Charts of the harbor\n\n## When to Use\n\n- When asked about the harbor\n"
+    )
+}
+
+#[test]
+fn an_unrecognized_read_only_value_is_m009_error() {
+    let dir = tempdir().unwrap();
+    write(
+        dir.path(),
+        "MANIFEST.md",
+        &manifest_declaring_read_only("true"),
+    );
+    let report = verify::verify_paths([dir.path()], &VerifyOptions::default()).unwrap();
+    let m009 = report
+        .issues
+        .iter()
+        .find(|i| i.rule == "M009")
+        .expect("M009 present");
+    assert_eq!(m009.severity, Severity::Error);
+    assert_eq!(m009.message, "`read_only: true` is neither `off` nor `on`");
+    assert_eq!(
+        m009.fix.as_deref(),
+        Some("read as `off`, so the domain still takes changes; write `on` to make it read-only")
+    );
+    assert_eq!(report.exit_code(), 1);
+}
+
+#[test]
+fn both_recognized_read_only_values_are_clean() {
+    for value in ["off", "on"] {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "MANIFEST.md",
+            &manifest_declaring_read_only(value),
+        );
+        let report = verify::verify_paths([dir.path()], &VerifyOptions::default()).unwrap();
+        assert!(
+            !report.issues.iter().any(|i| i.rule == "M009"),
+            "`{value}`: {:?}",
+            report.issues
+        );
+    }
+}
+
 /// The MANIFEST issue 91 left behind: `## When to Use` twice, the first one
 /// empty, which is the one routing reads.
 const DOUBLED_MANIFEST: &str = "---\ntype: manifest\ntitle: MANIFEST\npermalink: manifest\ntags:\n- manifest\nstatus: current\nrecorded_at: 2026-01-01\n---\n\n## Scope\n\n- Facts about the solar system\n\n## When to Use\n\n## When to Use\n\n- When asked about moons or planets\n";
