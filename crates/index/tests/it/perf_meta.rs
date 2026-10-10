@@ -487,19 +487,11 @@ async fn contains_filter_at_50k_postgres() {
     };
     let corpus = tempfile::tempdir().unwrap();
     generate_sourced_domain(corpus.path());
-    // One fixed schema, dropped on start: a run that panicked before its own
-    // `drop_schema` below leaves the schema behind, and the next run clears it.
-    let schema = "perf_meta";
-    {
-        use sqlx::Connection;
-        let mut raw = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql("DROP SCHEMA IF EXISTS perf_meta CASCADE")
-            .execute(&mut raw)
-            .await
-            .unwrap();
-        raw.close().await.unwrap();
-    }
-    let store = crystalline_index::PostgresStore::open_in_schema(&url, schema)
+    // A schema of its own per run, so two runs side by side never share one.
+    // A run that panics before `drop_schema` below leaves its schema behind
+    // under a name no later run picks again.
+    let schema = perf_schema();
+    let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
         .await
         .unwrap();
     let store = Mutex::new(store);

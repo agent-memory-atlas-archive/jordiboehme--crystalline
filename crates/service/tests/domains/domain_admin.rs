@@ -1108,6 +1108,104 @@ async fn validate_honours_the_domains_rule_overrides() {
     assert!(issues.iter().all(|i| i["kind"] != "T002"), "{report}");
 }
 
+/// A non-word override value beside a valid one: the bad entry is one M108
+/// finding naming its rule, and the valid entry still applies. One bad line
+/// never takes the rest of the file with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn validate_keeps_a_valid_override_beside_a_non_word_one() {
+    let (tmp, engine) = engine().await;
+    std::fs::write(tmp.path().join("eng/gamma.md"), OFF_RECORD).unwrap();
+    std::fs::write(
+        tmp.path().join("eng/.crystalline.yaml"),
+        "verify:\n  rules:\n    T001: warning\n    E007: 1\n",
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+
+    let report = engine
+        .validate_engrams(
+            &ValidateParams {
+                domain: "eng".to_string(),
+                identifier: None,
+                engram_type: None,
+                drift: false,
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let issues = report["issues"].as_array().unwrap();
+    let m108: Vec<_> = issues.iter().filter(|i| i["kind"] == "M108").collect();
+    assert_eq!(m108.len(), 1, "{report}");
+    assert!(
+        m108[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("E007: the value must be a word"),
+        "{report}"
+    );
+    let t001: Vec<_> = issues.iter().filter(|i| i["kind"] == "T001").collect();
+    assert!(!t001.is_empty(), "{report}");
+    assert!(
+        t001.iter().all(|i| i["severity"] == "warning"),
+        "the valid override beside the bad one still applies: {report}"
+    );
+}
+
+/// M108 is a rule like any other: the file's own override re-ranks it or
+/// turns it off, on the engine route as in `crystalline verify`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn validate_applies_the_override_of_m108_itself() {
+    let (tmp, engine) = engine().await;
+    let validate = || async {
+        engine
+            .validate_engrams(
+                &ValidateParams {
+                    domain: "eng".to_string(),
+                    identifier: None,
+                    engram_type: None,
+                    drift: false,
+                },
+                &Scope::Unrestricted,
+            )
+            .await
+            .unwrap()
+    };
+    let m108 = |report: &serde_json::Value| -> Vec<serde_json::Value> {
+        report["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["kind"] == "M108")
+            .cloned()
+            .collect()
+    };
+
+    std::fs::write(
+        tmp.path().join("eng/.crystalline.yaml"),
+        "verify:\n  rules:\n    E007: of\n    M108: error\n",
+    )
+    .unwrap();
+    let report = validate().await;
+    let found = m108(&report);
+    assert_eq!(found.len(), 1, "{report}");
+    assert_eq!(
+        found[0]["severity"], "error",
+        "re-ranked by its own override: {report}"
+    );
+
+    std::fs::write(
+        tmp.path().join("eng/.crystalline.yaml"),
+        "verify:\n  rules:\n    E007: of\n    M108: off\n",
+    )
+    .unwrap();
+    let report = validate().await;
+    assert!(
+        m108(&report).is_empty(),
+        "turned off by its own override: {report}"
+    );
+}
+
 /// validate_engrams reports E011 for a custom field the metadata index cannot
 /// hold, and a domain override turns it off.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -838,7 +838,8 @@ pub fn registry() -> Vec<HotStatement> {
             postgres_must_seek: &["idx_relation_to"],
         },
         // Unbinding the references into a domain being cleared: the engram
-        // ids through the domain index, then one `to_id` seek per id.
+        // ids through the domain index, then one `to_id` seek per id, on both
+        // backends.
         HotStatement {
             issued_by: "Store::clear_domain (inbound links)",
             turso: || crystalline_index::turso::CLEAR_DOMAIN_UNBIND_INBOUND_LINKS_SQL.to_string(),
@@ -850,7 +851,7 @@ pub fn registry() -> Vec<HotStatement> {
             scan_expected: &[],
             scan_expected_pg: None,
             turso_must_seek: &["idx_link_to"],
-            postgres_must_seek: &[],
+            postgres_must_seek: &["idx_link_to"],
         },
         HotStatement {
             issued_by: "Store::clear_domain (inbound relations)",
@@ -865,7 +866,7 @@ pub fn registry() -> Vec<HotStatement> {
             scan_expected: &[],
             scan_expected_pg: None,
             turso_must_seek: &["idx_relation_to"],
-            postgres_must_seek: &[],
+            postgres_must_seek: &["idx_relation_to"],
         },
         // The contradiction check's per-domain off switch: each delete seeks
         // the domain index of its table, as `clear_domain`'s do.
@@ -2198,5 +2199,44 @@ fn the_postgres_child_delete_is_one_statement() {
         body.matches("sqlx::query(").count(),
         1,
         "one statement for the six child tables: {body}"
+    );
+}
+
+/// The six child tables an upsert recreates, and so the child delete must clear.
+const CHILD_TABLES: [&str; 6] = [
+    "observation_tag",
+    "observation",
+    "engram_tag",
+    "engram_meta_value",
+    "relation",
+    "link",
+];
+
+/// The child tables the statement does not delete from.
+fn child_tables_not_deleted(sql: &str) -> Vec<&'static str> {
+    CHILD_TABLES
+        .into_iter()
+        .filter(|t| !sql.contains(&format!("DELETE FROM {t} ")))
+        .collect()
+}
+
+/// The one-statement child delete still names all six tables the six old
+/// statements deleted from. Folding six statements into one `WITH` chain makes
+/// a dropped arm a silent leak of stale child rows, which no other test sees.
+#[test]
+fn the_postgres_child_delete_names_all_six_child_tables() {
+    let sql = crystalline_index::postgres::DELETE_CHILDREN_SQL;
+    assert_eq!(
+        child_tables_not_deleted(sql),
+        Vec::<&str>::new(),
+        "DELETE_CHILDREN_SQL must delete from every child table: {sql}"
+    );
+    // The check bites: the statement with one arm removed is caught.
+    let without_links = sql.replace("DELETE FROM link ", "SELECT 1 FROM link ");
+    assert_eq!(child_tables_not_deleted(&without_links), vec!["link"]);
+    let without_relations = sql.replace("DELETE FROM relation ", "SELECT 1 FROM relation ");
+    assert_eq!(
+        child_tables_not_deleted(&without_relations),
+        vec!["relation"]
     );
 }
