@@ -532,7 +532,8 @@ impl Drop for Ownership {
 /// Whether `file`, just locked, is still the file at `path`.
 ///
 /// Every owner removes `service.lock` when it leaves, and `doctor --fix`
-/// removes one nobody holds. A process that opened the file just before
+/// removes a leftover one while it holds the lock itself
+/// ([`hold_service_lock`]). A process that opened the file just before
 /// that and locked it just after holds a lock on a file with no name any
 /// more, while the next opener creates a new file at the path and locks
 /// that one too: two owners of one state directory. Comparing the locked

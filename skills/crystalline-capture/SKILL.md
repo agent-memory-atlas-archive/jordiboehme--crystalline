@@ -9,6 +9,8 @@ Capturing what you learn while you work, as engrams, is the core of Crystalline.
 
 Some deployments are read-only: if the server instructions or an injected prompt say this deployment's knowledge is read-only and curated externally, stand down on capture. The write tools are not exposed there and this whole skill does not apply; search and read instead.
 
+A domain whose routing line says (read-only), or whose row carries `read_only: true` (a domain row's `read_only`), is not a place for you to write: it is locked, your role only reads it, or it is not on your account's write list. Search and read it, and write where the routing block allows.
+
 ## What to capture
 
 Capture durable knowledge: decisions, confirmed facts, repeatable patterns, gotchas, conventions, lessons learned the hard way, known risks and explicitly speculative ideas or proposals. Do not capture transient debugging steps, one-off scratch state, or knowledge so narrow it only ever matters to the current session.

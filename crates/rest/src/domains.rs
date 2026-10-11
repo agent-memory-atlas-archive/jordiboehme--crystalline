@@ -615,8 +615,8 @@ fn starters() -> Vec<StarterStanzaView> {
 
 impl ManifestSections {
     /// The features of `markdown`, read the way the engine reads every
-    /// MANIFEST. A source the format layer will not parse - no frontmatter,
-    /// a broken block - has no sections to speak of, and says so as a
+    /// MANIFEST. A source the format layer refuses (a null byte, a broken
+    /// block) has no sections to speak of, and says so as a
     /// MANIFEST lacking both required sections rather than as a failure of
     /// the read: the markdown beside it is still the thing to fix, in the
     /// editor.
@@ -878,6 +878,7 @@ pub async fn save_manifest(
     // Admin, not editor: see this function's doc comment for why domain
     // management, MANIFEST editing included, is held to the stronger role.
     identity.require_admin()?;
+    crate::refuse_off_write_list(&state, &identity, &domain, None).await?;
     // Before the If-Match parse, not after: the same reasoning as
     // `engrams::save`'s own read-only check, repeated here rather than
     // shared, since the handlers are not yet worth abstracting over.
@@ -889,7 +890,7 @@ pub async fn save_manifest(
     let token = if_match(&headers)?;
     match state
         .engine
-        .save_manifest(&domain, &body.markdown, &token)
+        .save_manifest(&domain, &body.markdown, &token, &identity.scope())
         .await
     {
         // What landed is the LF form of what was sent, so that is what the
@@ -1134,6 +1135,12 @@ mod tests {
     /// A source the format layer refuses: a null byte.
     const UNPARSED: &str = "---\ntype: manifest\n---\n\0\n";
 
+    /// A MANIFEST that routes by Scope (no When to Use), declares a choice
+    /// value `sharing` does not take, and carries every other problem kind:
+    /// malformed, invalid_path and duplicate_type in Provisioning; malformed,
+    /// self_alias, duplicate_alias and non_canonical_target in Tag Aliases.
+    const EVERY_PROBLEM: &str = "---\ntype: manifest\ntitle: eng\npermalink: manifest\ntags:\n  - manifest\nstatus: stable\nrecorded_at: 2026-01-01\nsharing: sometimes\n---\n\n# eng\n\n## Scope\n\n- Everything about eng\n\n## Provisioning\n\n- skills\n- agents: /etc/agents\n- commands: cmds\n- commands: more\n\n## Tag Aliases\n\n- k8s kubernetes\n- Kube -> kube\n- ops -> operations\n- ops -> devops\n- Docs -> Docs_Team\n";
+
     const GOLDEN: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/testdata/manifest_sections.golden.json"
@@ -1154,6 +1161,7 @@ mod tests {
     fn write_manifest_sections_golden() {
         let golden = serde_json::json!({
             "every_section": sections_json(EVERY_SECTION),
+            "every_problem": sections_json(EVERY_PROBLEM),
             "unparsed": sections_json(UNPARSED),
             "no_frontmatter": sections_json("no frontmatter at all\n"),
             "empty": sections_json(""),
@@ -1179,6 +1187,43 @@ mod tests {
             sections_json("no frontmatter at all\n")
         );
         assert_eq!(golden["empty"], sections_json(""));
+        assert_eq!(golden["every_problem"], sections_json(EVERY_PROBLEM));
+    }
+
+    /// The fourth source covers what the other three do not.
+    #[test]
+    fn the_every_problem_source_shows_every_kind() {
+        let value = sections_json(EVERY_PROBLEM);
+        assert_eq!(value["routing"], "scope");
+        let sharing = value["policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["key"] == "sharing")
+            .unwrap();
+        assert_eq!(sharing["declared"], "sometimes");
+        assert_eq!(sharing["effective"], "proposal");
+        let kinds = |section: &str| -> Vec<String> {
+            value[section]["problems"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["kind"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(
+            kinds("provisioning"),
+            ["malformed", "invalid_path", "duplicate_type"]
+        );
+        assert_eq!(
+            kinds("tag_aliases"),
+            [
+                "malformed",
+                "self_alias",
+                "duplicate_alias",
+                "non_canonical_target"
+            ]
+        );
     }
 
     /// One source: the policies REST sends are the rows core builds.

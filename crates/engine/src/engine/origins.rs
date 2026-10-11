@@ -1584,6 +1584,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         let lock = self.origin_lock_registered(domain)?;
         let _guard = lock.lock().await;
         let (spec, root, state_dir) = self.origin_spec_for_domain(domain)?;
@@ -1883,6 +1885,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         let lock = self.origin_lock_registered(domain)?;
         let _guard = lock.lock().await;
         let (spec, root, state_dir) = self.origin_spec_for_domain(domain)?;
@@ -1995,6 +1999,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         let lock = self.origin_lock_registered(domain)?;
         let _guard = lock.lock().await;
         let (spec, root, state_dir) = self.origin_spec_for_domain(domain)?;
@@ -2721,6 +2727,12 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        // Taking the team's side is what a pull does, so it stays allowed on a
+        // read-only domain; keeping your own text or a merge would change it.
+        if keep != Some("theirs") {
+            self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+                .await?;
+        }
         // An attachment is not an engram and this verb settles engrams. The
         // path would be normalized to `<path>.md` on the next line and then
         // miss everything, so the refusal comes first and says what to do
@@ -2743,6 +2755,25 @@ impl Engine {
         // asked about the same one or a missing suffix would turn a resolution
         // into a refusal.
         let path = &normalize_md(path);
+        // Keeping your own MANIFEST text or a merge may switch read_only on,
+        // which is the owner's (decision D10). The machine owner may; this
+        // verb carries no scope for anybody else, so for them an off-to-on
+        // result is refused and the owner switches it in the domain policies
+        // once the conflict is settled. Taking the team's side is a pull and
+        // is never checked.
+        if is_manifest_path(path) && keep != Some("theirs") && !matches!(&actor, ShareActor::Owner)
+        {
+            let after = match content {
+                Some(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+                None => std::fs::read_to_string(root.join(path)).unwrap_or_default(),
+            };
+            if self.switches_read_only_on(domain, &after).await {
+                return Err(EngineError::Forbidden(
+                    "resolving a conflict does not switch read_only on; the owner switches it in the domain policies"
+                        .to_string(),
+                ));
+            }
+        }
         if let Some(who) = self.overlay_share_identity(domain, &actor)? {
             let held = {
                 let store = self.store.lock().await;

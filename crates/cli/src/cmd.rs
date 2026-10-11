@@ -567,6 +567,11 @@ pub(crate) fn build_name_table(loaded: &crystalline_service::LoadedConfig) -> Na
 /// Rewrite `<root>/MANIFEST.md` to declare `domain_name: <name>`; a no-op
 /// when it already reads that way.
 fn write_back_manifest_name(root: &Path, name: &str) -> Result<()> {
+    // A read-only domain keeps its MANIFEST as the team wrote it; the name
+    // stays the registration's, exactly as the engine's write-back does.
+    if crystalline_core::read_only_at(root).is_on() {
+        return Ok(());
+    }
     let manifest = root.join("MANIFEST.md");
     let text = std::fs::read_to_string(&manifest)
         .map_err(|e| anyhow!("reading {}: {e}", manifest.display()))?;
@@ -877,11 +882,11 @@ pub(crate) fn print_origin_add(repo: &str, data: &serde_json::Value, json: bool)
 /// layers also says where it sits, through [`stack_line`]; a share that also
 /// carried refreshed folder listings says so in one line of its own, through
 /// [`change_count_lines`]. A direct domain's commit is reported with its
-/// branch and page (`committed`), a share that fell back to a proposal (or a
-/// direct commit that works again) adds the receipt's `note` under its first
-/// line, and so are the three direct refusals: a
-/// proposal still open, a branch whose rules refuse the commit, a branch that
-/// moved twice.
+/// branch and page (`committed`). A share that fell back to a proposal, or a
+/// direct commit that works again, adds the receipt's `note` under its first
+/// line. The three direct refusals are reported too: a proposal still open
+/// (the sharer's own, or another person's), a branch whose rules refuse the
+/// commit, a branch that moved twice.
 pub(crate) fn print_origin_share(domain: &str, data: &serde_json::Value, json: bool) {
     if json {
         println!("{data}");
@@ -950,11 +955,19 @@ pub(crate) fn origin_share_lines(domain: &str, data: &serde_json::Value) -> Vec<
         }
         "proposal_open" => {
             let prop = &data["proposal"];
-            lines.push(format!(
-                "Cannot share '{domain}': proposal #{} ({}) is still open; merge or withdraw it first.",
-                prop["number"].as_u64().unwrap_or(0),
-                prop["url"].as_str().unwrap_or("")
-            ));
+            let number = prop["number"].as_u64().unwrap_or(0);
+            let url = prop["url"].as_str().unwrap_or("");
+            // An older daemon sends no `own`; its proposal_open was always
+            // the sharer's own.
+            if data["own"].as_bool() == Some(false) {
+                lines.push(format!(
+                    "Cannot share '{domain}': proposal #{number} ({url}) is another person's and is still open. Share again once it is merged or closed."
+                ));
+            } else {
+                lines.push(format!(
+                    "Cannot share '{domain}': proposal #{number} ({url}) is still open; merge or withdraw it first."
+                ));
+            }
         }
         // With no proposal on offer (another person's proposal is open), the
         // engine's own sentence says what to do, and it is shown as given.
@@ -3850,6 +3863,14 @@ mod origin_share_tests {
         assert_eq!(
             open[0],
             "Cannot share 'kb': proposal #4 (https://github.com/acme/knowledge/pull/4) is still open; merge or withdraw it first."
+        );
+        let foreign = origin_share_lines(
+            "kb",
+            &json!({ "outcome": "proposal_open", "own": false, "proposal": { "number": 5, "url": "https://github.com/acme/knowledge/pull/5", "title": "Theirs" }, "guidance": "g" }),
+        );
+        assert_eq!(
+            foreign[0],
+            "Cannot share 'kb': proposal #5 (https://github.com/acme/knowledge/pull/5) is another person's and is still open. Share again once it is merged or closed."
         );
         let protected = origin_share_lines(
             "kb",

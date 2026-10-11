@@ -97,6 +97,7 @@ import { DOMAINS_QUERY_KEY } from "../api/domains";
 import { domainEngramsRoot } from "../api/engrams";
 import { asNumber, asObject, asString } from "../api/json";
 import { useAuth } from "../auth/AuthContext";
+import { useDomainWritable } from "../domainWritable";
 import { isWebAddress, plural } from "../format";
 import { ChangeList } from "./ChangeList";
 import { DiffPane } from "./DiffPaneLazy";
@@ -133,6 +134,10 @@ export default function ShareDialogBody({
    * reader who may not write is offered no control that would be refused.
    */
   const mayDiscard = capabilities.canWrite && !capabilities.readOnly;
+  // Sharing is refused on a locked domain (discard is not, decision D5), so
+  // the button says so instead of failing.
+  const { domainLocked } = useDomainWritable(domain);
+  const lockedReasonId = useId();
   const titleField = useId();
   const descriptionField = useId();
   const proposalField = useId();
@@ -790,6 +795,17 @@ export default function ShareDialogBody({
                   }}
                 />
               </Field>
+              {/* Said in plain view, beside the grey Share button it
+                  explains, rather than only to a screen reader: a person who
+                  sees the button go grey reads why. */}
+              {domainLocked && (
+                <p
+                  id={lockedReasonId}
+                  className="text-sm text-slate-600 dark:text-slate-300"
+                >
+                  {`'${domain}' is read-only; its owner switches read_only off in the domain policies`}
+                </p>
+              )}
               <div className="flex flex-wrap items-center justify-end gap-2">
                 {identity.sharingAs !== null && (
                   <SharingAs login={identity.sharingAs} />
@@ -843,8 +859,12 @@ export default function ShareDialogBody({
                       !shareable ||
                       nothingPicked ||
                       share.isPending ||
-                      identity.asking
+                      identity.asking ||
+                      domainLocked
                     }
+                    {...(domainLocked
+                      ? { "aria-describedby": lockedReasonId }
+                      : {})}
                     className={BUTTON.primary}
                   >
                     {action === "commit"
@@ -912,6 +932,7 @@ function actionLine(plan: SharePlan | null): string {
     layersAbove = null,
     branch = null,
     title = null,
+    own = true,
   } = plan ?? {};
   const named =
     number === null ? "the proposal" : `proposal #${String(number)}`;
@@ -945,6 +966,11 @@ function actionLine(plan: SharePlan | null): string {
     case "proposal_open":
       // The one state a direct domain adds: the branch this share would
       // commit onto is the one a proposal is still waiting to land on.
+      if (!own) {
+        return number === null
+          ? "Another person's proposal is still open; share again once it is merged or closed."
+          : `Proposal #${String(number)} (${title ?? "untitled"}) is another person's and is still open; share again once it is merged or closed.`;
+      }
       return number === null
         ? "A proposal is still open; merge or withdraw it before sharing directly."
         : `Proposal #${String(number)} (${title ?? "untitled"}) is still open; merge or withdraw it before sharing directly.`;

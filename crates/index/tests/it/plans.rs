@@ -266,6 +266,20 @@ macro_rules! filter_only_entry {
     };
 }
 
+/// The scope and the one term clause `scored_lexical` builds for a scoped
+/// one-word search in the default mode: `build_scalar_filters` puts the domain
+/// first, then each term is one `lower(column) LIKE` per column, ORed. A search
+/// always carries a term (`run_lexical` and the hybrid path send a search
+/// without one to `filter_only`), so the term is part of the statement's shape:
+/// without it half of a two-domain table matches, and walking `engram_pkey`
+/// until the `LIMIT` fills is the cheapest plan for a statement no search sends.
+const LEXICAL_SCOPE_AND_TERM_TURSO: &str = "AND d.name IN (?1) AND (lower(e.title) LIKE ?2 ESCAPE '\\' \
+     OR lower(e.description) LIKE ?3 ESCAPE '\\' OR lower(ec.content) LIKE ?4 ESCAPE '\\')";
+
+/// [`LEXICAL_SCOPE_AND_TERM_TURSO`] in the postgres dialect.
+const LEXICAL_SCOPE_AND_TERM_PG: &str = "AND d.name IN ($1) AND (lower(e.title) LIKE $2 ESCAPE '\\' \
+     OR lower(e.description) LIKE $3 ESCAPE '\\' OR lower(ec.content) LIKE $4 ESCAPE '\\')";
+
 pub fn registry() -> Vec<HotStatement> {
     vec![
         HotStatement {
@@ -278,6 +292,27 @@ pub fn registry() -> Vec<HotStatement> {
             scan_expected_pg: None,
             turso_must_seek: &[],
             postgres_must_seek: &[],
+        },
+        HotStatement {
+            // Every upsert asks this before it writes, so a walk here is paid
+            // once per engram: quadratic in a first index, twice that in a
+            // full reindex (10 to 12 minutes at 50,000 engrams before it
+            // seeked, 2026-10-10). The claim is that each arm is a full-key
+            // seek of its own unique index, so both are named in full on turso,
+            // where an `OR` over the two collapsed into a walk of
+            // `idx_engram_domain` that still reads as a SEARCH.
+            issued_by: "Store::upsert_engram (probe)",
+            turso: || crystalline_index::turso::UPSERT_PROBE_SQL.to_string(),
+            postgres: || crystalline_index::postgres::UPSERT_PROBE_SQL.to_string(),
+            literals: &["1", "'notes/e1.md'", "'p1'", "''"],
+            literals_pg: None,
+            scan_expected: &[],
+            scan_expected_pg: None,
+            turso_must_seek: &[
+                "idx_engram_path_actor (domain_id=? AND path=? AND actor=?)",
+                "idx_engram_permalink_actor (domain_id=? AND permalink=? AND actor=?)",
+            ],
+            postgres_must_seek: &["idx_engram_path_actor", "idx_engram_permalink_actor"],
         },
         HotStatement {
             // The one entry whose tie-break differs from `reference_match`'s:
@@ -329,27 +364,32 @@ pub fn registry() -> Vec<HotStatement> {
             postgres_must_seek: &[],
         },
         HotStatement {
+            // A scoped one-word search: the statement `scored_lexical` sends.
+            // The term is in 21 of the 200 seed engrams of each domain (titles
+            // and bodies of engram 7, 70 to 79 and 170 to 179) and in none of
+            // the grown fixture's bulk rows, so it is selective at scale, the
+            // case where a walk in id order reads the whole table.
             issued_by: "search::scored_lexical",
             turso: || {
                 crystalline_index::turso::lexical_candidate_sql(
                     BASE_SCREEN,
-                    "AND d.name IN (?1)",
+                    LEXICAL_SCOPE_AND_TERM_TURSO,
                     500,
                 )
             },
             postgres: || {
                 crystalline_index::postgres::lexical_candidate_sql(
                     BASE_SCREEN,
-                    "AND d.name IN ($1)",
+                    LEXICAL_SCOPE_AND_TERM_PG,
                     500,
                 )
             },
-            literals: &["'d'"],
+            literals: &["'d'", "'%engram 7%'", "'%engram 7%'", "'%engram 7%'"],
             literals_pg: None,
             scan_expected: &[],
             scan_expected_pg: None,
             turso_must_seek: &[],
-            postgres_must_seek: &[],
+            postgres_must_seek: &["idx_engram_domain"],
         },
         filter_only_entry!(
             "search::filter_only (recorded, newest first)",
@@ -798,7 +838,8 @@ pub fn registry() -> Vec<HotStatement> {
             postgres_must_seek: &["idx_relation_to"],
         },
         // Unbinding the references into a domain being cleared: the engram
-        // ids through the domain index, then one `to_id` seek per id.
+        // ids through the domain index, then one `to_id` seek per id, on both
+        // backends.
         HotStatement {
             issued_by: "Store::clear_domain (inbound links)",
             turso: || crystalline_index::turso::CLEAR_DOMAIN_UNBIND_INBOUND_LINKS_SQL.to_string(),
@@ -810,7 +851,7 @@ pub fn registry() -> Vec<HotStatement> {
             scan_expected: &[],
             scan_expected_pg: None,
             turso_must_seek: &["idx_link_to"],
-            postgres_must_seek: &[],
+            postgres_must_seek: &["idx_link_to"],
         },
         HotStatement {
             issued_by: "Store::clear_domain (inbound relations)",
@@ -825,7 +866,7 @@ pub fn registry() -> Vec<HotStatement> {
             scan_expected: &[],
             scan_expected_pg: None,
             turso_must_seek: &["idx_relation_to"],
-            postgres_must_seek: &[],
+            postgres_must_seek: &["idx_relation_to"],
         },
         // The contradiction check's per-domain off switch: each delete seeks
         // the domain index of its table, as `clear_domain`'s do.
@@ -1910,12 +1951,12 @@ mod postgres_plans {
 
     /// The entries planned on the grown fixture rather than the plain one: the
     /// four `$contains` statements, whose claim is the side table driving the
-    /// join, which postgres only prefers once `engram` is too big to walk.
-    /// Every other entry keeps the plain fixture its claim was measured on; at
-    /// 20,400 engrams `search::scored_lexical` turns into an `engram_pkey` walk
-    /// bounded by its `LIMIT`, which is a different question from this task's.
+    /// join, and the scoped lexical scan, whose claim is the seek of the
+    /// domain. Postgres only prefers either once `engram` is too big to walk.
+    /// Every other entry keeps the plain fixture its claim was measured on.
     fn planned_at_scale(entry: &HotStatement) -> bool {
         entry.issued_by.starts_with("search::metadata_clause")
+            || entry.issued_by == "search::scored_lexical"
     }
 
     /// Every hot statement reaches its rows through an index, on postgres.
@@ -1936,7 +1977,11 @@ mod postgres_plans {
         let store = open_seeded(&url, &schema).await;
         let (at_scale, plain): (Vec<HotStatement>, Vec<HotStatement>) =
             registry().into_iter().partition(planned_at_scale);
-        assert_eq!(at_scale.len(), 4, "the four $contains entries");
+        assert_eq!(
+            at_scale.len(),
+            5,
+            "the four $contains entries and the scoped lexical scan"
+        );
 
         for (pass, entries) in [plain, at_scale].into_iter().enumerate() {
             if pass == 1 {
@@ -1979,6 +2024,23 @@ mod postgres_plans {
                          the plan read {seen:?}. Statement: {sql}"
                     );
                 }
+                // The scoped lexical scan's own claim at scale: `engram` is
+                // reached through the domain, never walked in id order with the
+                // domain as a filter. A walk of `engram_pkey` carries no `Index
+                // Cond` of its own (the domain test sits in a `Filter` or in the
+                // `Join Filter` of the loop above it), so `unseeked_reads` alone
+                // does not see it.
+                if entry.issued_by == "search::scored_lexical" {
+                    let mut all = Vec::new();
+                    nodes(&plan, &mut all);
+                    for node in all.iter().filter(|node| node["Relation Name"] == "engram") {
+                        assert!(
+                            node["Index Name"] != "engram_pkey" || node.get("Index Cond").is_some(),
+                            "search::scored_lexical walks engram in id order instead of seeking \
+                             the domain: {node}. Whole plan: {plan}"
+                        );
+                    }
+                }
                 // The lexical prefilter's real claim, the same one the turso leg
                 // makes: bounded whenever it is sorted.
                 if entry.issued_by == "search::scored_lexical"
@@ -2010,7 +2072,10 @@ mod postgres_plans {
         let schema = unique_schema();
         let store = open_seeded(&url, &schema).await;
         grow_to_scale(&store, &url, &schema).await;
-        let entries: Vec<HotStatement> = registry().into_iter().filter(planned_at_scale).collect();
+        let entries: Vec<HotStatement> = registry()
+            .into_iter()
+            .filter(|entry| entry.issued_by.starts_with("search::metadata_clause"))
+            .collect();
         assert_eq!(entries.len(), 4, "two operators, unscoped and scoped");
         for entry in entries {
             let sql = bind_literals(
@@ -2095,4 +2160,83 @@ mod postgres_plans {
         );
         store.drop_schema().await.unwrap();
     }
+}
+
+/// The postgres upsert probe is planned on every call, never from a cached
+/// generic plan. sqlx prepares each statement, and postgres moves a prepared
+/// statement to a generic plan after five calls. A generic plan made while
+/// `engram` was empty (the first index of a new database) seeks the path index
+/// on `(domain_id, actor)` and filters path or permalink, which walks the whole
+/// domain on every probe: 9.9 ms and 19,999 rows removed at 20,000 engrams
+/// (2026-10-10). `persistent(false)` plans it against the table as it is.
+#[test]
+fn the_postgres_upsert_probe_is_planned_per_call() {
+    let src = include_str!("../../src/postgres/mod.rs");
+    let at = src
+        .find("sqlx::query(UPSERT_PROBE_SQL)")
+        .expect("upsert_row runs the shared probe");
+    let end = at + src[at..].find(".await").expect("the probe is awaited");
+    let call = &src[at..end];
+    assert!(
+        call.contains(".persistent(false)"),
+        "the upsert probe is prepared and can be cached as a generic plan: {call}"
+    );
+}
+
+/// The child rows of a postgres upsert are deleted in one round trip. Each
+/// statement is a round trip to the server, and a full reindex runs the child
+/// delete once per engram, so six statements here made the full reindex six
+/// round trips per engram slower than the first index, which never runs it.
+#[test]
+fn the_postgres_child_delete_is_one_statement() {
+    let src = include_str!("../../src/postgres/mod.rs");
+    let start = src
+        .find("async fn delete_children(")
+        .expect("delete_children exists");
+    let end = start + src[start..].find("\n}\n").expect("delete_children ends");
+    let body = &src[start..end];
+    assert_eq!(
+        body.matches("sqlx::query(").count(),
+        1,
+        "one statement for the six child tables: {body}"
+    );
+}
+
+/// The six child tables an upsert recreates, and so the child delete must clear.
+const CHILD_TABLES: [&str; 6] = [
+    "observation_tag",
+    "observation",
+    "engram_tag",
+    "engram_meta_value",
+    "relation",
+    "link",
+];
+
+/// The child tables the statement does not delete from.
+fn child_tables_not_deleted(sql: &str) -> Vec<&'static str> {
+    CHILD_TABLES
+        .into_iter()
+        .filter(|t| !sql.contains(&format!("DELETE FROM {t} ")))
+        .collect()
+}
+
+/// The one-statement child delete still names all six tables the six old
+/// statements deleted from. Folding six statements into one `WITH` chain makes
+/// a dropped arm a silent leak of stale child rows, which no other test sees.
+#[test]
+fn the_postgres_child_delete_names_all_six_child_tables() {
+    let sql = crystalline_index::postgres::DELETE_CHILDREN_SQL;
+    assert_eq!(
+        child_tables_not_deleted(sql),
+        Vec::<&str>::new(),
+        "DELETE_CHILDREN_SQL must delete from every child table: {sql}"
+    );
+    // The check bites: the statement with one arm removed is caught.
+    let without_links = sql.replace("DELETE FROM link ", "SELECT 1 FROM link ");
+    assert_eq!(child_tables_not_deleted(&without_links), vec!["link"]);
+    let without_relations = sql.replace("DELETE FROM relation ", "SELECT 1 FROM relation ");
+    assert_eq!(
+        child_tables_not_deleted(&without_relations),
+        vec!["relation"]
+    );
 }

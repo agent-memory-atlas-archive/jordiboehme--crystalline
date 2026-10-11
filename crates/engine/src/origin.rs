@@ -654,12 +654,24 @@ pub(crate) fn propose_outcome_json(outcome: &ProposeOutcome) -> Value {
             }
             receipt
         }
-        ProposeOutcome::ProposalOpen { number, url, title } => json!({
+        ProposeOutcome::ProposalOpen {
+            number,
+            url,
+            title,
+            own,
+        } => json!({
             "outcome": "proposal_open",
             "proposal": { "number": number, "url": url, "title": title },
-            "guidance": format!(
-                "merge or withdraw proposal #{number} first; a domain that shares directly commits onto the branch the proposal is waiting to land on"
-            ),
+            "own": own,
+            "guidance": if *own {
+                format!(
+                    "merge or withdraw proposal #{number} first; a domain that shares directly commits onto the branch the proposal is waiting to land on"
+                )
+            } else {
+                format!(
+                    "proposal #{number} is another person's and is still open; share again once it is merged or closed"
+                )
+            },
         }),
         ProposeOutcome::BranchProtected {
             branch,
@@ -952,11 +964,17 @@ pub(crate) fn share_plan_json(plan: &ops::SharePlan, root: Option<&Path>) -> Val
             v["action"] = json!("commit");
             v["branch"] = json!(branch);
         }
-        ops::PlannedAction::ProposalOpen { number, url, title } => {
+        ops::PlannedAction::ProposalOpen {
+            number,
+            url,
+            title,
+            own,
+        } => {
             v["action"] = json!("proposal_open");
             v["number"] = json!(number);
             v["url"] = json!(url);
             v["title"] = json!(title);
+            v["own"] = json!(own);
         }
     }
     v
@@ -2467,6 +2485,7 @@ mod tests {
             number: 4,
             url: "https://github.test/pull/4".to_string(),
             title: "Refine".to_string(),
+            own: true,
         });
         assert_eq!(open["outcome"], "proposal_open");
         assert_eq!(open["proposal"]["number"], 4);
@@ -2475,6 +2494,19 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("merge or withdraw proposal #4 first")
+        );
+        assert_eq!(open["own"], true);
+        let foreign = propose_outcome_json(&ProposeOutcome::ProposalOpen {
+            number: 5,
+            url: "https://github.test/pull/5".to_string(),
+            title: "Theirs".to_string(),
+            own: false,
+        });
+        assert_eq!(foreign["outcome"], "proposal_open");
+        assert_eq!(foreign["own"], false);
+        assert_eq!(
+            foreign["guidance"],
+            "proposal #5 is another person's and is still open; share again once it is merged or closed"
         );
 
         let protected = propose_outcome_json(&ProposeOutcome::BranchProtected {
@@ -2536,10 +2568,12 @@ mod tests {
             number: 4,
             url: "https://github.test/pull/4".to_string(),
             title: "Refine".to_string(),
+            own: true,
         }));
         assert_eq!(open["action"], "proposal_open");
         assert_eq!(open["number"], 4);
         assert_eq!(open["title"], "Refine");
+        assert_eq!(open["own"], true);
         let proposal = plan_json(&ops::SharePlan {
             sharing: crystalline_core::Sharing::Proposal,
             ..plan(ops::PlannedAction::Create)

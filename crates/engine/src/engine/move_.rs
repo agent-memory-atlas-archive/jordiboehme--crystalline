@@ -100,6 +100,12 @@ impl Engine {
             return Err(EngineError::Invalid(assets_reserved_error(&dest_rel)));
         }
         let cross = dest_domain != p.domain;
+        // The source was checked by its write view; a move into another
+        // domain writes there too, so the destination is asked the same way,
+        // before anything is written at either end.
+        if cross {
+            self.refuse_read_only_domain(&dest_domain, scope).await?;
+        }
         // A move into another domain writes there too, so it is counted there
         // for the whole move: a rename of the destination waits for it, and a
         // destination a rename has paused is waited for first.
@@ -121,6 +127,20 @@ impl Engine {
         // Whether the engram answers to a different address afterwards, which
         // is what every reference to it has to follow.
         let readdressed = cross || new_permalink != src.permalink;
+
+        // A move onto the MANIFEST writes the moved text as the MANIFEST, so it
+        // meets the switch-on rule every MANIFEST writer meets (decision D10),
+        // before anything is written at either end and before the review-mode
+        // branch, which writes a draft of it. A taken MANIFEST.md is refused
+        // later as a collision; this is the move onto a missing one. The name
+        // is compared in any letter case, as the write paths do: a
+        // case-insensitive filesystem (the macOS and Windows defaults) opens
+        // `manifest.md` as the very `MANIFEST.md` routing reads.
+        if dest_rel.eq_ignore_ascii_case("MANIFEST.md") {
+            let text = self.move_source_text(&src_source, &src, &p.domain).await?;
+            self.refuse_read_only_switch_on(&dest_domain, &text, scope)
+                .await?;
+        }
 
         // The third place a move can land, and it is two writes rather than
         // one: a tombstone where the team's file is, so this actor stops
@@ -214,26 +234,9 @@ impl Engine {
             to_permalink: &new_permalink,
         };
 
-        // Read once, stricter than the read path on purpose: a move re-emits
-        // the file at the destination, and a file domain's stored `content`
-        // column holds the body only, so falling back to it would strip the
-        // frontmatter off the engram that lands. Failing loudly is the only
-        // honest option; the store is the source of truth for a virtual
-        // domain, so only that kind reads from it.
-        let original = match &src_source {
-            ContentSource::File { root } => {
-                let abs = join_rel(root, &src.path);
-                std::fs::read_to_string(&abs).map_err(|e| {
-                    EngineError::NotFound(format!(
-                        "the source file for '{}' at {} is unreadable ({e}); resync '{}' and retry the move",
-                        src.permalink,
-                        abs.display(),
-                        p.domain
-                    ))
-                })?
-            }
-            ContentSource::Virtual => self.load_content(&src_source, &src).await?,
-        };
+        // Read here for the write, by the strict reader the MANIFEST check
+        // above uses too (see [`Engine::move_source_text`]).
+        let original = self.move_source_text(&src_source, &src, &p.domain).await?;
         // A move writes the engram anew, so it lands as LF whatever line
         // endings it was read with, a plain rename included.
         let original = crystalline_core::to_lf(&original).into_owned();
@@ -321,7 +324,15 @@ impl Engine {
                 }
             }
             let store = self.store.lock().await;
-            store.delete_engram(src.domain_id, &src.path).await?;
+            // One transaction for the source row, as the index half of a
+            // delete has: the row, its children and the unbinding of every
+            // reference that named it land together.
+            store.begin().await?;
+            if let Err(e) = store.delete_engram(src.domain_id, &src.path).await {
+                let _ = store.rollback().await;
+                return Err(e.into());
+            }
+            store.commit().await?;
         } else {
             // Same-domain rename: move the file when file-backed, then give the
             // row its new path and permalink in place, keeping its id. A move
@@ -708,7 +719,12 @@ impl Engine {
         let mut seen: HashSet<(i64, String)> = HashSet::new();
         let mut linkers = Vec::new();
         for (domain, domain_id, path) in candidates {
-            if hidden.contains(&domain) || (domain_id == src.domain_id && path == src.path) {
+            if hidden.contains(&domain)
+                || (domain_id == src.domain_id && path == src.path)
+                // A read-only domain's link is left as it was, like a hidden
+                // domain's (decision D7).
+                || self.domain_is_read_only(&domain).await
+            {
                 continue;
             }
             if seen.insert((domain_id.0, path.clone())) {
@@ -836,6 +852,9 @@ impl Engine {
     /// untouched and the domain is surfaced in `alias_conflict` rather than a
     /// false `alias_recorded`. The merge's tag rewrites still proceed either way;
     /// only the recording is skipped. A `rename` records nothing.
+    ///
+    /// A read-only domain is left out (named in `read_only_skipped`), and a
+    /// retag scoped to one is refused.
     pub async fn retag(
         &self,
         old: &str,
@@ -847,6 +866,12 @@ impl Engine {
     ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
+        }
+        // A retag of one read-only domain is refused; across every domain it
+        // skips the read-only ones and names them (decision D7).
+        if let Some(d) = domain {
+            self.refuse_read_only_domain(d, &crate::scope::Scope::Unrestricted)
+                .await?;
         }
         let old_f = old.trim().to_lowercase();
         let new_f = new.trim().to_lowercase();
@@ -907,12 +932,36 @@ impl Engine {
         // the list is built: `listed`, the dry run, the rewrite loop, the count
         // and the alias recording all read from it, so one filter covers all of
         // them and no later addition can forget it.
-        let targets = {
+        let (targets, read_only_skipped) = {
             let store = self.store.lock().await;
             let mut found = store.engrams_with_tag(&old_f, domain).await?;
             drop(store);
             found.retain(|d| !unregistered.contains(&d.domain));
-            found
+            // A read-only domain is left out here too, for the same reason:
+            // one filter covers the dry run, the rewrite and the alias
+            // recording into its MANIFEST. Asked once per domain, after the
+            // store guard is gone.
+            let mut locked: HashMap<String, bool> = HashMap::new();
+            let mut kept = Vec::with_capacity(found.len());
+            for d in found {
+                let is_locked = match locked.get(&d.domain) {
+                    Some(known) => *known,
+                    None => {
+                        let known = self.domain_is_read_only(&d.domain).await;
+                        locked.insert(d.domain.clone(), known);
+                        known
+                    }
+                };
+                if !is_locked {
+                    kept.push(d);
+                }
+            }
+            let mut skipped: Vec<String> = locked
+                .into_iter()
+                .filter_map(|(name, is_locked)| is_locked.then_some(name))
+                .collect();
+            skipped.sort();
+            (kept, skipped)
         };
         let listed: Vec<Value> = targets
             .iter()
@@ -920,10 +969,14 @@ impl Engine {
             .collect();
 
         if dry_run {
-            return Ok(json!({
+            let mut dry = json!({
                 "old": old_f, "new": new_f, "merge": merge, "dry_run": true,
                 "engrams": listed, "rewritten": targets.len(),
-            }));
+            });
+            if !read_only_skipped.is_empty() {
+                dry["read_only_skipped"] = json!(read_only_skipped);
+            }
+            return Ok(dry);
         }
 
         // Rewrite each engram, mirroring move_engram's file-vs-virtual branches.
@@ -990,6 +1043,9 @@ impl Engine {
             "old": old_f, "new": new_f, "merge": merge, "dry_run": false,
             "engrams": listed, "rewritten": rewritten,
         });
+        if !read_only_skipped.is_empty() {
+            response["read_only_skipped"] = json!(read_only_skipped);
+        }
 
         // Record the fold as a tag alias in each affected domain's MANIFEST, once
         // per distinct domain in first-seen order. Only a merge records, and only
@@ -1122,5 +1178,35 @@ fn manifest_change(edited: &str) -> PathChange {
             .and_then(|engram| engram.frontmatter.permalink)
             .filter(|permalink| !permalink.is_empty()),
         checksum: Some(sha256_hex(edited.as_bytes())),
+    }
+}
+
+impl Engine {
+    /// The moved engram's whole text, frontmatter included, read from its
+    /// source of truth. Stricter than the read path on purpose: a move
+    /// re-emits the file at the destination, and a file domain's stored
+    /// `content` column holds the body only, so falling back to it would strip
+    /// the frontmatter off the engram that lands. Failing loudly is the only
+    /// honest option; the store is the source of truth for a virtual domain,
+    /// so only that kind reads from it.
+    async fn move_source_text(
+        &self,
+        src_source: &ContentSource,
+        src: &EngramDescriptor,
+        domain: &str,
+    ) -> Result<String> {
+        match src_source {
+            ContentSource::File { root } => {
+                let abs = join_rel(root, &src.path);
+                std::fs::read_to_string(&abs).map_err(|e| {
+                    EngineError::NotFound(format!(
+                        "the source file for '{}' at {} is unreadable ({e}); resync '{domain}' and retry the move",
+                        src.permalink,
+                        abs.display(),
+                    ))
+                })
+            }
+            ContentSource::Virtual => self.load_content(src_source, src).await,
+        }
     }
 }

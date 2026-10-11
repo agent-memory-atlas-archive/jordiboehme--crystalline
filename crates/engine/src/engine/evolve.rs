@@ -26,7 +26,7 @@ impl Engine {
         // The swept scope is read back out of the response rather than
         // re-derived from the parameters: an unscoped call defaults to every
         // registered domain, and only the response knows which those were.
-        let swept: Vec<String> = value["scope"]["domains"]
+        let mut swept: Vec<String> = value["scope"]["domains"]
             .as_array()
             .map(|domains| {
                 domains
@@ -35,6 +35,13 @@ impl Engine {
                     .collect()
             })
             .unwrap_or_default();
+        swept.extend(
+            value["scope"]["read_only_left_out"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|d| d.as_str().map(str::to_string)),
+        );
         // A sweep with no scope of its own looked at every registered domain,
         // so it settles the whole backlog rather than subtracting the names it
         // saw. That is what heals the state file: a domain a human wrote to and
@@ -142,6 +149,20 @@ impl Engine {
                 }
             }
         }
+
+        // A read-only domain's findings are findings nobody could act on, so
+        // the sweep leaves it out, a named one included, and says which. They
+        // come back the moment the flag is switched off.
+        let mut read_only_left_out: Vec<String> = Vec::new();
+        let mut kept = Vec::with_capacity(swept_scope.len());
+        for name in swept_scope {
+            if self.domain_is_read_only(&name).await {
+                read_only_left_out.push(name);
+            } else {
+                kept.push(name);
+            }
+        }
+        let swept_scope = kept;
 
         let mut findings: Vec<Finding> = Vec::new();
         let mut truncations: Vec<String> = Vec::new();
@@ -317,7 +338,7 @@ impl Engine {
             })
             .collect();
 
-        Ok(json!({
+        let mut value = json!({
             "scope": {
                 "domains": swept_scope,
                 "families": families.iter().map(|f| f.as_str()).collect::<Vec<_>>(),
@@ -345,7 +366,11 @@ impl Engine {
             "actions": actions,
             "guidance": EVOLVE_GUIDANCE,
             "truncations": truncations,
-        }))
+        });
+        if !read_only_left_out.is_empty() {
+            value["scope"]["read_only_left_out"] = json!(read_only_left_out);
+        }
+        Ok(value)
     }
 
     // --- acknowledgments -----------------------------------------------------

@@ -10,6 +10,7 @@ use crystalline_index::TursoStore;
 use crystalline_service::DomainAccess;
 use crystalline_service::Engine;
 use crystalline_service::Scope;
+use crystalline_service::engine::EngineError;
 use crystalline_service::params::{
     DeleteParams, EditParams, ReadParams, RetireParams, SaveParams, SearchParams, SplitParams,
 };
@@ -1198,7 +1199,12 @@ async fn manifest_save_is_guarded_verbatim_and_refreshes_routing() {
 
     // Stale token: refused, file untouched.
     let err = engine
-        .save_manifest("eng", &current.replace("eng questions", "nothing"), "beef")
+        .save_manifest(
+            "eng",
+            &current.replace("eng questions", "nothing"),
+            "beef",
+            &Scope::Unrestricted,
+        )
         .await
         .unwrap_err();
     assert!(err.to_string().contains("stale edit"), "{err}");
@@ -1209,7 +1215,7 @@ async fn manifest_save_is_guarded_verbatim_and_refreshes_routing() {
         "Route here for everything eng",
     );
     engine
-        .save_manifest("eng", &edited, &checksum)
+        .save_manifest("eng", &edited, &checksum, &Scope::Unrestricted)
         .await
         .unwrap();
     assert_eq!(
@@ -1233,7 +1239,7 @@ async fn manifest_save_is_guarded_verbatim_and_refreshes_routing() {
     };
     assert!(
         engine
-            .save_manifest("eng", "no frontmatter", &checksum2)
+            .save_manifest("eng", "no frontmatter", &checksum2, &Scope::Unrestricted)
             .await
             .is_err()
     );
@@ -1273,7 +1279,12 @@ async fn manifest_save_is_guarded_verbatim_and_refreshes_routing() {
         "Route here for updated scratch topics",
     );
     engine
-        .save_manifest("scratch", &edited_scratch, &scratch_checksum)
+        .save_manifest(
+            "scratch",
+            &edited_scratch,
+            &scratch_checksum,
+            &Scope::Unrestricted,
+        )
         .await
         .unwrap();
 
@@ -1310,14 +1321,14 @@ async fn a_missing_file_manifest_reads_as_missing_and_its_first_save_creates_it(
 
     let empty = crate::support::sha256_hex(b"");
     let stale = engine
-        .save_manifest("eng", &original, "beef")
+        .save_manifest("eng", &original, "beef", &Scope::Unrestricted)
         .await
         .unwrap_err();
     assert!(stale.to_string().contains("stale edit"), "{stale}");
     assert!(!path.exists(), "a refused save writes nothing");
 
     engine
-        .save_manifest("eng", &original, &empty)
+        .save_manifest("eng", &original, &empty, &Scope::Unrestricted)
         .await
         .unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
@@ -1326,7 +1337,7 @@ async fn a_missing_file_manifest_reads_as_missing_and_its_first_save_creates_it(
     assert_eq!(after.markdown, original);
 
     let again = engine
-        .save_manifest("eng", &original, &empty)
+        .save_manifest("eng", &original, &empty, &Scope::Unrestricted)
         .await
         .unwrap_err();
     assert!(again.to_string().contains("stale edit"), "{again}");
@@ -2928,5 +2939,47 @@ async fn a_failing_virtual_reparse_does_not_stop_the_sync() {
     assert!(
         store.find_engram("eng", "beta").await.unwrap().is_some(),
         "the file domain was synced"
+    );
+}
+
+/// The MANIFEST editor's verb is refused on a read-only domain, the
+/// switch-off included (decision D4: the policies card is the way back), and
+/// its switch-on runs the owner check, which the machine owner passes.
+#[tokio::test]
+async fn save_manifest_refuses_a_read_only_domain_and_checks_the_switch_on() {
+    let (tmp, engine) = engine_fixture().await;
+    let path = tmp.path().join("eng/MANIFEST.md");
+    let current = std::fs::read_to_string(&path).unwrap();
+    let on = current.replacen("\n---\n", "\nread_only: on\n---\n", 1);
+    engine
+        .save_manifest(
+            "eng",
+            &on,
+            &crate::support::sha256_hex(current.as_bytes()),
+            &Scope::Unrestricted,
+        )
+        .await
+        .expect("the machine owner switches it on");
+    assert!(engine.domain_is_read_only("eng").await);
+
+    let back = on.replace("read_only: on", "read_only: off");
+    let err = engine
+        .save_manifest(
+            "eng",
+            &back,
+            &crate::support::sha256_hex(on.as_bytes()),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, EngineError::DomainReadOnly(_)), "{err}");
+    assert_eq!(
+        err.to_string(),
+        "'eng' is read-only; its owner switches read_only off in the domain policies"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        on,
+        "nothing was written"
     );
 }

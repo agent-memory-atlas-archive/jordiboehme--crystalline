@@ -1706,3 +1706,116 @@ fn expect_block(out: &std::process::Output, case: &str) -> String {
         .unwrap_or_else(|| panic!("{case}: no additionalContext: {payload}"))
         .to_string()
 }
+
+/// A machine whose only domain is read-only has nowhere to capture into, so
+/// the capture nudge stays silent; the same machine with the flag off nudges.
+#[test]
+fn a_machine_whose_only_domain_is_read_only_is_silent() {
+    let work = tempfile::tempdir().unwrap();
+    let home = work.path().join("home");
+    let config = work.path().join("config.yaml");
+    let dir = work.path().join("archive");
+    std::fs::create_dir_all(&dir).unwrap();
+    let manifest = dir.join("MANIFEST.md");
+    let writable =
+        "---\ntype: manifest\ntitle: archive\npermalink: manifest\n---\n\n## Scope\n\n- x\n";
+    std::fs::write(
+        &manifest,
+        writable.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+    std::fs::write(
+        &config,
+        format!("domains:\n  archive:\n    path: {}\n", dir.display()),
+    )
+    .unwrap();
+    let transcript = substantial_transcript(work.path());
+
+    let run = |session: &str| {
+        let mut cmd = bin();
+        isolate(&mut cmd, &home);
+        cmd.env("CRYSTALLINE_CONFIG", &config)
+            .args(["hook", "stop"])
+            .write_stdin(stop_payload(session, Some(&transcript)))
+            .output()
+            .unwrap()
+    };
+    let out = run("session-locked");
+    assert!(out.status.success());
+    assert!(
+        out.stdout.is_empty(),
+        "{:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    std::fs::write(&manifest, writable).unwrap();
+    let out = run("session-open");
+    assert!(out.status.success());
+    assert!(!out.stdout.is_empty(), "a writable domain earns the nudge");
+}
+
+/// The two ride-alongs look only at the domains a session could write to: a
+/// read-only team domain that is pending and holds unshared work is neither
+/// named as a focus domain nor counted in the sharing ask, while the writable
+/// one beside it keeps both asks alive.
+#[test]
+fn the_ride_alongs_leave_a_read_only_domain_out() {
+    let work = tempfile::tempdir().unwrap();
+    let home = work.path().join("home");
+    let config = work.path().join("config.yaml");
+    let engram = "---\ntype: engram\ntitle: Alpha\npermalink: alpha\ntags:\n  - t\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\nBody.\n";
+    let eng = write_team_domain(work.path(), &home, "eng", &[("alpha.md", engram)]);
+    let archive = write_team_domain(
+        work.path(),
+        &home,
+        "archive",
+        &[("alpha.md", engram), ("beta.md", engram)],
+    );
+    let manifest = "---\ntype: manifest\ntitle: archive\npermalink: manifest\nread_only: on\n---\n\n## Scope\n\n- x\n";
+    std::fs::write(archive.join("MANIFEST.md"), manifest).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "domains:\n  eng:\n    path: {}\n    origin:\n      repo: acme/kb\n  archive:\n    path: {}\n    origin:\n      repo: acme/kb\n",
+            eng.display(),
+            archive.display()
+        ),
+    )
+    .unwrap();
+    let transcript = substantial_transcript(work.path());
+    write_maintenance(
+        &home,
+        serde_json::json!({
+            "v": 1,
+            "pending_domains": ["archive"],
+            "pending_since": stamp(2),
+            // A stale weekly clock keeps the ask due without the locked
+            // domain's pending mark.
+            "last_run_at": stamp(30),
+            "last_nudge_at": null,
+            "first_seen": stamp(60),
+        }),
+    );
+
+    let mut cmd = bin();
+    isolate(&mut cmd, &home);
+    let out = cmd
+        .env("CRYSTALLINE_CONFIG", &config)
+        .args(["hook", "stop"])
+        .write_stdin(stop_payload("session-ride-locked", Some(&transcript)))
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let decision: serde_json::Value =
+        serde_json::from_str(String::from_utf8(out.stdout).unwrap().trim()).unwrap();
+    let reason = decision["reason"].as_str().unwrap();
+    assert!(reason.contains(EVOLVE_NUDGE_REASON), "{reason}");
+    assert!(
+        !reason.contains("Focus domains"),
+        "the locked domain is not a focus: {reason}"
+    );
+    assert!(
+        reason.contains("Also: 1 change in the team domain eng is not yet shared."),
+        "only the writable domain's work is counted: {reason}"
+    );
+}

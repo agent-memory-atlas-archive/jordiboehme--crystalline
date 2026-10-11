@@ -3,9 +3,10 @@
 use crate::common::{fixtures_dir, read};
 use crystalline_core::manifest::{
     ArtifactType, DOMAIN_NAME_KEY, GeneratedIndexes, Manifest, PolicyKey, PolicyKind, PolicyRole,
-    ProblemKind, SHARING_KEY, Sharing, TagAliasProblemKind, append_tag_alias, domain_name_at,
-    domain_name_of_source, generated_indexes_at, in_root_artifact_dirs, manifest_template,
-    policy_registry, sharing_at, starter_stanzas, tag_alias_pairs,
+    ProblemKind, READ_ONLY_KEY, ReadOnly, SHARING_KEY, Sharing, TagAliasProblemKind,
+    append_tag_alias, domain_name_at, domain_name_of_source, generated_indexes_at,
+    in_root_artifact_dirs, manifest_template, policy_registry, read_only_at, read_only_of_source,
+    sharing_at, starter_stanzas, tag_alias_pairs,
 };
 use crystalline_core::manifest_view::{RoutingSection, manifest_facts, policy_rows, section_rows};
 use crystalline_core::parse_engram;
@@ -927,8 +928,8 @@ fn every_registry_key_answers_through_manifest_policy() {
     let silent = manifest_from_source(&manifest_declaring_sharing(None));
     assert_eq!(
         policy_registry().len(),
-        3,
-        "generated_indexes, sharing and domain_name"
+        4,
+        "generated_indexes, sharing, domain_name and read_only"
     );
     for spec in policy_registry() {
         if spec.kind == PolicyKind::Choice {
@@ -971,7 +972,7 @@ fn every_registry_key_answers_through_manifest_policy() {
     assert_eq!(typo.policy(SHARING_KEY), Some((Some("dirct"), "proposal")));
 }
 
-/// The three rows, as the card and the doctor read them.
+/// The four rows, as the card and the doctor read them.
 #[test]
 fn the_registry_rows_say_who_changes_what_and_to_which_values() {
     let by_key = |key: &str| -> PolicyKey {
@@ -1000,6 +1001,18 @@ fn the_registry_rows_say_who_changes_what_and_to_which_values() {
     assert!(!name.accepts("../up"));
     assert!(by_key(SHARING_KEY).accepts("direct"));
     assert!(!by_key(SHARING_KEY).accepts("dirct"));
+
+    let locked = by_key(READ_ONLY_KEY);
+    assert_eq!(locked.kind, PolicyKind::Choice);
+    assert_eq!(locked.values, &["off", "on"]);
+    assert_eq!(locked.default, "off");
+    assert_eq!(locked.changed_by, PolicyRole::Owner);
+    assert!(locked.accepts("on") && locked.accepts("off") && !locked.accepts("true"));
+    assert_eq!(
+        policy_registry().last().map(|spec| spec.key),
+        Some(READ_ONLY_KEY),
+        "appended, so the rows that were there keep their places"
+    );
 }
 
 /// Every `pub const *_KEY` the parser declares is in the registry, and every
@@ -1033,6 +1046,59 @@ fn every_manifest_key_constant_is_in_the_registry_and_back() {
             "`{key}` is registered and not declared"
         );
     }
+}
+
+fn manifest_declaring_read_only(value: Option<&str>) -> String {
+    let line = value
+        .map(|v| format!("read_only: {v}\n"))
+        .unwrap_or_default();
+    format!(
+        "---\ntype: manifest\ntitle: MANIFEST\npermalink: manifest\ntags:\n- manifest\nstatus: current\nrecorded_at: 2026-01-01\n{line}---\n\n## Scope\n\n- Charts of the harbor\n\n## When to Use\n\n- When asked about the harbor\n"
+    )
+}
+
+/// `on` locks, `off` and an absent key do not, and anything else reads as
+/// `off`: the registry's rule for every key. `on` needs no quoting, because the
+/// YAML the parser reads is 1.2, where `on` is a string and not a boolean.
+#[test]
+fn read_only_reads_on_exactly_and_everything_else_as_off() {
+    let on = manifest_from_source(&manifest_declaring_read_only(Some("on")));
+    assert_eq!(on.read_only(), ReadOnly::On);
+    assert_eq!(on.policy(READ_ONLY_KEY), Some((Some("on"), "on")));
+    let off = manifest_from_source(&manifest_declaring_read_only(Some("off")));
+    assert_eq!(off.read_only(), ReadOnly::Off);
+    let absent = manifest_from_source(&manifest_declaring_read_only(None));
+    assert_eq!(absent.read_only(), ReadOnly::Off);
+    assert_eq!(absent.policy(READ_ONLY_KEY), Some((None, "off")));
+    for typo in ["true", "yes", "On", "\"on \""] {
+        let m = manifest_from_source(&manifest_declaring_read_only(Some(typo)));
+        assert_eq!(m.read_only(), ReadOnly::Off, "`{typo}` is not `on`");
+        assert!(
+            m.declared_read_only().is_some(),
+            "`{typo}` is still reported"
+        );
+    }
+    assert_eq!(
+        read_only_of_source(&manifest_declaring_read_only(Some("on"))),
+        ReadOnly::On
+    );
+    assert_eq!(read_only_of_source("no frontmatter at all"), ReadOnly::Off);
+    assert!(ReadOnly::On.is_on() && !ReadOnly::Off.is_on());
+    assert_eq!(ReadOnly::default(), ReadOnly::Off);
+}
+
+#[test]
+fn read_only_at_reads_the_folder_manifest_and_defaults_to_off() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(read_only_at(dir.path()), ReadOnly::Off, "no MANIFEST");
+    std::fs::write(
+        dir.path().join("MANIFEST.md"),
+        manifest_declaring_read_only(Some("on")),
+    )
+    .unwrap();
+    assert_eq!(read_only_at(dir.path()), ReadOnly::On);
+    std::fs::write(dir.path().join("MANIFEST.md"), "---\nbroken: [\n---\n").unwrap();
+    assert_eq!(read_only_at(dir.path()), ReadOnly::Off, "unparseable");
 }
 
 // --- The starter stanzas ----------------------------------------------------
@@ -1118,7 +1184,10 @@ fn manifest_facts_reads_every_policy_and_section() {
     let facts = manifest_facts(EVERY_SECTION, "eng");
     assert!(facts.parsed);
     let keys: Vec<&str> = facts.policies.iter().map(|p| p.key.as_str()).collect();
-    assert_eq!(keys, ["generated_indexes", "sharing", "domain_name"]);
+    assert_eq!(
+        keys,
+        ["generated_indexes", "sharing", "domain_name", "read_only"]
+    );
     assert_eq!(facts.policies[1].declared.as_deref(), Some("direct"));
     assert_eq!(facts.policies[1].effective, "direct");
     assert_eq!(facts.policies[2].kind, "text");
@@ -1164,7 +1233,7 @@ fn a_manifest_that_does_not_parse_declares_nothing() {
 #[test]
 fn policy_rows_without_a_manifest_are_the_registry_defaults() {
     let rows = policy_rows(None, "eng");
-    assert_eq!(rows.len(), 3);
+    assert_eq!(rows.len(), 4);
     assert_eq!(rows[0].effective, "local");
     assert_eq!(rows[1].effective, "proposal");
     assert!(rows.iter().all(|r| r.declared.is_none()));
@@ -1172,5 +1241,6 @@ fn policy_rows_without_a_manifest_are_the_registry_defaults() {
         rows[2].effective, "eng",
         "free text falls back to the local name"
     );
+    assert_eq!(rows[3].effective, "off");
     assert_eq!(section_rows(None).len(), 4);
 }

@@ -6329,6 +6329,77 @@ async fn the_share_ask_names_no_team_domain_the_caller_may_not_see() {
     );
 }
 
+/// **A read-only team domain gets neither ask on a write receipt**: its
+/// unshared work is not announced (nothing local can change there) and its
+/// pending mark does not arm the maintenance ask, while a writable domain
+/// beside it keeps the install in scope. Switched off, both asks come back.
+#[tokio::test]
+async fn a_read_only_team_domain_gets_neither_ask_on_a_write_receipt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(MockProvider::new());
+    let commit = mock.add_commit(commit_files(&[("MANIFEST.md", manifest_sharing_indexes())]));
+    mock.set_branch("main", &commit);
+
+    let config_path = tmp.path().join("config.yaml");
+    let origins_dir = tmp.path().join("origins");
+    let brand_root = tmp.path().join("brand-knowledge");
+    let vault_root = tmp.path().join("vault-knowledge");
+    let eng = engine_with(&config_path, &origins_dir, mock.clone(), true, false).await;
+    for (repo, name, root) in [
+        ("acme/brand-knowledge", "brand", &brand_root),
+        ("acme/vault-knowledge", "vault", &vault_root),
+    ] {
+        eng.origin_add(repo, Some(name), None, None, Some(root.to_str().unwrap()))
+            .await
+            .unwrap();
+    }
+    std::fs::write(
+        brand_root.join("added.md"),
+        engram("Added", "added", "written here, never shared"),
+    )
+    .unwrap();
+    let maintenance = tmp.path().join("hooks").join("maintenance.json");
+    std::fs::create_dir_all(maintenance.parent().unwrap()).unwrap();
+    std::fs::write(
+        &maintenance,
+        serde_json::json!({ "v": 1, "pending_domains": ["brand"] }).to_string(),
+    )
+    .unwrap();
+
+    let manifest_path = brand_root.join("MANIFEST.md");
+    let open = std::fs::read_to_string(&manifest_path).unwrap();
+    std::fs::write(
+        &manifest_path,
+        open.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+    assert!(eng.domain_is_read_only("brand").await, "the lock is real");
+
+    assert_eq!(
+        crystalline_service::nudge::write_verb_trailer(&eng, Some("ada"), &Scope::Unrestricted)
+            .await,
+        None,
+        "a locked domain owes no share and its pending mark arms no sweep"
+    );
+
+    std::fs::write(&manifest_path, &open).unwrap();
+    assert_eq!(
+        crystalline_service::nudge::write_verb_trailer(&eng, Some("ada"), &Scope::Unrestricted)
+            .await,
+        Some(crystalline_service::nudge::share_nudge_line(
+            1,
+            &["brand".to_string()]
+        )),
+        "unlocked, the share ask is back"
+    );
+    assert_eq!(
+        crystalline_service::nudge::write_verb_trailer(&eng, Some("ada"), &Scope::Unrestricted)
+            .await,
+        Some(crystalline_service::nudge::MCP_EVOLVE_NUDGE.to_string()),
+        "and so is the maintenance ask"
+    );
+}
+
 /// **A team domain that owes nothing is walked at most once a minute**, however
 /// many receipts go out in between.
 ///
@@ -6468,4 +6539,140 @@ async fn a_full_rename_rewrites_a_team_domains_link_as_a_local_change() {
         "{entry}"
     );
     assert_eq!(entry["local_changes"], 1, "{entry}");
+}
+
+fn manifest_read_only() -> Vec<u8> {
+    String::from_utf8(manifest())
+        .unwrap()
+        .replacen("\n---\n", "\nread_only: on\n---\n", 1)
+        .into_bytes()
+}
+
+/// The team repository stays the authority: a read-only copy keeps taking the
+/// team's updates, the team switching the flag off takes effect at the pull,
+/// and a share is refused while it holds.
+#[tokio::test]
+async fn a_pull_still_updates_a_read_only_copy() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(MockProvider::new());
+    let c1 = mock.add_commit(commit_files(&[
+        ("MANIFEST.md", manifest_read_only()),
+        ("notes/alpha.md", engram("Alpha", "alpha", "version one")),
+    ]));
+    mock.set_branch("main", &c1);
+    let config_path = tmp.path().join("config.yaml");
+    let origins_dir = tmp.path().join("origins");
+    let root = tmp.path().join("brand-knowledge");
+    let eng = engine_with(&config_path, &origins_dir, mock.clone(), true, false).await;
+    eng.origin_add(
+        "acme/brand-knowledge",
+        Some("brand"),
+        None,
+        None,
+        Some(root.to_str().unwrap()),
+    )
+    .await
+    .unwrap();
+    assert!(eng.domain_is_read_only("brand").await);
+
+    let c2 = mock.add_commit(commit_files(&[
+        ("MANIFEST.md", manifest_read_only()),
+        (
+            "notes/alpha.md",
+            engram("Alpha", "alpha", "version two, revised upstream"),
+        ),
+    ]));
+    mock.set_branch("main", &c2);
+    eng.origin_update(Some("brand"), &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(root.join("notes/alpha.md"))
+            .unwrap()
+            .contains("version two")
+    );
+
+    let share = eng
+        .origin_share("brand", None, None, None, None, ShareActor::Owner)
+        .await
+        .unwrap_err();
+    assert!(matches!(share, EngineError::DomainReadOnly(_)), "{share}");
+
+    let c3 = mock.add_commit(commit_files(&[
+        ("MANIFEST.md", manifest()),
+        (
+            "notes/alpha.md",
+            engram("Alpha", "alpha", "version two, revised upstream"),
+        ),
+    ]));
+    mock.set_branch("main", &c3);
+    eng.origin_update(Some("brand"), &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert!(
+        !eng.domain_is_read_only("brand").await,
+        "the team switched it off"
+    );
+}
+
+/// A conflict on a read-only copy can take the team's side, which is the
+/// direction a pull goes, and cannot keep this machine's side (decision D5).
+#[tokio::test]
+async fn a_conflict_takes_the_teams_side_on_a_read_only_domain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(MockProvider::new());
+    let c1 = mock.add_commit(commit_files(&[
+        ("MANIFEST.md", manifest()),
+        ("notes/a.md", engram("A", "a", "line one")),
+    ]));
+    mock.set_branch("main", &c1);
+    let config_path = tmp.path().join("config.yaml");
+    let origins_dir = tmp.path().join("origins");
+    let root = tmp.path().join("brand-knowledge");
+    let eng = engine_with(&config_path, &origins_dir, mock.clone(), true, false).await;
+    eng.origin_add(
+        "acme/brand-knowledge",
+        Some("brand"),
+        None,
+        None,
+        Some(root.to_str().unwrap()),
+    )
+    .await
+    .unwrap();
+    std::fs::write(root.join("notes/a.md"), engram("A", "a", "line one LOCAL")).unwrap();
+    let c2 = mock.add_commit(commit_files(&[
+        ("MANIFEST.md", manifest()),
+        ("notes/a.md", engram("A", "a", "line one UPSTREAM")),
+    ]));
+    mock.set_branch("main", &c2);
+    eng.origin_update(Some("brand"), &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let manifest_path = root.join("MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest_path).unwrap();
+    std::fs::write(
+        &manifest_path,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+
+    let mine = eng
+        .origin_resolve("brand", "notes/a.md", Some("mine"), None, ShareActor::Owner)
+        .await
+        .unwrap_err();
+    assert!(matches!(mine, EngineError::DomainReadOnly(_)), "{mine}");
+    eng.origin_resolve(
+        "brand",
+        "notes/a.md",
+        Some("theirs"),
+        None,
+        ShareActor::Owner,
+    )
+    .await
+    .unwrap();
+    assert!(
+        std::fs::read_to_string(root.join("notes/a.md"))
+            .unwrap()
+            .contains("line one UPSTREAM")
+    );
 }

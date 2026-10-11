@@ -993,6 +993,12 @@ enum UsersCommand {
         /// token is printed once.
         #[arg(long, value_name = "LABEL", conflicts_with_all = ["password_stdin", "password_file"])]
         mcp_token: Option<String>,
+        /// Let the account write only to these domains: a comma-separated
+        /// list of domain names, or name prefixes ending in `*`
+        /// (`agents-*`). It still needs the role and the membership to write
+        /// there. Change it later with `crystalline users writes`.
+        #[arg(long, value_name = "DOMAINS")]
+        writes: Option<String>,
     },
     /// List every account with its role and whether it is disabled.
     List,
@@ -1061,6 +1067,22 @@ enum UsersCommand {
         /// old secret stops working and the new one is printed.
         #[arg(long, value_name = "ID")]
         rotate: Option<i64>,
+    },
+    /// Show, set or remove an account's write list: the domains it may write
+    /// to. On every other domain it only reads, whatever its role. With no
+    /// list it writes wherever its role and memberships allow. Entries are
+    /// domain names or name prefixes ending in `*`; an entry that names no
+    /// registered domain is kept with a warning.
+    Writes {
+        /// The account.
+        name: String,
+        /// The new list, comma-separated (`agents-bot,shared-*`). It replaces
+        /// the old one. Leave it out to print the list.
+        #[arg(value_name = "DOMAINS", conflicts_with = "clear")]
+        domains: Option<String>,
+        /// Remove the list.
+        #[arg(long)]
+        clear: bool,
     },
     /// Tie a single sign-on identity to an existing account, so that person
     /// signs in through the provider and lands in this account. The durable
@@ -1801,7 +1823,32 @@ impl From<HarnessArg> for HarnessKind {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+/// A refusal already printed in full as the one JSON object on stdout:
+/// `main` exits 1 and prints nothing more.
+#[derive(Debug)]
+struct PrintedRefusal;
+
+impl std::fmt::Display for PrintedRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the refusal was printed as JSON")
+    }
+}
+
+impl std::error::Error for PrintedRefusal {}
+
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) if e.is::<PrintedRefusal>() => std::process::ExitCode::from(1),
+        // What `fn main() -> anyhow::Result<()>` printed, unchanged.
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     // No arguments at all falls through to this hidden default: print help
     // rather than doing nothing silently.
     if std::env::args_os().len() <= 1 {
@@ -2268,10 +2315,13 @@ async fn status_dispatch(
                     "desktop_states".to_string(),
                     serde_json::to_value(desktop_state::scan_here())?,
                 );
-                map.insert(
-                    "config_mismatch".to_string(),
-                    serde_json::to_value(&mismatches)?,
-                );
+                // Present only when something differs, as doctor --json does.
+                if !mismatches.is_empty() {
+                    map.insert(
+                        "config_mismatch".to_string(),
+                        serde_json::to_value(&mismatches)?,
+                    );
+                }
             }
             println!("{data}");
         } else {
@@ -3155,6 +3205,8 @@ fn ahead_line(d: &serde_json::Value) -> String {
 /// `origin share`'s flags as the share takes them: `(as_proposal, amend)`.
 /// A bare `--proposal` asks for a proposal; `--proposal <n>` amends that
 /// layer, as it always did; `--direct` asks for the direct commit only.
+/// The two arms with `--proposal` ignore `direct`: clap refuses the pair
+/// (`conflicts_with = "proposal"` on `--direct`), so it never reaches here.
 fn share_choice(proposal: Option<Option<u64>>, direct: bool) -> (Option<bool>, Option<u64>) {
     match (proposal, direct) {
         (Some(None), _) => (Some(true), None),
@@ -3164,8 +3216,9 @@ fn share_choice(proposal: Option<Option<u64>>, direct: bool) -> (Option<bool>, O
     }
 }
 
-/// The line a domain prints while this machine has a refused direct commit
-/// on record, and nothing otherwise; an older daemon sends no key.
+/// The line a domain prints while a refused direct commit is on record for
+/// the GitHub login its shares go out on, and nothing otherwise; an older
+/// daemon sends no key.
 fn direct_refused_line(d: &serde_json::Value) -> Option<String> {
     d["direct_refused"]["line"]
         .as_str()
@@ -3898,13 +3951,13 @@ where
 /// is not this command's to close, and making a shared domain private is its
 /// own verb. Called before anything is printed. With `--json` the refusal is
 /// the one object on stdout, `{"ok": false, "error": ...}` (the shape of the
-/// daemon's ctl replies), and the process exits 1; without it the message is
-/// returned as the command's error.
+/// daemon's ctl replies), and the error is [`PrintedRefusal`], which exits
+/// 1; without it the message is returned as the command's error.
 fn refuse_private_on_adopted(name: &str, owner: &str, json: bool) -> anyhow::Error {
     let message = private_on_adopted_message(name, owner);
     if json {
         println!("{}", serde_json::json!({ "ok": false, "error": message }));
-        std::process::exit(1);
+        return anyhow::Error::new(PrintedRefusal);
     }
     anyhow::anyhow!(message)
 }
@@ -3915,7 +3968,8 @@ fn refuse_private_on_adopted(name: &str, owner: &str, json: bool) -> anyhow::Err
 /// read as if nothing happened. The connect report comes first: printed as
 /// usual without `--json`, then the refusal as the command's error; with
 /// `--json` the one object on stdout is `{"ok": false, "error": ...,
-/// "connected": <the report>}` and the process exits 1.
+/// "connected": <the report>}` and the error is [`PrintedRefusal`], which
+/// exits 1.
 fn refuse_private_after_connect(
     repo: &str,
     name: &str,
@@ -3929,7 +3983,7 @@ fn refuse_private_after_connect(
             "{}",
             serde_json::json!({ "ok": false, "error": message, "connected": data })
         );
-        std::process::exit(1);
+        return anyhow::Error::new(PrintedRefusal);
     }
     cmd::print_origin_add(repo, data, false);
     anyhow::anyhow!(message)
@@ -5159,8 +5213,13 @@ fn mounted_routing_request(cfg: &crystalline_core::config::GlobalConfig) -> serd
 /// stdio onboarding block uses too (each on one line of
 /// [`crystalline_remote::ROUTING_BULLET_CHARS`], at most
 /// [`crystalline_remote::ROUTING_BULLETS_MAX`]); a name that could break the
-/// line is no row.
-fn mounted_row(name: &str, bullets: &[String]) -> Option<crystalline_core::PromptDomain> {
+/// line is no row. `read_only` is the server's `domain_read_only` for this
+/// account; it only labels the row.
+fn mounted_row(
+    name: &str,
+    bullets: &[String],
+    read_only: bool,
+) -> Option<crystalline_core::PromptDomain> {
     if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return None;
     }
@@ -5168,6 +5227,7 @@ fn mounted_row(name: &str, bullets: &[String]) -> Option<crystalline_core::Promp
         name: name.to_string(),
         bullets: crystalline_remote::routing_bullets(bullets),
         preferred: false,
+        read_only,
     })
 }
 
@@ -5247,7 +5307,7 @@ fn mounted_part(
         let rows = routing
             .domains
             .iter()
-            .filter_map(|m| mounted_row(&m.local, &m.bullets))
+            .filter_map(|m| mounted_row(&m.local, &m.bullets, m.domain_read_only))
             .collect();
         (set.shadowed(), rows, routing.stale)
     };
@@ -5260,7 +5320,13 @@ fn mounted_part(
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(|d| mounted_row(d["name"].as_str()?, &strings(&d["bullets"])))
+                .filter_map(|d| {
+                    mounted_row(
+                        d["name"].as_str()?,
+                        &strings(&d["bullets"]),
+                        d["domain_read_only"].as_bool().unwrap_or(false),
+                    )
+                })
                 .collect(),
             strings(&answer["stale"]),
         ),
@@ -5490,6 +5556,7 @@ mod tests {
                 "x".repeat(1000),
                 " \n ".to_string(),
             ],
+            false,
         )
         .unwrap();
         assert_eq!(row.bullets.len(), 2);
@@ -5498,12 +5565,14 @@ mod tests {
             row.bullets[1].chars().count(),
             crystalline_remote::ROUTING_BULLET_CHARS + 4
         );
-        assert!(mounted_row("open\nBehavior:", &[]).is_none());
+        assert!(mounted_row("open\nBehavior:", &[], false).is_none());
         let many: Vec<String> = (0..50).map(|i| format!("b{i}")).collect();
         assert_eq!(
-            mounted_row("open", &many).unwrap().bullets.len(),
+            mounted_row("open", &many, false).unwrap().bullets.len(),
             crystalline_remote::ROUTING_BULLETS_MAX
         );
+        assert!(mounted_row("open", &[], true).unwrap().read_only);
+        assert!(!mounted_row("open", &[], false).unwrap().read_only);
     }
 
     /// Review M5: the stale array is added after the last field, and every

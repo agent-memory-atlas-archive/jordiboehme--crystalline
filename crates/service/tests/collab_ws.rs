@@ -42,6 +42,8 @@ struct Options_ {
 
 struct Fixture {
     addr: std::net::SocketAddr,
+    /// The engine behind the router, so a test can ask it about the domain.
+    engine: Arc<Engine>,
     /// The domain folder on disk, so a test can read what a save landed.
     domain_dir: std::path::PathBuf,
     /// A save through this surface marks its domain pending under the state
@@ -130,7 +132,14 @@ async fn serve(opts: Options_) -> Fixture {
         .await
         .unwrap();
 
-    let router = http_router(engine, Arc::new(AtomicUsize::new(0)), &[], auth, None).unwrap();
+    let router = http_router(
+        engine.clone(),
+        Arc::new(AtomicUsize::new(0)),
+        &[],
+        auth,
+        None,
+    )
+    .unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let addr = listener.local_addr().unwrap();
@@ -148,6 +157,7 @@ async fn serve(opts: Options_) -> Fixture {
     });
     Fixture {
         addr,
+        engine,
         domain_dir: dir,
         _scratch: scratch,
         _tmp: tmp,
@@ -434,6 +444,117 @@ async fn a_read_only_instance_refuses_the_upgrade() {
     .await
     .unwrap_err();
     assert_eq!(refusal_status(&err), Some(403));
+}
+
+/// A room is a write channel: a read-only domain refuses the upgrade, so a
+/// stale tab never types into a document it can never save.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_only_domain_refuses_the_upgrade() {
+    let fx = serve(Options_::default()).await;
+    let manifest = fx.domain_dir.join("MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+    assert!(
+        fx.engine.domain_is_read_only("eng").await,
+        "the lock idiom took"
+    );
+    let editor = login(fx.addr, "eddy", "eddypw").await;
+    let err = connect(
+        fx.addr,
+        "/api/v1/collab/eng/alpha",
+        Some(&editor.0),
+        same_host(fx.addr),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refusal_status(&err), Some(403));
+    // The body is a problem document; the sentence is its `detail`.
+    let body: serde_json::Value = serde_json::from_str(&refusal_detail(&err)).unwrap();
+    assert_eq!(
+        body["detail"],
+        "'eng' is read-only; its owner switches read_only off in the domain policies"
+    );
+}
+
+/// "Restore mine" in a room over a draft goes through the room's own view,
+/// which never builds a write view: a domain locked while the conflict stood
+/// refuses the restore with the sentence, and the draft stays gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restoring_a_draft_into_a_read_only_domain_is_refused() {
+    let fx = serve_review().await;
+    let alice = login(fx.addr, "alice", "pw12345678").await;
+    fx.draft("alice", "Fresh", "A page only alice has.").await;
+    let mut hers = connect(
+        fx.addr,
+        "/api/v1/collab/team/fresh",
+        Some(&alice.0),
+        same_host(fx.addr),
+    )
+    .await
+    .unwrap();
+    let _ = next_binary(&mut hers).await;
+    fx.engine
+        .delete_engram_as(
+            &crystalline_service::params::DeleteParams {
+                identifier: "fresh".to_string(),
+                domain: "team".to_string(),
+                expected_checksum: None,
+            },
+            None,
+            &crystalline_service::Scope::User {
+                account: "alice".to_string(),
+                admin: false,
+            },
+        )
+        .await
+        .expect("her own draft is hers to take back");
+    let doc = client_doc();
+    hers.send(binary(step1(&doc))).await.unwrap();
+    let step2 = next_sync_step2(&mut hers).await;
+    apply(&doc, &step2);
+    let update = append_line(&doc, "still typing");
+    hers.send(binary(update_frame(&update))).await.unwrap();
+    hers.send(binary(control_frame(&Control::Flush)))
+        .await
+        .unwrap();
+    let raised = wait_for_control(&mut hers, "conflict").await;
+    let Control::Conflict { conflict_kind, .. } = &raised else {
+        panic!("the room is told its page is gone: {raised:?}")
+    };
+    assert_eq!(conflict_kind, "deleted");
+
+    let manifest = fx.domain_dir.join("MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+    hers.send(binary(control_frame(&Control::Resolve {
+        choice: "mine".into(),
+    })))
+    .await
+    .unwrap();
+    let refused = wait_for_control(&mut hers, "save-failed").await;
+    let Control::SaveFailed { detail } = &refused else {
+        panic!("the restore is refused: {refused:?}")
+    };
+    assert_eq!(
+        detail,
+        "'team' is read-only; its owner switches read_only off in the domain policies"
+    );
+    assert!(
+        fx.engine
+            .overlay_draft_at("team", "alice", "fresh.md")
+            .await
+            .unwrap()
+            .is_none(),
+        "nothing was restored into her draft"
+    );
 }
 
 /// The upgrade path names its domain by any of its names: a join through the

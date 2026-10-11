@@ -183,6 +183,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         validate_attachment_path(path)?;
         if bytes.len() as u64 > crystalline_core::MAX_ATTACHMENT_BYTES {
             return Err(EngineError::Invalid(over_cap_error(
@@ -259,6 +261,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         validate_attachment_path(path)?;
         let (domain_id, source) = self.domain_source(domain).await?;
         let mut file_removed = false;
@@ -317,6 +321,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(view.domain(), &crate::scope::Scope::Unrestricted)
+            .await?;
         validate_attachment_path(path)?;
         if bytes.len() as u64 > crystalline_core::MAX_ATTACHMENT_BYTES {
             return Err(EngineError::Invalid(over_cap_error(
@@ -353,6 +359,7 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, scope).await?;
         self.attachment_write_joined(domain, path, bytes, scope, None)
             .await
     }
@@ -418,6 +425,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(view.domain(), &crate::scope::Scope::Unrestricted)
+            .await?;
         validate_attachment_path(path)?;
         if let Some(actor) = view.actor() {
             view.tombstone_file(path).await?;
@@ -442,6 +451,7 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, scope).await?;
         self.attachment_delete_joined(domain, path, scope, None)
             .await
     }

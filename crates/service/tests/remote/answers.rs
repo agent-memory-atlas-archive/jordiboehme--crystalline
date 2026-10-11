@@ -237,3 +237,86 @@ async fn origin_status_reaches_the_engine_under_the_account() {
     );
     assert!(error.contains("github.enabled"), "{error}");
 }
+
+/// A connected machine's Stop hook never asks for a sweep of a domain that
+/// is read-only on the server: `hook_status` leaves it out, as the local
+/// arms do (spec A-7).
+#[tokio::test]
+async fn hook_status_leaves_a_read_only_domain_out() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let _guard = crate::support::maintenance_guard().await;
+    crystalline_service::maintenance::save(&crystalline_service::maintenance::MaintenanceState {
+        pending_domains: vec!["open".to_string(), "lab".to_string()],
+        last_run_at: chrono::DateTime::from_timestamp(1_800_000_000, 0),
+        ..Default::default()
+    })
+    .unwrap();
+    let manifest = server.file("open", "MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+
+    let keeper = server.token_for("keeper").await;
+    let (_, reply) = server.ctl(Some(&keeper), cmd("hook_status")).await;
+    assert_eq!(
+        reply["data"]["evolve"]["pending_domains"],
+        json!(["lab"]),
+        "{reply}"
+    );
+}
+
+/// The routing model carries each domain's `domain_read_only` for the
+/// requesting token: the lock for everybody, a write list for its account
+/// only. The model's top-level `read_only` stays the instance's.
+#[tokio::test]
+async fn the_routing_model_marks_read_only_domains_per_token() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let manifest = server.file("open", "MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+    server
+        .auth
+        .set_write_list("out", &["open".to_string()])
+        .await
+        .unwrap();
+
+    let row = |reply: &Value, name: &str| -> Value {
+        reply["data"]["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["name"] == name)
+            .unwrap_or_else(|| panic!("{name} in {reply}"))
+            .clone()
+    };
+    let keeper = server.token_for("keeper").await;
+    let (_, mine) = server.ctl(Some(&keeper), cmd("routing_bullets")).await;
+    assert_eq!(mine["data"]["read_only"], false, "the instance is writable");
+    assert_eq!(
+        row(&mine, "open")["domain_read_only"],
+        true,
+        "locked for everybody"
+    );
+    assert_eq!(row(&mine, "platform")["domain_read_only"], false);
+
+    let out = server.token_for("out").await;
+    let (_, theirs) = server.ctl(Some(&out), cmd("routing_bullets")).await;
+    assert_eq!(
+        row(&theirs, "open")["domain_read_only"],
+        true,
+        "lock beats list"
+    );
+    assert_eq!(
+        row(&theirs, "platform")["domain_read_only"],
+        true,
+        "off the write list of 'out'"
+    );
+    assert_ne!(mine["etag"], theirs["etag"]);
+}

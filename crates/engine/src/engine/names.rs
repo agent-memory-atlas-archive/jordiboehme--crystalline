@@ -408,29 +408,37 @@ impl Engine {
 
     /// Read every virtual domain's MANIFEST engram once and cache both what
     /// it routes by and the name it declares.
-    async fn reload_virtual_manifests(&self) {
+    pub(super) async fn reload_virtual_manifests(&self) {
         let mut bullets = BTreeMap::new();
         let mut names = BTreeMap::new();
+        let mut locked = BTreeSet::new();
         for (name, entry) in &self.registered_domain_entries_now().await {
             if !entry.is_virtual() {
                 continue;
             }
-            let (routing, declared) = self.virtual_manifest_facts(name).await;
+            let (routing, declared, read_only) = self.virtual_manifest_facts(name).await;
             bullets.insert(name.clone(), routing);
             if let Some(declared) = declared {
                 names.insert(name.clone(), declared);
             }
+            if read_only {
+                locked.insert(name.clone());
+            }
         }
         *self.routing_virtual.write().unwrap() = bullets;
         *self.virtual_domain_names.write().unwrap() = names;
+        *self.virtual_read_only.write().unwrap() = locked;
         self.virtual_names_loaded
             .store(true, AtomicOrdering::SeqCst);
     }
 
-    /// One virtual domain's routing bullets and declared valid `domain_name`,
-    /// from one read of its MANIFEST engram. Empty and `None` when it has no
-    /// MANIFEST engram yet.
-    pub(super) async fn virtual_manifest_facts(&self, name: &str) -> (Vec<String>, Option<String>) {
+    /// One virtual domain's routing bullets, declared valid `domain_name` and
+    /// whether it says `read_only: on`, from one read of its MANIFEST engram.
+    /// Empty, `None` and `false` when it has no MANIFEST engram yet.
+    pub(super) async fn virtual_manifest_facts(
+        &self,
+        name: &str,
+    ) -> (Vec<String>, Option<String>, bool) {
         let content = {
             let store = self.store.lock().await;
             match store.find_engram(name, "manifest").await.ok().flatten() {
@@ -443,7 +451,7 @@ impl Engine {
             }
         };
         let Some(source) = content else {
-            return (Vec::new(), None);
+            return (Vec::new(), None, false);
         };
         let bullets = match parse_engram(&source) {
             Ok(engram) => Manifest::from_engram(&engram, &source)
@@ -451,7 +459,11 @@ impl Engine {
                 .to_vec(),
             Err(_) => Vec::new(),
         };
-        (bullets, domain_name_of_source(&source))
+        (
+            bullets,
+            domain_name_of_source(&source),
+            crystalline_core::read_only_of_source(&source).is_on(),
+        )
     }
 
     /// Record `pairs` (spelling, local name) as the spellings of the domains

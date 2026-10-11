@@ -60,7 +60,7 @@ pub use client::{
 };
 pub use crystalline_engine::engine::{
     ConvergenceReport, Engine, EngineError, OVERLAY_NEEDS_IDENTITY, REVIEW_NO_STACKING, RenameStep,
-    ShareActor, WrittenAttachment,
+    ShareActor, WriteBlock, WrittenAttachment,
 };
 pub use crystalline_engine::harness_cli::{
     CliCapture, CliRun, SystemMcpRunner, run_harness_cli, run_harness_cli_capture,
@@ -73,7 +73,7 @@ pub use crystalline_engine::review::{FoldChoice, ReviewModeConfirm};
 pub use crystalline_engine::similar::{SIMILAR_GUIDANCE, SimilarEngram, SimilarProbe};
 pub use crystalline_identity::join::{Holder, Join, Joins};
 pub use crystalline_identity::scope::{
-    DomainAccess, DomainRight, DomainVisibility, Scope, overlay_actor,
+    DomainAccess, DomainRight, DomainVisibility, Scope, overlay_actor, write_list_matches,
 };
 pub use crystalline_remote::ops::DiscardTarget;
 pub use daemon::run_serve;

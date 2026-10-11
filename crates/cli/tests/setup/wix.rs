@@ -142,12 +142,70 @@ fn the_msi_schedules_all_four_inside_the_install_execute_sequence() {
         );
         i
     };
-    let rollback = at(ROLLBACK);
-    let register = at(REGISTER);
+    // Present and inside the sequence only: MSI orders the actions by their
+    // Before and After attributes, never by where they are written, and
+    // `the_task_actions_run_in_the_order_their_anchors_give` checks those.
+    at(ROLLBACK);
+    at(REGISTER);
     at(UNREGISTER);
     at(END);
+}
+
+/// Where `action` lands in the install execute sequence of `wxs`, resolved
+/// the way `Before` and `After` place it: the two standard actions the task
+/// actions hang off at their sequence numbers, a custom action just before
+/// or after its anchor.
+fn sequence_position(wxs: &str, action: &str) -> i64 {
+    match action {
+        "RemoveFiles" => 3500 * 100,
+        "InstallFiles" => 4000 * 100,
+        _ => {
+            let open = format!("<Custom Action='{action}' ");
+            let at = wxs
+                .find(&open)
+                .unwrap_or_else(|| panic!("no <Custom> for {action}"))
+                + open.len();
+            let (relation, rest) = wxs[at..].split_once("='").unwrap();
+            let anchor = rest.split('\'').next().unwrap();
+            match relation {
+                "Before" => sequence_position(wxs, anchor) - 1,
+                "After" => sequence_position(wxs, anchor) + 10,
+                other => panic!("{action} is placed with {other}, not Before or After"),
+            }
+        }
+    }
+}
+
+const TASK_ORDER: [&str; 6] = [
+    "EndDaemonTasks",
+    "UnregisterDaemonTask",
+    "RemoveFiles",
+    "InstallFiles",
+    "RollbackRegisterDaemonTask",
+    "RegisterDaemonTask",
+];
+
+fn in_task_order(wxs: &str) -> bool {
+    let at: Vec<i64> = TASK_ORDER
+        .iter()
+        .map(|action| sequence_position(wxs, action))
+        .collect();
+    at.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+/// The daemons end before their tasks go, the tasks go before the files,
+/// and the rollback is scheduled before the register it undoes, all after
+/// the new files are in: the order MSI runs them, from the attributes.
+#[test]
+fn the_task_actions_run_in_the_order_their_anchors_give() {
+    assert!(in_task_order(WXS), "{TASK_ORDER:?}");
+    let moved = WXS.replace(
+        "Action='UnregisterDaemonTask' Before='RemoveFiles'",
+        "Action='UnregisterDaemonTask' After='InstallFiles'",
+    );
+    assert_ne!(moved, WXS, "the anchor this red relies on is in main.wxs");
     assert!(
-        rollback < register,
-        "the rollback is written before the register it undoes"
+        !in_task_order(&moved),
+        "an unregister moved after the new files is caught"
     );
 }

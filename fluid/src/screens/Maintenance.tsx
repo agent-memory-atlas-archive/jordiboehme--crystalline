@@ -125,6 +125,14 @@ export default function Maintenance() {
     queryKey: DOMAINS_QUERY_KEY,
     queryFn: fetchDomains,
   });
+  // The domains this caller cannot write into, whatever the reason: the
+  // server leaves a locked domain out of the queue, and this hides the
+  // controls for one that is off the write list.
+  const blocked = new Set(
+    (listing.data?.domains ?? [])
+      .filter((d) => d.writeBlocked)
+      .map((d) => d.name),
+  );
   // Fetched on arrival, on the Refresh button, when the acknowledged rows are
   // asked for or given back, and after a write that changes what the queue
   // holds. Never on anything else: the app's default is to refetch a stale
@@ -317,7 +325,7 @@ export default function Maintenance() {
             key={group.key}
             group={group}
             actions={actions}
-            canWrite={capabilities.canWrite}
+            canWriteIn={(name) => capabilities.canWrite && !blocked.has(name)}
             onChanged={resweep}
           />
         ))}
@@ -507,12 +515,12 @@ function Acknowledged({
 function FamilySection({
   group,
   actions,
-  canWrite,
+  canWriteIn,
   onChanged,
 }: {
   group: FindingGroup;
   actions: Map<string, EvolveAction>;
-  canWrite: boolean;
+  canWriteIn: (domain: string) => boolean;
   onChanged: () => Promise<void>;
 }) {
   const headingId = `maintenance-${group.key}`;
@@ -538,7 +546,7 @@ function FamilySection({
               finding={finding}
               instruction={action?.instruction ?? null}
               summary={action?.summary ?? null}
-              canWrite={canWrite}
+              canWrite={canWriteIn(finding.domain)}
               onChanged={onChanged}
             />
           );

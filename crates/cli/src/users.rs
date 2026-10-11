@@ -9,6 +9,9 @@
 //! whether or not a daemon is running, and a running daemon picks the change
 //! up on its next lookup without a restart.
 //!
+//! `users writes` keeps an account's write list in the same database; the
+//! daemon reads it on the next request.
+//!
 //! Except on Windows, where the database engine has no cross-process
 //! coordination on its default IO backend yet, so a running daemon holds the
 //! file exclusively: a command here then fails at open time with the message
@@ -19,7 +22,9 @@ use std::io::{IsTerminal, Read, Write};
 
 use anyhow::{Context, Result, bail};
 
+use crystalline_core::config::registration::{DOMAIN_NAME_RULE, validate_domain_name};
 use crystalline_service::rest::{AuthStore, LINKED_BY_CLI, Role, User};
+use crystalline_service::write_list_matches;
 
 use crate::UsersCommand;
 
@@ -40,11 +45,15 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
             password_stdin,
             password_file,
             mcp_token,
+            writes,
         } => {
             // The login name as typed makes the better default display name:
             // the store folds the login name but keeps this one as given.
             let display = display.unwrap_or_else(|| name.trim().to_string());
             let role: Role = role.into();
+            // Checked before anything is created, so a bad entry leaves no
+            // account behind.
+            let writes = writes.as_deref().map(parse_write_list).transpose()?;
             let added = match &mcp_token {
                 // An account for an agent: no password to ask for, and the
                 // token is issued in the same transaction as the account.
@@ -77,6 +86,15 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
                     return Err(e);
                 }
             };
+            // An agent account must never stand without the list it was
+            // created for: a failed list write takes the account back out.
+            if let Some(entries) = &writes {
+                if let Err(e) = store.set_write_list(&name, entries).await {
+                    let _ = store.remove_user_force(&name).await;
+                    return Err(e.context("setting the write list; the account was not kept"));
+                }
+                warn_unmatched(entries);
+            }
             match issued {
                 Some(issued) => {
                     if !json {
@@ -84,27 +102,47 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
                             "Added user '{}' with role {role} and no password.",
                             stored_name(&name)
                         );
+                        if let Some(entries) = &writes {
+                            println!("Write list: {}.", entries.join(", "));
+                        }
                     }
                     print_issued_token(&issued, &stored_name(&name), json, None, Some(role));
                 }
-                None => println!("Added user '{}' with role {role}.", stored_name(&name)),
+                None => {
+                    println!("Added user '{}' with role {role}.", stored_name(&name));
+                    if let Some(entries) = &writes {
+                        println!("Write list: {}.", entries.join(", "));
+                    }
+                }
             }
         }
         UsersCommand::List => {
             let users = store.list_users().await?;
             let passwordless = store.passwordless_users().await?;
+            let mut writes = std::collections::HashMap::new();
+            for user in &users {
+                if let Some(list) = store.write_list(&user.name).await? {
+                    writes.insert(user.name.clone(), list);
+                }
+            }
             if json {
                 let rows: Vec<serde_json::Value> = users
                     .iter()
                     .map(|u| {
                         let mut row = serde_json::to_value(u).unwrap_or_default();
                         row["has_password"] = (!passwordless.contains(&u.name)).into();
+                        // Only when there is a list, as `users list` shows
+                        // nothing for an account without one. Never on
+                        // `User` itself, which crosses the REST API.
+                        if let Some(list) = writes.get(&u.name) {
+                            row["writes"] = serde_json::json!(list);
+                        }
                         row
                     })
                     .collect();
                 crate::print_value(&serde_json::json!({ "users": rows }), true);
             } else {
-                print_users(&users, &passwordless);
+                print_users(&users, &passwordless, &writes);
             }
         }
         UsersCommand::Passwd {
@@ -194,6 +232,43 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
                 let label = label.unwrap_or_else(|| "cli".to_string());
                 let issued = store.issue_mcp_token(&name, &label).await?;
                 print_issued_token(&issued, &stored_name(&name), json, None, None);
+            }
+        }
+        UsersCommand::Writes {
+            name,
+            domains,
+            clear,
+        } => {
+            let shown = stored_name(&name);
+            if clear {
+                store.clear_write_list(&name).await?;
+                println!(
+                    "Removed the write list of '{shown}'. It writes wherever its role and \
+                     memberships allow."
+                );
+            } else if let Some(raw) = domains {
+                let entries = parse_write_list(&raw)?;
+                store.set_write_list(&name, &entries).await?;
+                warn_unmatched(&entries);
+                println!("Set the write list of '{shown}': {}.", entries.join(", "));
+            } else {
+                if store.user(&name).await?.is_none() {
+                    bail!("no such user: '{shown}'");
+                }
+                let list = store.write_list(&name).await?;
+                if json {
+                    crate::print_value(&serde_json::json!({ "name": shown, "writes": list }), true);
+                } else {
+                    match list {
+                        Some(list) => {
+                            println!("Write list of '{shown}': {}.", list.join(", "))
+                        }
+                        None => println!(
+                            "'{shown}' has no write list. It writes wherever its role and \
+                             memberships allow."
+                        ),
+                    }
+                }
             }
         }
         UsersCommand::Link {
@@ -445,14 +520,18 @@ fn stored_name(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-/// One line per account: name, role, whether it is disabled, display name,
-/// email and when it was last seen, columns aligned to the widest entry.
-fn print_users(users: &[User], passwordless: &std::collections::HashSet<String>) {
+/// One line per account: name, role, status, write list, display name, email
+/// and when it was last seen, columns aligned to the widest entry.
+fn print_users(
+    users: &[User],
+    passwordless: &std::collections::HashSet<String>,
+    writes: &std::collections::HashMap<String, Vec<String>>,
+) {
     if users.is_empty() {
         println!("No users yet. Add one with: crystalline users add <name> --role admin");
         return;
     }
-    let rows: Vec<[String; 6]> = users
+    let rows: Vec<[String; 7]> = users
         .iter()
         .map(|u| {
             [
@@ -464,16 +543,28 @@ fn print_users(users: &[User], passwordless: &std::collections::HashSet<String>)
                     (false, false) => "active",
                 }
                 .to_string(),
+                writes
+                    .get(&u.name)
+                    .map(|list| list.join(","))
+                    .unwrap_or_default(),
                 u.display.clone(),
                 u.email.clone().unwrap_or_default(),
                 u.last_seen.clone().unwrap_or_default(),
             ]
         })
         .collect();
-    let header = ["NAME", "ROLE", "STATUS", "DISPLAY", "EMAIL", "LAST SEEN"];
+    let header = [
+        "NAME",
+        "ROLE",
+        "STATUS",
+        "WRITES",
+        "DISPLAY",
+        "EMAIL",
+        "LAST SEEN",
+    ];
     // The last column is never padded, so a trailing empty last-seen leaves no
     // trailing whitespace behind.
-    let widths: Vec<usize> = (0..5)
+    let widths: Vec<usize> = (0..6)
         .map(|c| {
             rows.iter()
                 .map(|r| r[c].chars().count())
@@ -482,17 +573,19 @@ fn print_users(users: &[User], passwordless: &std::collections::HashSet<String>)
                 .unwrap_or(0)
         })
         .collect();
-    let line = |cells: [&str; 6]| {
+    let line = |cells: [&str; 7]| {
         let mut out = String::new();
-        for (c, cell) in cells.iter().enumerate().take(5) {
+        for (c, cell) in cells.iter().enumerate().take(6) {
             out.push_str(&format!("{cell:<width$}  ", width = widths[c]));
         }
-        out.push_str(cells[5]);
+        out.push_str(cells[6]);
         println!("{}", out.trim_end());
     };
     line(header);
     for row in &rows {
-        line([&row[0], &row[1], &row[2], &row[3], &row[4], &row[5]]);
+        line([
+            &row[0], &row[1], &row[2], &row[3], &row[4], &row[5], &row[6],
+        ]);
     }
     println!();
     println!(
@@ -500,6 +593,76 @@ fn print_users(users: &[User], passwordless: &std::collections::HashSet<String>)
         users.len(),
         if users.len() == 1 { "" } else { "s" }
     );
+}
+
+/// Split `--writes` / `users writes` input into checked entries: trimmed,
+/// empties dropped, duplicates kept once, each one a domain name or a name
+/// prefix with one `*` at the end. A list with no entry is refused: no list
+/// at all is `--clear`.
+fn parse_write_list(raw: &str) -> Result<Vec<String>> {
+    let mut entries: Vec<String> = Vec::new();
+    for entry in raw.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+        check_write_entry(entry)?;
+        if !entries.iter().any(|e| e == entry) {
+            entries.push(entry.to_string());
+        }
+    }
+    if entries.is_empty() {
+        bail!(
+            "the write list is empty: give at least one entry, or use --clear to remove the list"
+        );
+    }
+    Ok(entries)
+}
+
+/// One entry: a domain name, or a name prefix with one `*` at the end. The
+/// stem is checked with the domain-name rule; a prefix is checked with one
+/// letter after it, so `agents-*` and `team.*` pass while `agents/*` does
+/// not. A bare `*` names every domain, which is the same as no list, and is
+/// refused.
+fn check_write_entry(entry: &str) -> Result<()> {
+    let (stem, prefix) = match entry.strip_suffix('*') {
+        Some(stem) => (stem, true),
+        None => (entry, false),
+    };
+    let probe = if prefix {
+        format!("{stem}x")
+    } else {
+        stem.to_string()
+    };
+    if stem.is_empty() || stem.contains('*') || validate_domain_name(&probe).is_err() {
+        bail!(
+            "'{entry}' is not a domain name or a name prefix with one * at the end: \
+             {DOMAIN_NAME_RULE}"
+        );
+    }
+    Ok(())
+}
+
+/// Warn, on stderr, about every entry no registered domain matches. The entry
+/// is kept: the domain may be created later. A configuration that cannot be
+/// read is said once and the check is skipped, never an error, because the
+/// accounts database does not depend on it.
+fn warn_unmatched(entries: &[String]) {
+    let registered: Vec<String> = match crystalline_service::overlay::load(None) {
+        Ok(loaded) => loaded.effective.domains.keys().cloned().collect(),
+        Err(e) => {
+            eprintln!(
+                "warning: the registered domains could not be read ({e:#}), so the write list \
+                 was not checked against them"
+            );
+            return;
+        }
+    };
+    for entry in entries {
+        let entry_only = std::slice::from_ref(entry);
+        if !registered.iter().any(|d| write_list_matches(entry_only, d)) {
+            eprintln!(
+                "warning: no registered domain matches '{entry}'; the entry is kept and counts \
+                 once such a domain exists"
+            );
+        }
+    }
 }
 
 /// Collect the password: from a file under `--password-file`, from stdin

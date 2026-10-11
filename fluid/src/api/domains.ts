@@ -88,6 +88,15 @@ export interface DomainSummary {
    * listing that predates the field.
    */
   renaming: boolean;
+  /**
+   * Whether this session cannot write into this domain right now, for any
+   * reason: the domain is locked, the role only reads, or the account's
+   * write list leaves it out. The row's `read_only`, which the server sends
+   * only when it is true; false for a listing that predates it. It hides
+   * write controls and says nothing about why: the lock a domain wears is
+   * its `read_only` policy row (see `useDomainWritable`), never this.
+   */
+  writeBlocked: boolean;
 }
 
 /** A domain this machine offers from a connected server: listed, not served. */
@@ -175,6 +184,7 @@ function readDomain(value: unknown): DomainSummary | null {
         : null,
     shadowed: record?.shadowed === true,
     renaming: record?.renaming === true,
+    writeBlocked: record?.read_only === true,
   };
 }
 

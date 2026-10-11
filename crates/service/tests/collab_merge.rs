@@ -557,3 +557,138 @@ async fn accepting_an_external_delete_closes_the_session() {
     );
     assert_eq!(sessions.session_count().await, 0);
 }
+
+const LOCKED_ENG: &str =
+    "'eng' is read-only; its owner switches read_only off in the domain policies";
+const ROOM_SWITCH_ON: &str =
+    "a co-editing room does not switch read_only on; the owner switches it in the domain policies";
+
+fn lock(dir: &std::path::Path) {
+    let manifest = dir.join("MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+}
+
+/// "Restore mine" in a room over the folder writes as the machine owner
+/// through `restore_engram`, whose write view refuses a read-only domain: the
+/// conflict stands, the room hears the sentence, and nothing comes back.
+#[tokio::test]
+async fn restoring_into_a_read_only_domain_is_refused_and_the_file_stays_gone() {
+    let (tmp, engine, _scratch) = engine_fixture().await;
+    let sessions = CollabSessions::new(engine);
+    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    replace_all(&joined, &doc, &ALPHA.replace("A rule", "An unsaved rule")).await;
+    std::fs::remove_file(tmp.path().join("eng/alpha.md")).unwrap();
+    joined
+        .session
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .await;
+    joined.session.tick_save(Instant::now()).await;
+    let Control::Conflict { conflict_kind, .. } = next_control(&mut joined.rx).await else {
+        panic!("deleted conflict");
+    };
+    assert_eq!(conflict_kind, "deleted");
+
+    lock(&tmp.path().join("eng"));
+    joined
+        .session
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Resolve {
+                choice: "mine".into(),
+            }),
+        )
+        .await;
+    let Control::SaveFailed { detail } = next_control(&mut joined.rx).await else {
+        panic!("the restore is refused");
+    };
+    assert_eq!(detail, LOCKED_ENG);
+    assert!(
+        !tmp.path().join("eng/alpha.md").exists(),
+        "nothing was restored"
+    );
+}
+
+/// A room saves as the machine owner and cannot name who typed a line, so it
+/// lands no switch-on at all (decision D10): the save fails with the room's
+/// sentence, the room stays open, and the MANIFEST is unchanged.
+#[tokio::test]
+async fn a_room_does_not_switch_read_only_on() {
+    let (tmp, engine, _scratch) = engine_fixture().await;
+    let manifest = tmp.path().join("eng/MANIFEST.md");
+    let before = std::fs::read_to_string(&manifest).unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    let mut joined = sessions.join("eng", "manifest", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    replace_all(
+        &joined,
+        &doc,
+        &before.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .await;
+    joined
+        .session
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .await;
+    joined.session.tick_save(Instant::now()).await;
+    let Control::SaveFailed { detail } = next_control(&mut joined.rx).await else {
+        panic!("a switch-on typed into a room is refused");
+    };
+    assert_eq!(detail, ROOM_SWITCH_ON);
+    assert_eq!(
+        std::fs::read_to_string(&manifest).unwrap(),
+        before,
+        "nothing landed"
+    );
+    assert!(!engine.domain_is_read_only("eng").await);
+}
+
+/// The same rule on "restore mine": a MANIFEST deleted on disk reads as
+/// unlocked, so restoring a room text that says `read_only: on` is a
+/// switch-on, and the room refuses it with its own sentence.
+#[tokio::test]
+async fn a_room_does_not_restore_a_switch_on() {
+    let (tmp, engine, _scratch) = engine_fixture().await;
+    let manifest = tmp.path().join("eng/MANIFEST.md");
+    let before = std::fs::read_to_string(&manifest).unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    let mut joined = sessions.join("eng", "manifest", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "- one more line").await;
+    std::fs::remove_file(&manifest).unwrap();
+    joined
+        .session
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .await;
+    joined.session.tick_save(Instant::now()).await;
+    let Control::Conflict { conflict_kind, .. } = next_control(&mut joined.rx).await else {
+        panic!("the MANIFEST is gone");
+    };
+    assert_eq!(conflict_kind, "deleted");
+
+    replace_all(
+        &joined,
+        &doc,
+        &before.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .await;
+    joined
+        .session
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Resolve {
+                choice: "mine".into(),
+            }),
+        )
+        .await;
+    let Control::SaveFailed { detail } = next_control(&mut joined.rx).await else {
+        panic!("the restore of a switch-on is refused");
+    };
+    assert_eq!(detail, ROOM_SWITCH_ON);
+    assert!(!manifest.exists(), "nothing was restored");
+}

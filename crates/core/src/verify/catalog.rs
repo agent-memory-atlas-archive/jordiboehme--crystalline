@@ -93,6 +93,7 @@ pub const VERIFY_RULES: &[VerifyRule] = &[
     rule("M006", "error", "generated_indexes is local or shared."),
     rule("M007", "error", "sharing is proposal or direct."),
     rule("M008", "error", "domain_name can name a domain."),
+    rule("M009", "error", "read_only is off or on."),
     rule("M101", "warning", "When to Use is not empty."),
     rule("M102", "warning", "Section bullets stay short."),
     rule("M103", "warning", "No section heading appears twice."),
@@ -267,7 +268,7 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(ids, sorted, "id order, each id once");
-        assert_eq!(ids.len(), 59);
+        assert_eq!(ids.len(), 60);
         for rule in VERIFY_RULES {
             assert!(
                 ["error", "warning", "info"].contains(&rule.default),

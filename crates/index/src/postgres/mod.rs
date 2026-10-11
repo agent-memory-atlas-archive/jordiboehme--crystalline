@@ -1000,30 +1000,34 @@ pub(crate) fn sanitize_url(url: &str) -> Option<String> {
     Some(host_db.to_string())
 }
 
+/// The child rows recreated on every upsert, deleted in one statement and so
+/// one round trip: the observation tags, the observations, the engram tags,
+/// the frontmatter values, the relations and the links of engram `$1`. Each
+/// data-modifying `WITH` arm reads the snapshot from before the statement, so
+/// the tag arm still finds the observations its sibling deletes, and the
+/// foreign key from `observation_tag` to `observation` is checked at the end
+/// of the statement, when both are gone.
+#[doc(hidden)]
+pub const DELETE_CHILDREN_SQL: &str = "WITH observation_tags AS (\
+       DELETE FROM observation_tag WHERE observation_id IN \
+       (SELECT id FROM observation WHERE engram_id=$1)), \
+     observations AS (DELETE FROM observation WHERE engram_id=$1), \
+     engram_tags AS (DELETE FROM engram_tag WHERE engram_id=$1), \
+     meta_values AS (DELETE FROM engram_meta_value WHERE engram_id=$1), \
+     relations AS (DELETE FROM relation WHERE engram_id=$1) \
+     DELETE FROM link WHERE engram_id=$1";
+
 /// Delete the child rows recreated on every upsert. Chunk rows are NOT cleared
 /// here so [`Store::replace_chunks`] can carry over embeddings whose fingerprint
 /// is unchanged; deleting an engram clears its chunks in [`Store::delete_engram`].
+/// One statement, [`DELETE_CHILDREN_SQL`], so a full reindex pays one round trip
+/// here per engram instead of six.
 async fn delete_children(conn: &mut PgConnection, engram_id: i64) -> Result<()> {
-    sqlx::query(
-        "DELETE FROM observation_tag WHERE observation_id IN (SELECT id FROM observation WHERE engram_id=$1)",
-    )
-    .bind(engram_id)
-    .execute(&mut *conn)
-    .await
-    .map_err(IndexError::from)?;
-    for sql in [
-        "DELETE FROM observation WHERE engram_id=$1",
-        "DELETE FROM engram_tag WHERE engram_id=$1",
-        "DELETE FROM engram_meta_value WHERE engram_id=$1",
-        "DELETE FROM relation WHERE engram_id=$1",
-        "DELETE FROM link WHERE engram_id=$1",
-    ] {
-        sqlx::query(sql)
-            .bind(engram_id)
-            .execute(&mut *conn)
-            .await
-            .map_err(IndexError::from)?;
-    }
+    sqlx::query(DELETE_CHILDREN_SQL)
+        .bind(engram_id)
+        .execute(&mut *conn)
+        .await
+        .map_err(IndexError::from)?;
     Ok(())
 }
 
@@ -1046,6 +1050,13 @@ async fn delete_children(conn: &mut PgConnection, engram_id: i64) -> Result<()> 
 #[doc(hidden)]
 pub const FILE_STAMPS_SQL: &str =
     "SELECT path, mtime, size, sha256 FROM engram WHERE domain_id=$1 AND actor = ''";
+
+/// The probe behind every upsert, the twin of the turso one: two arms, each a
+/// full-key seek of its own unique index. Run with `persistent(false)` (see
+/// `upsert_row`).
+#[doc(hidden)]
+pub const UPSERT_PROBE_SQL: &str = "SELECT id, path FROM engram WHERE domain_id=$1 AND path=$2 AND actor=$4 \
+     UNION ALL SELECT id, path FROM engram WHERE domain_id=$1 AND permalink=$3 AND actor=$4";
 
 /// The read behind [`Store::contradiction_pairs_scored`], one domain's pair
 /// rows for one model through `idx_contradiction_pair_domain`. The Turso text
@@ -1101,7 +1112,8 @@ pub const DELETE_ENGRAM_CONTRADICTION_PAIRS_SQL: &str =
     "DELETE FROM contradiction_pair WHERE engram_a=$1 OR engram_b=$1";
 
 /// The wikilinks that name one engram, unbound by [`Store::delete_engram`]
-/// through `idx_link_to`. See the turso twin.
+/// and [`Store::clear_overlay_entry`] through `idx_link_to`. See the turso
+/// twin.
 #[doc(hidden)]
 pub const UNBIND_INBOUND_LINKS_SQL: &str = "UPDATE link SET to_id = NULL WHERE to_id = $1";
 
@@ -3589,6 +3601,15 @@ impl Store for PostgresStore {
             return Ok(false);
         };
         delete_children(&mut *c, id).await?;
+        // Every reference that named this draft goes back to pending in the
+        // same transaction. See the turso twin.
+        for sql in [UNBIND_INBOUND_LINKS_SQL, UNBIND_INBOUND_RELATIONS_SQL] {
+            sqlx::query(sql)
+                .bind(id)
+                .execute(&mut *c)
+                .await
+                .map_err(IndexError::from)?;
+        }
         sqlx::query("DELETE FROM chunk WHERE engram_id=$1")
             .bind(id)
             .execute(&mut *c)
@@ -4186,17 +4207,19 @@ impl PostgresStore {
         // owned by a different path. Pre-checking the duplicate keeps a failing
         // unique-violation from aborting the surrounding batch transaction, so
         // the sync engine can collect it into `failed` instead.
-        let probe = sqlx::query(
-            "SELECT id, path FROM engram WHERE domain_id=$1 AND actor=$4 \
-             AND (path=$2 OR permalink=$3)",
-        )
-        .bind(domain.0)
-        .bind(&record.path)
-        .bind(&record.permalink)
-        .bind(actor)
-        .fetch_all(&mut *c)
-        .await
-        .map_err(IndexError::from)?;
+        // Planned on every call, never from a cached generic plan: a generic
+        // plan made while `engram` was empty (the first index of a new
+        // database) walks the domain on every later probe. Planning costs a
+        // few microseconds; the walk cost 9.9 ms per probe at 20,000 engrams.
+        let probe = sqlx::query(UPSERT_PROBE_SQL)
+            .persistent(false)
+            .bind(domain.0)
+            .bind(&record.path)
+            .bind(&record.permalink)
+            .bind(actor)
+            .fetch_all(&mut *c)
+            .await
+            .map_err(IndexError::from)?;
         let mut existing_id: Option<i64> = None;
         for r in &probe {
             let row_path = cell_text(r, 1).unwrap_or_default();

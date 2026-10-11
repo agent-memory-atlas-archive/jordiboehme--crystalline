@@ -229,8 +229,14 @@ async fn remote_status(
 /// The routing model for a connected machine: the whole block's content for
 /// this account, because the machine has no MANIFEST of these domains on
 /// disk, and each domain's origin identity, so it recognizes a domain it
-/// already holds (decision D3). `identity` is unused in 0.23.0; 0.25.0 reads
-/// it to count the Reflections this account curates.
+/// already holds (decision D3). `identity` is unused until 0.26.0, which
+/// reads it to count the Reflections this account curates. Each domain
+/// carries `domain_read_only`: whether this token cannot write there (the
+/// domain lock, a viewer role, or a write list), taken from
+/// `PromptDomain.read_only`, which `routing_model_scoped` already computed for
+/// this token with the same `write_block` the write verbs ask, so no second
+/// rights question is asked per row; the top-level `read_only` is the
+/// instance's.
 async fn routing_model(
     engine: &Arc<Engine>,
     identity: &McpIdentity,
@@ -249,6 +255,7 @@ async fn routing_model(
                 "name": d.name,
                 "bullets": d.bullets,
                 "origin": engine.origin_identity_of(&d.name),
+                "domain_read_only": d.read_only,
             })
         })
         .collect();
@@ -281,15 +288,18 @@ async fn visible_names(
 }
 
 /// What a connected machine's Stop hook reads: this server's maintenance
-/// record, narrowed to what the account may see. `identity` is unused in
-/// 0.23.0; 0.25.0 fills the `reflect` member from it.
+/// record, narrowed to what the account may see. `identity` is unused until
+/// 0.26.0, which fills the `reflect` member from it. A read-only domain is left
+/// out of the backlog, as the local arms leave it out: nobody can sweep it.
 async fn hook_status(
     engine: &Arc<Engine>,
     identity: &McpIdentity,
     scope: &Scope,
 ) -> Result<Value, String> {
     let _ = identity;
-    let visible = visible_names(engine, scope).await?;
+    let mut visible = visible_names(engine, scope).await?;
+    let locked = engine.read_only_domain_names().await;
+    visible.retain(|name| !locked.contains(name));
     let status = crate::maintenance::HookStatus::from_state(&crate::maintenance::load(), &visible);
     serde_json::to_value(status).map_err(|e| e.to_string())
 }

@@ -220,6 +220,15 @@ fn same_registration(real: &DomainEntry, private: &DomainEntry) -> bool {
 /// never over a key `real` sets. Answers the dotted names of the keys it
 /// copied, never a value.
 pub(crate) fn carry_github(real: &mut GlobalConfig, private: &GlobalConfig) -> Vec<String> {
+    /// Set `to` from `from` when `to` is unset, and note `key` as carried.
+    fn take<T>(to: &mut Option<T>, from: Option<T>, key: &str, carried: &mut Vec<String>) {
+        if to.is_none()
+            && let Some(value) = from
+        {
+            *to = Some(value);
+            carried.push(key.to_string());
+        }
+    }
     let Some(from) = private.github.clone() else {
         return Vec::new();
     };
@@ -233,14 +242,6 @@ pub(crate) fn carry_github(real: &mut GlobalConfig, private: &GlobalConfig) -> V
         api_url,
         oauth_client_id,
     } = from;
-    fn take<T>(to: &mut Option<T>, from: Option<T>, key: &str, carried: &mut Vec<String>) {
-        if to.is_none()
-            && let Some(value) = from
-        {
-            *to = Some(value);
-            carried.push(key.to_string());
-        }
-    }
     let had_block = real.github.is_some();
     let to = real.github.get_or_insert_with(GitHubConfig::default);
     let mut carried = Vec::new();

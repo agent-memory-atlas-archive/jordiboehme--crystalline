@@ -227,8 +227,11 @@ pub enum ProposeOutcome {
         /// The connected branch that refused the commit.
         refused_branch: String,
     },
-    /// A direct share refused because a proposal of the acting login is
-    /// still open; nothing was written. Merge or withdraw it first.
+    /// A share refused because a proposal is still open; nothing was written.
+    /// `own` says whose: the acting login's own proposal blocks a direct
+    /// share (merge or withdraw it first), and another login's proposal
+    /// blocks a share that would go into it (share again once it is merged
+    /// or closed).
     ProposalOpen {
         /// The open proposal's number.
         number: u64,
@@ -236,6 +239,8 @@ pub enum ProposeOutcome {
         url: String,
         /// The open proposal's title.
         title: String,
+        /// Whether the open proposal is the acting login's own.
+        own: bool,
     },
     /// The branch's rules do not accept direct commits; nothing landed.
     BranchProtected {
@@ -2270,6 +2275,7 @@ pub async fn propose(
                 number: open.number,
                 url: open.url.clone(),
                 title: open.title.clone(),
+                own: false,
             });
         }
     }
@@ -2614,7 +2620,8 @@ pub enum PlannedAction {
         /// The connected branch the commit would land on.
         branch: String,
     },
-    /// A share would refuse: this proposal is still open on a direct domain.
+    /// A share would refuse: this proposal is still open. `own` as on
+    /// [`ProposeOutcome::ProposalOpen`].
     ProposalOpen {
         /// The open proposal's number.
         number: u64,
@@ -2622,6 +2629,8 @@ pub enum PlannedAction {
         url: String,
         /// The open proposal's title.
         title: String,
+        /// Whether the open proposal is the acting login's own.
+        own: bool,
     },
 }
 
@@ -2671,8 +2680,10 @@ pub async fn propose_preview(
         }
         return Ok(plan);
     }
-    // The same guard [`propose`] runs before any proposal work.
-    if options.sharing == Sharing::Direct {
+    // The same guard [`propose`] runs before any proposal work, and in the
+    // same order: the share refuses for pending conflicts before it looks at
+    // anybody's proposal, so with conflicts the plan below reports them.
+    if options.sharing == Sharing::Direct && state.conflicts.is_empty() {
         refuse_foreign_amend(&state, &options)?;
         if let Some(open) = foreign_proposal_block(&state, options.author_login) {
             return Ok(SharePlan {
@@ -2680,6 +2691,7 @@ pub async fn propose_preview(
                     number: open.number,
                     url: open.url.clone(),
                     title: open.title.clone(),
+                    own: false,
                 },
                 changes: select_share_files(
                     detect_local_changes_against(
@@ -3107,6 +3119,7 @@ fn preview_direct(
                 number: open.number,
                 url: open.url.clone(),
                 title: open.title.clone(),
+                own: true,
             },
             String::new(),
         ));
@@ -3242,6 +3255,7 @@ async fn commit_direct(
             number: open.number,
             url: open.url.clone(),
             title: open.title.clone(),
+            own: true,
         });
     }
     // Detected against the chain tip, not the trunk: another person's open
@@ -3368,7 +3382,16 @@ async fn commit_direct(
                     message: message.clone(),
                     refused_at: Utc::now(),
                 });
-                state.save(state_dir)?;
+                // Remembering the refusal only spares the next share a try at
+                // the branch. A save that fails must not cost the person the
+                // answer, so it is logged and the refusal is answered anyway.
+                // The fallback below saves again through
+                // `open_proposal_on_commit` and reports its own failure.
+                if let Err(e) = state.save(state_dir) {
+                    tracing::warn!(
+                        "the refused direct commit on {branch} could not be remembered: {e}"
+                    );
+                }
                 if !fall_back {
                     let offers_proposal =
                         foreign_proposal_block(&state, options.author_login).is_none();

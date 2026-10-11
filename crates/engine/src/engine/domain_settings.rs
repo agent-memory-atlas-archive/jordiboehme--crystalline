@@ -16,7 +16,7 @@ pub const VIRTUAL_NO_RULES: &str =
 
 /// The `how` lines of the domain view, one per part.
 pub const DOMAIN_SETTINGS_HOW: [&str; 4] = [
-    "Set a policy: configure with domain and set, for example { \"sharing\": \"direct\" }. unset removes the key, so the default applies.",
+    "Set a policy: configure with domain and set, for example { \"sharing\": \"direct\" }. unset removes the key, so the default applies. Only a person switches read_only off, in the domain policies.",
     "Edit a section: read_engram the MANIFEST (identifier manifest), then edit_engram with replace_section or insert_after_section.",
     "Set a rule override: configure with domain and set { \"rules.<rule id>\": \"off\" } (off, error, warning or info), or { \"token_budget\": \"<tokens>\" }. unset removes it.",
     "Rename the domain: crystalline domain rename <old> <new>, or Rename domain on the domain page in Fluid.",
@@ -51,6 +51,20 @@ impl PolicyEdit {
         match self {
             PolicyEdit::Set { key, .. } | PolicyEdit::Unset { key } => key,
         }
+    }
+}
+
+/// Whether `edits` is exactly the owner's switch-off: `read_only` set to
+/// `off`, or `read_only` removed so its default (`off`) applies, and nothing
+/// else in the same call (decision D4, spec A-1).
+pub(crate) fn is_switch_off(edits: &[PolicyEdit]) -> bool {
+    match edits {
+        [PolicyEdit::Set { key, value }] => {
+            key == crystalline_core::READ_ONLY_KEY
+                && value == crystalline_core::ReadOnly::Off.as_str()
+        }
+        [PolicyEdit::Unset { key }] => key == crystalline_core::READ_ONLY_KEY,
+        _ => false,
     }
 }
 
@@ -89,6 +103,8 @@ impl Engine {
     /// where `edit_engram` writes the same frontmatter (`refuse_unwritable`
     /// in the MCP server). A reviewing domain still refuses the open tier
     /// further in, in `DomainView::for_write`, as it refuses its edits.
+    /// Except `read_only`, which only the owner or an instance admin
+    /// switches, on every tier.
     ///
     /// Its own gate rather than a looser `require_domain_owner_refusing`:
     /// ending a domain and reading who drafts in it refuse an anonymous
@@ -100,17 +116,16 @@ impl Engine {
         key: &str,
         scope: &crate::scope::Scope,
     ) -> Result<()> {
-        if matches!(scope, crate::scope::Scope::Anonymous) && !self.auth_mcp() {
+        // `read_only` is the owner's on every tier (spec A-1): the open tier
+        // keeps the other keys where edit_engram writes, never this one.
+        if key != crystalline_core::READ_ONLY_KEY
+            && matches!(scope, crate::scope::Scope::Anonymous)
+            && !self.auth_mcp()
+        {
             return self.require_domain(domain, scope).await;
         }
-        self.require_domain_owner_refusing(
-            domain,
-            scope,
-            EngineError::Forbidden(format!(
-                "only the owner of '{domain}' or an instance admin may change `{key}`"
-            )),
-        )
-        .await
+        self.require_domain_owner_refusing(domain, scope, Self::owner_key_refusal(domain, key))
+            .await
     }
 
     /// Set or remove MANIFEST policy keys through the edit path an engram
@@ -138,7 +153,23 @@ impl Engine {
                     .await?;
             }
         }
-        let view = DomainView::for_write(self, domain, scope).await?;
+        // A read-only domain takes one change: its owner switching the flag
+        // off, alone (`read_only: off`, or removing the key). Anything else is
+        // the refusal every write gets. Over MCP even the switch-off is
+        // refused, by the MCP handlers and not here: Fluid's policies card and
+        // REST PATCH reach this function with the same scope, and a person
+        // must be able to switch it off there (spec A-1). The owner check for
+        // `read_only` ran in the loop above.
+        let unlocking = self.domain_is_read_only(domain).await;
+        if unlocking && !is_switch_off(edits) {
+            self.require_domain(domain, scope).await?;
+            return Err(EngineError::DomainReadOnly(read_only_sentence(domain)));
+        }
+        let view = if unlocking {
+            DomainView::for_unlock(self, domain).await?
+        } else {
+            DomainView::for_write(self, domain, scope).await?
+        };
         let overlay = view.actor().map(str::to_string);
         let actor = self.actor_for(None, overlay.as_deref());
         let (desc, source) = view.resolve("manifest").await?;
@@ -195,7 +226,7 @@ const YAML_COMMENTS_DROPPED: &str =
 const REVIEW_NO_RULES: &str = "This domain reviews changes before they land, and .crystalline.yaml is not an engram, so a rule override cannot be a draft. Change it in the domain's files instead.";
 
 /// Why a token budget other than a positive number is refused.
-const TOKEN_BUDGET_POSITIVE: &str = "token_budget takes a positive whole number of tokens. To turn the size rule off, set rules.Q002: off.";
+const TOKEN_BUDGET_POSITIVE: &str = "token_budget takes a positive whole number of tokens. Two rules read it: verify's Q002 and the evolve sweep's V105. To turn Q002 off, set rules.Q002: off.";
 
 /// What one key of a configure call with a domain is.
 enum DomainKey {
@@ -330,6 +361,15 @@ impl Engine {
         for edit in &policy_edits {
             checked_policy(domain, edit)?;
         }
+        // A read-only domain is decided for the whole call before anything is
+        // compared, read or written (spec A-2): the owner's switch-off alone
+        // passes, and a call that mixes it with anything else, a rule
+        // override or another policy key, writes nothing at all.
+        if self.domain_is_read_only(domain).await
+            && !(config_edits.is_empty() && is_switch_off(&policy_edits))
+        {
+            return Err(EngineError::DomainReadOnly(read_only_sentence(domain)));
+        }
         // An edit that would leave the MANIFEST as it is writes nothing: on a
         // team domain a no-op write would be a local change nobody made. A
         // reviewing domain is left to the draft path, since the caller's
@@ -391,18 +431,7 @@ impl Engine {
                 return Err(match &written {
                     Some(written) => {
                         let keys: Vec<&str> = policy_edits.iter().map(PolicyEdit::key).collect();
-                        let how = if written["draft"] == Value::Bool(true) {
-                            " as a draft"
-                        } else {
-                            ""
-                        };
-                        // A refusal rather than an internal error, so the
-                        // model reads the one sentence that says the policy
-                        // did land.
-                        EngineError::Refused(format!(
-                            "applied [{}]{how}; {DOMAIN_CONFIG_FILE} was not changed: {e}",
-                            keys.join(", ")
-                        ))
+                        half_applied(e, &keys, written["draft"] == Value::Bool(true))
                     }
                     None => e,
                 });
@@ -436,6 +465,34 @@ impl Engine {
     }
 }
 
+/// The answer of a configure call whose policy keys landed and whose
+/// `.crystalline.yaml` step then failed: the keys that landed, then why the
+/// file was not changed. A conflict stays a conflict, so a caller that reads
+/// the class knows to send the call again. Everything else is a refusal the
+/// model reads, never an internal error.
+fn half_applied(error: EngineError, keys: &[&str], draft: bool) -> EngineError {
+    let how = if draft { " as a draft" } else { "" };
+    let head = format!(
+        "applied [{}]{how}; {DOMAIN_CONFIG_FILE} was not changed",
+        keys.join(", ")
+    );
+    match error {
+        EngineError::Conflict(text) => EngineError::Conflict(format!("{head}: {text}")),
+        other => EngineError::Refused(format!("{head}: {other}")),
+    }
+}
+
+/// A failed write of `.crystalline.yaml`: an IO error keeps its path, and
+/// anything else is a refusal that says the file was not written.
+fn config_write_error(path: &Path, error: crystalline_core::config::ConfigError) -> EngineError {
+    match error {
+        crystalline_core::config::ConfigError::Io { path, source } => {
+            EngineError::Io { path, source }
+        }
+        other => EngineError::Refused(format!("{} was not written: {other}", path.display())),
+    }
+}
+
 impl Engine {
     /// Write `edited` to the domain's `.crystalline.yaml` at `path`, or
     /// remove the file when no key is left: the write a rename waits for,
@@ -447,16 +504,14 @@ impl Engine {
         edited: &crystalline_core::verify::EditedConfig,
     ) -> Result<()> {
         self.refuse_shadowed(domain)?;
+        // Its one caller decided the read-only question for the whole call;
+        // this is the floor under any later caller.
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         let _writing = self.enter_write(domain).await?;
         match &edited.text {
-            Some(text) => {
-                crystalline_core::config::save_bytes(path, text.as_bytes()).map_err(|e| match e {
-                    crystalline_core::config::ConfigError::Io { path, source } => {
-                        EngineError::Io { path, source }
-                    }
-                    other => EngineError::Internal(format!("writing {}: {other}", path.display())),
-                })
-            }
+            Some(text) => crystalline_core::config::save_bytes(path, text.as_bytes())
+                .map_err(|e| config_write_error(path, e)),
             None if path.exists() => std::fs::remove_file(path).map_err(|source| EngineError::Io {
                 path: path.display().to_string(),
                 source,
@@ -497,7 +552,14 @@ impl Engine {
                         .domain_settings_view(domain, &text.content, false, scope)
                         .await;
                 }
-                Err(EngineError::NotFound(_)) => {}
+                // The caller's own draft deletes the MANIFEST: their view has
+                // none, so it shows as missing rather than as the folder's.
+                Err(EngineError::NotFound(_)) => {
+                    let (domain_id, _) = self.domain_source(domain).await?;
+                    if view.deletes(domain_id, "MANIFEST.md").await? {
+                        return self.domain_settings_view(domain, "", true, scope).await;
+                    }
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -546,9 +608,20 @@ impl Engine {
         } else {
             policy_rows(None, domain)
         };
+        // On a read-only domain only `read_only` itself can change, and only
+        // the owner's switch-off; `read_only` is never the open tier's.
+        let locked = self.domain_is_read_only(domain).await;
+        let may_own = may_change && !matches!(scope, crate::scope::Scope::Anonymous);
         let policies: Vec<Value> = rows
             .iter()
-            .map(|row| policy_json(row, may_change, domain))
+            .map(|row| {
+                let may = if row.key == crystalline_core::READ_ONLY_KEY {
+                    may_own
+                } else {
+                    may_change && !locked
+                };
+                policy_json(row, may, domain)
+            })
             .collect();
         let sections: Vec<Value> = facts
             .sections
@@ -622,6 +695,8 @@ fn policy_json(row: &PolicyRow, may_change: bool, domain: &str) -> Value {
     value["can_change"] = json!(may_change && !text);
     value["how"] = json!(if text {
         rename_how(domain)
+    } else if row.key == crystalline_core::READ_ONLY_KEY {
+        "switch on with configure; a person switches it off in the domain policies".to_string()
     } else {
         "set with configure".to_string()
     });
@@ -640,5 +715,84 @@ fn override_row(rule: &str, word: &str) -> Value {
         None => {
             json!({ "rule": rule, "severity": word, "default": "unknown", "meaning": OVERRIDE_UNKNOWN })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T6-b: a conflict on the yaml step (a rename began between the two
+    /// writes) stays a conflict, with the keys that did land in front.
+    #[test]
+    fn a_half_applied_conflict_keeps_its_class() {
+        let error = half_applied(
+            EngineError::Conflict("domain 'eng' is being renamed; send it again".to_string()),
+            &["sharing"],
+            false,
+        );
+        match error {
+            EngineError::Conflict(text) => assert_eq!(
+                text,
+                "applied [sharing]; .crystalline.yaml was not changed: domain 'eng' is being renamed; send it again"
+            ),
+            other => panic!("expected a Conflict, got {other:?}"),
+        }
+    }
+
+    /// Every other failure of the yaml step is a refusal the model reads,
+    /// as 9724dca5 made it.
+    #[test]
+    fn a_half_applied_io_error_is_a_refusal() {
+        let error = half_applied(
+            EngineError::Io {
+                path: "/d/.crystalline.yaml".to_string(),
+                source: std::io::Error::other("disk full"),
+            },
+            &["sharing", "generated_indexes"],
+            false,
+        );
+        match error {
+            EngineError::Refused(text) => assert!(
+                text.starts_with(
+                    "applied [sharing, generated_indexes]; .crystalline.yaml was not changed: "
+                ),
+                "{text}"
+            ),
+            other => panic!("expected a Refused, got {other:?}"),
+        }
+    }
+
+    /// T6-a: when the policy keys became a draft, the answer says so.
+    #[test]
+    fn a_half_applied_draft_says_as_a_draft() {
+        let error = half_applied(EngineError::Refused("no".to_string()), &["sharing"], true);
+        assert_eq!(
+            error.to_string(),
+            "applied [sharing] as a draft; .crystalline.yaml was not changed: no"
+        );
+    }
+
+    /// T6-b: a failed write of .crystalline.yaml that is not an IO error is
+    /// a refusal, never an internal error a client may hide.
+    #[test]
+    fn a_non_io_config_write_error_is_a_refusal() {
+        let error = config_write_error(
+            Path::new("/d/.crystalline.yaml"),
+            crystalline_core::config::ConfigError::Yaml("bad".to_string()),
+        );
+        assert!(matches!(error, EngineError::Refused(_)), "{error:?}");
+        assert_eq!(
+            error.to_string(),
+            "/d/.crystalline.yaml was not written: config yaml error: bad"
+        );
+        let io = config_write_error(
+            Path::new("/d/.crystalline.yaml"),
+            crystalline_core::config::ConfigError::Io {
+                path: "/d/.crystalline.yaml".to_string(),
+                source: std::io::Error::other("disk full"),
+            },
+        );
+        assert!(matches!(io, EngineError::Io { .. }), "{io:?}");
     }
 }

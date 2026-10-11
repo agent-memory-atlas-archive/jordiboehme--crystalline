@@ -26,6 +26,7 @@ mod move_permalink;
 mod name_report;
 mod orphaned_rows;
 mod overwrite_in_place;
+mod read_only_domains;
 mod similar;
 #[cfg(unix)]
 mod sync_denied;

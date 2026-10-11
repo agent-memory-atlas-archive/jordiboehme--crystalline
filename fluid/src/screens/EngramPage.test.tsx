@@ -38,7 +38,9 @@ import { engramRoute } from "../paths";
 import type { Answer } from "../test/harness";
 import {
   answersFor,
+  defaultPolicyRows,
   domainsResponse,
+  manifestSectionsResponse,
   meResponse,
   renderApp,
   userFixture,
@@ -218,6 +220,11 @@ function serve(routes: Record<string, Answer> = {}) {
           },
         ],
       }),
+      "/domains/eng/manifest": () => ({
+        domain: "eng",
+        markdown: "",
+        sections: manifestSectionsResponse(),
+      }),
       "/domains/eng/engrams/alpha": () => detailResponse(),
       "/graph": () => graphResponse(),
       // What points here, which the backlinks panel reads on its own: the
@@ -236,6 +243,63 @@ beforeEach(() => {
 });
 
 describe("the engram page", () => {
+  it("a locked domain's engram page shows the lock and its text and offers no Edit", async () => {
+    serve({
+      "/domains": () => ({
+        ...domainsResponse(),
+        domains: [{ ...domainsResponse().domains[0], read_only: true }],
+      }),
+      "/domains/eng/manifest": () => ({
+        domain: "eng",
+        markdown: "",
+        sections: manifestSectionsResponse({
+          policies: defaultPolicyRows().map((row) =>
+            row.key === "read_only"
+              ? { ...row, declared: "on", effective: "on" }
+              : row,
+          ),
+        }),
+      }),
+    });
+    renderApp("/d/eng/e/alpha");
+    expect(await screen.findByText("read-only")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "its owner switches read_only off in the domain policies",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Edit" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "More actions" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("a domain off this caller's write list offers no Edit and wears no lock", async () => {
+    serve({
+      "/domains": () => ({
+        ...domainsResponse(),
+        domains: [{ ...domainsResponse().domains[0], read_only: true }],
+      }),
+    });
+    renderApp("/d/eng/e/alpha");
+    expect(
+      await screen.findByRole("heading", { level: 1 }),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("link", { name: "Edit" }),
+      ).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText("read-only")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "its owner switches read_only off in the domain policies",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
   it("draws the body and links the wikilinks the server resolved", async () => {
     serve();
 

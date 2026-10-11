@@ -90,6 +90,15 @@ pub async fn join(
             "this instance is read-only, so collaborative editing is disabled",
         ));
     }
+    // A read-only domain takes no save, so no room opens on it. Asked after
+    // `require_domain_write`, which already answered a hidden domain as
+    // unregistered.
+    if state.engine.domain_is_read_only(&domain).await {
+        return Err(
+            crate::engine::EngineError::DomainReadOnly(crate::engine::read_only_sentence(&domain))
+                .into(),
+        );
+    }
     require_same_host_origin(&headers)?;
     // Whose document this room is a room over, decided before the upgrade for
     // the reason every other refusal here is decided there: a socket that

@@ -2250,12 +2250,19 @@ fn detect_structure(input: &SweepInput, graph: &Graph<'_>, report: &mut SweepRep
         // V106: almost nothing beyond the frontmatter.
         let lines = content_line_count(&fact.body);
         if lines < MIN_CONTENT_LINES {
+            let counted = crystalline_core::text::plural(
+                lines,
+                "non-blank body line",
+                "non-blank body lines",
+            );
+            let evidence = format!(
+                "content lines {lines}; need at least {MIN_CONTENT_LINES}; \
+                 same shape verify Q001 flags"
+            );
             report.findings.push(Finding::about("V106", fact).with(
                 Class::Judgment,
-                format!("only {} beyond the frontmatter", crystalline_core::text::plural(lines, "non-blank body line", "non-blank body lines")),
-                format!(
-                    "content lines {lines}; need at least {MIN_CONTENT_LINES}; same shape verify Q001 flags"
-                ),
+                format!("only {counted} beyond the frontmatter"),
+                evidence,
                 "enrich it; fold it into the engram that owns the topic or retire it".to_string(),
             ));
         }

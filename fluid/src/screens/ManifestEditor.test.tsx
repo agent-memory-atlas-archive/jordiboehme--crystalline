@@ -554,6 +554,49 @@ describe("the MANIFEST editor", () => {
     });
   });
 
+  it("restores a stored draft over the starter a missing MANIFEST opens on", async () => {
+    const empty =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const put = vi.fn(() => manifestResponse({ checksum: "m2" }));
+    localStorage.setItem(
+      "fluid.draft.ada.eng/MANIFEST",
+      JSON.stringify({
+        content: MARKDOWN.replace("Route here for eng.", "A recovered line."),
+        baseChecksum: empty,
+        savedAt: "2026-08-09T10:00:00Z",
+      }),
+    );
+    serveEditor({
+      "/domains/eng/manifest": (_path, init) =>
+        init?.method === "PUT"
+          ? put()
+          : manifestResponse({ markdown: "", checksum: empty, missing: true }),
+    });
+
+    renderApp("/d/eng/manifest/edit");
+    const editor = await screen.findByLabelText("MANIFEST source");
+    // The seed lands first, because a missing MANIFEST has nothing else.
+    await waitFor(() => {
+      expect(editor.textContent).toContain("## When to Use");
+    });
+    expect(await screen.findByText(/unsaved draft/i)).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Restore draft" }),
+    );
+
+    // The draft replaces the seed rather than landing beside it, and the
+    // save still creates the file under the empty text's checksum.
+    await waitFor(() => {
+      expect(editor.textContent).toContain("A recovered line.");
+    });
+    expect(editor.textContent).not.toContain("## When to Use");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(put).toHaveBeenCalled();
+    });
+    expect(firstIfMatch()).toBe(`"${empty}"`);
+  });
+
   it("discarding the draft keeps the server text and drops the banner", async () => {
     localStorage.setItem(
       "fluid.draft.ada.eng/MANIFEST",

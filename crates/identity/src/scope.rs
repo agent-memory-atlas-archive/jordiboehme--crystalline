@@ -14,7 +14,9 @@
 //! the per-domain answer and the bulk filter cannot drift apart. They read the
 //! same records differently (one domain's row against one user's whole
 //! membership list) purely to keep the bulk path from being N queries, and that
-//! is the only difference between them.
+//! is the only difference between them. An account's write list (`crystalline
+//! users writes`) caps both answers at [`DomainRight::Read`] on every domain
+//! it does not name, in `resolved_right`; visibility is not affected.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -241,6 +243,23 @@ fn instance_cap(principal: &Principal) -> DomainRight {
     }
 }
 
+/// Whether a write list names `domain`: an entry equal to it, or an entry
+/// ending in `*` whose stem it starts with.
+///
+/// The same comparison a `domain_acl` or `domain_member` row gets
+/// (`AuthStore::domain_visibility`): the domain is trimmed and then compared
+/// byte for byte, never case folded, because the engine keys its domain map
+/// on the literal name and `Lab` and `lab` are two registrations there.
+pub fn write_list_matches(patterns: &[String], domain: &str) -> bool {
+    let domain = domain.trim();
+    patterns
+        .iter()
+        .any(|pattern| match pattern.strip_suffix('*') {
+            Some(stem) => domain.starts_with(stem),
+            None => pattern == domain,
+        })
+}
+
 /// Resolves a [`Scope`] against the membership records in the auth database.
 ///
 /// Held by the engine (behind a `OnceLock`, installed when the HTTP surface
@@ -398,13 +417,100 @@ impl DomainAccess {
         Ok(if right < cap { right } else { cap })
     }
 
-    /// The policy answer for one scope on one domain, with the principal it was
-    /// decided for. Both public answers are this one, read differently.
+    /// The account whose write list keeps `scope` from writing `domain`, or
+    /// `None` when the list is not the reason.
+    ///
+    /// `Some(account)` exactly when the caller is an account with a write
+    /// list that does not name `domain` **and** its write right without the
+    /// list would be [`DomainRight::Write`] or more. A viewer, a viewer member,
+    /// an account with no list, the machine owner and the anonymous tier get
+    /// `None`, so a surface that refuses keeps the role's sentence for them
+    /// and names the list only when changing the list would change the
+    /// answer. The name is the store's own folded spelling, the one
+    /// `crystalline users writes` takes.
+    pub async fn write_list_excludes(&self, scope: &Scope, domain: &str) -> Result<Option<String>> {
+        let (principal, right) = self.decided_right(scope, domain).await?;
+        let cap = instance_cap(&principal);
+        let unlisted = if right < cap { right } else { cap };
+        if unlisted < DomainRight::Write {
+            return Ok(None);
+        }
+        self.off_list_account(&principal, domain).await
+    }
+
+    /// The account whose write list keeps `scope` from a step that needs
+    /// `needed` on `domain` (an owner or manager step), or `None` when the
+    /// list is not the reason.
+    ///
+    /// Compared with the domain answer alone ([`decide`], no instance cap),
+    /// because owning or managing a domain is what the domain grants: a
+    /// private domain's owner who is an instance editor owns it. An instance
+    /// editor asking for an owner step on a shared domain gets `None`, since
+    /// adding the domain to its list would not make it the owner.
+    pub async fn write_list_refuses(
+        &self,
+        scope: &Scope,
+        domain: &str,
+        needed: DomainRight,
+    ) -> Result<Option<String>> {
+        let (principal, right) = self.decided_right(scope, domain).await?;
+        if right < needed {
+            return Ok(None);
+        }
+        self.off_list_account(&principal, domain).await
+    }
+
+    /// The shared tail of the two answers above: the account's own name when
+    /// `principal` is an account whose write list exists and does not name
+    /// `domain`, `None` for every other principal and for an account with no
+    /// list. The caller has already decided that the list matters.
+    async fn off_list_account(
+        &self,
+        principal: &Principal,
+        domain: &str,
+    ) -> Result<Option<String>> {
+        let Principal::Account { name, .. } = principal else {
+            return Ok(None);
+        };
+        Ok(match self.auth.write_list(name).await? {
+            Some(patterns) if !write_list_matches(&patterns, domain) => Some(name.clone()),
+            _ => None,
+        })
+    }
+
+    /// The policy answer for one scope on one domain, with the principal it
+    /// was decided for. Both public answers are this one, read differently.
+    ///
+    /// **The write list caps here**, so [`DomainAccess::right`] (what the
+    /// owner gates read) and [`DomainAccess::write_right`] (what a content
+    /// write reads) both carry it: an account with a write list that does
+    /// not name `domain` is a reader there and nothing more. The cap only
+    /// lowers - a domain the caller may not see stays [`DomainRight::None`] -
+    /// and visibility never comes through here ([`DomainAccess::hidden_domains`]
+    /// folds [`decide`] directly), so every read is unchanged. The machine
+    /// owner and the anonymous tier have no list. One more read of the
+    /// accounts table, and only when there is a right above Read to cap.
     async fn resolved_right(
         &self,
         scope: &Scope,
         domain: &str,
     ) -> Result<(Principal, DomainRight)> {
+        let (principal, right) = self.decided_right(scope, domain).await?;
+        if right <= DomainRight::Read {
+            return Ok((principal, right));
+        }
+        if let Principal::Account { name, .. } = &principal
+            && let Some(patterns) = self.auth.write_list(name).await?
+            && !write_list_matches(&patterns, domain)
+        {
+            return Ok((principal, DomainRight::Read));
+        }
+        Ok((principal, right))
+    }
+
+    /// The policy answer for one scope on one domain before the write list,
+    /// with the principal it was decided for.
+    async fn decided_right(&self, scope: &Scope, domain: &str) -> Result<(Principal, DomainRight)> {
         let principal = self.principal(scope).await?;
         if matches!(principal, Principal::Unrestricted) {
             return Ok((principal, DomainRight::Own));
@@ -1112,6 +1218,371 @@ mod tests {
         assert_eq!(
             access.right(&user("Mem", false), "lab").await.unwrap(),
             DomainRight::Write
+        );
+    }
+
+    fn list(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|e| e.to_string()).collect()
+    }
+
+    /// The match itself: an exact name, or a prefix ending in one `*`.
+    #[test]
+    fn write_list_matches_exact_names_and_star_prefixes() {
+        let entries = list(&["agents-bot", "shared-*"]);
+        assert!(write_list_matches(&entries, "agents-bot"));
+        assert!(write_list_matches(&entries, "shared-"));
+        assert!(write_list_matches(&entries, "shared-notes"));
+        assert!(
+            write_list_matches(&entries, " agents-bot "),
+            "the domain is trimmed like an acl lookup"
+        );
+        assert!(
+            !write_list_matches(&entries, "agents-bot2"),
+            "an exact entry is not a prefix"
+        );
+        assert!(
+            !write_list_matches(&entries, "shared"),
+            "the prefix includes the hyphen"
+        );
+        assert!(!write_list_matches(&entries, "open"));
+        assert!(!write_list_matches(&[], "open"));
+    }
+
+    /// An entry compares with a domain name exactly as a `domain_acl` row
+    /// does: byte for byte after a trim, so case matters on both. Pinned on
+    /// both tables side by side, so the two comparisons cannot drift apart.
+    #[tokio::test]
+    async fn write_list_entry_case_follows_domain_acl() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = store(&dir).await;
+        cast(&auth).await;
+        // The acl side: a row for `Lab` does not make `lab` private.
+        auth.set_domain_visibility("Lab", true, "keeper")
+            .await
+            .unwrap();
+        // The write-list side: `Agents-Bot` names `Agents-Bot` only.
+        auth.set_write_list("OUT", &list(&["Agents-Bot", "Team-*"]))
+            .await
+            .unwrap();
+        let access = DomainAccess::new(auth);
+        let out = user("out", false);
+        assert_eq!(access.right(&out, "Lab").await.unwrap(), DomainRight::None);
+        assert_eq!(
+            access.right(&out, "lab").await.unwrap(),
+            DomainRight::Read,
+            "`lab` is not the private `Lab`; it is shared, and off the list"
+        );
+        assert_eq!(
+            access.write_right(&out, "Agents-Bot").await.unwrap(),
+            DomainRight::Write
+        );
+        assert_eq!(
+            access.write_right(&out, "agents-bot").await.unwrap(),
+            DomainRight::Read,
+            "a case variant of an entry is another domain"
+        );
+        assert_eq!(
+            access.write_right(&out, "Team-x").await.unwrap(),
+            DomainRight::Write
+        );
+        assert_eq!(
+            access.write_right(&out, "team-x").await.unwrap(),
+            DomainRight::Read,
+            "a `*` prefix is case-sensitive too"
+        );
+    }
+
+    /// The cap matrix of spec B-8: no list, an exact entry, a `*` entry, a
+    /// viewer with a list, an admin with a list, the machine owner and the
+    /// anonymous tier, on both public answers.
+    #[tokio::test]
+    async fn write_list_caps_off_list_domains_for_both_rights() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = store(&dir).await;
+        cast(&auth).await;
+        auth.add_user("star", "star", None, Role::Editor, "pw12345678")
+            .await
+            .unwrap();
+        auth.set_domain_visibility("lab", true, "keeper")
+            .await
+            .unwrap();
+        auth.set_write_list("out", &list(&["agents-out"]))
+            .await
+            .unwrap();
+        auth.set_write_list("star", &list(&["agents-*"]))
+            .await
+            .unwrap();
+        auth.set_write_list("mem", &list(&["open"])).await.unwrap();
+        auth.set_write_list("boss", &list(&["agents-boss"]))
+            .await
+            .unwrap();
+        auth.set_write_list("keeper", &list(&["agents-keeper"]))
+            .await
+            .unwrap();
+        let access = DomainAccess::new(auth);
+        let both = |right: DomainRight, write: DomainRight| (right, write);
+        let ask = |scope: Scope, domain: &'static str| {
+            let access = &access;
+            async move {
+                (
+                    access.right(&scope, domain).await.unwrap(),
+                    access.write_right(&scope, domain).await.unwrap(),
+                )
+            }
+        };
+        // An editor with an exact entry.
+        assert_eq!(
+            ask(user("out", false), "agents-out").await,
+            both(DomainRight::Write, DomainRight::Write)
+        );
+        assert_eq!(
+            ask(user("out", false), "open").await,
+            both(DomainRight::Read, DomainRight::Read)
+        );
+        // An editor with a `*` entry.
+        assert_eq!(
+            ask(user("star", false), "agents-bot").await,
+            both(DomainRight::Write, DomainRight::Write)
+        );
+        assert_eq!(
+            ask(user("star", false), "agentsbot").await,
+            both(DomainRight::Read, DomainRight::Read)
+        );
+        // A viewer with a list writes nothing, the listed domain included.
+        assert_eq!(
+            ask(user("mem", false), "open").await,
+            both(DomainRight::Read, DomainRight::Read)
+        );
+        // An admin with a list: owner on the listed domain, a reader elsewhere,
+        // private domains included, whether the scope or the row says admin.
+        assert_eq!(
+            ask(user("boss", true), "agents-boss").await,
+            both(DomainRight::Own, DomainRight::Own)
+        );
+        assert_eq!(
+            ask(user("boss", true), "open").await,
+            both(DomainRight::Read, DomainRight::Read)
+        );
+        assert_eq!(
+            ask(user("boss", false), "lab").await,
+            both(DomainRight::Read, DomainRight::Read)
+        );
+        // A private domain's owner whose list does not name it reads it and
+        // no more; it stays visible.
+        assert_eq!(
+            ask(user("keeper", false), "lab").await,
+            both(DomainRight::Read, DomainRight::Read)
+        );
+        assert!(
+            !access
+                .hidden_domains(&user("keeper", false))
+                .await
+                .unwrap()
+                .unwrap()
+                .contains("lab")
+        );
+        // No list, the machine owner and the anonymous tier are unchanged.
+        assert_eq!(
+            ask(user("keeper", false), "agents-keeper").await,
+            both(DomainRight::Write, DomainRight::Write)
+        );
+        assert_eq!(
+            ask(Scope::Unrestricted, "open").await,
+            both(DomainRight::Own, DomainRight::Own)
+        );
+        assert_eq!(
+            ask(Scope::Anonymous, "open").await,
+            both(DomainRight::Read, DomainRight::Read)
+        );
+    }
+
+    /// The list only lowers: a stranger with a list still has nothing on a
+    /// private domain, and the domain stays hidden from it.
+    #[tokio::test]
+    async fn a_stranger_with_a_write_list_still_sees_no_private_domain() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = store(&dir).await;
+        cast(&auth).await;
+        auth.set_domain_visibility("lab", true, "keeper")
+            .await
+            .unwrap();
+        auth.set_write_list("out", &list(&["lab"])).await.unwrap();
+        let access = DomainAccess::new(auth);
+        let out = user("out", false);
+        assert_eq!(access.right(&out, "lab").await.unwrap(), DomainRight::None);
+        assert_eq!(
+            access.write_right(&out, "lab").await.unwrap(),
+            DomainRight::None
+        );
+        assert!(
+            access
+                .hidden_domains(&out)
+                .await
+                .unwrap()
+                .unwrap()
+                .contains("lab")
+        );
+    }
+
+    /// Entries that name no domain anybody registered match nothing, so an
+    /// account whose list holds only such entries writes nowhere.
+    #[tokio::test]
+    async fn unknown_entries_match_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = store(&dir).await;
+        cast(&auth).await;
+        auth.set_write_list("out", &list(&["ghost", "nobody-*"]))
+            .await
+            .unwrap();
+        let access = DomainAccess::new(auth);
+        for domain in ["open", "second", "agents-bot"] {
+            assert_eq!(
+                access
+                    .write_right(&user("out", false), domain)
+                    .await
+                    .unwrap(),
+                DomainRight::Read,
+                "{domain}"
+            );
+        }
+    }
+
+    /// `write_list_excludes` names the account exactly when the list is what
+    /// refuses: an editor off its list. A viewer, a viewer member of a listed
+    /// private domain, no list, the machine owner and the anonymous tier get
+    /// `None`, so a surface keeps the role's sentence for them.
+    #[tokio::test]
+    async fn write_list_excludes_names_the_account_only_when_the_list_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = store(&dir).await;
+        cast(&auth).await;
+        auth.add_user("watcher", "watcher", None, Role::Editor, "pw12345678")
+            .await
+            .unwrap();
+        auth.set_domain_visibility("lab", true, "keeper")
+            .await
+            .unwrap();
+        auth.upsert_domain_member("lab", "watcher", MemberLevel::Viewer, "keeper")
+            .await
+            .unwrap();
+        auth.set_write_list("out", &list(&["second"]))
+            .await
+            .unwrap();
+        auth.set_write_list("mem", &list(&["second"]))
+            .await
+            .unwrap();
+        auth.set_write_list("watcher", &list(&["lab"]))
+            .await
+            .unwrap();
+        auth.set_write_list("boss", &list(&["second"]))
+            .await
+            .unwrap();
+        let access = DomainAccess::new(auth);
+        assert_eq!(
+            access
+                .write_list_excludes(&user("OUT", false), "open")
+                .await
+                .unwrap(),
+            Some("out".to_string()),
+            "the store's folded spelling"
+        );
+        assert_eq!(
+            access
+                .write_list_excludes(&user("out", false), "second")
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            access
+                .write_list_excludes(&user("boss", true), "open")
+                .await
+                .unwrap(),
+            Some("boss".to_string())
+        );
+        assert_eq!(
+            access
+                .write_list_excludes(&user("mem", false), "open")
+                .await
+                .unwrap(),
+            None,
+            "an instance viewer is refused by its role, not by its list"
+        );
+        assert_eq!(
+            access
+                .write_list_excludes(&user("watcher", false), "lab")
+                .await
+                .unwrap(),
+            None,
+            "a viewer member of a listed domain is refused by its level"
+        );
+        assert_eq!(
+            access
+                .write_list_excludes(&user("keeper", false), "open")
+                .await
+                .unwrap(),
+            None,
+            "no list"
+        );
+        assert_eq!(
+            access
+                .write_list_excludes(&Scope::Unrestricted, "open")
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            access
+                .write_list_excludes(&Scope::Anonymous, "open")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    /// The owner-step answer reads the domain's own grant: a private domain's
+    /// owner who is an instance editor is refused by its list, an instance
+    /// editor on a shared domain is not (it never owned it), and an admin is.
+    #[tokio::test]
+    async fn write_list_refuses_an_owner_step_only_where_the_caller_would_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = store(&dir).await;
+        cast(&auth).await;
+        auth.set_domain_visibility("lab", true, "keeper")
+            .await
+            .unwrap();
+        for name in ["keeper", "out", "boss"] {
+            auth.set_write_list(name, &list(&["second"])).await.unwrap();
+        }
+        let access = DomainAccess::new(auth);
+        let own = DomainRight::Own;
+        assert_eq!(
+            access
+                .write_list_refuses(&user("keeper", false), "lab", own)
+                .await
+                .unwrap(),
+            Some("keeper".to_string())
+        );
+        assert_eq!(
+            access
+                .write_list_refuses(&user("out", false), "open", own)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            access
+                .write_list_refuses(&user("boss", true), "open", own)
+                .await
+                .unwrap(),
+            Some("boss".to_string())
+        );
+        assert_eq!(
+            access
+                .write_list_refuses(&user("boss", true), "second", own)
+                .await
+                .unwrap(),
+            None
         );
     }
 }

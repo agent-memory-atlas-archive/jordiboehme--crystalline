@@ -1113,6 +1113,47 @@ pub(crate) async fn require_domain_read(
     Ok(())
 }
 
+/// Refuse with the write list's sentence when the caller's write list is
+/// what keeps it from a step on `domain`.
+///
+/// `needed` is `None` for the write question
+/// ([`crate::scope::DomainAccess::write_list_excludes`]) and `Some(Own)` or
+/// `Some(Manage)` for an owner or manager step, where the list is named only
+/// when the caller would hold `needed` without it
+/// ([`crate::scope::DomainAccess::write_list_refuses`]).
+///
+/// The cap itself is in the rights resolver, so every gate that reads
+/// `right` or `write_right` already refuses; this is the sentence for those
+/// gates, and the whole gate for the admin-only routes that read neither
+/// (the MANIFEST save, privatizing, the archive import). A resolver that
+/// cannot answer refuses, never a fallback.
+pub(crate) async fn refuse_off_write_list(
+    state: &RestState,
+    identity: &Identity,
+    domain: &str,
+    needed: Option<DomainRight>,
+) -> Result<(), ApiError> {
+    let scope = identity.scope();
+    let answer = match needed {
+        None => state.access.write_list_excludes(&scope, domain).await,
+        Some(needed) => {
+            state
+                .access
+                .write_list_refuses(&scope, domain, needed)
+                .await
+        }
+    };
+    let excluded = answer.map_err(|e| {
+        ApiError::internal(format!("this domain's membership is unreadable: {e:#}"))
+    })?;
+    if let Some(account) = excluded {
+        return Err(ApiError::forbidden(
+            crate::engine::WriteBlock::WriteList { account }.sentence(domain),
+        ));
+    }
+    Ok(())
+}
+
 /// The caller, when the request may mutate content in `domain`.
 ///
 /// Three refusals in the order they have to happen:
@@ -1123,6 +1164,7 @@ pub(crate) async fn require_domain_read(
 /// 2. then the instance role, unchanged: a domain invitation widens what an
 ///    account may *reach*, never what its instance role lets it *do*, so a
 ///    domain editor who is an instance viewer is still refused here;
+///    2b. then the write list, which names itself (`refuse_off_write_list`);
 /// 3. then the membership level, which is what a private domain adds. The
 ///    message names the level the caller holds, because "forbidden" on a
 ///    domain they can see and read is otherwise indistinguishable from a bug.
@@ -1131,12 +1173,11 @@ pub(crate) async fn require_domain_read(
 /// instance role's own (the policy in `crate::scope`), so a caller past step 2
 /// holds `Write` or better by construction.
 ///
-/// Two routes carry no domain gate of any kind, deliberately: saving a domain's
-/// MANIFEST and the origin pull. Both are `require_admin`, and an instance
-/// admin resolves to [`DomainRight::Own`] on every domain, private ones
-/// included, so a gate there is a store round trip that cannot refuse. If that
-/// early return is ever narrowed, those two are what has to be revisited -
-/// which is why this sentence sits here rather than nowhere.
+/// Saving a domain's MANIFEST, privatizing a domain and the archive import are
+/// `require_admin` and carry no membership gate, since an admin resolves to
+/// [`DomainRight::Own`] everywhere; the write list narrows that, so each of
+/// them calls `refuse_off_write_list`. The origin pull is a pull and is not
+/// affected.
 ///
 /// `DELETE /domains/{domain}` used to be the third. It is not admin-only any
 /// more: it runs `Identity::require_account` and hands the decision to
@@ -1153,6 +1194,7 @@ pub(crate) async fn require_domain_write(
     let scope = identity.scope();
     state.engine.require_domain(domain, &scope).await?;
     let caller = identity.require_editor()?;
+    refuse_off_write_list(state, identity, domain, None).await?;
     // The capped right rather than the bare domain answer, so this gate and the
     // MCP one are one rule with one spelling (`DomainAccess::write_right`).
     // `require_editor` above already refuses every account the cap would catch,

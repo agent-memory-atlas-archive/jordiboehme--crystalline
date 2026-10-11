@@ -1181,17 +1181,34 @@ async fn virtual_manifest_create(store: Arc<Mutex<dyn Store>>) {
     assert_eq!(source.markdown, "");
 
     let manifest = "---\ntype: manifest\ntitle: Notes\npermalink: manifest\ntags:\n  - manifest\nstatus: current\nrecorded_at: 2026-01-01\n---\n\n# Notes\n\n## Scope\n\n- notes\n\n## When to Use\n\n- Route here for created notes\n";
-    let stale = engine.save_manifest("notes", manifest, "beef").await;
+    let stale = engine
+        .save_manifest("notes", manifest, "beef", &Scope::Unrestricted)
+        .await;
     assert!(
         matches!(&stale, Err(EngineError::Conflict(m)) if m.starts_with("stale edit")),
         "{stale:?}"
     );
 
     let empty = crate::support::sha256_hex(b"");
+    let mut rx = engine.changes().subscribe();
     engine
-        .save_manifest("notes", manifest, &empty)
+        .save_manifest("notes", manifest, &empty, &Scope::Unrestricted)
         .await
         .unwrap();
+    // The create is announced as one, on both backends.
+    let mut kinds = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if let crystalline_service::changes::Change::Engram(change) = envelope.change {
+            kinds.push((change.path, change.kind));
+        }
+    }
+    assert_eq!(
+        kinds,
+        vec![(
+            "MANIFEST.md".to_string(),
+            crystalline_service::changes::ChangeKind::Added
+        )]
+    );
     let read = engine.manifest_markdown("notes").await.unwrap();
     assert_eq!(read, manifest);
     assert!(
@@ -1201,7 +1218,9 @@ async fn virtual_manifest_create(store: Arc<Mutex<dyn Store>>) {
         "the created MANIFEST routes"
     );
 
-    let again = engine.save_manifest("notes", manifest, &empty).await;
+    let again = engine
+        .save_manifest("notes", manifest, &empty, &Scope::Unrestricted)
+        .await;
     assert!(
         matches!(&again, Err(EngineError::Conflict(m)) if m.starts_with("stale edit")),
         "a second create is a stale edit: {again:?}"
@@ -1232,7 +1251,12 @@ async fn virtual_manifest_under_another_permalink(store: Arc<Mutex<dyn Store>>) 
 
     let edited = manifest.replace("- Route here for notes", "- Route here for edited notes");
     engine
-        .save_manifest("notes", &edited, &sha_hex(&source.markdown))
+        .save_manifest(
+            "notes",
+            &edited,
+            &sha_hex(&source.markdown),
+            &Scope::Unrestricted,
+        )
         .await
         .unwrap();
     assert_eq!(engine.manifest_markdown("notes").await.unwrap(), edited);
@@ -2065,4 +2089,52 @@ async fn unregister_unbinds_inbound_references(store: Arc<Mutex<dyn Store>>) {
 both_backends!(
     unregistering_a_domain_unbinds_the_links_into_it,
     unregister_unbinds_inbound_references
+);
+
+// --- import into a read-only virtual domain -----------------------------------
+
+/// `domain import` is a write like any other: a read-only virtual domain
+/// refuses it, a dry run included. An import with `--overwrite` that replaces
+/// the MANIFEST with `read_only: on` runs the switch-on check as the machine
+/// owner, who passes, and the flag holds at once.
+async fn import_meets_the_read_only_flag(store: Arc<Mutex<dyn Store>>) {
+    let engine = virtual_engine(store);
+    let manifest = "---\ntype: manifest\ntitle: notes\npermalink: manifest\ntags:\n  - manifest\nstatus: current\nrecorded_at: 2026-01-01\n---\n\n# notes\n\n## Scope\n\n- Everything about notes\n\n## When to Use\n\n- Route here for notes questions\n";
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(src.path().join("MANIFEST.md"), manifest).unwrap();
+    engine
+        .import_domain("notes", src.path(), false, false)
+        .await
+        .unwrap();
+    assert!(!engine.domain_is_read_only("notes").await);
+
+    let locked = manifest.replacen("\n---\n", "\nread_only: on\n---\n", 1);
+    std::fs::write(src.path().join("MANIFEST.md"), &locked).unwrap();
+    let report = engine
+        .import_domain("notes", src.path(), true, false)
+        .await
+        .unwrap();
+    assert_eq!(report["files_written"], 1, "{report}");
+    assert!(
+        engine.domain_is_read_only("notes").await,
+        "the imported MANIFEST holds at once"
+    );
+
+    let more = tempfile::tempdir().unwrap();
+    std::fs::write(
+        more.path().join("one.md"),
+        "---\ntype: engram\ntitle: One\npermalink: one\ntags:\n  - t\nstatus: current\nrecorded_at: 2026-01-01\n---\n\n# One\n\nbody one\n",
+    )
+    .unwrap();
+    for dry_run in [true, false] {
+        let err = engine
+            .import_domain("notes", more.path(), false, dry_run)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, EngineError::DomainReadOnly(_)), "{err}");
+    }
+}
+both_backends!(
+    an_import_meets_the_read_only_flag,
+    import_meets_the_read_only_flag
 );

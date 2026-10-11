@@ -1092,14 +1092,16 @@ pub(crate) enum TaskFix {
     /// Register this user's task under the name with the SID, then remove
     /// the 0.24.0-named one if there is one.
     Register,
-    /// Only remove the 0.24.0-named task: the machine task is ready and
-    /// every bridge finds it first.
+    /// Only remove the 0.24.0-named task: the machine task, which every
+    /// bridge finds first, or this user's own task with the SID is ready.
     RemoveOld,
 }
 
 /// What `--fix` does about `task` with `repair`. An old-named task beside a
-/// ready machine task is redundant, so it is removed and nothing is
-/// registered; without a ready machine task it is moved to the new name.
+/// ready machine task, or beside this user's own ready task under the name
+/// with the SID, is redundant, so it is removed and nothing is registered;
+/// when the old-named task is itself the ready one it is moved to the new
+/// name.
 /// A refused query is repaired as a missing task: register this user's
 /// own, which also moves an old-named one.
 pub(crate) fn task_fix(task: &TaskDoctor, repair: TaskRepair) -> TaskFix {
@@ -1110,6 +1112,17 @@ pub(crate) fn task_fix(task: &TaskDoctor, repair: TaskRepair) -> TaskFix {
         TaskRepair::Nothing if task.old_name.is_none() => TaskFix::Nothing,
         TaskRepair::Nothing => match &task.finding {
             Some(TaskFinding::Ready(name)) if is_machine_task(name) => TaskFix::RemoveOld,
+            // This user's own task under the name with the SID is ready, so
+            // the 0.24.0-named one is a leftover (Task Scheduler refused its
+            // delete before): removing it needs no MSI binary.
+            Some(TaskFinding::Ready(name))
+                if task
+                    .old_name
+                    .as_deref()
+                    .is_some_and(|old| !old.eq_ignore_ascii_case(name)) =>
+            {
+                TaskFix::RemoveOld
+            }
             _ => TaskFix::Register,
         },
     }
@@ -1246,35 +1259,59 @@ fn check_task(fix: bool) -> Option<TaskDoctor> {
     if !fix {
         return Some(report);
     }
-    let moved = match task_fix(&report, repair) {
-        TaskFix::Nothing => daemon_task::Moved::Nothing,
+    let what = task_fix(&report, repair);
+    apply_task_fix(
+        &mut report,
+        what,
+        installed,
         // The real schtasks, past the DaemonTask seam: no seam stands for a delete.
-        TaskFix::RemoveOld => daemon_task::remove_legacy_for_this_user(),
+        daemon_task::remove_legacy_for_this_user,
+        || daemon_task::register_for_this_user(&exe),
+    );
+    Some(report)
+}
+
+/// Carry out `fix` on `report`: `remove_old` only removes this user's
+/// 0.24.0-named task, `register` registers this user's own and then moves
+/// the old one. `installed` is whether this binary is the one the MSI
+/// installed; `--fix` registers only for that one. Split from
+/// [`check_task`], which runs only on Windows, so the wiring is tested on
+/// every platform.
+pub(crate) fn apply_task_fix(
+    report: &mut TaskDoctor,
+    fix: TaskFix,
+    installed: bool,
+    remove_old: impl FnOnce() -> crystalline_service::daemon_task::Moved,
+    register: impl FnOnce() -> Result<(String, crystalline_service::daemon_task::Moved), String>,
+) {
+    use crystalline_service::daemon_task::Moved;
+    let moved = match fix {
+        TaskFix::Nothing => Moved::Nothing,
+        TaskFix::RemoveOld => remove_old(),
         TaskFix::Register if !installed => {
             report.error = Some(NOT_THE_MSI_BINARY.to_string());
-            daemon_task::Moved::Nothing
+            Moved::Nothing
         }
         // The new name is registered first, the old one removed after.
-        TaskFix::Register => match daemon_task::register_for_this_user(&exe) {
+        TaskFix::Register => match register() {
             Ok((name, moved)) => {
                 report.registered_now = Some(name);
                 moved
             }
             Err(e) => {
                 report.error = Some(e);
-                daemon_task::Moved::Nothing
+                Moved::Nothing
             }
         },
     };
     match moved {
-        daemon_task::Moved::Nothing => {}
-        daemon_task::Moved::Removed(old) => report.moved_old = Some(old),
-        daemon_task::Moved::Refused { task, why } => {
+        Moved::Nothing => {}
+        Moved::Removed(old) => report.moved_old = Some(old),
+        Moved::Refused { task, why } => {
             report.old_name = Some(task);
             report.old_refused = Some(why);
         }
     }
-    Some(report)
 }
 
 /// Lock folders hf-hub left in the model cache for a model that is not cached
@@ -2396,6 +2433,15 @@ async fn check_domain_checks(
     let path = cmd::resolve_domain_path(entry).unwrap_or_default();
     let path_exists = path.is_dir();
     let manifest_present = path_exists && path.join("MANIFEST.md").is_file();
+    // Why `--fix` leaves this domain's files alone, if it does: the instance
+    // is read-only, or the domain is. `None` lets `--fix` repair.
+    let refusal: Option<String> = if read_only {
+        Some(READ_ONLY_NOTE.to_string())
+    } else if path_exists && crystalline_core::read_only_at(&path).is_on() {
+        Some(crystalline_service::engine::read_only_sentence(name))
+    } else {
+        None
+    };
 
     let mut d = DomainDoctor {
         name: name.to_string(),
@@ -2469,9 +2515,12 @@ async fn check_domain_checks(
             .and_then(|dir| read_base_file(dir, &rel).ok().flatten())
             .and_then(|bytes| String::from_utf8(bytes).ok());
         let mut plan = plan_duplicate_fix(&source, base.as_deref(), entry.is_overlay());
-        // A read-only instance never writes a domain file, doctor included.
-        if read_only && plan.is_ok() {
-            plan = Err(READ_ONLY_NOTE.to_string());
+        // A read-only instance or domain never has a file written, doctor
+        // included.
+        if let Some(note) = &refusal
+            && plan.is_ok()
+        {
+            plan = Err(note.clone());
         }
         let mut report = DuplicateKeyFile {
             path: rel,
@@ -2493,7 +2542,7 @@ async fn check_domain_checks(
     // included: a fix is an ordinary local change the next share carries.
     let mut stray_files: HashSet<String> = HashSet::new();
     for pair in stray_pairs(&path) {
-        let report = settle_stray(&path, &pair, entry.is_overlay(), read_only, fix);
+        let report = settle_stray(&path, &pair, entry.is_overlay(), refusal.as_deref(), fix);
         // Only a pair still on disk is its own finding. After a fix the
         // engram's file may not be indexed yet (the copy was the indexed
         // one), and then `unindexed` says so and sends the person to sync.
@@ -2583,10 +2632,29 @@ async fn check_domain_checks(
         // Only the direct route can delete. Over a daemon the orphans are
         // still reported, with the render saying plainly what removing them
         // takes, rather than being silently left in place.
-        if let (true, Some(store), Some(domain_id)) = (fix, store, domain_id) {
-            for p in &orphans {
-                store.delete_engram(domain_id, p).await?;
-                d.orphans_removed += 1;
+        if let (true, Some(store), Some(domain_id)) = (fix, store, domain_id)
+            && !orphans.is_empty()
+        {
+            // One transaction for the whole removal: each row, its children
+            // and the unbinding of every reference that named it land
+            // together or not at all.
+            store.begin().await?;
+            let removed = async {
+                for p in &orphans {
+                    store.delete_engram(domain_id, p).await?;
+                }
+                Ok::<usize, crystalline_index::IndexError>(orphans.len())
+            }
+            .await;
+            match removed {
+                Ok(n) => {
+                    store.commit().await?;
+                    d.orphans_removed += n;
+                }
+                Err(e) => {
+                    let _ = store.rollback().await;
+                    return Err(e.into());
+                }
             }
         }
         d.orphans = orphans;
@@ -2787,13 +2855,13 @@ fn written_at(file: &StrayFile) -> Option<chrono::DateTime<chrono::Utc>> {
 
 /// What doctor reports about one stray pair, and what `--fix` did about it,
 /// in the order the spec rules: a reviewing domain and a read-only instance
-/// are left, an identical copy is deleted, a newer copy's text moves into the
+/// or domain are left, an identical copy is deleted, a newer copy's text moves into the
 /// original and the copy goes, and a copy the original changed after is left.
 fn settle_stray(
     root: &Path,
     pair: &StrayPair,
     reviewing: bool,
-    read_only: bool,
+    refusal: Option<&str>,
     fix: bool,
 ) -> StrayCopy {
     let stray_abs = root.join(&pair.stray.rel);
@@ -2835,8 +2903,8 @@ fn settle_stray(
         report.note = Some(REVIEWED_NOTE.to_string());
         return report;
     }
-    if read_only {
-        report.note = Some(READ_ONLY_NOTE.to_string());
+    if let Some(note) = refusal {
+        report.note = Some(note.to_string());
         return report;
     }
     report.fixable = same_text || newer;
@@ -3089,28 +3157,46 @@ async fn check_service(
         // that is held now is reported as recovered rather than removed, the
         // same treatment `daemon_unresponsive`'s `NotNeeded` case gets above.
         if s.lock_stale || s.socket_orphaned {
-            match instance::hold_service_lock() {
-                Some(hold) => {
-                    let info_removed = s.lock_stale && std::fs::remove_file(&info_path).is_ok();
-                    if s.socket_orphaned {
-                        s.socket_removed = std::fs::remove_file(&sock_path).is_ok();
-                    }
-                    // Last, while still held. A free service.lock with no
-                    // daemon is itself a leftover, and when only the socket
-                    // was the finding, the hold created this file.
-                    let lock_file_removed = hold.release_removing_file();
-                    if s.lock_stale {
-                        s.lock_removed = info_removed || lock_file_removed;
-                    }
-                }
-                None => {
-                    s.lock_stale = false;
-                    s.socket_orphaned = false;
-                }
-            }
+            remove_stale_service_files(
+                &mut s,
+                instance::hold_service_lock(),
+                &info_path,
+                &sock_path,
+            );
         }
     }
     Ok(s)
+}
+
+/// The removals `--fix` makes for a stale lock and an orphaned socket,
+/// under `hold`, the service lock taken without waiting. `None` means
+/// something took the lock after the diagnosis, a daemon that started
+/// meanwhile: nothing is removed, and both findings read as recovered.
+fn remove_stale_service_files(
+    s: &mut ServiceDoctor,
+    hold: Option<instance::ServiceLockHold>,
+    info_path: &Path,
+    sock_path: &Path,
+) {
+    match hold {
+        Some(hold) => {
+            let info_removed = s.lock_stale && std::fs::remove_file(info_path).is_ok();
+            if s.socket_orphaned {
+                s.socket_removed = std::fs::remove_file(sock_path).is_ok();
+            }
+            // Last, while still held. A free service.lock with no daemon is
+            // itself a leftover, and when only the socket was the finding,
+            // the hold created this file.
+            let lock_file_removed = hold.release_removing_file();
+            if s.lock_stale {
+                s.lock_removed = info_removed || lock_file_removed;
+            }
+        }
+        None => {
+            s.lock_stale = false;
+            s.socket_orphaned = false;
+        }
+    }
 }
 
 /// Which `CRYSTALLINE_*` environment variables are active, straight off the
@@ -4670,16 +4756,17 @@ pub fn render_human(report: &DoctorReport) -> String {
                 "  [problem] --fix could not remove the task {old}, which has the name from Crystalline 0.24.0 ({why})"
             );
         } else if let Some(old) = &task.old_name {
-            // Beside a ready machine task --fix only removes it (task_fix).
-            let machine_ready = matches!(
-                (&task.finding, &task.gone_command),
-                (Some(TaskFinding::Ready(name)), None) if is_machine_task(name)
-            );
-            let _ = if machine_ready {
+            // Beside another ready task --fix only removes it (task_fix).
+            let ready_other = match (&task.finding, &task.gone_command) {
+                (Some(TaskFinding::Ready(name)), None) if !name.eq_ignore_ascii_case(old) => {
+                    Some(name)
+                }
+                _ => None,
+            };
+            let _ = if let Some(ready) = ready_other {
                 writeln!(
                     out,
-                    "  [warning] the task {old} has the name from Crystalline 0.24.0. The task {} starts the daemon for this user, so run crystalline doctor --fix to remove it",
-                    crystalline_service::daemon_task::MACHINE_TASK_NAME
+                    "  [warning] the task {old} has the name from Crystalline 0.24.0. The task {ready} starts the daemon for this user, so run crystalline doctor --fix to remove it"
                 )
             } else {
                 writeln!(
@@ -7181,6 +7268,64 @@ mod tests {
         );
     }
 
+    /// A lock folder whose model is gone but whose lock file somebody holds
+    /// is a download in flight: doctor lists nothing and `--fix` keeps it,
+    /// until the lock is let go.
+    #[test]
+    fn a_held_model_lock_is_never_listed_or_removed_by_doctor() {
+        let _guard = MODELS_DIR_ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = ModelsDirOverride::set(tmp.path());
+        let locks = tmp
+            .path()
+            .join(".locks")
+            .join(crystalline_index::hub_dir_name("BAAI/bge-small-en-v1.5"));
+        std::fs::create_dir_all(&locks).unwrap();
+        let held = std::fs::File::create(locks.join("abc.lock")).unwrap();
+        held.lock().unwrap();
+        assert!(
+            check_model_locks(true, false).is_none(),
+            "a held lock is a download in flight"
+        );
+        assert!(locks.join("abc.lock").is_file());
+        drop(held);
+        assert_eq!(
+            check_model_locks(true, false).unwrap().removed,
+            ["BAAI/bge-small-en-v1.5"],
+            "let go, it is a leftover"
+        );
+    }
+
+    /// A lock folder that is a symlink loses the link and never what it
+    /// points at: the removal does not follow links.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_model_lock_folder_loses_the_link_and_never_its_target() {
+        let _guard = MODELS_DIR_ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(cache.join(".locks")).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("keep.lock"), b"").unwrap();
+        let _env = ModelsDirOverride::set(&cache);
+        let link = cache
+            .join(".locks")
+            .join(crystalline_index::hub_dir_name("BAAI/bge-small-en-v1.5"));
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+
+        let fixed = check_model_locks(true, false).expect("the linked folder is listed");
+        assert_eq!(fixed.removed, ["BAAI/bge-small-en-v1.5"]);
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "the link is gone"
+        );
+        assert!(
+            elsewhere.join("keep.lock").is_file(),
+            "what it pointed at is untouched"
+        );
+    }
+
     #[test]
     fn the_model_lock_line_names_the_folders_and_is_never_a_problem() {
         let mut report = DoctorReport {
@@ -7897,7 +8042,7 @@ mod tests {
         // Somebody writes the original between doctor's read and its fix.
         let edited = review_standards("Edited meanwhile.", OLDER);
         std::fs::write(root.join(O_PATH), &edited).unwrap();
-        let s = settle_stray(&root, &pairs[0], false, false, true);
+        let s = settle_stray(&root, &pairs[0], false, None, true);
         assert!(!s.fixed, "{s:?}");
         assert_eq!(s.note.as_deref(), Some(CHANGED_NOTE));
         assert_eq!(std::fs::read_to_string(root.join(O_PATH)).unwrap(), edited);
@@ -7987,7 +8132,7 @@ mod tests {
             // Somebody writes the copy between doctor's read and its delete.
             let edited = review_standards("Written meanwhile.", NEWER);
             std::fs::write(root.join(S_PATH), &edited).unwrap();
-            let s = settle_stray(&root, &pairs[0], false, false, true);
+            let s = settle_stray(&root, &pairs[0], false, None, true);
             assert!(!s.fixed, "{original_body}: {s:?}");
             assert_eq!(
                 std::fs::read_to_string(root.join(S_PATH)).unwrap(),
@@ -8498,6 +8643,137 @@ mod tests {
             )),
             "{out}"
         );
+    }
+
+    /// This user's own task under the name with the SID is ready and the
+    /// 0.24.0-named one is still there (Task Scheduler refused its delete
+    /// last time). It is only a leftover: `--fix` removes it, which needs no
+    /// MSI binary, and registers nothing.
+    #[test]
+    fn beside_this_users_ready_task_fix_only_removes_the_old_task() {
+        const OWN: &str = r"\Crystalline Daemon for ada (S-1-5-21-1-2-3-1001)";
+        let old = crystalline_service::daemon_task::legacy_user_task_name("ada");
+        let report = TaskDoctor {
+            finding: Some(TaskFinding::Ready(OWN.to_string())),
+            old_name: Some(old.clone()),
+            ..TaskDoctor::default()
+        };
+        assert_eq!(task_fix(&report, TaskRepair::Nothing), TaskFix::RemoveOld);
+        assert_eq!(
+            task_fix(
+                &TaskDoctor {
+                    finding: Some(TaskFinding::Ready(old.to_uppercase())),
+                    ..report.clone()
+                },
+                TaskRepair::Nothing
+            ),
+            TaskFix::Register,
+            "the old task itself is the ready one: it is moved, in any case"
+        );
+
+        let out = render_human(&DoctorReport {
+            daemon_task: Some(report),
+            ..DoctorReport::default()
+        });
+        assert!(
+            out.contains(&format!(
+                "  [warning] the task {old} has the name from Crystalline 0.24.0. The task {OWN} starts the daemon for this user, so run crystalline doctor --fix to remove it\n"
+            )),
+            "{out}"
+        );
+    }
+
+    /// Each fix reaches exactly its Task Scheduler call: `RemoveOld` only the
+    /// removal, `Register` only the registration (which moves the old task
+    /// itself), and neither for `Nothing` or a binary the MSI did not install.
+    #[test]
+    fn each_task_fix_makes_exactly_its_own_call() {
+        use crystalline_service::daemon_task::Moved;
+        const OWN: &str = r"\Crystalline Daemon for ada (S-1-5-21-1-2-3-1001)";
+        let old = crystalline_service::daemon_task::legacy_user_task_name("ada");
+
+        let mut report = TaskDoctor {
+            old_name: Some(old.clone()),
+            ..TaskDoctor::default()
+        };
+        apply_task_fix(
+            &mut report,
+            TaskFix::RemoveOld,
+            false,
+            || Moved::Removed(old.clone()),
+            || panic!("RemoveOld registers nothing"),
+        );
+        assert_eq!(report.moved_old.as_deref(), Some(old.as_str()));
+        assert!(report.registered_now.is_none() && report.error.is_none());
+
+        let mut report = TaskDoctor::default();
+        apply_task_fix(
+            &mut report,
+            TaskFix::Register,
+            true,
+            || panic!("Register never calls the bare removal"),
+            || {
+                Ok((
+                    OWN.to_string(),
+                    Moved::Refused {
+                        task: old.clone(),
+                        why: "ERROR: Access is denied.".to_string(),
+                    },
+                ))
+            },
+        );
+        assert_eq!(report.registered_now.as_deref(), Some(OWN));
+        assert_eq!(report.old_name.as_deref(), Some(old.as_str()));
+        assert_eq!(
+            report.old_refused.as_deref(),
+            Some("ERROR: Access is denied.")
+        );
+
+        let mut report = TaskDoctor::default();
+        apply_task_fix(
+            &mut report,
+            TaskFix::Register,
+            false,
+            || panic!("not the MSI binary: no call"),
+            || panic!("not the MSI binary: no call"),
+        );
+        assert_eq!(report.error.as_deref(), Some(NOT_THE_MSI_BINARY));
+
+        apply_task_fix(
+            &mut TaskDoctor::default(),
+            TaskFix::Nothing,
+            true,
+            || panic!("nothing to do"),
+            || panic!("nothing to do"),
+        );
+    }
+
+    /// A lock nobody held at the diagnosis that somebody took before `--fix`
+    /// reached it is a daemon that started meanwhile: nothing is removed,
+    /// and the findings read as recovered rather than as removed.
+    #[test]
+    fn a_lock_taken_after_the_diagnosis_removes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let info = tmp.path().join("service.json");
+        let sock = tmp.path().join("service.sock");
+        std::fs::write(&info, b"{\"pid\":1}").unwrap();
+        std::fs::write(&sock, b"").unwrap();
+        let mut s = ServiceDoctor {
+            lock_present: true,
+            lock_stale: true,
+            socket_present: true,
+            socket_orphaned: true,
+            ..ServiceDoctor::default()
+        };
+        remove_stale_service_files(&mut s, None, &info, &sock);
+        assert!(!s.lock_stale, "recovered, not stale");
+        assert!(!s.socket_orphaned, "recovered, not orphaned");
+        assert!(
+            !s.lock_removed && !s.socket_removed,
+            "nothing claimed as removed"
+        );
+        assert!(info.is_file(), "the new daemon's record stays");
+        assert!(sock.exists(), "and so does its socket");
     }
 
     /// This user's 0.24.0-named task read back with the account's SID as

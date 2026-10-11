@@ -101,6 +101,9 @@ struct StoredStack {
 
 #[derive(Default)]
 struct Inner {
+    /// A directory [`MockProvider::make_dir_when_refused`] creates the next
+    /// time `update_branch` answers a protected-branch refusal.
+    dir_on_refusal: Option<std::path::PathBuf>,
     commits: HashMap<String, Commit>,
     branches: HashMap<String, String>,
     etags: HashMap<String, String>,
@@ -340,6 +343,14 @@ impl MockProvider {
             },
         );
         id
+    }
+
+    /// Creates `path` as a directory the next time `update_branch` answers a
+    /// protected-branch refusal, once. A test puts it where the next state
+    /// save writes its temporary file, so that save fails after the refusal
+    /// and not before it.
+    pub fn make_dir_when_refused(&self, path: &std::path::Path) {
+        self.inner.lock().unwrap().dir_on_refusal = Some(path.to_path_buf());
     }
 
     /// Makes `update_branch` on `name` answer the forge's protected-branch
@@ -973,6 +984,9 @@ impl Provider for MockProvider {
             .calls
             .push(format!("update_branch:{name}:{commit}:force={force}"));
         if let Some(message) = inner.protected.get(name).cloned() {
+            if let Some(dir) = inner.dir_on_refusal.take() {
+                std::fs::create_dir_all(&dir).unwrap();
+            }
             return Err(RemoteError::BranchProtected {
                 branch: name.to_string(),
                 message,

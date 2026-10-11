@@ -2471,3 +2471,71 @@ both_backends!(
     a_rename_sent_again_announces_the_old_name_to_the_owner_only,
     a_rename_sent_again_announces_the_old_name_to_the_owner_only_body
 );
+
+/// Lock `name`'s MANIFEST on disk: the machine fixtures write
+/// `status: current` in every MANIFEST.
+fn lock(m: &Machine, dir: &str) {
+    let path = m.root.join(dir).join("MANIFEST.md");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        text.replacen("status: current\n", "status: current\nread_only: on\n", 1),
+    )
+    .unwrap();
+}
+
+/// A full rename leaves the links in a read-only domain as they are and
+/// lists them under `left_behind`, like a domain the caller cannot write
+/// (decision D7). The links still resolve through the alias the rename keeps.
+async fn a_link_in_a_locked_domain_is_left_behind_and_listed_body(store: Arc<Mutex<dyn Store>>) {
+    let f = full_machine(store, "").await;
+    let m = &f.m;
+    lock(m, "ops");
+    let pager_before = std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap();
+    let engine = m.engine(true).await;
+    let report = engine
+        .rename_domain("eng", "platform", false, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(report["rewritten"], serde_json::json!([]), "{report}");
+    assert_eq!(
+        report["left_behind"],
+        serde_json::json!([{ "domain": "ops", "path": "pager.md", "references": 3 }]),
+        "{report}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap(),
+        pager_before,
+        "the locked domain is untouched"
+    );
+}
+both_backends!(
+    a_link_in_a_locked_domain_is_left_behind_and_listed,
+    a_link_in_a_locked_domain_is_left_behind_and_listed_body
+);
+
+/// A `--local` rename writes nothing into the domain, so a read-only domain
+/// takes it (decision D6); a full rename writes its MANIFEST and is refused.
+async fn a_local_rename_of_a_locked_domain_is_allowed_body(store: Arc<Mutex<dyn Store>>) {
+    let m = machine(store).await;
+    lock(&m, "ops");
+    let manifest_before = std::fs::read(m.root.join("ops/MANIFEST.md")).unwrap();
+    let engine = m.engine(true).await;
+    let full = engine
+        .rename_domain("ops", "pages", false, &Scope::Unrestricted)
+        .await
+        .unwrap_err();
+    assert!(matches!(full, EngineError::DomainReadOnly(_)), "{full:?}");
+    engine
+        .rename_domain("ops", "pages", true, &Scope::Unrestricted)
+        .await
+        .expect("a local rename writes nothing into the domain");
+    assert_eq!(
+        std::fs::read(m.root.join("ops/MANIFEST.md")).unwrap(),
+        manifest_before
+    );
+}
+both_backends!(
+    a_local_rename_of_a_locked_domain_is_allowed,
+    a_local_rename_of_a_locked_domain_is_allowed_body
+);

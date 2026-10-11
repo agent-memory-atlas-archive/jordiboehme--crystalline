@@ -303,6 +303,32 @@ impl Engine {
         // `expected_checksum` against the bytes it read BEFORE this
         // conversion, which is what a read handed out.
         let mut apply = move |current: &str| apply(&crystalline_core::to_lf(current));
+        // A MANIFEST edit may switch read_only on, which is the owner's
+        // (decision D10, on every tier). The verdict is asked here, before any
+        // lock, because `domain_is_read_only` may take the store lock and
+        // `apply` cannot await. A domain that is read-only already is not a
+        // switch-on (only the owner's unlock reaches here for it).
+        let may_switch_on = !is_manifest_path(&desc.path)
+            || self.domain_is_read_only(&desc.domain).await
+            || self
+                .require_domain_owner_refusing(
+                    &desc.domain,
+                    scope,
+                    Self::owner_key_refusal(&desc.domain, crystalline_core::READ_ONLY_KEY),
+                )
+                .await
+                .is_ok();
+        let manifest_domain = desc.domain.clone();
+        let mut apply = move |current: &str| -> Result<String> {
+            let edited = apply(current)?;
+            if !may_switch_on && crystalline_core::read_only_of_source(&edited).is_on() {
+                return Err(Engine::owner_key_refusal(
+                    &manifest_domain,
+                    crystalline_core::READ_ONLY_KEY,
+                ));
+            }
+            Ok(edited)
+        };
         // **The live arm, and it comes before every other one.** While a
         // co-editing room is open over this document, the room's text IS the
         // engram: somebody has it on screen, the file and the row are both

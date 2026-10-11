@@ -3,6 +3,21 @@ import { describe, expect, it } from "vitest";
 import { readListing } from "./domains";
 
 describe("readListing", () => {
+  it("reads a row's read_only as this caller's write block, absent as writable", () => {
+    const listing = readListing({
+      domains: [
+        { name: "archive", read_only: true },
+        { name: "eng" },
+        { name: "old", read_only: false },
+      ],
+    });
+    expect(listing.domains.map((d) => d.writeBlocked)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+  });
+
   it("reads the mounted domains beside the local ones", () => {
     const listing = readListing({
       behavior: [],

@@ -342,6 +342,14 @@ pub enum EngineError {
     /// A content mutation was attempted against a read-only instance.
     #[error("this instance is read-only; content mutations are disabled")]
     ReadOnly,
+    /// A write into a domain whose MANIFEST says `read_only: on`. Carries
+    /// [`read_only_sentence`] for that domain, which names the one way back;
+    /// every surface speaks it unchanged except MCP's refusal of a switch-off
+    /// (`mcp_unlock_refusal` in the service crate). Raised only about a
+    /// domain the caller may see ([`Engine::refuse_read_only_domain`] screens
+    /// first), so it discloses nothing by existing.
+    #[error("{0}")]
+    DomainReadOnly(String),
     /// The caller is known, may see the thing they addressed, and is not
     /// allowed to do this to it. Distinct from [`EngineError::UnknownDomain`],
     /// which is what a caller who may not see it gets: this variant is only
@@ -966,6 +974,10 @@ pub struct Engine {
     // virtual-source write, and read here under the lock. Empty at construction
     // and for an engine that never serves MCP.
     routing_virtual: std::sync::RwLock<BTreeMap<String, Vec<String>>>,
+    // The virtual domains whose MANIFEST row says `read_only: on`, filled in
+    // the same pass as `routing_virtual` (`reload_virtual_manifests`). A file
+    // domain is never in here: its flag is read off `MANIFEST.md` on demand.
+    virtual_read_only: std::sync::RwLock<BTreeSet<String>>,
     // The name table over every registered domain: local names, the canonical
     // names MANIFESTs declare and machine-local aliases, each resolved to one
     // local name. Rebuilt from the registrations when `names_stale` is set and
@@ -1360,6 +1372,7 @@ pub use crate::scope::OWNER_IDENTITY_NAME;
 pub use domain_settings::{DOMAIN_SETTINGS_HOW, PolicyEdit, VIRTUAL_NO_RULES};
 #[cfg(any(test, feature = "testing"))]
 pub use names::SpellingPushFault;
+pub use write_block::WriteBlock;
 
 /// What a write is told when it reaches a domain that reviews changes before
 /// they land and nobody can say whose draft it would join.
@@ -2125,6 +2138,7 @@ impl Engine {
             github_tokens: Arc::default(),
             origin_poller: poller::OriginPollerState::default(),
             routing_virtual: std::sync::RwLock::new(BTreeMap::new()),
+            virtual_read_only: std::sync::RwLock::new(BTreeSet::new()),
             names: std::sync::RwLock::new((0, Arc::default())),
             names_generation: std::sync::atomic::AtomicU64::new(0),
             names_stale: std::sync::atomic::AtomicBool::new(true),
@@ -2647,6 +2661,31 @@ impl Engine {
             return Ok(crate::scope::DomainRight::Own);
         };
         access.write_right(scope, domain).await.map_err(|e| {
+            EngineError::Internal(format!("this domain's membership is unreadable: {e:#}"))
+        })
+    }
+
+    /// The account whose write list keeps `scope` from a step, when the list
+    /// is the reason. `needed` is `None` for the write question
+    /// ([`crate::scope::DomainAccess::write_list_excludes`]) and `Some(Own)` or
+    /// `Some(Manage)` for an owner or manager step
+    /// ([`crate::scope::DomainAccess::write_list_refuses`]). `None` when no
+    /// resolver is installed (the machine owner), and an unreadable store is an
+    /// error, never a permissive default.
+    pub async fn write_list_refusal(
+        &self,
+        scope: &crate::scope::Scope,
+        domain: &str,
+        needed: Option<crate::scope::DomainRight>,
+    ) -> Result<Option<String>> {
+        let Some(access) = self.domain_access.get() else {
+            return Ok(None);
+        };
+        let answer = match needed {
+            None => access.write_list_excludes(scope, domain).await,
+            Some(needed) => access.write_list_refuses(scope, domain, needed).await,
+        };
+        answer.map_err(|e| {
             EngineError::Internal(format!("this domain's membership is unreadable: {e:#}"))
         })
     }
@@ -3584,6 +3623,116 @@ impl Engine {
         self.domain_entry(name)
             .map(|entry| entry.is_overlay())
             .unwrap_or(false)
+    }
+
+    /// Whether `name` is a read-only domain: its MANIFEST as the team has it
+    /// (the folder for a file domain, the base row for a virtual one, never a
+    /// draft) says `read_only: on`. A name nobody registers is not read-only;
+    /// the verb that asked refuses it as unregistered anyway.
+    ///
+    /// Takes the store lock for a virtual domain whose cache was never filled,
+    /// so a caller must not hold the store guard across this call.
+    pub async fn domain_is_read_only(&self, name: &str) -> bool {
+        match self.content_source(name) {
+            Ok(ContentSource::File { root }) => crystalline_core::read_only_at(&root).is_on(),
+            Ok(ContentSource::Virtual) => {
+                if !self
+                    .virtual_names_loaded
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    self.reload_virtual_manifests().await;
+                }
+                self.virtual_read_only.read().unwrap().contains(name)
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Refuse a write into `name` while its MANIFEST says `read_only: on`.
+    ///
+    /// The one check every write path meets: the two write-view constructors
+    /// call it, the destination of a cross-domain move calls it, and the few
+    /// paths that write without a view call it by hand (the guard
+    /// `every_instance_write_guard_meets_the_domain_flag` pins that list).
+    ///
+    /// **Screened first.** A domain `scope` may not see is answered exactly as
+    /// an unregistered one, before the sentence can be reached: the refusal
+    /// names the domain, and naming a private domain to a stranger is the leak
+    /// the screen exists to close. The screen costs a visibility read only on
+    /// a domain that is read-only, so a writable domain pays one MANIFEST read.
+    pub async fn refuse_read_only_domain(
+        &self,
+        name: &str,
+        scope: &crate::scope::Scope,
+    ) -> Result<()> {
+        if !self.domain_is_read_only(name).await {
+            return Ok(());
+        }
+        self.require_domain(name, scope).await?;
+        Err(EngineError::DomainReadOnly(read_only_sentence(name)))
+    }
+
+    /// Every registered domain that is read-only right now.
+    pub async fn read_only_domain_names(&self) -> HashSet<String> {
+        let mut out = HashSet::new();
+        for name in self.registered_domain_entries().keys() {
+            if self.domain_is_read_only(name).await {
+                out.insert(name.clone());
+            }
+        }
+        out
+    }
+
+    /// The refusal an owner key earns from a caller who does not own the
+    /// domain. One spelling for the policies path and the MANIFEST text
+    /// paths, so a person reads the same rule whichever way they tried.
+    pub(crate) fn owner_key_refusal(domain: &str, key: &str) -> EngineError {
+        EngineError::Forbidden(format!(
+            "only the owner of '{domain}' or an instance admin may change `{key}`"
+        ))
+    }
+
+    /// Whether writing `after` as `domain`'s MANIFEST switches `read_only`
+    /// on: the base MANIFEST says off and `after` says on. Read against the
+    /// base and never a draft, so a draft that already says `on` is still a
+    /// switch-on at its next edit. The cheap text read goes first, so a
+    /// MANIFEST write that leaves the flag alone never reads the base.
+    pub(crate) async fn switches_read_only_on(&self, domain: &str, after: &str) -> bool {
+        crystalline_core::read_only_of_source(after).is_on()
+            && !self.domain_is_read_only(domain).await
+    }
+
+    /// Refuse a MANIFEST write that switches `read_only` on, unless `scope`
+    /// owns the domain or administers the instance (decision D10). Every
+    /// MANIFEST text writer calls it with the text it is about to write; the
+    /// policies path meets the same rule through its owner-key gate. The
+    /// anonymous open tier is refused too: the 0.24.3 open-tier rule does not
+    /// cover this key (spec A-1).
+    pub async fn refuse_read_only_switch_on(
+        &self,
+        domain: &str,
+        after: &str,
+        scope: &crate::scope::Scope,
+    ) -> Result<()> {
+        if !self.switches_read_only_on(domain, after).await {
+            return Ok(());
+        }
+        self.require_domain_owner_refusing(
+            domain,
+            scope,
+            Self::owner_key_refusal(domain, crystalline_core::READ_ONLY_KEY),
+        )
+        .await
+    }
+
+    /// Whether `identifier` names `domain`'s MANIFEST, resolved the way a
+    /// write resolves it. For the MCP handlers, which refuse every edit of a
+    /// read-only domain's MANIFEST in their own words (spec A-1).
+    pub async fn names_manifest(&self, domain: &str, identifier: &str) -> bool {
+        matches!(
+            self.resolve_in(identifier, domain).await,
+            Ok((desc, _)) if is_manifest_path(&desc.path)
+        )
     }
 
     /// Whose drafts a READ may lay over the base, for the verbs that answer
@@ -5269,6 +5418,7 @@ mod sync;
 mod transfer;
 mod validate;
 mod write;
+mod write_block;
 
 /// Rank a context slice by personalized PageRank so the neighbors on the
 /// shortest, best-connected paths back to the seeds surface first.
@@ -7381,8 +7531,16 @@ fn note_heading_stripped(receipt: &mut Value, stripped: Option<String>) {
     }
 }
 
+/// The sentence a read-only domain refuses a write with:
+/// `'<domain>' is read-only; its owner switches read_only off in the domain policies`.
+/// One spelling for the engine, REST, Fluid and the write-block reason
+/// (`WriteBlock::DomainLocked`).
+pub fn read_only_sentence(domain: &str) -> String {
+    format!("'{domain}' is read-only; its owner switches read_only off in the domain policies")
+}
+
 /// Whether a domain-relative path is the domain's MANIFEST.
-fn is_manifest_path(rel: &str) -> bool {
+pub(crate) fn is_manifest_path(rel: &str) -> bool {
     rel == "MANIFEST.md"
 }
 

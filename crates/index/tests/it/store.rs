@@ -203,6 +203,56 @@ parity!(
     full_sync_counts
 );
 
+/// A rewritten engram keeps the tags of the observations it has now and none
+/// of the ones it had, on both backends.
+async fn a_rewrite_replaces_the_observation_tags(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.md");
+    std::fs::write(
+        &path,
+        engram(
+            "A",
+            "a",
+            "engram",
+            "",
+            "- [fact] one #old\n- [fact] two #old #both",
+        ),
+    )
+    .unwrap();
+    sync_domain(store, "d", dir.path()).await.unwrap();
+    // Longer, so the size moves and the stamp prefilter cannot skip it.
+    std::fs::write(
+        &path,
+        engram(
+            "A",
+            "a",
+            "engram",
+            "",
+            "- [fact] one again #new\n- [fact] two #both",
+        ),
+    )
+    .unwrap();
+    let report = sync_domain(store, "d", dir.path()).await.unwrap();
+    assert_eq!(report.updated, 1, "the engram was rewritten: {report:?}");
+    let vocab = store.vocabulary(Some("d"), None).await.unwrap();
+    let on_observations = |name: &str| {
+        vocab
+            .tags
+            .iter()
+            .find(|t| t.name == name)
+            .map(|t| t.observations)
+            .unwrap_or(0)
+    };
+    assert_eq!(on_observations("old"), 0, "{:?}", vocab.tags);
+    assert_eq!(on_observations("new"), 1, "{:?}", vocab.tags);
+    assert_eq!(on_observations("both"), 1, "{:?}", vocab.tags);
+}
+
+parity!(
+    a_rewrite_replaces_the_observation_tags_on_both_backends,
+    a_rewrite_replaces_the_observation_tags
+);
+
 /// A MANIFEST body with a `## Provisioning` section declaring `decl`, so the
 /// exclusion tests can point sync at a real domain root.
 fn provisioning_manifest(decl: &str) -> String {
@@ -10376,6 +10426,65 @@ parity!(
     reresolution_follows_the_row
 );
 
+/// Dropping a draft unbinds every reference that named it, wherever that
+/// reference lives, the way deleting a base row does.
+///
+/// Alice's page `plan` exists only as her draft in `d`, and her draft in `e`
+/// links to it across domains. The engine's own pass after a discard
+/// re-resolves her references in `d` alone, so the link in `e` goes back to
+/// pending only if the store unbinds it as the row goes. Before that it read
+/// as bound to a row nobody holds.
+async fn dropping_a_draft_unbinds_what_named_it(store: &dyn Store) {
+    let d_dir = tempfile::tempdir().unwrap();
+    let e_dir = tempfile::tempdir().unwrap();
+    let d = store
+        .upsert_domain("d", Some(&d_dir.path().to_string_lossy()), DomainKind::File)
+        .await
+        .unwrap();
+    let e = store
+        .upsert_domain("e", Some(&e_dir.path().to_string_lossy()), DomainKind::File)
+        .await
+        .unwrap();
+    let plan = draft(
+        store,
+        d,
+        "alice",
+        "plan.md",
+        &engram("Rollout plan", "plan", "engram", "", "plain\n"),
+    )
+    .await;
+    let pointer = draft(
+        store,
+        e,
+        "alice",
+        "pointer.md",
+        &engram("Pointer", "pointer", "engram", "", "See [[d:plan]].\n"),
+    )
+    .await;
+    store.reresolve_actor_references(e, "alice").await.unwrap();
+    assert!(all_bound(store, pointer).await, "her link starts out bound");
+    assert!(
+        binds_to(store, pointer, Some("alice"), plan).await,
+        "to her own draft of the plan"
+    );
+
+    assert!(
+        store
+            .clear_overlay_entry(d, "alice", "plan.md")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !all_bound(store, pointer).await,
+        "the link that named the dropped draft reads as pending again, not as bound \
+         to a row nobody holds"
+    );
+}
+parity!(
+    dropping_a_draft_unbinds_every_reference_that_named_it,
+    dropping_a_draft_unbinds_what_named_it
+);
+
 /// The vocabulary is the team's everywhere a person is shown it, and the
 /// reader's own only where a finding is about what they wrote.
 ///
@@ -10489,10 +10598,11 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
         census.failures.join("\n")
     );
     assert_eq!(
-        census.sites, 172,
+        census.sites, 174,
         "the engram statement census moved; every new one needs a predicate or a waiver. \
-         70 per backend in mod.rs (the `engram_meta_value` delete of `clear_domain` is the \
-         newest, waived below with the rest of that clear; before it the two unbinding \
+         71 per backend in mod.rs (the permalink arm of `UPSERT_PROBE_SQL` is the \
+         newest, on the caller's own actor; before it the `engram_meta_value` delete of \
+         `clear_domain`, waived below with the rest of that clear; before that the two unbinding \
          statements of `clear_domain`, also waived; before them the guarded compare \
          of `upsert_engram_checked` is the \
          newest, on the base row; before it the two `EXISTS` probes of the contradiction \

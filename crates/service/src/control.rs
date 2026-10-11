@@ -244,7 +244,14 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
             let domains: Vec<Value> = routing
                 .domains
                 .iter()
-                .map(|m| json!({ "name": m.local, "source": m.source, "bullets": m.bullets }))
+                .map(|m| {
+                    json!({
+                        "name": m.local,
+                        "source": m.source,
+                        "bullets": m.bullets,
+                        "domain_read_only": m.domain_read_only,
+                    })
+                })
                 .collect();
             let mut answer = json!({ "domains": domains, "stale": routing.stale });
             if let Some(shadowed) = shadowed {

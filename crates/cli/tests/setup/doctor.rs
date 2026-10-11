@@ -558,6 +558,51 @@ fn the_fix_on_a_read_only_instance_writes_nothing() {
     );
 }
 
+/// A read-only domain never has a file written, doctor included: --fix
+/// leaves the repeat in place and says why, in the domain's own sentence.
+#[test]
+fn doctor_fix_leaves_a_read_only_domain_and_says_why() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let db = work.path().join("index.db");
+    let domain_dir = setup_domain(work.path(), "eng", &config);
+    write(&domain_dir, "dup.md", REPEATED_STATUS);
+    let manifest = domain_dir.join("MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+
+    let mut cmd = bin();
+    let _home = shield_ambient_home(&mut cmd);
+    let stdout = String::from_utf8(
+        cmd.args(["doctor", "--fix", "--config"])
+            .arg(&config)
+            .args(["--db"])
+            .arg(&db)
+            .assert()
+            .code(1)
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(
+        stdout.contains(
+            "'eng' is read-only; its owner switches read_only off in the domain policies"
+        ),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("rerun with --fix"), "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(domain_dir.join("dup.md")).unwrap(),
+        REPEATED_STATUS,
+        "--fix leaves a read-only domain's files alone"
+    );
+}
+
 /// The plain invocation on a machine with no daemon: nothing to ask, so the
 /// index is opened here and every index-backed check runs exactly as it
 /// always did. The daemon route must not change what a person sees when there
@@ -812,6 +857,38 @@ fn reports_a_manifest_policy_value_nobody_recognizes_and_what_it_reads_as() {
             .unwrap()
             .contains("sharing: dirct"),
         "--fix does nothing here"
+    );
+}
+
+/// The read_only switch is a registry key, so a value nobody recognizes is a
+/// policy problem the doctor names, read as off.
+#[test]
+fn reports_an_unrecognized_read_only_value_as_off() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let db = work.path().join("index.db");
+    let domain_dir = setup_domain(work.path(), "eng", &config);
+    write(
+        &domain_dir,
+        "MANIFEST.md",
+        "---\ntype: manifest\ntitle: eng\npermalink: manifest\ntags:\n  - manifest\nstatus: stable\nrecorded_at: 2026-01-01\nread_only: yes\n---\n\n# eng\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n",
+    );
+    let mut cmd = bin();
+    let _home = shield_ambient_home(&mut cmd);
+    let out = cmd
+        .args(["--json", "doctor", "--config"])
+        .arg(&config)
+        .args(["--db"])
+        .arg(&db)
+        .assert()
+        .get_output()
+        .stdout
+        .clone();
+    let report: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        report["domains"][0]["policy_problems"],
+        serde_json::json!([{ "key": "read_only", "declared": "yes", "read_as": "off" }]),
+        "{report}"
     );
 }
 
@@ -3106,4 +3183,57 @@ fn skill_dirs(folder: &Path) -> usize {
         .unwrap()
         .filter(|e| e.as_ref().unwrap().path().join("SKILL.md").is_file())
         .count()
+}
+
+/// Every caller of `Store::delete_engram` outside the index crate runs it in a
+/// transaction of its own: a delete is the row, its children and the
+/// unbinding of every reference that named it, and on turso those land
+/// together only inside `begin`/`commit`. A source scan, because an
+/// interruption between those statements is not something a test can
+/// provoke on purpose. Three callers: `Engine::delete`, the cross-domain
+/// move and `doctor --fix`'s orphan removal.
+#[test]
+fn every_delete_engram_caller_holds_a_transaction() {
+    let files: &[(&str, &str)] = &[
+        ("cli/src/doctor.rs", include_str!("../../src/doctor.rs")),
+        (
+            "engine/src/engine/move_.rs",
+            include_str!("../../../engine/src/engine/move_.rs"),
+        ),
+        (
+            "engine/src/engine/delete.rs",
+            include_str!("../../../engine/src/engine/delete.rs"),
+        ),
+    ];
+    let mut sites = 0;
+    for (name, source) in files {
+        let lines: Vec<&str> = source.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains(".delete_engram(") || line.trim_start().starts_with("//") {
+                continue;
+            }
+            sites += 1;
+            let before = &lines[i.saturating_sub(12)..i];
+            let after = &lines[i + 1..(i + 16).min(lines.len())];
+            assert!(
+                before.iter().any(|l| l.contains(".begin().await")),
+                "{name}:{}: delete_engram runs with no begin() in the 12 lines above it",
+                i + 1
+            );
+            assert!(
+                after.iter().any(|l| l.contains(".commit().await")),
+                "{name}:{}: delete_engram has no commit() in the 15 lines below it",
+                i + 1
+            );
+            assert!(
+                after.iter().any(|l| l.contains(".rollback().await")),
+                "{name}:{}: delete_engram has no rollback() in the 15 lines below it",
+                i + 1
+            );
+        }
+    }
+    assert_eq!(
+        sites, 3,
+        "the delete_engram callers moved; a new one needs its own transaction"
+    );
 }

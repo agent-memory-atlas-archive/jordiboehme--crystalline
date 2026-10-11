@@ -253,6 +253,41 @@ async fn collaboration_and_machine_local_tools_refuse_a_mounted_domain() {
     );
 }
 
+/// T4-b: configure on a mounted domain is refused over stdio in the router's
+/// words, for the view and for a change alike, and nothing is written on
+/// this machine. A local domain still answers its view.
+#[tokio::test]
+async fn a_stdio_configure_on_a_mounted_domain_says_to_change_it_on_its_server() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    for args in [
+        json!({ "domain": "open" }),
+        json!({ "domain": "open", "set": { "sharing": "direct" } }),
+        json!({ "domain": "open", "unset": ["rules.E007"] }),
+    ] {
+        let refused = call(client.peer(), "configure", args.clone())
+            .await
+            .unwrap_err();
+        assert!(
+            refused.contains(
+                "'open' comes from acme; configure changes this machine's own domains, so change 'open' on acme itself"
+            ),
+            "{args}: {refused}"
+        );
+    }
+    assert!(
+        !machine.tmp.path().join("open").exists(),
+        "nothing local was created"
+    );
+    let local = call(client.peer(), "configure", json!({ "domain": "notes" }))
+        .await
+        .unwrap();
+    assert_eq!(local["domain"], "notes", "{local}");
+}
+
 /// The write receipt keeps the server's page address, never this machine's.
 #[tokio::test]
 async fn a_mounted_write_keeps_the_servers_page_address() {

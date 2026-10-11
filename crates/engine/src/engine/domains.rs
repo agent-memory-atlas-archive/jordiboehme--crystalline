@@ -125,6 +125,11 @@ impl Engine {
     /// present, `false` when nothing is paused, so a list-shaped rendering of
     /// this array keeps one uniform set of columns.
     ///
+    /// `read_only` is the exception to that rule: a row carries
+    /// `read_only: true` only when this caller cannot write in the domain
+    /// ([`Engine::write_block`] is `Some`), and leaves the key out otherwise,
+    /// never `false` (spec A-5).
+    ///
     /// The rows come back sorted by name, case-insensitively, so the sidebar
     /// and the CLI inherit one order rather than settling it three times.
     /// Registration order is what the config map preserves and it is
@@ -177,6 +182,13 @@ impl Engine {
         for (name, entry) in listed {
             let source = self.source_of(entry);
             let s = stats.iter().find(|d| &d.name == name);
+            // Whether THIS caller can write here (spec A-5): the domain lock, a
+            // viewer's role or a domain off the caller's write list all say
+            // no. Asked through the write gate's own answer, so the MCP open
+            // tier, which writes through its carve-out, is marked only where
+            // the domain is locked or reviews changes. One rights question
+            // per row.
+            let blocked = self.write_block(scope, name).await?.is_some();
             let mut obj = json!({
                 "name": name,
                 "kind": if entry.is_virtual() { "virtual" } else { "file" },
@@ -222,6 +234,12 @@ impl Engine {
                         .is_some_and(|holder| !hidden.contains(holder)),
                 "renaming": self.is_renaming(name),
             });
+            // Present only when true: "you cannot write here", for whatever
+            // reason; a writable row keeps the columns it always had. Not the
+            // top-level `read_only` other answers carry for the instance.
+            if blocked {
+                obj["read_only"] = json!(true);
+            }
             // What THIS caller is holding in a domain that reviews changes, so
             // a screen can say "you have work waiting here" off the listing it
             // already reads. It rides here rather than only on the domain's
@@ -386,11 +404,16 @@ impl Engine {
     /// the checksum of the empty text creates it: the file for a file
     /// domain, the `MANIFEST.md` row for a virtual one. Any other token is a
     /// stale edit, and so is a second create with the empty token.
+    ///
+    /// `scope` decides the read-only screen and the switch-on (decision D10):
+    /// on a read-only domain the editor is refused like every other write,
+    /// and an off-to-on MANIFEST is the owner's or an instance admin's.
     pub async fn save_manifest(
         &self,
         domain: &str,
         markdown: &str,
         expected_checksum: &str,
+        scope: &crate::scope::Scope,
     ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
@@ -413,6 +436,12 @@ impl Engine {
                     .into(),
             ));
         }
+        // The MANIFEST editor writes the whole document, so on a read-only
+        // domain it is refused like every other write; the switch-off goes
+        // through the domain policies, which is what the sentence says.
+        self.refuse_read_only_domain(domain, scope).await?;
+        self.refuse_read_only_switch_on(domain, markdown, scope)
+            .await?;
 
         let (rel, created) = match self.content_source(domain)? {
             ContentSource::File { root } => {
@@ -626,8 +655,8 @@ impl Engine {
     /// disk keeps navigating statically after a mutation or a sync.
     ///
     /// Silently does nothing for a virtual domain (no files to navigate), for a
-    /// read-only engine (the curating side owns the index files) and while the
-    /// `index.files` setting is off. The pass itself is idempotent: a
+    /// read-only engine (the curating side owns the index files), for a
+    /// read-only domain and while the `index.files` setting is off. The pass itself is idempotent: a
     /// regeneration that renders the same bytes writes nothing, so an unchanged
     /// index file keeps its mtime and the watcher stays quiet. Failures are
     /// logged, never propagated: a generated navigation file is a convenience,
@@ -640,6 +669,13 @@ impl Engine {
         let ContentSource::File { root } = self.read_source(domain) else {
             return;
         };
+        // Nothing is written into a read-only domain, and a listing
+        // regenerated after a pull would be an unshared change that can never
+        // be shared. A file domain, so this is a MANIFEST read and never the
+        // store lock.
+        if self.domain_is_read_only(domain).await {
+            return;
+        }
         let name = domain.to_string();
         // A full walk plus one read per engram is blocking IO, so it runs on the
         // blocking pool rather than on a runtime worker.
@@ -742,6 +778,7 @@ impl Engine {
                             name: m.local.clone(),
                             bullets: m.bullets.clone(),
                             preferred: false,
+                            read_only: m.domain_read_only,
                         }),
                 );
         }
@@ -825,8 +862,32 @@ impl Engine {
                 .collect()
         };
         let mut output = crystalline_core::generate_prompt_unscoped(&global, &virtual_bullets);
+        // A file domain's lock came off its MANIFEST in core; a virtual
+        // one's is in the cache the same refresh fills for its bullets. The
+        // scoped blocks then mark per caller (`mark_unwritable_rows`).
+        let locked = self.virtual_read_only.read().unwrap().clone();
+        for domain in &mut output.domains {
+            if locked.contains(&domain.name) {
+                domain.read_only = true;
+            }
+        }
         output.read_only = self.read_only();
         output
+    }
+
+    /// Mark every local routing row `scope` cannot write in as read-only:
+    /// the lock, a viewer's role, a domain off the caller's write list (spec
+    /// A-5, B-6), from the same `write_block` the listing asks. Mounted rows
+    /// are appended after this and keep what their server said (Task 19).
+    async fn mark_unwritable_rows(
+        &self,
+        output: &mut crystalline_core::PromptOutput,
+        scope: &crate::scope::Scope,
+    ) -> Result<()> {
+        for domain in &mut output.domains {
+            domain.read_only = self.write_block(scope, &domain.name).await?.is_some();
+        }
+        Ok(())
     }
 
     /// [`Engine::routing_text`] for a caller who may not see every domain: the
@@ -847,11 +908,13 @@ impl Engine {
     /// era's own instructions channel (`server/discover`) does carry a request
     /// context, and the `onboarding` prompt carries one too, so both are
     /// scoped through here.
+    ///
+    /// Each domain this caller cannot write is marked (read-only).
     pub async fn routing_text_scoped(&self, scope: &crate::scope::Scope) -> Result<String> {
         let hidden = self.hidden_for(scope).await?;
-        Ok(crystalline_core::render_instructions(
-            &self.routing_output(&hidden),
-        ))
+        let mut output = self.routing_output(&hidden);
+        self.mark_unwritable_rows(&mut output, scope).await?;
+        Ok(crystalline_core::render_instructions(&output))
     }
 
     /// [`Engine::routing_text_scoped`] for this machine's owner: the same
@@ -866,6 +929,7 @@ impl Engine {
     ) -> Result<String> {
         let hidden = self.hidden_for(scope).await?;
         let mut output = self.routing_output(&hidden);
+        self.mark_unwritable_rows(&mut output, scope).await?;
         self.append_mounts(&mut output);
         Ok(crystalline_core::render_instructions(&output))
     }
@@ -879,7 +943,9 @@ impl Engine {
         scope: &crate::scope::Scope,
     ) -> Result<crystalline_core::PromptOutput> {
         let hidden = self.hidden_for(scope).await?;
-        Ok(self.routing_output(&hidden))
+        let mut output = self.routing_output(&hidden);
+        self.mark_unwritable_rows(&mut output, scope).await?;
+        Ok(output)
     }
 
     // --- browse --------------------------------------------------------------
@@ -979,14 +1045,20 @@ impl Engine {
             })
             .collect();
 
-        Ok(json!({
+        let mut out = json!({
             "domain": p.domain,
             "path": raw,
             "folders": level.folders,
             "engrams": entries,
             "truncated": truncated,
             "total": level.total,
-        }))
+        });
+        // `read_only: true` when this caller cannot write in the domain (spec
+        // A-5), the same answer the listing's row gives; left out otherwise.
+        if self.write_block(scope, &p.domain).await?.is_some() {
+            out["read_only"] = json!(true);
+        }
+        Ok(out)
     }
 }
 

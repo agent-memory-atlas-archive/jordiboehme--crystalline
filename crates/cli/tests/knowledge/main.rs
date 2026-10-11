@@ -13,5 +13,6 @@ mod data;
 mod env_domains;
 mod import;
 mod index_access;
+mod read_only;
 mod tags;
 mod verify;

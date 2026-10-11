@@ -248,6 +248,7 @@ async fn refuse_below(
             ApiError::internal(format!("this domain's membership is unreadable: {e:#}"))
         })?;
     if right < min {
+        crate::refuse_off_write_list(state, identity, domain, Some(min)).await?;
         return Err(ApiError::forbidden(format!(
             "your membership on this domain is {}, and {needed} access is required",
             super::member_level_word(right)

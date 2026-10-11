@@ -1334,7 +1334,8 @@ async fn the_manifest_read_carries_the_policies_and_the_patch_writes_one() {
         serde_json::json!([
             { "key": "generated_indexes", "kind": "choice", "declared": null, "effective": "local", "values": ["local", "shared"], "default": "local", "meaning": "Whether the generated folder listings travel with a share.", "changed_by": "owner" },
             { "key": "sharing", "kind": "choice", "declared": null, "effective": "proposal", "values": ["proposal", "direct"], "default": "proposal", "meaning": "Whether a share opens a proposal for review or commits straight to the branch.", "changed_by": "owner" },
-            { "key": "domain_name", "kind": "text", "declared": null, "effective": "kb", "values": [], "default": "", "meaning": "The name this domain is known by everywhere; links from other domains use it.", "changed_by": "owner" }
+            { "key": "domain_name", "kind": "text", "declared": null, "effective": "kb", "values": [], "default": "", "meaning": "The name this domain is known by everywhere; links from other domains use it.", "changed_by": "owner" },
+            { "key": "read_only", "kind": "choice", "declared": null, "effective": "off", "values": ["off", "on"], "default": "off", "meaning": "Whether every change to this domain through Crystalline is refused; pulls from the team still apply.", "changed_by": "owner" }
         ]),
         "{body}"
     );
@@ -5310,4 +5311,51 @@ async fn no_rest_response_carries_an_operator_setting() {
             );
         }
     }
+}
+
+/// The REST twin of the MCP refusal stays open for a person: on a team
+/// domain whose lock was switched on here, discarding the MANIFEST puts the
+/// team's copy back and so switches the lock off (spec A-1). Over MCP the
+/// same discard is refused (`mcp_collab`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_person_unlocks_a_locally_locked_team_domain_by_discarding_the_manifest() {
+    let (fx, _mock) = serve_team_with_mock().await;
+    let admin = login(fx.addr, "root", "rootpw").await;
+    register_kb(&fx, &admin).await;
+    let kb_root = fx._tmp.path().join("domains-root").join("kb");
+    let manifest_path = kb_root.join("MANIFEST.md");
+    let team = std::fs::read_to_string(&manifest_path).unwrap();
+    std::fs::write(
+        &manifest_path,
+        team.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+    as_session(
+        fx.addr,
+        reqwest::Method::POST,
+        "/api/v1/domains/kb/sync",
+        &admin,
+    )
+    .send()
+    .await
+    .unwrap();
+
+    let report = as_session(
+        fx.addr,
+        reqwest::Method::POST,
+        "/api/v1/domains/kb/changes/discard",
+        &admin,
+    )
+    .json(&serde_json::json!({ "paths": [{ "path": "MANIFEST.md" }] }))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(report.status(), 200, "{}", report.text().await.unwrap());
+    let report: serde_json::Value = report.json().await.unwrap();
+    assert_eq!(
+        report["restored"],
+        serde_json::json!(["MANIFEST.md"]),
+        "{report}"
+    );
+    assert_eq!(std::fs::read_to_string(&manifest_path).unwrap(), team);
 }

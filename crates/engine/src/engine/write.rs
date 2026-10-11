@@ -486,6 +486,14 @@ impl Engine {
         let (markdown, domain_names_normalized) = self
             .normalize_domain_spellings_for(&crystalline_core::to_lf(&markdown), scope)
             .await?;
+        // A capture that lands on a virtual domain's MANIFEST replaces it
+        // (Ruling I2), so it meets the switch-on rule every MANIFEST writer
+        // meets (decision D10): here, ahead of all three arms below and with
+        // no lock in hand.
+        if path.eq_ignore_ascii_case("MANIFEST.md") {
+            self.refuse_read_only_switch_on(&p.domain, &markdown, scope)
+                .await?;
+        }
 
         let mut receipt = json!({
             "domain": p.domain,
@@ -952,6 +960,10 @@ impl Engine {
             }
             Err(e) => return Err(e),
         };
+        if is_manifest_path(&desc.path) {
+            self.refuse_read_only_switch_on(&p.domain, &p.content, scope)
+                .await?;
+        }
         // A reserved name never resolves to an engram today (sync skips both),
         // so this is defence in depth rather than a reachable branch: the
         // generated `index.md` is derived from its folder and would be
@@ -1148,6 +1160,8 @@ impl Engine {
         // A room that was open when its domain became hidden saves nothing
         // into the hidden copy (decision D19).
         self.refuse_shadowed(view.domain())?;
+        self.refuse_read_only_domain(view.domain(), &crate::scope::Scope::Unrestricted)
+            .await?;
         refuse_not_an_engram(&p.content)?;
         let (desc, source) = view.resolve(&p.identifier).await?;
         if desc.path != expected_path {
@@ -1299,6 +1313,10 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        if is_manifest_path(&normalize_rel(path)) {
+            self.refuse_read_only_switch_on(domain, content, scope)
+                .await?;
+        }
         let view = DomainView::for_write(self, domain, scope).await?;
         self.restore_engram_in_view(&view, domain, path, content)
             .await
@@ -1321,6 +1339,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         let overlay = view.actor();
         // Restored as LF, the one line ending anything is stored with.
         let content = crystalline_core::to_lf(content);
@@ -1601,6 +1621,16 @@ impl Engine {
             // than a failure. A read crossed the grant and got what the grant
             // is for; only a write needed the second step, and only a write is
             // refused by this sentence.
+            if let Some(account) = access
+                .write_list_excludes(scope, &domain)
+                .await
+                .map_err(|e| EngineError::Internal(e.to_string()))?
+            {
+                return Ok(OpenedLink::ReadOnly(format!(
+                    "you may read {owner}'s draft of '{path}' and not edit it: {}",
+                    super::WriteBlock::WriteList { account }.sentence(&domain)
+                )));
+            }
             return Ok(OpenedLink::ReadOnly(format!(
                 "you may read {owner}'s draft of '{path}' and not edit it: your access on \
                  '{domain}' is {}, and editing somebody's draft needs the same editor access \

@@ -1946,7 +1946,13 @@ async fn an_open_proposal_refuses_a_direct_share_and_writes_nothing() {
     mock.set_proposal_state(7, ProposalState::Open);
     let before = mock.calls().len();
     match share_direct(&mock, &sub, direct()).await {
-        ProposeOutcome::ProposalOpen { number, url, title } => {
+        ProposeOutcome::ProposalOpen {
+            number,
+            url,
+            title,
+            own,
+        } => {
+            assert!(own, "an unattributed proposal counts as every login's own");
             assert_eq!(number, 7);
             assert_eq!(url, "https://example.test/pull/7");
             assert_eq!(title, "Share proposal 7");
@@ -2244,6 +2250,47 @@ async fn a_refused_direct_share_records_the_refusal_and_opens_nothing() {
             .iter()
             .any(|c| c.starts_with("create_proposal"))
     );
+}
+
+/// T9-b: a refusal that cannot be remembered is still answered. The state
+/// save fails after the branch refused the commit, and the share answers
+/// BranchProtected instead of an error. Nothing is recorded, so the next
+/// share tries the direct commit again.
+#[tokio::test]
+async fn a_refusal_that_cannot_be_saved_still_answers_branch_protected() {
+    let mock = MockProvider::new();
+    let (sub, c1) = direct_domain(&mock).await;
+    mock.protect_branch("main", "Changes must be made through a pull request.");
+    let blocker = sub
+        .state_dir
+        .join(format!("state.json.tmp.{}", std::process::id()));
+    mock.make_dir_when_refused(&blocker);
+    let outcome = propose(
+        &mock,
+        &share_spec(),
+        &sub.domain_root,
+        "Brand Team",
+        &sub.state_dir,
+        direct(),
+    )
+    .await;
+    match outcome {
+        Ok(ProposeOutcome::BranchProtected {
+            branch,
+            message,
+            offers_proposal,
+        }) => {
+            assert_eq!(branch, "main");
+            assert_eq!(message, "Changes must be made through a pull request.");
+            assert!(offers_proposal);
+        }
+        other => panic!("expected BranchProtected, got {other:?}"),
+    }
+    assert!(blocker.is_dir(), "the save really was blocked");
+    std::fs::remove_dir(&blocker).unwrap();
+    let st = load_state(&sub.state_dir);
+    assert!(st.direct_refused.is_empty(), "the refusal was not saved");
+    assert_eq!(st.base_commit, c1);
 }
 
 fn choosing(as_proposal: Option<bool>) -> ShareOptions<'static> {
@@ -2686,19 +2733,67 @@ async fn as_proposal_does_not_reach_another_logins_open_proposal() {
     }
     let plan = preview_direct_share(&mock, &sub, by("bob", choosing(Some(true)))).await;
     assert!(
-        matches!(plan.action, PlannedAction::ProposalOpen { number, .. } if number == alice),
+        matches!(plan.action, PlannedAction::ProposalOpen { number, own: false, .. } if number == alice),
         "{:?}",
         plan.action
     );
     let before = mock.calls().len();
     match share_direct(&mock, &sub, by("bob", choosing(Some(true)))).await {
-        ProposeOutcome::ProposalOpen { number, .. } => assert_eq!(number, alice),
+        ProposeOutcome::ProposalOpen { number, own, .. } => {
+            assert_eq!(number, alice);
+            assert!(!own, "Alice's proposal is not Bob's own");
+        }
         other => panic!("expected ProposalOpen, got {other:?}"),
     }
     assert!(!mock.calls()[before..].iter().any(|c| is_write_call(c)));
     let st = load_state(&sub.state_dir);
     assert_eq!(st.proposals.len(), 1);
     assert_eq!(st.proposals[0].author_login.as_deref(), Some("alice"));
+}
+
+/// N1: with conflicts pending and only another person's proposal open, the
+/// preview answers the conflicts, the way the share does.
+#[tokio::test]
+async fn the_preview_reports_conflicts_before_another_logins_open_proposal() {
+    let mock = MockProvider::new();
+    let (sub, c1) = direct_domain(&mock).await;
+    let alice = match share_direct(&mock, &sub, by("alice", choosing(Some(true)))).await {
+        ProposeOutcome::Proposed(report) => report.number,
+        other => panic!("expected Proposed, got {other:?}"),
+    };
+    // A same-line conflict, recorded by the pull the preview runs.
+    write(&sub.domain_root.join("notes/keep.md"), b"keep LOCAL\n");
+    let c2 = mock.add_commit(
+        sub_commit_files(&[
+            ("MANIFEST.md", DIRECT_MANIFEST),
+            ("notes/keep.md", b"keep UPSTREAM\n"),
+            ("notes/edit.md", b"before\n"),
+            ("notes/gone.md", b"bye\n"),
+        ]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+
+    let plan = preview_direct_share(&mock, &sub, by("bob", choosing(Some(true)))).await;
+    assert!(
+        matches!(plan.action, PlannedAction::ConflictsPending { count: 1 }),
+        "the conflicts come first, not proposal #{alice}: {:?}",
+        plan.action
+    );
+    let err = propose(
+        &mock,
+        &share_spec(),
+        &sub.domain_root,
+        "Brand Team",
+        &sub.state_dir,
+        by("bob", choosing(Some(true))),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, RemoteError::ConflictsPending { count: 1 }),
+        "{err}"
+    );
 }
 
 /// A named proposal of another login is not amended on a direct domain,
@@ -2914,7 +3009,8 @@ async fn propose_preview_on_a_direct_domain_names_the_commit_and_the_refusals() 
         PlannedAction::ProposalOpen {
             number: 9,
             url: "https://example.test/pull/9".to_string(),
-            title: "Share proposal 9".to_string()
+            title: "Share proposal 9".to_string(),
+            own: true
         }
     );
     assert_eq!(plan.effective_title, "");
@@ -11433,6 +11529,40 @@ async fn a_withdrawn_share_keeps_its_branch_while_a_pull_request_is_based_on_it(
     let entry = queued(&state, &layers[1].branch);
     assert_eq!(entry.why, RetireWhy::Withdrawn);
     assert_eq!(entry.onto, layers[0].branch, "the layer below");
+    assert_eq!(kept_as(entry), Some((KeptKind::Base, Some(suggestion))));
+}
+
+/// M32: a layer the forge declined is queued by the repair as declined, with
+/// its pull requests belonging on the layer below it. A suggestion based on its branch keeps the branch, so the entry
+/// stays to be read.
+#[tokio::test]
+async fn a_repair_queues_a_declined_layer_as_declined() {
+    let mock = MockProvider::new();
+    mock.enable_stacks();
+    mock.close_proposals_when_their_base_is_deleted();
+    let (sub, layers) = stacked_three_layers(&mock).await;
+    let suggestion = stacked_layer(&mock, "suggest-62", &layers[1].branch).await;
+
+    mock.set_proposal_state(layers[1].number, ProposalState::Declined);
+    pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .unwrap();
+    assert!(
+        load_state(&sub.state_dir)
+            .retire_queue
+            .iter()
+            .all(|entry| entry.branch != layers[1].branch),
+        "the pull alone queues nothing"
+    );
+    stacked_withdraw(&mock, &sub, Some(layers[0].number), false).await;
+
+    let state = load_state(&sub.state_dir);
+    let entry = queued(&state, &layers[1].branch);
+    assert_eq!(entry.why, RetireWhy::Declined);
+    assert_eq!(
+        entry.onto, layers[0].branch,
+        "the layer below, read before the withdraw's first call"
+    );
     assert_eq!(kept_as(entry), Some((KeptKind::Base, Some(suggestion))));
 }
 

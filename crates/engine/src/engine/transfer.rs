@@ -74,6 +74,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         if let ContentSource::File { .. } = self.content_source(domain)? {
             return Err(EngineError::Invalid(format!(
                 "domain import loads into a virtual domain; '{domain}' is a file domain. \
@@ -88,6 +90,17 @@ impl Engine {
         }
 
         let files = walk_markdown(src);
+        // A MANIFEST in the batch that switches `read_only` on meets the owner
+        // check (decision D10) once, before anything is written: asked inside
+        // the loop, a refusal would land after every file that sorts before
+        // `MANIFEST.md` was already imported. A MANIFEST that cannot be read
+        // is left to the loop, which warns about it and imports nothing for it.
+        if let Some((_, abs)) = files.iter().find(|(rel, _)| is_manifest_path(rel))
+            && let Ok(text) = std::fs::read_to_string(abs)
+        {
+            self.refuse_read_only_switch_on(domain, &text, &crate::scope::Scope::Unrestricted)
+                .await?;
+        }
         let store = self.store.lock().await;
         let domain_id = store
             .upsert_domain(domain, None, DomainKind::Virtual)
@@ -164,6 +177,16 @@ impl Engine {
             }
         }
 
+        // A virtual domain's MANIFEST lives in the database, so its routing
+        // bullets, its declared name and its read_only flag are cached; an
+        // import that wrote one refreshes the cache, as every other virtual
+        // MANIFEST write does.
+        if announced
+            .iter()
+            .any(|change| is_manifest_path(&change.path))
+        {
+            self.refresh_routing_cache().await;
+        }
         self.announce_paths(domain, announced, None);
         Ok(json!({
             "domain": domain,
@@ -200,6 +223,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         // An import writes the folder the team shares under an admin's hand,
         // and a domain that reviews changes has no answer for whose draft that
         // would be. The preview is exempt because it writes nothing: a question

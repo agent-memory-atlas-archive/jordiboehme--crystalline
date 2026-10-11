@@ -699,6 +699,30 @@ async fn the_descriptions_of_the_call_time_gated_tools_state_their_condition() {
     );
 }
 
+/// T8-a: configure says up front which domain calls it refuses, so an agent
+/// does not learn them one refusal at a time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_configure_description_names_its_domain_refusals() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let tools = client.peer().list_tools(Default::default()).await.unwrap();
+    let configure = tools
+        .tools
+        .iter()
+        .find(|t| t.name == "configure")
+        .expect("configure tool present");
+    let text = configure.description.as_deref().unwrap_or("");
+    for needle in [
+        "switching read_only off",
+        "any other change on a read-only domain",
+        "a domain that reviews changes",
+        "a virtual domain",
+        "a mounted domain",
+    ] {
+        assert!(text.contains(needle), "configure names {needle}: {text}");
+    }
+}
+
 /// The salience prior (Tasks 1-4) is invisible to an agent unless the tool
 /// copy teaches it: `write_engram` documents the `salience` metadata key an
 /// agent sets to mark exceptionally valuable knowledge, and `search_engrams`
@@ -1108,7 +1132,7 @@ async fn configure_with_a_domain_answers_the_domain_view() {
         .await
         .unwrap();
     assert_eq!(out["domain"], "eng", "{out}");
-    assert_eq!(out["policies"].as_array().unwrap().len(), 3);
+    assert_eq!(out["policies"].as_array().unwrap().len(), 4);
     assert_eq!(out["sections"].as_array().unwrap().len(), 4);
     assert_eq!(out["rules"]["available"], true);
     assert_eq!(out["how"].as_array().unwrap().len(), 4);
@@ -7679,12 +7703,37 @@ async fn the_configure_description_names_the_domain_triggers() {
         "rule overrides",
         ".crystalline.yaml",
         "severity",
+        "read_only",
         "github.enabled",
         "the operator sets them with the crystalline CLI",
     ] {
         assert!(
             description.contains(word),
             "{word} missing from: {description}"
+        );
+    }
+}
+
+/// The read tools teach what a domain row's `read_only` means, and that it
+/// is not the top-level `read_only` some answers carry for the instance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_descriptions_teach_a_domain_rows_read_only() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let tools = client.peer().list_tools(Default::default()).await.unwrap();
+    for name in ["list_domains", "browse_domain", "read_engram"] {
+        let description = tools
+            .tools
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap()
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            description.contains("read_only: true"),
+            "{name} names the mark: {description}"
         );
     }
 }

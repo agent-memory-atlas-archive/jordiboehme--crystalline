@@ -2395,6 +2395,62 @@ async fn a_missing_manifest_reads_as_missing_and_a_put_creates_it() {
     assert_eq!(body["markdown"], starter.as_str());
 }
 
+/// A read-only instance answers a domain with no MANIFEST as missing, like any
+/// other instance, and refuses the create with 403 even under the token the
+/// read handed out: the empty text's checksum is no way past the refusal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_only_instance_refuses_a_manifest_create() {
+    let _serialized = crate::support::maintenance_guard().await;
+    let fx = serve(Options {
+        read_only: true,
+        ..Options::default()
+    })
+    .await;
+    let admin = login(fx.addr, "root", "rootpw").await;
+    let path = fx._tmp.path().join("eng/MANIFEST.md");
+    std::fs::remove_file(&path).unwrap();
+
+    let read = as_session(
+        fx.addr,
+        reqwest::Method::GET,
+        "/api/v1/domains/eng/manifest",
+        &admin,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(read.status(), 200);
+    let body: serde_json::Value = read.json().await.unwrap();
+    assert_eq!(body["missing"], true, "{body}");
+    let empty = crate::support::sha256_hex(b"");
+    let starter = body["sections"]["starter_document"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let refused = as_session(
+        fx.addr,
+        reqwest::Method::PUT,
+        "/api/v1/domains/eng/manifest",
+        &admin,
+    )
+    .header("if-match", format!("\"{empty}\""))
+    .json(&serde_json::json!({ "markdown": starter }))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        refused.status(),
+        403,
+        "a read-only instance creates nothing"
+    );
+    assert_eq!(
+        refused.headers()["content-type"],
+        "application/problem+json"
+    );
+    assert!(!path.exists(), "the refusal wrote no MANIFEST");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn validate_reports_findings_without_writing() {
     let fx = serve(Options::default()).await;

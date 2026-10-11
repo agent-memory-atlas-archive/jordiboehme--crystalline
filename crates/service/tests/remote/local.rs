@@ -1108,3 +1108,59 @@ async fn the_onboarding_block_does_not_depend_on_the_order_a_server_offers_domai
     assert!(order.windows(2).all(|w| w[0] < w[1]), "{first}");
     assert!(at("z one") < at("z two") && at("b two") < at("b one"));
 }
+
+/// A domain that is read-only on its server is marked here too: in the
+/// owner's routing block, and on the forwarded listing and read, with no
+/// local code reading a MANIFEST this machine does not hold.
+#[tokio::test]
+async fn a_mounted_read_only_domain_is_marked_in_the_block_and_the_forwarded_answers() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let manifest = server.file("open", "MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+    let machine = LocalMachine::start(false).await;
+    // Locked before the connect, which caches the routing model.
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+
+    let text = machine.engine.routing_text();
+    assert!(text.contains("- open (read-only): "), "{text}");
+    assert!(
+        text.contains("- notes: "),
+        "the local domain is unmarked: {text}"
+    );
+
+    let agent = ForwardedAgent { client: None };
+    let listed = crystalline_service::route::run_tool_routed(
+        &machine.engine,
+        "list_domains",
+        json!({}),
+        &agent,
+        None,
+    )
+    .await
+    .unwrap();
+    let open = listed["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "open")
+        .unwrap()
+        .clone();
+    assert_eq!(open["read_only"], true, "{listed}");
+
+    let read = crystalline_service::route::run_tool_routed(
+        &machine.engine,
+        "read_engram",
+        json!({ "identifier": "open-note", "domain": "open" }),
+        &agent,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(read["read_only"], true, "{read}");
+}

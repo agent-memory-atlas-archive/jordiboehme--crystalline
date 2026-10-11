@@ -23,6 +23,7 @@ import { defined } from "../test/assert";
 import type { Answer } from "../test/harness";
 import {
   answersFor,
+  defaultPolicyRows,
   domainsResponse,
   manifestSectionsResponse,
   meResponse,
@@ -281,6 +282,149 @@ beforeEach(() => {
 });
 
 describe("the domain screen", () => {
+  it("a locked domain's home wears the lock and offers no New engram", async () => {
+    serve(
+      {
+        "/domains": () => ({
+          ...domainsResponse(),
+          domains: [{ ...domainsResponse().domains[0], read_only: true }],
+        }),
+        "/domains/eng/manifest": () => ({
+          domain: "eng",
+          markdown: "# eng",
+          sections: manifestSectionsResponse({
+            policies: defaultPolicyRows().map((row) =>
+              row.key === "read_only"
+                ? { ...row, declared: "on", effective: "on" }
+                : row,
+            ),
+          }),
+        }),
+      },
+      "admin",
+    );
+    renderApp("/d/eng");
+    const body = await screenBody();
+    expect(await within(body).findByText("read-only")).toBeInTheDocument();
+    expect(
+      within(body).queryByRole("button", { name: "New engram" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("a domain off this caller's write list offers no New engram and wears no lock", async () => {
+    serve(
+      {
+        "/domains": () => ({
+          ...domainsResponse(),
+          domains: [{ ...domainsResponse().domains[0], read_only: true }],
+        }),
+      },
+      "admin",
+    );
+    renderApp("/d/eng");
+    const body = await screenBody();
+    await within(body).findByRole("heading", { level: 1 });
+    expect(
+      within(body).queryByRole("button", { name: "New engram" }),
+    ).not.toBeInTheDocument();
+    expect(within(body).queryByText("read-only")).not.toBeInTheDocument();
+  });
+
+  /** The MANIFEST of `eng` with its `read_only` row on. */
+  function lockedManifest(): unknown {
+    return {
+      domain: "eng",
+      markdown: "# eng",
+      sections: manifestSectionsResponse({
+        policies: defaultPolicyRows().map((row) =>
+          row.key === "read_only"
+            ? { ...row, declared: "on", effective: "on" }
+            : row,
+        ),
+      }),
+    };
+  }
+
+  /**
+   * Whether the MANIFEST editor, the seed buttons and Import archive are
+   * offered, on the page and in the palette. Download archive is a read and
+   * is always offered to an admin.
+   */
+  async function expectManifestWrites(offered: boolean): Promise<void> {
+    const body = await screenBody();
+    await within(body).findByRole("heading", { level: 1 });
+    await within(body).findByRole("link", { name: "Download archive" });
+    // Every read the gate draws on has landed: the MANIFEST (the policies
+    // card), the listing and the engrams beside them.
+    await within(body).findByRole("region", { name: "Domain policies" });
+    await within(body).findByRole("link", { name: /Alpha/ });
+    await waitFor(() => {
+      expect(requested()).toContain("/domains");
+    });
+    const section = await within(body).findByRole("region", {
+      name: "Manifest",
+    });
+    await waitFor(() => {
+      expect(
+        within(section).queryByRole("link", { name: "Edit MANIFEST" }) !== null,
+      ).toBe(offered);
+    });
+    expect(
+      within(body).queryByRole("button", { name: "Import archive" }) !== null,
+    ).toBe(offered);
+    expect(
+      within(body).queryAllByRole("button", { name: /^Add / }).length > 0,
+    ).toBe(offered);
+    const user = userEvent.setup();
+    await user.keyboard("{Meta>}k{/Meta}");
+    expect(
+      await screen.findByRole("option", { name: /download archive/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: /edit manifest/i }) !== null,
+    ).toBe(offered);
+    expect(
+      screen.queryByRole("option", { name: /import archive/i }) !== null,
+    ).toBe(offered);
+  }
+
+  it("offers an admin no MANIFEST edit and no import on a locked domain, and keeps the policies card", async () => {
+    serve(
+      {
+        "/domains": () => ({
+          ...domainsResponse(),
+          domains: [{ ...domainsResponse().domains[0], read_only: true }],
+        }),
+        "/domains/eng/manifest": lockedManifest,
+      },
+      "admin",
+    );
+    renderApp("/d/eng");
+    // The policies card, where a person switches the lock off, is one of
+    // the reads the helper waits for, so it is still drawn.
+    await expectManifestWrites(false);
+  });
+
+  it("offers an admin off the write list no MANIFEST edit and no import", async () => {
+    serve(
+      {
+        "/domains": () => ({
+          ...domainsResponse(),
+          domains: [{ ...domainsResponse().domains[0], read_only: true }],
+        }),
+      },
+      "admin",
+    );
+    renderApp("/d/eng");
+    await expectManifestWrites(false);
+  });
+
+  it("offers an admin the MANIFEST edit and the import on a writable domain", async () => {
+    serve({}, "admin");
+    renderApp("/d/eng");
+    await expectManifestWrites(true);
+  });
+
   it("renders the whole MANIFEST and the engrams at the root of the domain", async () => {
     serve();
 
@@ -1037,6 +1181,32 @@ describe("the domain screen", () => {
     expect(
       await within(await screenBody()).findByRole("link", { name: /Alpha/ }),
     ).toBeVisible();
+  });
+
+  it("keeps the editor link for an admin when an older daemon answers 404", async () => {
+    serve(
+      {
+        "/domains/eng/manifest": () => {
+          throw new ApiProblem(404, "not found", "no MANIFEST in domain 'eng'");
+        },
+      },
+      "admin",
+    );
+
+    renderApp("/d/eng");
+
+    // The daemon predates `missing: true`, so the gap arrives as a 404. That
+    // reader still gets the sentence and the way to the editor; the starter
+    // button needs the registry the 404 did not carry, so it is not drawn.
+    const section = await screen.findByRole("region", { name: "Manifest" });
+    expect(await within(section).findByText(/no MANIFEST yet/)).toBeVisible();
+    expect(
+      within(section).getByRole("link", { name: "Edit MANIFEST" }),
+    ).toHaveAttribute("href", "/d/eng/manifest/edit");
+    expect(
+      within(section).queryByRole("button", { name: "Create a MANIFEST" }),
+    ).toBeNull();
+    expect(within(section).queryByRole("alert")).toBeNull();
   });
 
   it("offers an admin the editor over a manifest that is not there yet", async () => {

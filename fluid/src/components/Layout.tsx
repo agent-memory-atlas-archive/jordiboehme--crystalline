@@ -72,6 +72,7 @@ import { problemDetail } from "../api/client";
 import { DOMAINS_QUERY_KEY, fetchDomains } from "../api/domains";
 import type { DomainListing, DomainSummary } from "../api/domains";
 import { useAuth } from "../auth/AuthContext";
+import { useDomainWritable } from "../domainWritable";
 import { openWindow } from "../base";
 import { useRegisterCommands } from "../commands";
 import type { PaletteCommand } from "../commands";
@@ -1535,6 +1536,7 @@ function DomainSidebar({
 
   const match = useMatch("/d/:domain/*");
   const domain = match?.params.domain ?? "";
+  const { canWrite } = useDomainWritable(domain);
   // The splat holds whatever follows the domain: `e/<permalink>` on an engram
   // screen, `edit/<permalink>` in the editor, the empty string on the
   // domain's own home. Both prefixed forms carry the same permalink, so the
@@ -1584,7 +1586,7 @@ function DomainSidebar({
             heading, prefilled with the folder being browsed, and the frame
             offering a second one would be two controls for one act.
           */}
-          {permalink !== "" && capabilities.canWrite && (
+          {permalink !== "" && canWrite && (
             <IconButton
               label="New engram"
               icon={Plus}
