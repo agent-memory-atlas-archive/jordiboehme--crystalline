@@ -821,6 +821,11 @@ impl Engine {
     /// whether they are ending it or reading who is drafting in it, and a
     /// second copy of the ladder is how the two would drift apart. `refusal` is
     /// built by the caller so its own verb is the one named in the answer.
+    ///
+    /// A caller who would own the domain but for its write list is refused
+    /// with the list's sentence instead of `refusal`; an instance editor on a
+    /// shared domain keeps `refusal`, since the list is not why it does not
+    /// own the domain.
     pub(super) async fn require_domain_owner_refusing(
         &self,
         name: &str,
@@ -832,6 +837,16 @@ impl Engine {
             return Err(refusal);
         }
         if self.domain_right(scope, name).await? < crate::scope::DomainRight::Own {
+            // An admin or owner capped by its write list is told so, not
+            // that the step is for an admin or an owner, which it is.
+            if let Some(account) = self
+                .write_list_refusal(scope, name, Some(crate::scope::DomainRight::Own))
+                .await?
+            {
+                return Err(EngineError::Forbidden(
+                    super::WriteBlock::WriteList { account }.sentence(name),
+                ));
+            }
             return Err(refusal);
         }
         Ok(())

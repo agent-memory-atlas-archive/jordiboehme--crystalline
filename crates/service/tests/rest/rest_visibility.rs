@@ -2016,3 +2016,79 @@ async fn an_alias_of_a_hidden_domain_answers_like_an_unknown_name() {
             .await;
     }
 }
+
+/// Over REST the same list refuses the same writes with the same sentence.
+#[tokio::test]
+async fn an_editor_off_its_write_list_is_refused_over_rest_with_the_sentence() {
+    let ctx = RestCtx::two_domains().await;
+    ctx.auth
+        .set_write_list("out", &["lab".to_string()])
+        .await
+        .unwrap();
+    let out = ctx.as_user("out").await;
+    let refused = out
+        .post_json(
+            "/api/v1/domains/open/engrams",
+            json!({"title": "Fresh", "content": "# Fresh\n"}),
+        )
+        .await;
+    assert_eq!(refused.status(), 403);
+    let body = refused.text().await.unwrap();
+    assert!(
+        body.contains(
+            "'open' is not on the write list of 'out'; an instance admin changes it with crystalline users writes"
+        ),
+        "{body}"
+    );
+    let written = out
+        .post_json(
+            "/api/v1/domains/lab/engrams",
+            json!({"title": "Fresh", "content": "# Fresh\n"}),
+        )
+        .await;
+    assert!(written.status().is_success(), "{:?}", written.text().await);
+    let read = out.get_json("/api/v1/domains/open/engrams/alpha").await;
+    assert!(read.is_object(), "reads are unchanged");
+}
+
+/// An admin off its list renames nothing, sets no policy, saves no MANIFEST,
+/// privatizes nothing and imports nothing there: the raw admin-only routes
+/// carry the cap too.
+#[tokio::test]
+async fn an_admin_off_its_write_list_cannot_rename_set_policies_or_manage_the_domain() {
+    let ctx = RestCtx::two_domains().await;
+    ctx.auth
+        .set_write_list("boss", &["lab".to_string()])
+        .await
+        .unwrap();
+    let boss = ctx.as_user("boss").await;
+    let sentence = "'open' is not on the write list of 'boss'; an instance admin changes it with crystalline users writes";
+    let answers = [
+        boss.patch_json(
+            "/api/v1/domains/open/manifest",
+            json!({"sharing": "direct"}),
+        )
+        .await,
+        boss.post_json("/api/v1/domains/open/rename", json!({"name": "opened"}))
+            .await,
+        boss.put_json(
+            "/api/v1/domains/open/manifest",
+            json!({"markdown": "# open\n"}),
+        )
+        .await,
+        boss.put_json("/api/v1/domains/open/visibility", json!({"private": true}))
+            .await,
+        boss.post_json("/api/v1/domains/open/archive/import", json!({}))
+            .await,
+    ];
+    for answer in answers {
+        assert_eq!(answer.status(), 403);
+        let body = answer.text().await.unwrap();
+        assert!(body.contains(sentence), "{body}");
+    }
+    // The listed domain is still the admin's.
+    let set = boss
+        .patch_json("/api/v1/domains/lab/manifest", json!({"sharing": "direct"}))
+        .await;
+    assert_eq!(set.status(), 200, "{:?}", set.text().await);
+}

@@ -903,14 +903,13 @@ use crate::collab::session::AgentPeer;
 use crate::domain_view::DomainView;
 use crate::engine::{
     ACTOR_MAX_CHARS, ConfigureAction, Engine, EngineError, LiveWriteTarget, OVERLAY_NEEDS_IDENTITY,
-    ProvisionAction, ShareActor, sanitize_actor,
+    ProvisionAction, ShareActor, WriteBlock, sanitize_actor,
 };
 /// The two facts the `crystalline mcp` process resolved about its harness,
 /// re-exported here because [`McpServer::with_harness_gate`] takes one.
 pub use crate::instance::HarnessGate;
 use crate::params::*;
-use crate::scope::member_level_word;
-use crate::scope::{DomainRight, Scope};
+use crate::scope::Scope;
 use crate::similar::SimilarProbe;
 
 /// rmcp's `subscriptions/listen` sink as the engine's registry sees it.
@@ -1826,10 +1825,11 @@ impl McpServer {
     /// 1. **A domain this caller may not see is the not-found**, decided first,
     ///    so a stranger writing into a private domain learns exactly what a
     ///    stranger writing into a domain nobody registered learns.
-    /// 2. **Then the right**, which is what a private domain adds and what the
-    ///    instance role decides on a shared one. The refusal names the level
-    ///    the caller holds, because "forbidden" on a domain they can see and
-    ///    read is otherwise indistinguishable from a bug.
+    /// 2. **Then the right**, which is what a private domain adds, what the
+    ///    instance role decides on a shared one and what the caller's write
+    ///    list narrows. The refusal names the reason, the role or the write
+    ///    list ([`Engine::write_block`]), because "forbidden" on a domain they
+    ///    can see and read is otherwise indistinguishable from a bug.
     ///
     /// The right read here is [`Engine::write_right`], the domain answer capped
     /// by the instance role, and it is the same call the JSON API's write gate
@@ -1868,7 +1868,7 @@ impl McpServer {
     /// through it would arrive here as [`Scope::Anonymous`] too, and it must
     /// not inherit the open tier's writes. So the condition is "the door is
     /// open", not "nobody is there". [`Scope::Unrestricted`] needs no arm at
-    /// all - it resolves to [`DomainRight::Own`] on every domain.
+    /// all - it resolves to [`crate::scope::DomainRight::Own`] on every domain.
     async fn refuse_unwritable(
         &self,
         domain: &str,
@@ -1881,18 +1881,21 @@ impl McpServer {
         if matches!(scope, Scope::Anonymous) && !self.engine.auth_mcp() {
             return Ok(None);
         }
-        let right = self
+        // The lock is left to the engine's write view and to the MCP unlock
+        // refusal (`configure`, `edit_engram` on the MANIFEST), so this gate
+        // never pre-empts the sentence those give; `Reviewing` is the open
+        // tier's, which returned above.
+        match self
             .engine
-            .write_right(scope, domain)
+            .write_block(scope, domain)
             .await
-            .map_err(to_error)?;
-        if right < DomainRight::Write {
-            return Ok(Some(format!(
-                "your access to '{domain}' is {}, and editor access is required to change it",
-                member_level_word(right)
-            )));
+            .map_err(to_error)?
+        {
+            Some(block @ (WriteBlock::Role | WriteBlock::WriteList { .. })) => {
+                Ok(Some(block.sentence(domain)))
+            }
+            Some(WriteBlock::DomainLocked | WriteBlock::Reviewing) | None => Ok(None),
         }
-        Ok(None)
     }
 
     /// The gate on changing what this instance IS: which domains are
@@ -3275,13 +3278,19 @@ impl McpServer {
         // A named domain this caller may not see is refused as an unregistered
         // one, and an unregistered name is refused right here too, with the
         // visible set: further in, an unscoped lookup would list every
-        // registered domain, private ones included. A read gate rather than a
-        // write one: what may be shared is `github.share_identity`'s question
-        // and answered further in.
-        self.engine
-            .require_domain(&p.domain, &self.scope_of(&ctx))
-            .await
-            .map_err(to_error)?;
+        // registered domain, private ones included.
+        //
+        // The write gate, as REST's `share_now` has: sharing changes the
+        // domain upstream, so a caller who may only read it, or whose write
+        // list leaves it out, is refused here. A hidden or unregistered name
+        // is still the unregistered not-found, from inside the gate. Who the
+        // share goes out as is `github.share_identity`'s question, further in.
+        if let Some(refusal) = self
+            .refuse_unwritable(&p.domain, &self.scope_of(&ctx))
+            .await?
+        {
+            return refuse(refusal);
+        }
         // Nobody is asked: the agent's call is the go-ahead, so every plan
         // publishes on this call. The refusal an agent with no identity meets
         // here is teaching text - "connect with your MCP token and try again" -
@@ -3411,10 +3420,13 @@ impl McpServer {
         if let Some(resolution) = p.resolution.as_deref() {
             resolution_parts(resolution, p.content.as_deref())?;
         }
-        self.engine
-            .require_domain(&p.domain, &self.scope_of(&ctx))
-            .await
-            .map_err(to_error)?;
+        // The write gate its REST twin `resolve_conflict` has (`require_domain_write`).
+        if let Some(refusal) = self
+            .refuse_unwritable(&p.domain, &self.scope_of(&ctx))
+            .await?
+        {
+            return refuse(refusal);
+        }
         // The resolution comes from the call's own arguments for every peer,
         // and a call that named none is refused in words that name the
         // argument to pass: nobody is asked to choose a side.
@@ -3463,10 +3475,13 @@ impl McpServer {
         if self.engine.read_only() {
             return Err(to_error(EngineError::ReadOnly));
         }
-        self.engine
-            .require_domain(&p.domain, &self.scope_of(&ctx))
-            .await
-            .map_err(to_error)?;
+        // The write gate its REST twin `withdraw_proposal` has (`require_domain_write`).
+        if let Some(refusal) = self
+            .refuse_unwritable(&p.domain, &self.scope_of(&ctx))
+            .await?
+        {
+            return refuse(refusal);
+        }
         let revert = p.revert.unwrap_or(false);
         // Nobody is asked: the agent's call is the go-ahead. Teaching text
         // rather than a protocol error, for the reason `share_changes` answers
@@ -3509,10 +3524,15 @@ impl McpServer {
         if self.engine.read_only() {
             return Err(to_error(EngineError::ReadOnly));
         }
-        self.engine
-            .require_domain(&p.domain, &self.scope_of(&ctx))
-            .await
-            .map_err(to_error)?;
+        // The write gate its REST twin `discard_domain_changes` has
+        // (`require_domain_write`), ahead of the confirmation question so no
+        // question is put about a discard that would refuse anyway.
+        if let Some(refusal) = self
+            .refuse_unwritable(&p.domain, &self.scope_of(&ctx))
+            .await?
+        {
+            return refuse(refusal).map(CallToolResponse::from);
+        }
         let actor = self.share_actor(&ctx);
         let expected = p.expected.unwrap_or_default();
         let targets: Vec<DiscardTarget> = p

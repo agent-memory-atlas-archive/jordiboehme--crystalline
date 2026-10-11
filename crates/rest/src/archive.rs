@@ -1064,6 +1064,7 @@ pub async fn import(
 ) -> Result<Json<ArchiveReport>, ApiError> {
     identity.require_admin()?;
     refuse_read_only(&state)?;
+    crate::refuse_off_write_list(&state, &identity, &domain, None).await?;
     // An unknown policy is refused rather than treated as the safe default: a
     // client that asked for something this endpoint does not do must hear so,
     // not silently get a skip it never requested.

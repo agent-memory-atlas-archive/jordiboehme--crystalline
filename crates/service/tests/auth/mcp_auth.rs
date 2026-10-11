@@ -4139,3 +4139,301 @@ async fn nothing_due_means_no_trailer() {
         "with nothing due the receipt says nothing:\n{answer}"
     );
 }
+
+const OFF_LIST_OPEN_OUT: &str = "'open' is not on the write list of 'out'; an instance admin changes it with crystalline users writes";
+
+fn listed(entries: &[&str]) -> Vec<String> {
+    entries.iter().map(|e| e.to_string()).collect()
+}
+
+/// An editor with a write list writes the domain the list names and is
+/// refused everywhere else with the list's sentence; it still reads there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_editor_with_a_write_list_writes_its_own_domain_and_nowhere_else() {
+    let ctx = mcp_ctx(true).await;
+    ctx.store
+        .set_write_list("out", &listed(&["second"]))
+        .await
+        .unwrap();
+    let token = ctx.token_for("out").await;
+    let session = McpTestSession::open(&ctx.addr, Some(&token)).await;
+    let written = session
+        .call_tool(
+            "write_engram",
+            serde_json::json!({ "domain": "second", "title": "Mine", "content": "- [fact] yes" }),
+        )
+        .await;
+    assert!(written.contains("mine"), "{written}");
+    assert!(ctx.path("second", "mine.md").exists());
+
+    let refused = session
+        .call_tool(
+            "write_engram",
+            serde_json::json!({ "domain": "open", "title": "Theirs", "content": "x" }),
+        )
+        .await;
+    assert!(refused.contains(OFF_LIST_OPEN_OUT), "{refused}");
+    assert!(!ctx.path("open", "theirs.md").exists());
+    for (tool, args) in [
+        (
+            "edit_engram",
+            serde_json::json!({ "domain": "open", "identifier": "open-note", "operation": "append", "content": "x" }),
+        ),
+        (
+            "delete_engram",
+            serde_json::json!({ "domain": "open", "identifier": "open-note" }),
+        ),
+        (
+            "move_engram",
+            serde_json::json!({ "domain": "second", "identifier": "mine", "destination": "mine.md", "destination_domain": "open" }),
+        ),
+    ] {
+        let refused = session.call_tool(tool, args).await;
+        assert!(refused.contains(OFF_LIST_OPEN_OUT), "{tool}: {refused}");
+    }
+    let read = session
+        .call_tool(
+            "read_engram",
+            serde_json::json!({ "identifier": "open-note", "domain": "open" }),
+        )
+        .await;
+    assert!(read.contains("Open Note"), "reads are unchanged: {read}");
+}
+
+/// A viewer with a list keeps today's sentence: its role is the reason, and
+/// the list would not change the answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_viewer_with_a_write_list_keeps_the_viewer_sentence() {
+    let ctx = mcp_ctx(true).await;
+    ctx.store
+        .set_write_list("looker", &listed(&["open"]))
+        .await
+        .unwrap();
+    let token = ctx.token_for("looker").await;
+    let session = McpTestSession::open(&ctx.addr, Some(&token)).await;
+    let refused = session
+        .call_tool(
+            "write_engram",
+            serde_json::json!({ "domain": "open", "title": "Nope", "content": "x" }),
+        )
+        .await;
+    assert!(
+        refused.contains(
+            "your access to 'open' is viewer, and editor access is required to change it"
+        ),
+        "{refused}"
+    );
+    assert!(!refused.contains("write list"), "{refused}");
+}
+
+/// An admin off its list cannot change the domain's policies through
+/// configure: the owner gate reads the capped right and names the list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_admin_off_its_write_list_cannot_configure_the_domain() {
+    let ctx = mcp_ctx(true).await;
+    ctx.store
+        .set_write_list("boss", &listed(&["second"]))
+        .await
+        .unwrap();
+    let before = std::fs::read_to_string(ctx.path("open", "MANIFEST.md")).unwrap();
+    let token = ctx.token_for("boss").await;
+    let session = McpTestSession::open(&ctx.addr, Some(&token)).await;
+    let refused = session
+        .call_tool(
+            "configure",
+            serde_json::json!({ "domain": "open", "set": { "sharing": "direct" } }),
+        )
+        .await;
+    assert!(
+        refused.contains(
+            "'open' is not on the write list of 'boss'; an instance admin changes it with crystalline users writes"
+        ),
+        "{refused}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ctx.path("open", "MANIFEST.md")).unwrap(),
+        before,
+        "nothing was written"
+    );
+    let removed = session
+        .call_tool("remove_domain", serde_json::json!({ "domain": "open" }))
+        .await;
+    assert!(
+        removed.contains("not on the write list of 'boss'"),
+        "{removed}"
+    );
+    // An instance editor off its list on a shared domain keeps the owner
+    // sentence: the list is not why it may not change the policy.
+    ctx.store
+        .set_write_list("out", &listed(&["second"]))
+        .await
+        .unwrap();
+    let out_token = ctx.token_for("out").await;
+    let out = McpTestSession::open(&ctx.addr, Some(&out_token)).await;
+    let owner_rule = out
+        .call_tool(
+            "configure",
+            serde_json::json!({ "domain": "open", "set": { "sharing": "direct" } }),
+        )
+        .await;
+    assert!(
+        owner_rule.contains("only the owner of 'open' or an instance admin may change `sharing`"),
+        "{owner_rule}"
+    );
+    assert!(!owner_rule.contains("write list"), "{owner_rule}");
+    // A private domain's owner who is an instance editor, off its list, is
+    // told the list is the reason.
+    ctx.store
+        .set_write_list("keeper", &listed(&["x"]))
+        .await
+        .unwrap();
+    let keeper_token = ctx.token_for("keeper").await;
+    let keeper = McpTestSession::open(&ctx.addr, Some(&keeper_token)).await;
+    let listed_out = keeper
+        .call_tool(
+            "configure",
+            serde_json::json!({ "domain": "lab", "set": { "sharing": "direct" } }),
+        )
+        .await;
+    assert!(
+        listed_out.contains("'lab' is not on the write list of 'keeper'"),
+        "{listed_out}"
+    );
+    // On the domain its list names it is still the admin.
+    let set = session
+        .call_tool(
+            "configure",
+            serde_json::json!({ "domain": "second", "set": { "sharing": "direct" } }),
+        )
+        .await;
+    assert!(!set.contains("write list"), "{set}");
+}
+
+/// The collaboration verbs that write a domain read the same gate as their
+/// REST twins, so an off-list account is refused before any network call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_collaboration_writes_are_refused_off_the_write_list() {
+    let ctx = mcp_team_ctx().await;
+    ctx.store
+        .set_write_list("boss", &listed(&["open"]))
+        .await
+        .unwrap();
+    let token = ctx.token_for("boss").await;
+    let session = McpTestSession::open(&ctx.addr, Some(&token)).await;
+    for (tool, args) in [
+        ("share_changes", serde_json::json!({ "domain": "lab" })),
+        (
+            "resolve_conflict",
+            serde_json::json!({ "domain": "lab", "path": "lab-note.md", "resolution": "mine" }),
+        ),
+        (
+            "withdraw_proposal",
+            serde_json::json!({ "domain": "lab", "proposal": 1 }),
+        ),
+        (
+            "discard_changes",
+            serde_json::json!({ "domain": "lab", "paths": ["lab-note.md"] }),
+        ),
+    ] {
+        let refused = session.call_tool(tool, args).await;
+        assert!(
+            refused.contains("'lab' is not on the write list of 'boss'"),
+            "{tool}: {refused}"
+        );
+    }
+}
+
+/// The engine's answer names each reason, lock first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_block_names_each_reason() {
+    use crystalline_service::{Scope, WriteBlock};
+    let ctx = mcp_ctx(true).await;
+    ctx.store
+        .set_write_list("out", &listed(&["second"]))
+        .await
+        .unwrap();
+    let out = Scope::User {
+        account: "out".into(),
+        admin: false,
+    };
+    let looker = Scope::User {
+        account: "looker".into(),
+        admin: false,
+    };
+    let block = |scope: Scope, domain: &'static str| {
+        let engine = ctx.engine.clone();
+        async move { engine.write_block(&scope, domain).await.unwrap() }
+    };
+    assert_eq!(block(Scope::Unrestricted, "open").await, None);
+    assert_eq!(block(out.clone(), "second").await, None);
+    assert_eq!(
+        block(out.clone(), "open").await,
+        Some(WriteBlock::WriteList {
+            account: "out".into()
+        })
+    );
+    assert_eq!(block(looker.clone(), "open").await, Some(WriteBlock::Role));
+    assert_eq!(
+        block(Scope::Anonymous, "open").await,
+        Some(WriteBlock::Role),
+        "auth.mcp is on"
+    );
+    // Lock beats list: a domain the list names refuses once it is locked.
+    let manifest = std::fs::read_to_string(ctx.path("second", "MANIFEST.md")).unwrap();
+    assert!(manifest.contains("status: stable\n"));
+    std::fs::write(
+        ctx.path("second", "MANIFEST.md"),
+        manifest.replacen("status: stable\n", "status: stable\nread_only: on\n", 1),
+    )
+    .unwrap();
+    ctx.engine.sync(None).await.unwrap();
+    assert_eq!(block(out, "second").await, Some(WriteBlock::DomainLocked));
+    assert_eq!(
+        WriteBlock::WriteList {
+            account: "out".into()
+        }
+        .sentence("open"),
+        OFF_LIST_OPEN_OUT
+    );
+    assert_eq!(
+        WriteBlock::Role.sentence("open"),
+        "your access to 'open' is viewer, and editor access is required to change it"
+    );
+    assert_eq!(
+        WriteBlock::Reviewing.sentence("open"),
+        crystalline_service::OVERLAY_NEEDS_IDENTITY
+    );
+}
+
+/// The open tier is answered by the domain alone: nothing on a direct
+/// domain, whatever any account's list says. The control: the same list
+/// does block the account it belongs to, so the open tier's `None` is not
+/// an engine that ignores lists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_open_tier_has_no_write_list() {
+    use crystalline_service::{Scope, WriteBlock};
+    let ctx = mcp_ctx(false).await;
+    ctx.store
+        .set_write_list("out", &listed(&["second"]))
+        .await
+        .unwrap();
+    let out = Scope::User {
+        account: "out".into(),
+        admin: false,
+    };
+    assert_eq!(
+        ctx.engine.write_block(&out, "open").await.unwrap(),
+        Some(WriteBlock::WriteList {
+            account: "out".into()
+        }),
+        "the list is in force for its account"
+    );
+    assert_eq!(
+        ctx.engine
+            .write_block(&Scope::Anonymous, "open")
+            .await
+            .unwrap(),
+        None,
+        "and the open tier does not read it"
+    );
+}

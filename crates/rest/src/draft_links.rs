@@ -767,6 +767,26 @@ async fn open_link(
             ApiError::internal(format!("this domain's membership is unreadable: {e:#}"))
         })?;
     let editable = right >= DomainRight::Write;
+    // An account whose write list leaves the domain out is told that, not a
+    // level it would hold without the list.
+    let listed = if editable {
+        None
+    } else {
+        state
+            .access
+            .write_list_excludes(&identity.scope(), &grant.domain)
+            .await
+            .map_err(|e| {
+                ApiError::internal(format!("this domain's membership is unreadable: {e:#}"))
+            })?
+    };
+    let reason = (!editable).then(|| match listed {
+        Some(account) => format!(
+            "you are reading this draft: {}",
+            crate::engine::WriteBlock::WriteList { account }.sentence(&grant.domain)
+        ),
+        None => read_only_reason(&right),
+    });
     Ok((
         AcceptedDraft {
             domain: grant.domain,
@@ -774,7 +794,7 @@ async fn open_link(
             owner: grant.owner,
             permalink: draft.permalink,
             editable,
-            reason: (!editable).then(|| read_only_reason(&right)),
+            reason,
             content: draft.content,
             checksum: draft.checksum,
             join_key: None,

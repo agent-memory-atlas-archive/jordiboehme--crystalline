@@ -1609,6 +1609,16 @@ impl Engine {
             // than a failure. A read crossed the grant and got what the grant
             // is for; only a write needed the second step, and only a write is
             // refused by this sentence.
+            if let Some(account) = access
+                .write_list_excludes(scope, &domain)
+                .await
+                .map_err(|e| EngineError::Internal(e.to_string()))?
+            {
+                return Ok(OpenedLink::ReadOnly(format!(
+                    "you may read {owner}'s draft of '{path}' and not edit it: {}",
+                    super::WriteBlock::WriteList { account }.sentence(&domain)
+                )));
+            }
             return Ok(OpenedLink::ReadOnly(format!(
                 "you may read {owner}'s draft of '{path}' and not edit it: your access on \
                  '{domain}' is {}, and editing somebody's draft needs the same editor access \

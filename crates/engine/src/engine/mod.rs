@@ -1372,6 +1372,7 @@ pub use crate::scope::OWNER_IDENTITY_NAME;
 pub use domain_settings::{DOMAIN_SETTINGS_HOW, PolicyEdit, VIRTUAL_NO_RULES};
 #[cfg(any(test, feature = "testing"))]
 pub use names::SpellingPushFault;
+pub use write_block::WriteBlock;
 
 /// What a write is told when it reaches a domain that reviews changes before
 /// they land and nobody can say whose draft it would join.
@@ -2660,6 +2661,31 @@ impl Engine {
             return Ok(crate::scope::DomainRight::Own);
         };
         access.write_right(scope, domain).await.map_err(|e| {
+            EngineError::Internal(format!("this domain's membership is unreadable: {e:#}"))
+        })
+    }
+
+    /// The account whose write list keeps `scope` from a step, when the list
+    /// is the reason. `needed` is `None` for the write question
+    /// ([`crate::scope::DomainAccess::write_list_excludes`]) and `Some(Own)` or
+    /// `Some(Manage)` for an owner or manager step
+    /// ([`crate::scope::DomainAccess::write_list_refuses`]). `None` when no
+    /// resolver is installed (the machine owner), and an unreadable store is an
+    /// error, never a permissive default.
+    pub async fn write_list_refusal(
+        &self,
+        scope: &crate::scope::Scope,
+        domain: &str,
+        needed: Option<crate::scope::DomainRight>,
+    ) -> Result<Option<String>> {
+        let Some(access) = self.domain_access.get() else {
+            return Ok(None);
+        };
+        let answer = match needed {
+            None => access.write_list_excludes(scope, domain).await,
+            Some(needed) => access.write_list_refuses(scope, domain, needed).await,
+        };
+        answer.map_err(|e| {
             EngineError::Internal(format!("this domain's membership is unreadable: {e:#}"))
         })
     }
@@ -5392,6 +5418,7 @@ mod sync;
 mod transfer;
 mod validate;
 mod write;
+mod write_block;
 
 /// Rank a context slice by personalized PageRank so the neighbors on the
 /// shortest, best-connected paths back to the seeds surface first.

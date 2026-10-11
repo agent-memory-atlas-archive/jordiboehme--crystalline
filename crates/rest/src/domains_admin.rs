@@ -2782,6 +2782,9 @@ pub async fn set_visibility(
             .engine
             .require_domain(&domain, &identity.scope())
             .await?;
+        // Privatizing changes who may reach the domain, which is managing it:
+        // an admin whose write list leaves it out is refused, by name.
+        crate::refuse_off_write_list(&state, &identity, &domain, None).await?;
         state
             .auth
             .set_domain_visibility(&domain, true, caller.name())
@@ -2807,6 +2810,7 @@ pub async fn set_visibility(
             ApiError::internal(format!("this domain's membership is unreadable: {e:#}"))
         })?;
     if right < DomainRight::Own {
+        crate::refuse_off_write_list(&state, &identity, &domain, Some(DomainRight::Own)).await?;
         return Err(ApiError::forbidden(format!(
             "your membership on this domain is {}, and only its owner or an \
              instance admin may share it with everyone again",

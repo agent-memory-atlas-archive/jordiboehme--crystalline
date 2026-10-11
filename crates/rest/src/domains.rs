@@ -878,6 +878,7 @@ pub async fn save_manifest(
     // Admin, not editor: see this function's doc comment for why domain
     // management, MANIFEST editing included, is held to the stronger role.
     identity.require_admin()?;
+    crate::refuse_off_write_list(&state, &identity, &domain, None).await?;
     // Before the If-Match parse, not after: the same reasoning as
     // `engrams::save`'s own read-only check, repeated here rather than
     // shared, since the handlers are not yet worth abstracting over.
