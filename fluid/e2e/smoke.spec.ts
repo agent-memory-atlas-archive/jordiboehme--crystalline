@@ -213,13 +213,41 @@ async function topBarBoxes(page: Page, width: number) {
         parseFloat(style!.paddingLeft) -
         parseFloat(style!.paddingRight)
       : 0;
-    const account = row?.lastElementChild?.getBoundingClientRect();
+    const accountButton = row?.lastElementChild ?? null;
+    const account = accountButton?.getBoundingClientRect();
+    const viewport = document.documentElement.clientWidth;
+    // The sidebar is a drawer below `md`: its collapse control is drawn only
+    // in the column, so whether that control has a box says which frame this is.
+    const collapse = document.querySelector(
+      '[aria-label="Collapse the sidebar"]',
+    );
     return {
-      viewport: document.documentElement.clientWidth,
+      viewport,
       rowOverflow: row ? row.scrollWidth - row.clientWidth : 0,
       accountRight: account ? account.right : null,
       hasSearch: input !== null,
       typing,
+      // What a failure needs to say which number moved.
+      innerWidth: window.innerWidth,
+      scrollbar: window.innerWidth - viewport,
+      wide: window.matchMedia("(min-width: 48rem)").matches,
+      drawer: !collapse || collapse.getClientRects().length === 0,
+      typingSlack: typing - 40,
+      accountSlack: account ? viewport - account.right : null,
+      accountText:
+        accountButton?.getAttribute("aria-label") ??
+        accountButton?.textContent ??
+        null,
+      children: row
+        ? [...row.children].map((c) => {
+            const r = c.getBoundingClientRect();
+            return {
+              name: c.getAttribute("aria-label") ?? c.textContent,
+              left: Math.round(r.left),
+              width: Math.round(r.width),
+            };
+          })
+        : [],
     };
   });
 }
@@ -257,6 +285,10 @@ for (const share of [false, true]) {
         ).toBeVisible();
       }
       const boxes = await topBarBoxes(page, width);
+      await test.info().attach("boxes", {
+        body: JSON.stringify(boxes),
+        contentType: "application/json",
+      });
       expect(boxes.hasSearch).toBe(true);
       expect(boxes.accountRight).not.toBeNull();
       expect(boxes.accountRight!).toBeLessThanOrEqual(boxes.viewport);
