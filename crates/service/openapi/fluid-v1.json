@@ -2387,7 +2387,7 @@
           "engrams"
         ],
         "summary": "One engram in full.",
-        "description": "Its frontmatter, its markdown as written and the references the engine resolves around it.\n\nThe response carries an `ETag` of `\"{checksum}-{version}\"`: the engine's own checksum plus this binary's own version, so a client knows which version it is holding and can say so when it later writes back - `If-Match` accepts either this full tag or the bare checksum. `If-None-Match` naming the current tag answers 304 with no body, and `Cache-Control: no-cache` on both the 200 and the 304 keeps a stored copy revalidating instead of going heuristically fresh, so a save elsewhere - or an upgrade that changed this JSON's own shape - is picked up on its next use.",
+        "description": "Its frontmatter, its markdown as written and the references the engine resolves around it.\n\nThe response carries an `ETag` of `\"{checksum}-{version}\"`: the engine's own checksum plus this binary's own version, so a client knows which version it is holding and can say so when it later writes back - `If-Match` accepts either this full tag or the bare checksum. `If-None-Match` naming the current tag answers 304 with no body, and `Cache-Control: no-cache` on both the 200 and the 304 keeps a stored copy revalidating instead of going heuristically fresh, so a save elsewhere - or an upgrade that changed this JSON's own shape - is picked up on its next use.\n\nWhen the answer says `read_only: true` for this caller, the tag ends in `-ro` (`\"{checksum}-{version}-ro\"`), so a tag held by a reader who may not write never answers 304 to one who may. `If-Match` accepts the tag with or without it. The response carries `Vary: Cookie, Authorization`.",
         "operationId": "get_engram",
         "parameters": [
           {
@@ -2438,6 +2438,12 @@
                   "type": "string"
                 },
                 "description": "The quoted `\"{checksum}-{version}\"` of the engram as read, the same checksum a later write compares an `expected_checksum` against."
+              },
+              "vary": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always `Cookie, Authorization`: the body depends on who reads it."
               }
             },
             "content": {

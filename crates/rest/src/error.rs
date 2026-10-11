@@ -391,7 +391,8 @@ impl IntoResponse for ApiError {
 /// before the checksum is returned: the content is what this guard protects,
 /// and a tag copied from a response written by another version of this binary
 /// is still a valid precondition when its checksum matches, whatever version
-/// wrote it. An attachment's `If-Match` (were one ever added) would carry no
+/// wrote it. The `-ro` an engram read adds for a reader who may not write is
+/// stripped the same way. An attachment's `If-Match` (were one ever added) would carry no
 /// such suffix, since the plain content hash has no shape to version.
 pub fn if_match(headers: &axum::http::HeaderMap) -> Result<String, ApiError> {
     let raw = headers

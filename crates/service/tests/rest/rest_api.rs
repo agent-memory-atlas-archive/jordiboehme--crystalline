@@ -2679,9 +2679,14 @@ async fn engram_detail_carries_the_source_and_a_strong_etag() {
         on_disk.as_slice(),
         "the content is the markdown as written: {body}"
     );
+    // The anonymous viewer reads it as read-only, so its tag ends in `-ro`.
     assert_eq!(
         etag,
-        format!("\"{}-{}\"", sha256_hex(&on_disk), crystalline_core::VERSION),
+        format!(
+            "\"{}-{}-ro\"",
+            sha256_hex(&on_disk),
+            crystalline_core::VERSION
+        ),
         "the ETag is the quoted SHA-256 of that markdown, versioned"
     );
     assert!(
@@ -2806,10 +2811,11 @@ async fn engram_detail_resolves_a_permalink_with_folders() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["permalink"], "notes/deep/gamma");
     assert_eq!(body["path"], "notes/deep/gamma.md");
+    // Read as the anonymous viewer, so read-only: the tag ends in `-ro`.
     assert_eq!(
         etag,
         format!(
-            "\"{}-{}\"",
+            "\"{}-{}-ro\"",
             sha256_hex(&fixture.engram_bytes("notes/deep/gamma.md")),
             crystalline_core::VERSION
         )
@@ -4819,6 +4825,62 @@ async fn the_anonymous_viewer_reads_every_domain_as_read_only() {
         };
         assert!(marked.is_null(), "GET {path} as the editor: {body}");
     }
+}
+
+/// The engram read's tag follows who reads it: the anonymous viewer's
+/// read-only answer is tagged apart, so its cached tag never answers 304 to a
+/// signed-in editor, while a write still takes that tag as its precondition.
+#[tokio::test]
+async fn the_engram_etag_and_vary_follow_who_reads_it() {
+    let fixture = anonymous_instance_with_one_domain("eng").await;
+    let addr = fixture.addr;
+    let path = "/api/v1/domains/eng/engrams/ops/runbook";
+    let anonymous = get(addr, path).await;
+    assert_eq!(anonymous.status(), 200);
+    assert_eq!(header(&anonymous, "vary"), "Cookie, Authorization");
+    let anonymous_tag = header(&anonymous, "etag");
+    assert!(anonymous_tag.ends_with("-ro\""), "{anonymous_tag}");
+
+    fixture
+        .auth
+        .add_user("bob", "Bob", None, Role::Editor, "pw")
+        .await
+        .unwrap();
+    let (token, csrf) = login(addr, "bob", "pw").await;
+    let session = |method: reqwest::Method| as_session(addr, method, path, &token, &csrf);
+
+    let fresh = session(reqwest::Method::GET)
+        .header("if-none-match", &anonymous_tag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fresh.status(), 200, "the anonymous tag is not the editor's");
+    assert_eq!(header(&fresh, "vary"), "Cookie, Authorization");
+    let editor_tag = header(&fresh, "etag");
+    assert!(!editor_tag.contains("-ro"), "{editor_tag}");
+    let body: serde_json::Value = fresh.json().await.unwrap();
+    assert!(body.get("read_only").is_none(), "{body}");
+
+    let cached = session(reqwest::Method::GET)
+        .header("if-none-match", &editor_tag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cached.status(), 304);
+    assert_eq!(header(&cached, "vary"), "Cookie, Authorization");
+
+    let content = body["content"]
+        .as_str()
+        .unwrap()
+        .replace("the rollback steps", "the rollback steps, checked");
+    let put = session(reqwest::Method::PUT)
+        .header("if-match", &anonymous_tag)
+        .json(&serde_json::json!({ "content": content }))
+        .send()
+        .await
+        .unwrap();
+    let status = put.status();
+    assert_eq!(status, 200, "{}", put.text().await.unwrap());
 }
 
 const LOCKED: &str = "'eng' is read-only; its owner switches read_only off in the domain policies";
