@@ -519,6 +519,10 @@ fn write_back_manifest_name_if_needed(entry: &DomainEntry, root: &Path, name: &s
     if !needs_manifest_write_back(entry, manifest_declares) {
         return;
     }
+    if crystalline_core::read_only_at(root).is_on() {
+        eprintln!("note: '{name}' is read-only, so the name was not written into its MANIFEST.");
+        return;
+    }
     if let Err(e) = write_back_manifest_name(root, name) {
         eprintln!(
             "warning: writing the domain name back into the MANIFEST of '{name}' failed: {e}"
