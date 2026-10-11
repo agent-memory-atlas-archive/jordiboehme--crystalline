@@ -1584,6 +1584,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         let lock = self.origin_lock_registered(domain)?;
         let _guard = lock.lock().await;
         let (spec, root, state_dir) = self.origin_spec_for_domain(domain)?;
@@ -1883,6 +1885,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         let lock = self.origin_lock_registered(domain)?;
         let _guard = lock.lock().await;
         let (spec, root, state_dir) = self.origin_spec_for_domain(domain)?;
@@ -1995,6 +1999,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         let lock = self.origin_lock_registered(domain)?;
         let _guard = lock.lock().await;
         let (spec, root, state_dir) = self.origin_spec_for_domain(domain)?;
@@ -2720,6 +2726,12 @@ impl Engine {
         }
         if self.read_only {
             return Err(EngineError::ReadOnly);
+        }
+        // Taking the team's side is what a pull does, so it stays allowed on a
+        // read-only domain; keeping your own text or a merge would change it.
+        if keep != Some("theirs") {
+            self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+                .await?;
         }
         // An attachment is not an engram and this verb settles engrams. The
         // path would be normalized to `<path>.md` on the next line and then

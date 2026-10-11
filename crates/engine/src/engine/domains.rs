@@ -637,8 +637,8 @@ impl Engine {
     /// disk keeps navigating statically after a mutation or a sync.
     ///
     /// Silently does nothing for a virtual domain (no files to navigate), for a
-    /// read-only engine (the curating side owns the index files) and while the
-    /// `index.files` setting is off. The pass itself is idempotent: a
+    /// read-only engine (the curating side owns the index files), for a
+    /// read-only domain and while the `index.files` setting is off. The pass itself is idempotent: a
     /// regeneration that renders the same bytes writes nothing, so an unchanged
     /// index file keeps its mtime and the watcher stays quiet. Failures are
     /// logged, never propagated: a generated navigation file is a convenience,
@@ -651,6 +651,13 @@ impl Engine {
         let ContentSource::File { root } = self.read_source(domain) else {
             return;
         };
+        // Nothing is written into a read-only domain, and a listing
+        // regenerated after a pull would be an unshared change that can never
+        // be shared. A file domain, so this is a MANIFEST read and never the
+        // store lock.
+        if self.domain_is_read_only(domain).await {
+            return;
+        }
         let name = domain.to_string();
         // A full walk plus one read per engram is blocking IO, so it runs on the
         // blocking pool rather than on a runtime worker.

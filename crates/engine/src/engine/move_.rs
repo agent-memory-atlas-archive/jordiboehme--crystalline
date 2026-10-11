@@ -722,7 +722,12 @@ impl Engine {
         let mut seen: HashSet<(i64, String)> = HashSet::new();
         let mut linkers = Vec::new();
         for (domain, domain_id, path) in candidates {
-            if hidden.contains(&domain) || (domain_id == src.domain_id && path == src.path) {
+            if hidden.contains(&domain)
+                || (domain_id == src.domain_id && path == src.path)
+                // A read-only domain's link is left as it was, like a hidden
+                // domain's (decision D7).
+                || self.domain_is_read_only(&domain).await
+            {
                 continue;
             }
             if seen.insert((domain_id.0, path.clone())) {
@@ -850,6 +855,9 @@ impl Engine {
     /// untouched and the domain is surfaced in `alias_conflict` rather than a
     /// false `alias_recorded`. The merge's tag rewrites still proceed either way;
     /// only the recording is skipped. A `rename` records nothing.
+    ///
+    /// A read-only domain is left out (named in `read_only_skipped`), and a
+    /// retag scoped to one is refused.
     pub async fn retag(
         &self,
         old: &str,
@@ -861,6 +869,12 @@ impl Engine {
     ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
+        }
+        // A retag of one read-only domain is refused; across every domain it
+        // skips the read-only ones and names them (decision D7).
+        if let Some(d) = domain {
+            self.refuse_read_only_domain(d, &crate::scope::Scope::Unrestricted)
+                .await?;
         }
         let old_f = old.trim().to_lowercase();
         let new_f = new.trim().to_lowercase();
@@ -921,12 +935,36 @@ impl Engine {
         // the list is built: `listed`, the dry run, the rewrite loop, the count
         // and the alias recording all read from it, so one filter covers all of
         // them and no later addition can forget it.
-        let targets = {
+        let (targets, read_only_skipped) = {
             let store = self.store.lock().await;
             let mut found = store.engrams_with_tag(&old_f, domain).await?;
             drop(store);
             found.retain(|d| !unregistered.contains(&d.domain));
-            found
+            // A read-only domain is left out here too, for the same reason:
+            // one filter covers the dry run, the rewrite and the alias
+            // recording into its MANIFEST. Asked once per domain, after the
+            // store guard is gone.
+            let mut locked: HashMap<String, bool> = HashMap::new();
+            let mut kept = Vec::with_capacity(found.len());
+            for d in found {
+                let is_locked = match locked.get(&d.domain) {
+                    Some(known) => *known,
+                    None => {
+                        let known = self.domain_is_read_only(&d.domain).await;
+                        locked.insert(d.domain.clone(), known);
+                        known
+                    }
+                };
+                if !is_locked {
+                    kept.push(d);
+                }
+            }
+            let mut skipped: Vec<String> = locked
+                .into_iter()
+                .filter_map(|(name, is_locked)| is_locked.then_some(name))
+                .collect();
+            skipped.sort();
+            (kept, skipped)
         };
         let listed: Vec<Value> = targets
             .iter()
@@ -934,10 +972,14 @@ impl Engine {
             .collect();
 
         if dry_run {
-            return Ok(json!({
+            let mut dry = json!({
                 "old": old_f, "new": new_f, "merge": merge, "dry_run": true,
                 "engrams": listed, "rewritten": targets.len(),
-            }));
+            });
+            if !read_only_skipped.is_empty() {
+                dry["read_only_skipped"] = json!(read_only_skipped);
+            }
+            return Ok(dry);
         }
 
         // Rewrite each engram, mirroring move_engram's file-vs-virtual branches.
@@ -1004,6 +1046,9 @@ impl Engine {
             "old": old_f, "new": new_f, "merge": merge, "dry_run": false,
             "engrams": listed, "rewritten": rewritten,
         });
+        if !read_only_skipped.is_empty() {
+            response["read_only_skipped"] = json!(read_only_skipped);
+        }
 
         // Record the fold as a tag alias in each affected domain's MANIFEST, once
         // per distinct domain in first-seen order. Only a merge records, and only

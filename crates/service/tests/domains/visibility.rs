@@ -1048,3 +1048,38 @@ async fn the_owner_and_an_admin_switch_read_only_on_and_a_viewer_cannot() {
         .unwrap();
     assert!(engine.domain_is_read_only("lab").await);
 }
+
+/// A capture titled after a virtual domain's MANIFEST replaces it (Ruling
+/// I2), so it meets the switch-on rule like every other MANIFEST writer: an
+/// editor who does not own the domain cannot lock it this way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_capture_over_a_virtual_manifest_cannot_switch_read_only_on() {
+    let (_tmp, engine) = fixture().await;
+    engine.domain_add_virtual("scratch").await.unwrap();
+    let p = crystalline_service::params::WriteParams {
+        domain: "scratch".into(),
+        title: "MANIFEST".into(),
+        content: "## Scope\n\n- x\n\n## When to Use\n\n- y\n".into(),
+        folder: None,
+        engram_type: Some("manifest".into()),
+        tags: vec!["manifest".into()],
+        status: None,
+        metadata: Some(serde_json::json!({ "read_only": "on" })),
+        overwrite: true,
+        model: None,
+        share_link: None,
+    };
+    let err = engine
+        .write_engram_as(&p, None, &user("out"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, crystalline_service::EngineError::Forbidden(_)),
+        "{err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "only the owner of 'scratch' or an instance admin may change `read_only`"
+    );
+    assert!(!engine.domain_is_read_only("scratch").await);
+}

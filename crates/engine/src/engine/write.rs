@@ -486,6 +486,14 @@ impl Engine {
         let (markdown, domain_names_normalized) = self
             .normalize_domain_spellings_for(&crystalline_core::to_lf(&markdown), scope)
             .await?;
+        // A capture that lands on a virtual domain's MANIFEST replaces it
+        // (Ruling I2), so it meets the switch-on rule every MANIFEST writer
+        // meets (decision D10): here, ahead of all three arms below and with
+        // no lock in hand.
+        if path.eq_ignore_ascii_case("MANIFEST.md") {
+            self.refuse_read_only_switch_on(&p.domain, &markdown, scope)
+                .await?;
+        }
 
         let mut receipt = json!({
             "domain": p.domain,
@@ -1152,6 +1160,8 @@ impl Engine {
         // A room that was open when its domain became hidden saves nothing
         // into the hidden copy (decision D19).
         self.refuse_shadowed(view.domain())?;
+        self.refuse_read_only_domain(view.domain(), &crate::scope::Scope::Unrestricted)
+            .await?;
         refuse_not_an_engram(&p.content)?;
         let (desc, source) = view.resolve(&p.identifier).await?;
         if desc.path != expected_path {
@@ -1329,6 +1339,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         let overlay = view.actor();
         // Restored as LF, the one line ending anything is stored with.
         let content = crystalline_core::to_lf(content);

@@ -424,6 +424,7 @@ impl Engine {
         let _admin = self.domain_admin().await;
         let _fence = self.fence_joins().await;
         self.require_domain_owner(domain, scope).await?;
+        self.refuse_read_only_domain(domain, scope).await?;
         if let Some(conflict) = self.env_domain_conflict(domain) {
             return Err(conflict);
         }

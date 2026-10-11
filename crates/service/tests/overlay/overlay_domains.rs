@@ -6637,7 +6637,9 @@ async fn a_write_with_no_identity_still_refuses_and_a_read_still_answers_the_bas
 }
 
 /// Every function in this crate's `src` that calls `needle`, as
-/// `(file, enclosing fn)`, sorted and deduplicated.
+/// `(file, enclosing fn)`, sorted and deduplicated. The scan covers the
+/// identity, engine and REST crates' `src` too, and the remote crate's, where
+/// the pull and share plumbing lives.
 ///
 /// The mechanism both allow-list guards below share, rather than two copies of
 /// it: they pin two different seams onto another actor's rows and they have to
@@ -6652,8 +6654,14 @@ async fn a_write_with_no_identity_still_refuses_and_a_read_still_answers_the_bas
 /// reach another actor's drafts and stay green.
 fn call_sites(needle: &str) -> Vec<(String, String)> {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let roots =
-        ["src", "../identity/src", "../engine/src", "../rest/src"].map(|dir| manifest.join(dir));
+    let roots = [
+        "src",
+        "../identity/src",
+        "../engine/src",
+        "../rest/src",
+        "../remote/src",
+    ]
+    .map(|dir| manifest.join(dir));
     /// The name a line declares a function under, if it declares one.
     fn declared_fn(line: &str) -> Option<&str> {
         let rest = line.trim_start();
@@ -6721,6 +6729,100 @@ fn only_these_reach(needle: &str, allowed: &[(&str, &str)], complaint: &str) {
         .collect();
     expected.sort();
     assert_eq!(call_sites(needle), expected, "{complaint}");
+}
+
+const MANIFEST_READ_ONLY: &str = "---\ntype: manifest\ntitle: team\npermalink: manifest\ntags:\n  - manifest\nstatus: stable\nrecorded_at: 2026-01-01\nread_only: on\n---\n\n# team\n\n## Scope\n\n- The shared domain\n\n## When to Use\n\n- Route here for team work\n";
+
+/// A reviewing domain parks every write in its author's draft, and a draft
+/// cannot be shared while the domain is read-only. So the switch-off lands
+/// in the folder the team reviewed, and nowhere else.
+#[tokio::test]
+async fn the_owner_switches_read_only_off_in_a_reviewing_domain() {
+    let f = build_fixture(MANIFEST_READ_ONLY, true, true, None, false, false).await;
+    let answer = f
+        .engine
+        .set_manifest_policies(
+            "team",
+            &[("read_only".into(), "off".into())],
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(answer["draft"], false, "not a draft");
+    let folder = std::fs::read_to_string(f.root.join("team/MANIFEST.md")).unwrap();
+    assert!(folder.contains("read_only: off"), "{folder}");
+    assert!(!f.engine.domain_is_read_only("team").await);
+}
+
+/// The view that skips the read-only check has one caller: the owner's
+/// switch-off in `edit_manifest_policies`, which `set_manifest_policies`,
+/// REST PATCH, Fluid's policies card and `configure` all reach.
+#[test]
+fn only_edit_manifest_policies_reaches_the_unlock_view() {
+    only_these_reach(
+        "DomainView::for_unlock(",
+        &[("engine.rs", "edit_manifest_policies")],
+        "the write view that skips the read-only check is reachable from somewhere other than \
+         the owner's switch-off; a write through it lands in a read-only domain",
+    );
+}
+
+/// Every function that refuses on a read-only instance writes something. Each
+/// one either enters a write view (which checks the domain flag), checks the
+/// flag by hand, or is listed below as instance-wide: it writes the
+/// configuration, a credential or a registration, never into a domain.
+#[test]
+fn every_instance_write_guard_meets_the_domain_flag() {
+    let guarded = call_sites("Err(EngineError::ReadOnly)");
+    let meets: std::collections::BTreeSet<(String, String)> = [
+        "DomainView::for_write(",
+        "DomainView::for_write_joined(",
+        "refuse_read_only_domain(",
+        "domain_is_read_only(",
+    ]
+    .iter()
+    .flat_map(|needle| call_sites(needle))
+    .collect();
+    let instance_wide: &[(&str, &str)] = &[
+        // The configuration and the harness decisions it records.
+        ("engine.rs", "configure"),
+        ("engine.rs", "provision"),
+        // A registration, which writes the config and a MANIFEST scaffold
+        // for a domain that is not read-only yet.
+        ("engine.rs", "domain_add_local_as"),
+        ("engine.rs", "domain_add_virtual_as"),
+        ("engine.rs", "origin_add_with_progress_as"),
+        // Ending a registration (decision D6).
+        ("engine.rs", "unregister_domain"),
+        ("engine.rs", "domain_remove"),
+        // Putting paths back the way the team has them: the direction a pull
+        // goes, so it stays allowed (decision D5).
+        ("engine.rs", "discard_local_changes"),
+        // The GitHub connection and identities.
+        ("engine.rs", "connect_github_identity_token"),
+        ("engine.rs", "connect_with_token"),
+        ("engine.rs", "disconnect_github_identity"),
+        ("engine.rs", "github_disconnect"),
+        ("engine.rs", "start_device_connect"),
+        ("engine.rs", "start_github_identity_device_flow"),
+    ];
+    let mut strays: Vec<&(String, String)> = guarded
+        .iter()
+        .filter(|site| !meets.contains(*site))
+        .filter(|(file, name)| !instance_wide.contains(&(file.as_str(), name.as_str())))
+        .collect();
+    strays.sort();
+    assert!(
+        strays.is_empty(),
+        "these refuse on a read-only instance and never meet the read-only domain check; \
+         add `refuse_read_only_domain` to each, or list it as instance-wide with the reason: {strays:?}"
+    );
+    for (file, name) in instance_wide {
+        assert!(
+            guarded.iter().any(|(f, n)| f == file && n == name),
+            "`{name}` is listed as instance-wide but no longer refuses on a read-only instance; drop it"
+        );
+    }
 }
 
 /// Another actor's view is buildable, because the fold, a withdrawal, a

@@ -133,6 +133,11 @@ impl Engine {
             return Err(EngineError::ReadOnly);
         }
         self.refuse_hidden_admin(old, scope).await?;
+        // A full rename writes the domain's MANIFEST; a `--local` one changes
+        // only this machine's name and writes nothing into the domain.
+        if !local_only {
+            self.refuse_read_only_domain(old, scope).await?;
+        }
         // A rename moves this machine's state folders and writes its
         // configuration under a journal in the state directory: only the
         // process that holds that directory runs one, so no two processes
@@ -1252,7 +1257,9 @@ impl Engine {
             if hidden.contains(name) {
                 continue;
             }
-            if self.write_right(scope, name).await? >= crate::scope::DomainRight::Write {
+            if self.write_right(scope, name).await? >= crate::scope::DomainRight::Write
+                && !self.domain_is_read_only(name).await
+            {
                 writable.push(name.clone());
             }
         }

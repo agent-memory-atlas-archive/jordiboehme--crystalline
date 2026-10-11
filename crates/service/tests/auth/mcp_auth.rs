@@ -4200,6 +4200,83 @@ async fn an_editor_with_a_write_list_writes_its_own_domain_and_nowhere_else() {
     assert!(read.contains("Open Note"), "reads are unchanged: {read}");
 }
 
+/// The bytes of every file under `dir`, so "nothing moved" is a byte claim.
+fn folder_bytes(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+    let mut out: Vec<(String, Vec<u8>)> = walkdir::WalkDir::new(dir)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file())
+        .map(|e| {
+            (
+                e.path().strip_prefix(dir).unwrap().display().to_string(),
+                std::fs::read(e.path()).unwrap(),
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// An account whose write list names only `second` cannot move an engram
+/// into `open` nor out of it: both directions are refused with the list's
+/// sentence before anything is written, and both folders stay byte-identical.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_move_between_a_listed_and_an_unlisted_domain_moves_nothing() {
+    let ctx = mcp_ctx(true).await;
+    // An admin with no list puts an engram in `second`, so both ends hold one.
+    let boss = ctx.token_for("boss").await;
+    let admin = McpTestSession::open(&ctx.addr, Some(&boss)).await;
+    let written = admin
+        .call_tool(
+            "write_engram",
+            serde_json::json!({ "domain": "second", "title": "Mine", "content": "- [fact] yes" }),
+        )
+        .await;
+    assert!(written.contains("mine"), "{written}");
+    ctx.store
+        .set_write_list("out", &listed(&["second"]))
+        .await
+        .unwrap();
+    let open_dir = ctx
+        .path("open", "MANIFEST.md")
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let second_dir = ctx
+        .path("second", "MANIFEST.md")
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let open_before = folder_bytes(&open_dir);
+    let second_before = folder_bytes(&second_dir);
+
+    let token = ctx.token_for("out").await;
+    let session = McpTestSession::open(&ctx.addr, Some(&token)).await;
+    for (from, identifier, to) in [("second", "mine", "open"), ("open", "open-note", "second")] {
+        let refused = session
+            .call_tool(
+                "move_engram",
+                serde_json::json!({
+                    "domain": from,
+                    "identifier": identifier,
+                    "destination": "moved.md",
+                    "destination_domain": to,
+                }),
+            )
+            .await;
+        assert!(
+            refused.contains(OFF_LIST_OPEN_OUT),
+            "{from} -> {to}: {refused}"
+        );
+        assert_eq!(folder_bytes(&open_dir), open_before, "{from} -> {to}: open");
+        assert_eq!(
+            folder_bytes(&second_dir),
+            second_before,
+            "{from} -> {to}: second"
+        );
+    }
+}
+
 /// A viewer with a list keeps today's sentence: its role is the reason, and
 /// the list would not change the answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

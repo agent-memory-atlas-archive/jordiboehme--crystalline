@@ -4,8 +4,10 @@
 
 use std::sync::Arc;
 
+use crystalline_core::config::ReviewMode;
 use crystalline_core::config::{DomainEntry, GlobalConfig, ResponseFormat, ServiceConfig};
 use crystalline_index::TursoStore;
+use crystalline_service::ReviewModeConfirm;
 use crystalline_service::engine::PolicyEdit;
 use crystalline_service::engine::read_only_sentence;
 use crystalline_service::params::{
@@ -414,4 +416,206 @@ async fn a_virtual_domain_is_locked_and_unlocked_through_the_same_switch() {
         .write_engram_as(&write, None, &scope)
         .await
         .expect("open again");
+}
+
+#[tokio::test]
+async fn the_paths_without_a_write_view_refuse_too() {
+    let (tmp, engine) = fixture().await;
+    let before = snapshot(&tmp.path().join("archive"));
+    let scope = Scope::Unrestricted;
+    assert_refused(
+        engine
+            .attachment_write("archive", "assets/a.txt", b"x".to_vec())
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+    assert_refused(
+        engine
+            .attachment_write_as("archive", "assets/a.txt", b"x".to_vec(), &scope)
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+    assert_refused(
+        engine
+            .attachment_delete("archive", "assets/a.txt")
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+    assert_refused(
+        engine
+            .attachment_delete_as("archive", "assets/a.txt", &scope)
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+    assert_refused(
+        engine
+            .import_domain_files(
+                "archive",
+                &[("beta.md".into(), ALPHA.replace("alpha", "beta"))],
+                false,
+                false,
+            )
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+    assert_refused(
+        engine
+            .retag("eng", "kept", Some("archive"), false, false, false)
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+    assert_refused(
+        engine
+            .rename_domain("archive", "attic", false, &scope)
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+    assert_refused(
+        engine
+            .set_review_mode(
+                "archive",
+                Some(ReviewMode::Overlay),
+                ReviewModeConfirm::Preview,
+                &scope,
+            )
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+    assert_eq!(snapshot(&tmp.path().join("archive")), before);
+}
+
+/// `domain import` loads a folder into a virtual domain: refused like any
+/// write once the domain is read-only (spec A-3).
+#[tokio::test]
+async fn an_import_into_a_read_only_virtual_domain_is_refused() {
+    let (tmp, engine) = fixture().await;
+    engine.domain_add_virtual("scratch").await.unwrap();
+    engine
+        .set_manifest_policies(
+            "scratch",
+            &[("read_only".into(), "on".into())],
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let src = tmp.path().join("import-src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("beta.md"), ALPHA.replace("alpha", "beta")).unwrap();
+    assert_refused(
+        engine
+            .import_domain("scratch", &src, false, false)
+            .await
+            .unwrap_err(),
+        "scratch",
+    );
+    let listed = engine
+        .browse_domain(
+            &crystalline_service::params::BrowseParams {
+                domain: "scratch".into(),
+                path: None,
+                depth: None,
+                glob: None,
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert!(!listed.to_string().contains("beta"), "{listed}");
+}
+
+#[tokio::test]
+async fn an_unscoped_retag_skips_a_read_only_domain_and_names_it() {
+    let (tmp, engine) = fixture().await;
+    let before = snapshot(&tmp.path().join("archive"));
+    let dry = engine
+        .retag("eng", "engineering", None, false, true, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        dry["read_only_skipped"],
+        serde_json::json!(["archive"]),
+        "{dry}"
+    );
+    let answer = engine
+        .retag("eng", "engineering", None, false, false, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        answer["read_only_skipped"],
+        serde_json::json!(["archive"]),
+        "{answer}"
+    );
+    assert_eq!(snapshot(&tmp.path().join("archive")), before);
+    let eng = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();
+    assert!(eng.contains("engineering"), "{eng}");
+}
+
+/// The generated listings are written into a writable folder and never into
+/// a read-only one (a regenerated listing after a pull would be an unshared
+/// change that can never be shared). `index.files` is on by default.
+#[tokio::test]
+async fn generated_index_files_are_not_written_into_a_read_only_domain() {
+    let (tmp, engine) = fixture().await;
+    engine.sync(None).await.unwrap();
+    assert!(
+        tmp.path().join("eng/index.md").exists(),
+        "a writable folder still gets its listing"
+    );
+    assert!(
+        !tmp.path().join("archive/index.md").exists(),
+        "the listing refresh skips a read-only folder"
+    );
+}
+
+const SHOT: &[u8] = b"\x89PNG\r\n\x1a\n\x00shot";
+
+const WITH_SHOT: &str = "---\ntype: engram\ntitle: Shot\npermalink: shot\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Shot\n\n- [fact] the dashboard looked like this #eng\n- [fact] a second fact about the dashboard #eng\n- [fact] a third fact about the dashboard #eng\n\n![The dashboard](assets/shot.png)\n";
+
+/// A cross-domain move into a blocked domain and out of one is refused before
+/// anything moves: no engram, no carried attachment, no link rewrite, at
+/// either end. The carry writes with the raw attachment writer, so this pins
+/// that the refusal comes before it.
+#[tokio::test]
+async fn a_move_into_or_out_of_a_blocked_domain_moves_nothing() {
+    let (tmp, engine) = fixture().await;
+    for dir in ["eng", "archive"] {
+        let root = tmp.path().join(dir);
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join("assets/shot.png"), SHOT).unwrap();
+        std::fs::write(root.join("shot.md"), WITH_SHOT).unwrap();
+    }
+    engine.sync(None).await.unwrap();
+    let archive = snapshot(&tmp.path().join("archive"));
+    let eng = snapshot(&tmp.path().join("eng"));
+    for (from, to) in [("eng", "archive"), ("archive", "eng")] {
+        let p = MoveParams {
+            identifier: "shot".into(),
+            domain: from.into(),
+            destination: "moved/shot".into(),
+            destination_domain: Some(to.into()),
+            permalink: None,
+            update_links: None,
+        };
+        assert_refused(
+            engine
+                .move_engram(&p, &Scope::Unrestricted)
+                .await
+                .unwrap_err(),
+            "archive",
+        );
+        assert_eq!(
+            snapshot(&tmp.path().join("archive")),
+            archive,
+            "{from} -> {to}"
+        );
+        assert_eq!(snapshot(&tmp.path().join("eng")), eng, "{from} -> {to}");
+    }
 }

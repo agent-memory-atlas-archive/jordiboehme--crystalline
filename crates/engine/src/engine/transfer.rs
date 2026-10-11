@@ -74,6 +74,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         if let ContentSource::File { .. } = self.content_source(domain)? {
             return Err(EngineError::Invalid(format!(
                 "domain import loads into a virtual domain; '{domain}' is a file domain. \
@@ -121,6 +123,10 @@ impl Engine {
                     continue;
                 }
             };
+            if rel == "MANIFEST.md" {
+                self.refuse_read_only_switch_on(domain, &text, &crate::scope::Scope::Unrestricted)
+                    .await?;
+            }
             let record = EngramRecord::from_engram(&engram, &rel, virtual_stamp(&text));
             let collides = (existing_paths.contains(&rel)
                 || existing_perms.contains(&record.permalink))
@@ -200,6 +206,8 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         // An import writes the folder the team shares under an admin's hand,
         // and a domain that reviews changes has no answer for whose draft that
         // would be. The preview is exempt because it writes nothing: a question

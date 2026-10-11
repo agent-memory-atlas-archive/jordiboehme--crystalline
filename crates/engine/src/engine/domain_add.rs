@@ -367,6 +367,11 @@ impl Engine {
     /// one just wrote and answers `Ok(false)`.
     pub(crate) async fn write_back_domain_name(&self, local: &str) -> Result<bool> {
         let entry = self.domain_entry(local)?;
+        // A read-only domain keeps its MANIFEST as the team wrote it; the
+        // name stays the registration's.
+        if self.domain_is_read_only(local).await {
+            return Ok(false);
+        }
         let scope = crate::scope::Scope::Unrestricted;
         let view = DomainView::for_write(self, local, &scope).await?;
         let (desc, source) = view.resolve("manifest").await?;
