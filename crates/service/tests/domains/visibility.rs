@@ -16,8 +16,8 @@ use std::sync::Arc;
 use crystalline_core::config::{DomainEntry, GlobalConfig};
 use crystalline_index::TursoStore;
 use crystalline_service::params::{
-    BrowseParams, ContextParams, EvolveParams, InferParams, ListDomainsParams, ReadParams,
-    RecentParams, SearchParams, ValidateParams, VocabularyParams,
+    BrowseParams, ContextParams, EvolveParams, InferParams, ListDomainsParams, MoveParams,
+    ReadParams, RecentParams, SearchParams, ValidateParams, VocabularyParams,
 };
 use crystalline_service::rest::{AuthStore, MemberLevel, Role};
 use crystalline_service::{DomainAccess, Engine, Scope};
@@ -975,6 +975,82 @@ async fn an_editor_cannot_switch_read_only_on_by_any_path() {
         .unwrap_err();
     assert_eq!(err.to_string(), open_rule);
     assert!(!engine.domain_is_read_only("open").await);
+}
+
+/// A move onto a missing MANIFEST.md writes the moved text as the MANIFEST,
+/// so it meets the switch-on rule like every other MANIFEST writer (decision
+/// D10): an instance editor on a shared domain is refused with the owner
+/// rule, from the same domain and from another one, and nothing moves. A
+/// move that leaves the flag off lands, and an instance admin may switch it
+/// on this way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_move_onto_the_manifest_cannot_switch_read_only_on_for_an_editor() {
+    let (tmp, engine) = fixture().await;
+    let open = tmp.path().join("open");
+    let lab = tmp.path().join("lab");
+    let note = |permalink: &str, flag: bool| {
+        let text = OPEN_NOTE.replacen(
+            "permalink: open-note",
+            &format!("permalink: {permalink}"),
+            1,
+        );
+        match flag {
+            true => switch_on(&text),
+            false => text,
+        }
+    };
+    std::fs::remove_file(open.join("MANIFEST.md")).unwrap();
+    std::fs::write(open.join("locker.md"), note("locker", true)).unwrap();
+    std::fs::write(open.join("plain.md"), note("plain", false)).unwrap();
+    std::fs::write(lab.join("lab-locker.md"), note("lab-locker", true)).unwrap();
+    engine.sync(None).await.unwrap();
+    let open_rule = "only the owner of 'open' or an instance admin may change `read_only`";
+    let onto_manifest = |identifier: &str, domain: &str| MoveParams {
+        identifier: identifier.into(),
+        domain: domain.into(),
+        destination: "MANIFEST.md".into(),
+        destination_domain: Some("open".into()),
+        permalink: None,
+        update_links: None,
+    };
+
+    // The same domain: `out` is an instance editor there.
+    let err = engine
+        .move_engram(&onto_manifest("locker", "open"), &user("out"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, crystalline_service::EngineError::Forbidden(_)),
+        "{err:?}"
+    );
+    assert_eq!(err.to_string(), open_rule);
+    // Another domain: `ed` edits `lab` and is an instance editor on `open`.
+    let err = engine
+        .move_engram(&onto_manifest("lab-locker", "lab"), &user("ed"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), open_rule, "{err:?}");
+    assert!(!open.join("MANIFEST.md").exists(), "nothing moved");
+    assert!(open.join("locker.md").exists());
+    assert!(lab.join("lab-locker.md").exists());
+    assert!(!engine.domain_is_read_only("open").await);
+
+    // A move that leaves the flag off is not this rule's business.
+    engine
+        .move_engram(&onto_manifest("plain", "open"), &user("out"))
+        .await
+        .expect("a MANIFEST without the lock lands");
+    assert!(open.join("MANIFEST.md").exists());
+    assert!(!engine.domain_is_read_only("open").await);
+
+    // An instance admin may switch it on by the same move.
+    std::fs::remove_file(open.join("MANIFEST.md")).unwrap();
+    engine.sync(None).await.unwrap();
+    engine
+        .move_engram(&onto_manifest("locker", "open"), &admin("boss"))
+        .await
+        .expect("the admin switches the lock on");
+    assert!(engine.domain_is_read_only("open").await);
 }
 
 /// The owner and an instance admin switch it on, through the policies and

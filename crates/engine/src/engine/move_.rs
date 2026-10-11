@@ -128,6 +128,17 @@ impl Engine {
         // is what every reference to it has to follow.
         let readdressed = cross || new_permalink != src.permalink;
 
+        // A move onto the MANIFEST writes the moved text as the MANIFEST, so it
+        // meets the switch-on rule every MANIFEST writer meets (decision D10),
+        // before anything is written at either end and before the review-mode
+        // branch, which writes a draft of it. A taken MANIFEST.md is refused
+        // later as a collision; this is the move onto a missing one.
+        if is_manifest_path(&dest_rel) {
+            let text = self.move_source_text(&src_source, &src, &p.domain).await?;
+            self.refuse_read_only_switch_on(&dest_domain, &text, scope)
+                .await?;
+        }
+
         // The third place a move can land, and it is two writes rather than
         // one: a tombstone where the team's file is, so this actor stops
         // seeing the engram there, and an entry at the destination, so they
@@ -220,26 +231,9 @@ impl Engine {
             to_permalink: &new_permalink,
         };
 
-        // Read once, stricter than the read path on purpose: a move re-emits
-        // the file at the destination, and a file domain's stored `content`
-        // column holds the body only, so falling back to it would strip the
-        // frontmatter off the engram that lands. Failing loudly is the only
-        // honest option; the store is the source of truth for a virtual
-        // domain, so only that kind reads from it.
-        let original = match &src_source {
-            ContentSource::File { root } => {
-                let abs = join_rel(root, &src.path);
-                std::fs::read_to_string(&abs).map_err(|e| {
-                    EngineError::NotFound(format!(
-                        "the source file for '{}' at {} is unreadable ({e}); resync '{}' and retry the move",
-                        src.permalink,
-                        abs.display(),
-                        p.domain
-                    ))
-                })?
-            }
-            ContentSource::Virtual => self.load_content(&src_source, &src).await?,
-        };
+        // Read here for the write, by the strict reader the MANIFEST check
+        // above uses too (see [`Engine::move_source_text`]).
+        let original = self.move_source_text(&src_source, &src, &p.domain).await?;
         // A move writes the engram anew, so it lands as LF whatever line
         // endings it was read with, a plain rename included.
         let original = crystalline_core::to_lf(&original).into_owned();
@@ -1181,5 +1175,35 @@ fn manifest_change(edited: &str) -> PathChange {
             .and_then(|engram| engram.frontmatter.permalink)
             .filter(|permalink| !permalink.is_empty()),
         checksum: Some(sha256_hex(edited.as_bytes())),
+    }
+}
+
+impl Engine {
+    /// The moved engram's whole text, frontmatter included, read from its
+    /// source of truth. Stricter than the read path on purpose: a move
+    /// re-emits the file at the destination, and a file domain's stored
+    /// `content` column holds the body only, so falling back to it would strip
+    /// the frontmatter off the engram that lands. Failing loudly is the only
+    /// honest option; the store is the source of truth for a virtual domain,
+    /// so only that kind reads from it.
+    async fn move_source_text(
+        &self,
+        src_source: &ContentSource,
+        src: &EngramDescriptor,
+        domain: &str,
+    ) -> Result<String> {
+        match src_source {
+            ContentSource::File { root } => {
+                let abs = join_rel(root, &src.path);
+                std::fs::read_to_string(&abs).map_err(|e| {
+                    EngineError::NotFound(format!(
+                        "the source file for '{}' at {} is unreadable ({e}); resync '{domain}' and retry the move",
+                        src.permalink,
+                        abs.display(),
+                    ))
+                })
+            }
+            ContentSource::Virtual => self.load_content(src_source, src).await,
+        }
     }
 }
