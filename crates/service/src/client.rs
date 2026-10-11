@@ -2128,8 +2128,9 @@ fn save_file(path: &Path, config: &crystalline_core::config::GlobalConfig) -> an
 }
 
 /// The key of the `routing_bullets` answer that lists the read-only virtual
-/// domains. `$` is not a legal domain name character, so no domain row can
-/// take it, and an older client parses it as one more entry it never asks for.
+/// domains. `$` is not a legal domain name character: no domain name passes
+/// the validator; a hand-registered $ name is left out of the answer. An
+/// older client parses the key as one more entry it never asks for.
 pub const ROUTING_READ_ONLY_KEY: &str = "$read_only";
 
 /// The virtual domains' routing facts for `prompt system`: each one's bullets,
@@ -2160,8 +2161,9 @@ fn split_routing_answer(
 /// Resolve virtual-domain routing bullets for `prompt system`: over the daemon
 /// when one is running (its warm state) and no explicit `--config`/`--db`
 /// override was given, else against a directly opened store, with the
-/// virtual domains that are read-only beside them. Returns nothing when the config has no virtual domains, so the common all-file case never
-/// opens a store or a socket. `config_path` is the raw `--config` override the
+/// virtual domains that are read-only beside them. Returns nothing when the
+/// config has no virtual domains, so the common all-file case never opens a
+/// store or a socket. `config_path` is the raw `--config` override the
 /// caller resolved `config` from, threaded through only so an override bypasses
 /// the daemon (which serves its own default config) exactly like every other
 /// verb.
@@ -2199,10 +2201,10 @@ pub async fn virtual_routing_bullets(
     // the state directory, so a rename left half done waits for the next
     // opener that does.
     match open_standalone(loaded, &db_path, false).await {
-        Ok(engine) => VirtualRouting {
-            bullets: engine.virtual_routing_bullets().await,
-            read_only: engine.virtual_read_only_names().await,
-        },
+        Ok(engine) => {
+            let (bullets, read_only) = engine.virtual_routing().await;
+            VirtualRouting { bullets, read_only }
+        }
         Err(_) => VirtualRouting::default(),
     }
 }

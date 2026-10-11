@@ -331,18 +331,25 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
         }
         // Virtual-domain routing bullets for `prompt system`, served from the
         // daemon's warm state so the prompt stays inside its latency budget.
-        // The locked virtual domains ride along under a key no domain can
-        // be named, so an older client still parses the answer as bullets.
+        // The locked virtual domains ride along under `$read_only`: no domain
+        // name passes the validator; a hand-registered $ name is left out of
+        // the answer, so an older client still parses it as bullets.
         "routing_bullets" => {
-            let mut answer = serde_json::to_value(shared.engine.virtual_routing_bullets().await)
-                .unwrap_or(Value::Null);
-            if let Value::Object(map) = &mut answer {
-                map.insert(
-                    crate::client::ROUTING_READ_ONLY_KEY.to_string(),
-                    json!(shared.engine.virtual_read_only_names().await),
-                );
-            }
-            (envelope_ok(answer), false)
+            let (bullets, read_only) = shared.engine.virtual_routing().await;
+            let mut answer: serde_json::Map<String, Value> = bullets
+                .into_iter()
+                .filter(|(name, _)| !name.starts_with('$'))
+                .map(|(name, lines)| (name, json!(lines)))
+                .collect();
+            let read_only: Vec<String> = read_only
+                .into_iter()
+                .filter(|name| !name.starts_with('$'))
+                .collect();
+            answer.insert(
+                crate::client::ROUTING_READ_ONLY_KEY.to_string(),
+                json!(read_only),
+            );
+            (envelope_ok(Value::Object(answer)), false)
         }
         // Scaffold a virtual domain's MANIFEST from markdown the CLI built.
         "scaffold_manifest" => {

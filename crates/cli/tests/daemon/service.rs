@@ -3954,7 +3954,36 @@ fn prompt_system_marks_a_read_only_virtual_domain_with_a_daemon() {
     let (ok, out) = env.run(&["prompt", "system"]);
     assert!(ok, "{out}");
     assert!(out.contains("- notes (read-only): "), "{out}");
+    // The mark came from the daemon: its own ctl answer names the lock under
+    // `$read_only`, the key the CLI reads it from.
+    #[cfg(unix)]
+    {
+        let answer = ctl_over_the_socket(&env, &json!({ "v": 1, "cmd": "routing_bullets" }));
+        assert_eq!(answer["ok"], json!(true), "{answer}");
+        assert_eq!(answer["data"]["$read_only"], json!(["notes"]), "{answer}");
+        assert!(answer["data"]["notes"].is_array(), "{answer}");
+    }
     let _ = env.run(&["ctl", "shutdown"]);
+}
+
+/// One ctl command sent straight to the running daemon's socket, the way the
+/// CLI's own client does: the `ctl` mode line, then the command, then one
+/// answer line.
+#[cfg(unix)]
+fn ctl_over_the_socket(env: &Env, cmd: &Value) -> Value {
+    use std::io::{BufRead, BufReader, Write};
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(env.state_dir().join("service.json")).unwrap(),
+    )
+    .unwrap();
+    let socket = record["socket_path"].as_str().unwrap();
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    stream.write_all(b"ctl\n").unwrap();
+    writeln!(stream, "{cmd}").unwrap();
+    stream.flush().unwrap();
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).unwrap();
+    serde_json::from_str(line.trim()).unwrap()
 }
 
 /// With the index unreachable, `domain list` still answers: the registrations

@@ -649,19 +649,25 @@ impl Engine {
         out
     }
 
-    /// The virtual domains whose MANIFEST says `read_only: on`, for `prompt
-    /// system` to mark beside [`Engine::virtual_routing_bullets`]. Read from
-    /// the same MANIFEST engrams and over the same registrations as those
-    /// bullets, so the two never disagree about a domain the CLI registered
-    /// after this engine started.
-    pub async fn virtual_read_only_names(&self) -> BTreeSet<String> {
-        let mut out = BTreeSet::new();
+    /// The routing facts of every virtual domain for `prompt system`: each
+    /// one's bullets, and the names whose MANIFEST says `read_only: on`. One
+    /// read of each MANIFEST engram answers both, over the same registrations
+    /// as [`Engine::virtual_routing_bullets`], so a domain the CLI registered
+    /// after this engine started is marked as well as routed.
+    pub async fn virtual_routing(&self) -> (BTreeMap<String, Vec<String>>, BTreeSet<String>) {
+        let mut bullets = BTreeMap::new();
+        let mut read_only = BTreeSet::new();
         for (name, entry) in &self.registered_domain_entries() {
-            if entry.is_virtual() && self.virtual_manifest_facts(name).await.2 {
-                out.insert(name.clone());
+            if !entry.is_virtual() {
+                continue;
+            }
+            let (routing, _, locked) = self.virtual_manifest_facts(name).await;
+            bullets.insert(name.clone(), routing);
+            if locked {
+                read_only.insert(name.clone());
             }
         }
-        out
+        (bullets, read_only)
     }
 
     // --- generated index files -----------------------------------------------
