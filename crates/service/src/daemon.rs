@@ -277,6 +277,14 @@ fn prepare_task_start() -> Option<std::fs::File> {
 /// [`crate::runs_in`]. `from_task` says Task Scheduler started it (the
 /// hidden `serve --from-task`); it implies `daemon_flag`.
 // The daemon's startup switches are flat on purpose, one clap flag each.
+/// The daemon's log filter when `RUST_LOG` is unset: `info`, with the crates
+/// of the model download library (hf-xet: `xet`, `xet_client`, `xet_data`,
+/// `xet_runtime` and `xet_core_structures`, all matched by the `xet` prefix)
+/// at `warn`. They log every transfer step at info, dozens of lines a second
+/// during a download. The download's own notice and progress line are
+/// printed by Crystalline and are not filtered here.
+const DEFAULT_LOG_FILTER: &str = "info,xet=warn";
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_serve(
     daemon_flag: bool,
@@ -302,9 +310,9 @@ pub async fn run_serve(
         None
     };
     // RUST_LOG filters the daemon's log (the tracing `EnvFilter` syntax),
-    // `info` when it is unset or does not parse.
+    // `DEFAULT_LOG_FILTER` when it is unset or does not parse.
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER));
     let _ = match log_file {
         Some(file) => tracing_subscriber::fmt()
             .with_ansi(false)
@@ -3551,6 +3559,54 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default filter quiets the model download library's crates, which
+    /// log every transfer step at info (dozens of lines a second during a
+    /// download), and keeps the daemon's own info lines and the library's
+    /// warnings. The targets are the ones a real download wrote to
+    /// daemon.log; `xet` matches each of them as a prefix.
+    #[test]
+    fn the_default_log_filter_keeps_xet_at_warn() {
+        #[derive(Clone, Default)]
+        struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Captured {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .with_env_filter(tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "crystalline_service::daemon", "own info line");
+            tracing::info!(target: "xet::xet_session::session", "xet session info");
+            tracing::info!(target: "xet_client::common::http_client", "xet client info");
+            tracing::info!(target: "xet_data::file_reconstruction::run_state", "xet data info");
+            tracing::info!(target: "xet_runtime::error_printer", "xet runtime info");
+            tracing::info!(target: "xet_core_structures::x", "xet structures info");
+            tracing::warn!(target: "xet_client::cas_client::retry_wrapper", "xet warning");
+        });
+        let text = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(text.contains("own info line"), "{text}");
+        assert!(text.contains("xet warning"), "{text}");
+        for quiet in [
+            "xet session info",
+            "xet client info",
+            "xet data info",
+            "xet runtime info",
+            "xet structures info",
+        ] {
+            assert!(!text.contains(quiet), "{quiet} passed the filter: {text}");
+        }
+    }
 
     /// The bare `/crystalline` prefix is stripped. MCP is the router's
     /// fallback, so a test that only checks that `/crystalline` reaches MCP
