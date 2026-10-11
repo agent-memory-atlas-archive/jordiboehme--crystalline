@@ -146,8 +146,8 @@ function notice(outcome, platform, extensionVersion) {
     fix = `Update Crystalline with ${update}, then restart Claude Desktop.`;
   } else if (mac) {
     reason = "Crystalline is not installed on this Mac";
-    instructions = `Crystalline is not ready this session: ${reason}, and this extension only connects Claude Desktop to it. No knowledge tools are available. Ask the user to install it with \`brew install jordiboehme/tap/crystalline\` and restart Claude Desktop. Without Homebrew, they can install crystalline-desktop-only-v${extensionVersion}-macos.mcpb from ${RELEASES} instead of this extension. Call the status tool for the full details to relay.`;
-    fix = `Run \`brew install jordiboehme/tap/crystalline\` and restart Claude Desktop, or install crystalline-desktop-only-v${extensionVersion}-macos.mcpb from ${RELEASES} instead of this extension.`;
+    instructions = `Crystalline is not ready this session: ${reason}, and this extension only connects Claude Desktop to it. No knowledge tools are available. Ask the user to install it with \`brew install jordiboehme/tap/crystalline\` and restart Claude Desktop. Without Homebrew, they can install crystalline-claude-desktop-only-v${extensionVersion}-macos.mcpb from ${RELEASES} instead of this extension. Call the status tool for the full details to relay.`;
+    fix = `Run \`brew install jordiboehme/tap/crystalline\` and restart Claude Desktop, or install crystalline-claude-desktop-only-v${extensionVersion}-macos.mcpb from ${RELEASES} instead of this extension.`;
   } else {
     reason = "Crystalline is not installed on this computer";
     instructions = `Crystalline is not ready this session: ${reason}, and this extension only connects Claude Desktop to it. No knowledge tools are available. Ask the user to download the MSI from ${RELEASES}, run it, and restart Claude Desktop. Call the status tool for the full details to relay.`;

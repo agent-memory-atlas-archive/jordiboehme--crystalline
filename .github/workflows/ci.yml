@@ -536,7 +536,7 @@ jobs:
           set -euo pipefail
           packaging/mcpb/generate-manifest.sh standard 0.0.0 bundle/standard
           npx --yes @anthropic-ai/mcpb@2.1.2 validate bundle/standard
-          npx --yes @anthropic-ai/mcpb@2.1.2 pack bundle/standard standard.mcpb
+          npx --yes @anthropic-ai/mcpb@2.1.2 pack bundle/standard crystalline-claude-desktop-v0.0.0.mcpb
           mkdir -p bundle/desktop-only/server
           printf 'placeholder\n' > bundle/desktop-only/server/crystalline
           packaging/mcpb/generate-manifest.sh desktop-only 0.0.0 bundle/desktop-only

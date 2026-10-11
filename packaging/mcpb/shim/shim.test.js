@@ -113,7 +113,8 @@ test("an old Crystalline is reported with its path and version", () => {
 test("with no binary on macOS the stub names brew and the Desktop-only bundle", () => {
   const note = shim.notice({ kind: "missing" }, "darwin", "0.24.0");
   assert.match(note.instructions, /brew install jordiboehme\/tap\/crystalline/);
-  assert.match(note.instructions, /crystalline-desktop-only-v0\.24\.0-macos\.mcpb/);
+  assert.match(note.instructions, /crystalline-claude-desktop-only-v0\.24\.0-macos\.mcpb/);
+  assert.match(note.fix, /crystalline-claude-desktop-only-v0\.24\.0-macos\.mcpb/);
   assert.match(note.instructions, /restart Claude Desktop/);
   assert.equal(note.payload.available, false);
   assert.equal(note.payload.needed_version, "0.24.0");
