@@ -1389,7 +1389,7 @@ impl Engine {
         let (old, new) = (journal.old.as_str(), journal.new.as_str());
         let entry = {
             let mut file_guard = self.file_config.write().unwrap();
-            let mut file = self.fresh_file_config(&file_guard);
+            let mut file = self.fresh_file_config(&file_guard)?;
             let (index, mut entry) = match (
                 file.domains.get_index_of(old),
                 file.domains.get_index_of(new),

@@ -4681,28 +4681,47 @@ fn status_still_answers_over_a_config_it_cannot_parse() {
     .unwrap();
 
     let (ok, stdout, stderr) = env.run_full(&["status"]);
-    assert!(ok, "status answers: {stdout}{stderr}");
-    assert!(stdout.starts_with("Daemon: running (pid "), "{stdout}");
+    assert!(
+        ok,
+        "status answers: {stdout}{stderr}\n--- daemon log ---\n{}",
+        env.daemon_log_tail(60)
+    );
+    assert!(
+        stdout.starts_with("Daemon: running (pid "),
+        "{stdout}\n--- daemon log ---\n{}",
+        env.daemon_log_tail(60)
+    );
     assert!(
         stderr.contains("configuration did not load"),
-        "the config problem is named, not swallowed: {stderr}"
+        "the config problem is named, not swallowed: {stderr}\n--- daemon log ---\n{}",
+        env.daemon_log_tail(60)
     );
 
-    let (ok, stdout, _) = env.run_full(&["status", "--json"]);
-    assert!(ok);
+    let (ok, stdout, stderr) = env.run_full(&["status", "--json"]);
+    assert!(
+        ok,
+        "status --json answers: {stdout}{stderr}\n--- daemon log ---\n{}",
+        env.daemon_log_tail(60)
+    );
     let value: Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert!(value["pid"].as_u64().is_some(), "{value}");
+    assert!(
+        value["pid"].as_u64().is_some(),
+        "{value}\n--- daemon log ---\n{}",
+        env.daemon_log_tail(60)
+    );
     assert!(
         value["config_error"]
             .as_str()
             .is_some_and(|e| !e.is_empty()),
-        "--json carries the same note as a field: {value}"
+        "--json carries the same note as a field: {value}\n--- daemon log ---\n{}",
+        env.daemon_log_tail(60)
     );
     // Nothing the daemon did since put a good file back.
     assert_eq!(
         std::fs::read_to_string(env.config_path()).unwrap(),
         "domains: [unclosed\n",
-        "the daemon left the broken file as it is"
+        "the daemon left the broken file as it is\n--- daemon log ---\n{}",
+        env.daemon_log_tail(60)
     );
 }
 

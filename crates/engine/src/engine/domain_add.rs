@@ -162,7 +162,7 @@ impl Engine {
         // adopted registration is already in the config.
         if !adopted {
             let mut file_guard = self.file_config.write().unwrap();
-            let mut file = self.fresh_file_config(&file_guard);
+            let mut file = self.fresh_file_config(&file_guard)?;
             file.domains.insert(
                 domain_name.clone(),
                 DomainEntry::file(canonical.clone()).with_name_origin(origin),
@@ -281,7 +281,7 @@ impl Engine {
         // repository or folder to derive a default from.
         if is_new {
             let mut file_guard = self.file_config.write().unwrap();
-            let mut file = self.fresh_file_config(&file_guard);
+            let mut file = self.fresh_file_config(&file_guard)?;
             // Asked again of the file as it is now, under the guard: another
             // process may have registered this name since the snapshot above
             // was read. A file domain there is refused, not overwritten; a

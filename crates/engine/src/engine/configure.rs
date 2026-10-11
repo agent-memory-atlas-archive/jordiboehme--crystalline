@@ -36,7 +36,7 @@ impl Engine {
                     // synchronous (no .await), so holding the guard across it is
                     // safe. Lock order is always file_config then config.
                     let mut file_guard = self.file_config.write().unwrap();
-                    let mut file = self.fresh_file_config(&file_guard);
+                    let mut file = self.fresh_file_config(&file_guard)?;
                     settings::apply_checked(&mut file, &self.overlay, key, value)?;
                     self.persist_config(&file)?;
                     // Recompute the effective config from the freshly saved file
@@ -60,7 +60,7 @@ impl Engine {
                 let view = {
                     // Same write-lock-first discipline and lock order as Set above.
                     let mut file_guard = self.file_config.write().unwrap();
-                    let mut file = self.fresh_file_config(&file_guard);
+                    let mut file = self.fresh_file_config(&file_guard)?;
                     settings::unset_checked(&mut file, &self.overlay, key)?;
                     self.persist_config(&file)?;
                     let effective = self.overlay.apply(&file);
@@ -148,16 +148,20 @@ impl Engine {
     ///
     /// The snapshot is the base only when there is no file to load: an engine
     /// built over a configuration never written to disk, which is what a
-    /// one-shot command and many test engines are, or a file that will not
-    /// parse, where persisting the snapshot is what happened before too.
-    pub(super) fn fresh_file_config(&self, snapshot: &GlobalConfig) -> GlobalConfig {
-        let Some(path) = self.config_file_path() else {
-            return snapshot.clone();
-        };
-        if !path.is_file() {
-            return snapshot.clone();
+    /// one-shot command and many test engines are. A file that is there and
+    /// does not parse is an error: saving the snapshot over it would throw
+    /// away whatever somebody is editing by hand, and a daemon that did so
+    /// put a good file back under a broken one `crystalline status` was about
+    /// to report. The write is refused and the file stays as it is.
+    pub(super) fn fresh_file_config(&self, snapshot: &GlobalConfig) -> Result<GlobalConfig> {
+        match self.config_file_path() {
+            Some(path) if path.is_file() => overlay::load_file(&path).map_err(|e| {
+                EngineError::Invalid(format!(
+                    "{e}; the configuration file is left as it is until it parses again"
+                ))
+            }),
+            _ => Ok(snapshot.clone()),
         }
-        overlay::load_file(&path).unwrap_or_else(|_| snapshot.clone())
     }
 
     /// Persist a config to the path this engine was started with (its
@@ -166,12 +170,18 @@ impl Engine {
     /// current, load-modify-save typed config (see
     /// [`Engine::fresh_file_config`] for the load), so the serde round trip
     /// keeps every other key byte-for-byte.
+    ///
+    /// Every write logs one line naming its caller, so a daemon log says
+    /// which path saved the file when it changed under somebody's feet.
+    #[track_caller]
     pub(super) fn persist_config(&self, config: &GlobalConfig) -> Result<()> {
+        let caller = std::panic::Location::caller();
         let path = match &self.config_path {
             Some(p) => p.clone(),
             None => crystalline_core::config::global_config_path()
                 .map_err(|e| EngineError::Internal(e.to_string()))?,
         };
+        tracing::info!(caller = %caller, path = %path.display(), "saving the configuration");
         crystalline_core::config::save_yaml(&path, config).map_err(|e| {
             EngineError::Internal(format!("failed to save config {}: {e}", path.display()))
         })?;
@@ -306,7 +316,7 @@ impl Engine {
                 // in. Lock order is always file_config then config.
                 {
                     let mut file_guard = self.file_config.write().unwrap();
-                    let mut file = self.fresh_file_config(&file_guard);
+                    let mut file = self.fresh_file_config(&file_guard)?;
                     // The name was resolved above; a domain removed from the
                     // file since is refused through the same helper, so even
                     // that race lists only what this caller may see.

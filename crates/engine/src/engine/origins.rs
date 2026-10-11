@@ -287,7 +287,7 @@ impl Engine {
         // a half-applied config and no env value bakes into the saved file.
         {
             let mut file_guard = self.file_config.write().unwrap();
-            let mut file = self.fresh_file_config(&file_guard);
+            let mut file = self.fresh_file_config(&file_guard)?;
             // Adopting a registered domain keeps everything already decided
             // about it - whether its artifacts are provisioned, whether it
             // reviews changes, the aliases it answers to and the canonical

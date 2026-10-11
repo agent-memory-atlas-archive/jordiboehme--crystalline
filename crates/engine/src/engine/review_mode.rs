@@ -877,7 +877,7 @@ impl Engine {
         review: Option<crystalline_core::config::ReviewMode>,
     ) -> Result<()> {
         let mut file_guard = self.file_config.write().unwrap();
-        let mut file = self.fresh_file_config(&file_guard);
+        let mut file = self.fresh_file_config(&file_guard)?;
         let Some(entry) = file.domains.get_mut(domain) else {
             return Err(EngineError::UnknownDomain {
                 domain: domain.to_string(),
@@ -986,7 +986,7 @@ impl Engine {
         // guard is released well before the awaits that follow.
         let removed = {
             let mut file_guard = self.file_config.write().unwrap();
-            let mut file = self.fresh_file_config(&file_guard);
+            let mut file = self.fresh_file_config(&file_guard)?;
             let removed = match file.domains.shift_remove(name) {
                 Some(entry) => entry,
                 None => {

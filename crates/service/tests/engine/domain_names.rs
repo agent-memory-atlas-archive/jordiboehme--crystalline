@@ -1130,6 +1130,42 @@ async fn an_adoption_leaves_a_configuration_that_does_not_parse_alone() {
     );
 }
 
+/// A settings write over a configuration file that does not parse refuses and
+/// leaves the file alone, like the adoption above: every configuration write
+/// loads the file the same way, so none of them saves the engine's snapshot
+/// over a broken file `crystalline status` is about to report. Once the file
+/// parses again, the same write lands.
+#[tokio::test]
+async fn a_settings_write_leaves_a_configuration_that_does_not_parse_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = bare_manifest_folder(tmp.path(), "eng", "Eng");
+    let engine = adopting_engine(
+        memory_store().await,
+        tmp.path(),
+        vec![(
+            "eng",
+            DomainEntry::file(root).with_name_origin(NameOrigin::Explicit),
+        )],
+    );
+    engine.sync(None).await.unwrap();
+    let path = tmp.path().join("config.yaml");
+    let good = std::fs::read_to_string(&path).unwrap();
+    let broken = "domains: [unclosed\n";
+    std::fs::write(&path, broken).unwrap();
+
+    let set = crystalline_service::engine::ConfigureAction::Set {
+        key: "github.enabled".into(),
+        value: "true".into(),
+    };
+    let err = engine.configure(&set).await.unwrap_err();
+    assert!(err.to_string().contains("left as it is"), "{err}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+
+    std::fs::write(&path, good).unwrap();
+    engine.configure(&set).await.unwrap();
+    assert_eq!(saved(tmp.path()).github.and_then(|g| g.enabled), Some(true));
+}
+
 /// An engine that does not hold this machine's state directory (a one-shot
 /// command while the daemon runs) adopts no name and renames nothing: an
 /// adoption moves the machine's state and configuration, which only the
