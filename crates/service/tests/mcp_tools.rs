@@ -7711,3 +7711,27 @@ async fn the_configure_description_names_the_domain_triggers() {
         );
     }
 }
+
+/// The read tools teach what a domain row's `read_only` means, and that it
+/// is not the top-level `read_only` some answers carry for the instance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_descriptions_teach_a_domain_rows_read_only() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let tools = client.peer().list_tools(Default::default()).await.unwrap();
+    for name in ["list_domains", "browse_domain", "read_engram"] {
+        let description = tools
+            .tools
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap()
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            description.contains("read_only: true"),
+            "{name} names the mark: {description}"
+        );
+    }
+}

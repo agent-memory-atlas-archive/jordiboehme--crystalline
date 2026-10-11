@@ -253,3 +253,40 @@ async fn the_machine_owner_switches_read_only_on_over_mcp() {
     assert_ne!(result["isError"], true, "{result}");
     assert!(h.engine.domain_is_read_only("eng").await);
 }
+
+/// The read tools carry the mark over MCP too, for the stdio session (the
+/// machine owner, so only the lock marks).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_read_tools_mark_the_locked_domain() {
+    let h = Harness::new().await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    // TOON-encoded: asked for the field name only.
+    let listed = call(peer, "list_domains", json!({ "include_routing": true })).await;
+    assert!(text(&listed).contains("read_only"), "{listed}");
+    let read: Value = serde_json::from_str(&text(
+        &call(
+            peer,
+            "read_engram",
+            json!({ "domain": "archive", "identifier": "alpha" }),
+        )
+        .await,
+    ))
+    .unwrap();
+    assert_eq!(read["read_only"], true, "{read}");
+    let open: Value = serde_json::from_str(&text(
+        &call(
+            peer,
+            "read_engram",
+            json!({ "domain": "eng", "identifier": "alpha" }),
+        )
+        .await,
+    ))
+    .unwrap();
+    assert!(open.get("read_only").is_none(), "{open}");
+    let browsed: Value = serde_json::from_str(&text(
+        &call(peer, "browse_domain", json!({ "domain": "archive" })).await,
+    ))
+    .unwrap();
+    assert_eq!(browsed["read_only"], true, "{browsed}");
+}

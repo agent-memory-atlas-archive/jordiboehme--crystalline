@@ -341,7 +341,30 @@ impl Engine {
         self.read_engram_in(p, scope, false, None).await
     }
 
+    /// [`Engine::read_engram_in_unmarked`], with `read_only: true` when this
+    /// caller cannot write in the domain the engram was read from (spec
+    /// A-5); the key is left out otherwise, so a writable answer is
+    /// unchanged. Both doors of the read (a granted draft and the caller's
+    /// own view) pass through here.
     async fn read_engram_in(
+        &self,
+        p: &ReadParams,
+        scope: &crate::scope::Scope,
+        live_wins: bool,
+        peer: Option<&AgentPeer>,
+    ) -> Result<Value> {
+        let mut value = self
+            .read_engram_in_unmarked(p, scope, live_wins, peer)
+            .await?;
+        if let Some(domain) = value["domain"].as_str().map(str::to_string)
+            && self.write_block(scope, &domain).await?.is_some()
+        {
+            value["read_only"] = json!(true);
+        }
+        Ok(value)
+    }
+
+    async fn read_engram_in_unmarked(
         &self,
         p: &ReadParams,
         scope: &crate::scope::Scope,

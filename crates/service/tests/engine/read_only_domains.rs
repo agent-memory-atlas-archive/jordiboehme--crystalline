@@ -619,3 +619,106 @@ async fn a_move_into_or_out_of_a_blocked_domain_moves_nothing() {
         assert_eq!(snapshot(&tmp.path().join("eng")), eng, "{from} -> {to}");
     }
 }
+
+#[tokio::test]
+async fn the_listing_browse_read_and_routing_say_read_only() {
+    let (tmp, engine) = fixture().await;
+    let scope = Scope::Unrestricted;
+    engine.domain_add_virtual("scratch").await.unwrap();
+    engine
+        .set_manifest_policies("scratch", &[("read_only".into(), "on".into())], &scope)
+        .await
+        .unwrap();
+    let listed = engine
+        .list_domains(
+            &crystalline_service::params::ListDomainsParams::default(),
+            &scope,
+        )
+        .await
+        .unwrap();
+    let row = |name: &str| {
+        listed["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(row("archive")["read_only"], true);
+    assert_eq!(row("scratch")["read_only"], true);
+    assert!(
+        row("eng").get("read_only").is_none(),
+        "a writable row leaves the key out, like an absent mark"
+    );
+
+    let browse = |domain: &str| crystalline_service::params::BrowseParams {
+        domain: domain.into(),
+        path: None,
+        depth: None,
+        glob: None,
+    };
+    let locked = engine
+        .browse_domain(&browse("archive"), &scope)
+        .await
+        .unwrap();
+    assert_eq!(locked["read_only"], true);
+    let open = engine.browse_domain(&browse("eng"), &scope).await.unwrap();
+    assert!(
+        open.get("read_only").is_none(),
+        "a writable domain's answer is unchanged"
+    );
+
+    let read = |domain: &str| ReadParams {
+        identifier: "alpha".into(),
+        domain: Some(domain.into()),
+        share_link: None,
+    };
+    let locked = engine.read_engram(&read("archive"), &scope).await.unwrap();
+    assert_eq!(locked["read_only"], true);
+    let open = engine.read_engram(&read("eng"), &scope).await.unwrap();
+    assert!(open.get("read_only").is_none());
+
+    for routing in [
+        engine.routing_text(),
+        engine
+            .routing_text_scoped_with_mounts(&scope)
+            .await
+            .unwrap(),
+    ] {
+        assert!(routing.contains("- archive (read-only): "), "{routing}");
+        assert!(routing.contains("- scratch (read-only): "), "{routing}");
+        assert!(routing.contains("- eng: "), "{routing}");
+    }
+
+    // A plain edit of MANIFEST.md on disk, with no sync in between (the
+    // case of Task 10's `a_plain_edit_locks_the_next_write`): the very next
+    // listing and routing block say so.
+    std::fs::write(
+        tmp.path().join("eng/MANIFEST.md"),
+        manifest("eng", Some("on")),
+    )
+    .unwrap();
+    let listed = engine
+        .list_domains(
+            &crystalline_service::params::ListDomainsParams::default(),
+            &scope,
+        )
+        .await
+        .unwrap();
+    let eng = listed["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "eng")
+        .unwrap();
+    assert_eq!(
+        eng["read_only"], true,
+        "a plain edit marks the next listing: {eng}"
+    );
+    let routing = engine
+        .routing_text_scoped_with_mounts(&scope)
+        .await
+        .unwrap();
+    assert!(routing.contains("- eng (read-only): "), "{routing}");
+}

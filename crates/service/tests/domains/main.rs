@@ -20,6 +20,7 @@ mod domain_settings;
 mod evolve;
 mod evolve_twins;
 mod metal_runtime;
+mod read_only_rows;
 mod toon_measurement;
 mod virtual_domains;
 mod visibility;
