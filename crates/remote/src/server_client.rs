@@ -375,9 +375,10 @@ pub fn http_client() -> Result<reqwest::Client, RemoteFailure> {
 static WARMED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
 /// Build this process's first HTTP client on a blocking thread and wait for
-/// it, once per process. The first build loads the platform's certificate
-/// roots, which takes most of a second; every later one takes a few
-/// milliseconds.
+/// it, once per process. The first build reads the system proxy settings,
+/// and on macOS that lists the directory the executable sits in once per
+/// process: a few milliseconds for an installed binary, seconds for one in a
+/// crowded directory. Every later build takes well under a millisecond.
 pub async fn warm_http_client() {
     WARMED
         .get_or_init(|| async {

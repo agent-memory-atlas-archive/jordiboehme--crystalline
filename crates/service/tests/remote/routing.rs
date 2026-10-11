@@ -34,8 +34,8 @@ async fn call(machine: &LocalMachine, tool: &str, args: Value) -> anyhow::Result
 /// A server that takes ten seconds over every ctl request, connected to
 /// `machine` as `slow` with the domain `drafts` in its cached routing model.
 ///
-/// The process's first HTTP client takes most of a second to build (the
-/// platform's certificate roots load once); built here, so the budgets the
+/// The process's first HTTP client is the slow one to build (it reads the
+/// system proxy settings once per process); built here, so the budgets the
 /// tests set measure the call and not that.
 async fn connect_slow(machine: &LocalMachine) {
     let _ = crystalline_remote::http_client().unwrap();
@@ -60,8 +60,8 @@ async fn connect_fake(
     app: axum::Router,
 ) -> String {
     // This process's first HTTP client, built before any budget a test sets
-    // starts: under a loaded machine its certificate roots can take seconds
-    // to load, and a call inside that wait answers that it did not get to
+    // starts: under a loaded machine its system proxy lookup can take
+    // seconds, and a call inside that wait answers that it did not get to
     // ask the source at all.
     crystalline_remote::warm_http_client().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -900,7 +900,7 @@ fn quick_app() -> axum::Router {
     )
 }
 
-/// Re-review R1: a cold process's first HTTP client takes most of a second.
+/// Re-review R1: a cold process's first HTTP client takes a while to build.
 /// A call on a shorter budget still ends within it, says the source was not
 /// asked yet (never that the sign-in could not be used), and once the client
 /// is ready the next call is answered. The set is held in its cold start
