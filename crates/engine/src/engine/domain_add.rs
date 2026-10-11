@@ -43,6 +43,9 @@ impl Engine {
                 "provide a domain name, a folder, or both".to_string(),
             ));
         }
+        // Before the folder is created or a MANIFEST scaffolded: the
+        // registration at the end would refuse a file that does not parse.
+        self.refuse_a_config_that_does_not_parse()?;
 
         // Against every registration this instance has, not the startup
         // snapshot alone: a domain the CLI registered after this engine

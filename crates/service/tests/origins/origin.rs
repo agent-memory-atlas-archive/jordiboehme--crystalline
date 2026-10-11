@@ -412,6 +412,64 @@ async fn origin_add_creates_folder_registers_domain_and_indexes_engrams() {
     );
 }
 
+/// A connect over a configuration file that does not parse is refused before
+/// anything is downloaded: the registration at its end would refuse to save
+/// over the broken file, after the files and the origin state were written.
+/// Once the file parses again, the same connect lands.
+#[tokio::test]
+async fn origin_add_over_a_config_that_does_not_parse_downloads_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(MockProvider::new());
+    let commit = mock.add_commit(commit_files(&[
+        ("MANIFEST.md", manifest()),
+        (
+            "notes/alpha.md",
+            engram("Alpha", "alpha", "shared knowledge about turbines"),
+        ),
+    ]));
+    mock.set_branch("main", &commit);
+
+    let config_path = tmp.path().join("config.yaml");
+    let origins_dir = tmp.path().join("origins");
+    let root = tmp.path().join("brand-knowledge");
+    let eng = engine_with(&config_path, &origins_dir, mock.clone(), true, false).await;
+    let broken = "domains: [unclosed\n";
+    std::fs::write(&config_path, broken).unwrap();
+
+    let err = eng
+        .origin_add(
+            "acme/brand-knowledge",
+            Some("brand"),
+            None,
+            None,
+            Some(root.to_str().unwrap()),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("left as it is"), "{err}");
+    assert_eq!(mock.tarball_calls(), 0, "nothing was downloaded");
+    assert!(!root.exists(), "no files were written");
+    assert!(
+        !origins_dir.join("brand").exists(),
+        "no origin state was written"
+    );
+    assert_eq!(std::fs::read_to_string(&config_path).unwrap(), broken);
+
+    std::fs::remove_file(&config_path).unwrap();
+    eng.origin_add(
+        "acme/brand-knowledge",
+        Some("brand"),
+        None,
+        None,
+        Some(root.to_str().unwrap()),
+    )
+    .await
+    .unwrap();
+    assert!(root.join("MANIFEST.md").is_file());
+    let on_disk: GlobalConfig = crystalline_core::config::load_yaml(&config_path).unwrap();
+    assert!(on_disk.domains.contains_key("brand"));
+}
+
 /// Connecting a repository as `brand` heals `[[brand:Alpha]]` in another
 /// domain at once: the link waited pending while nothing answered to the
 /// prefix, and the connect binds the rows spelled with the new name.

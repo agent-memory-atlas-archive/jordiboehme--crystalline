@@ -1021,6 +1021,48 @@ async fn a_refused_add_creates_no_folder() {
     );
 }
 
+/// An add over a configuration file that does not parse is refused before
+/// anything touches the disk: the registration at its end would refuse to
+/// save over the broken file, after the folder was created and its MANIFEST
+/// scaffolded. Once the file parses again, the same add lands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_add_over_a_config_that_does_not_parse_scaffolds_nothing() {
+    let (tmp, engine) = engine().await;
+    let config_path = tmp.path().join("config.yaml");
+    let good = std::fs::read_to_string(&config_path).unwrap();
+    let broken = "domains: [unclosed\n";
+    std::fs::write(&config_path, broken).unwrap();
+
+    // A folder that is there but has no MANIFEST yet, and the default folder.
+    let bare = tmp.path().join("bare");
+    std::fs::create_dir_all(&bare).unwrap();
+    let err = engine
+        .domain_add_local(Some("bare"), Some(bare.to_str().unwrap()))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("left as it is"), "{err}");
+    assert!(!bare.join("MANIFEST.md").exists(), "no MANIFEST scaffolded");
+    let err = engine
+        .domain_add_local(Some("fresh"), None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("left as it is"), "{err}");
+    assert!(
+        !tmp.path().join("domains-root").join("fresh").exists(),
+        "the default folder was never created"
+    );
+    assert_eq!(std::fs::read_to_string(&config_path).unwrap(), broken);
+
+    std::fs::write(&config_path, good).unwrap();
+    engine
+        .domain_add_local(Some("bare"), Some(bare.to_str().unwrap()))
+        .await
+        .unwrap();
+    assert!(bare.join("MANIFEST.md").is_file());
+    let after: GlobalConfig = crystalline_core::config::load_yaml(&config_path).unwrap();
+    assert!(after.domains.contains_key("bare"));
+}
+
 /// A name another process registered in the file after this engine read its
 /// snapshot is refused under the file guard, never overwritten.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -155,12 +155,25 @@ impl Engine {
     /// to report. The write is refused and the file stays as it is.
     pub(super) fn fresh_file_config(&self, snapshot: &GlobalConfig) -> Result<GlobalConfig> {
         match self.config_file_path() {
-            Some(path) if path.is_file() => overlay::load_file(&path).map_err(|e| {
-                EngineError::Invalid(format!(
-                    "{e}; the configuration file is left as it is until it parses again"
-                ))
-            }),
+            Some(path) if path.is_file() => overlay::load_file(&path).map_err(config_left_as_it_is),
             _ => Ok(snapshot.clone()),
+        }
+    }
+
+    /// Refuse up front when the configuration file is there and does not
+    /// parse, with the same error [`Engine::fresh_file_config`] answers.
+    ///
+    /// A verb whose last step writes the configuration (a rename, a
+    /// subscribe, a folder `domain add`) asks this before its first side
+    /// effect, so a broken file stops it before it moves, downloads or
+    /// scaffolds anything instead of at the end, with the work half done.
+    /// The write itself still loads the file again under the lock.
+    pub(super) fn refuse_a_config_that_does_not_parse(&self) -> Result<()> {
+        match self.config_file_path() {
+            Some(path) if path.is_file() => overlay::load_file(&path)
+                .map(drop)
+                .map_err(config_left_as_it_is),
+            _ => Ok(()),
         }
     }
 
@@ -402,4 +415,11 @@ impl Engine {
         }
         Ok(value)
     }
+}
+
+/// The refusal of a configuration write over a file that does not parse.
+fn config_left_as_it_is(e: impl std::fmt::Display) -> EngineError {
+    EngineError::Invalid(format!(
+        "{e}; the configuration file is left as it is until it parses again"
+    ))
 }

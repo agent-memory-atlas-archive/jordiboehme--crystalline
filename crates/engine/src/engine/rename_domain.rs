@@ -307,6 +307,9 @@ impl Engine {
                 },
             ));
         }
+        // Before any step: the Config step at the end would refuse a file
+        // that does not parse, after the domain was moved and paused.
+        self.refuse_a_config_that_does_not_parse()?;
         let reviewing_draft = if local_only {
             false
         } else {

@@ -92,6 +92,9 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        // Before anything is downloaded or origin state written: the
+        // registration at the end would refuse a file that does not parse.
+        self.refuse_a_config_that_does_not_parse()?;
 
         // The name, in order: the caller's own; else the `domain_name` the
         // repository's MANIFEST declares, read through the forge before
