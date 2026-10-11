@@ -75,6 +75,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<Engine>) {
         ("keeper", Role::Editor),
         ("mem", Role::Editor),
         ("out", Role::Editor),
+        ("ed", Role::Editor),
         ("boss", Role::Admin),
     ] {
         auth.add_user(name, name, None, role, "pw12345678")
@@ -85,6 +86,9 @@ async fn fixture() -> (tempfile::TempDir, Arc<Engine>) {
         .await
         .unwrap();
     auth.upsert_domain_member("lab", "mem", MemberLevel::Viewer, "keeper")
+        .await
+        .unwrap();
+    auth.upsert_domain_member("lab", "ed", MemberLevel::Editor, "keeper")
         .await
         .unwrap();
     engine.set_domain_access(Arc::new(DomainAccess::new(auth)));
@@ -784,4 +788,263 @@ async fn the_schema_verbs_refuse_a_hidden_domain_as_unregistered() {
         inferred.to_string().contains("dossier"),
         "the member infers over the private domain: {inferred}"
     );
+}
+
+const OWNER_RULE: &str = "only the owner of 'lab' or an instance admin may change `read_only`";
+
+fn lab_manifest(tmp: &tempfile::TempDir) -> String {
+    std::fs::read_to_string(tmp.path().join("lab/MANIFEST.md")).unwrap()
+}
+
+fn sha256(text: &str) -> String {
+    crate::support::sha256_hex(text.as_bytes())
+}
+
+fn switch_on(text: &str) -> String {
+    text.replacen("\n---\n", "\nread_only: on\n---\n", 1)
+}
+
+/// A text edit of the MANIFEST that writes `read_only: on` into it. Not
+/// `set_frontmatter`: that operation sets lifecycle keys only.
+fn edit_switching_on(domain: &str) -> crystalline_service::params::EditParams {
+    crystalline_service::params::EditParams {
+        identifier: "manifest".into(),
+        domain: domain.into(),
+        operation: "find_replace".into(),
+        find_text: Some("recorded_at: 2026-01-01\n".into()),
+        content: Some("recorded_at: 2026-01-01\nread_only: on\n".into()),
+        ..Default::default()
+    }
+}
+
+/// A private domain that is also read-only answers a stranger as a domain
+/// nobody registered: the refusal sentence would tell them it exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_private_read_only_domain_is_unknown_to_a_stranger() {
+    let (tmp, engine) = fixture().await;
+    std::fs::write(
+        tmp.path().join("lab/MANIFEST.md"),
+        switch_on(&lab_manifest(&tmp)),
+    )
+    .unwrap();
+    let params = crystalline_service::params::EditParams {
+        identifier: "lab-note".into(),
+        domain: "lab".into(),
+        operation: "append".into(),
+        content: Some("- [fact] x #confidential".into()),
+        ..Default::default()
+    };
+    let stranger = engine
+        .edit_engram_as(&params, None, &user("out"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            stranger,
+            crystalline_service::EngineError::UnknownDomain { .. }
+        ),
+        "{stranger:?}"
+    );
+    let keeper = engine
+        .edit_engram_as(&params, None, &user("keeper"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(keeper, crystalline_service::EngineError::DomainReadOnly(_)),
+        "{keeper:?}"
+    );
+}
+
+/// Only the owner or an instance admin switches it off: a member is refused
+/// with the owner rule's own words.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_the_owner_or_an_admin_switches_read_only_off() {
+    let (tmp, engine) = fixture().await;
+    std::fs::write(
+        tmp.path().join("lab/MANIFEST.md"),
+        switch_on(&lab_manifest(&tmp)),
+    )
+    .unwrap();
+    let off = [("read_only".to_string(), "off".to_string())];
+    for member in ["mem", "ed"] {
+        let refused = engine
+            .set_manifest_policies("lab", &off, &user(member))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(refused, crystalline_service::EngineError::Forbidden(_)),
+            "{member}: {refused:?}"
+        );
+        assert_eq!(refused.to_string(), OWNER_RULE);
+    }
+    engine
+        .set_manifest_policies("lab", &off, &user("keeper"))
+        .await
+        .unwrap();
+    assert!(!engine.domain_is_read_only("lab").await);
+}
+
+/// Switching read_only on is the owner's, like switching it off (decision
+/// D10): an editor of the domain is refused on every path that writes the
+/// MANIFEST, with the owner rule's own sentence, and nothing is written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_editor_cannot_switch_read_only_on_by_any_path() {
+    let (tmp, engine) = fixture().await;
+    let ed = user("ed");
+    let before = lab_manifest(&tmp);
+    let refused = |err: crystalline_service::EngineError| {
+        assert!(
+            matches!(err, crystalline_service::EngineError::Forbidden(_)),
+            "{err:?}"
+        );
+        assert_eq!(err.to_string(), OWNER_RULE);
+    };
+
+    // The policies card and REST PATCH.
+    let on = [("read_only".to_string(), "on".to_string())];
+    refused(
+        engine
+            .set_manifest_policies("lab", &on, &ed)
+            .await
+            .unwrap_err(),
+    );
+
+    // edit_engram on the MANIFEST.
+    refused(
+        engine
+            .edit_engram_as(&edit_switching_on("lab"), None, &ed)
+            .await
+            .unwrap_err(),
+    );
+
+    // A whole-text save of the MANIFEST as an engram (REST PUT on the
+    // `manifest` permalink, the engram editor).
+    let save = crystalline_service::params::SaveParams {
+        domain: "lab".into(),
+        identifier: "manifest".into(),
+        content: switch_on(&before),
+        expected_checksum: sha256(&before),
+    };
+    refused(engine.save_engram(&save, &ed).await.unwrap_err());
+
+    // The MANIFEST editor's own verb, now that it carries the scope.
+    refused(
+        engine
+            .save_manifest("lab", &switch_on(&before), &sha256(&before), &ed)
+            .await
+            .unwrap_err(),
+    );
+
+    // A restore of the MANIFEST.
+    refused(
+        engine
+            .restore_engram("lab", "MANIFEST.md", &switch_on(&before), &ed)
+            .await
+            .unwrap_err(),
+    );
+
+    assert_eq!(lab_manifest(&tmp), before, "the MANIFEST is byte-identical");
+    assert!(!engine.domain_is_read_only("lab").await);
+
+    // The editor still edits the MANIFEST: only the switch-on is the owner's.
+    let other = crystalline_service::params::EditParams {
+        identifier: "manifest".into(),
+        domain: "lab".into(),
+        operation: "set_frontmatter".into(),
+        key: Some("status".into()),
+        value: Some("current".into()),
+        ..Default::default()
+    };
+    engine
+        .edit_engram_as(&other, None, &ed)
+        .await
+        .expect("an ordinary MANIFEST edit lands");
+
+    // A shared domain has no owning account: an instance editor holds
+    // `Write` there, so only an admin switches it, and `out` is refused.
+    let out = user("out");
+    let open_rule = "only the owner of 'open' or an instance admin may change `read_only`";
+    let err = engine
+        .set_manifest_policies("open", &on, &out)
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), open_rule);
+    let err = engine
+        .edit_engram_as(&edit_switching_on("open"), None, &out)
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), open_rule);
+    assert!(!engine.domain_is_read_only("open").await);
+}
+
+/// The owner and an instance admin switch it on, through the policies and
+/// through the MANIFEST text; a viewer cannot, by either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_owner_and_an_admin_switch_read_only_on_and_a_viewer_cannot() {
+    let (tmp, engine) = fixture().await;
+    let on = [("read_only".to_string(), "on".to_string())];
+    let off = [("read_only".to_string(), "off".to_string())];
+
+    // The viewer: refused by the policies path and by the text path.
+    let viewer = user("mem");
+    let refused = engine
+        .set_manifest_policies("lab", &on, &viewer)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, crystalline_service::EngineError::Forbidden(_)),
+        "{refused:?}"
+    );
+    let refused = engine
+        .edit_engram_as(&edit_switching_on("lab"), None, &viewer)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, crystalline_service::EngineError::Forbidden(_)),
+        "{refused:?}"
+    );
+    assert!(!engine.domain_is_read_only("lab").await);
+
+    // The owner, through the policies and through the MANIFEST text.
+    engine
+        .set_manifest_policies("lab", &on, &user("keeper"))
+        .await
+        .unwrap();
+    assert!(engine.domain_is_read_only("lab").await);
+    engine
+        .set_manifest_policies("lab", &off, &user("keeper"))
+        .await
+        .unwrap();
+    let back_on = crystalline_service::params::EditParams {
+        find_text: Some("read_only: off\n".into()),
+        content: Some("read_only: on\n".into()),
+        ..edit_switching_on("lab")
+    };
+    engine
+        .edit_engram_as(&back_on, None, &user("keeper"))
+        .await
+        .unwrap();
+    assert!(engine.domain_is_read_only("lab").await);
+    engine
+        .set_manifest_policies("lab", &off, &user("keeper"))
+        .await
+        .unwrap();
+
+    // An instance admin, through the policies and through the MANIFEST editor.
+    engine
+        .set_manifest_policies("lab", &on, &admin("boss"))
+        .await
+        .unwrap();
+    assert!(engine.domain_is_read_only("lab").await);
+    engine
+        .set_manifest_policies("lab", &off, &admin("boss"))
+        .await
+        .unwrap();
+    let now = lab_manifest(&tmp);
+    let switched = now.replace("read_only: off", "read_only: on");
+    engine
+        .save_manifest("lab", &switched, &sha256(&now), &admin("boss"))
+        .await
+        .unwrap();
+    assert!(engine.domain_is_read_only("lab").await);
 }

@@ -2236,6 +2236,18 @@ impl McpServer {
             .map(sanitize_actor)
             .filter(|m| !m.is_empty());
         let scope = &caller.scope;
+        // The MANIFEST of a read-only domain is where its switch lives, and
+        // over MCP nobody switches it off (spec A-1): any edit of it is this
+        // refusal. After the visibility screen, so a stranger learns nothing.
+        if self.engine.domain_is_read_only(&p.domain).await {
+            self.engine
+                .require_domain(&p.domain, scope)
+                .await
+                .map_err(to_error)?;
+            if self.engine.names_manifest(&p.domain, &p.identifier).await {
+                return Ok(Verdict::Refused(mcp_unlock_refusal(&p.domain)));
+            }
+        }
         if let Some(refusal) = self.refuse_unwritable(&p.domain, scope).await? {
             return Ok(Verdict::Refused(refusal));
         }
@@ -2956,7 +2968,7 @@ impl McpServer {
     #[tool(
         name = "configure",
         title = "Configure Crystalline",
-        description = "View and adjust Crystalline's settings, like an app's preferences page: call with no arguments to see them, set to change them (for example github.enabled to turn on team collaboration) and connect to link your GitHub account with a short code you confirm in the browser. With a token it accepts a personal access token instead. Connecting works before or after enabling; only team domains need github.enabled turned on. Call it with domain to see and change how one domain behaves: its domain policies (the MANIFEST keys sharing, direct or proposal, and generated indexes, local or shared), what each MANIFEST section does, and its rule overrides in .crystalline.yaml (a verify rule's severity, off, error, warning or info, and the token budget). With domain, set and unset change that domain, for example set { \"sharing\": \"direct\" } to allow direct commits or { \"rules.E007\": \"off\" } to turn a rule off. Call it with domain whenever the user wants a domain to commit directly or open proposals, to share or keep its generated indexes, or to silence or raise a rule. With domain it refuses three things: a rule override in a domain that reviews changes (.crystalline.yaml is not an engram, so change the file in the domain), a rule override in a virtual domain (it has no .crystalline.yaml), and any call on a mounted domain (change it on the server it comes from). In a domain that reviews changes a policy change becomes your draft. The instance's network, database and sign-in are not listed here: the operator sets them with the crystalline CLI.",
+        description = "View and adjust Crystalline's settings, like an app's preferences page: call with no arguments to see them, set to change them (for example github.enabled to turn on team collaboration) and connect to link your GitHub account with a short code you confirm in the browser. With a token it accepts a personal access token instead. Connecting works before or after enabling; only team domains need github.enabled turned on. Call it with domain to see and change how one domain behaves: its domain policies (the MANIFEST keys sharing, direct or proposal, generated indexes, local or shared, and read_only, off or on), what each MANIFEST section does, and its rule overrides in .crystalline.yaml (a verify rule's severity, off, error, warning or info, and the token budget). With domain, set and unset change that domain, for example set { \"sharing\": \"direct\" } to allow direct commits or { \"rules.E007\": \"off\" } to turn a rule off. read_only: on refuses every write to the domain; switch it on when the user asks. Only a person switches it off, in the domain policies, so configure refuses that. Call it with domain whenever the user wants a domain to commit directly or open proposals, to share or keep its generated indexes, or to silence or raise a rule. With domain it refuses three things: a rule override in a domain that reviews changes (.crystalline.yaml is not an engram, so change the file in the domain), a rule override in a virtual domain (it has no .crystalline.yaml), and any call on a mounted domain (change it on the server it comes from). In a domain that reviews changes a policy change becomes your draft. The instance's network, database and sign-in are not listed here: the operator sets them with the crystalline CLI.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -3969,6 +3981,17 @@ impl McpServer {
             if let Err(e) = self.engine.require_domain(&domain, &scope).await {
                 return Err(to_error(e));
             }
+            // A read-only domain is switched off by a person, never over MCP:
+            // a call naming `read_only` on one is this refusal as a whole,
+            // whatever else it names (spec A-1, A-2).
+            if self.engine.domain_is_read_only(&domain).await
+                && p.set
+                    .keys()
+                    .chain(p.unset.iter())
+                    .any(|key| key == crystalline_core::READ_ONLY_KEY)
+            {
+                return refuse(mcp_unlock_refusal(&domain));
+            }
             let admin = matches!(scope, Scope::Unrestricted | Scope::User { admin: true, .. });
             if let Some(text) = admin_policy_refusal(
                 p.set.keys().chain(p.unset.iter()),
@@ -3987,7 +4010,8 @@ impl McpServer {
                 EngineError::Invalid(text)
                 | EngineError::Forbidden(text)
                 | EngineError::Refused(text)
-                | EngineError::Conflict(text),
+                | EngineError::Conflict(text)
+                | EngineError::DomainReadOnly(text),
             ) => refuse(text),
             Err(e) => Err(to_error(e)),
         }
@@ -5228,6 +5252,19 @@ fn refuse(message: impl Into<String>) -> Result<CallToolResult, ErrorData> {
     )]))
 }
 
+/// What MCP answers to every route that would switch a read-only domain off:
+/// `configure` with `set read_only: off` or `unset read_only`, and
+/// `edit_engram` on the MANIFEST in any operation. The machine owner's stdio
+/// session included: switching it off is a person's act, in Fluid's domain
+/// policies, over REST or in the file (spec A-1). Checked here and never in
+/// the engine, because Fluid's policies card reaches the engine with the
+/// same scope.
+fn mcp_unlock_refusal(domain: &str) -> String {
+    format!(
+        "'{domain}' is read-only. Only a person switches it off, in the domain policies; ask the owner."
+    )
+}
+
 /// An engine error as the shape its content deserves: a refusal the model must
 /// read, or a protocol error.
 ///
@@ -5244,9 +5281,9 @@ fn refuse(message: impl Into<String>) -> Result<CallToolResult, ErrorData> {
 /// hidden domain is answered with, and the two have to stay identical.
 fn refusal_or_error(e: EngineError) -> Result<CallToolResponse, ErrorData> {
     match e {
-        EngineError::Forbidden(text) | EngineError::ConfirmationRequired(text) => {
-            refuse(text).map(CallToolResponse::from)
-        }
+        EngineError::Forbidden(text)
+        | EngineError::ConfirmationRequired(text)
+        | EngineError::DomainReadOnly(text) => refuse(text).map(CallToolResponse::from),
         other => Err(to_error(other)),
     }
 }
@@ -5270,6 +5307,9 @@ fn refusal_or_error(e: EngineError) -> Result<CallToolResponse, ErrorData> {
 /// meets this refusal did what it was told, and an opaque protocol error would
 /// leave it nothing to do next.
 ///
+/// A read-only domain's refusal (`EngineError::DomainReadOnly`) is teaching
+/// text for the same reason and goes back the same way.
+///
 /// **One helper, and the shape is the call site's.** A tool function that
 /// answers [`CallToolResponse`] rather than the bare [`CallToolResult`] this
 /// reads adds `.map(CallToolResponse::from)` where it knows which it is; a
@@ -5285,6 +5325,9 @@ fn overlay_write_error(e: EngineError) -> Result<CallToolResult, ErrorData> {
 fn overlay_refusal(e: EngineError) -> Result<String, ErrorData> {
     match e {
         EngineError::Refused(message) if message == OVERLAY_NEEDS_IDENTITY => Ok(message),
+        // A read-only domain refuses everybody, and the sentence names the
+        // way back: text the model relays, not a protocol error.
+        EngineError::DomainReadOnly(sentence) => Ok(sentence),
         other => Err(to_error(other)),
     }
 }
@@ -5305,6 +5348,7 @@ fn to_error(e: EngineError) -> ErrorData {
         | EngineError::Conflict(_)
         | EngineError::Invalid(_)
         | EngineError::ReadOnly
+        | EngineError::DomainReadOnly(_)
         // The caller asked for something they are not allowed to do, and the
         // message says who is: input-class guidance, like the read-only
         // refusal above it.

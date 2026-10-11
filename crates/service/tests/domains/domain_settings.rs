@@ -9,7 +9,7 @@ use crystalline_index::TursoStore;
 use crystalline_service::engine::PolicyEdit;
 use crystalline_service::params::DeleteParams;
 use crystalline_service::rest::{AuthStore, Role};
-use crystalline_service::{DomainAccess, Engine, Scope};
+use crystalline_service::{DomainAccess, Engine, EngineError, Scope};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
@@ -530,5 +530,123 @@ async fn a_draft_that_deletes_the_manifest_shows_it_missing_to_its_actor() {
     assert_eq!(
         row(&base["policies"], "key", "sharing")["declared"],
         "direct"
+    );
+}
+
+const LOCKED: &str = "---\ntype: manifest\ntitle: eng\npermalink: manifest\ntags:\n  - manifest\nstatus: stable\nrecorded_at: 2026-01-01\nread_only: on\n---\n\n# eng\n\n## Scope\n\n- Everything about eng\n\n## When to Use\n\n- Route here for eng questions\n";
+
+/// The open tier sets the other owner keys where edit_engram writes, but not
+/// `read_only`: switching it on is the owner's or an admin's on every tier
+/// (spec A-1, D10). The configure view says so on the row.
+#[tokio::test]
+async fn the_open_tier_cannot_switch_read_only_on() {
+    let (tmp, engine) = settings_engine(EVERY_SECTION, |_, _| {}).await;
+    assert!(!engine.auth_mcp());
+    let before = std::fs::read_to_string(tmp.path().join("eng/MANIFEST.md")).unwrap();
+    let err = engine
+        .edit_manifest_policies("eng", &[set("read_only", "on")], &Scope::Anonymous)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, EngineError::Forbidden(_)), "{err:?}");
+    assert_eq!(
+        err.to_string(),
+        "only the owner of 'eng' or an instance admin may change `read_only`"
+    );
+    let text = crystalline_service::params::EditParams {
+        identifier: "manifest".into(),
+        domain: "eng".into(),
+        operation: "find_replace".into(),
+        find_text: Some("recorded_at: 2026-01-01\n".into()),
+        content: Some("recorded_at: 2026-01-01\nread_only: on\n".into()),
+        ..Default::default()
+    };
+    let err = engine
+        .edit_engram_as(&text, None, &Scope::Anonymous)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, EngineError::Forbidden(_)), "{err:?}");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("eng/MANIFEST.md")).unwrap(),
+        before
+    );
+    let view = engine
+        .domain_settings("eng", &Scope::Anonymous)
+        .await
+        .unwrap();
+    assert_eq!(row(&view["policies"], "key", "sharing")["can_change"], true);
+    assert_eq!(
+        row(&view["policies"], "key", "read_only")["can_change"],
+        false
+    );
+}
+
+/// On a read-only domain configure takes the owner's switch-off alone and
+/// nothing else, and a call that mixes the two writes nothing at all: not
+/// the MANIFEST, not .crystalline.yaml (spec A-2).
+#[tokio::test]
+async fn a_locked_domain_takes_only_the_switch_off_through_configure() {
+    let (tmp, engine) = settings_engine(LOCKED, |_, _| {}).await;
+    let yaml_path = tmp.path().join("eng/.crystalline.yaml");
+    std::fs::write(&yaml_path, "verify:\n  rules:\n    E008: warning\n").unwrap();
+    let manifest_before = std::fs::read_to_string(tmp.path().join("eng/MANIFEST.md")).unwrap();
+    let yaml_before = std::fs::read_to_string(&yaml_path).unwrap();
+    let map = |pairs: &[(&str, &str)]| -> std::collections::BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    };
+    for (set_keys, unset_keys) in [
+        (map(&[("rules.E007", "off")]), vec![]),
+        (map(&[("token_budget", "4000")]), vec![]),
+        (map(&[("sharing", "direct")]), vec![]),
+        (map(&[("read_only", "on")]), vec![]),
+        (map(&[("read_only", "off"), ("rules.E007", "off")]), vec![]),
+        (map(&[("read_only", "off")]), vec!["rules.E008".to_string()]),
+        (
+            map(&[]),
+            vec!["read_only".to_string(), "sharing".to_string()],
+        ),
+    ] {
+        let err = engine
+            .change_domain_settings("eng", &set_keys, &unset_keys, &Scope::Unrestricted)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, EngineError::DomainReadOnly(_)),
+            "{set_keys:?} {unset_keys:?}: {err:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("eng/MANIFEST.md")).unwrap(),
+            manifest_before,
+            "{set_keys:?} {unset_keys:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&yaml_path).unwrap(), yaml_before);
+    }
+    // The switch-off alone lands, then the domain takes changes again.
+    engine
+        .change_domain_settings(
+            "eng",
+            &map(&[("read_only", "off")]),
+            &[],
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert!(!engine.domain_is_read_only("eng").await);
+    engine
+        .change_domain_settings(
+            "eng",
+            &map(&[("rules.E007", "off")]),
+            &[],
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(&yaml_path)
+            .unwrap()
+            .contains("E007"),
+        "the rule override lands once the domain is open"
     );
 }

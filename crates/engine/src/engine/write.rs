@@ -952,6 +952,10 @@ impl Engine {
             }
             Err(e) => return Err(e),
         };
+        if is_manifest_path(&desc.path) {
+            self.refuse_read_only_switch_on(&p.domain, &p.content, scope)
+                .await?;
+        }
         // A reserved name never resolves to an engram today (sync skips both),
         // so this is defence in depth rather than a reachable branch: the
         // generated `index.md` is derived from its folder and would be
@@ -1298,6 +1302,10 @@ impl Engine {
     ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
+        }
+        if is_manifest_path(&normalize_rel(path)) {
+            self.refuse_read_only_switch_on(domain, content, scope)
+                .await?;
         }
         let view = DomainView::for_write(self, domain, scope).await?;
         self.restore_engram_in_view(&view, domain, path, content)

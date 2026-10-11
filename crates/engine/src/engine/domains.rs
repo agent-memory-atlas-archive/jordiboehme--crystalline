@@ -386,11 +386,16 @@ impl Engine {
     /// the checksum of the empty text creates it: the file for a file
     /// domain, the `MANIFEST.md` row for a virtual one. Any other token is a
     /// stale edit, and so is a second create with the empty token.
+    ///
+    /// `scope` decides the read-only screen and the switch-on (decision D10):
+    /// on a read-only domain the editor is refused like every other write,
+    /// and an off-to-on MANIFEST is the owner's or an instance admin's.
     pub async fn save_manifest(
         &self,
         domain: &str,
         markdown: &str,
         expected_checksum: &str,
+        scope: &crate::scope::Scope,
     ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
@@ -413,6 +418,12 @@ impl Engine {
                     .into(),
             ));
         }
+        // The MANIFEST editor writes the whole document, so on a read-only
+        // domain it is refused like every other write; the switch-off goes
+        // through the domain policies, which is what the sentence says.
+        self.refuse_read_only_domain(domain, scope).await?;
+        self.refuse_read_only_switch_on(domain, markdown, scope)
+            .await?;
 
         let (rel, created) = match self.content_source(domain)? {
             ContentSource::File { root } => {

@@ -7701,6 +7701,7 @@ async fn the_configure_description_names_the_domain_triggers() {
         "rule overrides",
         ".crystalline.yaml",
         "severity",
+        "read_only",
         "github.enabled",
         "the operator sets them with the crystalline CLI",
     ] {

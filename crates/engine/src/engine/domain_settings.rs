@@ -16,7 +16,7 @@ pub const VIRTUAL_NO_RULES: &str =
 
 /// The `how` lines of the domain view, one per part.
 pub const DOMAIN_SETTINGS_HOW: [&str; 4] = [
-    "Set a policy: configure with domain and set, for example { \"sharing\": \"direct\" }. unset removes the key, so the default applies.",
+    "Set a policy: configure with domain and set, for example { \"sharing\": \"direct\" }. unset removes the key, so the default applies. Only a person switches read_only off, in the domain policies.",
     "Edit a section: read_engram the MANIFEST (identifier manifest), then edit_engram with replace_section or insert_after_section.",
     "Set a rule override: configure with domain and set { \"rules.<rule id>\": \"off\" } (off, error, warning or info), or { \"token_budget\": \"<tokens>\" }. unset removes it.",
     "Rename the domain: crystalline domain rename <old> <new>, or Rename domain on the domain page in Fluid.",
@@ -51,6 +51,20 @@ impl PolicyEdit {
         match self {
             PolicyEdit::Set { key, .. } | PolicyEdit::Unset { key } => key,
         }
+    }
+}
+
+/// Whether `edits` is exactly the owner's switch-off: `read_only` set to
+/// `off`, or `read_only` removed so its default (`off`) applies, and nothing
+/// else in the same call (decision D4, spec A-1).
+pub(crate) fn is_switch_off(edits: &[PolicyEdit]) -> bool {
+    match edits {
+        [PolicyEdit::Set { key, value }] => {
+            key == crystalline_core::READ_ONLY_KEY
+                && value == crystalline_core::ReadOnly::Off.as_str()
+        }
+        [PolicyEdit::Unset { key }] => key == crystalline_core::READ_ONLY_KEY,
+        _ => false,
     }
 }
 
@@ -89,6 +103,8 @@ impl Engine {
     /// where `edit_engram` writes the same frontmatter (`refuse_unwritable`
     /// in the MCP server). A reviewing domain still refuses the open tier
     /// further in, in `DomainView::for_write`, as it refuses its edits.
+    /// Except `read_only`, which only the owner or an instance admin
+    /// switches, on every tier.
     ///
     /// Its own gate rather than a looser `require_domain_owner_refusing`:
     /// ending a domain and reading who drafts in it refuse an anonymous
@@ -100,17 +116,16 @@ impl Engine {
         key: &str,
         scope: &crate::scope::Scope,
     ) -> Result<()> {
-        if matches!(scope, crate::scope::Scope::Anonymous) && !self.auth_mcp() {
+        // `read_only` is the owner's on every tier (spec A-1): the open tier
+        // keeps the other keys where edit_engram writes, never this one.
+        if key != crystalline_core::READ_ONLY_KEY
+            && matches!(scope, crate::scope::Scope::Anonymous)
+            && !self.auth_mcp()
+        {
             return self.require_domain(domain, scope).await;
         }
-        self.require_domain_owner_refusing(
-            domain,
-            scope,
-            EngineError::Forbidden(format!(
-                "only the owner of '{domain}' or an instance admin may change `{key}`"
-            )),
-        )
-        .await
+        self.require_domain_owner_refusing(domain, scope, Self::owner_key_refusal(domain, key))
+            .await
     }
 
     /// Set or remove MANIFEST policy keys through the edit path an engram
@@ -138,7 +153,23 @@ impl Engine {
                     .await?;
             }
         }
-        let view = DomainView::for_write(self, domain, scope).await?;
+        // A read-only domain takes one change: its owner switching the flag
+        // off, alone (`read_only: off`, or removing the key). Anything else is
+        // the refusal every write gets. Over MCP even the switch-off is
+        // refused, by the MCP handlers and not here: Fluid's policies card and
+        // REST PATCH reach this function with the same scope, and a person
+        // must be able to switch it off there (spec A-1). The owner check for
+        // `read_only` ran in the loop above.
+        let unlocking = self.domain_is_read_only(domain).await;
+        if unlocking && !is_switch_off(edits) {
+            self.require_domain(domain, scope).await?;
+            return Err(EngineError::DomainReadOnly(read_only_sentence(domain)));
+        }
+        let view = if unlocking {
+            DomainView::for_unlock(self, domain).await?
+        } else {
+            DomainView::for_write(self, domain, scope).await?
+        };
         let overlay = view.actor().map(str::to_string);
         let actor = self.actor_for(None, overlay.as_deref());
         let (desc, source) = view.resolve("manifest").await?;
@@ -330,6 +361,15 @@ impl Engine {
         for edit in &policy_edits {
             checked_policy(domain, edit)?;
         }
+        // A read-only domain is decided for the whole call before anything is
+        // compared, read or written (spec A-2): the owner's switch-off alone
+        // passes, and a call that mixes it with anything else, a rule
+        // override or another policy key, writes nothing at all.
+        if self.domain_is_read_only(domain).await
+            && !(config_edits.is_empty() && is_switch_off(&policy_edits))
+        {
+            return Err(EngineError::DomainReadOnly(read_only_sentence(domain)));
+        }
         // An edit that would leave the MANIFEST as it is writes nothing: on a
         // team domain a no-op write would be a local change nobody made. A
         // reviewing domain is left to the draft path, since the caller's
@@ -464,6 +504,10 @@ impl Engine {
         edited: &crystalline_core::verify::EditedConfig,
     ) -> Result<()> {
         self.refuse_shadowed(domain)?;
+        // Its one caller decided the read-only question for the whole call;
+        // this is the floor under any later caller.
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         let _writing = self.enter_write(domain).await?;
         match &edited.text {
             Some(text) => crystalline_core::config::save_bytes(path, text.as_bytes())
@@ -564,9 +608,20 @@ impl Engine {
         } else {
             policy_rows(None, domain)
         };
+        // On a read-only domain only `read_only` itself can change, and only
+        // the owner's switch-off; `read_only` is never the open tier's.
+        let locked = self.domain_is_read_only(domain).await;
+        let may_own = may_change && !matches!(scope, crate::scope::Scope::Anonymous);
         let policies: Vec<Value> = rows
             .iter()
-            .map(|row| policy_json(row, may_change, domain))
+            .map(|row| {
+                let may = if row.key == crystalline_core::READ_ONLY_KEY {
+                    may_own
+                } else {
+                    may_change && !locked
+                };
+                policy_json(row, may, domain)
+            })
             .collect();
         let sections: Vec<Value> = facts
             .sections
@@ -640,6 +695,8 @@ fn policy_json(row: &PolicyRow, may_change: bool, domain: &str) -> Value {
     value["can_change"] = json!(may_change && !text);
     value["how"] = json!(if text {
         rename_how(domain)
+    } else if row.key == crystalline_core::READ_ONLY_KEY {
+        "switch on with configure; a person switches it off in the domain policies".to_string()
     } else {
         "set with configure".to_string()
     });

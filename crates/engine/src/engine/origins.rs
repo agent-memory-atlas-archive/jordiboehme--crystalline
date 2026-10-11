@@ -2743,6 +2743,25 @@ impl Engine {
         // asked about the same one or a missing suffix would turn a resolution
         // into a refusal.
         let path = &normalize_md(path);
+        // Keeping your own MANIFEST text or a merge may switch read_only on,
+        // which is the owner's (decision D10). The machine owner may; this
+        // verb carries no scope for anybody else, so for them an off-to-on
+        // result is refused and the owner switches it in the domain policies
+        // once the conflict is settled. Taking the team's side is a pull and
+        // is never checked.
+        if is_manifest_path(path) && keep != Some("theirs") && !matches!(&actor, ShareActor::Owner)
+        {
+            let after = match content {
+                Some(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+                None => std::fs::read_to_string(root.join(path)).unwrap_or_default(),
+            };
+            if self.switches_read_only_on(domain, &after).await {
+                return Err(EngineError::Forbidden(
+                    "resolving a conflict does not switch read_only on; the owner switches it in the domain policies"
+                        .to_string(),
+                ));
+            }
+        }
         if let Some(who) = self.overlay_share_identity(domain, &actor)? {
             let held = {
                 let store = self.store.lock().await;

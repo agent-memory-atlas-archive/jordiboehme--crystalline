@@ -1181,7 +1181,9 @@ async fn virtual_manifest_create(store: Arc<Mutex<dyn Store>>) {
     assert_eq!(source.markdown, "");
 
     let manifest = "---\ntype: manifest\ntitle: Notes\npermalink: manifest\ntags:\n  - manifest\nstatus: current\nrecorded_at: 2026-01-01\n---\n\n# Notes\n\n## Scope\n\n- notes\n\n## When to Use\n\n- Route here for created notes\n";
-    let stale = engine.save_manifest("notes", manifest, "beef").await;
+    let stale = engine
+        .save_manifest("notes", manifest, "beef", &Scope::Unrestricted)
+        .await;
     assert!(
         matches!(&stale, Err(EngineError::Conflict(m)) if m.starts_with("stale edit")),
         "{stale:?}"
@@ -1190,7 +1192,7 @@ async fn virtual_manifest_create(store: Arc<Mutex<dyn Store>>) {
     let empty = crate::support::sha256_hex(b"");
     let mut rx = engine.changes().subscribe();
     engine
-        .save_manifest("notes", manifest, &empty)
+        .save_manifest("notes", manifest, &empty, &Scope::Unrestricted)
         .await
         .unwrap();
     // The create is announced as one, on both backends.
@@ -1216,7 +1218,9 @@ async fn virtual_manifest_create(store: Arc<Mutex<dyn Store>>) {
         "the created MANIFEST routes"
     );
 
-    let again = engine.save_manifest("notes", manifest, &empty).await;
+    let again = engine
+        .save_manifest("notes", manifest, &empty, &Scope::Unrestricted)
+        .await;
     assert!(
         matches!(&again, Err(EngineError::Conflict(m)) if m.starts_with("stale edit")),
         "a second create is a stale edit: {again:?}"
@@ -1247,7 +1251,12 @@ async fn virtual_manifest_under_another_permalink(store: Arc<Mutex<dyn Store>>) 
 
     let edited = manifest.replace("- Route here for notes", "- Route here for edited notes");
     engine
-        .save_manifest("notes", &edited, &sha_hex(&source.markdown))
+        .save_manifest(
+            "notes",
+            &edited,
+            &sha_hex(&source.markdown),
+            &Scope::Unrestricted,
+        )
         .await
         .unwrap();
     assert_eq!(engine.manifest_markdown("notes").await.unwrap(), edited);

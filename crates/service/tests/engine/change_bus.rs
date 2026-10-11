@@ -645,7 +645,12 @@ async fn a_manifest_save_announces_the_manifest() {
     let mut rx = engine.changes().subscribe();
     let revised = current.replace("Everything about notes", "Everything about notes, revised");
     engine
-        .save_manifest("notes", &revised, &support::sha256_hex(current.as_bytes()))
+        .save_manifest(
+            "notes",
+            &revised,
+            &support::sha256_hex(current.as_bytes()),
+            &Scope::Unrestricted,
+        )
         .await
         .unwrap();
     let heard = drain(&mut rx);
@@ -671,7 +676,12 @@ async fn a_manifest_create_announces_added() {
     std::fs::remove_file(&path).unwrap();
     let mut rx = engine.changes().subscribe();
     engine
-        .save_manifest("notes", &original, &support::sha256_hex(b""))
+        .save_manifest(
+            "notes",
+            &original,
+            &support::sha256_hex(b""),
+            &Scope::Unrestricted,
+        )
         .await
         .unwrap();
     let heard = drain(&mut rx);
@@ -1090,7 +1100,12 @@ async fn a_virtual_domains_scaffold_import_and_manifest_save_announce() {
     let current = engine.manifest_markdown("vault").await.unwrap();
     let revised = format!("{current}\n- one more routing line\n");
     engine
-        .save_manifest("vault", &revised, &support::sha256_hex(current.as_bytes()))
+        .save_manifest(
+            "vault",
+            &revised,
+            &support::sha256_hex(current.as_bytes()),
+            &Scope::Unrestricted,
+        )
         .await
         .unwrap();
     let heard = drain(&mut rx);

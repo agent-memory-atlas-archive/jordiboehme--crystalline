@@ -1198,7 +1198,12 @@ async fn manifest_save_is_guarded_verbatim_and_refreshes_routing() {
 
     // Stale token: refused, file untouched.
     let err = engine
-        .save_manifest("eng", &current.replace("eng questions", "nothing"), "beef")
+        .save_manifest(
+            "eng",
+            &current.replace("eng questions", "nothing"),
+            "beef",
+            &Scope::Unrestricted,
+        )
         .await
         .unwrap_err();
     assert!(err.to_string().contains("stale edit"), "{err}");
@@ -1209,7 +1214,7 @@ async fn manifest_save_is_guarded_verbatim_and_refreshes_routing() {
         "Route here for everything eng",
     );
     engine
-        .save_manifest("eng", &edited, &checksum)
+        .save_manifest("eng", &edited, &checksum, &Scope::Unrestricted)
         .await
         .unwrap();
     assert_eq!(
@@ -1233,7 +1238,7 @@ async fn manifest_save_is_guarded_verbatim_and_refreshes_routing() {
     };
     assert!(
         engine
-            .save_manifest("eng", "no frontmatter", &checksum2)
+            .save_manifest("eng", "no frontmatter", &checksum2, &Scope::Unrestricted)
             .await
             .is_err()
     );
@@ -1273,7 +1278,12 @@ async fn manifest_save_is_guarded_verbatim_and_refreshes_routing() {
         "Route here for updated scratch topics",
     );
     engine
-        .save_manifest("scratch", &edited_scratch, &scratch_checksum)
+        .save_manifest(
+            "scratch",
+            &edited_scratch,
+            &scratch_checksum,
+            &Scope::Unrestricted,
+        )
         .await
         .unwrap();
 
@@ -1310,14 +1320,14 @@ async fn a_missing_file_manifest_reads_as_missing_and_its_first_save_creates_it(
 
     let empty = crate::support::sha256_hex(b"");
     let stale = engine
-        .save_manifest("eng", &original, "beef")
+        .save_manifest("eng", &original, "beef", &Scope::Unrestricted)
         .await
         .unwrap_err();
     assert!(stale.to_string().contains("stale edit"), "{stale}");
     assert!(!path.exists(), "a refused save writes nothing");
 
     engine
-        .save_manifest("eng", &original, &empty)
+        .save_manifest("eng", &original, &empty, &Scope::Unrestricted)
         .await
         .unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
@@ -1326,7 +1336,7 @@ async fn a_missing_file_manifest_reads_as_missing_and_its_first_save_creates_it(
     assert_eq!(after.markdown, original);
 
     let again = engine
-        .save_manifest("eng", &original, &empty)
+        .save_manifest("eng", &original, &empty, &Scope::Unrestricted)
         .await
         .unwrap_err();
     assert!(again.to_string().contains("stale edit"), "{again}");

@@ -15,6 +15,7 @@ mod mcp_attachments;
 mod mcp_cache_hints;
 mod mcp_instructions;
 mod mcp_modern_era;
+mod mcp_read_only;
 mod mcp_skills;
 mod mcp_subscriptions;
 mod stub;

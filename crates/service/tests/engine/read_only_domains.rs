@@ -1,0 +1,417 @@
+//! A domain whose MANIFEST says `read_only: on` refuses every write made
+//! through the engine, whoever asks, with one sentence; its owner switching
+//! the key back off is the one change it takes.
+
+use std::sync::Arc;
+
+use crystalline_core::config::{DomainEntry, GlobalConfig, ResponseFormat, ServiceConfig};
+use crystalline_index::TursoStore;
+use crystalline_service::engine::PolicyEdit;
+use crystalline_service::engine::read_only_sentence;
+use crystalline_service::params::{
+    DeleteParams, EditParams, MoveParams, ReadParams, RetireParams, SaveParams, SplitParams,
+    WriteParams,
+};
+use crystalline_service::{Engine, EngineError, Scope};
+use tokio::sync::Mutex;
+
+pub(crate) const ALPHA: &str = "---\ntype: engram\ntitle: Alpha\npermalink: alpha\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Alpha\n\n## Part\n\n- [fact] a fact about alpha #eng\n- [fact] a second fact about alpha #eng\n- [fact] a third fact about alpha #eng\n";
+
+pub(crate) fn manifest(name: &str, read_only: Option<&str>) -> String {
+    let line = read_only
+        .map(|v| format!("read_only: {v}\n"))
+        .unwrap_or_default();
+    format!(
+        "---\ntype: manifest\ntitle: {name}\npermalink: manifest\ntags:\n  - manifest\nstatus: current\nrecorded_at: 2026-01-01\n{line}---\n\n# {name}\n\n## Scope\n\n- Everything about {name}\n\n## When to Use\n\n- Route here for {name} questions\n"
+    )
+}
+
+/// Two file domains: `archive` (read-only, holding alpha) and `eng`
+/// (writable, holding alpha too), synced into an in-memory store.
+pub(crate) async fn fixture() -> (tempfile::TempDir, Arc<Engine>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    let mut cfg = GlobalConfig::default();
+    for (name, flag) in [("archive", Some("on")), ("eng", None)] {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("MANIFEST.md"), manifest(name, flag)).unwrap();
+        std::fs::write(dir.join("alpha.md"), ALPHA).unwrap();
+        cfg.domains.insert(name.to_string(), DomainEntry::file(dir));
+    }
+    cfg.service = Some(ServiceConfig {
+        response_format: Some(ResponseFormat::Json),
+        ..ServiceConfig::default()
+    });
+    let config_path = root.join("config.yaml");
+    crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
+    let store = TursoStore::open_in_memory().await.unwrap();
+    let engine = Arc::new(Engine::new(
+        Arc::new(Mutex::new(store)),
+        cfg,
+        None,
+        Some(config_path),
+    ));
+    engine.sync(None).await.unwrap();
+    (tmp, engine)
+}
+
+pub(crate) fn assert_refused(err: EngineError, domain: &str) {
+    assert!(matches!(err, EngineError::DomainReadOnly(_)), "{err:?}");
+    assert_eq!(err.to_string(), read_only_sentence(domain));
+}
+
+/// The folder as bytes, so "nothing changed" is a byte-for-byte claim.
+pub(crate) fn snapshot(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+    let mut out: Vec<(String, Vec<u8>)> = walkdir::WalkDir::new(dir)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file())
+        .map(|e| {
+            (
+                e.path().strip_prefix(dir).unwrap().display().to_string(),
+                std::fs::read(e.path()).unwrap(),
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+pub(crate) fn sha256(text: &str) -> String {
+    crate::support::sha256_hex(text.as_bytes())
+}
+
+pub(crate) fn write_params(domain: &str, title: &str) -> WriteParams {
+    WriteParams {
+        domain: domain.into(),
+        title: title.into(),
+        content: "- [fact] new #eng".into(),
+        folder: None,
+        engram_type: None,
+        tags: vec!["eng".into()],
+        status: None,
+        metadata: None,
+        overwrite: false,
+        model: None,
+        share_link: None,
+    }
+}
+
+async fn checksum(engine: &Engine, domain: &str, id: &str) -> String {
+    let read = engine
+        .read_engram(
+            &ReadParams {
+                identifier: id.into(),
+                domain: Some(domain.into()),
+                share_link: None,
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    read["checksum"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn the_sentence_is_the_one_the_spec_fixes() {
+    assert_eq!(
+        read_only_sentence("archive"),
+        "'archive' is read-only; its owner switches read_only off in the domain policies"
+    );
+}
+
+#[tokio::test]
+async fn every_write_verb_refuses_a_read_only_domain_with_one_sentence() {
+    let (tmp, engine) = fixture().await;
+    let before = snapshot(&tmp.path().join("archive"));
+    let scope = Scope::Unrestricted;
+    let sum = checksum(&engine, "archive", "alpha").await;
+
+    assert_refused(
+        engine
+            .write_engram_as(&write_params("archive", "Beta"), None, &scope)
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+
+    let edit = EditParams {
+        identifier: "alpha".into(),
+        domain: "archive".into(),
+        operation: "append".into(),
+        content: Some("- [fact] more #eng".into()),
+        ..EditParams::default()
+    };
+    assert_refused(
+        engine
+            .edit_engram_as(&edit, None, &scope)
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+
+    let set = EditParams {
+        identifier: "alpha".into(),
+        domain: "archive".into(),
+        operation: "set_frontmatter".into(),
+        key: Some("status".into()),
+        value: Some("draft".into()),
+        ..EditParams::default()
+    };
+    assert_refused(
+        engine.edit_engram_as(&set, None, &scope).await.unwrap_err(),
+        "archive",
+    );
+
+    assert_refused(
+        engine
+            .acknowledge_finding_as("archive", "alpha", "V104", None, None, None, &scope)
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+
+    let save = SaveParams {
+        domain: "archive".into(),
+        identifier: "alpha".into(),
+        content: ALPHA.replace("a fact", "another fact"),
+        expected_checksum: sum.clone(),
+    };
+    assert_refused(
+        engine.save_engram(&save, &scope).await.unwrap_err(),
+        "archive",
+    );
+
+    let split = SplitParams {
+        domain: "archive".into(),
+        identifier: "alpha".into(),
+        title: "Part".into(),
+        sections: vec!["## Part".into()],
+        ..SplitParams::default()
+    };
+    assert_refused(
+        engine
+            .split_engram_as(&split, None, &scope)
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+
+    let retire = RetireParams {
+        domain: "archive".into(),
+        identifier: "alpha".into(),
+        status: "archived".into(),
+        successor: None,
+        valid_to: None,
+    };
+    assert_refused(
+        engine
+            .retire_engram_as(&retire, None, &scope)
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+
+    let delete = DeleteParams {
+        identifier: "alpha".into(),
+        domain: "archive".into(),
+        expected_checksum: None,
+    };
+    assert_refused(
+        engine
+            .delete_engram_as(&delete, None, &scope)
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+
+    let out = MoveParams {
+        identifier: "alpha".into(),
+        domain: "archive".into(),
+        destination: "moved".into(),
+        destination_domain: Some("eng".into()),
+        permalink: None,
+        update_links: None,
+    };
+    assert_refused(
+        engine.move_engram(&out, &scope).await.unwrap_err(),
+        "archive",
+    );
+
+    assert_refused(
+        engine
+            .restore_engram("archive", "alpha.md", ALPHA, &scope)
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+
+    assert_eq!(
+        snapshot(&tmp.path().join("archive")),
+        before,
+        "nothing in the folder moved"
+    );
+}
+
+#[tokio::test]
+async fn a_move_into_a_read_only_domain_is_refused_and_nothing_moves() {
+    let (tmp, engine) = fixture().await;
+    let archive = snapshot(&tmp.path().join("archive"));
+    let eng = snapshot(&tmp.path().join("eng"));
+    let into = MoveParams {
+        identifier: "alpha".into(),
+        domain: "eng".into(),
+        destination: "from-eng".into(),
+        destination_domain: Some("archive".into()),
+        permalink: None,
+        update_links: None,
+    };
+    assert_refused(
+        engine
+            .move_engram(&into, &Scope::Unrestricted)
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+    assert_eq!(snapshot(&tmp.path().join("archive")), archive);
+    assert_eq!(
+        snapshot(&tmp.path().join("eng")),
+        eng,
+        "the source stays where it was"
+    );
+}
+
+/// The flag is read off the folder at each write: a person who edits
+/// MANIFEST.md in a plain editor while the engine runs locks the domain for
+/// the very next write, with no restart and no sync in between.
+#[tokio::test]
+async fn a_plain_edit_locks_the_next_write() {
+    let (tmp, engine) = fixture().await;
+    engine
+        .write_engram_as(&write_params("eng", "Before"), None, &Scope::Unrestricted)
+        .await
+        .expect("eng takes changes");
+    std::fs::write(
+        tmp.path().join("eng/MANIFEST.md"),
+        manifest("eng", Some("on")),
+    )
+    .unwrap();
+    assert!(engine.domain_is_read_only("eng").await);
+    assert_refused(
+        engine
+            .write_engram_as(&write_params("eng", "After"), None, &Scope::Unrestricted)
+            .await
+            .unwrap_err(),
+        "eng",
+    );
+    assert!(!tmp.path().join("eng/after.md").exists());
+}
+
+#[tokio::test]
+async fn the_owner_switches_read_only_off_and_writes_land_again() {
+    let (tmp, engine) = fixture().await;
+    let scope = Scope::Unrestricted;
+    // Any other policy change, alone or beside the switch-off, is refused.
+    for changes in [
+        vec![("sharing".to_string(), "direct".to_string())],
+        vec![
+            ("read_only".to_string(), "off".to_string()),
+            ("sharing".to_string(), "direct".to_string()),
+        ],
+    ] {
+        assert_refused(
+            engine
+                .set_manifest_policies("archive", &changes, &scope)
+                .await
+                .unwrap_err(),
+            "archive",
+        );
+    }
+    // The MANIFEST editor is refused too: the policies card is the way back.
+    let manifest_now = std::fs::read_to_string(tmp.path().join("archive/MANIFEST.md")).unwrap();
+    assert_refused(
+        engine
+            .save_manifest(
+                "archive",
+                &manifest_now.replace("read_only: on", "read_only: off"),
+                &sha256(&manifest_now),
+                &scope,
+            )
+            .await
+            .unwrap_err(),
+        "archive",
+    );
+
+    let answer = engine
+        .set_manifest_policies("archive", &[("read_only".into(), "off".into())], &scope)
+        .await
+        .unwrap();
+    assert_eq!(answer["draft"], false);
+    let manifest_after = std::fs::read_to_string(tmp.path().join("archive/MANIFEST.md")).unwrap();
+    assert!(
+        manifest_after.contains("read_only: off"),
+        "{manifest_after}"
+    );
+    assert!(!engine.domain_is_read_only("archive").await);
+
+    let edit = EditParams {
+        identifier: "alpha".into(),
+        domain: "archive".into(),
+        operation: "append".into(),
+        content: Some("- [fact] written after the switch #eng".into()),
+        ..EditParams::default()
+    };
+    engine
+        .edit_engram_as(&edit, None, &scope)
+        .await
+        .expect("the domain takes changes again");
+
+    // The owner switches it on again: `Unrestricted` is the machine owner,
+    // who holds every right (decision D10).
+    engine
+        .set_manifest_policies("archive", &[("read_only".into(), "on".into())], &scope)
+        .await
+        .unwrap();
+    assert!(engine.domain_is_read_only("archive").await);
+
+    // Removing the key is a switch-off too: its default is off (spec A-1).
+    let unset = [PolicyEdit::Unset {
+        key: "read_only".into(),
+    }];
+    engine
+        .edit_manifest_policies("archive", &unset, &scope)
+        .await
+        .unwrap();
+    assert!(!engine.domain_is_read_only("archive").await);
+    let manifest_unset = std::fs::read_to_string(tmp.path().join("archive/MANIFEST.md")).unwrap();
+    assert!(!manifest_unset.contains("read_only"), "{manifest_unset}");
+}
+
+#[tokio::test]
+async fn a_virtual_domain_is_locked_and_unlocked_through_the_same_switch() {
+    let (_tmp, engine) = fixture().await;
+    engine.domain_add_virtual("scratch").await.unwrap();
+    let scope = Scope::Unrestricted;
+    engine
+        .set_manifest_policies("scratch", &[("read_only".into(), "on".into())], &scope)
+        .await
+        .unwrap();
+    assert!(engine.domain_is_read_only("scratch").await);
+    let write = write_params("scratch", "Note");
+    assert_refused(
+        engine
+            .write_engram_as(&write, None, &scope)
+            .await
+            .unwrap_err(),
+        "scratch",
+    );
+    engine
+        .set_manifest_policies("scratch", &[("read_only".into(), "off".into())], &scope)
+        .await
+        .unwrap();
+    engine
+        .write_engram_as(&write, None, &scope)
+        .await
+        .expect("open again");
+}

@@ -333,6 +333,11 @@ impl<'a> DomainView<'a> {
         // A domain a rename has paused is waited for before anything is
         // decided about it, and this write is counted until the view goes.
         let ticket = engine.enter_write(name).await?;
+        // A read-only domain takes no write at all, screened so a domain this
+        // caller may not see answers as unregistered rather than as locked.
+        // After the ticket, so a domain a rename has paused is read once the
+        // rename is done with it.
+        engine.refuse_read_only_domain(name, scope).await?;
         let seen = |actor: Option<String>| DomainView {
             engine,
             domain: name.to_string(),
@@ -394,9 +399,29 @@ impl<'a> DomainView<'a> {
         };
         let ticket = engine.enter_write(name).await?;
         engine.require_domain(name, scope).await?;
+        engine.refuse_read_only_domain(name, scope).await?;
         let mut view = DomainView::for_actor(engine, name, &HashSet::new(), &join.owner)?;
         view.joined = Some(join.owner.clone());
         view.writer = crate::scope::overlay_actor(scope);
+        view._writing = Some(ticket);
+        Ok(view)
+    }
+
+    /// The one write view that skips the read-only check: the owner switching
+    /// `read_only` back off, and nothing else (the guard
+    /// `only_edit_manifest_policies_reaches_the_unlock_view` names its one
+    /// caller, `Engine::edit_manifest_policies`).
+    ///
+    /// Always the base view, even in a domain that reviews changes: the flag
+    /// is read off the base MANIFEST, and a switch-off parked in a draft could
+    /// never land, since sharing is refused while the flag holds. A hidden
+    /// local domain is refused as `for_write` refuses it (0.23 D19). The
+    /// caller has already checked that the change is exactly the switch-off
+    /// and that the caller owns the domain.
+    pub(crate) async fn for_unlock(engine: &'a Engine, name: &str) -> Result<DomainView<'a>> {
+        engine.refuse_shadowed(name)?;
+        let ticket = engine.enter_write(name).await?;
+        let mut view = DomainView::base(engine, name, &HashSet::new())?;
         view._writing = Some(ticket);
         Ok(view)
     }

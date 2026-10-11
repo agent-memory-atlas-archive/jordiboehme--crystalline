@@ -889,7 +889,7 @@ pub async fn save_manifest(
     let token = if_match(&headers)?;
     match state
         .engine
-        .save_manifest(&domain, &body.markdown, &token)
+        .save_manifest(&domain, &body.markdown, &token, &identity.scope())
         .await
     {
         // What landed is the LF form of what was sent, so that is what the
