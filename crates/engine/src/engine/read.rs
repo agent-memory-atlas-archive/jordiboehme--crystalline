@@ -357,7 +357,7 @@ impl Engine {
             .read_engram_in_unmarked(p, scope, live_wins, peer)
             .await?;
         if let Some(domain) = value["domain"].as_str().map(str::to_string)
-            && self.write_block(scope, &domain).await?.is_some()
+            && self.read_only_mark(scope, &domain).await
         {
             value["read_only"] = json!(true);
         }

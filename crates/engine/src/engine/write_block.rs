@@ -54,7 +54,8 @@ impl Engine {
     /// Asked of a domain the caller may see; the surface's `require_domain`
     /// runs first. The domain lock comes first, then
     /// [`Engine::write_access_block`]. A domain listing marks a row
-    /// `read_only: true` exactly when this is `Some`.
+    /// `read_only: true` exactly when this is `Some`; when it errors, a read
+    /// leaves the mark out ([`Engine::read_only_mark`]).
     ///
     /// The machine owner ([`Scope::Unrestricted`]) and an engine with no
     /// resolver installed are answered `None` or [`WriteBlock::DomainLocked`],
@@ -64,6 +65,23 @@ impl Engine {
             return Ok(Some(WriteBlock::DomainLocked));
         }
         self.write_access_block(scope, domain).await
+    }
+
+    /// Whether a read marks `domain` read-only for `scope`. A read never
+    /// fails because this could not be decided: the row is served without
+    /// the mark and a warning is logged. A write still runs its own check,
+    /// which refuses on the same error.
+    pub(crate) async fn read_only_mark(&self, scope: &Scope, domain: &str) -> bool {
+        match self.write_block(scope, domain).await {
+            Ok(block) => block.is_some(),
+            Err(e) => {
+                tracing::warn!(
+                    domain,
+                    "the read_only mark could not be decided, so the read is served without it: {e}"
+                );
+                false
+            }
+        }
     }
 
     /// Why `scope` may not write `domain` whatever the domain lock says:

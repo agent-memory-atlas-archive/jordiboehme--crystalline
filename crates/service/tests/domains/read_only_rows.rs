@@ -31,6 +31,18 @@ async fn instance(
     locked: &[&str],
     accounts: &[(&str, Role, Option<&[&str]>)],
 ) -> (tempfile::TempDir, Arc<Engine>) {
+    instance_with(domains, locked, accounts, false).await
+}
+
+/// [`instance`], and with `break_write_list` the accounts store's write-list
+/// table is broken after the accounts are created and before the resolver is
+/// installed, so every write-list read fails.
+async fn instance_with(
+    domains: &[&str],
+    locked: &[&str],
+    accounts: &[(&str, Role, Option<&[&str]>)],
+    break_write_list: bool,
+) -> (tempfile::TempDir, Arc<Engine>) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_path_buf();
     let mut cfg = GlobalConfig::default();
@@ -69,6 +81,14 @@ async fn instance(
             auth.set_write_list(name, &patterns).await.unwrap();
         }
     }
+    let auth = if break_write_list {
+        // No store holds the file while the table is replaced.
+        drop(auth);
+        break_the_write_list_table(&root.join("web-auth.db")).await;
+        Arc::new(AuthStore::open(&root.join("web-auth.db")).await.unwrap())
+    } else {
+        auth
+    };
     engine.set_domain_access(Arc::new(DomainAccess::new(auth)));
     (tmp, engine)
 }
@@ -272,4 +292,85 @@ async fn browse_read_and_the_routing_block_mark_the_callers_unwritable_domains()
             ("eng".to_string(), true)
         ]
     );
+}
+
+/// Replace the write-list table with one whose columns are wrong, so every
+/// write-list read fails and nothing else does. Sequential, like
+/// `mcp_auth.rs`'s `break_the_visibility_table`: no store holds the file
+/// while this runs.
+async fn break_the_write_list_table(path: &std::path::Path) {
+    let name = path.to_string_lossy().to_string();
+    let db = match turso::Builder::new_local(&name)
+        .experimental_multiprocess_wal(true)
+        .build()
+        .await
+    {
+        Ok(db) => db,
+        Err(_) => turso::Builder::new_local(&name).build().await.unwrap(),
+    };
+    let conn = db.connect().unwrap();
+    conn.execute_batch(
+        "DROP TABLE account_write_domain; CREATE TABLE account_write_domain (junk TEXT);",
+    )
+    .await
+    .unwrap();
+}
+
+/// B-1 item 7: a read whose read_only mark cannot be decided is served
+/// without the mark; it does not fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mark_that_cannot_be_decided_leaves_the_read_standing() {
+    let (_tmp, engine) = instance_with(
+        &["eng"],
+        &[],
+        &[("ed", Role::Editor, None)],
+        true, // break the write-list table before the resolver is installed
+    )
+    .await;
+    let scope = user("ed");
+    let listed = engine
+        .list_domains(&ListDomainsParams::default(), &scope)
+        .await
+        .expect("the listing still answers");
+    let row = &listed["domains"][0];
+    assert_eq!(row["name"], "eng");
+    assert!(row.get("read_only").is_none(), "{row}");
+    let browsed = engine
+        .browse_domain(
+            &BrowseParams {
+                domain: "eng".into(),
+                path: None,
+                depth: None,
+                glob: None,
+            },
+            &scope,
+        )
+        .await
+        .expect("browse still answers");
+    assert!(browsed.get("read_only").is_none(), "{browsed}");
+    let read = engine
+        .read_engram(
+            &ReadParams {
+                identifier: "note".into(),
+                domain: Some("eng".into()),
+                share_link: None,
+            },
+            &scope,
+        )
+        .await
+        .expect("the read still answers");
+    assert!(read.get("read_only").is_none(), "{read}");
+}
+
+/// A Viewer's mark does not depend on the write list (a role below Write is
+/// read-only before the list is read), so a broken write-list table must not
+/// unmark it. Task 11's batched marks must give the same answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_viewer_stays_marked_when_the_write_list_table_is_broken() {
+    let (_tmp, engine) = instance_with(&["eng"], &[], &[("vw", Role::Viewer, None)], true).await;
+    let listed = engine
+        .list_domains(&ListDomainsParams::default(), &user("vw"))
+        .await
+        .expect("the listing still answers");
+    assert_eq!(listed["domains"][0]["read_only"], true, "{listed}");
 }

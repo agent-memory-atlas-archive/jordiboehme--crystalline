@@ -1310,8 +1310,38 @@ async fn break_the_visibility_table(path: &std::path::Path) {
         .unwrap();
 }
 
+/// Give `path` an `account_write_domain` table of the wrong shape before the
+/// auth store opens one, so every write-list read fails and nothing else does.
+/// Sequential, like [`break_the_visibility_table`].
+async fn break_the_write_list_table(path: &std::path::Path) {
+    let name = path.to_string_lossy().to_string();
+    let db = match turso::Builder::new_local(&name)
+        .experimental_multiprocess_wal(true)
+        .build()
+        .await
+    {
+        Ok(db) => db,
+        Err(_) => turso::Builder::new_local(&name).build().await.unwrap(),
+    };
+    let conn = db.connect().unwrap();
+    conn.execute_batch("CREATE TABLE account_write_domain (junk TEXT);")
+        .await
+        .unwrap();
+}
+
+/// Which table of the resolver's accounts store [`mcp_ctx_with`] breaks.
+#[derive(Clone, Copy, PartialEq)]
+enum Fault {
+    /// `domain_acl`: what a caller may see is unanswerable.
+    Visibility,
+    /// `account_write_domain`: whether a caller may write is unanswerable.
+    /// The resolver's store holds the same accounts, so only the write list
+    /// fails.
+    WriteList,
+}
+
 async fn mcp_ctx(mcp_auth: bool) -> VisibilityCtx {
-    mcp_ctx_with(mcp_auth, false, false).await
+    mcp_ctx_with(mcp_auth, None, false).await
 }
 
 /// The same instance with `lab` also carrying a GitHub origin and
@@ -1320,10 +1350,10 @@ async fn mcp_ctx(mcp_auth: bool) -> VisibilityCtx {
 /// not see it has an empty target list and the aggregate verbs resolve no
 /// provider and reach no network for it.
 async fn mcp_team_ctx() -> VisibilityCtx {
-    mcp_ctx_with(true, false, true).await
+    mcp_ctx_with(true, None, true).await
 }
 
-async fn mcp_ctx_with(mcp_auth: bool, fault: bool, team: bool) -> VisibilityCtx {
+async fn mcp_ctx_with(mcp_auth: bool, fault: Option<Fault>, team: bool) -> VisibilityCtx {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_path_buf();
     let mut cfg = GlobalConfig::default();
@@ -1388,13 +1418,14 @@ async fn mcp_ctx_with(mcp_auth: bool, fault: bool, team: bool) -> VisibilityCtx 
     engine.sync(None).await.unwrap();
 
     let auth = Arc::new(AuthStore::open(&root.join("web-auth.db")).await.unwrap());
-    for (name, role) in [
+    let accounts = [
         ("keeper", Role::Editor),
         ("mem", Role::Editor),
         ("out", Role::Editor),
         ("boss", Role::Admin),
         ("looker", Role::Viewer),
-    ] {
+    ];
+    for (name, role) in accounts {
         auth.add_user(name, name, None, role, "pw12345678")
             .await
             .unwrap();
@@ -1403,10 +1434,25 @@ async fn mcp_ctx_with(mcp_auth: bool, fault: bool, team: bool) -> VisibilityCtx 
         .await
         .unwrap();
 
-    if fault {
+    if let Some(fault) = fault {
         let broken_path = root.join("broken-auth.db");
-        break_the_visibility_table(&broken_path).await;
+        match fault {
+            Fault::Visibility => break_the_visibility_table(&broken_path).await,
+            Fault::WriteList => break_the_write_list_table(&broken_path).await,
+        }
         let broken = Arc::new(AuthStore::open(&broken_path).await.unwrap());
+        if fault == Fault::WriteList {
+            for (name, role) in accounts {
+                broken
+                    .add_user(name, name, None, role, "pw12345678")
+                    .await
+                    .unwrap();
+            }
+            broken
+                .set_domain_visibility("lab", true, "keeper")
+                .await
+                .unwrap();
+        }
         engine.set_domain_access(Arc::new(crystalline_service::DomainAccess::new(broken)));
     }
 
@@ -2249,7 +2295,7 @@ async fn the_http_handshake_carries_the_rules_and_no_domain_name() {
 /// It answers nothing. Not the unfiltered list, not a partial one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_scoped_read_refuses_when_the_resolver_cannot_answer() {
-    let ctx = mcp_ctx_with(true, true, false).await;
+    let ctx = mcp_ctx_with(true, Some(Fault::Visibility), false).await;
     let token = ctx.token_for("boss").await;
     let session = McpTestSession::open(&ctx.addr, Some(&token)).await;
 
@@ -2287,6 +2333,34 @@ async fn a_scoped_read_refuses_when_the_resolver_cannot_answer() {
             .is_err(),
         "the resolver itself is what is failing, for the very scope those \
          calls were made under"
+    );
+}
+
+/// B-1 item 7, the write half: a read is served without its read_only mark
+/// when the write list is unreadable, but a write is not. The MCP write gate
+/// asks the store and refuses on the same error, and no file is written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_refuses_when_the_write_list_is_unreadable() {
+    let ctx = mcp_ctx_with(true, Some(Fault::WriteList), false).await;
+    let token = ctx.token_for("out").await;
+    let session = McpTestSession::open(&ctx.addr, Some(&token)).await;
+    let answer = session
+        .call_tool(
+            "write_engram",
+            serde_json::json!({
+                "domain": "open",
+                "title": "Fresh Note",
+                "content": "- [fact] a fresh fact #shared",
+            }),
+        )
+        .await;
+    assert!(
+        answer.contains("membership is unreadable"),
+        "the write gate refuses on the unreadable write list:\n{answer}"
+    );
+    assert!(
+        !ctx.path("open", "fresh-note.md").exists(),
+        "and nothing is written"
     );
 }
 
@@ -2653,7 +2727,7 @@ async fn a_padded_destination_domain_is_answered_like_a_missing_one() {
 /// the one where a filter regression is least likely to be noticed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_aggregate_origin_verbs_hide_a_private_team_domain_from_the_open_tier() {
-    let ctx = mcp_ctx_with(false, false, true).await;
+    let ctx = mcp_ctx_with(false, None, true).await;
     let before = std::fs::read_to_string(ctx.path("lab", "lab-note.md")).unwrap();
     let session = McpTestSession::open(&ctx.addr, None).await;
 

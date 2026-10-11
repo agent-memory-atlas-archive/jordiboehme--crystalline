@@ -188,7 +188,7 @@ impl Engine {
             // tier, which writes through its carve-out, is marked only where
             // the domain is locked or reviews changes. One rights question
             // per row.
-            let blocked = self.write_block(scope, name).await?.is_some();
+            let blocked = self.read_only_mark(scope, name).await;
             let mut obj = json!({
                 "name": name,
                 "kind": if entry.is_virtual() { "virtual" } else { "file" },
@@ -877,7 +877,7 @@ impl Engine {
 
     /// Mark every local routing row `scope` cannot write in as read-only:
     /// the lock, a viewer's role, a domain off the caller's write list (spec
-    /// A-5, B-6), from the same `write_block` the listing asks. Mounted rows
+    /// A-5, B-6), from the same `read_only_mark` the listing asks. Mounted rows
     /// are appended after this and keep what their server said (Task 19).
     async fn mark_unwritable_rows(
         &self,
@@ -885,7 +885,7 @@ impl Engine {
         scope: &crate::scope::Scope,
     ) -> Result<()> {
         for domain in &mut output.domains {
-            domain.read_only = self.write_block(scope, &domain.name).await?.is_some();
+            domain.read_only = self.read_only_mark(scope, &domain.name).await;
         }
         Ok(())
     }
@@ -1055,7 +1055,7 @@ impl Engine {
         });
         // `read_only: true` when this caller cannot write in the domain (spec
         // A-5), the same answer the listing's row gives; left out otherwise.
-        if self.write_block(scope, &p.domain).await?.is_some() {
+        if self.read_only_mark(scope, &p.domain).await {
             out["read_only"] = json!(true);
         }
         Ok(out)
