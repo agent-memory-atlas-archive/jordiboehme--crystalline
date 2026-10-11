@@ -6329,6 +6329,77 @@ async fn the_share_ask_names_no_team_domain_the_caller_may_not_see() {
     );
 }
 
+/// **A read-only team domain gets neither ask on a write receipt**: its
+/// unshared work is not announced (nothing local can change there) and its
+/// pending mark does not arm the maintenance ask, while a writable domain
+/// beside it keeps the install in scope. Switched off, both asks come back.
+#[tokio::test]
+async fn a_read_only_team_domain_gets_neither_ask_on_a_write_receipt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(MockProvider::new());
+    let commit = mock.add_commit(commit_files(&[("MANIFEST.md", manifest_sharing_indexes())]));
+    mock.set_branch("main", &commit);
+
+    let config_path = tmp.path().join("config.yaml");
+    let origins_dir = tmp.path().join("origins");
+    let brand_root = tmp.path().join("brand-knowledge");
+    let vault_root = tmp.path().join("vault-knowledge");
+    let eng = engine_with(&config_path, &origins_dir, mock.clone(), true, false).await;
+    for (repo, name, root) in [
+        ("acme/brand-knowledge", "brand", &brand_root),
+        ("acme/vault-knowledge", "vault", &vault_root),
+    ] {
+        eng.origin_add(repo, Some(name), None, None, Some(root.to_str().unwrap()))
+            .await
+            .unwrap();
+    }
+    std::fs::write(
+        brand_root.join("added.md"),
+        engram("Added", "added", "written here, never shared"),
+    )
+    .unwrap();
+    let maintenance = tmp.path().join("hooks").join("maintenance.json");
+    std::fs::create_dir_all(maintenance.parent().unwrap()).unwrap();
+    std::fs::write(
+        &maintenance,
+        serde_json::json!({ "v": 1, "pending_domains": ["brand"] }).to_string(),
+    )
+    .unwrap();
+
+    let manifest_path = brand_root.join("MANIFEST.md");
+    let open = std::fs::read_to_string(&manifest_path).unwrap();
+    std::fs::write(
+        &manifest_path,
+        open.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+    assert!(eng.domain_is_read_only("brand").await, "the lock is real");
+
+    assert_eq!(
+        crystalline_service::nudge::write_verb_trailer(&eng, Some("ada"), &Scope::Unrestricted)
+            .await,
+        None,
+        "a locked domain owes no share and its pending mark arms no sweep"
+    );
+
+    std::fs::write(&manifest_path, &open).unwrap();
+    assert_eq!(
+        crystalline_service::nudge::write_verb_trailer(&eng, Some("ada"), &Scope::Unrestricted)
+            .await,
+        Some(crystalline_service::nudge::share_nudge_line(
+            1,
+            &["brand".to_string()]
+        )),
+        "unlocked, the share ask is back"
+    );
+    assert_eq!(
+        crystalline_service::nudge::write_verb_trailer(&eng, Some("ada"), &Scope::Unrestricted)
+            .await,
+        Some(crystalline_service::nudge::MCP_EVOLVE_NUDGE.to_string()),
+        "and so is the maintenance ask"
+    );
+}
+
 /// **A team domain that owes nothing is walked at most once a minute**, however
 /// many receipts go out in between.
 ///

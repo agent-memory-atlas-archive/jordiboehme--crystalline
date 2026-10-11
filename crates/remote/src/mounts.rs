@@ -950,6 +950,10 @@ fn map_authorities(text: &str, map: &BTreeMap<String, String>) -> String {
 mod tests {
     use super::*;
 
+    use crate::server_token::CredentialKind;
+    use crate::sources::{MountRecord, SourceRecord, SourcesFile};
+    use serde_json::json;
+
     #[test]
     fn the_read_only_name_lists_move_to_the_local_names() {
         let map = NameMap {
@@ -965,9 +969,6 @@ mod tests {
         assert_eq!(answer["scope"]["read_only_left_out"], json!(["jordi-acme"]));
         assert_eq!(answer["read_only_skipped"], json!(["jordi-acme"]));
     }
-    use crate::server_token::CredentialKind;
-    use crate::sources::{MountRecord, SourceRecord, SourcesFile};
-    use serde_json::json;
 
     fn source(name: &str) -> SourceRecord {
         SourceRecord {

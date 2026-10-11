@@ -494,6 +494,8 @@ mod tests {
 
     use super::*;
 
+    use serde_json::json;
+
     #[test]
     fn evolve_parts_keep_every_left_out_domain() {
         let part = |left: Value| {
@@ -533,7 +535,6 @@ mod tests {
         );
         assert!(none["scope"].get("read_only_left_out").is_none(), "{none}");
     }
-    use serde_json::json;
 
     fn hits(domain: &str, names: &[&str], score: f64) -> Value {
         Value::Array(

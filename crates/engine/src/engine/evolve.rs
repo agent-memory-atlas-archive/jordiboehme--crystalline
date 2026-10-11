@@ -26,7 +26,7 @@ impl Engine {
         // The swept scope is read back out of the response rather than
         // re-derived from the parameters: an unscoped call defaults to every
         // registered domain, and only the response knows which those were.
-        let swept: Vec<String> = value["scope"]["domains"]
+        let mut swept: Vec<String> = value["scope"]["domains"]
             .as_array()
             .map(|domains| {
                 domains
@@ -35,7 +35,6 @@ impl Engine {
                     .collect()
             })
             .unwrap_or_default();
-        let mut swept = swept;
         swept.extend(
             value["scope"]["read_only_left_out"]
                 .as_array()
