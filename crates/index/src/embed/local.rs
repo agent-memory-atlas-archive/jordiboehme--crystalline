@@ -549,8 +549,9 @@ mod tests {
     use hf_hub::HFClient;
 
     use super::{
-        HubFiles, MAX_INPUT_CHARS, cached_path, cap_chars, check_files, check_model_type, cls_pool,
-        ensure_files_with, hub_repo, load_encoder_with, load_files_with,
+        HubFiles, MAX_INPUT_CHARS, build_on_blocking, cached_path, cap_chars, check_files,
+        check_model_type, cls_pool, ensure_files_with, hub_repo, load_encoder_with,
+        load_files_with,
     };
     use crate::embed::models::{
         LocalModel, SnapshotChoice, choose_snapshot, lookup_local_model, older_snapshot_warning,
@@ -1013,6 +1014,23 @@ mod tests {
                 pinned_differs: false
             }
         );
+    }
+
+    /// The whole blocking build of files that are not a model fails with the
+    /// config's own reason.
+    #[tokio::test]
+    async fn a_build_of_files_that_are_not_a_model_fails_on_the_config() {
+        let granite = lookup_local_model("granite-embedding-97m-multilingual-r2").unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let older = "1111111111111111111111111111111111111111";
+        cache_from_main(tmp.path(), granite, older);
+        let files = HubFiles::from_snapshot(tmp.path(), &hub_repo(granite), older);
+        let err = build_on_blocking(files, granite)
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("parsing config.json"), "{err}");
     }
 
     /// Files that are not a model fail before any device is opened, with the

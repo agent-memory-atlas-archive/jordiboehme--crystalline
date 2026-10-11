@@ -275,6 +275,18 @@ where
     }
 }
 
+/// The checks a build makes that need no device: `config.json` parses, names
+/// this model and carries an `id2label` with a contradiction row. A cache
+/// that holds the wrong files, or files that are not a model at all, fails
+/// here, before a GPU is opened for it.
+fn check_files(files: &HubFiles, model: &NliModel) -> Result<()> {
+    let config_text = read(files.config()?)?;
+    let raw: serde_json::Value = serde_json::from_str(&config_text)
+        .map_err(|e| IndexError::Nli(format!("parsing config.json: {e}")))?;
+    check_model_type(&raw, model)?;
+    contradiction_index(&id2label(&raw)?).map(|_| ())
+}
+
 /// [`build`] on a blocking thread, on the device [`crate::device`] picks: the
 /// GPU when the checkpoint builds there and scores [`warm_up`], the CPU
 /// otherwise. The error this returns is always the CPU's.
@@ -284,6 +296,7 @@ where
 /// reaches the self-heal.
 async fn build_on_blocking(files: HubFiles, model: &'static NliModel) -> Result<LocalNli> {
     tokio::task::spawn_blocking(move || {
+        check_files(&files, model)?;
         let (loaded, report) = load_on_best_device(
             CONTRADICTION_MODEL,
             |device| build(&files, model, device),
@@ -442,6 +455,47 @@ fn softmax_at(row: &[f32], index: usize) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every file of the checkpoint's snapshot written as the single byte
+    /// `x`: a cache that holds no model.
+    fn files_that_are_not_a_model(cache: &std::path::Path) -> (&'static NliModel, HubFiles) {
+        let model = &crate::nli::models::NLI_MODELS[0];
+        let files = HubFiles::from_snapshot(
+            cache,
+            &hub_repo(model),
+            "1111111111111111111111111111111111111111",
+        );
+        for file in model.files {
+            let path = files.get(file).unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"x").unwrap();
+        }
+        (model, files)
+    }
+
+    /// Files that are not a model fail before any device is opened, with the
+    /// config's own reason: the build never reaches the GPU.
+    #[test]
+    fn files_that_are_not_a_model_fail_before_a_device_is_opened() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (model, files) = files_that_are_not_a_model(tmp.path());
+        let err = check_files(&files, model).unwrap_err().to_string();
+        assert!(err.contains("parsing config.json"), "{err}");
+    }
+
+    /// The whole blocking build of files that are not a model fails with the
+    /// config's own reason.
+    #[tokio::test]
+    async fn a_build_of_files_that_are_not_a_model_fails_on_the_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (model, files) = files_that_are_not_a_model(tmp.path());
+        let err = build_on_blocking(files, model)
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("parsing config.json"), "{err}");
+    }
 
     /// A word-level tokenizer built in place: no download, no fixture.
     fn words() -> Tokenizer {
