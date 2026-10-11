@@ -993,6 +993,12 @@ enum UsersCommand {
         /// token is printed once.
         #[arg(long, value_name = "LABEL", conflicts_with_all = ["password_stdin", "password_file"])]
         mcp_token: Option<String>,
+        /// Let the account write only to these domains: a comma-separated
+        /// list of domain names, or name prefixes ending in `*`
+        /// (`agents-*`). It still needs the role and the membership to write
+        /// there. Change it later with `crystalline users writes`.
+        #[arg(long, value_name = "DOMAINS")]
+        writes: Option<String>,
     },
     /// List every account with its role and whether it is disabled.
     List,
@@ -1061,6 +1067,22 @@ enum UsersCommand {
         /// old secret stops working and the new one is printed.
         #[arg(long, value_name = "ID")]
         rotate: Option<i64>,
+    },
+    /// Show, set or remove an account's write list: the domains it may write
+    /// to. On every other domain it only reads, whatever its role. With no
+    /// list it writes wherever its role and memberships allow. Entries are
+    /// domain names or name prefixes ending in `*`; an entry that names no
+    /// registered domain is kept with a warning.
+    Writes {
+        /// The account.
+        name: String,
+        /// The new list, comma-separated (`agents-bot,shared-*`). It replaces
+        /// the old one. Leave it out to print the list.
+        #[arg(value_name = "DOMAINS", conflicts_with = "clear")]
+        domains: Option<String>,
+        /// Remove the list.
+        #[arg(long)]
+        clear: bool,
     },
     /// Tie a single sign-on identity to an existing account, so that person
     /// signs in through the provider and lands in this account. The durable

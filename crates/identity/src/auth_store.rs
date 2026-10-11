@@ -882,7 +882,9 @@ pub struct AuthStore {
 }
 
 /// Create the tables on first open. `IF NOT EXISTS` throughout, so this is the
-/// same statement on an existing file.
+/// same statement on an existing file. `account_write_domain` holds the write
+/// lists (`crystalline users writes`): no rows for an account means it has no
+/// list.
 const SCHEMA: &str = "\
 CREATE TABLE IF NOT EXISTS users (
     name TEXT PRIMARY KEY,
@@ -979,6 +981,11 @@ CREATE INDEX IF NOT EXISTS overlay_grant_draft
     ON overlay_grant (domain, owner, path);
 CREATE INDEX IF NOT EXISTS overlay_grant_grantee
     ON overlay_grant (grantee, domain, path);
+CREATE TABLE IF NOT EXISTS account_write_domain (
+    account TEXT NOT NULL,
+    pattern TEXT NOT NULL,
+    PRIMARY KEY (account, pattern)
+);
 ";
 
 /// Prefix every MCP token is minted with, so a token is recognizable at a
@@ -1582,8 +1589,8 @@ impl AuthStore {
     }
 
     /// Delete an account and everything keyed on its name: its sessions, its
-    /// MCP tokens and its private-domain memberships. Errors if there is no
-    /// such account.
+    /// MCP tokens, its private-domain memberships and its write list. Errors
+    /// if there is no such account.
     ///
     /// The deletes are one `BEGIN IMMEDIATE` transaction, sessions first.
     /// Both details are load-bearing, because a session row that outlives its
@@ -1617,6 +1624,7 @@ impl AuthStore {
             self.delete_memberships_of(&name).await?;
             self.delete_identity_links_of(&name).await?;
             self.delete_oauth_grants_of(&name).await?;
+            self.delete_write_list_of(&name).await?;
             self.disown_domains_of(&name).await?;
             let changed = self
                 .conn
@@ -1645,9 +1653,9 @@ impl AuthStore {
     }
 
     /// [`AuthStore::remove_user`] without the last-admin guard, for
-    /// `users remove --force`. Sessions, tokens and memberships still go
-    /// first, in the same `BEGIN IMMEDIATE` transaction, for the resurrection
-    /// reasons the guarded remove documents.
+    /// `users remove --force`. Sessions, tokens, memberships and its write
+    /// list still go first, in the same `BEGIN IMMEDIATE` transaction, for
+    /// the resurrection reasons the guarded remove documents.
     pub async fn remove_user_force(&self, name: &str) -> Result<()> {
         let name = normalize_account_name(name)?;
         let key = vec![Value::Text(name.clone())];
@@ -1661,6 +1669,7 @@ impl AuthStore {
             self.delete_memberships_of(&name).await?;
             self.delete_identity_links_of(&name).await?;
             self.delete_oauth_grants_of(&name).await?;
+            self.delete_write_list_of(&name).await?;
             self.disown_domains_of(&name).await?;
             let changed = self
                 .conn
@@ -4073,6 +4082,9 @@ impl AuthStore {
     /// from everyone but an admin. Answers whether there was an acl row at all,
     /// which is how a caller can tell a private domain's records from a shared
     /// domain's absence of them.
+    ///
+    /// Write-list entries naming the domain are left alone: they match nothing
+    /// until a domain of that name exists again.
     pub async fn forget_domain(&self, domain: &str) -> Result<bool> {
         let domain = normalize_domain(domain)?;
         let _guard = self.guard.lock().await;
@@ -4112,6 +4124,10 @@ impl AuthStore {
     /// Idempotent, for a rename completed again after a crash: with nothing
     /// under `old` the call changes nothing, and in particular leaves the rows
     /// under `new` alone, since those are the ones an earlier run moved.
+    ///
+    /// Exact write-list entries naming `old` are rewritten to `new` as well;
+    /// `*` entries are left alone (a prefix names a family of domains, not
+    /// this one), and an account that already named `new` keeps one entry.
     pub async fn rename_domain(&self, old: &str, new: &str) -> Result<()> {
         let old = normalize_domain(old)?;
         let new = normalize_domain(new)?;
@@ -4123,6 +4139,54 @@ impl AuthStore {
         self.begin_immediate().await.with_context(context)?;
         let names = vec![Value::Text(old.clone()), Value::Text(new.clone())];
         let result = async {
+            // The write lists first, and before the early return below: a
+            // shared domain has no acl, member or grant row, so the probe
+            // would skip it. Only exact entries name a domain (a domain name
+            // never holds a `*`), so a prefix entry is never touched. An entry
+            // already naming `new` is a real entry, not a stale row, and is
+            // kept: the account's `old` row is dropped instead of colliding
+            // with it on the primary key.
+            let mut holders = Vec::new();
+            {
+                let mut rows = self
+                    .conn
+                    .query(
+                        "SELECT account FROM account_write_domain WHERE pattern = ?1",
+                        vec![Value::Text(old.clone())],
+                    )
+                    .await
+                    .with_context(context)?;
+                while let Some(row) = rows.next().await.with_context(context)? {
+                    if let Some(account) = cell_text(&row, 0) {
+                        holders.push(account);
+                    }
+                }
+            }
+            for account in holders {
+                let both = self
+                    .query_first(
+                        "SELECT 1 FROM account_write_domain WHERE account = ?1 AND pattern = ?2",
+                        vec![Value::Text(account.clone()), Value::Text(new.clone())],
+                    )
+                    .await
+                    .with_context(context)?
+                    .is_some();
+                let sql = if both {
+                    "DELETE FROM account_write_domain WHERE account = ?1 AND pattern = ?2"
+                } else {
+                    "UPDATE account_write_domain SET pattern = ?3 WHERE account = ?1 AND pattern = ?2"
+                };
+                let params = if both {
+                    vec![Value::Text(account), Value::Text(old.clone())]
+                } else {
+                    vec![
+                        Value::Text(account),
+                        Value::Text(old.clone()),
+                        Value::Text(new.clone()),
+                    ]
+                };
+                self.conn.execute(sql, params).await.with_context(context)?;
+            }
             let mut old_has_records = false;
             for sql in [
                 "SELECT 1 FROM domain_acl WHERE domain = ?1",
@@ -4438,6 +4502,130 @@ impl AuthStore {
             ));
         }
         Ok(out)
+    }
+
+    /// The domains `account` may write to, or `None` when it has no write
+    /// list and writes wherever its role and memberships allow.
+    ///
+    /// An entry is a domain name or a name prefix ending in one `*`, stored
+    /// as given (trimmed, never case folded, like a `domain_acl` row) and
+    /// matched by [`crate::scope::write_list_matches`]. Sorted byte-wise.
+    /// A list only lowers rights; [`crate::scope::DomainAccess`] applies it.
+    pub async fn write_list(&self, account: &str) -> Result<Option<Vec<String>>> {
+        let account = normalize_account_name(account)?;
+        let _guard = self.guard.lock().await;
+        self.write_list_of(&account).await
+    }
+
+    /// Replace `account`'s write list with `patterns`: trimmed, empties
+    /// dropped, duplicates kept once. An unknown account and a list with no
+    /// entry are refused, because no rows already means "no list": an empty
+    /// list cannot be stored, and removing the list is
+    /// [`AuthStore::clear_write_list`]. The surface validates the entries; this
+    /// stores what it is given.
+    pub async fn set_write_list(&self, account: &str, patterns: &[String]) -> Result<()> {
+        let account = normalize_account_name(account)?;
+        let mut entries: Vec<String> = Vec::new();
+        for pattern in patterns {
+            let pattern = pattern.trim();
+            if !pattern.is_empty() && !entries.iter().any(|e| e == pattern) {
+                entries.push(pattern.to_string());
+            }
+        }
+        if entries.is_empty() {
+            bail!(
+                "a write list needs at least one entry; to remove the list of '{account}', clear it"
+            );
+        }
+        let _guard = self.guard.lock().await;
+        self.begin_immediate()
+            .await
+            .with_context(|| format!("setting the write list of '{account}'"))?;
+        let result = async {
+            self.require_user_row(&account).await?;
+            self.delete_write_list_of(&account).await?;
+            for pattern in &entries {
+                self.conn
+                    .execute(
+                        "INSERT INTO account_write_domain (account, pattern) VALUES (?1, ?2)",
+                        vec![Value::Text(account.clone()), Value::Text(pattern.clone())],
+                    )
+                    .await
+                    .with_context(|| format!("setting the write list of '{account}'"))?;
+            }
+            Ok(())
+        }
+        .await;
+        self.finish(result).await
+    }
+
+    /// Remove `account`'s write list, so it writes wherever its role and
+    /// memberships allow. An unknown account is refused; an account with no
+    /// list is fine.
+    pub async fn clear_write_list(&self, account: &str) -> Result<()> {
+        let account = normalize_account_name(account)?;
+        let _guard = self.guard.lock().await;
+        self.begin_immediate()
+            .await
+            .with_context(|| format!("clearing the write list of '{account}'"))?;
+        let result = async {
+            self.require_user_row(&account).await?;
+            self.delete_write_list_of(&account).await
+        }
+        .await;
+        self.finish(result).await
+    }
+
+    /// [`AuthStore::write_list`] without the lock or the folding.
+    async fn write_list_of(&self, account: &str) -> Result<Option<Vec<String>>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT pattern FROM account_write_domain WHERE account = ?1 ORDER BY pattern",
+                vec![Value::Text(account.to_string())],
+            )
+            .await
+            .with_context(|| format!("reading the write list of '{account}'"))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .with_context(|| format!("reading the write list of '{account}'"))?
+        {
+            if let Some(pattern) = cell_text(&row, 0) {
+                out.push(pattern);
+            }
+        }
+        Ok((!out.is_empty()).then_some(out))
+    }
+
+    /// Delete every write-list row of one account. Inside the caller's
+    /// transaction; no lock taken.
+    async fn delete_write_list_of(&self, name: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM account_write_domain WHERE account = ?1",
+                vec![Value::Text(name.to_string())],
+            )
+            .await
+            .with_context(|| format!("removing the write list of user '{name}'"))?;
+        Ok(())
+    }
+
+    /// `no such user` unless `name` (already folded) has a row. Inside the
+    /// caller's transaction, so the check and the write see one table.
+    async fn require_user_row(&self, name: &str) -> Result<()> {
+        if self
+            .query_first(
+                "SELECT 1 FROM users WHERE name = ?1",
+                vec![Value::Text(name.to_string())],
+            )
+            .await?
+            .is_none()
+        {
+            bail!("no such user: '{name}'");
+        }
+        Ok(())
     }
 
     /// Un-name `name` as the owner of every private domain it owns, leaving
@@ -6667,6 +6855,186 @@ mod tests {
         // Re-opening (the migrated shape) must not fail on the duplicate column.
         let again = AuthStore::open(&path).await.unwrap();
         assert_eq!(again.list_users().await.unwrap().len(), 1);
+    }
+
+    fn entries(items: &[&str]) -> Vec<String> {
+        items.iter().map(|e| e.to_string()).collect()
+    }
+
+    /// The table is created on open over a database an older build wrote,
+    /// and opening twice is harmless.
+    #[tokio::test]
+    async fn an_old_database_gains_the_write_list_table_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("web-auth.db");
+        {
+            let db = Builder::new_local(&path.to_string_lossy())
+                .build()
+                .await
+                .unwrap();
+            let conn = db.connect().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE users (
+                    name TEXT PRIMARY KEY,
+                    display TEXT NOT NULL,
+                    email TEXT,
+                    role TEXT NOT NULL,
+                    pass_hash TEXT,
+                    disabled INTEGER NOT NULL DEFAULT 0,
+                    last_seen_at TEXT,
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO users (name, display, email, role, pass_hash, disabled, created_at)
+                VALUES ('bot', 'bot', NULL, 'editor', NULL, 0, '2026-01-01T00:00:00Z');",
+            )
+            .await
+            .unwrap();
+        }
+        let store = AuthStore::open(&path).await.unwrap();
+        assert_eq!(store.write_list("bot").await.unwrap(), None);
+        store
+            .set_write_list("bot", &entries(&["agents-bot"]))
+            .await
+            .unwrap();
+        drop(store);
+        let again = AuthStore::open(&path).await.unwrap();
+        assert_eq!(
+            again.write_list("bot").await.unwrap(),
+            Some(entries(&["agents-bot"]))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_list_is_set_replaced_read_and_cleared() {
+        let (_dir, store) = store().await;
+        store
+            .add_user("bot", "Bot", None, Role::Editor, "pw")
+            .await
+            .unwrap();
+        assert_eq!(store.write_list("bot").await.unwrap(), None);
+        store
+            .set_write_list(
+                "BOT",
+                &entries(&[" shared-* ", "agents-bot", "agents-bot", ""]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.write_list("bot").await.unwrap(),
+            Some(entries(&["agents-bot", "shared-*"])),
+            "trimmed, deduplicated, empties dropped, sorted, keyed on the folded name"
+        );
+        store
+            .set_write_list("bot", &entries(&["other"]))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.write_list("bot").await.unwrap(),
+            Some(entries(&["other"])),
+            "a set replaces the whole list"
+        );
+        store.clear_write_list("bot").await.unwrap();
+        assert_eq!(store.write_list("bot").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_write_list_needs_an_account_and_an_entry() {
+        let (_dir, store) = store().await;
+        store
+            .add_user("bot", "Bot", None, Role::Editor, "pw")
+            .await
+            .unwrap();
+        let ghost = store
+            .set_write_list("ghost", &entries(&["open"]))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{ghost:#}").contains("no such user: 'ghost'"),
+            "{ghost:#}"
+        );
+        let ghost = store.clear_write_list("ghost").await.unwrap_err();
+        assert!(
+            format!("{ghost:#}").contains("no such user: 'ghost'"),
+            "{ghost:#}"
+        );
+        let empty = store
+            .set_write_list("bot", &entries(&["", "  "]))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{empty:#}").contains("at least one entry"),
+            "{empty:#}"
+        );
+        assert_eq!(store.write_list("bot").await.unwrap(), None);
+    }
+
+    /// A rename rewrites exact entries and leaves `*` entries alone, on a
+    /// shared domain too (which has no acl, member or grant row), keeps an
+    /// entry that already named the new name, and a second run changes
+    /// nothing.
+    #[tokio::test]
+    async fn a_rename_follows_exact_write_entries_only() {
+        let (_dir, store) = store().await;
+        for name in ["bot", "both"] {
+            store
+                .add_user(name, name, None, Role::Editor, "pw")
+                .await
+                .unwrap();
+        }
+        store
+            .set_write_list("bot", &entries(&["eng", "eng-*", "open"]))
+            .await
+            .unwrap();
+        store
+            .set_write_list("both", &entries(&["eng", "platform"]))
+            .await
+            .unwrap();
+        store.rename_domain("eng", "platform").await.unwrap();
+        assert_eq!(
+            store.write_list("bot").await.unwrap(),
+            Some(entries(&["eng-*", "open", "platform"]))
+        );
+        assert_eq!(
+            store.write_list("both").await.unwrap(),
+            Some(entries(&["platform"])),
+            "an account that named both ends keeps one entry"
+        );
+        store.rename_domain("eng", "platform").await.unwrap();
+        assert_eq!(
+            store.write_list("bot").await.unwrap(),
+            Some(entries(&["eng-*", "open", "platform"])),
+            "idempotent"
+        );
+    }
+
+    /// The list goes with the account, on both removal paths, so a name
+    /// added again starts with no list.
+    #[tokio::test]
+    async fn removing_an_account_removes_its_write_list() {
+        let (_dir, store) = store().await;
+        store
+            .add_user("ada", "Ada", None, Role::Admin, "pw")
+            .await
+            .unwrap();
+        for name in ["bot", "bot2"] {
+            store
+                .add_user(name, name, None, Role::Editor, "pw")
+                .await
+                .unwrap();
+            store
+                .set_write_list(name, &entries(&["agents-bot"]))
+                .await
+                .unwrap();
+        }
+        store.remove_user("bot").await.unwrap();
+        store.remove_user_force("bot2").await.unwrap();
+        for name in ["bot", "bot2"] {
+            store
+                .add_user(name, name, None, Role::Editor, "pw")
+                .await
+                .unwrap();
+            assert_eq!(store.write_list(name).await.unwrap(), None, "{name}");
+        }
     }
 
     /// Resolving a session stamps the account as seen; a trusted-header contact

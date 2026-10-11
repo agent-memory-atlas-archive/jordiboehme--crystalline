@@ -1131,3 +1131,252 @@ fn users_add_reads_the_password_from_a_file() {
         });
     }
 }
+
+/// Run `crystalline users ...` with `CRYSTALLINE_CONFIG` pointing at a config
+/// that registers `domains`, so the unknown-entry warning has a registry to
+/// check against. Returns the whole output; the caller asserts the status.
+fn users_with_registry(
+    home: &std::path::Path,
+    domains: &[&str],
+    args: &[&str],
+) -> std::process::Output {
+    let config = home.join("registry.yaml");
+    let mut yaml = String::from("domains:\n");
+    for name in domains {
+        let dir = home.join("domains").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        yaml.push_str(&format!("  {name}:\n    path: {}\n", dir.display()));
+    }
+    std::fs::write(&config, yaml).unwrap();
+    let mut cmd = bin();
+    isolate(&mut cmd, home);
+    cmd.env("CRYSTALLINE_CONFIG", &config);
+    cmd.arg("users").args(args);
+    cmd.output().unwrap()
+}
+
+#[test]
+fn users_add_with_writes_sets_the_list_for_an_agent_and_a_person() {
+    let home = tempfile::tempdir().unwrap();
+    let out = users_with_registry(
+        home.path(),
+        &["agents-bot", "shared-notes"],
+        &[
+            "add",
+            "bot",
+            "--role",
+            "editor",
+            "--mcp-token",
+            "bot",
+            "--writes",
+            "agents-bot,shared-*",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Write list: agents-bot, shared-*."),
+        "{stdout}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("warning"),
+        "every entry matches a registered domain"
+    );
+    let printed = users_ok(home.path(), &["writes", "bot"], None);
+    assert!(
+        printed.contains("Write list of 'bot': agents-bot, shared-*."),
+        "{printed}"
+    );
+
+    users_ok(
+        home.path(),
+        &[
+            "add",
+            "ada",
+            "--role",
+            "editor",
+            "--writes",
+            "agents-ada",
+            "--password-stdin",
+        ],
+        Some("s3cret\n"),
+    );
+    let printed = users_ok(home.path(), &["writes", "ada"], None);
+    assert!(
+        printed.contains("Write list of 'ada': agents-ada."),
+        "{printed}"
+    );
+}
+
+#[test]
+fn users_writes_sets_clears_and_prints() {
+    let home = tempfile::tempdir().unwrap();
+    users_ok(
+        home.path(),
+        &["add", "bot", "--role", "editor", "--password-stdin"],
+        Some("s3cret\n"),
+    );
+    let none = users_ok(home.path(), &["writes", "bot"], None);
+    assert!(none.contains("'bot' has no write list."), "{none}");
+
+    let set = users_ok(home.path(), &["writes", "Bot", "agents-bot, team-*"], None);
+    assert!(
+        set.contains("Set the write list of 'bot': agents-bot, team-*."),
+        "{set}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&users_ok(home.path(), &["--json", "writes", "bot"], None)).unwrap();
+    assert_eq!(json["name"], "bot");
+    assert_eq!(json["writes"], serde_json::json!(["agents-bot", "team-*"]));
+
+    let cleared = users_ok(home.path(), &["writes", "bot", "--clear"], None);
+    assert!(
+        cleared.contains("Removed the write list of 'bot'."),
+        "{cleared}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&users_ok(home.path(), &["--json", "writes", "bot"], None)).unwrap();
+    assert_eq!(json["writes"], serde_json::Value::Null);
+
+    let ghost = users_err(home.path(), &["writes", "ghost", "open"], None);
+    assert!(ghost.contains("no such user: 'ghost'"), "{ghost}");
+    let ghost = users_err(home.path(), &["writes", "ghost"], None);
+    assert!(ghost.contains("no such user: 'ghost'"), "{ghost}");
+}
+
+/// A path separator is not a domain name: the entry is refused with a plain
+/// sentence and nothing is stored, the valid entry beside it included.
+#[test]
+fn users_writes_refuses_a_slash() {
+    let home = tempfile::tempdir().unwrap();
+    users_ok(
+        home.path(),
+        &["add", "bot", "--role", "editor", "--password-stdin"],
+        Some("s3cret\n"),
+    );
+    let refused = users_err(home.path(), &["writes", "bot", "open,agents-bot/"], None);
+    assert!(
+        refused
+            .contains("'agents-bot/' is not a domain name or a name prefix with one * at the end"),
+        "{refused}"
+    );
+    for bad in ["*", "a*b*", "*agents"] {
+        let refused = users_err(home.path(), &["writes", "bot", bad], None);
+        assert!(refused.contains("is not a domain name"), "{bad}: {refused}");
+    }
+    let empty = users_err(home.path(), &["writes", "bot", " , "], None);
+    assert!(
+        empty.contains("give at least one entry, or use --clear"),
+        "{empty}"
+    );
+    let printed = users_ok(home.path(), &["writes", "bot"], None);
+    assert!(
+        printed.contains("'bot' has no write list."),
+        "nothing stored: {printed}"
+    );
+
+    // `users add --writes` validates before it creates anything.
+    let refused = users_err(
+        home.path(),
+        &[
+            "add",
+            "agent",
+            "--mcp-token",
+            "agent",
+            "--writes",
+            "agents/x",
+        ],
+        None,
+    );
+    assert!(refused.contains("is not a domain name"), "{refused}");
+    let listed = users_ok(home.path(), &["list"], None);
+    assert!(
+        !listed.contains("agent "),
+        "no account was created: {listed}"
+    );
+}
+
+/// An entry that names no registered domain is kept with a warning (the
+/// domain may be created later), and until then it matches nothing: the
+/// account writes nowhere.
+#[test]
+fn unknown_entries_warn_and_match_nothing() {
+    let home = tempfile::tempdir().unwrap();
+    users_ok(
+        home.path(),
+        &["add", "bot", "--role", "editor", "--password-stdin"],
+        Some("s3cret\n"),
+    );
+    let out = users_with_registry(home.path(), &["open"], &["writes", "bot", "ghost,nobody-*"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning: no registered domain matches 'ghost'; the entry is kept"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("'nobody-*'"), "{stderr}");
+    let printed = users_ok(home.path(), &["writes", "bot"], None);
+    assert!(
+        printed.contains("Write list of 'bot': ghost, nobody-*."),
+        "{printed}"
+    );
+
+    // And the account writes nowhere: every registered domain is capped.
+    let db = crate::common::isolated_state_dir(home.path()).join("web-auth.db");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let auth = std::sync::Arc::new(
+            crystalline_service::rest::AuthStore::open(&db)
+                .await
+                .unwrap(),
+        );
+        let access = crystalline_service::DomainAccess::new(auth);
+        let scope = crystalline_service::Scope::User {
+            account: "bot".to_string(),
+            admin: false,
+        };
+        assert_eq!(
+            access.write_right(&scope, "open").await.unwrap(),
+            crystalline_service::DomainRight::Read
+        );
+    });
+}
+
+#[test]
+fn users_list_shows_the_write_list() {
+    let home = tempfile::tempdir().unwrap();
+    for name in ["ada", "bot"] {
+        users_ok(
+            home.path(),
+            &["add", name, "--role", "editor", "--password-stdin"],
+            Some("s3cret\n"),
+        );
+    }
+    users_ok(home.path(), &["writes", "bot", "agents-bot,team-*"], None);
+    let text = users_ok(home.path(), &["list"], None);
+    assert!(text.contains("WRITES"), "{text}");
+    let bot_line = text.lines().find(|l| l.starts_with("bot ")).unwrap();
+    assert!(bot_line.contains("agents-bot,team-*"), "{bot_line}");
+    let json: serde_json::Value =
+        serde_json::from_str(&users_ok(home.path(), &["--json", "list"], None)).unwrap();
+    assert_eq!(json["users"][0]["name"], "ada");
+    assert!(
+        json["users"][0].get("writes").is_none(),
+        "no list, no key: {json}"
+    );
+    assert_eq!(
+        json["users"][1]["writes"],
+        serde_json::json!(["agents-bot", "team-*"])
+    );
+}
