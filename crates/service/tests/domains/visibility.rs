@@ -1053,6 +1053,74 @@ async fn a_move_onto_the_manifest_cannot_switch_read_only_on_for_an_editor() {
     assert!(engine.domain_is_read_only("open").await);
 }
 
+/// The same rule in lowercase: on a case-insensitive filesystem (the macOS
+/// and Windows defaults) a move onto `manifest.md` lands as the file routing
+/// reads as `MANIFEST.md`, so it is the MANIFEST and meets the switch-on rule
+/// (decision D10) like the exact spelling. An instance editor is refused and
+/// nothing moves; a move that leaves the flag off lands as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_move_onto_a_lowercase_manifest_cannot_switch_read_only_on_for_an_editor() {
+    let (tmp, engine) = fixture().await;
+    let open = tmp.path().join("open");
+    let note = |permalink: &str, flag: bool| {
+        let text = OPEN_NOTE.replacen(
+            "permalink: open-note",
+            &format!("permalink: {permalink}"),
+            1,
+        );
+        match flag {
+            true => switch_on(&text),
+            false => text,
+        }
+    };
+    std::fs::remove_file(open.join("MANIFEST.md")).unwrap();
+    std::fs::write(open.join("locker.md"), note("locker", true)).unwrap();
+    std::fs::write(open.join("plain.md"), note("plain", false)).unwrap();
+    engine.sync(None).await.unwrap();
+    let snapshot = |dir: &std::path::Path| {
+        let mut files = std::collections::BTreeMap::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file() {
+                files.insert(path.clone(), std::fs::read(&path).unwrap());
+            }
+        }
+        files
+    };
+    let onto_manifest = |identifier: &str| MoveParams {
+        identifier: identifier.into(),
+        domain: "open".into(),
+        destination: "manifest.md".into(),
+        destination_domain: Some("open".into()),
+        permalink: None,
+        update_links: None,
+    };
+
+    let before = snapshot(&open);
+    let err = engine
+        .move_engram(&onto_manifest("locker"), &user("out"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, crystalline_service::EngineError::Forbidden(_)),
+        "{err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "only the owner of 'open' or an instance admin may change `read_only`"
+    );
+    assert_eq!(snapshot(&open), before, "nothing moved");
+    assert!(!engine.domain_is_read_only("open").await);
+
+    // A move that leaves the flag off is not this rule's business.
+    engine
+        .move_engram(&onto_manifest("plain"), &user("out"))
+        .await
+        .expect("a lowercase MANIFEST without the lock lands");
+    assert!(!open.join("plain.md").exists());
+    assert!(!engine.domain_is_read_only("open").await);
+}
+
 /// The owner and an instance admin switch it on, through the policies and
 /// through the MANIFEST text; a viewer cannot, by either.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

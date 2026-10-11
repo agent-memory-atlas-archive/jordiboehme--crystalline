@@ -132,8 +132,11 @@ impl Engine {
         // meets the switch-on rule every MANIFEST writer meets (decision D10),
         // before anything is written at either end and before the review-mode
         // branch, which writes a draft of it. A taken MANIFEST.md is refused
-        // later as a collision; this is the move onto a missing one.
-        if is_manifest_path(&dest_rel) {
+        // later as a collision; this is the move onto a missing one. The name
+        // is compared in any letter case, as the write paths do: a
+        // case-insensitive filesystem (the macOS and Windows defaults) opens
+        // `manifest.md` as the very `MANIFEST.md` routing reads.
+        if dest_rel.eq_ignore_ascii_case("MANIFEST.md") {
             let text = self.move_source_text(&src_source, &src, &p.domain).await?;
             self.refuse_read_only_switch_on(&dest_domain, &text, scope)
                 .await?;
