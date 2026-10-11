@@ -13,7 +13,7 @@ use axum::http::header::{CACHE_CONTROL, ETAG};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use utoipa::{IntoParams, ToSchema};
 
 use super::auth::Identity;
@@ -122,6 +122,13 @@ pub async fn list(
             &identity.scope(),
         )
         .await?;
+    if reads_only(&identity)
+        && let Some(rows) = value.get_mut("domains").and_then(Value::as_array_mut)
+    {
+        for row in rows {
+            row["read_only"] = json!(true);
+        }
+    }
     // The servers this machine is connected to are its owner's business: an
     // instance admin sees their domains listed, nobody else does, so a team
     // server that happens to have sources never shows them to its members.
@@ -131,6 +138,14 @@ pub async fn list(
         map.insert("mounted".to_string(), state.engine.mounted_listing());
     }
     Ok(Json(value))
+}
+
+/// The anonymous viewer writes nothing over REST (`Identity::require_editor`
+/// refuses it before any domain is asked), so a domain it reads is
+/// read-only for it. The engine's open-tier carve-out is the MCP surface's
+/// and does not hold here.
+pub(crate) fn reads_only(identity: &Identity) -> bool {
+    identity.anonymous
 }
 
 /// The query string `GET /domains/{domain}/tree` takes, mirroring
@@ -243,7 +258,7 @@ pub async fn tree(
     ApiPath(domain): ApiPath<String>,
     ApiQuery(query): ApiQuery<TreeQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let value = state
+    let mut value = state
         .engine
         .browse_domain(
             &BrowseParams {
@@ -255,6 +270,9 @@ pub async fn tree(
             &identity.scope(),
         )
         .await?;
+    if reads_only(&identity) {
+        value["read_only"] = json!(true);
+    }
     Ok(Json(value))
 }
 

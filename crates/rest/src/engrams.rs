@@ -422,6 +422,9 @@ pub async fn detail(
     // validator for the same engram, which `no-cache` and the per-session
     // auth make harmless.
     let mut value = value;
+    if super::domains::reads_only(&identity) {
+        value["read_only"] = serde_json::json!(true);
+    }
     crate::web_url::attach_engram_url(&mut value, &state.engine.request_web_base(&headers));
     let checksum = checksum_of(&value)?.to_string();
     if if_none_match_matches(&headers, &versioned_etag(&checksum)) {
