@@ -353,6 +353,14 @@ async fn load_pinned(
     }
 }
 
+/// The checks a build makes that need no device: `config.json` parses and
+/// names this model. A cache that holds the wrong files, or files that are
+/// not a model at all, fails here, before a GPU is opened for it.
+fn check_files(files: &HubFiles, model: &LocalModel) -> Result<()> {
+    let config_text = read(files.config()?)?;
+    check_model_type(&config_text, model)
+}
+
 /// [`build_encoder`] on a blocking thread: it mmaps and parses the weights.
 /// The device is the best one that builds the model and embeds a warm-up
 /// text; a GPU failure only falls back to the CPU, so the error this returns,
@@ -366,6 +374,7 @@ async fn build_on_blocking(
     model: &'static LocalModel,
 ) -> Result<ModelSlot<Encoder>> {
     tokio::task::spawn_blocking(move || {
+        check_files(&files, model)?;
         let (encoder, report) = load_on_best_device(
             EMBEDDING_MODEL,
             |device| build_encoder(&files, model, device),
@@ -540,8 +549,8 @@ mod tests {
     use hf_hub::HFClient;
 
     use super::{
-        MAX_INPUT_CHARS, cached_path, cap_chars, check_model_type, cls_pool, ensure_files_with,
-        load_encoder_with, load_files_with,
+        HubFiles, MAX_INPUT_CHARS, cached_path, cap_chars, check_files, check_model_type, cls_pool,
+        ensure_files_with, hub_repo, load_encoder_with, load_files_with,
     };
     use crate::embed::models::{
         LocalModel, SnapshotChoice, choose_snapshot, lookup_local_model, older_snapshot_warning,
@@ -1004,6 +1013,19 @@ mod tests {
                 pinned_differs: false
             }
         );
+    }
+
+    /// Files that are not a model fail before any device is opened, with the
+    /// config's own reason: the build never reaches the GPU.
+    #[tokio::test]
+    async fn files_that_are_not_a_model_fail_before_a_device_is_opened() {
+        let granite = lookup_local_model("granite-embedding-97m-multilingual-r2").unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let older = "1111111111111111111111111111111111111111";
+        cache_from_main(tmp.path(), granite, older);
+        let files = HubFiles::from_snapshot(tmp.path(), &hub_repo(granite), older);
+        let err = check_files(&files, granite).unwrap_err().to_string();
+        assert!(err.contains("parsing config.json"), "{err}");
     }
 
     /// An older snapshot that fails to build (here: files that are not a
