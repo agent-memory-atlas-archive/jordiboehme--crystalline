@@ -22,10 +22,37 @@ fn bin() -> PathBuf {
 /// An isolated, short-path environment for one test.
 struct Env {
     dir: PathBuf,
+    /// The model hub every child reaches (`HF_ENDPOINT`).
+    hub: &'static str,
+    /// The worker threads of every child's runtime (`TOKIO_WORKER_THREADS`),
+    /// or the default of one per core.
+    workers: Option<&'static str>,
 }
 
 impl Env {
+    /// No child here downloads a model: the hub is `crate::common::NO_HUB`.
     fn new(tag: &str) -> Env {
+        Env::with(tag, crate::common::NO_HUB, None)
+    }
+
+    /// A daemon that downloads the embedding model from the real hub for its
+    /// whole life, as on a first start, on a runtime of one worker thread.
+    ///
+    /// For the two bounded-life tests, the regression cover for c9eea9ce
+    /// (a model download on the daemon's own runtime starved its 5 s idle
+    /// exit). Only the real hub can give that cover: the starvation comes from
+    /// hf-xet's transfer, and a loopback stub can only serve a plain HTTP
+    /// file, which hf-hub fetches without hf-xet and which did not starve the
+    /// idle exit even with the fix reverted. One worker thread stands in for
+    /// the three-core runner that failed: with the fix reverted the idle test
+    /// fails here on any machine, while with all ten cores of a developer's
+    /// Mac it passed. Without network the download fails at once and the tests
+    /// still pass, without that cover.
+    fn downloading(tag: &str) -> Env {
+        Env::with(tag, "https://huggingface.co", Some("1"))
+    }
+
+    fn with(tag: &str, hub: &'static str, workers: Option<&'static str>) -> Env {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -35,7 +62,7 @@ impl Env {
         std::fs::create_dir_all(dir.join("config")).unwrap();
         std::fs::create_dir_all(dir.join("state")).unwrap();
         std::fs::create_dir_all(dir.join("cache")).unwrap();
-        Env { dir }
+        Env { dir, hub, workers }
     }
 
     /// Isolate a child (and, through inheritance, any daemon it spawns) into
@@ -68,7 +95,13 @@ impl Env {
             .env("CRYSTALLINE_TEST_NO_KEYCHAIN", "1")
             // The task seam answers "no task", so a refused breakaway on
             // Windows never asks the real Task Scheduler.
-            .env("CRYSTALLINE_TEST_DAEMON_TASK", "missing");
+            .env("CRYSTALLINE_TEST_DAEMON_TASK", "missing")
+            // No daemon here downloads a model unless the test asked for it
+            // (`Env::downloading`); see `crate::common::NO_HUB`.
+            .env(crate::common::HUB_ENDPOINT_VAR, self.hub);
+        if let Some(workers) = self.workers {
+            cmd.env("TOKIO_WORKER_THREADS", workers);
+        }
     }
 
     fn state_dir(&self) -> PathBuf {
@@ -643,7 +676,9 @@ fn single_daemon_two_clients_and_stale_recovery() {
 /// client is gone, taking its lock and record with it.
 #[test]
 fn an_extension_started_daemon_leaves_once_its_last_client_is_gone() {
-    let env = Env::new("idle");
+    // The 2026-10-06 failure was the first model download starving the idle
+    // exit, so this daemon downloads it for real (see `Env::downloading`).
+    let env = Env::downloading("idle");
     env.setup_domain("eng");
 
     let mut c1 = Mcp::spawn_in_extension_folder(&env);
@@ -703,7 +738,8 @@ fn an_extension_started_daemon_leaves_once_its_last_client_is_gone() {
 /// past the grace must not lose its daemon under it.
 #[test]
 fn a_silent_stub_holds_an_extension_started_daemon_past_the_grace() {
-    let env = Env::new("silent");
+    // The same window as the test above, with the same real download.
+    let env = Env::downloading("silent");
     env.setup_domain("eng");
 
     // Spawned, never spoken to: no initialize for longer than the grace.

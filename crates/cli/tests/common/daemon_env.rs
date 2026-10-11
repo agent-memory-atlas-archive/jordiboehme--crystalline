@@ -47,8 +47,9 @@ impl DaemonEnv {
     }
 
     /// Isolate a child into this test's directories, with the HTTP endpoint
-    /// off (a real port is the one thing a temp directory cannot isolate) and
-    /// the real keychain and the real Task Scheduler refused.
+    /// off (a real port is the one thing a temp directory cannot isolate),
+    /// the real keychain and the real Task Scheduler refused and the model
+    /// hub unreachable (`crate::common::NO_HUB`).
     pub fn apply(&self, cmd: &mut std::process::Command) {
         cmd.env("HOME", &self.dir)
             .env("XDG_CONFIG_HOME", self.dir.join("config"))
@@ -56,7 +57,8 @@ impl DaemonEnv {
             .env("XDG_CACHE_HOME", self.dir.join("cache"))
             .env("CRYSTALLINE_SERVICE_HTTP", "false")
             .env("CRYSTALLINE_TEST_NO_KEYCHAIN", "1")
-            .env("CRYSTALLINE_TEST_DAEMON_TASK", "missing");
+            .env("CRYSTALLINE_TEST_DAEMON_TASK", "missing")
+            .env(crate::common::HUB_ENDPOINT_VAR, crate::common::NO_HUB);
     }
 
     /// Start the daemon against this environment's config and wait until it

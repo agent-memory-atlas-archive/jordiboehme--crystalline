@@ -65,6 +65,9 @@ impl Env {
             .env("LOCALAPPDATA", self.dir.join("local"))
             .env("CRYSTALLINE_SERVICE_HTTP", "false")
             .env("CRYSTALLINE_TEST_DAEMON_TASK", "missing")
+            // The model hub is unreachable as well (`crate::common::NO_HUB`),
+            // beside the unresolvable provider the config names.
+            .env(crate::common::HUB_ENDPOINT_VAR, crate::common::NO_HUB)
             // A models cache named in the developer's shell must not be
             // reached by `doctor --fix`.
             .env_remove("CRYSTALLINE_MODELS_DIR");

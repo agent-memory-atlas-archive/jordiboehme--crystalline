@@ -77,7 +77,9 @@ impl Env {
             .env("CRYSTALLINE_TEST_NO_KEYCHAIN", "1")
             // And the task seam answers "no task", so a refused breakaway on
             // Windows never asks the real Task Scheduler.
-            .env("CRYSTALLINE_TEST_DAEMON_TASK", "missing");
+            .env("CRYSTALLINE_TEST_DAEMON_TASK", "missing")
+            // And the model hub is unreachable (`crate::common::NO_HUB`).
+            .env(crate::common::HUB_ENDPOINT_VAR, crate::common::NO_HUB);
     }
 
     fn info_path(&self) -> PathBuf {
