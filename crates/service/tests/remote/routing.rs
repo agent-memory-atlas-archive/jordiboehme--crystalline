@@ -1380,3 +1380,44 @@ fn assert_reached_only_open(server: &RemoteServer, step: &str) {
         }
     }
 }
+
+/// A forwarded refusal keeps the server's own domain name: the mount's local
+/// name here is another one, and the error text is never translated.
+#[tokio::test]
+async fn a_write_to_a_mounted_read_only_domain_gets_the_servers_sentence_under_its_name() {
+    let acme = RemoteServer::start(Options::TOKENS).await;
+    let manifest = acme.file("open", "MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&acme, "acme", "keeper").await;
+    update_sources(&machine.remote_dir(), |file| {
+        for mount in &mut file.sources[0].mounts {
+            if mount.remote == "open" {
+                mount.local = "shelf".into();
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    machine.mount();
+    let refusal = call(
+        &machine,
+        "write_engram",
+        json!({ "domain": "shelf", "title": "Nope", "content": "- [fact] no" }),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refusal.contains(
+            "'open' is read-only; its owner switches read_only off in the domain policies"
+        ),
+        "{refusal}"
+    );
+    assert!(!acme.file("open", "nope.md").exists());
+}

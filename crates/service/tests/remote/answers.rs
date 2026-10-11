@@ -267,3 +267,56 @@ async fn hook_status_leaves_a_read_only_domain_out() {
         "{reply}"
     );
 }
+
+/// The routing model carries each domain's `domain_read_only` for the
+/// requesting token: the lock for everybody, a write list for its account
+/// only. The model's top-level `read_only` stays the instance's.
+#[tokio::test]
+async fn the_routing_model_marks_read_only_domains_per_token() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let manifest = server.file("open", "MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+    server
+        .auth
+        .set_write_list("out", &["open".to_string()])
+        .await
+        .unwrap();
+
+    let row = |reply: &Value, name: &str| -> Value {
+        reply["data"]["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["name"] == name)
+            .unwrap_or_else(|| panic!("{name} in {reply}"))
+            .clone()
+    };
+    let keeper = server.token_for("keeper").await;
+    let (_, mine) = server.ctl(Some(&keeper), cmd("routing_bullets")).await;
+    assert_eq!(mine["data"]["read_only"], false, "the instance is writable");
+    assert_eq!(
+        row(&mine, "open")["domain_read_only"],
+        true,
+        "locked for everybody"
+    );
+    assert_eq!(row(&mine, "platform")["domain_read_only"], false);
+
+    let out = server.token_for("out").await;
+    let (_, theirs) = server.ctl(Some(&out), cmd("routing_bullets")).await;
+    assert_eq!(
+        row(&theirs, "open")["domain_read_only"],
+        true,
+        "lock beats list"
+    );
+    assert_eq!(
+        row(&theirs, "platform")["domain_read_only"],
+        true,
+        "off the write list of 'out'"
+    );
+    assert_ne!(mine["etag"], theirs["etag"]);
+}

@@ -358,6 +358,7 @@ impl SourceSet {
                         remote: reserved.remote.clone(),
                         source: source.name.clone(),
                         bullets: Vec::new(),
+                        domain_read_only: false,
                         replaces_local: false,
                     });
                 }
@@ -966,6 +967,7 @@ mod tests {
                 path: String::new(),
                 branch: "main".to_string(),
             }),
+            domain_read_only: false,
         }
     }
 

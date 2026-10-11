@@ -5213,8 +5213,13 @@ fn mounted_routing_request(cfg: &crystalline_core::config::GlobalConfig) -> serd
 /// stdio onboarding block uses too (each on one line of
 /// [`crystalline_remote::ROUTING_BULLET_CHARS`], at most
 /// [`crystalline_remote::ROUTING_BULLETS_MAX`]); a name that could break the
-/// line is no row.
-fn mounted_row(name: &str, bullets: &[String]) -> Option<crystalline_core::PromptDomain> {
+/// line is no row. `read_only` is the server's `domain_read_only` for this
+/// account; it only labels the row.
+fn mounted_row(
+    name: &str,
+    bullets: &[String],
+    read_only: bool,
+) -> Option<crystalline_core::PromptDomain> {
     if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return None;
     }
@@ -5222,7 +5227,7 @@ fn mounted_row(name: &str, bullets: &[String]) -> Option<crystalline_core::Promp
         name: name.to_string(),
         bullets: crystalline_remote::routing_bullets(bullets),
         preferred: false,
-        read_only: false,
+        read_only,
     })
 }
 
@@ -5302,7 +5307,7 @@ fn mounted_part(
         let rows = routing
             .domains
             .iter()
-            .filter_map(|m| mounted_row(&m.local, &m.bullets))
+            .filter_map(|m| mounted_row(&m.local, &m.bullets, m.domain_read_only))
             .collect();
         (set.shadowed(), rows, routing.stale)
     };
@@ -5315,7 +5320,13 @@ fn mounted_part(
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(|d| mounted_row(d["name"].as_str()?, &strings(&d["bullets"])))
+                .filter_map(|d| {
+                    mounted_row(
+                        d["name"].as_str()?,
+                        &strings(&d["bullets"]),
+                        d["domain_read_only"].as_bool().unwrap_or(false),
+                    )
+                })
                 .collect(),
             strings(&answer["stale"]),
         ),
@@ -5545,6 +5556,7 @@ mod tests {
                 "x".repeat(1000),
                 " \n ".to_string(),
             ],
+            false,
         )
         .unwrap();
         assert_eq!(row.bullets.len(), 2);
@@ -5553,12 +5565,14 @@ mod tests {
             row.bullets[1].chars().count(),
             crystalline_remote::ROUTING_BULLET_CHARS + 4
         );
-        assert!(mounted_row("open\nBehavior:", &[]).is_none());
+        assert!(mounted_row("open\nBehavior:", &[], false).is_none());
         let many: Vec<String> = (0..50).map(|i| format!("b{i}")).collect();
         assert_eq!(
-            mounted_row("open", &many).unwrap().bullets.len(),
+            mounted_row("open", &many, false).unwrap().bullets.len(),
             crystalline_remote::ROUTING_BULLETS_MAX
         );
+        assert!(mounted_row("open", &[], true).unwrap().read_only);
+        assert!(!mounted_row("open", &[], false).unwrap().read_only);
     }
 
     /// Review M5: the stale array is added after the last field, and every

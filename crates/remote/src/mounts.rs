@@ -86,6 +86,12 @@ pub struct RemoteDomain {
     /// Its origin identity, when it tracks a repository.
     #[serde(default)]
     pub origin: Option<OriginIdentity>,
+    /// Whether this account cannot write there, as the server answered it
+    /// for the token (the lock, the role or a write list). An older server
+    /// says nothing, which reads as writable; the server refuses a write
+    /// either way.
+    #[serde(default)]
+    pub domain_read_only: bool,
 }
 
 /// One domain registered on this machine.
@@ -110,6 +116,9 @@ pub struct Mount {
     pub source: String,
     /// Its routing bullets, from the source's routing model.
     pub bullets: Vec<String>,
+    /// Whether the server marks it read-only for this account, from the
+    /// source's routing model. Only shown here: the server enforces it.
+    pub domain_read_only: bool,
     /// Whether it is the same domain as a local copy (same origin), which
     /// is hidden while this source is connected. True whatever name either
     /// of them has; the hidden copy is in [`MountTable::shadowed`] with
@@ -800,6 +809,7 @@ pub fn assign(
                 remote: domain.name,
                 source: source.name.clone(),
                 bullets: domain.bullets,
+                domain_read_only: domain.domain_read_only,
             });
         }
         if let Some(list) = &source.domains {
@@ -999,6 +1009,7 @@ mod tests {
             name: name.to_string(),
             bullets: vec![format!("Route here for {name} questions")],
             origin: repo.and_then(origin),
+            domain_read_only: false,
         }
     }
 

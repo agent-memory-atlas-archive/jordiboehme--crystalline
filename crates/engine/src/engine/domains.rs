@@ -778,7 +778,7 @@ impl Engine {
                             name: m.local.clone(),
                             bullets: m.bullets.clone(),
                             preferred: false,
-                            read_only: false,
+                            read_only: m.domain_read_only,
                         }),
                 );
         }

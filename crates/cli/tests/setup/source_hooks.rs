@@ -1020,3 +1020,37 @@ fn session_start_does_not_depend_on_the_order_a_server_offers_domains_in() {
     }
     assert_eq!(zulu.offered() + acme.offered(), 0, "no server was asked");
 }
+
+/// Session start without a daemon reads the cached routing model, and a
+/// mounted domain the server marks `domain_read_only` gets the "(read-only)"
+/// label in the block.
+#[test]
+fn session_start_marks_a_mounted_read_only_domain() {
+    let home = tempfile::tempdir().unwrap();
+    let remote = isolated_state_dir(home.path()).join("remote");
+    let blackhole = Blackhole::start();
+    let host = seed_source(
+        &remote,
+        &blackhole.origin,
+        &[
+            ("open", &["Route here for open"]),
+            ("specs", &["Route here for specs"]),
+        ],
+        &[("open", "open"), ("specs", "specs")],
+    );
+    write_cache(
+        &host,
+        crystalline_remote::ROUTING_FILE,
+        json!({ "domains": [
+            { "name": "open", "bullets": ["Route here for open"], "domain_read_only": true },
+            { "name": "specs", "bullets": ["Route here for specs"] },
+        ] }),
+    );
+    let stdout = stdout_of(&prompt_system(home.path()));
+    assert!(
+        stdout.contains("- open (read-only): Route here for open"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("- specs: Route here for specs"), "{stdout}");
+    assert_eq!(blackhole.offered(), 0);
+}

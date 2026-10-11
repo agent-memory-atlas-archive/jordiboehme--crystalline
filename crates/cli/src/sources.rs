@@ -969,6 +969,7 @@ mod tests {
                     remote: "platform".into(),
                     source: "acme".into(),
                     bullets: Vec::new(),
+                    domain_read_only: false,
                     replaces_local: true,
                 },
                 Mount {
@@ -976,6 +977,7 @@ mod tests {
                     remote: "open".into(),
                     source: "acme".into(),
                     bullets: Vec::new(),
+                    domain_read_only: false,
                     replaces_local: false,
                 },
                 Mount {
@@ -983,6 +985,7 @@ mod tests {
                     remote: "open".into(),
                     source: "beta".into(),
                     bullets: Vec::new(),
+                    domain_read_only: false,
                     replaces_local: false,
                 },
             ],
