@@ -100,12 +100,6 @@ impl Engine {
             return Err(EngineError::Invalid(assets_reserved_error(&dest_rel)));
         }
         let cross = dest_domain != p.domain;
-        // The source was checked by its write view; a move into another
-        // domain writes there too, so the destination is asked the same way,
-        // before anything is written at either end.
-        if cross {
-            self.refuse_read_only_domain(&dest_domain, scope).await?;
-        }
         // A move into another domain writes there too, so it is counted there
         // for the whole move: a rename of the destination waits for it, and a
         // destination a rename has paused is waited for first.
@@ -114,6 +108,12 @@ impl Engine {
         } else {
             None
         };
+        // The source was checked by its write view; a move into another
+        // domain writes there too, so the destination is asked the same way,
+        // inside its ticket and before anything is written at either end.
+        if cross {
+            self.refuse_read_only_domain(&dest_domain, scope).await?;
+        }
         let new_permalink = Self::moved_permalink(&src, &dest_rel, p.permalink.as_deref())?;
         let in_place = !cross && dest_rel == src.path;
         if in_place && new_permalink == src.permalink {

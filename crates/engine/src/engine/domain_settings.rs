@@ -525,11 +525,11 @@ impl Engine {
         edited: &crystalline_core::verify::EditedConfig,
     ) -> Result<()> {
         self.refuse_shadowed(domain)?;
+        let _writing = self.enter_write(domain).await?;
         // Its one caller decided the read-only question for the whole call;
-        // this is the floor under any later caller.
+        // this is the floor under any later caller, inside the ticket.
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;
-        let _writing = self.enter_write(domain).await?;
         match &edited.text {
             Some(text) => crystalline_core::config::save_bytes(path, text.as_bytes())
                 .map_err(|e| config_write_error(path, e)),

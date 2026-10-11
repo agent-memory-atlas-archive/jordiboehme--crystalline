@@ -1286,6 +1286,12 @@ impl Engine {
         // spellings.
         self.names_frozen
             .store(false, std::sync::atomic::Ordering::SeqCst);
+        // A refresh skipped while the names were frozen (a virtual MANIFEST
+        // written meanwhile) is owed now: the next lookup reloads the virtual
+        // caches, their read_only flags among them, and rebuilds the table.
+        self.virtual_names_loaded
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.mark_names_stale();
         tracing::error!(
             "the rename of domain '{}' to '{}' stopped at its {} step: {e}",
             journal.old,
