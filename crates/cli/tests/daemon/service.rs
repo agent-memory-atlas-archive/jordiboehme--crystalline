@@ -45,9 +45,11 @@ impl Env {
     /// file, which hf-hub fetches without hf-xet and which did not starve the
     /// idle exit even with the fix reverted. One worker thread stands in for
     /// the three-core runner that failed: with the fix reverted the idle test
-    /// fails here on any machine, while with all ten cores of a developer's
-    /// Mac it passed. Without network the download fails at once and the tests
-    /// still pass, without that cover.
+    /// hung in two runs on a 10-core Mac with one worker thread, and passed
+    /// there with the default of one per core. A regression shows as the
+    /// nextest timeout (about 1200 s), not as an assertion. Without network
+    /// the download fails at once and the tests still pass, without that
+    /// cover; [`Env::note_missed_download`] says so in the test's output.
     fn downloading(tag: &str) -> Env {
         Env::with(tag, "https://huggingface.co", Some("1"))
     }
@@ -312,6 +314,25 @@ impl Env {
                 }
             }
             Err(e) => format!("({} could not be read: {e})", path.display()),
+        }
+    }
+
+    /// For a test on [`Env::downloading`]: print a note when the daemon.log
+    /// shows the run did not exercise the download, because the model was
+    /// never fetched or the fetch failed (no network, the hub down). The test
+    /// still passes: a hub outage must not fail it, but a lost cover is seen.
+    fn note_missed_download(&self, test: &str) {
+        let path = self.state_dir().join("daemon.log");
+        let log = std::fs::read_to_string(&path).unwrap_or_default();
+        let reason = if !log.contains("downloading embedding model") {
+            Some("daemon.log has no \"downloading embedding model\" line")
+        } else if log.contains("embedding provider unavailable") {
+            Some("the download failed (\"embedding provider unavailable\" in daemon.log)")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            eprintln!("note: {test}: this run did not exercise the download: {reason}");
         }
     }
 
@@ -731,6 +752,7 @@ fn an_extension_started_daemon_leaves_once_its_last_client_is_gone() {
         env.daemon_lifecycle_lines(),
         env.daemon_log_tail(60)
     );
+    env.note_missed_download("an_extension_started_daemon_leaves_once_its_last_client_is_gone");
 }
 
 /// A stub counts as a client from the moment it attaches, not from its
@@ -775,6 +797,7 @@ fn a_silent_stub_holds_an_extension_started_daemon_past_the_grace() {
         env.daemon_lifecycle_lines(),
         env.daemon_log_tail(60)
     );
+    env.note_missed_download("a_silent_stub_holds_an_extension_started_daemon_past_the_grace");
 }
 
 /// The control: a daemon any other client started has no bounded life and is

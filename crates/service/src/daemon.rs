@@ -265,6 +265,14 @@ fn prepare_task_start() -> Option<std::fs::File> {
     crate::instance::daemon_log_file()
 }
 
+/// The daemon's log filter when `RUST_LOG` is unset: `info`, with the crates
+/// of the model download library (hf-xet: `xet`, `xet_client`, `xet_data`,
+/// `xet_runtime` and `xet_core_structures`, all matched by the `xet` prefix)
+/// at `warn`. They log every transfer step at info, dozens of lines a second
+/// during a download. The download's own notice and progress line are
+/// printed by Crystalline and are not filtered here.
+const DEFAULT_LOG_FILTER: &str = "info,xet=warn";
+
 /// Run the daemon: `crystalline serve [--daemon] [--http <addr>] [--read-only]
 /// [--take-over]`. The HTTP endpoint is on at [`DEFAULT_HTTP_ADDR`] unless it was
 /// turned off, so `--http` moves it or closes it rather than opening it; see
@@ -277,14 +285,6 @@ fn prepare_task_start() -> Option<std::fs::File> {
 /// [`crate::runs_in`]. `from_task` says Task Scheduler started it (the
 /// hidden `serve --from-task`); it implies `daemon_flag`.
 // The daemon's startup switches are flat on purpose, one clap flag each.
-/// The daemon's log filter when `RUST_LOG` is unset: `info`, with the crates
-/// of the model download library (hf-xet: `xet`, `xet_client`, `xet_data`,
-/// `xet_runtime` and `xet_core_structures`, all matched by the `xet` prefix)
-/// at `warn`. They log every transfer step at info, dozens of lines a second
-/// during a download. The download's own notice and progress line are
-/// printed by Crystalline and are not filtered here.
-const DEFAULT_LOG_FILTER: &str = "info,xet=warn";
-
 #[allow(clippy::too_many_arguments)]
 pub async fn run_serve(
     daemon_flag: bool,
