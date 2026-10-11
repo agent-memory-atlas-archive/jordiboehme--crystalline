@@ -713,6 +713,8 @@ async fn the_configure_description_names_its_domain_refusals() {
         .expect("configure tool present");
     let text = configure.description.as_deref().unwrap_or("");
     for needle in [
+        "switching read_only off",
+        "any other change on a read-only domain",
         "a domain that reviews changes",
         "a virtual domain",
         "a mounted domain",
