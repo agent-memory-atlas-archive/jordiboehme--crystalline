@@ -772,10 +772,12 @@ mod tests {
             .join("blobs");
         std::fs::create_dir_all(&blobs).unwrap();
         let partial = blobs.join("abc123.incomplete");
-        std::fs::write(&partial, b"part").unwrap();
         // Nothing listens on the discard port, so a fetch that dials out
-        // fails at once with a connection error.
+        // fails at once with a connection error. The client is built before
+        // the partial file is written: the first build can take far longer
+        // than the stall window on a loaded machine.
         let client = test_client(cache.path(), "http://127.0.0.1:9");
+        std::fs::write(&partial, b"part").unwrap();
         let limits = HubLimits {
             stall: Duration::from_secs(60),
         };
@@ -794,6 +796,14 @@ mod tests {
         assert!(!err.to_string().contains("may still be running"), "{err}");
 
         note_dropped_download(cache.path(), &TEST_REPO);
+        // Judge the age right here, not from the write above: the first
+        // fetch may have taken longer than the stall window under load.
+        std::fs::File::options()
+            .write(true)
+            .open(&partial)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now())
+            .unwrap();
         let err = ensure_files_with(&client, cache.path(), &TEST_REPO, false, &limits)
             .await
             .err()
