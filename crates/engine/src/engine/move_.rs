@@ -135,9 +135,22 @@ impl Engine {
         // later as a collision; this is the move onto a missing one. The name
         // is compared in any letter case, as the write paths do: a
         // case-insensitive filesystem (the macOS and Windows defaults) opens
-        // `manifest.md` as the very `MANIFEST.md` routing reads.
+        // `manifest.md` as the very `MANIFEST.md` routing reads. In a
+        // reviewing domain the draft's text is judged, since the draft is what
+        // the move writes.
         if dest_rel.eq_ignore_ascii_case("MANIFEST.md") {
-            let text = self.move_source_text(&src_source, &src, &p.domain).await?;
+            // In a reviewing domain the move writes the mover's draft, so the
+            // text that lands is what they see: their own draft when they hold
+            // one, the base text otherwise.
+            let text = match overlay {
+                Some(_) => view.text_at(&src_source, &src).await?.ok_or_else(|| {
+                    EngineError::NotFound(format!(
+                        "no engram '{}' in domain '{}'",
+                        p.identifier, p.domain
+                    ))
+                })?,
+                None => self.move_source_text(&src_source, &src, &p.domain).await?,
+            };
             self.refuse_read_only_switch_on(&dest_domain, &text, scope)
                 .await?;
         }
