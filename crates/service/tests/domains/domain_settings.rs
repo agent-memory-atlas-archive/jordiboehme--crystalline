@@ -582,7 +582,8 @@ async fn the_open_tier_cannot_switch_read_only_on() {
 
 /// On a read-only domain configure takes the owner's switch-off alone and
 /// nothing else, and a call that mixes the two writes nothing at all: not
-/// the MANIFEST, not .crystalline.yaml (spec A-2).
+/// the MANIFEST, not .crystalline.yaml (spec A-2). The switch-on alone is a
+/// no-op that says so (B-1 item 2).
 #[tokio::test]
 async fn a_locked_domain_takes_only_the_switch_off_through_configure() {
     let (tmp, engine) = settings_engine(LOCKED, |_, _| {}).await;
@@ -600,7 +601,7 @@ async fn a_locked_domain_takes_only_the_switch_off_through_configure() {
         (map(&[("rules.E007", "off")]), vec![]),
         (map(&[("token_budget", "4000")]), vec![]),
         (map(&[("sharing", "direct")]), vec![]),
-        (map(&[("read_only", "on")]), vec![]),
+        (map(&[("read_only", "on"), ("sharing", "direct")]), vec![]),
         (map(&[("read_only", "off"), ("rules.E007", "off")]), vec![]),
         (map(&[("read_only", "off")]), vec!["rules.E008".to_string()]),
         (
@@ -623,6 +624,21 @@ async fn a_locked_domain_takes_only_the_switch_off_through_configure() {
         );
         assert_eq!(std::fs::read_to_string(&yaml_path).unwrap(), yaml_before);
     }
+    // The switch-on alone changes nothing: it writes nothing and says so.
+    let same = engine
+        .change_domain_settings(
+            "eng",
+            &map(&[("read_only", "on")]),
+            &[],
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(same["note"], "'eng' is already read-only", "{same}");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("eng/MANIFEST.md")).unwrap(),
+        manifest_before
+    );
     // The switch-off alone lands, then the domain takes changes again.
     engine
         .change_domain_settings(

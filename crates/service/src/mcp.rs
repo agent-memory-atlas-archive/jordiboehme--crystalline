@@ -4033,12 +4033,20 @@ impl McpServer {
             }
             // A read-only domain is switched off by a person, never over MCP:
             // a call naming `read_only` on one is this refusal as a whole,
-            // whatever else it names (spec A-1, A-2).
+            // whatever else it names (spec A-1, A-2). Switching it on where it
+            // is on is the one call that passes: the engine answers it as a
+            // no-op.
             if self.engine.domain_is_read_only(&domain).await
                 && p.set
                     .keys()
                     .chain(p.unset.iter())
                     .any(|key| key == crystalline_core::READ_ONLY_KEY)
+                && !(p.unset.is_empty()
+                    && p.set.len() == 1
+                    && p.set
+                        .get(crystalline_core::READ_ONLY_KEY)
+                        .map(String::as_str)
+                        == Some(crystalline_core::ReadOnly::On.as_str()))
             {
                 return refuse(mcp_unlock_refusal(&domain));
             }

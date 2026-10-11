@@ -68,6 +68,17 @@ pub(crate) fn is_switch_off(edits: &[PolicyEdit]) -> bool {
     }
 }
 
+/// Whether `edits` is exactly the switch-on of `read_only`: one `set
+/// read_only: on`, nothing else.
+pub(crate) fn is_switch_on(edits: &[PolicyEdit]) -> bool {
+    matches!(
+        edits,
+        [PolicyEdit::Set { key, value }]
+            if key == crystalline_core::READ_ONLY_KEY
+                && value == crystalline_core::ReadOnly::On.as_str()
+    )
+}
+
 /// The registry row `edit` names, once the key and the value are ones it
 /// takes. The texts are the ones `set_manifest_policies` has always answered.
 fn checked_policy(domain: &str, edit: &PolicyEdit) -> Result<&'static crystalline_core::PolicyKey> {
@@ -360,6 +371,16 @@ impl Engine {
         }
         for edit in &policy_edits {
             checked_policy(domain, edit)?;
+        }
+        // Switching the lock on where it is on already changes nothing: it
+        // writes nothing and says so, rather than answering a refusal.
+        if config_edits.is_empty()
+            && is_switch_on(&policy_edits)
+            && self.domain_is_read_only(domain).await
+        {
+            let mut view = self.domain_settings(domain, scope).await?;
+            view["note"] = json!(format!("'{domain}' is already read-only"));
+            return Ok(view);
         }
         // A read-only domain is decided for the whole call before anything is
         // compared, read or written (spec A-2): the owner's switch-off alone
