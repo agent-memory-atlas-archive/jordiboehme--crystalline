@@ -795,6 +795,17 @@ export default function ShareDialogBody({
                   }}
                 />
               </Field>
+              {/* Said in plain view, beside the grey Share button it
+                  explains, rather than only to a screen reader: a person who
+                  sees the button go grey reads why. */}
+              {domainLocked && (
+                <p
+                  id={lockedReasonId}
+                  className="text-sm text-slate-600 dark:text-slate-300"
+                >
+                  {`'${domain}' is read-only; its owner switches read_only off in the domain policies`}
+                </p>
+              )}
               <div className="flex flex-wrap items-center justify-end gap-2">
                 {identity.sharingAs !== null && (
                   <SharingAs login={identity.sharingAs} />
@@ -860,11 +871,6 @@ export default function ShareDialogBody({
                       ? `Commit to ${plan.data?.branch ?? "the branch"}`
                       : "Share"}
                   </button>
-                )}
-                {domainLocked && (
-                  <span id={lockedReasonId} className="sr-only">
-                    {`'${domain}' is read-only; its owner switches read_only off in the domain policies`}
-                  </span>
                 )}
               </div>
             </form>

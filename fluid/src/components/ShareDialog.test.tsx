@@ -17,7 +17,9 @@ import { acrossElements } from "../test/assert";
 import type { Answer } from "../test/harness";
 import {
   answersFor,
+  defaultPolicyRows,
   domainsResponse,
+  manifestSectionsResponse,
   meResponse,
   renderApp,
   userFixture,
@@ -1593,6 +1595,34 @@ describe("the share dialog", () => {
     expect(
       within(dialog).getByRole("button", { name: "Share" }),
     ).toBeDisabled();
+  });
+
+  it("says in plain view why a locked domain cannot share", async () => {
+    const LOCKED =
+      "'eng' is read-only; its owner switches read_only off in the domain policies";
+    serve({
+      "/domains/eng/manifest": () => ({
+        domain: "eng",
+        markdown: "# eng\n",
+        sections: manifestSectionsResponse({
+          policies: defaultPolicyRows().map((row) =>
+            row.key === "read_only"
+              ? { ...row, declared: "on", effective: "on" }
+              : row,
+          ),
+        }),
+      }),
+    });
+
+    renderApp("/d/eng");
+    const dialog = await openShareDialog();
+
+    const caption = await within(dialog).findByText(LOCKED);
+    expect(caption).toBeVisible();
+    expect(caption).not.toHaveClass("sr-only");
+    const share = within(dialog).getByRole("button", { name: "Share" });
+    expect(share).toBeDisabled();
+    expect(share).toHaveAccessibleDescription(LOCKED);
   });
 
   it("says to share again later when another person's proposal blocks the share", async () => {
