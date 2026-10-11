@@ -69,7 +69,21 @@ An agent that runs on another machine does not need a password, because it never
 crystalline users add agent-build --role editor --mcp-token build
 ```
 
-The command creates the account `agent-build` and prints the token once. Add `--json` to get `name`, `role`, `id`, `token` and `label` as one object for a script. `--mcp-token` and `--password-stdin` cannot be used together, and a name that already exists is refused: a token for an existing account is `crystalline users mcp-token <name>`. The account is created with the role you give (viewer if you give none), so an agent that writes needs `--role editor`. Password sign-in never works for it, and `crystalline users list` shows it as "active, no password". You can still list, rotate and revoke its tokens with `crystalline users mcp-token`, change its role with `users role` and turn it off with `users disable`.
+The command creates the account `agent-build` and prints the token once. Add `--json` to get `name`, `role`, `id`, `token` and `label` as one object for a script. `--mcp-token` and `--password-stdin` cannot be used together, and a name that already exists is refused: a token for an existing account is `crystalline users mcp-token <name>`. The account is created with the role you give (viewer if you give none), so an agent that writes needs `--role editor`. Password sign-in never works for it, and `crystalline users list` shows it as "active, no password". You can still list, rotate and revoke its tokens with `crystalline users mcp-token`, change its role with `users role`, set what it may write with `users writes` and turn it off with `users disable`.
+
+An account can also carry a write list: the domains it may write to. Every other domain is read-only for that account, while it still reads every domain it can see. An entry is a domain name (`agents-bot`) or a name prefix ending in `*` (`agents-*`). Without a list nothing changes. A list only lowers rights: a domain on the list still needs the role and, for a private domain, the membership. A read-only domain stays read-only for everybody.
+
+A worked example: every agent gets its own domain, reads all company knowledge and writes only its own domain.
+
+```bash
+crystalline domain init /srv/knowledge/agents-bot --name agents-bot
+crystalline domain add agents-bot /srv/knowledge/agents-bot
+crystalline users add bot --mcp-token bot --role editor --writes agents-bot
+```
+
+`crystalline users writes bot agents-bot,agents-shared` replaces the list, `crystalline users writes bot` prints it, and `crystalline users writes bot --clear` removes it. `crystalline users list` shows each account's list. An entry that names no registered domain is accepted with a warning, since the domain may be created later. A domain rename updates the entries that name the domain exactly; an entry with `*` stays as it is.
+
+What the agent sees: its routing block marks every other domain "(read-only)", and a domain row in `list_domains` carries `read_only: true` for it. A write there is refused with "'eng' is not on the write list of 'bot'; an instance admin changes it with crystalline users writes".
 
 On the agent's machine, set the server and the token and nothing else:
 
