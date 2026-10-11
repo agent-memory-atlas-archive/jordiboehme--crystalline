@@ -4,6 +4,23 @@ on:
   pull_request:
   push:
     branches: [main]
+  # A dispatched run is the `stress` job alone (see there): `changes` answers
+  # code=false for it, so the gated jobs skip.
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Runner to stress on
+        type: choice
+        options: [windows-latest, ubuntu-latest, macos-latest, ubuntu-24.04-arm]
+        default: windows-latest
+      filter:
+        description: nextest filterset of the tests to stress
+        type: string
+        default: (package(crystalline-index) & !test(/^embed::/)) | package(crystalline-engine) | (package(crystalline-service) & (binary(domains) | binary(overlay) | binary(engine)))
+      count:
+        description: Stress iterations (each runs every selected test once)
+        type: string
+        default: '20'
 
 env:
   CARGO_TERM_COLOR: always
@@ -114,6 +131,13 @@ jobs:
               fi
               base="$PUSH_BEFORE_SHA"
               range="${base}..HEAD"
+              ;;
+            workflow_dispatch)
+              # A dispatched run exists for the stress job, which does not
+              # wait on this one. Skipping the gated jobs is the point.
+              echo "changes: a dispatched run is the stress job alone, so the gated jobs skip."
+              echo "code=false" >>"$GITHUB_OUTPUT"
+              exit 0
               ;;
             *)
               run_everything "the event $EVENT_NAME has no base to compare against"
@@ -337,6 +361,45 @@ jobs:
       - name: cargo test --doc
         if: ${{ needs.changes.outputs.tested != 'true' }}
         run: cargo test --workspace --doc --locked
+
+  # Runs chosen tests many times on one runner, on a manual dispatch only:
+  # `gh workflow run ci.yml --ref <branch> -f os=windows-latest -f count=20
+  # -f filter='<filterset>'`. It is how a flake that only one runner shows is
+  # pinned, since a local stress run cannot reach that runner. The default
+  # profile has no retry, so every failure counts. The default filter covers
+  # the Windows temp directory family: every suite that opens many stores.
+  stress:
+    name: stress (${{ inputs.os }})
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    timeout-minutes: 180
+    runs-on: ${{ inputs.os }}
+    env:
+      RUSTFLAGS: ${{ inputs.os == 'ubuntu-24.04-arm' && '-C target-feature=+fp16' || '' }}
+      CRYSTALLINE_TEST_NO_KEYCHAIN: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: nextest@0.9.146
+
+      # Restores what the test legs saved on main and saves nothing.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: test
+          save-if: false
+
+      - name: cargo nextest run --stress-count
+        shell: bash
+        env:
+          FILTER: ${{ inputs.filter }}
+          COUNT: ${{ inputs.count }}
+        run: cargo nextest run --workspace --locked --no-tests=fail --no-fail-fast -E "$FILTER" --stress-count "$COUNT"
 
   # Fluid, the browser UI. Nothing under fluid/ is part of the cargo workspace,
   # so its gates are a job of their own: they neither wait on the Rust matrix
