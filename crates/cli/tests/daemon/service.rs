@@ -249,6 +249,39 @@ impl Env {
         }
     }
 
+    /// The daemon's own account of its lifecycle: every daemon.log line about
+    /// a session, the idle exit, the shutdown steps and the watchdog, with the
+    /// time between the test's own marks. A plain tail does not show these
+    /// when a model download is running: its transfer lines fill the last
+    /// sixty lines, as on the 2026-10-06 macOS failure.
+    fn daemon_lifecycle_lines(&self) -> String {
+        const MARKS: [&str; 8] = [
+            "no client for",
+            "stopping (",
+            "shutdown: ",
+            "shutdown did not finish",
+            "input stream terminated",
+            "client initialized",
+            "downloading",
+            "embedding provider",
+        ];
+        let path = self.state_dir().join("daemon.log");
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                let lines: Vec<&str> = text
+                    .lines()
+                    .filter(|line| MARKS.iter().any(|mark| line.contains(mark)))
+                    .collect();
+                if lines.is_empty() {
+                    "(no lifecycle line in daemon.log)".to_string()
+                } else {
+                    lines.join("\n")
+                }
+            }
+            Err(e) => format!("({} could not be read: {e})", path.display()),
+        }
+    }
+
     /// The whole owner record, for the tests that assert on more than the pid.
     fn lock_record(&self) -> Option<Value> {
         let text = std::fs::read_to_string(self.info_path()).ok()?;
@@ -658,8 +691,9 @@ fn an_extension_started_daemon_leaves_once_its_last_client_is_gone() {
     }
     assert!(
         !env.lock_path().exists() && !env.info_path().exists(),
-        "the daemon left on its own after {:?}\ndaemon.log tail:\n{}",
+        "the daemon left on its own after {:?}\ndaemon lifecycle:\n{}\ndaemon.log tail:\n{}",
         start.elapsed(),
+        env.daemon_lifecycle_lines(),
         env.daemon_log_tail(60)
     );
 }
@@ -681,7 +715,8 @@ fn a_silent_stub_holds_an_extension_started_daemon_past_the_grace() {
     assert_eq!(
         status["sessions"],
         json!(1),
-        "the silent stub is a counted session: {status}"
+        "the silent stub is a counted session: {status}\ndaemon lifecycle:\n{}",
+        env.daemon_lifecycle_lines()
     );
     let pid = status["pid"].as_u64().unwrap();
 
@@ -699,7 +734,10 @@ fn a_silent_stub_holds_an_extension_started_daemon_past_the_grace() {
     }
     assert!(
         !env.lock_path().exists() && !env.info_path().exists(),
-        "gone after its only client left"
+        "gone after its only client left, waited {:?}\ndaemon lifecycle:\n{}\ndaemon.log tail:\n{}",
+        start.elapsed(),
+        env.daemon_lifecycle_lines(),
+        env.daemon_log_tail(60)
     );
 }
 
