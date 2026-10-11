@@ -125,3 +125,25 @@ fn domain_add_leaves_a_read_only_manifest_byte_identical() {
         manifest
     );
 }
+
+/// B-1 item 4: `prompt system` marks a virtual domain whose MANIFEST says
+/// `read_only: on`, read from a directly opened index (no daemon running).
+#[test]
+fn prompt_system_marks_a_read_only_virtual_domain_without_a_daemon() {
+    let work = tempfile::tempdir().unwrap();
+    bin(work.path())
+        .args(["domain", "add", "notes", "--virtual"])
+        .assert()
+        .success();
+    bin(work.path())
+        .args(["edit", "manifest", "notes", "find_replace"])
+        .args(["--find-text", "status: stable"])
+        .args(["--content", "status: stable\nread_only: on"])
+        .assert()
+        .success();
+    bin(work.path())
+        .args(["prompt", "system"])
+        .assert()
+        .success()
+        .stdout(contains("- notes (read-only): "));
+}

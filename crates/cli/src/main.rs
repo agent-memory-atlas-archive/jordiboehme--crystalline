@@ -5060,7 +5060,7 @@ fn run_prompt(
     // Virtual domains have no MANIFEST on disk; their routing bullets come from
     // the daemon (warm) or a direct store read. The all-file common case never
     // opens a runtime, so it stays as fast and deterministic as before.
-    let virtual_bullets = if global.domains.values().any(|e| e.is_virtual()) {
+    let virtual_routing = if global.domains.values().any(|e| e.is_virtual()) {
         // Owned copies: the future moves onto the runtime worker thread. The
         // raw --config override rides along so it bypasses the daemon just like
         // every other verb, even though `global` was already resolved from it.
@@ -5076,7 +5076,7 @@ fn run_prompt(
             .await
         })?
     } else {
-        std::collections::BTreeMap::new()
+        crystalline_service::VirtualRouting::default()
     };
 
     // Validated against the registry rather than against what survived the
@@ -5100,7 +5100,15 @@ fn run_prompt(
         );
     }
 
-    let mut output = crystalline_core::generate_prompt(&global, &workspace, &virtual_bullets);
+    let mut output =
+        crystalline_core::generate_prompt(&global, &workspace, &virtual_routing.bullets);
+    // A file domain's lock came off its MANIFEST in core; a virtual one's
+    // came with its bullets, the way the engine's own prompt marks it.
+    for domain in &mut output.domains {
+        if virtual_routing.read_only.contains(&domain.name) {
+            domain.read_only = true;
+        }
+    }
     // After the local rows, never sorted in among them (ruling F1): with
     // nothing mounted the block is byte-identical to one without sources.
     // `prompt.rules` names a lent domain by its local name like any other,

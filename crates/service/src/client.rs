@@ -2127,10 +2127,40 @@ fn save_file(path: &Path, config: &crystalline_core::config::GlobalConfig) -> an
         .map_err(|e| anyhow::anyhow!("failed to save config {}: {e}", path.display()))
 }
 
+/// The key of the `routing_bullets` answer that lists the read-only virtual
+/// domains. `$` is not a legal domain name character, so no domain row can
+/// take it, and an older client parses it as one more entry it never asks for.
+pub const ROUTING_READ_ONLY_KEY: &str = "$read_only";
+
+/// The virtual domains' routing facts for `prompt system`: each one's bullets,
+/// and which of them are read-only.
+#[derive(Debug, Default)]
+pub struct VirtualRouting {
+    pub bullets: std::collections::BTreeMap<String, Vec<String>>,
+    pub read_only: std::collections::BTreeSet<String>,
+}
+
+/// Split a daemon's `routing_bullets` answer into the bullets and the
+/// read-only names. An answer from before 0.25.1 has no such key and marks
+/// nothing.
+fn split_routing_answer(
+    mut map: std::collections::BTreeMap<String, Vec<String>>,
+) -> VirtualRouting {
+    let read_only = map
+        .remove(ROUTING_READ_ONLY_KEY)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    VirtualRouting {
+        bullets: map,
+        read_only,
+    }
+}
+
 /// Resolve virtual-domain routing bullets for `prompt system`: over the daemon
 /// when one is running (its warm state) and no explicit `--config`/`--db`
-/// override was given, else against a directly opened store. Returns an empty
-/// map when the config has no virtual domains, so the common all-file case never
+/// override was given, else against a directly opened store, with the
+/// virtual domains that are read-only beside them. Returns nothing when the config has no virtual domains, so the common all-file case never
 /// opens a store or a socket. `config_path` is the raw `--config` override the
 /// caller resolved `config` from, threaded through only so an override bypasses
 /// the daemon (which serves its own default config) exactly like every other
@@ -2139,20 +2169,20 @@ pub async fn virtual_routing_bullets(
     config: &crystalline_core::config::GlobalConfig,
     db: Option<&Path>,
     config_path: Option<&Path>,
-) -> std::collections::BTreeMap<String, Vec<String>> {
+) -> VirtualRouting {
     use serde_json::json;
     if !config.domains.values().any(|e| e.is_virtual()) {
-        return std::collections::BTreeMap::new();
+        return VirtualRouting::default();
     }
     if use_daemon(db, config_path)
         && let Ok(Some(data)) = ctl_if_running(json!({ "v": 1, "cmd": "routing_bullets" })).await
         && let Ok(map) = serde_json::from_value(data)
     {
-        return map;
+        return split_routing_answer(map);
     }
     let db_path = match resolve_db(db) {
         Ok(p) => p,
-        Err(_) => return std::collections::BTreeMap::new(),
+        Err(_) => return VirtualRouting::default(),
     };
     // The caller already resolved the effective config (the overlay is applied
     // upstream in `run_prompt`), and this read-only path never persists, so a
@@ -2169,8 +2199,11 @@ pub async fn virtual_routing_bullets(
     // the state directory, so a rename left half done waits for the next
     // opener that does.
     match open_standalone(loaded, &db_path, false).await {
-        Ok(engine) => engine.virtual_routing_bullets().await,
-        Err(_) => std::collections::BTreeMap::new(),
+        Ok(engine) => VirtualRouting {
+            bullets: engine.virtual_routing_bullets().await,
+            read_only: engine.virtual_read_only_names().await,
+        },
+        Err(_) => VirtualRouting::default(),
     }
 }
 
@@ -2401,6 +2434,42 @@ fn init_tracing() {
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
+
+    /// An answer from a daemon before 0.25.1 has no `$read_only` key: every
+    /// bullet is kept and nothing is marked.
+    #[test]
+    fn an_old_routing_bullets_answer_still_parses() {
+        let answer = serde_json::json!({ "scratch": ["- x"] });
+        let routing = split_routing_answer(serde_json::from_value(answer).unwrap());
+        assert_eq!(routing.bullets["scratch"], vec!["- x".to_string()]);
+        assert!(routing.read_only.is_empty());
+    }
+
+    /// A 0.25.1 answer carries the locked virtual domains under a key no
+    /// domain can be named, and the key is not a domain row.
+    #[test]
+    fn the_read_only_key_is_split_off() {
+        let answer = serde_json::json!({
+            "scratch": ["- x"],
+            "vault": ["- y"],
+            (ROUTING_READ_ONLY_KEY): ["vault"],
+        });
+        let routing = split_routing_answer(serde_json::from_value(answer).unwrap());
+        assert_eq!(routing.bullets.len(), 2);
+        assert!(!routing.bullets.contains_key(ROUTING_READ_ONLY_KEY));
+        assert_eq!(
+            routing.read_only,
+            ["vault".to_string()].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn the_read_only_key_is_never_a_domain_name() {
+        assert!(
+            crystalline_core::config::registration::validate_domain_name(ROUTING_READ_ONLY_KEY)
+                .is_err()
+        );
+    }
 
     fn lines_from(bytes: &'static [u8]) -> tokio::io::Lines<BufReader<&'static [u8]>> {
         BufReader::new(bytes).lines()

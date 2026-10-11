@@ -649,6 +649,21 @@ impl Engine {
         out
     }
 
+    /// The virtual domains whose MANIFEST says `read_only: on`, for `prompt
+    /// system` to mark beside [`Engine::virtual_routing_bullets`]. Read from
+    /// the same MANIFEST engrams and over the same registrations as those
+    /// bullets, so the two never disagree about a domain the CLI registered
+    /// after this engine started.
+    pub async fn virtual_read_only_names(&self) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for (name, entry) in &self.registered_domain_entries() {
+            if entry.is_virtual() && self.virtual_manifest_facts(name).await.2 {
+                out.insert(name.clone());
+            }
+        }
+        out
+    }
+
     // --- generated index files -----------------------------------------------
 
     /// Regenerate a file domain's OKF `index.md` files, so the knowledge on

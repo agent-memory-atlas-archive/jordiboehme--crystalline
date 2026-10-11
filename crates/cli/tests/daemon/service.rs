@@ -3923,6 +3923,40 @@ fn domain_list_shows_a_virtual_domains_declared_name_with_a_daemon() {
     );
 }
 
+/// B-1 item 4: `prompt system` marks a virtual domain whose MANIFEST says
+/// `read_only: on` when the running daemon answers its routing bullets.
+#[test]
+fn prompt_system_marks_a_read_only_virtual_domain_with_a_daemon() {
+    let env = Env::new("prompt-virtual-lock");
+    std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();
+    config::save_yaml(&env.config_path(), &GlobalConfig::default()).unwrap();
+
+    let mut client = Mcp::spawn(&env);
+    client.initialize();
+    env.wait_ready();
+
+    let (ok, out) = env.run(&["domain", "add", "notes", "--virtual"]);
+    assert!(ok, "{out}");
+    let (ok, out) = env.run(&["prompt", "system"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("- notes: "), "not locked yet: {out}");
+    let (ok, out, err) = env.run_full(&[
+        "edit",
+        "manifest",
+        "notes",
+        "find_replace",
+        "--find-text",
+        "status: stable",
+        "--content",
+        "status: stable\nread_only: on",
+    ]);
+    assert!(ok, "{out} {err}");
+    let (ok, out) = env.run(&["prompt", "system"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("- notes (read-only): "), "{out}");
+    let _ = env.run(&["ctl", "shutdown"]);
+}
+
 /// With the index unreachable, `domain list` still answers: the registrations
 /// come from configuration, and only the counts are missing. They say so in
 /// words, rather than reading as a domain nobody has synced.
