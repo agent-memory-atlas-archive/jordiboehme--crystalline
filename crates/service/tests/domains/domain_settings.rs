@@ -650,3 +650,34 @@ async fn a_locked_domain_takes_only_the_switch_off_through_configure() {
         "the rule override lands once the domain is open"
     );
 }
+
+/// The open tier cannot switch a locked domain back off either: the owner
+/// gate for `read_only` in `require_policy_writer` is the engine guard, since
+/// the switch-off reaches `for_unlock` and the MANIFEST already says `on`.
+/// Both forms of the switch-off are refused and nothing is written.
+#[tokio::test]
+async fn the_open_tier_cannot_switch_read_only_off() {
+    let (tmp, engine) = settings_engine(LOCKED, |_, _| {}).await;
+    assert!(!engine.auth_mcp());
+    let before = std::fs::read_to_string(tmp.path().join("eng/MANIFEST.md")).unwrap();
+    for edit in [set("read_only", "off"), unset("read_only")] {
+        let err = engine
+            .edit_manifest_policies("eng", std::slice::from_ref(&edit), &Scope::Anonymous)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, EngineError::Forbidden(_)),
+            "{edit:?}: {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "only the owner of 'eng' or an instance admin may change `read_only`"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("eng/MANIFEST.md")).unwrap(),
+            before,
+            "{edit:?}"
+        );
+        assert!(engine.domain_is_read_only("eng").await);
+    }
+}
