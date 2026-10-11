@@ -2901,3 +2901,158 @@ async fn resolve_conflict_merged_without_content_is_a_clean_invalid_params_error
     assert!(err.contains("content"), "{err}");
     assert!(err.contains("merged"), "{err}");
 }
+
+// --- a locally switched-on lock on a team domain ------------------------------
+
+/// The MCP switch-off refusal for `brand` (spec A-1).
+const BRAND_NOT_OVER_MCP: &str =
+    "'brand' is read-only. Only a person switches it off, in the domain policies; ask the owner.";
+
+/// A team domain whose MANIFEST this machine switched `read_only: on`
+/// locally (a local change the share never sends), beside one more local
+/// edit of an ordinary engram. Returns the engine, the domain root and the
+/// mock, so a test can move the team's branch.
+async fn locally_locked_team_engine(
+    tmp: &tempfile::TempDir,
+) -> (Arc<Engine>, std::path::PathBuf, Arc<MockProvider>) {
+    let mock = Arc::new(MockProvider::new());
+    let commit = mock.add_commit(commit_files(&[
+        ("MANIFEST.md", manifest()),
+        (
+            "notes/a.md",
+            engram("Alpha", "notes/a", "alpha as the team has it"),
+        ),
+    ]));
+    mock.set_branch("main", &commit);
+    let config_path = tmp.path().join("config.yaml");
+    let origins_dir = tmp.path().join("origins");
+    let root = tmp.path().join("brand-knowledge");
+    let eng = Arc::new(engine_with_provider(&config_path, &origins_dir, mock.clone()).await);
+    eng.origin_add(
+        "acme/brand-knowledge",
+        Some("brand"),
+        None,
+        None,
+        Some(root.to_str().unwrap()),
+    )
+    .await
+    .unwrap();
+    std::fs::write(
+        root.join("notes/a.md"),
+        engram("Alpha", "notes/a", "alpha, edited"),
+    )
+    .unwrap();
+    let text = std::fs::read_to_string(root.join("MANIFEST.md")).unwrap();
+    std::fs::write(
+        root.join("MANIFEST.md"),
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+    eng.sync(Some("brand")).await.unwrap();
+    assert!(eng.domain_is_read_only("brand").await, "the lock is real");
+    (eng, root, mock)
+}
+
+/// A discard of the MANIFEST would put the team's copy back, without the
+/// lock: over MCP that is a switch-off, so it is refused for the machine
+/// owner too, in every spelling of the path. A discard of another path on
+/// the same domain still lands (spec A-1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn discard_changes_cannot_unlock_a_locally_locked_team_domain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (eng, root, _mock) = locally_locked_team_engine(&tmp).await;
+    let (client, _server) = connect(eng.clone()).await;
+    let peer = client.peer();
+
+    for paths in [
+        json!(["MANIFEST.md"]),
+        json!(["./MANIFEST.md"]),
+        json!(["notes/a.md", "MANIFEST.md"]),
+    ] {
+        let out = call(
+            peer,
+            "discard_changes",
+            json!({ "domain": "brand", "paths": paths }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, json!(BRAND_NOT_OVER_MCP), "{paths}");
+        assert!(eng.domain_is_read_only("brand").await, "{paths}");
+    }
+    assert!(
+        std::fs::read_to_string(root.join("notes/a.md"))
+            .unwrap()
+            .contains("alpha, edited"),
+        "a refused call discards nothing"
+    );
+
+    let out = call(
+        peer,
+        "discard_changes",
+        json!({ "domain": "brand", "paths": ["notes/a.md"] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["restored"], json!(["notes/a.md"]), "{out}");
+    assert!(eng.domain_is_read_only("brand").await);
+}
+
+/// Taking the team's side of the MANIFEST would drop the local lock too, so
+/// over MCP a resolution of the MANIFEST is refused on a locked domain,
+/// whichever side it keeps.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resolve_conflict_cannot_unlock_a_locally_locked_team_domain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (eng, root, mock) = locally_locked_team_engine(&tmp).await;
+    // This machine and the team retitle the MANIFEST differently, so the
+    // pull records a conflict there and leaves the locked text in place.
+    let mine = std::fs::read_to_string(root.join("MANIFEST.md")).unwrap();
+    std::fs::write(
+        root.join("MANIFEST.md"),
+        mine.replacen("title: Team\n", "title: Team here\n", 1),
+    )
+    .unwrap();
+    eng.sync(Some("brand")).await.unwrap();
+    let team = String::from_utf8(manifest())
+        .unwrap()
+        .replacen("title: Team\n", "title: Team upstream\n", 1)
+        .into_bytes();
+    let moved = mock.add_commit(commit_files(&[
+        ("MANIFEST.md", team),
+        (
+            "notes/a.md",
+            engram("Alpha", "notes/a", "alpha as the team has it"),
+        ),
+    ]));
+    mock.set_branch("main", &moved);
+    let pulled = eng
+        .origin_update(Some("brand"), &crystalline_service::Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(
+        pulled["domains"][0]["conflicts"][0]["path"], "MANIFEST.md",
+        "{pulled}"
+    );
+    assert!(
+        eng.domain_is_read_only("brand").await,
+        "the pull kept the lock"
+    );
+    let (client, _server) = connect(eng.clone()).await;
+    let peer = client.peer();
+
+    for (path, keep) in [
+        ("MANIFEST.md", "theirs"),
+        ("MANIFEST", "theirs"),
+        ("MANIFEST.md", "mine"),
+    ] {
+        let out = call(
+            peer,
+            "resolve_conflict",
+            json!({ "domain": "brand", "path": path, "resolution": keep }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, json!(BRAND_NOT_OVER_MCP), "{path} {keep}");
+        assert!(eng.domain_is_read_only("brand").await, "{path} {keep}");
+    }
+}

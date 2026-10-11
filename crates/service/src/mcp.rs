@@ -3393,7 +3393,7 @@ impl McpServer {
     #[tool(
         name = "resolve_conflict",
         title = "Resolve conflict",
-        description = "Settle a flagged conflict by keeping your version (mine), taking the team's version (theirs) or providing merged content. The engram then counts as ordinary local knowledge you can share. Needs github.enabled turned on: with team collaboration off this refuses and says how to turn it on with configure. Resolving touches only this machine and reaches the forge on the next share, which is where an instance that sets github.share_identity to personal needs the sharer's connected personal GitHub identity (Fluid's profile > GitHub identity, or 'crystalline connect github --personal'; agent shares over HTTP run as the account the agent authenticated as, or as the account github.agent_identity names where agents are not made to authenticate). Pass resolution on every call, and content with merged: nobody is asked to choose a side, and a call without a resolution is refused with text that names the three values. Read the local side with read_engram before you choose.",
+        description = "Settle a flagged conflict by keeping your version (mine), taking the team's version (theirs) or providing merged content. The engram then counts as ordinary local knowledge you can share. Needs github.enabled turned on: with team collaboration off this refuses and says how to turn it on with configure. Resolving touches only this machine and reaches the forge on the next share, which is where an instance that sets github.share_identity to personal needs the sharer's connected personal GitHub identity (Fluid's profile > GitHub identity, or 'crystalline connect github --personal'; agent shares over HTTP run as the account the agent authenticated as, or as the account github.agent_identity names where agents are not made to authenticate). Pass resolution on every call, and content with merged: nobody is asked to choose a side, and a call without a resolution is refused with text that names the three values. Read the local side with read_engram before you choose. On a read-only domain a resolution of MANIFEST.md is refused, because it could switch read_only off, and only a person does that.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -3422,6 +3422,19 @@ impl McpServer {
         // depend on the name, so it answers the same for every domain.
         if let Some(resolution) = p.resolution.as_deref() {
             resolution_parts(resolution, p.content.as_deref())?;
+        }
+        // On a read-only domain any resolution of the MANIFEST may drop the
+        // lock (the team's side of a lock switched on here has none), and
+        // over MCP nobody switches it off (spec A-1). After the visibility
+        // screen, so a stranger learns nothing. REST keeps it for a person.
+        if self.engine.domain_is_read_only(&p.domain).await {
+            self.engine
+                .require_domain(&p.domain, &self.scope_of(&ctx))
+                .await
+                .map_err(to_error)?;
+            if names_manifest_path(&p.path) {
+                return refuse(mcp_unlock_refusal(&p.domain));
+            }
         }
         // The write gate its REST twin `resolve_conflict` has (`require_domain_write`).
         if let Some(refusal) = self
@@ -3503,7 +3516,7 @@ impl McpServer {
     #[tool(
         name = "discard_changes",
         title = "Discard changes",
-        description = "Discard, revert, undo or throw away unshared local changes in a team domain, file by file, before they are shared: each named path is put back the way the team has it - a modified engram gets the team's copy back, an added file is deleted, a deleted file is restored - and the index is updated at once. In a domain in review mode (review: overlay) it clears your own drafts of those paths and never anybody else's. Use it when a change turned out wrong, when an edit should not go into the next proposal, or when the user asks to drop a change; pass the paths from origin_status with detail: true, which is also where diff: true shows what each change is before you decide. Pass expected, a map of path to the sha origin_status reported with diff: true, to have a file that moved since you read that list refused as changed_since instead of overwritten; without it there is no guard and each path is discarded as it stands when the call runs. Refuses by name a path that is not among the domain's unshared changes, refuses a path whose earlier content only an open proposal below the top layer holds (withdraw that layer instead), and refuses a draft somebody has open in a live editor. Never touches GitHub, never closes a proposal (that is withdraw_proposal) and never deletes knowledge the team already has. Needs github.enabled turned on: with team collaboration off this refuses and says how to turn it on with configure. On a 2026-07-28 peer that declared an elicitation capability the first call discards nothing and answers input_required instead: a confirmation question naming the domain, each path and what undoing it does, with one checkbox that is checked by default, so Accept alone discards; the client puts it to the user and answers by re-sending the same call with the answer. An accept discards unless the box was unchecked; a decline or a cancel discards nothing.",
+        description = "Discard, revert, undo or throw away unshared local changes in a team domain, file by file, before they are shared: each named path is put back the way the team has it - a modified engram gets the team's copy back, an added file is deleted, a deleted file is restored - and the index is updated at once. In a domain in review mode (review: overlay) it clears your own drafts of those paths and never anybody else's. Use it when a change turned out wrong, when an edit should not go into the next proposal, or when the user asks to drop a change; pass the paths from origin_status with detail: true, which is also where diff: true shows what each change is before you decide. Pass expected, a map of path to the sha origin_status reported with diff: true, to have a file that moved since you read that list refused as changed_since instead of overwritten; without it there is no guard and each path is discarded as it stands when the call runs. Refuses by name a path that is not among the domain's unshared changes, refuses a path whose earlier content only an open proposal below the top layer holds (withdraw that layer instead), and refuses a draft somebody has open in a live editor. Never touches GitHub, never closes a proposal (that is withdraw_proposal) and never deletes knowledge the team already has. Needs github.enabled turned on: with team collaboration off this refuses and says how to turn it on with configure. On a 2026-07-28 peer that declared an elicitation capability the first call discards nothing and answers input_required instead: a confirmation question naming the domain, each path and what undoing it does, with one checkbox that is checked by default, so Accept alone discards; the client puts it to the user and answers by re-sending the same call with the answer. An accept discards unless the box was unchecked; a decline or a cancel discards nothing. On a read-only domain a discard that names MANIFEST.md is refused, because the team's copy may not carry read_only and only a person switches it off.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -3526,6 +3539,20 @@ impl McpServer {
         }
         if self.engine.read_only() {
             return Err(to_error(EngineError::ReadOnly));
+        }
+        // On a read-only domain a discard of the MANIFEST puts the team's copy
+        // back, which on a team domain whose lock was switched on here is a
+        // switch-off, and over MCP nobody switches it off (spec A-1). After
+        // the visibility screen, so a stranger learns nothing, and before the
+        // confirmation question. REST keeps the discard for a person.
+        if self.engine.domain_is_read_only(&p.domain).await {
+            self.engine
+                .require_domain(&p.domain, &self.scope_of(&ctx))
+                .await
+                .map_err(to_error)?;
+            if p.paths.iter().any(|path| names_manifest_path(path)) {
+                return refuse(mcp_unlock_refusal(&p.domain)).map(CallToolResponse::from);
+            }
         }
         // The write gate its REST twin `discard_domain_changes` has
         // (`require_domain_write`), ahead of the confirmation question so no
@@ -5276,8 +5303,9 @@ fn refuse(message: impl Into<String>) -> Result<CallToolResult, ErrorData> {
 }
 
 /// What MCP answers to every route that would switch a read-only domain off:
-/// `configure` with `set read_only: off` or `unset read_only`, and
-/// `edit_engram` on the MANIFEST in any operation. The machine owner's stdio
+/// `configure` with `set read_only: off` or `unset read_only`, `edit_engram`
+/// on the MANIFEST in any operation, and `discard_changes` or
+/// `resolve_conflict` naming the MANIFEST. The machine owner's stdio
 /// session included: switching it off is a person's act, in Fluid's domain
 /// policies, over REST or in the file (spec A-1). Checked here and never in
 /// the engine, because Fluid's policies card reaches the engine with the
@@ -5286,6 +5314,28 @@ fn mcp_unlock_refusal(domain: &str) -> String {
     format!(
         "'{domain}' is read-only. Only a person switches it off, in the domain policies; ask the owner."
     )
+}
+
+/// Whether a path an agent named for `discard_changes` or `resolve_conflict`
+/// is the domain's MANIFEST, in any spelling those verbs accept: a leading
+/// `./` or `/`, backslashes, `.` and `..` segments, a missing `.md` and any
+/// case. Generous on purpose: a false match only refuses a call on a locked
+/// domain, while a miss would let the call put the team's MANIFEST back and
+/// with it switch the lock off (spec A-1).
+fn names_manifest_path(raw: &str) -> bool {
+    let unified = raw.trim().replace('\\', "/");
+    let mut parts: Vec<&str> = Vec::new();
+    for segment in unified.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    let joined = parts.join("/");
+    joined.eq_ignore_ascii_case("MANIFEST.md") || joined.eq_ignore_ascii_case("MANIFEST")
 }
 
 /// An engine error as the shape its content deserves: a refusal the model must
@@ -5450,6 +5500,27 @@ mod tests {
     use rmcp::model::ErrorCode;
 
     use super::*;
+
+    /// Every spelling `discard_changes` and `resolve_conflict` accept for the
+    /// MANIFEST is caught, and an engram beside it is not.
+    #[test]
+    fn every_spelling_of_the_manifest_path_is_caught() {
+        for raw in [
+            "MANIFEST.md",
+            "MANIFEST",
+            "./MANIFEST.md",
+            "/MANIFEST.md",
+            " MANIFEST.md ",
+            "manifest.md",
+            "notes/../MANIFEST.md",
+            ".\\MANIFEST.md",
+        ] {
+            assert!(names_manifest_path(raw), "{raw}");
+        }
+        for raw in ["notes/MANIFEST.md", "MANIFEST.md.bak", "notes/a.md", ""] {
+            assert!(!names_manifest_path(raw), "{raw}");
+        }
+    }
 
     /// A policy key only an instance admin may change is refused to anyone
     /// else, set or unset; an owner key passes. No such key exists yet, so
