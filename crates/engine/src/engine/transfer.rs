@@ -90,6 +90,17 @@ impl Engine {
         }
 
         let files = walk_markdown(src);
+        // A MANIFEST in the batch that switches `read_only` on meets the owner
+        // check (decision D10) once, before anything is written: asked inside
+        // the loop, a refusal would land after every file that sorts before
+        // `MANIFEST.md` was already imported. A MANIFEST that cannot be read
+        // is left to the loop, which warns about it and imports nothing for it.
+        if let Some((_, abs)) = files.iter().find(|(rel, _)| is_manifest_path(rel))
+            && let Ok(text) = std::fs::read_to_string(abs)
+        {
+            self.refuse_read_only_switch_on(domain, &text, &crate::scope::Scope::Unrestricted)
+                .await?;
+        }
         let store = self.store.lock().await;
         let domain_id = store
             .upsert_domain(domain, None, DomainKind::Virtual)
@@ -123,10 +134,6 @@ impl Engine {
                     continue;
                 }
             };
-            if rel == "MANIFEST.md" {
-                self.refuse_read_only_switch_on(domain, &text, &crate::scope::Scope::Unrestricted)
-                    .await?;
-            }
             let record = EngramRecord::from_engram(&engram, &rel, virtual_stamp(&text));
             let collides = (existing_paths.contains(&rel)
                 || existing_perms.contains(&record.permalink))
@@ -170,6 +177,16 @@ impl Engine {
             }
         }
 
+        // A virtual domain's MANIFEST lives in the database, so its routing
+        // bullets, its declared name and its read_only flag are cached; an
+        // import that wrote one refreshes the cache, as every other virtual
+        // MANIFEST write does.
+        if announced
+            .iter()
+            .any(|change| is_manifest_path(&change.path))
+        {
+            self.refresh_routing_cache().await;
+        }
         self.announce_paths(domain, announced, None);
         Ok(json!({
             "domain": domain,

@@ -4739,3 +4739,134 @@ async fn a_domain_path_answers_to_the_canonical_name_and_an_alias() {
         }
     }
 }
+
+const LOCKED: &str = "'eng' is read-only; its owner switches read_only off in the domain policies";
+
+fn lock_eng(fixture: &Fixture) {
+    let path = fixture._tmp.path().join("eng/MANIFEST.md");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text.replacen("\n---\n", "\nread_only: on\n---\n", 1)).unwrap();
+}
+
+/// The status and the problem document's `detail` of a refused request.
+async fn problem(resp: reqwest::Response) -> (u16, String) {
+    let status = resp.status().as_u16();
+    let body: serde_json::Value = resp.json().await.unwrap_or_default();
+    (
+        status,
+        body["detail"].as_str().unwrap_or_default().to_string(),
+    )
+}
+
+/// Every REST write route answers a read-only domain with 403 and the one
+/// sentence; the MANIFEST editor is refused too (decision D4); the owner's
+/// switch-off is the one change it takes, after which the listing row carries
+/// no `read_only` key at all (spec A-5).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_write_routes_refuse_a_read_only_domain_with_403_and_the_sentence() {
+    let (fixture, token, csrf) = serve_as_admin(AuthOptions::default()).await;
+    lock_eng(&fixture);
+    let addr = fixture.addr;
+    let session =
+        |method: reqwest::Method, path: &str| as_session(addr, method, path, &token, &csrf);
+    let alpha = FIXTURE_ENGRAMS[0].markdown();
+    let detail = session(reqwest::Method::GET, "/api/v1/domains/eng/engrams/alpha")
+        .send()
+        .await
+        .unwrap();
+    let etag = header(&detail, "etag");
+    let put = session(reqwest::Method::PUT, "/api/v1/domains/eng/engrams/alpha")
+        .header("if-match", &etag)
+        .json(&serde_json::json!({ "content": alpha }));
+    assert_eq!(
+        problem(put.send().await.unwrap()).await,
+        (403, LOCKED.to_string())
+    );
+    let create = session(reqwest::Method::POST, "/api/v1/domains/eng/engrams")
+        .json(&serde_json::json!({ "title": "Beta", "content": "Beta body." }));
+    assert_eq!(
+        problem(create.send().await.unwrap()).await,
+        (403, LOCKED.to_string())
+    );
+    let delete = session(reqwest::Method::DELETE, "/api/v1/domains/eng/engrams/alpha")
+        .header("if-match", &etag);
+    assert_eq!(
+        problem(delete.send().await.unwrap()).await,
+        (403, LOCKED.to_string())
+    );
+    let file = session(
+        reqwest::Method::PUT,
+        "/api/v1/domains/eng/files/assets/a.txt",
+    )
+    .header("content-type", "text/plain")
+    .body("x");
+    assert_eq!(
+        problem(file.send().await.unwrap()).await,
+        (403, LOCKED.to_string())
+    );
+    let policy = session(reqwest::Method::PATCH, "/api/v1/domains/eng/manifest")
+        .json(&serde_json::json!({ "sharing": "direct" }));
+    assert_eq!(
+        problem(policy.send().await.unwrap()).await,
+        (403, LOCKED.to_string())
+    );
+    let read = session(reqwest::Method::GET, "/api/v1/domains/eng/manifest")
+        .send()
+        .await
+        .unwrap();
+    let manifest_etag = header(&read, "etag");
+    let manifest_path = fixture._tmp.path().join("eng/MANIFEST.md");
+    let locked_text = std::fs::read_to_string(&manifest_path).unwrap();
+    let editor_put = session(reqwest::Method::PUT, "/api/v1/domains/eng/manifest")
+        .header("if-match", &manifest_etag)
+        .json(&serde_json::json!({
+            "markdown": locked_text.replace("read_only: on", "read_only: off")
+        }));
+    assert_eq!(
+        problem(editor_put.send().await.unwrap()).await,
+        (403, LOCKED.to_string()),
+        "the MANIFEST editor is not the way back (D4)"
+    );
+
+    let listed: serde_json::Value = session(reqwest::Method::GET, "/api/v1/domains")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let eng = listed["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "eng")
+        .unwrap();
+    assert_eq!(eng["read_only"], true);
+
+    // The owner's switch-off is the one change it takes.
+    let off = session(reqwest::Method::PATCH, "/api/v1/domains/eng/manifest")
+        .json(&serde_json::json!({ "read_only": "off" }));
+    assert_eq!(off.send().await.unwrap().status().as_u16(), 200);
+    let listed: serde_json::Value = session(reqwest::Method::GET, "/api/v1/domains")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let eng = listed["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "eng")
+        .unwrap();
+    assert!(
+        eng.get("read_only").is_none(),
+        "a writable row carries no key: {eng}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture._tmp.path().join("eng/alpha.md")).unwrap(),
+        alpha,
+        "no refused write reached the folder"
+    );
+}

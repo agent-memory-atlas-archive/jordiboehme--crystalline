@@ -10,6 +10,7 @@ use crystalline_index::TursoStore;
 use crystalline_service::DomainAccess;
 use crystalline_service::Engine;
 use crystalline_service::Scope;
+use crystalline_service::engine::EngineError;
 use crystalline_service::params::{
     DeleteParams, EditParams, ReadParams, RetireParams, SaveParams, SearchParams, SplitParams,
 };
@@ -2938,5 +2939,47 @@ async fn a_failing_virtual_reparse_does_not_stop_the_sync() {
     assert!(
         store.find_engram("eng", "beta").await.unwrap().is_some(),
         "the file domain was synced"
+    );
+}
+
+/// The MANIFEST editor's verb is refused on a read-only domain, the
+/// switch-off included (decision D4: the policies card is the way back), and
+/// its switch-on runs the owner check, which the machine owner passes.
+#[tokio::test]
+async fn save_manifest_refuses_a_read_only_domain_and_checks_the_switch_on() {
+    let (tmp, engine) = engine_fixture().await;
+    let path = tmp.path().join("eng/MANIFEST.md");
+    let current = std::fs::read_to_string(&path).unwrap();
+    let on = current.replacen("\n---\n", "\nread_only: on\n---\n", 1);
+    engine
+        .save_manifest(
+            "eng",
+            &on,
+            &crate::support::sha256_hex(current.as_bytes()),
+            &Scope::Unrestricted,
+        )
+        .await
+        .expect("the machine owner switches it on");
+    assert!(engine.domain_is_read_only("eng").await);
+
+    let back = on.replace("read_only: on", "read_only: off");
+    let err = engine
+        .save_manifest(
+            "eng",
+            &back,
+            &crate::support::sha256_hex(on.as_bytes()),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, EngineError::DomainReadOnly(_)), "{err}");
+    assert_eq!(
+        err.to_string(),
+        "'eng' is read-only; its owner switches read_only off in the domain policies"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        on,
+        "nothing was written"
     );
 }

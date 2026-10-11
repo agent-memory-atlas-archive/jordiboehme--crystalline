@@ -2433,6 +2433,15 @@ async fn check_domain_checks(
     let path = cmd::resolve_domain_path(entry).unwrap_or_default();
     let path_exists = path.is_dir();
     let manifest_present = path_exists && path.join("MANIFEST.md").is_file();
+    // Why `--fix` leaves this domain's files alone, if it does: the instance
+    // is read-only, or the domain is. `None` lets `--fix` repair.
+    let refusal: Option<String> = if read_only {
+        Some(READ_ONLY_NOTE.to_string())
+    } else if path_exists && crystalline_core::read_only_at(&path).is_on() {
+        Some(crystalline_service::engine::read_only_sentence(name))
+    } else {
+        None
+    };
 
     let mut d = DomainDoctor {
         name: name.to_string(),
@@ -2506,9 +2515,12 @@ async fn check_domain_checks(
             .and_then(|dir| read_base_file(dir, &rel).ok().flatten())
             .and_then(|bytes| String::from_utf8(bytes).ok());
         let mut plan = plan_duplicate_fix(&source, base.as_deref(), entry.is_overlay());
-        // A read-only instance never writes a domain file, doctor included.
-        if read_only && plan.is_ok() {
-            plan = Err(READ_ONLY_NOTE.to_string());
+        // A read-only instance or domain never has a file written, doctor
+        // included.
+        if let Some(note) = &refusal
+            && plan.is_ok()
+        {
+            plan = Err(note.clone());
         }
         let mut report = DuplicateKeyFile {
             path: rel,
@@ -2530,7 +2542,7 @@ async fn check_domain_checks(
     // included: a fix is an ordinary local change the next share carries.
     let mut stray_files: HashSet<String> = HashSet::new();
     for pair in stray_pairs(&path) {
-        let report = settle_stray(&path, &pair, entry.is_overlay(), read_only, fix);
+        let report = settle_stray(&path, &pair, entry.is_overlay(), refusal.as_deref(), fix);
         // Only a pair still on disk is its own finding. After a fix the
         // engram's file may not be indexed yet (the copy was the indexed
         // one), and then `unindexed` says so and sends the person to sync.
@@ -2843,13 +2855,13 @@ fn written_at(file: &StrayFile) -> Option<chrono::DateTime<chrono::Utc>> {
 
 /// What doctor reports about one stray pair, and what `--fix` did about it,
 /// in the order the spec rules: a reviewing domain and a read-only instance
-/// are left, an identical copy is deleted, a newer copy's text moves into the
+/// or domain are left, an identical copy is deleted, a newer copy's text moves into the
 /// original and the copy goes, and a copy the original changed after is left.
 fn settle_stray(
     root: &Path,
     pair: &StrayPair,
     reviewing: bool,
-    read_only: bool,
+    refusal: Option<&str>,
     fix: bool,
 ) -> StrayCopy {
     let stray_abs = root.join(&pair.stray.rel);
@@ -2891,8 +2903,8 @@ fn settle_stray(
         report.note = Some(REVIEWED_NOTE.to_string());
         return report;
     }
-    if read_only {
-        report.note = Some(READ_ONLY_NOTE.to_string());
+    if let Some(note) = refusal {
+        report.note = Some(note.to_string());
         return report;
     }
     report.fixable = same_text || newer;
@@ -8030,7 +8042,7 @@ mod tests {
         // Somebody writes the original between doctor's read and its fix.
         let edited = review_standards("Edited meanwhile.", OLDER);
         std::fs::write(root.join(O_PATH), &edited).unwrap();
-        let s = settle_stray(&root, &pairs[0], false, false, true);
+        let s = settle_stray(&root, &pairs[0], false, None, true);
         assert!(!s.fixed, "{s:?}");
         assert_eq!(s.note.as_deref(), Some(CHANGED_NOTE));
         assert_eq!(std::fs::read_to_string(root.join(O_PATH)).unwrap(), edited);
@@ -8120,7 +8132,7 @@ mod tests {
             // Somebody writes the copy between doctor's read and its delete.
             let edited = review_standards("Written meanwhile.", NEWER);
             std::fs::write(root.join(S_PATH), &edited).unwrap();
-            let s = settle_stray(&root, &pairs[0], false, false, true);
+            let s = settle_stray(&root, &pairs[0], false, None, true);
             assert!(!s.fixed, "{original_body}: {s:?}");
             assert_eq!(
                 std::fs::read_to_string(root.join(S_PATH)).unwrap(),

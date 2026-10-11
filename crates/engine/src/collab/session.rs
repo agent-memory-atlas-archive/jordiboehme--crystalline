@@ -69,6 +69,12 @@ pub const SAVE_MAX_LAG_MS: u64 = 15_000;
 pub const IDLE_CHECK_MS: u64 = 10_000;
 /// How often the per-session saver wakes up to ask whether anything is due.
 const SAVER_TICK_MS: u64 = 250;
+/// What a room answers when its text would switch `read_only` on. The saver
+/// writes as the machine owner and cannot name who typed the line, so it
+/// lands no switch-on for anybody (decision D10); the policies card, which
+/// knows the caller, is the way.
+const ROOM_SWITCH_ON_REFUSAL: &str =
+    "a co-editing room does not switch read_only on; the owner switches it in the domain policies";
 /// How long an agent stands in the participant strip after its last action.
 ///
 /// An agent holds no socket, so nothing tells the room when it has finished:
@@ -1672,6 +1678,10 @@ impl CollabSession {
                 return SaveOutcome::Done(None);
             }
         };
+        if self.room_switches_read_only_on(&state.path, &file).await {
+            self.fail_save(state, ROOM_SWITCH_ON_REFUSAL.to_string());
+            return SaveOutcome::Done(None);
+        }
         let params = crate::params::SaveParams {
             domain: self.domain.clone(),
             identifier: room_address(&self.domain, &state.permalink),
@@ -1769,6 +1779,15 @@ impl CollabSession {
                 SaveOutcome::Done(None)
             }
         }
+    }
+
+    /// Whether landing `text` at `path` would switch this room's domain to
+    /// read-only: the path is the MANIFEST, the base MANIFEST says off (a
+    /// missing one reads as off), and the text says on. Read against the
+    /// base, never a draft, the same transition the engine's own check reads.
+    async fn room_switches_read_only_on(&self, path: &str, text: &str) -> bool {
+        crate::engine::is_manifest_path(path)
+            && self.engine.switches_read_only_on(&self.domain, text).await
     }
 
     /// Record and announce a save refusal that is nobody's conflict.
@@ -2055,6 +2074,20 @@ impl CollabSession {
                 return None;
             }
         };
+        // The restore writes as the machine owner too (base arm) or through
+        // the room's view (draft arm), so the room is the only place that can
+        // refuse a switch-on here.
+        if self.room_switches_read_only_on(&state.path, &file).await {
+            state.pending = Some(PendingConflict::Deleted);
+            let _ = self.tx.send(Frame {
+                from: None,
+                to: None,
+                bytes: Bytes::from(control::encode(&Control::SaveFailed {
+                    detail: ROOM_SWITCH_ON_REFUSAL.to_string(),
+                })),
+            });
+            return None;
+        }
         // Through the room's own view when the room is over a draft - it puts
         // its text back in that actor's draft - and through the scope its save
         // uses otherwise. The two arms have to agree, and the save's `None`

@@ -2092,3 +2092,101 @@ async fn an_admin_off_its_write_list_cannot_rename_set_policies_or_manage_the_do
         .await;
     assert_eq!(set.status(), 200, "{:?}", set.text().await);
 }
+
+const OWNER_RULE: &str = "only the owner of 'lab' or an instance admin may change `read_only`";
+
+/// Switching read_only on is the owner's (decision D10), on every REST
+/// surface that can change the MANIFEST. An editor of the domain is refused
+/// by the policies PATCH and the engram save with the owner rule, and by the
+/// MANIFEST editor's PUT with the admin gate it always had; a viewer is
+/// refused by the write gate; the owner and an instance admin succeed.
+#[tokio::test]
+async fn only_the_owner_or_an_admin_switches_read_only_on_over_rest() {
+    let ctx = RestCtx::two_domains().await;
+    ctx.make_private("lab", "keeper").await;
+    ctx.add_member("lab", "mgr", MemberLevel::Editor).await;
+    ctx.add_member("lab", "mem", MemberLevel::Viewer).await;
+    let path = ctx._tmp.path().join("lab/MANIFEST.md");
+    let before = std::fs::read_to_string(&path).unwrap();
+    let switched = before.replacen("\n---\n", "\nread_only: on\n---\n", 1);
+    let on = json!({ "read_only": "on" });
+    let off = json!({ "read_only": "off" });
+
+    let editor = ctx.as_user("mgr").await;
+    let patch = editor
+        .patch_json("/api/v1/domains/lab/manifest", on.clone())
+        .await;
+    assert_eq!(patch.status(), 403);
+    assert!(patch.text().await.unwrap().contains(OWNER_RULE));
+    let detail = editor.get("/api/v1/domains/lab/engrams/manifest").await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_string();
+    let save = editor
+        .request(reqwest::Method::PUT, "/api/v1/domains/lab/engrams/manifest")
+        .header("if-match", &etag)
+        .json(&json!({ "content": switched }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(save.status(), 403);
+    assert!(save.text().await.unwrap().contains(OWNER_RULE));
+    let read = editor.get("/api/v1/domains/lab/manifest").await;
+    let manifest_etag = read.headers()["etag"].to_str().unwrap().to_string();
+    let put = editor
+        .request(reqwest::Method::PUT, "/api/v1/domains/lab/manifest")
+        .header("if-match", &manifest_etag)
+        .json(&json!({ "markdown": switched }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        put.status(),
+        403,
+        "the MANIFEST editor is admin-only, as before"
+    );
+
+    let viewer = ctx.as_user("mem").await;
+    let patch = viewer
+        .patch_json("/api/v1/domains/lab/manifest", on.clone())
+        .await;
+    assert_eq!(patch.status(), 403);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        before,
+        "nothing was written"
+    );
+
+    let owner = ctx.as_user("keeper").await;
+    let set = owner
+        .patch_json("/api/v1/domains/lab/manifest", on.clone())
+        .await;
+    assert_eq!(set.status(), 200, "{:?}", set.text().await);
+    let unset = owner
+        .patch_json("/api/v1/domains/lab/manifest", off.clone())
+        .await;
+    assert_eq!(unset.status(), 200, "{:?}", unset.text().await);
+
+    let boss = ctx.as_user("boss").await;
+    let read = boss.get("/api/v1/domains/lab/manifest").await;
+    let manifest_etag = read.headers()["etag"].to_str().unwrap().to_string();
+    let now = std::fs::read_to_string(&path).unwrap();
+    // The owner's switch-off may have written `read_only: off` or removed the
+    // key; either way the admin's text says on.
+    let on_text = if now.contains("read_only:") {
+        now.replace("read_only: off", "read_only: on")
+    } else {
+        now.replacen("\n---\n", "\nread_only: on\n---\n", 1)
+    };
+    let put = boss
+        .request(reqwest::Method::PUT, "/api/v1/domains/lab/manifest")
+        .header("if-match", &manifest_etag)
+        .json(&json!({ "markdown": on_text }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status(), 200, "{:?}", put.text().await);
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("read_only: on")
+    );
+}

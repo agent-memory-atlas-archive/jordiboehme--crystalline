@@ -7540,7 +7540,7 @@ pub fn read_only_sentence(domain: &str) -> String {
 }
 
 /// Whether a domain-relative path is the domain's MANIFEST.
-fn is_manifest_path(rel: &str) -> bool {
+pub(crate) fn is_manifest_path(rel: &str) -> bool {
     rel == "MANIFEST.md"
 }
 

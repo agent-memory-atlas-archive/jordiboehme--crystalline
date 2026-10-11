@@ -558,6 +558,51 @@ fn the_fix_on_a_read_only_instance_writes_nothing() {
     );
 }
 
+/// A read-only domain never has a file written, doctor included: --fix
+/// leaves the repeat in place and says why, in the domain's own sentence.
+#[test]
+fn doctor_fix_leaves_a_read_only_domain_and_says_why() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let db = work.path().join("index.db");
+    let domain_dir = setup_domain(work.path(), "eng", &config);
+    write(&domain_dir, "dup.md", REPEATED_STATUS);
+    let manifest = domain_dir.join("MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+
+    let mut cmd = bin();
+    let _home = shield_ambient_home(&mut cmd);
+    let stdout = String::from_utf8(
+        cmd.args(["doctor", "--fix", "--config"])
+            .arg(&config)
+            .args(["--db"])
+            .arg(&db)
+            .assert()
+            .code(1)
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(
+        stdout.contains(
+            "'eng' is read-only; its owner switches read_only off in the domain policies"
+        ),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("rerun with --fix"), "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(domain_dir.join("dup.md")).unwrap(),
+        REPEATED_STATUS,
+        "--fix leaves a read-only domain's files alone"
+    );
+}
+
 /// The plain invocation on a machine with no daemon: nothing to ask, so the
 /// index is opened here and every index-backed check runs exactly as it
 /// always did. The daemon route must not change what a person sees when there

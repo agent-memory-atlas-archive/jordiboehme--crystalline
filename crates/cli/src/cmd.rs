@@ -567,6 +567,11 @@ pub(crate) fn build_name_table(loaded: &crystalline_service::LoadedConfig) -> Na
 /// Rewrite `<root>/MANIFEST.md` to declare `domain_name: <name>`; a no-op
 /// when it already reads that way.
 fn write_back_manifest_name(root: &Path, name: &str) -> Result<()> {
+    // A read-only domain keeps its MANIFEST as the team wrote it; the name
+    // stays the registration's, exactly as the engine's write-back does.
+    if crystalline_core::read_only_at(root).is_on() {
+        return Ok(());
+    }
     let manifest = root.join("MANIFEST.md");
     let text = std::fs::read_to_string(&manifest)
         .map_err(|e| anyhow!("reading {}: {e}", manifest.display()))?;

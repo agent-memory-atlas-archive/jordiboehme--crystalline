@@ -2090,3 +2090,51 @@ both_backends!(
     unregistering_a_domain_unbinds_the_links_into_it,
     unregister_unbinds_inbound_references
 );
+
+// --- import into a read-only virtual domain -----------------------------------
+
+/// `domain import` is a write like any other: a read-only virtual domain
+/// refuses it, a dry run included. An import with `--overwrite` that replaces
+/// the MANIFEST with `read_only: on` runs the switch-on check as the machine
+/// owner, who passes, and the flag holds at once.
+async fn import_meets_the_read_only_flag(store: Arc<Mutex<dyn Store>>) {
+    let engine = virtual_engine(store);
+    let manifest = "---\ntype: manifest\ntitle: notes\npermalink: manifest\ntags:\n  - manifest\nstatus: current\nrecorded_at: 2026-01-01\n---\n\n# notes\n\n## Scope\n\n- Everything about notes\n\n## When to Use\n\n- Route here for notes questions\n";
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(src.path().join("MANIFEST.md"), manifest).unwrap();
+    engine
+        .import_domain("notes", src.path(), false, false)
+        .await
+        .unwrap();
+    assert!(!engine.domain_is_read_only("notes").await);
+
+    let locked = manifest.replacen("\n---\n", "\nread_only: on\n---\n", 1);
+    std::fs::write(src.path().join("MANIFEST.md"), &locked).unwrap();
+    let report = engine
+        .import_domain("notes", src.path(), true, false)
+        .await
+        .unwrap();
+    assert_eq!(report["files_written"], 1, "{report}");
+    assert!(
+        engine.domain_is_read_only("notes").await,
+        "the imported MANIFEST holds at once"
+    );
+
+    let more = tempfile::tempdir().unwrap();
+    std::fs::write(
+        more.path().join("one.md"),
+        "---\ntype: engram\ntitle: One\npermalink: one\ntags:\n  - t\nstatus: current\nrecorded_at: 2026-01-01\n---\n\n# One\n\nbody one\n",
+    )
+    .unwrap();
+    for dry_run in [true, false] {
+        let err = engine
+            .import_domain("notes", more.path(), false, dry_run)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, EngineError::DomainReadOnly(_)), "{err}");
+    }
+}
+both_backends!(
+    an_import_meets_the_read_only_flag,
+    import_meets_the_read_only_flag
+);
