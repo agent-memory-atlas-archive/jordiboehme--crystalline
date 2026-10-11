@@ -1706,3 +1706,50 @@ fn expect_block(out: &std::process::Output, case: &str) -> String {
         .unwrap_or_else(|| panic!("{case}: no additionalContext: {payload}"))
         .to_string()
 }
+
+/// A machine whose only domain is read-only has nowhere to capture into, so
+/// the capture nudge stays silent; the same machine with the flag off nudges.
+#[test]
+fn a_machine_whose_only_domain_is_read_only_is_silent() {
+    let work = tempfile::tempdir().unwrap();
+    let home = work.path().join("home");
+    let config = work.path().join("config.yaml");
+    let dir = work.path().join("archive");
+    std::fs::create_dir_all(&dir).unwrap();
+    let manifest = dir.join("MANIFEST.md");
+    let writable =
+        "---\ntype: manifest\ntitle: archive\npermalink: manifest\n---\n\n## Scope\n\n- x\n";
+    std::fs::write(
+        &manifest,
+        writable.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+    std::fs::write(
+        &config,
+        format!("domains:\n  archive:\n    path: {}\n", dir.display()),
+    )
+    .unwrap();
+    let transcript = substantial_transcript(work.path());
+
+    let run = |session: &str| {
+        let mut cmd = bin();
+        isolate(&mut cmd, &home);
+        cmd.env("CRYSTALLINE_CONFIG", &config)
+            .args(["hook", "stop"])
+            .write_stdin(stop_payload(session, Some(&transcript)))
+            .output()
+            .unwrap()
+    };
+    let out = run("session-locked");
+    assert!(out.status.success());
+    assert!(
+        out.stdout.is_empty(),
+        "{:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    std::fs::write(&manifest, writable).unwrap();
+    let out = run("session-open");
+    assert!(out.status.success());
+    assert!(!out.stdout.is_empty(), "a writable domain earns the nudge");
+}

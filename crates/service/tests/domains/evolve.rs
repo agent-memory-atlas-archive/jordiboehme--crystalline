@@ -3293,3 +3293,77 @@ async fn v111_fires_on_a_blank_or_whitespace_resource() {
         "an empty or whitespace-only resource must not be read as present: {v}"
     );
 }
+
+/// Nobody could act on a read-only domain's findings, so the sweep leaves it
+/// out and says so, an explicitly named one included, and a scoped run
+/// settles it so a pending mark from before the switch never arms the nudge
+/// again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn evolve_leaves_a_read_only_domain_out_and_says_so() {
+    let _serialized = crate::support::maintenance_guard().await;
+    let _scratch = crate::support::ScratchStateDir::acquire();
+    let (tmp, engine) = fixture().await;
+    let manifest = tmp.path().join("eng/MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+
+    let all = engine
+        .evolve_detect(
+            &EvolveParams {
+                today: Some(TODAY.to_string()),
+                ..EvolveParams::default()
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(all["scope"]["domains"], serde_json::json!([]), "{all}");
+    assert_eq!(
+        all["scope"]["read_only_left_out"],
+        serde_json::json!(["eng"])
+    );
+    assert_eq!(all["total"], 0, "no finding from the locked domain");
+
+    crystalline_service::maintenance::record_pending("eng");
+    let named = engine
+        .evolve_engrams(
+            &EvolveParams {
+                domains: vec!["eng".to_string()],
+                today: Some(TODAY.to_string()),
+                ..EvolveParams::default()
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        named["scope"]["read_only_left_out"],
+        serde_json::json!(["eng"])
+    );
+    assert_eq!(named["total"], 0);
+    assert!(
+        crystalline_service::maintenance::load()
+            .pending_domains
+            .is_empty(),
+        "the scoped run settled the locked domain too"
+    );
+
+    // Switched off, the findings come back.
+    std::fs::write(&manifest, &text).unwrap();
+    let back = engine
+        .evolve_detect(
+            &EvolveParams {
+                today: Some(TODAY.to_string()),
+                ..EvolveParams::default()
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert!(back["scope"].get("read_only_left_out").is_none(), "{back}");
+    assert!(back["total"].as_u64().unwrap() > 0);
+}

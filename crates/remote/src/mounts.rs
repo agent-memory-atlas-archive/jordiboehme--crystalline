@@ -845,7 +845,13 @@ const NAME_KEYS: &[&str] = &[
 ];
 
 /// Keys whose array of strings are domain names.
-const NAME_LIST_KEYS: &[&str] = &["domains", "aliases", "pending_domains"];
+const NAME_LIST_KEYS: &[&str] = &[
+    "domains",
+    "aliases",
+    "pending_domains",
+    "read_only_left_out",
+    "read_only_skipped",
+];
 
 /// Rewrite every structured field of a source's answer from the source's
 /// names to this machine's (decision D18). A name the source does not mount
@@ -943,6 +949,22 @@ fn map_authorities(text: &str, map: &BTreeMap<String, String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_read_only_name_lists_move_to_the_local_names() {
+        let map = NameMap {
+            source: "acme".into(),
+            to_remote: [("jordi-acme".to_string(), "jordi".to_string())].into(),
+            to_local: [("jordi".to_string(), "jordi-acme".to_string())].into(),
+        };
+        let mut answer = json!({
+            "scope": { "read_only_left_out": ["jordi"] },
+            "read_only_skipped": ["jordi"],
+        });
+        translate_answer(&mut answer, &map);
+        assert_eq!(answer["scope"]["read_only_left_out"], json!(["jordi-acme"]));
+        assert_eq!(answer["read_only_skipped"], json!(["jordi-acme"]));
+    }
     use crate::server_token::CredentialKind;
     use crate::sources::{MountRecord, SourceRecord, SourcesFile};
     use serde_json::json;

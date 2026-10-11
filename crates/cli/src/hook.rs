@@ -394,6 +394,26 @@ pub fn evolve_ask(m: &MaintenanceState, now: DateTime<Utc>) -> Option<Vec<String
     }
 }
 
+/// The registered domains a session could still write to, in the order given:
+/// every one except a file domain whose MANIFEST says `read_only: on`. Read
+/// off the folder like everything else this hook reads. A virtual domain is
+/// counted as writable: its MANIFEST lives in the database, which this hook
+/// never opens, and the write verbs refuse it themselves.
+fn writable_domain_names<'a>(
+    domains: impl IntoIterator<Item = (&'a String, &'a crystalline_core::config::DomainEntry)>,
+) -> Vec<String> {
+    domains
+        .into_iter()
+        .filter(|(_, entry)| {
+            entry.is_virtual()
+                || !entry
+                    .file_path()
+                    .is_some_and(|root| crystalline_core::read_only_at(&root).is_on())
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
 /// The pending backlog narrowed to the domains this install still registers,
 /// in the backlog's own order.
 ///
@@ -603,12 +623,19 @@ pub fn run_stop(harness: Option<&str>) {
     let mounted = sources
         .as_ref()
         .is_some_and(|s| !s.table().mounts.is_empty());
-    let has_domains = mounted
-        || loaded
+    // The local domains this session could capture into: neither hidden by a
+    // mount nor read-only. A mounted domain still counts as a place to
+    // capture (its server refuses a write it does not take), so the nudge
+    // stays silent only when no local domain is writable and nothing is
+    // mounted.
+    let writable = writable_domain_names(
+        loaded
             .effective
             .domains
-            .keys()
-            .any(|d| !shadowed.contains(d));
+            .iter()
+            .filter(|(name, _)| !shadowed.contains(*name)),
+    );
+    let has_domains = mounted || !writable.is_empty();
     let read_only = loaded.effective.read_only();
 
     let Ok(path) = state_path(&input.session_id) else {
@@ -658,12 +685,7 @@ pub fn run_stop(harness: Option<&str>) {
         let visible = MaintenanceState {
             pending_domains: registered_pending(
                 &maintenance_state.pending_domains,
-                loaded
-                    .effective
-                    .domains
-                    .keys()
-                    .map(String::as_str)
-                    .filter(|d| !shadowed.contains(*d)),
+                writable.iter().map(String::as_str),
             ),
             ..maintenance_state.clone()
         };
@@ -700,7 +722,8 @@ pub fn run_stop(harness: Option<&str>) {
                     .effective
                     .domains
                     .iter()
-                    .filter(|(name, _)| !shadowed.contains(*name)),
+                    .filter(|(name, _)| !shadowed.contains(*name))
+                    .filter(|(name, _)| writable.contains(*name)),
                 &origins_dir,
             );
             share_line(changes, &domains)
@@ -911,6 +934,33 @@ fn sweep_dir(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writable_domain_names_leave_out_a_read_only_file_domain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut domains = std::collections::BTreeMap::new();
+        for (name, flag) in [("archive", "read_only: on\n"), ("eng", "")] {
+            let dir = tmp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("MANIFEST.md"),
+                format!("---\ntype: manifest\ntitle: {name}\npermalink: manifest\n{flag}---\n\n## Scope\n\n- x\n"),
+            )
+            .unwrap();
+            domains.insert(
+                name.to_string(),
+                crystalline_core::config::DomainEntry::file(dir),
+            );
+        }
+        domains.insert(
+            "scratch".to_string(),
+            crystalline_core::config::DomainEntry::virtual_domain(),
+        );
+        assert_eq!(
+            writable_domain_names(&domains),
+            vec!["eng".to_string(), "scratch".to_string()]
+        );
+    }
 
     // --- the response shape per harness --------------------------------------
 

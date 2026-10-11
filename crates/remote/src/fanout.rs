@@ -366,6 +366,7 @@ pub fn merge_evolve(parts: Vec<Part>, page: usize, limit: usize, missing: &[Miss
     let mut queue = Vec::new();
     let mut actions: Vec<Value> = Vec::new();
     let mut domains: Vec<Value> = Vec::new();
+    let mut read_only_left_out: Vec<Value> = Vec::new();
     let mut families = Map::new();
     let mut by_family = Map::new();
     let (mut total, mut scanned, mut unparsed, mut acknowledged) = (0u64, 0u64, 0u64, 0u64);
@@ -402,6 +403,18 @@ pub fn merge_evolve(parts: Vec<Part>, page: usize, limit: usize, missing: &[Miss
         {
             if !domains.contains(domain) {
                 domains.push(domain.clone());
+            }
+        }
+        // Every part's left-out domains, not only the first part's: a server
+        // that leaves its locked domain out says so as much as this machine.
+        for name in answer
+            .pointer("/scope/read_only_left_out")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if !read_only_left_out.contains(name) {
+                read_only_left_out.push(name.clone());
             }
         }
         for action in answer
@@ -450,6 +463,14 @@ pub fn merge_evolve(parts: Vec<Part>, page: usize, limit: usize, missing: &[Miss
         .collect();
     if let Some(obj) = scope.as_object_mut() {
         obj.insert("domains".to_string(), Value::Array(domains));
+        if read_only_left_out.is_empty() {
+            obj.remove("read_only_left_out");
+        } else {
+            obj.insert(
+                "read_only_left_out".to_string(),
+                Value::Array(read_only_left_out),
+            );
+        }
     }
     let merged = json!({
         "scope": scope,
@@ -472,6 +493,46 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn evolve_parts_keep_every_left_out_domain() {
+        let part = |left: Value| {
+            json!({
+                "scope": { "domains": [], "read_only_left_out": left },
+                "total": 0, "engrams_scanned": 0, "unparsed": 0, "queue": [], "actions": [],
+                "families": {}, "acknowledged": { "total": 0, "by_family": {} },
+            })
+        };
+        let merged = merge_evolve(
+            vec![
+                Part {
+                    source: None,
+                    answer: part(json!(["archive"])),
+                },
+                Part {
+                    source: Some("acme".into()),
+                    answer: part(json!(["handbook", "archive"])),
+                },
+            ],
+            1,
+            10,
+            &[],
+        );
+        assert_eq!(
+            merged["scope"]["read_only_left_out"],
+            json!(["archive", "handbook"])
+        );
+        let none = merge_evolve(
+            vec![Part {
+                source: None,
+                answer: json!({ "scope": { "domains": ["eng"] }, "queue": [] }),
+            }],
+            1,
+            10,
+            &[],
+        );
+        assert!(none["scope"].get("read_only_left_out").is_none(), "{none}");
+    }
     use serde_json::json;
 
     fn hits(domain: &str, names: &[&str], score: f64) -> Value {

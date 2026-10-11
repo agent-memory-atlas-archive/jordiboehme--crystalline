@@ -281,15 +281,18 @@ async fn visible_names(
 }
 
 /// What a connected machine's Stop hook reads: this server's maintenance
-/// record, narrowed to what the account may see. `identity` is unused in
-/// 0.23.0; 0.25.0 fills the `reflect` member from it.
+/// record, narrowed to what the account may see. `identity` is unused until
+/// 0.26.0, which fills the `reflect` member from it. A read-only domain is left
+/// out of the backlog, as the local arms leave it out: nobody can sweep it.
 async fn hook_status(
     engine: &Arc<Engine>,
     identity: &McpIdentity,
     scope: &Scope,
 ) -> Result<Value, String> {
     let _ = identity;
-    let visible = visible_names(engine, scope).await?;
+    let mut visible = visible_names(engine, scope).await?;
+    let locked = engine.read_only_domain_names().await;
+    visible.retain(|name| !locked.contains(name));
     let status = crate::maintenance::HookStatus::from_state(&crate::maintenance::load(), &visible);
     serde_json::to_value(status).map_err(|e| e.to_string())
 }

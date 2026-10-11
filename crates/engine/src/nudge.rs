@@ -264,6 +264,7 @@ pub async fn write_verb_trailer(
     // One snapshot for whichever arms are still open, rather than one per arm:
     // `Engine::config` clones the whole configuration.
     let config = engine.config();
+    let locked = engine.read_only_domain_names().await;
 
     if share_open {
         // Resolved only once the ask is open, so a receipt with nothing due
@@ -271,7 +272,9 @@ pub async fn write_verb_trailer(
         // ask rather than widening it: a private team domain the caller may not
         // see is never named or counted here.
         let shared = match engine.hidden_for(scope).await {
-            Ok(hidden) => Some(unshared_team_work(engine, &config, identity, &hidden).await),
+            Ok(hidden) => {
+                Some(unshared_team_work(engine, &config, identity, &hidden, &locked).await)
+            }
             Err(e) => {
                 tracing::debug!("share ask skipped, the caller's scope is unreadable: {e}");
                 None
@@ -286,7 +289,7 @@ pub async fn write_verb_trailer(
         }
     }
 
-    if evolve_open && evolve_due(&config, &state, now) {
+    if evolve_open && evolve_due(&config, &state, now, &locked) {
         record(&state_dir, NudgeKind::Evolve, key, now);
         return Some(MCP_EVOLVE_NUDGE.to_string());
     }
@@ -326,6 +329,9 @@ fn record(state_dir: &std::path::Path, kind: NudgeKind, identity: &str, now: Dat
 /// origin is mid-operation is skipped too, without waiting for it: an ask is
 /// worth no part of the latency of a write that has already landed.
 ///
+/// A read-only domain in `locked` is skipped the same way: nothing local can
+/// change there, so there is nothing to share.
+///
 /// A domain in `hidden` ([`Engine::hidden_for`] of the caller) is skipped the
 /// same way and before any walk: a private team domain the caller may not see
 /// is neither named in the ask nor counted in it. A folder walk counts
@@ -336,12 +342,13 @@ async fn unshared_team_work(
     config: &GlobalConfig,
     identity: Option<&str>,
     hidden: &HashSet<String>,
+    locked: &HashSet<String>,
 ) -> (u64, Vec<String>) {
     let actor = identity.unwrap_or(crate::engine::OWNER_IDENTITY_NAME);
     let mut changes = 0u64;
     let mut names = Vec::new();
     for (name, entry) in &config.domains {
-        if entry.origin.is_none() || hidden.contains(name) {
+        if entry.origin.is_none() || hidden.contains(name) || locked.contains(name) {
             continue;
         }
         let count = if entry.is_overlay() {
@@ -405,7 +412,7 @@ async fn walked_unshared(engine: &Engine, name: &str, root: &Path) -> u64 {
 
 /// Whether the maintenance sweep is due, on the two arms the Stop hook reads:
 /// a week since the last recorded sweep, or any domain a human has written to
-/// since one ran.
+/// since one ran. A read-only domain counts for neither arm (`read_only`).
 ///
 /// The pending arm is narrowed to domains this install still registers, for
 /// the reason the hook narrows it: a domain that went pending and was then
@@ -416,11 +423,22 @@ async fn walked_unshared(engine: &Engine, name: &str, root: &Path) -> u64 {
 /// never run a Stop hook there is none - `first_seen` is the hook's own stamp.
 /// Such an install is asked by the pending arm alone, which is the arm with
 /// evidence behind it.
-fn evolve_due(config: &GlobalConfig, state: &MaintenanceState, now: DateTime<Utc>) -> bool {
+fn evolve_due(
+    config: &GlobalConfig,
+    state: &MaintenanceState,
+    now: DateTime<Utc>,
+    read_only: &HashSet<String>,
+) -> bool {
+    // Only a domain somebody could sweep counts: a read-only one takes no
+    // fix, so its pending mark arms nothing, and a machine whose every
+    // domain is read-only is never asked.
+    if !config.domains.keys().any(|d| !read_only.contains(d)) {
+        return false;
+    }
     let pending = state
         .pending_domains
         .iter()
-        .any(|domain| config.domains.contains_key(domain));
+        .any(|domain| config.domains.contains_key(domain) && !read_only.contains(domain));
     let interval = TimeDelta::days(EVOLVE_RUN_INTERVAL_DAYS);
     let weekly = match state.last_run_at {
         Some(ran) => now.signed_duration_since(ran) >= interval,
@@ -617,5 +635,38 @@ mod tests {
                  {MCP_SHARE_NUDGE_REASON}"
             )
         );
+    }
+
+    /// A pending mark on a read-only domain arms nothing, and the weekly arm
+    /// stays quiet when every registered domain is read-only.
+    #[test]
+    fn a_read_only_domain_never_arms_the_maintenance_ask() {
+        let now: DateTime<Utc> = "2026-10-05T09:00:00Z".parse().unwrap();
+        let mut config = GlobalConfig::default();
+        config.domains.insert(
+            "archive".into(),
+            crystalline_core::config::DomainEntry::virtual_domain(),
+        );
+        let state = MaintenanceState {
+            pending_domains: vec!["archive".into()],
+            last_run_at: Some(now - TimeDelta::days(30)),
+            ..MaintenanceState::default()
+        };
+        let locked: HashSet<String> = ["archive".to_string()].into();
+        assert!(!evolve_due(&config, &state, now, &locked));
+        assert!(evolve_due(&config, &state, now, &HashSet::new()));
+
+        // With a writable domain beside it and a fresh weekly clock, the
+        // locked domain's pending mark is the only arm left, and it is quiet.
+        config.domains.insert(
+            "eng".into(),
+            crystalline_core::config::DomainEntry::virtual_domain(),
+        );
+        let fresh = MaintenanceState {
+            last_run_at: Some(now - TimeDelta::days(1)),
+            ..state.clone()
+        };
+        assert!(!evolve_due(&config, &fresh, now, &locked));
+        assert!(evolve_due(&config, &fresh, now, &HashSet::new()));
     }
 }

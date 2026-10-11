@@ -237,3 +237,33 @@ async fn origin_status_reaches_the_engine_under_the_account() {
     );
     assert!(error.contains("github.enabled"), "{error}");
 }
+
+/// A connected machine's Stop hook never asks for a sweep of a domain that
+/// is read-only on the server: `hook_status` leaves it out, as the local
+/// arms do (spec A-7).
+#[tokio::test]
+async fn hook_status_leaves_a_read_only_domain_out() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let _guard = crate::support::maintenance_guard().await;
+    crystalline_service::maintenance::save(&crystalline_service::maintenance::MaintenanceState {
+        pending_domains: vec!["open".to_string(), "lab".to_string()],
+        last_run_at: chrono::DateTime::from_timestamp(1_800_000_000, 0),
+        ..Default::default()
+    })
+    .unwrap();
+    let manifest = server.file("open", "MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+
+    let keeper = server.token_for("keeper").await;
+    let (_, reply) = server.ctl(Some(&keeper), cmd("hook_status")).await;
+    assert_eq!(
+        reply["data"]["evolve"]["pending_domains"],
+        json!(["lab"]),
+        "{reply}"
+    );
+}
