@@ -526,4 +526,67 @@ describe("the domain policies card", () => {
     expect(within(card).queryByRole("combobox")).toBeNull();
     expect(within(card).getByRole("row", { name: /^sharing/ })).toBeVisible();
   });
+
+  it("on a locked domain only the read_only row can change, and the others say why", async () => {
+    serve({
+      "/domains/eng/manifest": () =>
+        manifestWith({ read_only: { declared: "on", effective: "on" } }),
+    });
+    renderApp("/d/eng");
+    const card = await policiesCard();
+    expect(
+      within(card).getByRole("combobox", { name: "read_only" }),
+    ).toBeEnabled();
+    const sharing = within(card).getByRole("combobox", { name: "sharing" });
+    expect(sharing).toBeDisabled();
+    expect(sharing).toHaveAccessibleDescription(
+      "'eng' is read-only; its owner switches read_only off in the domain policies",
+    );
+    // A machine-local rename still works (decision D6), so the button stays.
+    expect(
+      within(card).getByRole("button", { name: "Change name" }),
+    ).toBeEnabled();
+  });
+
+  it("asks before it turns read_only on, and posts on confirm", async () => {
+    serve();
+    renderApp("/d/eng");
+    const card = await policiesCard();
+    await userEvent.selectOptions(
+      within(card).getByRole("combobox", { name: "read_only" }),
+      "on",
+    );
+    expect(
+      within(card).getByText(
+        /refuses every change to this domain through Crystalline/,
+      ),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      within(card).getByRole("button", { name: "Turn on read-only" }),
+    );
+    await waitFor(() => {
+      expect(sentBody("/domains/eng/manifest", "PATCH")).toEqual({
+        read_only: "on",
+      });
+    });
+  });
+
+  it("offers an editor who does not own the domain no read_only switch, on or off", async () => {
+    serve({
+      "/auth/me": () => meResponse({ user: userFixture({ role: "editor" }) }),
+      "/domains/eng/members": () => ({
+        owner: "somebody-else",
+        visibility: "shared",
+        members: [],
+      }),
+    });
+    renderApp("/d/eng");
+    const card = await policiesCard();
+    // Switching it on is the owner's, like switching it off (decision D10):
+    // the row is read, never offered.
+    expect(within(card).getByRole("row", { name: /^read_only/ })).toBeVisible();
+    expect(
+      within(card).queryByRole("combobox", { name: "read_only" }),
+    ).toBeNull();
+  });
 });

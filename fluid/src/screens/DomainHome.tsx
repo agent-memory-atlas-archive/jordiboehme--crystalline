@@ -58,6 +58,8 @@ import type {
   StarterStanza,
 } from "../api/domain";
 import { DOMAINS_QUERY_KEY, fetchDomains } from "../api/domains";
+import { DomainLockChip } from "../components/DomainLockChip";
+import { useDomainWritable } from "../domainWritable";
 import type { EngramFilters, EngramPage, ListingOrder } from "../api/engrams";
 import {
   NO_FILTERS,
@@ -196,6 +198,7 @@ function DomainPage({
   folders: string[];
 }) {
   const { user, capabilities } = useAuth();
+  const { canWrite, domainLocked } = useDomainWritable(domain);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   /**
@@ -394,7 +397,7 @@ function DomainPage({
     const rows: PaletteCommand[] = [];
     // Every write row here drops out while renaming: the keyboard route
     // does not get to reach a control the page itself shows disabled.
-    if (capabilities.canWrite && !isRenaming) {
+    if (canWrite && !isRenaming) {
       rows.push({
         id: "create",
         title: "New engram",
@@ -447,8 +450,8 @@ function DomainPage({
     return rows.length === 0 ? NO_COMMANDS : rows;
   }, [
     canUnregister,
+    canWrite,
     capabilities.canAdminister,
-    capabilities.canWrite,
     domain,
     isRenaming,
     manifestEditable,
@@ -472,6 +475,7 @@ function DomainPage({
             that named this domain on the way here.
           */}
           {summary?.private === true && <Chip variant="accent">private</Chip>}
+          {domainLocked && <DomainLockChip />}
           {/*
             Reached only by the domain's owner or an instance admin - the
             exact rule the danger zone's own controls follow, since it is the
@@ -875,7 +879,7 @@ function FolderPage({
   path: string;
   folders: string[];
 }) {
-  const { capabilities } = useAuth();
+  const { canWrite } = useDomainWritable(domain);
   const { filters, browse, filtering, listingOrder, apply } = useListingState();
   const [creating, setCreating] = useState(false);
   const tags = useQuery({
@@ -900,7 +904,7 @@ function FolderPage({
 
   const commands = useMemo<readonly PaletteCommand[]>(
     () =>
-      capabilities.canWrite
+      canWrite
         ? [
             {
               id: "create",
@@ -911,7 +915,7 @@ function FolderPage({
             },
           ]
         : NO_COMMANDS,
-    [capabilities.canWrite],
+    [canWrite],
   );
   useRegisterCommands(commands);
 
@@ -1036,7 +1040,7 @@ function EngramsSection({
    */
   renaming?: boolean;
 }) {
-  const { capabilities } = useAuth();
+  const { canWrite } = useDomainWritable(domain);
   const newEngramReasonId = useId();
   const newEngramDisabledReason = renaming ? RENAMING_REASON : undefined;
 
@@ -1046,7 +1050,7 @@ function EngramsSection({
         <h2 id="domain-engrams" className="text-section">
           Engrams
         </h2>
-        {capabilities.canWrite && (
+        {canWrite && (
           <>
             <button
               type="button"

@@ -97,6 +97,7 @@ import { DOMAINS_QUERY_KEY } from "../api/domains";
 import { domainEngramsRoot } from "../api/engrams";
 import { asNumber, asObject, asString } from "../api/json";
 import { useAuth } from "../auth/AuthContext";
+import { useDomainWritable } from "../domainWritable";
 import { isWebAddress, plural } from "../format";
 import { ChangeList } from "./ChangeList";
 import { DiffPane } from "./DiffPaneLazy";
@@ -133,6 +134,10 @@ export default function ShareDialogBody({
    * reader who may not write is offered no control that would be refused.
    */
   const mayDiscard = capabilities.canWrite && !capabilities.readOnly;
+  // Sharing is refused on a locked domain (discard is not, decision D5), so
+  // the button says so instead of failing.
+  const { domainLocked } = useDomainWritable(domain);
+  const lockedReasonId = useId();
   const titleField = useId();
   const descriptionField = useId();
   const proposalField = useId();
@@ -843,14 +848,23 @@ export default function ShareDialogBody({
                       !shareable ||
                       nothingPicked ||
                       share.isPending ||
-                      identity.asking
+                      identity.asking ||
+                      domainLocked
                     }
+                    {...(domainLocked
+                      ? { "aria-describedby": lockedReasonId }
+                      : {})}
                     className={BUTTON.primary}
                   >
                     {action === "commit"
                       ? `Commit to ${plan.data?.branch ?? "the branch"}`
                       : "Share"}
                   </button>
+                )}
+                {domainLocked && (
+                  <span id={lockedReasonId} className="sr-only">
+                    {`'${domain}' is read-only; its owner switches read_only off in the domain policies`}
+                  </span>
                 )}
               </div>
             </form>

@@ -23,6 +23,7 @@ import { defined } from "../test/assert";
 import type { Answer } from "../test/harness";
 import {
   answersFor,
+  defaultPolicyRows,
   domainsResponse,
   manifestSectionsResponse,
   meResponse,
@@ -281,6 +282,54 @@ beforeEach(() => {
 });
 
 describe("the domain screen", () => {
+  it("a locked domain's home wears the lock and offers no New engram", async () => {
+    serve(
+      {
+        "/domains": () => ({
+          ...domainsResponse(),
+          domains: [{ ...domainsResponse().domains[0], read_only: true }],
+        }),
+        "/domains/eng/manifest": () => ({
+          domain: "eng",
+          markdown: "# eng",
+          sections: manifestSectionsResponse({
+            policies: defaultPolicyRows().map((row) =>
+              row.key === "read_only"
+                ? { ...row, declared: "on", effective: "on" }
+                : row,
+            ),
+          }),
+        }),
+      },
+      "admin",
+    );
+    renderApp("/d/eng");
+    const body = await screenBody();
+    expect(await within(body).findByText("read-only")).toBeInTheDocument();
+    expect(
+      within(body).queryByRole("button", { name: "New engram" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("a domain off this caller's write list offers no New engram and wears no lock", async () => {
+    serve(
+      {
+        "/domains": () => ({
+          ...domainsResponse(),
+          domains: [{ ...domainsResponse().domains[0], read_only: true }],
+        }),
+      },
+      "admin",
+    );
+    renderApp("/d/eng");
+    const body = await screenBody();
+    await within(body).findByRole("heading", { level: 1 });
+    expect(
+      within(body).queryByRole("button", { name: "New engram" }),
+    ).not.toBeInTheDocument();
+    expect(within(body).queryByText("read-only")).not.toBeInTheDocument();
+  });
+
   it("renders the whole MANIFEST and the engrams at the root of the domain", async () => {
     serve();
 

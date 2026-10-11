@@ -66,6 +66,8 @@ import {
   graphKey,
 } from "../api/graph";
 import { useAuth } from "../auth/AuthContext";
+import { DomainLockChip } from "../components/DomainLockChip";
+import { useDomainWritable } from "../domainWritable";
 import { absoluteUrl } from "../base";
 import { NO_COMMANDS, useRegisterCommands } from "../commands";
 import type { PaletteCommand } from "../commands";
@@ -115,6 +117,7 @@ export default function EngramPage() {
   // A permalink is a path of its own, so it arrives through the splat.
   const permalink = params["*"] ?? "";
   const { capabilities } = useAuth();
+  const { canWrite, domainLocked } = useDomainWritable(domain);
   const { fullWidth } = useFullWidth();
   const navigate = useNavigate();
   /**
@@ -287,7 +290,7 @@ export default function EngramPage() {
     }
     // The writes lead, because they are what somebody opens a palette to do
     // that a link would not already have done for them.
-    const writes: PaletteCommand[] = capabilities.canWrite
+    const writes: PaletteCommand[] = canWrite
       ? [
           {
             id: "edit",
@@ -351,7 +354,7 @@ export default function EngramPage() {
         },
       },
     ];
-  }, [capabilities.canWrite, chipWord, loaded, navigate]);
+  }, [canWrite, chipWord, loaded, navigate]);
   useRegisterCommands(commands);
 
   /*
@@ -494,7 +497,7 @@ export default function EngramPage() {
               may not write has nothing left for the menu to hold, and an
               ellipsis that opens onto an empty panel is worse than no ellipsis.
             */}
-            {capabilities.canWrite && (
+            {canWrite && (
               <>
                 <Link
                   to={editRoute(engram.domain, engram.permalink)}
@@ -551,6 +554,7 @@ export default function EngramPage() {
           <h1 id="engram-title" className="text-display">
             {engram.title}
           </h1>
+          {domainLocked && <DomainLockChip />}
           {chipWord !== null && (
             <DropdownMenu.Root>
               <DropdownMenu.Trigger asChild>
@@ -591,7 +595,7 @@ export default function EngramPage() {
                       Share this change
                     </DropdownMenu.Item>
                   )}
-                  {capabilities.canWrite && !capabilities.readOnly && (
+                  {canWrite && !capabilities.readOnly && (
                     <>
                       <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
                       <DropdownMenu.Item
@@ -748,7 +752,7 @@ export default function EngramPage() {
               <AttachmentsSection
                 domain={engram.domain}
                 body={engram.content}
-                canDelete={capabilities.canWrite}
+                canDelete={canWrite}
               />
             </div>
           )}
@@ -772,7 +776,7 @@ export default function EngramPage() {
               // The body decides which of the domain's files this engram
               // carries: the panel lists what the prose actually references.
               body={engram.content}
-              canDelete={capabilities.canWrite}
+              canDelete={canWrite}
             />
             <BacklinksPanel
               domain={engram.domain}
@@ -794,7 +798,11 @@ export default function EngramPage() {
       {moving && (
         <MoveDialog
           engram={engram}
-          domains={(domains.data?.domains ?? []).map((entry) => entry.name)}
+          domains={(domains.data?.domains ?? [])
+            .filter(
+              (entry) => !entry.writeBlocked || entry.name === engram.domain,
+            )
+            .map((entry) => entry.name)}
           reviewing={
             (domains.data?.domains ?? []).find(
               (entry) => entry.name === engram.domain,

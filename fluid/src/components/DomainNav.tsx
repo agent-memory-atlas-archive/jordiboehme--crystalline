@@ -49,7 +49,7 @@ import { treeQuery } from "../api/domain";
 import type { DomainSummary } from "../api/domains";
 import type { EngramRow } from "../api/engrams";
 import { hasFilters } from "../api/engrams";
-import { useAuth } from "../auth/AuthContext";
+import { useDomainWritable } from "../domainWritable";
 import { frontmatterFilters } from "../filters";
 import { RETIRED_CLASS, isRetired } from "../lifecycle";
 import { domainRoute, engramRoute, folderRoute } from "../paths";
@@ -71,7 +71,7 @@ export interface DomainNavProps {
 }
 
 export function DomainNav({ domain, permalink, domains }: DomainNavProps) {
-  const { capabilities } = useAuth();
+  const { canWrite } = useDomainWritable(domain);
   const [creating, setCreating] = useState(false);
   const [params] = useSearchParams();
   // Whether the domain's own page is what stands beside the tree: the exact
@@ -129,7 +129,7 @@ export function DomainNav({ domain, permalink, domains }: DomainNavProps) {
           `Layout.tsx`'s `DomainSidebar`) - so this is the only launcher on
           either of those screens.
         */}
-        {capabilities.canWrite && permalink !== "" && (
+        {canWrite && permalink !== "" && (
           <button
             type="button"
             onClick={() => {

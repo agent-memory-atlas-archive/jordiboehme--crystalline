@@ -35,6 +35,7 @@ import type { Vocabulary } from "../api/vocabulary";
 import { fetchVocabulary, fullVocabularyKey } from "../api/vocabulary";
 import { saveEngram } from "../api/writes";
 import { useAuth } from "../auth/AuthContext";
+import { useDomainWritable } from "../domainWritable";
 import { CollabConflictDialog } from "../collab/CollabConflictDialog";
 import { PresenceChips } from "../collab/PresenceChips";
 import type { CollabConflict, CollabSession } from "../collab/useCollabSession";
@@ -361,16 +362,16 @@ export default function EngramEditor() {
   const params = useParams();
   const domain = params.domain ?? "";
   const permalink = params["*"] ?? "";
-  const { capabilities } = useAuth();
+  const { canWrite } = useDomainWritable(domain);
 
   const detail = useQuery({
     queryKey: engramDetailKey(domain, permalink),
     queryFn: () => fetchEngramDetail(domain, permalink),
-    enabled: capabilities.canWrite,
+    enabled: canWrite,
     staleTime: DETAIL_STALE_MS,
   });
 
-  if (!capabilities.canWrite) {
+  if (!canWrite) {
     return <NotFound />;
   }
   if (detail.error) {

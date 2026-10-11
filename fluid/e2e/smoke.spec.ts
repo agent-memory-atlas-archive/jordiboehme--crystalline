@@ -41,6 +41,9 @@ const BASE_PATH = process.env.FLUID_E2E_BASE_PATH ?? "";
 /** The engram three folders down, whose permalink is a path rather than a word. */
 const DEEP_PERMALINK = "notes/deep/gamma";
 
+/** The domain whose MANIFEST starts with `read_only: on`. */
+const LOCKED_DOMAIN = process.env.FLUID_E2E_LOCKED_DOMAIN ?? "smoke-archive";
+
 /**
  * The domain the last journey registers, fills and unregisters.
  *
@@ -508,6 +511,42 @@ test("a search finds an engram by what is in it", async ({ page }) => {
   await expect(
     page.getByRole("link", { name: /^Lantern Protocol, / }),
   ).toBeVisible();
+});
+
+test("a read-only domain shows its lock and offers no edit until the owner switches it off", async ({
+  page,
+}) => {
+  await page.goto(`d/${LOCKED_DOMAIN}`);
+  await expect(page.getByText("read-only", { exact: true })).toBeVisible();
+  // Exact: the policies card's sr-only reasons hold the same words inside
+  // the longer sentence, one per disabled select.
+  await expect(
+    page.getByText("its owner switches read_only off in the domain policies", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "New engram" })).toHaveCount(0);
+
+  await page.getByRole("link", { name: /^Ledger, / }).click();
+  await expect(engramTitle(page)).toHaveText("Ledger");
+  await expect(page.getByText("read-only", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Edit" })).toHaveCount(0);
+
+  // The owner (the smoke's admin) switches it off in the domain policies...
+  await page.goto(`d/${LOCKED_DOMAIN}`);
+  const policies = page.getByRole("region", { name: "Domain policies" });
+  await policies
+    .getByRole("combobox", { name: "read_only" })
+    .selectOption("off");
+  await expect(page.getByText("read-only", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New engram" })).toBeVisible();
+
+  // ...and on again, which asks first, so the journey ends as it started.
+  await policies
+    .getByRole("combobox", { name: "read_only" })
+    .selectOption("on");
+  await policies.getByRole("button", { name: "Turn on read-only" }).click();
+  await expect(page.getByText("read-only", { exact: true })).toBeVisible();
 });
 
 test("the neighborhood graph draws a canvas", async ({ page }) => {

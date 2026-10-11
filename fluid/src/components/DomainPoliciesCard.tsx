@@ -16,11 +16,13 @@
  * make, and the reason `canWrite` is not consulted here (it folds `readOnly`
  * in, which would take the shut door away instead of showing it).
  *
- * One key asks before it changes: `sharing: direct` removes the review step
- * for everybody, so it arms the two-step confirmation and the select goes
- * back to the held value on Keep. Either press ends the question, so either
- * press hands the focus back to the select it came from. Every other change
- * posts at once. After a write the answer's `policies` go straight into the
+ * Two values ask before they change: `sharing: direct` removes the review step
+ * for everybody, and `read_only: on` refuses every change for everybody.
+ * Either arms the two-step confirmation, and the select goes back to the held
+ * value on Keep. While `read_only` is on, its row is the one row that can
+ * change: every other select is disabled with the read-only sentence as its
+ * description. Either press ends the question, so either press hands the
+ * focus back to the select it came from. Every other change posts at once. After a write the answer's `policies` go straight into the
  * manifest query, so the card holds the new values without a second read.
  *
  * `domain_name` is the one row with no select at all: a `PolicyKind::Text`
@@ -47,9 +49,11 @@ import {
   setDomainPolicies,
 } from "../api/domain";
 import type { ManifestView, PolicyView } from "../api/domain";
+import { DOMAINS_QUERY_KEY } from "../api/domains";
 import { domainEngramsRoot } from "../api/engrams";
 import { fetchMembers, membersKey, sameAccount } from "../api/members";
 import { useAuth } from "../auth/AuthContext";
+import { policiesLocked } from "../domainWritable";
 import {
   DestructiveAction,
   READ_ONLY_REASON,
@@ -67,6 +71,25 @@ const ALERT_CLASSES =
  * name is what a row header and a select are tied together by.
  */
 const HEADING_ID = "domain-policies";
+
+/** The values that ask before they post, and what they say. */
+const ASKS: Record<
+  string,
+  { value: string; label: string; say: (branch: string | null) => string }
+> = {
+  sharing: {
+    value: "direct",
+    label: "Turn on direct sharing",
+    say: (branch) =>
+      `Direct sharing removes the review step: every share on this domain commits straight to ${branch ?? "the branch"}, for everybody, until the policy is changed back. Turn it on?`,
+  },
+  read_only: {
+    value: "on",
+    label: "Turn on read-only",
+    say: () =>
+      "Read-only refuses every change to this domain through Crystalline, for everybody, until its owner switches it off. Updates from the team still arrive. Turn it on?",
+  },
+};
 
 const DRAFT_LINE =
   "Saved to your draft. The domain's policy changes when the draft is shared and lands.";
@@ -108,6 +131,7 @@ export function DomainPoliciesCard({
   const own =
     capabilities.canAdminister ||
     (user !== null && owner !== null && sameAccount(owner, user.name));
+  const locked = policiesLocked(policies);
   const [problem, setProblem] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<Record<string, string>>({});
   // The pending direct-sharing switch: the row whose select shows `direct`
@@ -135,6 +159,11 @@ export function DomainPoliciesCard({
         queryKey: manifestDetailKey(domain),
       });
       void queryClient.invalidateQueries({ queryKey: syncStatusKey(domain) });
+      if (key === "read_only") {
+        // Every row's `read_only` and every write gate move with the chip,
+        // which the manifest write above already moved.
+        void queryClient.invalidateQueries({ queryKey: DOMAINS_QUERY_KEY });
+      }
       if (written.draft) {
         // A draft of the MANIFEST is a file in the caller's own overlay, so
         // the lists that draw the domain's files have moved.
@@ -155,7 +184,7 @@ export function DomainPoliciesCard({
   }
 
   function choose(row: PolicyView, value: string) {
-    if (row.key === "sharing" && value === "direct") {
+    if (ASKS[row.key]?.value === value) {
       setArming(row.key);
       return;
     }
@@ -196,7 +225,11 @@ export function DomainPoliciesCard({
               row.kind !== "text" &&
               row.declared !== null &&
               !row.values.includes(row.declared);
-            const shown = arming === row.key ? "direct" : row.effective;
+            const shown =
+              arming === row.key
+                ? (ASKS[row.key]?.value ?? row.effective)
+                : row.effective;
+            const lockedOut = locked && row.key !== "read_only";
             // The exact reason "Rename domain" is disabled for on the page
             // itself: read-only first, since that holds whatever a rename
             // is doing, then a rename already in flight. The read-only span
@@ -281,10 +314,14 @@ export function DomainPoliciesCard({
                       aria-labelledby={rowId}
                       className={FIELD}
                       value={shown}
-                      disabled={capabilities.readOnly || write.isPending}
+                      disabled={
+                        capabilities.readOnly || write.isPending || lockedOut
+                      }
                       {...(capabilities.readOnly
                         ? { "aria-describedby": `${rowId}-readonly` }
-                        : {})}
+                        : lockedOut
+                          ? { "aria-describedby": `${rowId}-locked` }
+                          : {})}
                       onChange={(event) => {
                         choose(row, event.target.value);
                       }}
@@ -303,22 +340,27 @@ export function DomainPoliciesCard({
                       {READ_ONLY_REASON}
                     </span>
                   )}
+                  {lockedOut && (
+                    <span id={`${rowId}-locked`} className="sr-only">
+                      {`'${domain}' is read-only; its owner switches read_only off in the domain policies`}
+                    </span>
+                  )}
                   {unrecognized && (
                     <p className={`mt-1 ${ALERT_CLASSES}`}>
                       {`read as ${row.effective}; ${row.declared ?? ""} is not a known value`}
                     </p>
                   )}
-                  {arming === row.key && (
+                  {arming === row.key && ASKS[row.key] !== undefined && (
                     <>
                       {/* What the switch costs, beside the press that makes
                           it: the review step goes for everybody on this
                           domain, not only for whoever is changing it. */}
                       <p className="mt-1 text-sm">
-                        {`Direct sharing removes the review step: every share on this domain commits straight to ${branch ?? "the branch"}, for everybody, until the policy is changed back. Turn it on?`}
+                        {ASKS[row.key]?.say(branch)}
                       </p>
                       <DestructiveAction
-                        label="Turn on direct sharing"
-                        confirmLabel="Turn on direct sharing"
+                        label={ASKS[row.key]?.label ?? ""}
+                        confirmLabel={ASKS[row.key]?.label ?? ""}
                         pending={write.isPending}
                         // The select is what armed this, so this control
                         // draws no trigger of its own and hands the focus
@@ -333,7 +375,7 @@ export function DomainPoliciesCard({
                         }}
                         onConfirm={() => {
                           setArming(null);
-                          write.mutate([row.key, "direct"]);
+                          write.mutate([row.key, ASKS[row.key]?.value ?? ""]);
                         }}
                       />
                     </>

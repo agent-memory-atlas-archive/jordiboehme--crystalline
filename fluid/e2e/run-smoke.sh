@@ -108,6 +108,7 @@ FLUID_E2E_PRIVATE_DOMAIN="${FLUID_E2E_PRIVATE_DOMAIN:-smoke-vault}"
 # neither `fluid-smoke` nor `smoke-vault` (the sidebar matches by prefix) and
 # does not contain the badge's word.
 FLUID_E2E_OWNED_DOMAIN="${FLUID_E2E_OWNED_DOMAIN:-peer-shelf}"
+FLUID_E2E_LOCKED_DOMAIN="${FLUID_E2E_LOCKED_DOMAIN:-smoke-archive}"
 # The label the single sign-on button wears, which is the whole of what the
 # sso spec asserts. The provider it names is never contacted: the button is a
 # link, the spec only reads it, and discovery does not happen until somebody
@@ -118,7 +119,7 @@ export FLUID_E2E_SSO_NAME
 export FLUID_E2E_USER FLUID_E2E_PASSWORD FLUID_E2E_DOMAIN
 export FLUID_E2E_PEER FLUID_E2E_PEER_PASSWORD
 export FLUID_E2E_OUTSIDER FLUID_E2E_OUTSIDER_PASSWORD
-export FLUID_E2E_PRIVATE_DOMAIN FLUID_E2E_OWNED_DOMAIN
+export FLUID_E2E_PRIVATE_DOMAIN FLUID_E2E_OWNED_DOMAIN FLUID_E2E_LOCKED_DOMAIN
 
 # A second run serves the daemon under a path prefix: its public_url names
 # the prefix, every curl below goes through it, and Playwright drives the
@@ -213,6 +214,8 @@ private_root="$run_dir/private-domain"
 cp -R "$here/fixtures/private-domain" "$private_root"
 owned_root="$run_dir/owned-domain"
 cp -R "$here/fixtures/owned-domain" "$owned_root"
+locked_root="$run_dir/locked-domain"
+cp -R "$here/fixtures/locked-domain" "$locked_root"
 
 echo "smoke: registering the fixture domains"
 "${isolated[@]}" "$bin" domain add "$FLUID_E2E_DOMAIN" "$domain_root"
@@ -223,6 +226,7 @@ echo "smoke: registering the fixture domains"
 # stands between the two halves.
 "${isolated[@]}" "$bin" domain add "$FLUID_E2E_PRIVATE_DOMAIN" "$private_root"
 "${isolated[@]}" "$bin" domain add "$FLUID_E2E_OWNED_DOMAIN" "$owned_root"
+"${isolated[@]}" "$bin" domain add "$FLUID_E2E_LOCKED_DOMAIN" "$locked_root"
 
 # The daemon comes up before any account exists, which is the state a real
 # first run is in: the admin below is created through the daemon's own setup

@@ -173,6 +173,14 @@ export function defaultPolicyRows(): PolicyRowFixture[] {
       "The name this domain is known by everywhere; links from other domains use it.",
       "text",
     ),
+    policyRow(
+      "read_only",
+      null,
+      "off",
+      ["off", "on"],
+      "off",
+      "Whether every change to this domain through Crystalline is refused; pulls from the team still apply.",
+    ),
   ];
 }
 
