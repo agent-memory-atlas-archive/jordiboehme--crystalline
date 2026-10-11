@@ -4206,7 +4206,7 @@ async fn an_editor_with_a_write_list_writes_its_own_domain_and_nowhere_else() {
 async fn a_viewer_with_a_write_list_keeps_the_viewer_sentence() {
     let ctx = mcp_ctx(true).await;
     ctx.store
-        .set_write_list("looker", &listed(&["open"]))
+        .set_write_list("looker", &listed(&["second"]))
         .await
         .unwrap();
     let token = ctx.token_for("looker").await;
@@ -4387,7 +4387,19 @@ async fn write_block_names_each_reason() {
     )
     .unwrap();
     ctx.engine.sync(None).await.unwrap();
-    assert_eq!(block(out, "second").await, Some(WriteBlock::DomainLocked));
+    assert_eq!(
+        block(out.clone(), "second").await,
+        Some(WriteBlock::DomainLocked)
+    );
+    // The access part never names the lock: it answers the role and the
+    // list alone, which is what the MCP write gate asks.
+    let access = |scope: Scope| {
+        let engine = ctx.engine.clone();
+        async move { engine.write_access_block(&scope, "second").await.unwrap() }
+    };
+    assert_eq!(access(looker).await, Some(WriteBlock::Role));
+    assert_eq!(access(Scope::Unrestricted).await, None);
+    assert_eq!(access(out).await, None);
     assert_eq!(
         WriteBlock::WriteList {
             account: "out".into()
@@ -4436,4 +4448,54 @@ async fn the_open_tier_has_no_write_list() {
         None,
         "and the open tier does not read it"
     );
+}
+
+/// A locked domain does not open the MCP write gate: the collaboration verbs,
+/// whose origin paths do not read the lock, still ask the role and the write
+/// list first, so a viewer and an off-list editor are refused with their own
+/// sentences, as REST refuses them, and nothing is shared or discarded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_locked_domain_still_refuses_a_viewer_and_an_off_list_editor_over_mcp() {
+    let ctx = mcp_team_ctx().await;
+    ctx.add_member("lab", "mem", crystalline_service::rest::MemberLevel::Viewer)
+        .await;
+    ctx.store
+        .set_write_list("keeper", &listed(&["open"]))
+        .await
+        .unwrap();
+    let manifest = std::fs::read_to_string(ctx.path("lab", "MANIFEST.md")).unwrap();
+    assert!(manifest.contains("status: stable\n"));
+    std::fs::write(
+        ctx.path("lab", "MANIFEST.md"),
+        manifest.replacen("status: stable\n", "status: stable\nread_only: on\n", 1),
+    )
+    .unwrap();
+    ctx.engine.sync(None).await.unwrap();
+    assert!(ctx.engine.domain_is_read_only("lab").await);
+    let note = std::fs::read_to_string(ctx.path("lab", "lab-note.md")).unwrap();
+
+    let viewer_sentence =
+        "your access to 'lab' is viewer, and editor access is required to change it";
+    let list_sentence = "'lab' is not on the write list of 'keeper'; an instance admin changes it with crystalline users writes";
+    for (account, sentence) in [("mem", viewer_sentence), ("keeper", list_sentence)] {
+        let token = ctx.token_for(account).await;
+        let session = McpTestSession::open(&ctx.addr, Some(&token)).await;
+        for (tool, args) in [
+            ("share_changes", serde_json::json!({ "domain": "lab" })),
+            (
+                "discard_changes",
+                serde_json::json!({ "domain": "lab", "paths": ["lab-note.md"] }),
+            ),
+        ] {
+            let refused = session.call_tool(tool, args).await;
+            assert!(refused.contains(sentence), "{account} {tool}: {refused}");
+        }
+    }
+    assert_eq!(
+        std::fs::read_to_string(ctx.path("lab", "lab-note.md")).unwrap(),
+        note,
+        "nothing was discarded"
+    );
+    // Nothing was shared: the refusal above is the gate's own sentence, which
+    // answers before `origin_share_with` and so before any network call.
 }
