@@ -178,6 +178,19 @@ impl LocalMachine {
         self.engine.set_sources(set.clone());
         set
     }
+
+    /// [`LocalMachine::mount`] for a process still building its first HTTP
+    /// client: the set treats the client as not ready until the answered
+    /// gate is sent `true`, whatever this process has built already.
+    pub fn mount_cold(&self) -> (Arc<SourceSet>, tokio::sync::watch::Sender<bool>) {
+        let (gate, ready) = tokio::sync::watch::channel(false);
+        let set = Arc::new(
+            SourceSet::load(self.remote_dir(), self.engine.local_domains(), |_| None)
+                .with_client_gate(ready),
+        );
+        self.engine.set_sources(set.clone());
+        (set, gate)
+    }
 }
 
 /// Whether `result` is a refusal a domain nobody registered gets: the
