@@ -330,6 +330,101 @@ describe("the domain screen", () => {
     expect(within(body).queryByText("read-only")).not.toBeInTheDocument();
   });
 
+  /** The MANIFEST of `eng` with its `read_only` row on. */
+  function lockedManifest(): unknown {
+    return {
+      domain: "eng",
+      markdown: "# eng",
+      sections: manifestSectionsResponse({
+        policies: defaultPolicyRows().map((row) =>
+          row.key === "read_only"
+            ? { ...row, declared: "on", effective: "on" }
+            : row,
+        ),
+      }),
+    };
+  }
+
+  /**
+   * Whether the MANIFEST editor, the seed buttons and Import archive are
+   * offered, on the page and in the palette. Download archive is a read and
+   * is always offered to an admin.
+   */
+  async function expectManifestWrites(offered: boolean): Promise<void> {
+    const body = await screenBody();
+    await within(body).findByRole("heading", { level: 1 });
+    await within(body).findByRole("link", { name: "Download archive" });
+    // Every read the gate draws on has landed: the MANIFEST (the policies
+    // card), the listing and the engrams beside them.
+    await within(body).findByRole("region", { name: "Domain policies" });
+    await within(body).findByRole("link", { name: /Alpha/ });
+    await waitFor(() => {
+      expect(requested()).toContain("/domains");
+    });
+    const section = await within(body).findByRole("region", {
+      name: "Manifest",
+    });
+    await waitFor(() => {
+      expect(
+        within(section).queryByRole("link", { name: "Edit MANIFEST" }) !== null,
+      ).toBe(offered);
+    });
+    expect(
+      within(body).queryByRole("button", { name: "Import archive" }) !== null,
+    ).toBe(offered);
+    expect(
+      within(body).queryAllByRole("button", { name: /^Add / }).length > 0,
+    ).toBe(offered);
+    const user = userEvent.setup();
+    await user.keyboard("{Meta>}k{/Meta}");
+    expect(
+      await screen.findByRole("option", { name: /download archive/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: /edit manifest/i }) !== null,
+    ).toBe(offered);
+    expect(
+      screen.queryByRole("option", { name: /import archive/i }) !== null,
+    ).toBe(offered);
+  }
+
+  it("offers an admin no MANIFEST edit and no import on a locked domain, and keeps the policies card", async () => {
+    serve(
+      {
+        "/domains": () => ({
+          ...domainsResponse(),
+          domains: [{ ...domainsResponse().domains[0], read_only: true }],
+        }),
+        "/domains/eng/manifest": lockedManifest,
+      },
+      "admin",
+    );
+    renderApp("/d/eng");
+    // The policies card, where a person switches the lock off, is one of
+    // the reads the helper waits for, so it is still drawn.
+    await expectManifestWrites(false);
+  });
+
+  it("offers an admin off the write list no MANIFEST edit and no import", async () => {
+    serve(
+      {
+        "/domains": () => ({
+          ...domainsResponse(),
+          domains: [{ ...domainsResponse().domains[0], read_only: true }],
+        }),
+      },
+      "admin",
+    );
+    renderApp("/d/eng");
+    await expectManifestWrites(false);
+  });
+
+  it("offers an admin the MANIFEST edit and the import on a writable domain", async () => {
+    serve({}, "admin");
+    renderApp("/d/eng");
+    await expectManifestWrites(true);
+  });
+
   it("renders the whole MANIFEST and the engrams at the root of the domain", async () => {
     serve();
 

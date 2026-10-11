@@ -407,7 +407,11 @@ function DomainPage({
       });
     }
     if (capabilities.canAdminister) {
-      if (manifestEditable && !isRenaming) {
+      // The MANIFEST editor and the import write into the domain, so they ask
+      // `canWrite` as well: neither is offered on a locked domain or to an
+      // admin whose write list leaves it out. The policies card stays, since
+      // that is where a person switches the lock off.
+      if (canWrite && manifestEditable && !isRenaming) {
         rows.push({
           id: "manifest-edit",
           title: "Edit MANIFEST",
@@ -428,7 +432,7 @@ function DomainPage({
           navigateTo(archiveDownloadUrl(domain));
         },
       });
-      if (!isRenaming) {
+      if (canWrite && !isRenaming) {
         rows.push({
           id: "import-archive",
           title: "Import archive",
@@ -708,7 +712,7 @@ function DomainPage({
             document: while the read is in flight, and after one the server
             refused.
           */}
-          {capabilities.canAdminister && manifestEditable && (
+          {capabilities.canAdminister && canWrite && manifestEditable && (
             <>
               <Link
                 to={manifestEditRoute(domain)}
@@ -749,7 +753,10 @@ function DomainPage({
           pending={manifest.isPending}
           error={manifest.error}
           onStart={
-            capabilities.canAdminister && manifestEditable && !isRenaming
+            capabilities.canAdminister &&
+            canWrite &&
+            manifestEditable &&
+            !isRenaming
               ? (section) => {
                   void navigate(manifestEditRoute(domain), {
                     state: { seedSection: section },
@@ -849,6 +856,7 @@ function DomainPage({
           onImport={() => {
             setImporting(true);
           }}
+          canImport={canWrite}
           renaming={isRenaming}
         />
       )}

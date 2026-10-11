@@ -18,11 +18,18 @@ import { BUTTON } from "./primitives";
 export function BackupCard({
   domain,
   onImport,
+  canImport = true,
   renaming = false,
 }: {
   domain: string;
   /** Open the import dialog, which the screen owns because its palette row opens it too. */
   onImport: () => void;
+  /**
+   * Whether this caller may write into the domain. False on a locked domain
+   * or off the caller's write list: Import archive is not offered then, and
+   * Download archive, a read, still is.
+   */
+  canImport?: boolean;
   /** Whether a rename has this domain paused, which withholds Import archive only. */
   renaming?: boolean;
 }): ReactElement {
@@ -57,21 +64,25 @@ export function BackupCard({
         >
           Download archive
         </a>
-        <button
-          type="button"
-          aria-disabled={disabledReason !== undefined}
-          aria-describedby={disabledReason !== undefined ? reasonId : undefined}
-          onClick={() => {
-            if (disabledReason !== undefined) {
-              return;
+        {canImport && (
+          <button
+            type="button"
+            aria-disabled={disabledReason !== undefined}
+            aria-describedby={
+              disabledReason !== undefined ? reasonId : undefined
             }
-            onImport();
-          }}
-          className={`${BUTTON.secondary} aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent dark:aria-disabled:hover:bg-transparent`}
-        >
-          Import archive
-        </button>
-        {disabledReason !== undefined && (
+            onClick={() => {
+              if (disabledReason !== undefined) {
+                return;
+              }
+              onImport();
+            }}
+            className={`${BUTTON.secondary} aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent dark:aria-disabled:hover:bg-transparent`}
+          >
+            Import archive
+          </button>
+        )}
+        {canImport && disabledReason !== undefined && (
           <span id={reasonId} className="sr-only">
             {disabledReason}
           </span>
