@@ -276,7 +276,7 @@ const DEFAULT_LOG_FILTER: &str = "info,xet=warn";
 /// Run the daemon: `crystalline serve [--daemon] [--http <addr>] [--read-only]
 /// [--take-over]`. The HTTP endpoint is on at [`DEFAULT_HTTP_ADDR`] unless it was
 /// turned off, so `--http` moves it or closes it rather than opening it; see
-/// [`resolve_http`]. The effective read-only mode is the explicit flag or
+/// `resolve_http`. The effective read-only mode is the explicit flag or
 /// `service.read_only`; `take_over` forces host-lock claims for a deliberate host
 /// migration in a shared database. `exit_when_idle` bounds the daemon's life to
 /// [`IDLE_EXIT_GRACE`] past its last socket session, the Claude Desktop
@@ -934,10 +934,10 @@ fn settle_budget(deadline: Duration, elapsed: Duration) -> Duration {
 
 /// How long a stopping daemon has from the moment it decides to stop to the
 /// moment its process is gone. Each shutdown step normally takes milliseconds;
-/// a step still running at the deadline is abandoned by [`Departure`]'s
+/// a step still running at the deadline is abandoned by `Departure`'s
 /// watchdog, which names it in the log and exits anyway. The deadline is the
 /// longest a stuck daemon keeps its ownership: the record, the socket and the
-/// service lock stay until [`Departure`] removes them, so a successor arriving
+/// service lock stay until `Departure` removes them, so a successor arriving
 /// in the meantime meets a held service lock rather than a held index, and
 /// once ownership goes the exit follows at once.
 pub const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(10);
@@ -2799,7 +2799,7 @@ const EMBED_TICK: Duration = Duration::from_secs(300);
 /// falls back to an inline embed when no worker is wired (an inline pass on this
 /// timer would reintroduce the request-path stall the worker exists to
 /// prevent), so an unwired tick is a silent no-op. The cadence is a parameter so
-/// a test can drive it fast; production passes [`EMBED_TICK`].
+/// a test can drive it fast; production passes `EMBED_TICK`.
 ///
 /// "A backlog remains" is not on its own the condition to fire: it stays true
 /// for the whole life of a pass that is working through one, so a first index
@@ -2880,7 +2880,7 @@ const ORPHAN_SWEEP: Duration = Duration::from_secs(3600);
 const ORPHAN_GRACE_DAYS: i64 = 7;
 
 /// Collect the rows of every domain this instance has had no registration for
-/// longer than [`ORPHAN_GRACE_DAYS`], once per `cadence`, until shutdown.
+/// longer than `ORPHAN_GRACE_DAYS`, once per `cadence`, until shutdown.
 ///
 /// The grace period is always supplied, which is the whole difference between
 /// this and a person asking: an unattended sweep waits out the week, and
@@ -2901,7 +2901,7 @@ const ORPHAN_GRACE_DAYS: i64 = 7;
 /// process starts.
 ///
 /// The cadence is a parameter so a test can drive it fast; production passes
-/// [`ORPHAN_SWEEP`]. Silent on a pass that collects nothing - the engine logs
+/// `ORPHAN_SWEEP`. Silent on a pass that collects nothing - the engine logs
 /// one line per collection - and a failed pass is a warning, never fatal: the
 /// next tick tries again.
 ///

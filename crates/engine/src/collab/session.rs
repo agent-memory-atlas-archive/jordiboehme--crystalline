@@ -402,7 +402,7 @@ impl CollabSessions {
     ///
     /// A room removed here is gone from the registry before it is saved, so
     /// the two entry-moving paths leave it alone from that moment on:
-    /// [`CollabSessions::rekey`] and [`CollabSessions::dispose_if_empty`] both
+    /// `CollabSessions::rekey` and [`CollabSessions::dispose_if_empty`] both
     /// look the session up by key and find nothing of theirs, so a rename that
     /// lands during the sweep cannot re-file a swept room.
     ///
@@ -418,7 +418,7 @@ impl CollabSessions {
     /// the DATABASE rather than in the file that `files_kept` deliberately left
     /// on disk). Note that the fence is what closes the join window, not luck:
     /// [`CollabSessions::join`] holds the registry lock ACROSS
-    /// [`CollabSession::open`] (the engine read), so a join either inserts
+    /// `CollabSession::open` (the engine read), so a join either inserts
     /// before the sweep collects and is swept, or arrives after and is refused
     /// by the fence - no join is in flight across the sweep. If that lock is
     /// ever released around the open, this argument silently breaks.
@@ -442,7 +442,7 @@ impl CollabSessions {
     ///
     /// Why the exception is not optional. The sweep runs one step after the
     /// review key comes off, so a room over a draft has already fallen back to
-    /// the folder ([`room_view`]) and its final save is an ordinary file
+    /// the folder (`room_view`) and its final save is an ordinary file
     /// write. Discard is the one fold choice whose whole meaning is "this
     /// never reaches the tree" - the rows are dropped unwritten - so saving
     /// such a room would publish, into the reviewed folder, the one text the
@@ -626,7 +626,7 @@ impl CollabSessions {
     /// that only need to know whether the room is there: `live_text` renders
     /// the whole Yrs document under the session lock, which is a real cost on
     /// a large engram and is pure waste when the answer is a yes-or-no. The
-    /// three conditions are [`CollabSessions::live_room`]'s, so a swept,
+    /// three conditions are `CollabSessions::live_room`'s, so a swept,
     /// poisoned or closed room answers `false` here exactly as it answers
     /// `None` there.
     pub async fn has_live_room(

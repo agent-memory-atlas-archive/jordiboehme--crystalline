@@ -1124,7 +1124,7 @@ pub struct SearchQuery {
     /// Filter by `type`.
     pub engram_type: Option<String>,
     /// Filter by `status`. `stable` and `current` are one equivalence class in
-    /// both directions (see [`CURRENT_STATUS_CLASS`]); any other value is an
+    /// both directions (see `CURRENT_STATUS_CLASS`); any other value is an
     /// exact match.
     pub status: Option<String>,
     /// Require all of these tags.
@@ -2228,7 +2228,7 @@ pub(crate) fn build_vocabulary(
 /// This exists for the one caller that cannot ask SQL for what it wants: a
 /// vocabulary sweep for a caller who may not read every domain. The store's own
 /// sweep is all-domains or one domain, so such a caller reads the domains it may
-/// see and merges here - and the merge is [`build_vocabulary`] itself, fed the
+/// see and merges here - and the merge is `build_vocabulary` itself, fed the
 /// summed per-name counts, so the result cannot order or shape itself
 /// differently from a sweep the store answered in one query.
 pub fn merge_vocabularies(parts: Vec<Vocabulary>) -> Vocabulary {
@@ -2779,7 +2779,7 @@ pub trait Store: Send + Sync {
     /// caller has open. First what dangles is unbound: a `to_id` naming a row
     /// nobody holds any more is the trace of a draft that went away, and
     /// leaving it would be an edge into nothing. Then what is pending is bound,
-    /// against [`ReferenceCandidates::View`] - their own drafts first, then the
+    /// against `ReferenceCandidates::View` - their own drafts first, then the
     /// base - so the author's links follow their own rows as those rows are
     /// written, dropped and folded.
     ///

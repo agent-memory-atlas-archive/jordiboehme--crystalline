@@ -654,7 +654,7 @@ const SUGGESTION_SKIPPED_KEYS: [&str; 3] = ["type", "generated", "timestamp"];
 
 /// Infer a schema from a set of Engrams. Fields present in at least `threshold`
 /// of the Engrams become optional; at least 0.95 makes them required. Keys in
-/// [`SUGGESTION_SKIPPED_KEYS`] are never suggested.
+/// `SUGGESTION_SKIPPED_KEYS` are never suggested.
 pub fn infer(engrams: &[Engram], threshold: f64) -> Schema {
     let total = engrams.len();
     let entity = common_type(engrams);

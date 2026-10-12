@@ -42,7 +42,7 @@
 //! it is the only other place in the tree that answers "whose rows is this
 //! caller entitled to".
 //!
-//! [`crate::review::DraftView`] carries the word "view" for a different
+//! `crate::review::DraftView` carries the word "view" for a different
 //! meaning and is not one of these: it renders per-actor counts for a status
 //! payload and projects nothing.
 

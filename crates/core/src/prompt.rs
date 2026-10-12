@@ -489,7 +489,7 @@ fn render_behavior_block(output: &PromptOutput, out: &mut String) {
 /// never trimmed; the rules below them absorbed the budget instead, which is
 /// why the narrow and broad routing rule is one line rather than two.
 ///
-/// This is the single source of the rule set: [`render_routing_body`] renders
+/// This is the single source of the rule set: `render_routing_body` renders
 /// it as the Behavior block of both onboarding renderers, and the MCP
 /// `list_domains` response returns it verbatim for remote clients that never
 /// see the initialize instructions. Both paths therefore teach exactly the

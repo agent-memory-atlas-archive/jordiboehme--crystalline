@@ -7,7 +7,7 @@
 //! is included regardless of extension: assets, `.crystalline.yaml` and any
 //! other file that lives alongside the engrams travels with the domain, not
 //! just markdown. Which paths take part at all is one predicate,
-//! [`participates_in_change_detection`], asked of the walk and of the base
+//! `participates_in_change_detection`, asked of the walk and of the base
 //! snapshot alike. Detection has no side effects and reads nothing but the
 //! files it walks and, for the domain's own generated-index policy, its
 //! `MANIFEST.md`; a later task decides what to do with the result (open a
@@ -170,7 +170,7 @@ impl LocalChanges {
 ///   `index.md` is skipped too unless the domain declares
 ///   [`GeneratedIndexes::Shared`], and when it is skipped it is skipped on
 ///   BOTH sides, the walk and the base snapshot (see
-///   [`participates_in_change_detection`], which says why that is not
+///   `participates_in_change_detection`, which says why that is not
 ///   optional).
 /// - every non-hidden file is included regardless of extension.
 /// - a file larger than [`MAX_SHARED_FILE_BYTES`] is reported in

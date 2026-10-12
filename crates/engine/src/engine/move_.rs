@@ -12,7 +12,7 @@ impl Engine {
     /// chunk, embedding and bound reference, stays), a cross-domain move reads
     /// the source content and re-indexes it into the destination's source.
     ///
-    /// **The permalink** is decided by [`Engine::moved_permalink`]: by default
+    /// **The permalink** is decided by `Engine::moved_permalink`: by default
     /// it follows the move only when it was in step with the old path, so a
     /// deliberate custom permalink survives a re-filing; `MoveParams::permalink`
     /// asks for the path's own, the current one, or a named one. A destination

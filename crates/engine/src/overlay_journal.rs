@@ -42,7 +42,7 @@
 //! `path` all arrive from callers that have their own screens, and the actor
 //! key in particular will later be an account name chosen by whoever holds the
 //! account, so every one of the three is re-checked against
-//! [`crate::engine::is_within_domain`] before a path is built - and `domain`
+//! `crate::engine::is_within_domain` before a path is built - and `domain`
 //! and `actor` must additionally be a single segment, since neither names a
 //! tree.
 

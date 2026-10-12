@@ -5,8 +5,8 @@
 //! A domain in review mode takes every write into its author's own draft, and
 //! the folder the team shares changes only through a reviewed proposal. Coming
 //! back out of that ends every draft one way or the other, so it is a question
-//! before it is a change: [`plan_json`] answers what would happen and writes
-//! nothing, and [`choices`] insists that the answer name every actor the plan
+//! before it is a change: `plan_json` answers what would happen and writes
+//! nothing, and `choices` insists that the answer name every actor the plan
 //! named and nobody else.
 //!
 //! Everything here is a pure function over rows somebody else read. The verb
@@ -14,7 +14,7 @@
 //! is `Engine::set_review_mode` in [`crate::engine`], which is where the
 //! ordering argument lives; this module is the half that decides what an answer
 //! would produce, so the plan and the fold can be held to one rule by sharing
-//! one [`DomainView::address_map`] rather than by two call sites agreeing to
+//! one `DomainView::address_map` rather than by two call sites agreeing to
 //! agree.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};

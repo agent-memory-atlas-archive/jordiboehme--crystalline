@@ -14,13 +14,13 @@
 //! (aggregate JSON) around those calls.
 //!
 //! Three things here read the working tree. A share plan says who last wrote
-//! each changed file ([`last_author`]), which is a line of the file's own
+//! each changed file (`last_author`), which is a line of the file's own
 //! frontmatter and nowhere else; it is a read of files the plan already names,
 //! and every failure of it is an absent author rather than a failed plan.
 //! [`unshared_work`] walks a team domain's tree against its base snapshot to
 //! answer "what does this domain owe its origin, and since when" offline, which
 //! the sweep, the owned-changes enrichment and the Stop hook all ask.
-//! [`local_change_detail`] walks the same tree to answer the other half of that
+//! `local_change_detail` walks the same tree to answer the other half of that
 //! question, "which files, and what happened to each", for the caller that asks
 //! a status for detail rather than a count. None of the three touches the
 //! network.

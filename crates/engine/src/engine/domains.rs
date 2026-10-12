@@ -753,7 +753,7 @@ impl Engine {
     /// the "CRYSTALLINE KNOWLEDGE ROUTING" block over every registered domain.
     /// Synchronous, because rmcp's `get_info` is sync and runs once per
     /// connection; it never blocks on async work, so the virtual bullets come
-    /// from the [`Engine::routing_virtual`] cache alone (refreshed off the async
+    /// from the `Engine::routing_virtual` cache alone (refreshed off the async
     /// path by [`Engine::refresh_routing_cache`]) and the file bullets are read
     /// straight from each domain's `MANIFEST.md` on disk.
     ///
@@ -762,7 +762,7 @@ impl Engine {
     /// `preferred_domains` never apply here (both need a workspace path). The
     /// effective config is composed live: with a `--config` override this
     /// re-reads that file and re-applies the environment overlay (mirroring
-    /// [`Engine::refresh_domain`]) so a domain registered after startup shows up
+    /// `Engine::refresh_domain`) so a domain registered after startup shows up
     /// on the next connection; without one (tests and standalone) it takes the
     /// in-memory config plus any domain discovered since, and never touches the
     /// default global config path. Staleness is bounded to one connection: the
@@ -789,7 +789,7 @@ impl Engine {
     /// already-accepted bounded staleness this comment describes for the
     /// `None` branch below. So the re-read stays for as long as `domain add`
     /// is a mutation path that does not refresh `self.config`, and
-    /// [`Engine::registered_domain_entries`] is the same rule for the listing.
+    /// `Engine::registered_domain_entries` is the same rule for the listing.
     ///
     /// On a machine with connected servers the block also lists every
     /// mounted domain, after every local one and in mount-table order, and

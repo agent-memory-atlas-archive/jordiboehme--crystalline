@@ -1,7 +1,7 @@
 //! The local NLI scorer: one checkpoint from [`super::models`] via candle,
 //! always in F32. mDeBERTa overflows in F16, so an F16 or BF16 file is upcast
 //! on load and no NLI model ever runs in half precision. The files are
-//! fetched into the same cache as the embedding model through [`crate::hub`],
+//! fetched into the same cache as the embedding model through `crate::hub`,
 //! with the same first-use notice and progress line, and a load failure from a
 //! corrupt cache removes the failed snapshot and fetches once more.
 //!

@@ -1226,7 +1226,7 @@ pub struct DomainConfig {
 
 /// Verify overrides for a domain.
 ///
-/// Read through [`RawVerifyConfig`], so one rule override whose value is not
+/// Read through `RawVerifyConfig`, so one rule override whose value is not
 /// a word (`E007: 1`, `E001: false`) is kept aside in `not_words` and
 /// reported per rule, instead of failing the whole file and taking every
 /// other override with it.

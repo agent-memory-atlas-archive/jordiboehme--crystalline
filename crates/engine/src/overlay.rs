@@ -95,7 +95,7 @@ const REVIEW_OVERLAY_VALUE: &str = "overlay";
 /// (see `Engine::github_credential`), so a container with this variable set
 /// never needs an interactive sign-in. Read-only: a saved token is never
 /// consulted while this is set, `connect github` refuses and `crates/remote`
-/// never reads it itself (see [`crate::engine::Engine::github_credential`]
+/// never reads it itself (see `crate::engine::Engine::github_credential`
 /// and the `crystalline_remote::token` module docs).
 pub const GITHUB_TOKEN_ENV: &str = "CRYSTALLINE_GITHUB_TOKEN";
 

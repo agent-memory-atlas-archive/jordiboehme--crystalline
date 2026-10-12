@@ -310,6 +310,12 @@ jobs:
         if: ${{ matrix.os == 'ubuntu-latest' && needs.changes.outputs.tested != 'true' }}
         run: cargo fmt --all --check
 
+      - name: cargo doc (no private intra-doc links)
+        if: ${{ matrix.os == 'ubuntu-latest' && needs.changes.outputs.tested != 'true' }}
+        env:
+          RUSTDOCFLAGS: -D rustdoc::private_intra_doc_links
+        run: cargo doc --no-deps --workspace --locked
+
       - name: cargo clippy
         if: ${{ needs.changes.outputs.tested != 'true' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

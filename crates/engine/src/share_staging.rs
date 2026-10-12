@@ -12,8 +12,8 @@
 //! was decided here.
 //!
 //! Two pieces live here, and the second exists because of the first.
-//! [`crate::domain_view::DomainView::materialise`] stages the tree.
-//! [`PinnedHead`] wraps the provider for the one call
+//! `crate::domain_view::DomainView::materialise` stages the tree.
+//! `PinnedHead` wraps the provider for the one call
 //! that runs against that tree: `ops::propose` and `ops::propose_preview` open
 //! with a pull of their own, and a pull into the staged tree would write the
 //! team's merged work into a folder that is deleted moments later while the base
@@ -21,7 +21,7 @@
 //! own base, with no later pull that would bring it back (`ops::pull`
 //! short-circuits once `head == base_commit` and writes no file). The engine
 //! pulls the REAL folder before it stages, so that pull has nothing left to do;
-//! [`PinnedHead`] is what makes "nothing left to do" true rather than likely.
+//! `PinnedHead` is what makes "nothing left to do" true rather than likely.
 //!
 //! Everything here is filesystem work over rows and paths somebody else read.
 //! The verb itself - the gates, the credential, the lock, the ordering argument

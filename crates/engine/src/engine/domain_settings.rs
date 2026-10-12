@@ -288,7 +288,7 @@ impl Engine {
     /// [`Engine::edit_manifest_policies`] (a draft in a reviewing domain);
     /// the rule overrides through [`edit_domain_config`], refused on a
     /// virtual domain and in a reviewing one. Both pass
-    /// [`Engine::require_policy_writer`]. Answers the fresh view, with
+    /// `Engine::require_policy_writer`. Answers the fresh view, with
     /// `draft: true` when the policy edit became a draft and `note` when the
     /// file lost its comments. Nothing is shared: on a team domain both files
     /// become unshared local changes.

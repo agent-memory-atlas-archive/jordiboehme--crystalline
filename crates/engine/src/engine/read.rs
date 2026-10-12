@@ -651,13 +651,13 @@ impl Engine {
     /// `total` is exact under both; `types` ignores both, because a summary that
     /// shrank as it was used would be a map redrawing itself while it is read.
     ///
-    /// `limit` is clamped to [`MAX_INBOUND_LIMIT`] and a page past the end is an
+    /// `limit` is clamped to `MAX_INBOUND_LIMIT` and a page past the end is an
     /// empty page carrying the true total, never the first page's rows.
     ///
     /// An engram nobody wrote is [`EngineError::NotFound`], the same resolution
     /// every other read of one identifier opens with.
     ///
-    /// Scoped: the anchor resolves through [`Engine::resolve_scoped`], so an
+    /// Scoped: the anchor resolves through `Engine::resolve_scoped`, so an
     /// engram in a domain the caller may not see is the not-found a missing
     /// one produces, and the domains it may not see are subtracted inside the
     /// query rather than from its answer. This list names other domains by

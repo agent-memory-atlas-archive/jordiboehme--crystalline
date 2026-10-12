@@ -370,7 +370,7 @@ impl Engine {
     /// **Files follow the join**, which is the whole of the rule: an upload
     /// made while working inside somebody else's draft lands in the OWNER's
     /// files overlay, through
-    /// [`crate::overlay_files::target_actor`], and is staged, folded and
+    /// `crate::overlay_files::target_actor`, and is staged, folded and
     /// discarded with that draft. Anything else would put an image in one
     /// overlay and the page that references it in another, so folding the
     /// draft would land a page pointing at a file nobody folded.
@@ -850,12 +850,12 @@ impl Engine {
     /// [`Engine::actor`] and stamped into both engrams' `generated` block.
     ///
     /// Everything is validated and resolved before anything is written: the
-    /// status is checked against [`Self::RETIREMENT_STATUSES`], the
+    /// status is checked against `Self::RETIREMENT_STATUSES`, the
     /// successor rule (required for `superseded`, refused otherwise) is
     /// enforced, `valid_to` is parsed and, when a successor is named, it is
     /// resolved before the target is touched, so a missing successor is
     /// `NotFound` rather than a half-written pair. That resolution goes
-    /// through [`Engine::resolve_in`], which is what actually holds the
+    /// through `Engine::resolve_in`, which is what actually holds the
     /// successor to this domain: the absolute `crystalline://` form overrides
     /// a domain hint wherever it is accepted, so "the same domain" is a rule
     /// enforced there rather than a property of passing the name in. The
@@ -1126,7 +1126,7 @@ impl Engine {
     ///
     /// **Everything that can be refused is refused before anything is
     /// written**: the source resolves inside the domain the request named (see
-    /// [`Engine::resolve_in`]), its checksum is compared, every selected line is
+    /// `Engine::resolve_in`), its checksum is compared, every selected line is
     /// checked to be an observation the source really carries, every section
     /// path is resolved, and the remainder is measured against verify's `Q001`
     /// minimum so a split can never quietly empty an engram. Only then does the
@@ -1139,7 +1139,7 @@ impl Engine {
     /// the checksum of the text this call planned against, so any concurrent
     /// edit refuses it. Without one the split is last-write-wins: the source
     /// edit plans the split again against the text it is about to write over
-    /// (see [`Engine::replanned_split_source`]) and lands on top of another
+    /// (see `Engine::replanned_split_source`) and lands on top of another
     /// writer's change, refusing only when the lines it moves changed, since
     /// those are already in the new engram. A refusal before the source's
     /// bytes change - either conflict, a read that fails, a write the
@@ -1151,7 +1151,7 @@ impl Engine {
     /// moved observations, so deleting the engram that does hold them is the
     /// one outcome this verb must never produce. `apply_source_edit_staged`
     /// reports which side of the write it failed on
-    /// ([`SourceEditFailure::wrote`]), and on the far side both engrams are
+    /// (`SourceEditFailure::wrote`), and on the far side both engrams are
     /// kept and the error names them and says the source's index row may be
     /// stale. What is left then is a correct pair with a stale index row for
     /// the source, which a sync, a watcher tick or `reindex` repairs.

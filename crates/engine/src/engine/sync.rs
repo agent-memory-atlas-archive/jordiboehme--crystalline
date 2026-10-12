@@ -500,7 +500,7 @@ impl Engine {
     /// [`Engine::sync_take_over`] does, because stamps are keyed by domain id
     /// and a domain nobody has synced yet has no row to read. Nothing about
     /// what this daemon watches, syncs or caches changes here (see
-    /// [`Engine::diagnostic_file_domains`]).
+    /// `Engine::diagnostic_file_domains`).
     ///
     /// Each entry carries the engram's mtime, size and checksum, more than a
     /// presence check needs, because a stamp is what the index records: a

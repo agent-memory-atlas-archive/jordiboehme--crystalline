@@ -86,13 +86,13 @@ impl Engine {
     ///   and the graph is taken at depth 1 so cross-domain targets carry a
     ///   status for `V101` to read;
     /// - the attachment facts (`analyzes`, `analyzed_hash`, `asset_refs`) are
-    ///   read off the **parsed engram** [`Engine::load_engram`] returns - the
+    ///   read off the **parsed engram** `Engine::load_engram` returns - the
     ///   file for a file domain, the stored source for a virtual one - and
     ///   never off the index's `content` column, which for a file domain holds
     ///   the body alone. A claim lives in the frontmatter, so counting it off
     ///   the index would make every file domain look as if it claimed nothing
     ///   and would report claimed attachments as orphans. This is the same
-    ///   split [`Engine::peer_engram_text`] makes for the move's referent
+    ///   split `Engine::peer_engram_text` makes for the move's referent
     ///   count, and the two agree on what a reference is: an `assets/` link in
     ///   the body or the `analyzes` key, compared as exact paths;
     /// - the lead vectors reach `V301` only when a provider is installed, so
@@ -383,7 +383,7 @@ impl Engine {
     /// to be one the catalog knows, because an acknowledgment of a rule that
     /// does not exist can never suppress anything and silently storing it would
     /// read as work done. `remove V101` takes an entry back instead of
-    /// recording one (see [`parse_ack_value`]).
+    /// recording one (see `parse_ack_value`).
     pub fn ack_intent(p: &EditParams) -> Result<Option<AckIntent>> {
         if p.operation != "set_frontmatter"
             || p.key.as_deref().map(str::trim) != Some(EVOLVE_ACK_KEY)
@@ -618,7 +618,7 @@ impl Engine {
     /// `scope` names the pair the acknowledgment is for, which only a
     /// [pair-scoped](crystalline_index::is_pair_scoped) rule has more than one
     /// of; it is ignored for every other rule and checked rather than trusted
-    /// for that one (see [`Engine::named_scope`]). `None` leaves the choice to
+    /// for that one (see `Engine::named_scope`). `None` leaves the choice to
     /// the server, which is what an agent's `set_frontmatter` does.
     ///
     /// `acting` is who is asking, and it is a different thing entirely from
@@ -673,7 +673,7 @@ impl Engine {
     /// per engram and all pairs at once for `V301` and `V302`.
     ///
     /// Fluid's half of the take-back an agent asks for with the `remove
-    /// <rule-id>` value form; both filter through [`without_ack`]. They differ
+    /// <rule-id>` value form; both filter through `without_ack`. They differ
     /// in how an entry that is not there is reported, and in that the agent's
     /// form names a rule and never a pair.
     pub async fn unacknowledge_finding_as(

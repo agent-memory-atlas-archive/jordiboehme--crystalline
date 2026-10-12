@@ -34,8 +34,9 @@ Dependency direction: core <- index <- identity <- engine <- rest <- service <- 
 - Build: `cargo build --release`
 - Test (fast path): `cargo nextest run --workspace` (install: `brew install cargo-nextest`), plus doctests via `cargo test --workspace --doc`
 - Test (canonical fallback): `cargo test --workspace`
-- Disk: `cargo sweep --time 14` once a week and `cargo sweep --installed` after a toolchain change keep `target/` small (install: `cargo install cargo-sweep`)
+- Disk: `cargo sweep --time 14` once a week and `cargo sweep --installed` after a toolchain change keep `target/` small (install: `cargo install cargo-sweep`). After the packed-debuginfo change (`[profile.dev] split-debuginfo = "packed"` in Cargo.toml, commit 7f394a74), run `cargo clean` once. `cargo sweep` does not remove the old `*.rcgu.o` files, which slow every test process on macOS
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check`
+- Rustdoc links: `RUSTDOCFLAGS="-D rustdoc::private_intra_doc_links" cargo doc --no-deps --workspace` (CI runs it since 0.25.1)
 - Style check: `bash scripts/style-lint.sh`
 - Fluid (from `fluid/`): `npm run build`, `npm test -- --run`, `npm run lint`, `pnpm run format:check`, `pnpm typecheck`; CI runs all five, so a change that skips the format check or the typecheck goes red on main. A change that adds, moves or renames a control also runs the browser smoke, `bash fluid/e2e/run-smoke.sh` (needs `pnpm build`, `cargo build -p crystalline` and the chromium install; on a mac export `CRYSTALLINE_TEST_NO_KEYCHAIN=1` first), and greps `fluid/e2e/*.spec.ts` for the accessible names it changed
 

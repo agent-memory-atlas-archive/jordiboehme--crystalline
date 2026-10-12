@@ -177,7 +177,7 @@ impl TursoStore {
     /// names it so a caller can say where it went. A rename that fails is
     /// returned as the error it is and never falls back to a delete.
     ///
-    /// Two failures must not be treated as damage (see [`must_not_be_set_aside`]).
+    /// Two failures must not be treated as damage (see `must_not_be_set_aside`).
     /// A file another process holds: `reindex --wipe` is daemonless by
     /// construction, so it meets a running daemon's index as an open that
     /// fails, and moving the files aside then would take a healthy index out

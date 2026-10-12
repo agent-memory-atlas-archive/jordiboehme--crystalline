@@ -910,7 +910,7 @@ async fn classify_changes(
 /// statement runs); any other error rolls the batch back.
 ///
 /// The changed files are read, parsed and upserted in slabs of
-/// [`SYNC_SLAB_FILES`], so the apply of a huge domain holds one slab of contents
+/// `SYNC_SLAB_FILES`, so the apply of a huge domain holds one slab of contents
 /// at a time - see the module-level memory note. Use [`apply_scan_with_slab`] to
 /// pick another slab size.
 ///
@@ -928,7 +928,7 @@ pub async fn apply_scan<S: Store + ?Sized>(
 
 /// [`apply_scan`] with an explicit slab size, for tests that want to exercise the
 /// slab boundaries on a handful of files. `slab_files` only changes how the work
-/// is cut up, never the end state; production uses [`SYNC_SLAB_FILES`].
+/// is cut up, never the end state; production uses `SYNC_SLAB_FILES`.
 pub async fn apply_scan_with_slab<S: Store + ?Sized>(
     store: &S,
     domain: DomainId,

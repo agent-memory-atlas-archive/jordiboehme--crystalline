@@ -653,7 +653,7 @@ impl OriginState {
 ///
 /// `rel` always uses forward slashes (the convention `OriginState` and every
 /// other function in this module follow); this is the one place that gets
-/// translated to the platform's own separator, via [`to_platform_path`],
+/// translated to the platform's own separator, via `to_platform_path`,
 /// which also validates it. A `rel` that is empty, absolute, normalizes to
 /// no components at all, or has a `.`, `..`, `:` or `\` component is
 /// rejected with [`RemoteError::State`] naming the offending path rather
@@ -758,7 +758,7 @@ pub fn remove_base_file(dir: &Path, rel: &str) -> Result<(), RemoteError> {
 /// Writes the new tree to a sibling `base.tmp/` directory first, then swaps
 /// it in for `base/`, so a reader never sees a half-replaced tree.
 ///
-/// Every key in `files` is validated by [`to_platform_path`] before
+/// Every key in `files` is validated by `to_platform_path` before
 /// anything is written: the first one shaped like a traversal, an absolute
 /// path or a Windows drive-prefix attempt fails the whole call with
 /// [`RemoteError::State`] naming the offending path, and the previous
@@ -816,7 +816,7 @@ fn artifact_kind_dir(dir: &Path, kind_id: &str) -> PathBuf {
 /// empty `files` therefore leaves the kind directory absent, which the scan
 /// reads as nothing to provision.
 ///
-/// Every key in `files` is validated by [`to_platform_path`] before it is
+/// Every key in `files` is validated by `to_platform_path` before it is
 /// written: the first one shaped like a traversal, an absolute path or a
 /// Windows drive-prefix attempt fails the whole call with
 /// [`RemoteError::State`] naming the offending path, so upstream artifact

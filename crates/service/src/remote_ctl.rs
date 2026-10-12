@@ -9,7 +9,7 @@
 //!   is on, an OAuth access token minted for this origin, whatever
 //!   `auth.mcp` says. There is no anonymous ctl: the open tier is a promise
 //!   about MCP, and nothing here is MCP. The check is
-//!   [`crate::mcp_gate::resolve_bearer`], the one the MCP gate runs.
+//!   `crate::mcp_gate::resolve_bearer`, the one the MCP gate runs.
 //! - **It runs as the token's account** ([`Scope::User`]), never as the
 //!   machine owner. The control socket's handler ([`crate::control`]) is
 //!   `Scope::Unrestricted` and `ShareActor::Owner` in every arm, which is

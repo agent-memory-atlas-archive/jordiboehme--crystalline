@@ -831,7 +831,7 @@ fn valid_repo_segment(segment: &str) -> bool {
 
 /// Validate a caller-supplied `repo` as `owner/name` before it reaches this
 /// module's own url building (`split_repo` above splits on the first `/`
-/// only, and [`URL_COMPONENT`] keeps `.` unescaped), so every surface that
+/// only, and `URL_COMPONENT` keeps `.` unescaped), so every surface that
 /// takes a repository from a caller - the JSON API's team-domain create and
 /// domain-name peek, the `add_domain` MCP tool, the CLI's `domain add
 /// --origin` - answers a caller-fault refusal for `a/b/../../user` rather

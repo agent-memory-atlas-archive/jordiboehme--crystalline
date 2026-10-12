@@ -14,7 +14,7 @@ impl Engine {
     /// releases) sees it.
     ///
     /// A change that moves the MCP tool list is announced here, by
-    /// [`Engine::announce_a_moved_tool_list`], because this method is the one
+    /// `Engine::announce_a_moved_tool_list`, because this method is the one
     /// seam all three settings callers share.
     pub async fn configure(&self, action: &ConfigureAction) -> Result<Value> {
         match action {

@@ -1093,7 +1093,7 @@ fn normalize_in_root(path: &str) -> Option<PathBuf> {
     Some(kept.iter().collect())
 }
 
-/// The textual `.`/`..` normalization shared by [`normalize_in_root`] and the
+/// The textual `.`/`..` normalization shared by `normalize_in_root` and the
 /// `provision` module's source-root resolution: split `path` on `/`, drop `.`
 /// and empty components, and let `..` pop the last kept component. Returns the
 /// components still kept once popping settles, plus how many `..` climbed past

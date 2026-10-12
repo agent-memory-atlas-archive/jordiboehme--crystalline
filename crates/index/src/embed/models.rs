@@ -242,7 +242,7 @@ const CONTENT_FILES: [&str; 2] = ["model.safetensors", "tokenizer.json"];
 ///
 /// When the pinned commit is complete and an older complete snapshot is
 /// also cached, the two are compared by the content of
-/// [`CONTENT_FILES`]: equal content switches to the pinned one, different
+/// `CONTENT_FILES`: equal content switches to the pinned one, different
 /// content stays on the older one, because the index keys its vectors by
 /// model id and could not tell the weights apart.
 pub fn choose_snapshot(models_dir: &Path, model: &LocalModel) -> SnapshotChoice {

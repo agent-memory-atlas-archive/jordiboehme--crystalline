@@ -125,7 +125,7 @@ pub const TREE_LEVEL_CAP: usize = 500;
 /// Clamped rather than refused, like every other bound on this surface: a hand
 /// written URL asking for too much gets the largest page there is, not a 4xx.
 ///
-/// The same number as [`MAX_INBOUND_LIMIT`] and for the same reason, kept as
+/// The same number as `MAX_INBOUND_LIMIT` and for the same reason, kept as
 /// its own constant because the two bound different queries and either could
 /// move without the other: this one bounds a sorter holding bodies, that one
 /// bounds how much of the reference index a popover materializes.
@@ -648,7 +648,7 @@ pub type OriginProgress = std::sync::Arc<dyn Fn(u64, u64, &str) + Send + Sync>;
 
 /// The GitHub identity calls the `configure` tool's connect actions need:
 /// validating a token and running a device flow to completion. Production
-/// always uses [`RealConnectAuth`], a thin pass-through to
+/// always uses `RealConnectAuth`, a thin pass-through to
 /// `crystalline_remote::github::auth`; tests inject a fake so the
 /// pending-connect state machine (one flow at a time, a landed outcome
 /// reported once, the slot cleared after) can be driven deterministically,
@@ -713,7 +713,7 @@ impl ConnectAuth for RealConnectAuth {
 
 /// A message from the engine to the daemon's file watcher: a domain root to
 /// start or stop watching, raised when a domain registered after the daemon
-/// started is first resolved (see [`Engine::domain_entry`]) or removed (see
+/// started is first resolved (see `Engine::domain_entry`) or removed (see
 /// [`Engine::forget_domain`]). Only the daemon's watcher task consumes these;
 /// embedded stdio and standalone CLI commands never install a receiver.
 #[derive(Debug, Clone)]
@@ -3024,7 +3024,7 @@ impl Engine {
     /// per-operation `GitHubProvider` build from config and the token store.
     /// Test-only: production code always leaves this unset so the provider is
     /// built from the cached GitHub token (read from the keychain at most once
-    /// per process, see [`Engine::github_credential`]) and a new `connect` is
+    /// per process, see `Engine::github_credential`) and a new `connect` is
     /// still picked up without a restart.
     pub fn with_origin_provider(mut self, provider: Arc<dyn Provider>) -> Engine {
         self.origin_provider_override = Some(provider);
@@ -3035,7 +3035,7 @@ impl Engine {
     /// share to record an author (see
     /// [`crystalline_remote::state::Proposal::author_login`]). Test-only, and
     /// only meaningful beside [`Engine::with_origin_provider`]: a mock has no
-    /// credential for [`Engine::resolve_share_provider`] to read a login off,
+    /// credential for `Engine::resolve_share_provider` to read a login off,
     /// so the login it would have carried is supplied here. Leaving it unset
     /// keeps the injected provider's original behaviour - a write that names
     /// nobody.
@@ -4821,7 +4821,7 @@ impl Engine {
     /// Every domain name this instance has a registration for, resolved the way
     /// a *named* lookup resolves one: the startup snapshot, the discovered
     /// overlay, then a re-read of the configuration file on disk - the three
-    /// tiers of [`Engine::domain_entry`], so what one verb calls registered
+    /// tiers of `Engine::domain_entry`, so what one verb calls registered
     /// another cannot call an orphan.
     ///
     /// A union of the three and not a replacement by the newest: the file is
@@ -4831,7 +4831,7 @@ impl Engine {
     /// across the tiers, so this is too.
     ///
     /// One file read per call, never one per name, and never a write: unlike
-    /// [`Engine::refresh_domain`] nothing found here is cached into the
+    /// `Engine::refresh_domain` nothing found here is cached into the
     /// discovered overlay and no watch is armed for it, because merely asking
     /// whether a domain is registered must not start indexing it. The file read
     /// failing is read as no further registrations, so the answer narrows and
@@ -4840,7 +4840,7 @@ impl Engine {
     /// **This is the set collection may key on.** A caller deciding that rows
     /// are collectable, or stamping `last_registered` for one that is not, must
     /// resolve "registered" through here rather than through
-    /// [`Engine::known_domain_names`], whose two tiers miss a registration this
+    /// `Engine::known_domain_names`, whose two tiers miss a registration this
     /// process has never been asked about by name.
     pub fn registered_domain_names(&self) -> HashSet<String> {
         self.registered_domain_entries().into_keys().collect()

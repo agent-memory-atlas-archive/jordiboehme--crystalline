@@ -62,7 +62,7 @@
 //! does filter. Stdio keeps the
 //! whole block, because a local session is the machine owner. Every channel
 //! that *does* carry a request context is scoped per caller instead:
-//! `server/discover` through [`McpServer::arrival_info_scoped`], the
+//! `server/discover` through `McpServer::arrival_info_scoped`, the
 //! `onboarding` prompt, and `list_domains` itself.
 //!
 //! In read-only mode (the engine's `read_only` flag) the write-gated tools are
@@ -194,8 +194,8 @@
 //! can carry one: `remove_domain` and `discard_changes`. Each returns an
 //! `input_required` result holding a single form elicitation, the client puts
 //! it to its user, and the same call arrives again with the answer beside the
-//! original arguments. [`confirmation_supported`] decides whether to ask,
-//! [`confirm_question`] builds the question and [`confirmed`] reads the
+//! original arguments. `confirmation_supported` decides whether to ask,
+//! `confirm_question` builds the question and `confirmed` reads the
 //! answer; all three are deliberately tool-agnostic. The question's one
 //! checkbox is checked by default, so Accept alone goes ahead, and an accept
 //! that leaves the box out of its content is a yes.
@@ -219,7 +219,7 @@
 //! re-sends the original arguments beside the answer and nothing on this side
 //! remembers what was asked, so a buggy client that changes an argument on the
 //! retry is honoured rather than caught - the price of the stateless design
-//! (see [`confirm_question`] on why nothing is sealed into `requestState`),
+//! (see `confirm_question` on why nothing is sealed into `requestState`),
 //! and the reason each round's refusal is read before the act it guards rather
 //! than after it.
 //!
@@ -306,7 +306,7 @@ fn is_write_tool(name: &str) -> bool {
 /// `instructions` to `server/discover`, restricts `tools/list_changed` to
 /// subscribers and requires caching hints on six operations; all four are
 /// implemented here - see [`McpServer::list_tools`], [`McpServer::discover`],
-/// [`McpServer::listen`] and [`CacheHinted`]. The stdio path has no probe
+/// [`McpServer::listen`] and `CacheHinted`. The stdio path has no probe
 /// handling of its own - every client line is forwarded verbatim
 /// (`crate::client`) and rmcp classifies and answers it. A fifth obligation,
 /// `ping`'s removal, is rmcp's: it answers `method_not_found` to any peer that
@@ -4237,7 +4237,7 @@ impl ServerHandler for McpServer {
     /// `InitializeResult` at all - the handshake is deleted and `instructions`
     /// lives on `DiscoverResult` - so a modern peer is onboarded through
     /// [`McpServer::discover`] instead. Both build their block from
-    /// [`McpServer::arrival_info`], so the two eras hand out the same bytes.
+    /// `McpServer::arrival_info`, so the two eras hand out the same bytes.
     ///
     /// **Nothing here reads who is connecting any more.** This used to be the
     /// only point at which the instructions could depend on the client, so the
@@ -4412,7 +4412,7 @@ impl ServerHandler for McpServer {
     /// construction already accounts for: `DiscoverResult::from_server_info`
     /// sets `cache_scope: Private`, so a per-caller block is never cached
     /// across callers. The block is rendered through
-    /// [`McpServer::arrival_info_scoped`], so a domain this caller may not see
+    /// `McpServer::arrival_info_scoped`, so a domain this caller may not see
     /// is absent from its onboarding rather than named to it.
     async fn discover(
         &self,
@@ -4462,7 +4462,7 @@ impl ServerHandler for McpServer {
     ///
     /// One thing this server can be asked to do moves a list: `configure` can
     /// flip `github.enabled`, and six collaboration tools appear or disappear
-    /// with it (see [`hidden_collab_tool`]). That is the only mover.
+    /// with it (see `hidden_collab_tool`). That is the only mover.
     /// `resources/list` and `prompts/list` read `skills.serve` and
     /// the harness gate, both fixed before the first request arrives, so
     /// those two categories are accepted on a subscription and then never
@@ -4528,10 +4528,10 @@ impl ServerHandler for McpServer {
     /// `skills.serve` is snapshotted at the same point
     /// (`Engine::skills_serve`) and the harness answer was resolved by the
     /// spawned process before the session started - see
-    /// [`hidden_skills_surface`].
+    /// `hidden_skills_surface`.
     ///
     /// The fourth, `github.enabled`, is read **live**, and is the one gate that
-    /// makes this list dynamic (see [`hidden_collab_tool`]). It is a single
+    /// makes this list dynamic (see `hidden_collab_tool`). It is a single
     /// setting on the shared engine, so two clients listing at the same moment
     /// still get the same answer; what varies is the moment, which is the
     /// "MAY change over time" clause rather than a violation of the one after
@@ -4615,7 +4615,7 @@ impl ServerHandler for McpServer {
     /// so a remote client that never runs the CLI can read the same playbooks
     /// an installed harness gets. Empty while the surface is withheld, on the
     /// same two construction-time inputs the tool gate reads (see
-    /// [`hidden_skills_surface`]); nothing about this list can move under a
+    /// `hidden_skills_surface`); nothing about this list can move under a
     /// live connection.
     async fn list_resources(
         &self,
@@ -4648,7 +4648,7 @@ impl ServerHandler for McpServer {
     /// The override also carries the caching hints on its own account: rmcp's
     /// default returns `ListResourceTemplatesResult::default()` (rmcp 3.1.2
     /// `handler/server.rs:387-395`), a **complete** result with no hints on one
-    /// of the six operations SEP-2549 names. See [`CacheHinted`].
+    /// of the six operations SEP-2549 names. See `CacheHinted`.
     async fn list_resource_templates(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -4668,7 +4668,7 @@ impl ServerHandler for McpServer {
     /// a puzzle.
     ///
     /// An attachment uri is anything [`CrystallineUrl::asset_path`] recognizes
-    /// once its path has been percent-decoded (see [`decoded_uri_path`]), and
+    /// once its path has been percent-decoded (see `decoded_uri_path`), and
     /// the bytes come back the way the file is read rather than the way it was
     /// asked for: a text mime as `TextResourceContents`, everything else base64
     /// in `BlobResourceContents`. This is the one place base64 is ever emitted

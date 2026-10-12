@@ -550,7 +550,7 @@ pub struct DesiredSet {
 /// kind but commands - the Copilot CLI declined a prompt-file surface, so a
 /// command has nowhere to land there and is skipped with a notice. How each
 /// supported pair actually maps (passthrough versus a cross-dialect render)
-/// lives in [`crate::provision::translate`]; this gate answers only the coarse
+/// lives in `crate::provision::translate`; this gate answers only the coarse
 /// "at all" question the MCP path and the skip notices need.
 ///
 /// The four profile harnesses (Cursor, Kiro, Gemini CLI, Qwen Code) take

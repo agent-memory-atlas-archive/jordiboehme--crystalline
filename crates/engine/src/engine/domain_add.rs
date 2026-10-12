@@ -869,7 +869,7 @@ impl Engine {
     /// is holding something and roughly how much, which is exactly this.
     ///
     /// A deletion counts as an entry, for the reason
-    /// [`Engine::overlay_counts_by_actor`] gives. A domain that takes changes
+    /// `Engine::overlay_counts_by_actor` gives. A domain that takes changes
     /// directly answers with an empty list rather than a refusal: nobody can
     /// draft there, so nobody is, and a client asking the same question of
     /// every domain gets one shape back.
@@ -975,7 +975,7 @@ impl Engine {
     ///    ([`Engine::require_domain_owner`]), the environment conflict, the
     ///    unconfirmed purge of a virtual domain's engrams, and the private
     ///    drafts of every OTHER actor, which have to be named before they are
-    ///    ended ([`crate::review::removal_choices`]). That ordering is the
+    ///    ended (`crate::review::removal_choices`). That ordering is the
     ///    point of holding the lock at all - a gate decided outside it is a
     ///    check somebody's ownership transfer can land behind - and it is what
     ///    makes the preview above advisory rather than authoritative.

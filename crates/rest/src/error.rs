@@ -52,7 +52,7 @@ pub struct ApiError {
     ///
     /// Never zero by construction at the call sites: a `Retry-After: 0`
     /// invites an immediate retry into the same refusal, which is the rule
-    /// [`super::oauth`]'s registration limiter already states for its own 429.
+    /// `super::oauth`'s registration limiter already states for its own 429.
     pub retry_after: Option<u64>,
 }
 

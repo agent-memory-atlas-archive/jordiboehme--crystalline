@@ -211,7 +211,7 @@ const AUTH_METHOD_NONE: &str = "none";
 /// can apply before the body is read: axum resolves extractors first, so by the
 /// time [`RegistrationLimiter::admit`] runs the body has been buffered and put
 /// through serde already. The largest registration the rules here allow is ten
-/// [`MAX_URI_LEN`] uris beside a [`MAX_CLIENT_NAME_CHARS`] name, so this is
+/// `MAX_URI_LEN` uris beside a `MAX_CLIENT_NAME_CHARS` name, so this is
 /// room to spare for anything legitimate and a 160th of what an anonymous
 /// caller could otherwise make this process parse.
 pub const MAX_REGISTER_BYTES: usize = 64 * 1024;
@@ -1262,7 +1262,7 @@ fn issued_at(created_at: &str) -> i64 {
 ///   read by whatever script is at that fragment.
 /// - **No userinfo.** `https://user@knowledge.example/cb` is how a target is
 ///   made to read as one host and resolve as another.
-/// - **At most [`MAX_URI_LEN`] characters.** See the constant.
+/// - **At most `MAX_URI_LEN` characters.** See the constant.
 /// - **Already normalized.** What is stored is the raw string (the first rule
 ///   is why), and [`redirect_matches`] compares it exactly, so a spelling a url
 ///   parser would canonicalize - an uppercase scheme or host, a default port, a

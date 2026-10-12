@@ -125,8 +125,8 @@ pub fn ui_available<E: RustEmbed>() -> bool {
 /// relative asset urls resolve under it from any deep link. At the root the
 /// file is served as built.
 ///
-/// Both shapes carry [`SHELL_CSP`] and `X-Frame-Options: DENY`, added here
-/// rather than in [`embedded`]: every app route this SPA answers - `/authorize`
+/// Both shapes carry `SHELL_CSP` and `X-Frame-Options: DENY`, added here
+/// rather than in `embedded`: every app route this SPA answers - `/authorize`
 /// included - is this same response, so a policy that unframes the shell
 /// unframes every one of them, while an asset chunk under `/assets/` (served
 /// through [`asset_response`] instead) has no reason to carry it.

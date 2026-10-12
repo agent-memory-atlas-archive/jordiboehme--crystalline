@@ -34,7 +34,7 @@
 //! filesystem is validated through [`crate::state`]'s chokepoint
 //! ([`crate::state::base_path`] and the conflict helpers), which rejects
 //! traversal-shaped, absolute and Windows-drive-prefixed paths. Working-tree
-//! writes funnel through the same validation via [`checked_working_path`]
+//! writes funnel through the same validation via `checked_working_path`
 //! before a byte is written, so a crafted path can never escape the domain
 //! root.
 
@@ -313,7 +313,7 @@ pub struct CommitReport {
     /// Working-tree files skipped for exceeding [`MAX_SHARED_FILE_BYTES`],
     /// each with its size in bytes.
     pub skipped_large: Vec<(String, u64)>,
-    /// The one-line summary, as [`generate_summary_line`] writes it.
+    /// The one-line summary, as `generate_summary_line` writes it.
     pub summary: String,
     /// Whether this commit cleared the refusal recorded for the acting login:
     /// direct commits work for that login again.
@@ -587,13 +587,13 @@ fn manifest_candidates(
 ///
 /// Consuming a merged layer is also what puts a stacked chain back together
 /// after the forge moved it: merging one layer rebases every layer above it,
-/// so once the merge is in history [`adopt_rebased_layers`] takes each
+/// so once the merge is in history `adopt_rebased_layers` takes each
 /// survivor's new head where the move carried none of that layer's own work.
 /// Without that a plain merge would leave the whole chain looking amended.
 ///
 /// A consumed merge's branch is queued in the same save, and deleted once
 /// every open pull request based on it was moved to the branch the share
-/// merged into ([`retire_branches`]). This is [`pull_with`] running
+/// merged into (`retire_branches`). This is [`pull_with`] running
 /// that cleanup.
 pub async fn pull(
     provider: &dyn Provider,
@@ -604,7 +604,7 @@ pub async fn pull(
     pull_with(provider, spec, domain_root, state_dir, BranchCleanup::Run).await
 }
 
-/// Whether a pull runs the branch cleanup ([`retire_branches`])
+/// Whether a pull runs the branch cleanup (`retire_branches`)
 /// or leaves the queue for a later pull.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchCleanup {
@@ -1364,7 +1364,7 @@ async fn rebased_head(
 /// flags), never failing the status.
 ///
 /// The four stack fields are read off local state, with one exception: an
-/// owed stack link may be settled before they are read ([`retry_stack_link`]),
+/// owed stack link may be settled before they are read (`retry_stack_link`),
 /// so a status that could pay the debt reports the healed truth rather than the
 /// debt. That needs a provider and `settle_owed_link`, and it costs nothing
 /// when nothing is owed - the flag is tested before the capability is.
@@ -1605,7 +1605,7 @@ pub struct ShareOptions<'a> {
     ///
     /// Opaque here in the same sense `author_login` is: the caller decides
     /// which files a person or an agent picked, and this crate only filters
-    /// the delta it detected down to them (see [`select_share_files`]). An
+    /// the delta it detected down to them (see `select_share_files`). An
     /// empty slice is a selection of nothing, which is
     /// [`ProposeOutcome::NothingToShare`] rather than an error.
     pub files: Option<&'a [String]>,
@@ -2155,7 +2155,7 @@ pub(crate) fn share_route(options: &ShareOptions<'_>, state: &OriginState) -> Sh
 ///
 /// `domain_name` is the domain's registered name, the contract's sole
 /// authority over what a share calls the domain: it seeds the branch slug
-/// (see [`share_branch_name`]) and the generated title and body, regardless
+/// (see `share_branch_name`) and the generated title and body, regardless
 /// of what `domain_root`'s own directory happens to be named.
 ///
 /// The algorithm, in order: pull first, so every proposal is opened
@@ -2165,7 +2165,7 @@ pub(crate) fn share_route(options: &ShareOptions<'_>, state: &OriginState) -> Sh
 /// provider write call is made; detect local changes against the
 /// now-current base, reporting [`ProposeOutcome::NothingToShare`] when there
 /// are none; supersede any declined proposal (moved to history keeping
-/// `Declined`, its branch queued for [`retire_branches`], which deletes it
+/// `Declined`, its branch queued for `retire_branches`, which deletes it
 /// unless an open pull request is based on it or comes from it); then either
 /// update the one open proposal in place or create a new one.
 ///
@@ -2175,7 +2175,7 @@ pub(crate) fn share_route(options: &ShareOptions<'_>, state: &OriginState) -> Sh
 /// on that layer's head, its commit carrying exactly one parent, its pull
 /// request targeting that layer's branch) and links it into the forge's
 /// stack, so every share stays reviewable on its own. A layer is detected
-/// against the chain TIP rather than the trunk (see [`effective_tip_files`]),
+/// against the chain TIP rather than the trunk (see `effective_tip_files`),
 /// so it records its own delta and nothing the layers below it already carry:
 /// a share with nothing new is [`ProposeOutcome::NothingToShare`] even with a
 /// chain open, and retiring a file only a lower layer holds is a change like
@@ -2184,7 +2184,7 @@ pub(crate) fn share_route(options: &ShareOptions<'_>, state: &OriginState) -> Sh
 ///
 /// `options.proposal` names a layer to amend instead, the verb a reviewer's
 /// feedback is answered with: the share lands on that layer's own branch and
-/// [`amend_layer`] replays every layer above it onto the amended head, so the
+/// `amend_layer` replays every layer above it onto the amended head, so the
 /// chain heals itself rather than needing a manual re-base. A number that is
 /// not an open layer is refused with the open layers listed. Off the stacked
 /// path the number can only name the one living proposal, and amending it is
@@ -2205,14 +2205,14 @@ pub(crate) fn share_route(options: &ShareOptions<'_>, state: &OriginState) -> Sh
 /// opening a second pull request ([`ProposeOutcome::Updated`]), and refuses
 /// with [`ProposeOutcome::ProposalDiverged`] - before any provider write -
 /// when a reviewer has moved the branch away from every head this machine
-/// recorded (see [`head_is_ours`]: the settled head, a half-finished push this
+/// recorded (see `head_is_ours`: the settled head, a half-finished push this
 /// machine announced before making it, or no recorded head at all). An open
 /// record whose branch ref is gone is settled from the proposal's own state
 /// (an open pull request with no branch counts as declined) and the share
 /// falls through to a fresh creation.
 ///
 /// `options.files` narrows what the share carries to a chosen subset of the
-/// detected delta ([`select_share_files`]): the paths named, plus the
+/// detected delta (`select_share_files`): the paths named, plus the
 /// generated listings of the folders they live in. It applies to every path
 /// through this function, a new layer and an amend alike, and what it leaves
 /// out simply stays an unshared local change for a later share. A path that
@@ -2222,8 +2222,8 @@ pub(crate) fn share_route(options: &ShareOptions<'_>, state: &OriginState) -> Sh
 ///
 /// Creating uploads each added or modified file's content as a blob, builds a
 /// tree from the base commit with every domain-relative path re-prefixed to
-/// its repo-relative form (see [`to_repo_relative`]), commits it, opens a
-/// share branch named per [`share_branch_name`] and opens the pull request;
+/// its repo-relative form (see `to_repo_relative`), commits it, opens a
+/// share branch named per `share_branch_name` and opens the pull request;
 /// finally the proposal is recorded in state (status `Open`) and saved. Local
 /// files are never touched: a share only ever reads them.
 pub async fn propose(
@@ -3490,7 +3490,7 @@ fn advance_base_after_commit(
 
 /// Writes the folder at `paths` from the base copies: the write a pull would
 /// have made for a commit that just landed. A path with no base copy is
-/// removed from the folder. Every path goes through [`checked_working_path`],
+/// removed from the folder. Every path goes through `checked_working_path`,
 /// so a crafted path is refused rather than joined.
 pub fn materialise_base_paths(
     domain_root: &Path,
@@ -5095,7 +5095,7 @@ async fn finish_pending_repair(
 }
 
 /// Withdraws a share proposal: closes its pull request on the forge (an Open
-/// one), queues its branch for [`retire_branches`], which deletes it unless an
+/// one), queues its branch for `retire_branches`, which deletes it unless an
 /// open pull request is based on it or comes from it (then it is kept and
 /// named in `kept_branches`), optionally restores the shared files to their
 /// pre-share content, and moves the record to history as
@@ -5120,7 +5120,7 @@ async fn finish_pending_repair(
 /// Taking a layer out of a stacked chain is more than a close: the layers
 /// above it sit on a commit that is about to be nothing, and the forge refuses
 /// to retarget a proposal while it is stacked. So the chain is repaired around
-/// the hole, in [`repair_chain`]'s order - dissolve, replay the survivors onto
+/// the hole, in `repair_chain`'s order - dissolve, replay the survivors onto
 /// the layer below the hole, retarget the first of them, recreate the stack
 /// when two or more layers survive - with
 /// [`crate::state::OriginState::repair_pending`] set from before the dissolve
@@ -5389,9 +5389,9 @@ pub struct DiscardReport {
 /// Per target, in order: resolve it against `local` (both spellings; a path
 /// that is a base file but no longer differs is [`DiscardRefusal::NotAChange`],
 /// anything else unresolved is [`DiscardRefusal::UnknownPath`]); join it
-/// through [`checked_working_path`] at its on-disk spelling; read the current
+/// through `checked_working_path` at its on-disk spelling; read the current
 /// file and compare its digest with what the caller looked at, the guard
-/// [`revert_layer_files`] keeps, so newer work is never destroyed
+/// `revert_layer_files` keeps, so newer work is never destroyed
 /// ([`DiscardRefusal::ChangedSince`]); then act. An addition is removed, a
 /// modification or a deletion is written back from the base copy, and a
 /// path the trunk has no copy of is [`DiscardRefusal::NoBaseCopy`] with

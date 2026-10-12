@@ -19,9 +19,9 @@
 //!   positional key cannot carry a collation, so a compound select is wrapped in
 //!   a subselect and its keys named. `every_text_order_by_is_collation_pinned`
 //!   in this module's tests enforces both halves against the source of this file
-//!   and of [`search`].
+//!   and of `search`.
 //! - Full-text search is the same LIKE-candidate scan plus the identical Rust
-//!   weighted scorer Turso uses (see [`search`]), not tsvector, so hybrid
+//!   weighted scorer Turso uses (see `search`), not tsvector, so hybrid
 //!   ranking and every search test match across backends. `store_info().fts_mode`
 //!   is `CandidateScan` on both.
 //! - Transactions pin one pool connection in `begin()` and route every statement
@@ -3451,7 +3451,7 @@ impl Store for PostgresStore {
         Ok(())
     }
 
-    /// Runs on [`PostgresStore::acquire`]'s connection, which is the pinned
+    /// Runs on `PostgresStore::acquire`'s connection, which is the pinned
     /// transaction connection when one is open - the same reason `record_sync`
     /// does, and the reason clearing the marker inside the apply's transaction
     /// is atomic with it here as it is on Turso.

@@ -8,7 +8,7 @@
 //! is the resolver that turns one of those, plus the membership records in the
 //! auth database, into a [`DomainRight`].
 //!
-//! The policy itself is one small synchronous function, [`decide`]. Both public
+//! The policy itself is one small synchronous function, `decide`. Both public
 //! answers - [`DomainAccess::right`] for a single domain and
 //! [`DomainAccess::hidden_domains`] for the whole set - are folds over it, so
 //! the per-domain answer and the bulk filter cannot drift apart. They read the
@@ -479,7 +479,7 @@ impl DomainAccess {
     /// owner is [`DomainRight::Own`] before any of it, an anonymous caller caps
     /// at [`DomainRight::Read`] (the MCP open tier is carved out by its own
     /// surface, on the setting that creates it, before this is ever called),
-    /// and an admin caps at `Own`, which is what [`decide`] already gave them.
+    /// and an admin caps at `Own`, which is what `decide` already gave them.
     pub async fn write_right(&self, scope: &Scope, domain: &str) -> Result<DomainRight> {
         let (principal, right) = self.resolved_right(scope, domain).await?;
         Ok(capped(&principal, right))
@@ -535,7 +535,7 @@ impl DomainAccess {
     /// `needed` on `domain` (an owner or manager step), or `None` when the
     /// list is not the reason.
     ///
-    /// Compared with the domain answer alone ([`decide`], no instance cap),
+    /// Compared with the domain answer alone (`decide`, no instance cap),
     /// because owning or managing a domain is what the domain grants: a
     /// private domain's owner who is an instance editor owns it. An instance
     /// editor asking for an owner step on a shared domain gets `None`, since
@@ -650,10 +650,10 @@ impl DomainAccess {
     /// domain's name out of these records (a removal, the old name of a
     /// rename), so the change can carry who could read the domain a moment
     /// before it, rather than leaving a listener to ask a registry the change
-    /// is emptying. Each account is decided by [`decide`], the rule every
+    /// is emptying. Each account is decided by `decide`, the rule every
     /// other answer here uses: the owner, every member at any level and every
     /// instance admin; a disabled account reads nothing, as
-    /// [`DomainAccess::principal`] rules. Names are the store's own folded
+    /// `DomainAccess::principal` rules. Names are the store's own folded
     /// spelling. The machine owner is never named: it reads every domain.
     pub async fn readers_of(&self, domain: &str) -> Result<Option<HashSet<String>>> {
         let Some(acl) = self.auth.domain_visibility(domain).await? else {

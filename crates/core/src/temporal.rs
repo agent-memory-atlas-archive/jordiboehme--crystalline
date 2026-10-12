@@ -46,7 +46,7 @@ pub const DATE_FIELDS: &[&str] = &[
 pub struct DateFieldError {
     /// The frontmatter key that was set, one of [`DATE_FIELDS`].
     pub field: &'static str,
-    /// The offending value, rendered as [`describe`] renders it.
+    /// The offending value, rendered as `describe` renders it.
     pub value: String,
 }
 
@@ -144,7 +144,7 @@ fn assign_date_field(fm: &mut Frontmatter, field: &str, date: NaiveDate) {
     "verified must be a {{ by, at }} entry or a list of them, got {value}; `by` names the actor and `at` is an RFC 3339 instant"
 )]
 pub struct VerifiedFieldError {
-    /// The offending value, rendered as [`describe`] renders it.
+    /// The offending value, rendered as `describe` renders it.
     pub value: String,
 }
 
