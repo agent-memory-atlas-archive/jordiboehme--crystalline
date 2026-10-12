@@ -2,7 +2,7 @@
  * The block-pixel font and the pixel pictures built from it: titles and
  * demos on the arcade cabinets' attract screens and marquees (H14), the
  * pocket console's two screen pictures (C16), the small "<=>" mark on
- * the back of the beige laptop's lid (C17), and the 2.6d and 2.6f props'
+ * the beige laptop's screen (C17), and the 2.6d and 2.6f props'
  * marks (`marks.ts`, 2.6d C16, 2.6f C13-C17).
  *
  * A picture is a list of rows of characters, row 0 at the top, one

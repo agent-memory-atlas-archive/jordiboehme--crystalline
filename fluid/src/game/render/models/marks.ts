@@ -46,6 +46,8 @@ export const MARKS = {
   towerBadge: "HIGHSCREEN",
   /** The designer tower's clock-speed display, red. */
   towerClock: "40",
+  /** The beige laptop's small mark, drawn on its screen. */
+  laptopMark: "<=>",
   /** The gravity console's readout. */
   gravity: "300G",
   /** Both desk computers' badge, in the original's lower-case wordmark. */
