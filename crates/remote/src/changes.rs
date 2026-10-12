@@ -561,17 +561,36 @@ pub(crate) fn detect_local_changes_with(
             // (the file answers, or the question fails) means the walk could
             // not see it for another reason, and the plan stops with the file
             // named instead of proposing to delete it.
+            //
+            // The base holds two or more spellings of this path that differ
+            // only in letter case, none of them is on disk exactly, and the
+            // walk saw a file under yet another spelling. A case-insensitive
+            // filesystem answers "a file is there" for every spelling, so
+            // nothing here can tell which one the file stands for or whether
+            // the others were deleted. A deletion would ask the team
+            // repository to drop a teammate's file, so the plan stops and
+            // names the spellings instead. This is decided before the
+            // filesystem is asked, so every platform gives the same answer.
+            let folded = fold_case(rel);
+            if seen_folded.contains(&folded)
+                && let Some(keys) = folded_base.get(&folded)
+                && keys.len() > 1
+            {
+                let named = keys
+                    .iter()
+                    .map(|k| format!("'{k}'"))
+                    .collect::<Vec<_>>()
+                    .join(" and ");
+                return Err(RemoteError::Refused(format!(
+                    "{named} in the team repository differ only in letter case. Windows and macOS can hold only one of them, so Crystalline cannot tell whether one was deleted. Rename one of them in the team repository, then share again."
+                )));
+            }
             match std::fs::symlink_metadata(domain_root.join(rel)) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(RemoteError::working_tree(*rel, e)),
-                // A case-insensitive filesystem answers for a base spelling
-                // that differs only in case from a file the walk did see: the
-                // answer is that file, already accounted for above, and the
-                // documented case rules decide what it means.
-                Ok(meta) if meta.is_file() && seen_folded.contains(&fold_case(rel)) => {}
                 Ok(_) => {
                     return Err(RemoteError::Refused(format!(
-                        "'{rel}' is in the last shared state and still on disk, but Crystalline could not see it as a file. It may be a link or a redirected folder. Move it out of the domain folder, then share again."
+                        "'{rel}' is in the last shared state and still on disk, but Crystalline could not see it as a file. It may be behind a link or a redirected folder. Replace the link with a real folder (or a real file) at the same place, then try again."
                     )));
                 }
             }
@@ -1600,11 +1619,12 @@ mod tests {
     }
 
     #[test]
-    fn two_base_keys_folding_together_are_ambiguous_and_nothing_is_folded() {
-        // A repository genuinely holding both spellings. Guessing which one
-        // the disk file stands for would be worse than reporting, so this
-        // falls through to the byte-exact behaviour - and verify rule `E009`
-        // is what tells the member to rename one of them.
+    fn two_base_keys_folding_together_are_ambiguous_and_refuse_the_plan() {
+        // A repository genuinely holding both spellings, and a disk file
+        // under a third. A case-insensitive filesystem answers "a file is
+        // there" for both base spellings, so neither may be proposed for
+        // deletion; guessing which one the disk file stands for is worse
+        // than stopping, so the plan stops and names both.
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), DISK_SPELLING, b"header module");
         let mut base = BTreeMap::new();
@@ -1614,18 +1634,36 @@ mod tests {
             stamp_for(b"header module"),
         );
 
-        let result = detect_local_changes(dir.path(), &base).unwrap();
-        let mut rules: Vec<&str> = result
-            .changes
-            .iter()
-            .map(|c| match c {
-                LocalChange::Added { .. } => "added",
-                LocalChange::Modified { .. } => "modified",
-                LocalChange::Deleted { .. } => "deleted",
-            })
-            .collect();
-        rules.sort_unstable();
-        assert_eq!(rules, vec!["added", "deleted", "deleted"]);
+        let err = detect_local_changes(dir.path(), &base)
+            .expect_err("two spellings in the base must refuse the plan");
+        let text = err.to_string();
+        assert!(text.contains(BASE_SPELLING), "{text}");
+        assert!(
+            text.contains("classes/PLATFORM.COMPONENTS.COMMON/CustomHeaderModule.md"),
+            "{text}"
+        );
+        assert!(text.contains("differ only in letter case"), "{text}");
+    }
+
+    #[test]
+    fn a_case_collision_in_the_base_is_refused_not_deleted() {
+        // The team repository holds `notes/A.md` and `notes/a.md`; the
+        // working tree holds one file under the folder spelled `Notes`. No
+        // spelling matches exactly, so the old code proposed deleting both.
+        // The answer is the same on every filesystem: a refusal naming both.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Notes/a.md", b"alpha");
+        let mut base = BTreeMap::new();
+        base.insert("notes/A.md".to_string(), stamp_for(b"alpha"));
+        base.insert("notes/a.md".to_string(), stamp_for(b"other alpha"));
+
+        let err = detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None)
+            .expect_err("a case collision in the base must refuse the plan");
+        let text = err.to_string();
+        assert!(
+            text.contains("'notes/A.md' and 'notes/a.md'"),
+            "both spellings must be named: {text}"
+        );
     }
 
     #[test]
@@ -1736,7 +1774,15 @@ mod tests {
         let base = base_of(&[("linked/a.md", b"alpha"), ("plain.md", b"plain")]);
         let err = detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None)
             .expect_err("a file behind a link must refuse the plan");
-        assert!(err.to_string().contains("linked/a.md"), "{err}");
+        let text = err.to_string();
+        assert!(text.contains("linked/a.md"), "{text}");
+        // Moving the file out of the domain would make the next share
+        // propose deleting it, so the advice is to replace the link.
+        assert!(
+            text.contains("Replace the link with a real folder"),
+            "{text}"
+        );
+        assert!(!text.contains("Move it out"), "{text}");
     }
 
     #[test]
