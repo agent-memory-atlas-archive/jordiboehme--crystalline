@@ -279,7 +279,7 @@ pub fn utf16_with_bom(xml: &str) -> Vec<u8> {
 /// and from those two variables when the token cannot be read.
 pub fn current_account() -> String {
     let token = token_account();
-    if token.is_none() {
+    if token.is_none() && cfg!(windows) {
         tracing::info!(
             "the process token gave no account, so the daemon task account comes from USERDOMAIN and USERNAME"
         );
