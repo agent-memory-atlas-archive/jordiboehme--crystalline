@@ -65,7 +65,7 @@ A write result may end with a '[crystalline]' nudge line - treat it as the stand
 
 Some deployments are read-only and say so up front: the instructions state the knowledge is curated externally, and the write tools are simply absent from the tool list. Search and read there; do not propose a capture.
 
-A domain whose routing line says (read-only), or whose row carries `read_only: true` (a domain row's `read_only`), is not a place for you to write: it is locked, your role only reads it, or it is not on your account's write list. Search and read it, and write where the routing block allows.
+A domain whose routing line says (read-only), or whose row carries `read_only: true` (a domain row's `read_only`), is not a place for you to write. It is locked, your role only reads it, or it is not on your account's write list. Search and read it, and write where the routing block allows.
 
 ## Sharing with a team
 

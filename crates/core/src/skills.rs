@@ -397,7 +397,7 @@ mod tests {
     /// `read_only` means and where to write instead (spec A-5, B-6).
     #[test]
     fn the_skills_teach_that_a_read_only_domain_takes_no_writes() {
-        let sentence = "A domain whose routing line says (read-only), or whose row carries `read_only: true` (a domain row's `read_only`), is not a place for you to write: it is locked, your role only reads it, or it is not on your account's write list. Search and read it, and write where the routing block allows.";
+        let sentence = "A domain whose routing line says (read-only), or whose row carries `read_only: true` (a domain row's `read_only`), is not a place for you to write. It is locked, your role only reads it, or it is not on your account's write list. Search and read it, and write where the routing block allows.";
         for name in ["crystalline-intelligence", "crystalline-capture"] {
             let body = skill(name).unwrap().content;
             assert!(body.contains(sentence), "{name}");
