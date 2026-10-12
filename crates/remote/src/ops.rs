@@ -451,7 +451,11 @@ pub async fn subscribe(
         .and_then(|bytes| std::str::from_utf8(bytes).ok());
     write_artifact_mirror(state_dir, spec.subpath.as_deref(), manifest_source, &bytes)?;
 
-    let adopted = domain_root.exists() && std::fs::read_dir(domain_root)?.next().is_some();
+    let adopted = domain_root.exists()
+        && std::fs::read_dir(domain_root)
+            .map_err(|e| working_tree_error(domain_root, e))?
+            .next()
+            .is_some();
 
     // One pass writes the base snapshot and stamps the manifest from the same
     // bytes, so the base is never read back. The working tree only receives
@@ -3575,7 +3579,7 @@ async fn collect_changes(
         match change {
             LocalChange::Added { path, sha256 } => {
                 let wt_path = checked_working_path(state_dir, domain_root, local.disk_path(path))?;
-                let bytes = std::fs::read(&wt_path)?;
+                let bytes = read_working_file(&wt_path)?;
                 let size = bytes.len() as u64;
                 let blob_sha = provider.create_blob(spec, &bytes).await?;
                 out.writes.push(TreeWrite {
@@ -3594,7 +3598,7 @@ async fn collect_changes(
             }
             LocalChange::Modified { path, sha256 } => {
                 let wt_path = checked_working_path(state_dir, domain_root, local.disk_path(path))?;
-                let bytes = std::fs::read(&wt_path)?;
+                let bytes = read_working_file(&wt_path)?;
                 let size = bytes.len() as u64;
                 let blob_sha = provider.create_blob(spec, &bytes).await?;
                 out.writes.push(TreeWrite {
@@ -4463,7 +4467,7 @@ async fn collect_amend_changes(
                     continue;
                 }
                 let wt_path = checked_working_path(state_dir, domain_root, fresh.disk_path(path))?;
-                let bytes = std::fs::read(&wt_path)?;
+                let bytes = read_working_file(&wt_path)?;
                 let blob_sha = provider.create_blob(spec, &bytes).await?;
                 merged.insert(
                     path.clone(),
@@ -6297,16 +6301,26 @@ fn read_optional_file(path: &Path) -> Result<Option<Vec<u8>>, RemoteError> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
+        Err(e) => Err(working_tree_error(path, e)),
     }
+}
+
+/// A working-tree failure that names `path`.
+fn working_tree_error(path: &Path, source: std::io::Error) -> RemoteError {
+    RemoteError::working_tree(path.display().to_string(), source)
+}
+
+/// Reads a working-tree file that must exist; a failure names the file.
+fn read_working_file(path: &Path) -> Result<Vec<u8>, RemoteError> {
+    std::fs::read(path).map_err(|e| working_tree_error(path, e))
 }
 
 /// Writes `content` to a working-tree file, creating parent directories.
 fn write_working_file(path: &Path, content: &[u8]) -> Result<(), RemoteError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|e| working_tree_error(parent, e))?;
     }
-    std::fs::write(path, content)?;
+    std::fs::write(path, content).map_err(|e| working_tree_error(path, e))?;
     Ok(())
 }
 
@@ -6340,7 +6354,7 @@ fn remove_working_file(path: &Path) -> Result<(), RemoteError> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.into()),
+        Err(e) => Err(working_tree_error(path, e)),
     }
 }
 

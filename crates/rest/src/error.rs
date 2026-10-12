@@ -630,6 +630,7 @@ fn remote_to_api_error(e: crystalline_remote::RemoteError, detail: String) -> Ap
         | RemoteError::AuthPending
         | RemoteError::Api { .. }
         | RemoteError::Io(_)
+        | RemoteError::WorkingTree { .. }
         | RemoteError::State(_)
         | RemoteError::Credential { .. }
         | RemoteError::ServerCredential { .. }

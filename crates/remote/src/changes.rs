@@ -332,9 +332,19 @@ pub(crate) fn detect_local_changes_with(
         .into_iter()
         .filter_entry(|e| e.depth() == 0 || !is_hidden(e.file_name().to_string_lossy().as_ref()))
     {
+        // A walk error is never read as "the file is gone": the walk stops and
+        // names what it could not list, so nothing it did not see can reach a
+        // share as a deletion.
         let entry = match entry {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(err) => {
+                let at = err
+                    .path()
+                    .map(|p| rel_path(domain_root, p))
+                    .filter(|p| !p.is_empty())
+                    .unwrap_or_else(|| ".".to_string());
+                return Err(RemoteError::working_tree(at, std::io::Error::from(err)));
+            }
         };
         if !entry.file_type().is_file() {
             continue;
@@ -344,9 +354,9 @@ pub(crate) fn detect_local_changes_with(
             continue;
         }
 
-        let Ok(meta) = entry.metadata() else {
-            continue;
-        };
+        let meta = entry
+            .metadata()
+            .map_err(|e| RemoteError::working_tree(rel.clone(), std::io::Error::from(e)))?;
         let size = meta.len();
         seen.insert(rel.clone());
 
@@ -360,7 +370,8 @@ pub(crate) fn detect_local_changes_with(
 
         match base.get(rel.as_str()) {
             Some(stamp) => {
-                let bytes = std::fs::read(entry.path())?;
+                let bytes = std::fs::read(entry.path())
+                    .map_err(|e| RemoteError::working_tree(rel.clone(), e))?;
                 let sha256 = sha256_hex(&bytes);
                 let lf = lf_digests.and_then(|m| m.get(&rel)).map(String::as_str);
                 // A path the map covers is decided by its digest; only one it
@@ -373,7 +384,8 @@ pub(crate) fn detect_local_changes_with(
                 }
             }
             None => {
-                let bytes = std::fs::read(entry.path())?;
+                let bytes = std::fs::read(entry.path())
+                    .map_err(|e| RemoteError::working_tree(rel.clone(), e))?;
                 let sha256 = sha256_hex(&bytes);
                 unmatched.push((rel, size, Some(sha256)));
             }
@@ -537,8 +549,28 @@ pub(crate) fn detect_local_changes_with(
         .flat_map(|keys| keys.iter().copied())
         .collect();
 
+    let seen_folded: BTreeSet<String> = seen.iter().map(|p| fold_case(p)).collect();
     for rel in base.keys() {
         if !seen.contains(*rel) && !adopted.contains(rel) && !removed_but_for_case.contains(rel) {
+            // The walk did not see it. That is a deletion only when the
+            // operating system says the path is not there. Any other answer
+            // (the file answers, or the question fails) means the walk could
+            // not see it for another reason, and the plan stops with the file
+            // named instead of proposing to delete it.
+            match std::fs::symlink_metadata(domain_root.join(rel)) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(RemoteError::working_tree(*rel, e)),
+                // A case-insensitive filesystem answers for a base spelling
+                // that differs only in case from a file the walk did see: the
+                // answer is that file, already accounted for above, and the
+                // documented case rules decide what it means.
+                Ok(meta) if meta.is_file() && seen_folded.contains(&fold_case(rel)) => {}
+                Ok(_) => {
+                    return Err(RemoteError::Refused(format!(
+                        "'{rel}' is in the last shared state and still on disk, but Crystalline could not see it as a file. It may be a link or a redirected folder. Move it out of the way, then share again."
+                    )));
+                }
+            }
             changes.push(LocalChange::Deleted {
                 path: (*rel).to_string(),
             });
@@ -1616,5 +1648,115 @@ mod tests {
                 sha256: crate::state::sha256_hex(b"lowercase alpha"),
             }]
         );
+    }
+
+    // --- a walk never turns an error into a deletion ---
+
+    /// Takes every right away from the folder `path`; returns false when the
+    /// process is root (or the filesystem ignores modes) and it has no effect.
+    #[cfg(unix)]
+    fn deny(path: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::read_dir(path).is_err()
+    }
+
+    #[cfg(unix)]
+    fn restore(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_the_walk_cannot_list_refuses_the_plan_and_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes/a.md", b"alpha");
+        write(dir.path(), "decisions/b.md", b"beta");
+        let base = base_of(&[("notes/a.md", b"alpha"), ("decisions/b.md", b"beta")]);
+        let locked = dir.path().join("decisions");
+        if !deny(&locked) {
+            restore(&locked);
+            eprintln!("skipped: permissions are not enforced for this user");
+            return;
+        }
+        let result =
+            detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None);
+        restore(&locked);
+        let err = result.expect_err("an unreadable folder must refuse the plan");
+        assert!(err.to_string().contains("decisions"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_exists_but_cannot_be_read_is_not_a_deletion() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes/a.md", b"alpha");
+        write(dir.path(), "notes/b.md", b"beta");
+        let base = base_of(&[("notes/a.md", b"alpha"), ("notes/b.md", b"beta")]);
+        let file = dir.path().join("notes/b.md");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&file).is_ok() {
+            eprintln!("skipped: permissions are not enforced for this user");
+            return;
+        }
+        let result =
+            detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let err = result.expect_err("an unreadable file must refuse the plan");
+        assert!(err.to_string().contains("notes/b.md"), "{err}");
+    }
+
+    /// A base file the walk cannot reach through a link is on disk: it is
+    /// refused with its name, never proposed for deletion.
+    #[cfg(unix)]
+    #[test]
+    fn a_base_file_behind_a_link_is_refused_not_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        write(elsewhere.path(), "a.md", b"alpha");
+        std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("linked")).unwrap();
+        write(dir.path(), "plain.md", b"plain");
+        let base = base_of(&[("linked/a.md", b"alpha"), ("plain.md", b"plain")]);
+        let err = detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None)
+            .expect_err("a file behind a link must refuse the plan");
+        assert!(err.to_string().contains("linked/a.md"), "{err}");
+    }
+
+    #[test]
+    fn a_base_file_that_is_really_gone_is_still_a_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes/a.md", b"alpha");
+        let base = base_of(&[("notes/a.md", b"alpha"), ("notes/gone.md", b"gone")]);
+        let result = local(dir.path(), &base);
+        assert_eq!(
+            result.changes,
+            vec![LocalChange::Deleted {
+                path: "notes/gone.md".to_string()
+            }]
+        );
+    }
+
+    /// A junction in the domain folder is a link std does not follow: the
+    /// plan refuses cleanly and names what is behind it.
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_in_the_domain_refuses_the_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        write(elsewhere.path(), "a.md", b"alpha");
+        let link = dir.path().join("linked");
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(elsewhere.path())
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "mklink failed");
+        let base = base_of(&[("linked/a.md", b"alpha")]);
+        let err = detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None)
+            .expect_err("a junction must refuse the plan");
+        assert!(err.to_string().contains("linked"), "{err}");
     }
 }

@@ -119,13 +119,11 @@ impl OverlayStaging {
 
 impl Drop for OverlayStaging {
     fn drop(&mut self) {
-        match std::fs::remove_dir_all(&self.root) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::warn!(
+        if let Err(e) = crystalline_remote::tree::remove_tree(&self.root) {
+            tracing::warn!(
                 "the staged share tree at {} could not be removed: {e}",
                 self.root.display()
-            ),
+            );
         }
     }
 }

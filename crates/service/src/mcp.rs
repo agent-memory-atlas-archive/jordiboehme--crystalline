@@ -5482,6 +5482,7 @@ fn remote_to_error(e: RemoteError) -> ErrorData {
         | RemoteError::AuthPending
         | RemoteError::Api { .. }
         | RemoteError::Io(_)
+        | RemoteError::WorkingTree { .. }
         | RemoteError::State(_)
         | RemoteError::Credential { .. }
         | RemoteError::ServerCredential { .. }

@@ -766,7 +766,7 @@ pub fn remove_base_file(dir: &Path, rel: &str) -> Result<(), RemoteError> {
 pub fn replace_base_tree(dir: &Path, files: &BTreeMap<String, Vec<u8>>) -> Result<(), RemoteError> {
     let tmp_root = dir.join(BASE_TMP_DIR_NAME);
     if tmp_root.exists() {
-        std::fs::remove_dir_all(&tmp_root)?;
+        crate::tree::remove_tree(&tmp_root)?;
     }
     std::fs::create_dir_all(&tmp_root)?;
     for (rel, bytes) in files {
@@ -779,7 +779,7 @@ pub fn replace_base_tree(dir: &Path, files: &BTreeMap<String, Vec<u8>>) -> Resul
 
     let base_root = dir.join(BASE_DIR_NAME);
     if base_root.exists() {
-        std::fs::remove_dir_all(&base_root)?;
+        crate::tree::remove_tree(&base_root)?;
     }
     std::fs::rename(&tmp_root, &base_root)?;
     Ok(())
@@ -827,11 +827,7 @@ pub fn replace_artifact_kind(
     files: &BTreeMap<String, Vec<u8>>,
 ) -> Result<(), RemoteError> {
     let kind_dir = artifact_kind_dir(dir, kind_id);
-    match std::fs::remove_dir_all(&kind_dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
-    }
+    crate::tree::remove_tree(&kind_dir)?;
     for (rel, bytes) in files {
         let path = kind_dir.join(to_platform_path(rel)?);
         if let Some(parent) = path.parent() {
@@ -861,11 +857,7 @@ pub fn prune_artifact_kinds(dir: &Path, keep: &BTreeSet<&str>) -> Result<(), Rem
             continue;
         }
         let path = entry.path();
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            std::fs::remove_dir_all(&path)?;
-        } else {
-            std::fs::remove_file(&path)?;
-        }
+        crate::tree::remove_tree(&path)?;
     }
     let now_empty = std::fs::read_dir(&artifacts)
         .map(|mut e| e.next().is_none())
@@ -995,11 +987,7 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, RemoteError> {
 /// the offending id without touching the filesystem.
 pub fn clear_conflict(dir: &Path, id: &str) -> Result<(), RemoteError> {
     let conflict_dir = conflict_dir(dir, id)?;
-    match std::fs::remove_dir_all(conflict_dir) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.into()),
-    }
+    crate::tree::remove_tree(&conflict_dir)
 }
 
 /// A fresh conflict id: 8 lowercase hex characters drawn from a random UUID
