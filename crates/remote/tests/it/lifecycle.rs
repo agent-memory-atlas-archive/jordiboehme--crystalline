@@ -2079,6 +2079,57 @@ async fn a_direct_share_with_conflicts_pending_refuses_as_today() {
     assert_eq!(plan.sharing, Sharing::Direct);
 }
 
+/// The preview answers the conflicts before the amend refusal, as the share
+/// does: a named proposal on a direct domain with a conflict recorded.
+#[tokio::test]
+async fn a_direct_preview_with_a_proposal_reports_conflicts_before_the_amend_refusal() {
+    let mock = MockProvider::new();
+    let spec = share_spec();
+    let c1 = mock.add_commit(
+        sub_commit_files(&[("MANIFEST.md", DIRECT_MANIFEST), ("notes/a.md", b"a v1\n")]),
+        None,
+    );
+    let sub = subscribe_named(&mock, &spec, &c1, "brand").await;
+    write(&sub.domain_root.join("notes/a.md"), b"a mine\n");
+    let c2 = mock.add_commit(
+        sub_commit_files(&[
+            ("MANIFEST.md", DIRECT_MANIFEST),
+            ("notes/a.md", b"a theirs\n"),
+        ]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+    let options = ShareOptions {
+        proposal: Some(4),
+        ..direct()
+    };
+    let err = propose(
+        &mock,
+        &spec,
+        &sub.domain_root,
+        "brand",
+        &sub.state_dir,
+        options,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, RemoteError::ConflictsPending { count: 1 }),
+        "{err}"
+    );
+    let plan = propose_preview(
+        &mock,
+        &spec,
+        &sub.domain_root,
+        "brand",
+        &sub.state_dir,
+        options,
+    )
+    .await
+    .unwrap();
+    assert_eq!(plan.action, PlannedAction::ConflictsPending { count: 1 });
+}
+
 #[tokio::test]
 async fn a_branch_that_moved_once_is_pulled_and_the_share_lands_on_the_new_head() {
     let mock = MockProvider::new();

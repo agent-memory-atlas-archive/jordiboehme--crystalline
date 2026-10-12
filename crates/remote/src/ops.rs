@@ -3101,9 +3101,6 @@ fn preview_direct(
     state: &OriginState,
     options: ShareOptions<'_>,
 ) -> Result<SharePlan, RemoteError> {
-    if options.proposal.is_some() {
-        return Err(RemoteError::Refused(DIRECT_NO_AMEND.to_string()));
-    }
     // Against the chain tip, as the commit does (see [`commit_direct`]).
     let local = select_share_files(
         detect_local_changes_against(domain_root, &effective_tip_files(state), state_dir)?,
@@ -3123,6 +3120,9 @@ fn preview_direct(
             },
             String::new(),
         ));
+    }
+    if options.proposal.is_some() {
+        return Err(RemoteError::Refused(DIRECT_NO_AMEND.to_string()));
     }
     if let Some(open) = own_open_proposal(state, options.author_login) {
         return Ok(plan(
