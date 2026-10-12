@@ -12612,6 +12612,18 @@ fn ignores_case(dir: &Path) -> bool {
     probe.path().join("X.md").exists()
 }
 
+/// Makes `b` the same file as `a`, as a filesystem that ignores letter case
+/// keeps two spellings of one path. Where it already is (that filesystem),
+/// nothing changes; elsewhere `b` becomes a hard link to `a`, so the check
+/// that asks the filesystem runs on every platform.
+fn one_file_for_both(root: &Path, a: &str, b: &str) {
+    if ignores_case(root) {
+        return;
+    }
+    std::fs::remove_file(root.join(b)).unwrap();
+    std::fs::hard_link(root.join(a), root.join(b)).unwrap();
+}
+
 /// A team repository that holds `notes/A.md` and `notes/a.md`, subscribed
 /// on this machine. On a filesystem that ignores case the two land in one
 /// file.
@@ -12636,10 +12648,7 @@ async fn subscribe_two_spellings(mock: &MockProvider) -> (Subscribed, String) {
 async fn a_pull_never_removes_a_file_another_spelling_still_needs() {
     let mock = MockProvider::new();
     let (sub, c1) = subscribe_two_spellings(&mock).await;
-    if !ignores_case(&sub.domain_root) {
-        eprintln!("skipped: this filesystem tells letter case apart");
-        return;
-    }
+    one_file_for_both(&sub.domain_root, "notes/a.md", "notes/A.md");
     let c2 = mock.add_commit(
         commit_files(&[("MANIFEST.md", b"# Manifest"), ("notes/A.md", b"upper\n")]),
         Some(&c1),
@@ -12674,10 +12683,7 @@ async fn a_pull_never_removes_a_file_another_spelling_still_needs() {
 async fn a_pull_never_renames_away_a_file_another_spelling_still_needs() {
     let mock = MockProvider::new();
     let (sub, c1) = subscribe_two_spellings(&mock).await;
-    if !ignores_case(&sub.domain_root) {
-        eprintln!("skipped: this filesystem tells letter case apart");
-        return;
-    }
+    one_file_for_both(&sub.domain_root, "notes/a.md", "notes/A.md");
     let c2 = mock.add_commit(
         commit_files(&[
             ("MANIFEST.md", b"# Manifest"),
@@ -12749,6 +12755,88 @@ async fn a_pull_goes_through_once_the_two_spellings_have_distinct_names() {
         local.changes.is_empty(),
         "nothing may be proposed: {:?}",
         local.changes
+    );
+}
+
+/// Renaming only one spelling is not a way out: the other spelling stays,
+/// and the one file on disk still stands for it, so the pull still refuses
+/// and changes nothing.
+#[tokio::test]
+async fn a_pull_still_refuses_when_only_one_spelling_gets_a_new_name() {
+    let mock = MockProvider::new();
+    let (sub, c1) = subscribe_two_spellings(&mock).await;
+    one_file_for_both(&sub.domain_root, "notes/a.md", "notes/A.md");
+    let c2 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/A.md", b"upper\n"),
+            ("notes/lower.md", b"lower\n"),
+        ]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+    let file = sub.domain_root.join("notes/A.md");
+    let bytes_before = read(&file);
+    let state_before = std::fs::read(sub.state_dir.join("state.json")).unwrap();
+
+    let err = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect_err("one rename leaves the other spelling, so the pull stops");
+    let text = err.to_string();
+    assert!(text.contains("give both files new names"), "{text}");
+    assert_eq!(read(&file), bytes_before);
+    assert!(!sub.domain_root.join("notes/lower.md").exists());
+    assert_eq!(load_state(&sub.state_dir).base_commit, c1);
+    assert_eq!(
+        std::fs::read(sub.state_dir.join("state.json")).unwrap(),
+        state_before
+    );
+}
+
+/// After an upstream case-only rename with a local edit, the old spelling
+/// is an edit/delete conflict. Keeping theirs means "the old spelling is
+/// gone", but its file is the file of the new spelling, edit included, so
+/// the conflict is cleared and the file stays.
+#[tokio::test]
+async fn keeping_theirs_never_removes_a_file_another_spelling_still_needs() {
+    let mock = MockProvider::new();
+    let c1 = mock.add_commit(
+        commit_files(&[("MANIFEST.md", b"# Manifest"), ("notes/A.md", b"body\n")]),
+        None,
+    );
+    let (sub, _) = subscribe_at(&mock, &c1).await;
+    let c2 = mock.add_commit(
+        commit_files(&[("MANIFEST.md", b"# Manifest"), ("notes/a.md", b"body\n")]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+    write(&sub.domain_root.join("notes/A.md"), b"edited\n");
+
+    let report = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect("the pull records conflicts and goes through");
+    let old = report
+        .conflicts
+        .iter()
+        .find(|c| c.path == "notes/A.md")
+        .expect("the old spelling is a conflict");
+    assert_eq!(old.kind, ConflictKind::EditDelete);
+    one_file_for_both(&sub.domain_root, "notes/A.md", "notes/a.md");
+
+    resolve(
+        &sub.domain_root,
+        &sub.state_dir,
+        "notes/A.md",
+        Resolution::Theirs,
+    )
+    .expect("keeping theirs clears the conflict");
+    assert!(sub.domain_root.join("notes/A.md").exists());
+    assert_eq!(read(&sub.domain_root.join("notes/a.md")), b"edited\n");
+    assert!(
+        load_state(&sub.state_dir)
+            .conflicts
+            .iter()
+            .all(|c| c.path != "notes/A.md")
     );
 }
 

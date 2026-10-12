@@ -5686,6 +5686,18 @@ pub fn resolve(
             let wt_path = checked_working_path(state_dir, domain_root, local.disk_path(path))?;
             match upstream {
                 Some(bytes) => write_pulled_file(&wt_path, &bytes)?,
+                // Upstream removed this path, but on a filesystem that
+                // ignores letter case its file can be the file of a spelling
+                // that stays (an upstream case-only rename). Removing it
+                // would remove that file too, so the conflict is cleared and
+                // the file stays.
+                None if needed_by_another_spelling(
+                    state_dir,
+                    domain_root,
+                    &state.files,
+                    path,
+                    &wt_path,
+                )? => {}
                 None => remove_working_file(&wt_path)?,
             }
         }
@@ -6422,19 +6434,64 @@ fn check_no_shared_spelling(
         let wt_path = checked_working_path(state_dir, domain_root, rel)?;
         for other in others {
             let other_path = checked_working_path(state_dir, domain_root, other)?;
-            let shared = match same_file::is_same_file(&wt_path, &other_path) {
-                Ok(same) => same,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-                Err(e) => return Err(working_tree_error(&wt_path, e)),
-            };
-            if shared {
+            if same_physical_file(&wt_path, &other_path)? {
                 return Err(RemoteError::Refused(format!(
-                    "'{rel}' and '{other}' differ only in letter case, and this computer keeps them as one file. Crystalline will not remove it. In the team repository, give the two files names that differ in more than letter case. Do this from a computer that can hold both, then try again."
+                    "'{rel}' and '{other}' differ only in letter case, and this computer keeps them as one file. Crystalline will not remove it. In the team repository, give both files new names that differ in more than letter case. Do this from a computer that can hold both, then try again."
                 )));
             }
         }
     }
     Ok(())
+}
+
+/// Whether `a` and `b` open one and the same file, as a filesystem that
+/// ignores letter case answers for two spellings of one path. A path that is
+/// not there (or has a file where a folder should be) shares nothing. Any
+/// other failure names the path it came from.
+fn same_physical_file(a: &Path, b: &Path) -> Result<bool, RemoteError> {
+    fn handle(path: &Path) -> Result<Option<same_file::Handle>, RemoteError> {
+        match same_file::Handle::from_path(path) {
+            Ok(handle) => Ok(Some(handle)),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(working_tree_error(path, e)),
+        }
+    }
+    let Some(first) = handle(a)? else {
+        return Ok(false);
+    };
+    let Some(second) = handle(b)? else {
+        return Ok(false);
+    };
+    Ok(first == second)
+}
+
+/// Whether the working file at `wt_path` is also the file of another base
+/// path that differs from `rel` only in letter case.
+fn needed_by_another_spelling(
+    state_dir: &Path,
+    domain_root: &Path,
+    base: &BTreeMap<String, BaseStamp>,
+    rel: &str,
+    wt_path: &Path,
+) -> Result<bool, RemoteError> {
+    let folded = crystalline_core::fold_path_case(rel);
+    for other in base.keys() {
+        if other == rel || crystalline_core::fold_path_case(other) != folded {
+            continue;
+        }
+        let other_path = checked_working_path(state_dir, domain_root, other)?;
+        if same_physical_file(wt_path, &other_path)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// The nearest existing folder above the not yet existing `path` must be a

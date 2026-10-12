@@ -585,7 +585,7 @@ pub(crate) fn detect_local_changes_with(
                     .collect::<Vec<_>>()
                     .join(" and ");
                 return Err(RemoteError::Refused(format!(
-                    "{named} in the team repository differ only in letter case. Windows and macOS can hold only one of them, so Crystalline cannot tell whether one was deleted. In the team repository, give the files names that differ in more than letter case. Do this from a computer that can hold all of them, then try again."
+                    "{named} in the team repository differ only in letter case. Windows and macOS can hold only one of them, so Crystalline cannot tell whether one was deleted. In the team repository, give each of these files a new name that differs in more than letter case. Do this from a computer that can hold all of them, then try again."
                 )));
             }
             match std::fs::symlink_metadata(domain_root.join(rel)) {
@@ -1650,7 +1650,7 @@ mod tests {
         // one file both spellings share, so the advice keeps every name.
         assert!(!text.contains("Rename one"), "{text}");
         assert!(
-            text.contains("names that differ in more than letter case"),
+            text.contains("a new name that differs in more than letter case"),
             "{text}"
         );
     }
