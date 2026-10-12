@@ -421,6 +421,9 @@ mod tests {
             "make no call",
             "`unknown operator '$contains'`",
             "The record also lists the source's stable addresses in `sources`",
+            "the whole `sources` list with the old address replaced by the new one",
+            "point `resource` at the new path",
+            "A value whose JSON text is longer than 1024 bytes (quotes and escapes count)",
         ] {
             assert!(capture.contains(needle), "capture skill lacks {needle}");
         }
