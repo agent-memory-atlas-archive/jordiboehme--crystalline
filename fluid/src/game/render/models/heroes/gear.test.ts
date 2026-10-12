@@ -26,7 +26,7 @@ import {
 } from "../../modelChecks";
 import { MARKS } from "../marks";
 import { buildHeroMesh } from ".";
-import { STATUS_GREEN } from "./common";
+import { STATUS_GREEN, heroHalf } from "./common";
 import {
   ARM,
   ASSIST_LAMP,
@@ -198,6 +198,48 @@ describe("the turntable's model", () => {
 
   it("stays under its triangle pin", () => {
     expect(buildHeroMesh("turntable", 0, LOOK).count / 3).toBeLessThan(3300);
+  });
+});
+
+describe("the exhibit pieces' bounds", () => {
+  /** Every point of a kind inside its footprint, on the floor, under its top. */
+  const inside = (kind: "turntable" | "camera") => {
+    const { hw, d0, d1, top } = heroHalf(kind, 0);
+    const pts = pointsOf(partsOf(kind));
+    for (const q of pts) {
+      expect(Math.abs(q[0])).toBeLessThanOrEqual(hw + 1e-9);
+      expect(q[1]).toBeGreaterThanOrEqual(d0 - 1e-9);
+      expect(q[1]).toBeLessThanOrEqual(d1 + 1e-9);
+      expect(q[2]).toBeGreaterThanOrEqual(-1e-9);
+      expect(q[2]).toBeLessThanOrEqual(top + 1e-9);
+    }
+    return { hw, d0, d1, pts };
+  };
+
+  it("keeps the turntable's table inside its footprint, filling it, the deck on its top", () => {
+    // Mutation caught: the table grown past the footprint or shrunk off
+    // it, or the deck hanging over the table's edge.
+    const { hw, d0, d1 } = inside("turntable");
+    const top = pointsOf(
+      partsOf("turntable").filter(
+        (p) =>
+          p.method === "bevelBox" &&
+          Math.abs(span(local(p), 2).hi - TABLE.top) < 1e-9,
+      ),
+    );
+    expect(span(top, 0).lo).toBeCloseTo(-hw, 6);
+    expect(span(top, 0).hi).toBeCloseTo(hw, 6);
+    expect(span(top, 1).lo).toBeCloseTo(d0, 6);
+    expect(span(top, 1).hi).toBeCloseTo(d1, 6);
+    expect(DECK.w / 2).toBeLessThan(hw);
+    expect(DECK.d / 2 + 0.015).toBeLessThan(d1);
+  });
+
+  it("keeps the camera's plinth and tripod inside its footprint", () => {
+    // Mutation caught: the plinth or a leg's foot past the footprint.
+    const { hw, d1 } = inside("camera");
+    expect(TRIPOD.plinth.r).toBeLessThanOrEqual(Math.min(hw, d1));
+    expect(TRIPOD.foot).toBeLessThan(TRIPOD.plinth.r);
   });
 });
 
