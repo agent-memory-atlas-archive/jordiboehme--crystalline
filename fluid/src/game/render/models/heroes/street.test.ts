@@ -286,9 +286,11 @@ describe("street hero models", () => {
     }
     // The left flank's three and the right flank's two, as on the original.
     const sideOf = (m: string) => BIKE_STICKERS.find((s) => s.mark === m)?.side;
-    const [canon, citizen, arai, shoei] = MARKS.bikeStickers;
-    expect([canon, citizen, shoei].map((m) => sideOf(m))).toEqual([-1, -1, -1]);
-    expect(sideOf(arai)).toBe(1);
+    const [leftFirst, leftSecond, right, leftThird] = MARKS.bikeStickers;
+    expect([leftFirst, leftSecond, leftThird].map((m) => sideOf(m))).toEqual([
+      -1, -1, -1,
+    ]);
+    expect(sideOf(right)).toBe(1);
   });
 
   it("sets the notice's lines in black on the left door leaf's white notice (2.6f C13)", () => {
