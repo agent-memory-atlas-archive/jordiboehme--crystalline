@@ -481,8 +481,15 @@ impl DomainAccess {
     /// surface, on the setting that creates it, before this is ever called),
     /// and an admin caps at `Own`, which is what `decide` already gave them.
     pub async fn write_right(&self, scope: &Scope, domain: &str) -> Result<DomainRight> {
-        let (principal, right) = self.resolved_right(scope, domain).await?;
-        Ok(capped(&principal, right))
+        let (principal, right) = self.decided_right(scope, domain).await?;
+        // The write list can only lower a right, so a role that already reads
+        // at most has its answer without it, and a broken list table cannot
+        // change it.
+        let right = capped(&principal, right);
+        if right > DomainRight::Read && self.off_list_account(&principal, domain).await?.is_some() {
+            return Ok(DomainRight::Read);
+        }
+        Ok(right)
     }
 
     /// [`WriteRights`] for `scope`, read from the store once: the principal,

@@ -415,6 +415,27 @@ async fn a_viewer_stays_marked_when_the_write_list_table_is_broken() {
     assert_eq!(listed["domains"][0]["read_only"], true, "{listed}");
 }
 
+/// An instance Viewer who is an Editor member of a private domain is capped to
+/// read by the role, so the write list is not read and the row stays marked
+/// over a broken table.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_viewer_with_editor_membership_stays_marked_over_a_broken_write_list_table() {
+    let (_tmp, engine) = instance_with(
+        &["lab"],
+        &[],
+        &[("ed", Role::Editor, None), ("vw", Role::Viewer, None)],
+        &[("lab", "ed", &[("vw", MemberLevel::Editor)][..])],
+        true,
+    )
+    .await;
+    let listed = engine
+        .list_domains(&ListDomainsParams::default(), &user("vw"))
+        .await
+        .expect("the listing still answers");
+    assert_eq!(listed["domains"][0]["read_only"], true, "{listed}");
+    assert!(engine.read_only_mark(&user("vw"), "lab").await);
+}
+
 /// B-3: the batched marks are exactly the per-row write answer, for every
 /// kind of caller and every domain, a private one with members included.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -496,9 +517,17 @@ async fn batched_marks_equal_the_per_row_answer_over_a_broken_write_list_table()
         &[
             ("ed", Role::Editor, None),
             ("viewer", Role::Viewer, None),
+            ("vedit", Role::Viewer, None),
             ("boss", Role::Admin, None),
         ],
-        &[("lab", "ed", &[("viewer", MemberLevel::Viewer)][..])],
+        &[(
+            "lab",
+            "ed",
+            &[
+                ("viewer", MemberLevel::Viewer),
+                ("vedit", MemberLevel::Editor),
+            ][..],
+        )],
         true,
     )
     .await;
@@ -506,7 +535,7 @@ async fn batched_marks_equal_the_per_row_answer_over_a_broken_write_list_table()
         account: "boss".into(),
         admin: true,
     };
-    for scope in [user("ed"), user("viewer"), admin] {
+    for scope in [user("ed"), user("viewer"), user("vedit"), admin] {
         let listed = engine
             .list_domains(
                 &ListDomainsParams {
@@ -526,6 +555,9 @@ async fn batched_marks_equal_the_per_row_answer_over_a_broken_write_list_table()
                 per_row,
                 "{scope:?} on {name}: {row}"
             );
+            if scope == user("vedit") {
+                assert!(per_row, "{scope:?} on {name} stays marked: {row}");
+            }
         }
     }
 }
