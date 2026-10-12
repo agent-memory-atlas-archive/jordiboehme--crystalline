@@ -1,8 +1,8 @@
 /**
  * The street pieces: the red bike and the blue police box, two machines
- * from the street that ended up aboard. Both are lit on the `breathe`
- * bank (C13). The police box's two door leaves are the one thing on
- * either that moves.
+ * from the street that ended up aboard, and the light cycle beside the
+ * bike. All three are lit on the `breathe` bank (C13). The police box's
+ * two door leaves are the one thing on any of them that moves.
  *
  * - The bike (`BIKE`) is a long racing motorcycle parked on its side
  *   stand, its length along `a` and its nose at `+a`, glossy red. Its two
@@ -54,17 +54,30 @@
  *   `boxKey(index)`, so they open and close together. That is the one
  *   door motion; the recipe builds them in place, closed, only when asked
  *   to (`movers`), which the model checks are.
+ * - The light cycle (`CYCLE`) is the enclosed racing cycle from inside
+ *   the computer, parked like the bike: its length along `a`, its nose at
+ *   `+a`. Two wheels of one size are its ends (`CYCLE_WHEELS`), each a
+ *   glowing tread under a dark cover on each side, so only the rim
+ *   glows, set into the narrow shell between the shell's arches. The
+ *   shell (`CYCLE_SHELL`) is one dark glossy piece in slices like the
+ *   bike's panels (`grown`), running from the nose over the front wheel,
+ *   along the belly and over the rear wheel to the tail, its long back
+ *   under a smoked canopy. Glowing lines trace the shell's outline a
+ *   little inside it on both sides (`cycleLine`, laid by `profileLine`,
+ *   which the bike's pinstripe shares) and the canopy's ridge. Every
+ *   light is in one group and breathes; the body carries no text.
  *
  * The numbers each kind is built to are named above its recipe: `BIKE`,
  * `BIKE_WHEELS` and the profiles (`CORE`, `SKIRT`, `COWL`) for the bike,
- * `BOX` for the box. Round parts use few facets, as in every batch.
+ * `BOX` for the box, `CYCLE`, `CYCLE_WHEELS` and `CYCLE_SHELL` for the
+ * light cycle. Round parts use few facets, as in every batch.
  */
 
 import { boxKey } from "../../../world/box";
 import { turnedPoint } from "../../../world/footprints";
 import type { Hero, HeroKind } from "../../../world/types";
 import { CELL } from "../../../world/units";
-import { createBuilder } from "../../geometry";
+import { createBuilder, type Surface } from "../../geometry";
 import {
   DECAL_LIFT,
   createKit,
@@ -293,6 +306,35 @@ function grown(poly: readonly P2[], g: number): [number, number][] {
     const k = g / Math.max(1 + n0[0] * n1[0] + n0[1] * n1[1], 0.5);
     return [p[0] + (n0[0] + n1[0]) * k, p[1] + (n0[1] + n1[1]) * k];
   });
+}
+
+/**
+ * A line along the side profile `pts` (`[a, h]`, open), `width` wide, laid
+ * on the face between depths `d0` and `d1`: one flat bar per pair of
+ * points, each a little longer than its piece so the joints close. The
+ * bike's pinstripe and the light cycle's glowing lines.
+ */
+function profileLine(
+  k: Kit,
+  pts: readonly P2[],
+  width: number,
+  d0: number,
+  d1: number,
+  surf: Surface,
+): void {
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const p = pts[i];
+    const q = pts[i + 1];
+    if (!p || !q) continue;
+    const bar = tiltedBar(
+      (p[0] + q[0]) / 2,
+      (p[1] + q[1]) / 2,
+      Math.atan2(q[1] - p[1], q[0] - p[0]),
+      Math.hypot(q[0] - p[0], q[1] - p[1]) + width,
+      width,
+    );
+    k.extrude(bar, d0, d1, surf);
+  }
 }
 
 /**
@@ -739,20 +781,8 @@ const redBike: HeroRecipe = ({ k, kitAt, s }) => {
   );
   const outer = COWL_SLICES[0]?.[0] ?? 0;
   const accent = s.tinted(ACCENT);
-  for (let i = 0; i + 1 < PINSTRIPE.length; i++) {
-    const p = PINSTRIPE[i];
-    const q = PINSTRIPE[i + 1];
-    if (!p || !q) continue;
-    const bar = tiltedBar(
-      (p[0] + q[0]) / 2,
-      (p[1] + q[1]) / 2,
-      Math.atan2(q[1] - p[1], q[0] - p[0]),
-      Math.hypot(q[0] - p[0], q[1] - p[1]) + 0.012,
-      0.012,
-    );
-    for (const d of [-1, 1])
-      k.extrude(bar, d * outer, d * (outer + 0.004), accent);
-  }
+  for (const d of [-1, 1])
+    profileLine(k, PINSTRIPE, 0.012, d * outer, d * (outer + 0.004), accent);
   // The tail light lies on the crest's slope: the slope's edge moved out
   // along its normal (up and back) by the crest's growth, then the dark
   // bezel and the light, each standing proud of the one under it.
@@ -880,6 +910,175 @@ const redBike: HeroRecipe = ({ k, kitAt, s }) => {
     bh - 0.4 * r,
     smile,
   );
+};
+
+/** The light cycle's body: a glossy near black with a cold blue cast. */
+export const CYCLE_BODY: Rgb = [0.03, 0.035, 0.06];
+
+/** The gloss on the light cycle's crests: a lighter blue-black. */
+const CYCLE_SHINE: Rgb = [0.07, 0.08, 0.13];
+
+/** The light cycle's canopy: a dark smoked blue. */
+export const CYCLE_CANOPY: Rgb = [0.05, 0.08, 0.16];
+
+/** The light cycle's hub covers: the body's black. */
+const CYCLE_HUB: Rgb = [0.02, 0.022, 0.035];
+
+/** The light cycle's glow: the bright cyan blue of its lines and rims. */
+export const CYCLE_GLOW: Rgb = [0.3, 0.8, 1.0];
+
+/**
+ * The light cycle's size, in metres: `length` from tyre to tyre along
+ * `a` and `top`, the canopy's top. No source gives the original's size,
+ * so it takes the red bike's footprint; its wheels are a third of its
+ * length, as in the film.
+ */
+export const CYCLE = { length: 2.86, top: 1.35 } as const;
+
+/**
+ * The light cycle's two wheels, the front one at `+a`: its axle at `a`
+ * (at height `r`), `r` the tyre's radius and `half` its half width. They
+ * are the same size, and their treads are the cycle's two ends.
+ */
+export const CYCLE_WHEELS = {
+  front: { a: 0.95, r: 0.48, half: 0.12 },
+  rear: { a: -0.95, r: 0.48, half: 0.12 },
+} as const satisfies Record<string, BikeWheel>;
+
+/** The arch over each wheel: its radius round the axle. */
+const CYCLE_ARCH = 0.52;
+
+/**
+ * The light cycle's body, `[a, h]`: one closed shell from the nose over
+ * the front wheel's arch (from in front of the axle round over the top to
+ * behind it), along the belly to the rear wheel's arch and round it to
+ * the tail, then over the top forward: rising from the tail to the long
+ * flat back under the canopy and falling to the nose.
+ */
+const CYCLE_SHELL: readonly P2[] = [
+  ...arc(CYCLE_WHEELS.front.a, CYCLE_WHEELS.front.r, CYCLE_ARCH, 15, 200, 14),
+  ...arc(CYCLE_WHEELS.rear.a, CYCLE_WHEELS.rear.r, CYCLE_ARCH, -20, 165, 14),
+  [-1.44, 0.8],
+  [-1.32, 1.0],
+  [-1.05, 1.15],
+  [-0.55, 1.22],
+  [0.2, 1.22],
+  [0.7, 1.19],
+  [1.1, 1.07],
+  [1.36, 0.88],
+];
+
+/**
+ * The shell's slices, `[half width, growth]`: the wide one on the outline
+ * and two narrower glossy crests grown proud of it, so its edges read
+ * rounded.
+ */
+const CYCLE_SLICES: readonly (readonly [number, number])[] = [
+  [0.2, 0],
+  [0.165, 0.02],
+  [0.11, 0.035],
+];
+
+/**
+ * The canopy's top: under the cycle's top by the glowing line along its
+ * ridge, whose upper edge is the cycle's top.
+ */
+const CANOPY_TOP = CYCLE.top - 0.012;
+
+/**
+ * The canopy over the rider, `[a, h]`: a long smoked bubble on the back,
+ * its foot sunk into the crests, its top at `CANOPY_TOP`. `CANOPY_HALF`
+ * is its half width.
+ */
+const CYCLE_CANOPY_PROFILE: readonly P2[] = [
+  [0.6, 1.15],
+  ...curve([0.6, 1.15], [0.3, 1.32], [-0.2, CANOPY_TOP], 4),
+  ...curve([-0.2, CANOPY_TOP], [-0.7, 1.33], [-0.9, 1.18], 3),
+  [-0.9, 1.15],
+];
+const CANOPY_HALF = 0.12;
+
+/** How far in from the shell's outline its glowing side line runs. */
+const CYCLE_LINE_IN = 0.045;
+
+/** The glowing lines' width and how far they stand off their face. */
+const CYCLE_LINE = { width: 0.016, out: 0.004 } as const;
+
+/**
+ * The light cycle's glowing side lines, `[a, h]`, as open polylines: the
+ * shell's outline traced `CYCLE_LINE_IN` inside it, all the way round,
+ * closed on itself.
+ */
+export function cycleLine(): P2[] {
+  const inner = grown(CYCLE_SHELL, -CYCLE_LINE_IN);
+  const first = inner[0];
+  return first === undefined ? inner : [...inner, first];
+}
+
+/**
+ * One light cycle wheel: the tread a solid glowing disc, under a dark
+ * cover on each side that leaves only its rim lit, and the axle through
+ * the body from side to side.
+ */
+function cycleWheel(k: Kit, s: Surfaces, w: BikeWheel, glow: Surface): void {
+  k.extrude(discOutline(w.a, w.r, w.r, 24, "top"), -w.half, w.half, glow);
+  const hub = s.tinted(CYCLE_HUB);
+  for (const sg of [-1, 1]) {
+    k.extrude(
+      discOutline(w.a, w.r, w.r - 0.06, 20, "top"),
+      sg * w.half,
+      sg * (w.half + 0.012),
+      hub,
+    );
+    k.extrude(
+      discOutline(w.a, w.r, w.r - 0.2, 14, "top"),
+      sg * (w.half + 0.012),
+      sg * (w.half + 0.02),
+      s.tinted(CYCLE_SHINE),
+    );
+  }
+  const half = (CYCLE_SLICES[0]?.[0] ?? 0) - 0.01;
+  k.extrude(discOutline(w.a, w.r, 0.05, 10), -half, half, hub);
+}
+
+/**
+ * The light cycle: two wheels of one size at its ends, their rims
+ * glowing; the dark glossy shell in slices over both wheels and between
+ * them; the smoked canopy over the rider; and the glowing lines tracing
+ * the shell's outline on both sides and the canopy's top edge. Every
+ * light is in one group and breathes.
+ */
+const lightCycle: HeroRecipe = ({ k, s }) => {
+  const glow = s.blink(CYCLE_GLOW, 0);
+  cycleWheel(k, s, CYCLE_WHEELS.front, glow);
+  cycleWheel(k, s, CYCLE_WHEELS.rear, glow);
+
+  const [body, shine] = [s.tinted(CYCLE_BODY), s.tinted(CYCLE_SHINE)];
+  CYCLE_SLICES.forEach(([half, g], i) =>
+    k.extrude(grown(CYCLE_SHELL, g), -half, half, i === 0 ? body : shine),
+  );
+  k.extrude(
+    CYCLE_CANOPY_PROFILE,
+    -CANOPY_HALF,
+    CANOPY_HALF,
+    s.tinted(CYCLE_CANOPY),
+  );
+
+  const outer = CYCLE_SLICES[0]?.[0] ?? 0;
+  const { width, out } = CYCLE_LINE;
+  const line = cycleLine();
+  const ridge = CYCLE_CANOPY_PROFILE.slice(1, -1);
+  for (const d of [-1, 1]) {
+    profileLine(k, line, width, d * outer, d * (outer + out), glow);
+    profileLine(
+      k,
+      ridge,
+      width,
+      d * CANOPY_HALF,
+      d * (CANOPY_HALF + out),
+      glow,
+    );
+  }
 };
 
 /** The box's deep blue paint. */
@@ -1409,4 +1608,8 @@ export function boxLeafMovers(hero: Hero, index: number, look: Look): Mover[] {
 export const STREET_RECIPES = {
   "red-bike": redBike,
   "police-box": policeBox,
-} satisfies Record<Extract<HeroKind, "red-bike" | "police-box">, HeroRecipe>;
+  "light-cycle": lightCycle,
+} satisfies Record<
+  Extract<HeroKind, "red-bike" | "police-box" | "light-cycle">,
+  HeroRecipe
+>;

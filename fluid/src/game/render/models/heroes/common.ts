@@ -122,6 +122,7 @@ export const HERO_BANK = {
   "slab-walker": "steady",
   turntable: "breathe",
   camera: "breathe",
+  "light-cycle": "breathe",
 } as const satisfies Record<HeroKind, BlinkBank>;
 
 /**

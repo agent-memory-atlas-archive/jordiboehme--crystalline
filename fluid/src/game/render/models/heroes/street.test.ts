@@ -4,7 +4,9 @@
  * its triangle pin and its stickers each on its own side; the police box's sign
  * layout, its sign on all four sides, the lines of its door notice, and
  * its door leaves handed over as two swinging movers, and its hollow
- * inside lit white behind them.
+ * inside lit white behind them; the light cycle's size, its two wheels of
+ * one size as its ends on the floor, its glowing rims and lines in one
+ * group, its dark body and canopy, and its triangle pin.
  */
 
 import { describe, expect, it } from "vitest";
@@ -34,6 +36,11 @@ import {
   BIKE_STICKERS,
   BIKE_WHEELS,
   BOX_SIGN,
+  CYCLE,
+  CYCLE_BODY,
+  CYCLE_CANOPY,
+  CYCLE_GLOW,
+  CYCLE_WHEELS,
   HUB_SILVER,
   NOTICE_INK,
   boxDoor,
@@ -44,6 +51,14 @@ import { textRows } from "./pixels";
 
 const local = (p: Part): V3[] =>
   p.points.map((q) => toLocal(frameAt([0, 0, 0], 0), q));
+
+/** The low end, high end and middle of some points along axis `i`. */
+const span = (pts: readonly V3[], i: 0 | 1 | 2) => {
+  const v = pts.map((q) => q[i]);
+  const lo = Math.min(...v);
+  const hi = Math.max(...v);
+  return { lo, hi, mid: (lo + hi) / 2 };
+};
 
 /**
  * The police box's depth range in the recipe's terms: it stands free,
@@ -460,5 +475,87 @@ describe("the police box's doors (2.6e C10, C16)", () => {
         ),
     );
     expect(inside.length).toBeGreaterThan(0);
+  });
+});
+
+describe("the light cycle (0.25.1)", () => {
+  const parts = partsOf("light-cycle");
+  const all = parts.flatMap(local);
+  const along = all.map((q) => q[0]);
+
+  it("is its length from tyre to tyre, its shell's arches overhanging the tyres a little, up to its top", () => {
+    // Mutation caught: the cycle scaled, the wheels moved in under the
+    // shell, or the shell run out past its footprint.
+    const { front, rear } = CYCLE_WHEELS;
+    const hw = heroHalf("light-cycle", 0).hw;
+    expect(front.a + front.r - (rear.a - rear.r)).toBeCloseTo(CYCLE.length, 6);
+    expect(CYCLE.length).toBeLessThanOrEqual(BIKE.length + 1e-9);
+    expect(Math.max(...along)).toBeGreaterThan(front.a + front.r);
+    expect(Math.max(...along)).toBeLessThan(front.a + front.r + 0.06);
+    expect(Math.min(...along)).toBeLessThan(rear.a - rear.r);
+    expect(Math.min(...along)).toBeGreaterThan(rear.a - rear.r - 0.06);
+    expect(Math.max(...along)).toBeLessThanOrEqual(hw);
+    expect(Math.max(...all.map((q) => q[2]))).toBeCloseTo(CYCLE.top, 2);
+    expect(CYCLE.top).toBeLessThan(3.0 - 0.05);
+  });
+
+  it("stands on its two wheels of one size, its treads on the floor and glowing", () => {
+    // Mutation caught: a wheel off the floor, the two of different sizes,
+    // or a tread left unlit.
+    const { front, rear } = CYCLE_WHEELS;
+    expect(front.r).toBe(rear.r);
+    expect(front.a).toBeCloseTo(-rear.a, 6);
+    const glow = inked(parts, CYCLE_GLOW, "extrude");
+    const treads = glow.filter(
+      (p) => span(local(p), 2).hi - span(local(p), 2).lo > 0.9,
+    );
+    expect(treads).toHaveLength(2);
+    for (const t of treads) {
+      const pts = local(t);
+      expect(span(pts, 2).lo).toBeCloseTo(0, 6);
+      expect(span(pts, 2).hi).toBeCloseTo(2 * front.r, 6);
+    }
+    expect(treads.map((t) => Math.sign(span(local(t), 0).mid)).sort()).toEqual([
+      -1, 1,
+    ]);
+    expect(Math.min(...all.map((q) => q[2]))).toBeCloseTo(0, 6);
+  });
+
+  it("lights its rims and lines in one breathing group, on both sides, and nothing else", () => {
+    // Mutation caught: a line in another group, a steady light, or the
+    // lines on one side only.
+    const lit = parts.filter((p) => p.flag !== FLAG.lit);
+    expect(lit.length).toBeGreaterThan(40);
+    for (const p of lit) {
+      expect(p.flag).toBe(blinkFlag(0));
+      expect(p.tint).toEqual([...CYCLE_GLOW]);
+    }
+    const lines = lit.filter(
+      (p) => span(local(p), 2).hi - span(local(p), 2).lo < 0.9,
+    );
+    const sides = new Set(lines.map((p) => Math.sign(span(local(p), 1).mid)));
+    expect([...sides].sort()).toEqual([-1, 1]);
+    const left = lines.filter((p) => span(local(p), 1).mid < 0).length;
+    expect(lines.length).toBe(2 * left);
+  });
+
+  it("keeps the body dark and the canopy on top of it", () => {
+    // Mutation caught: a lit or bright body, or the canopy sunk under the
+    // back.
+    for (const c of [CYCLE_BODY, CYCLE_CANOPY])
+      expect(Math.max(...c)).toBeLessThan(0.2);
+    const body = inked(parts, CYCLE_BODY);
+    const canopy = inked(parts, CYCLE_CANOPY);
+    expect(body).toHaveLength(1);
+    expect(canopy).toHaveLength(1);
+    const [b] = body;
+    const [c] = canopy;
+    if (b === undefined || c === undefined) throw new Error("no body");
+    expect(span(local(c), 2).hi).toBeGreaterThan(span(local(b), 2).hi + 0.05);
+    expect(span(local(c), 1).hi).toBeLessThan(span(local(b), 1).hi);
+  });
+
+  it("stays under its triangle pin", () => {
+    expect(buildHeroMesh("light-cycle", 0, LOOK).count / 3).toBeLessThan(2600);
   });
 });

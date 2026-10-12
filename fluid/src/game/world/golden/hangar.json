@@ -567,12 +567,12 @@
       "seed": 589270817293903
     },
     {
-      "kind": "recruit-cabinet",
+      "kind": "mech-head",
       "variant": 0,
-      "x": 18.5,
-      "y": 0,
-      "turn": 2,
-      "seed": 3958403259317752
+      "x": 17,
+      "y": 12,
+      "turn": 1,
+      "seed": 94580743622728
     }
   ],
   "props": [
@@ -665,6 +665,24 @@
       "y": 0,
       "turn": 2,
       "seed": 7028210763623375
+    },
+    {
+      "kind": "breaker-box",
+      "variant": 0,
+      "anchor": "wall",
+      "x": 18.5,
+      "y": 0,
+      "turn": 2,
+      "seed": 2789401377136830
+    },
+    {
+      "kind": "pipe-bundle",
+      "variant": 0,
+      "anchor": "wall",
+      "x": 18.5,
+      "y": 0,
+      "turn": 2,
+      "seed": 5364707902060914
     },
     {
       "kind": "light-strip",
@@ -883,13 +901,13 @@
       "seed": 2434035423718523
     },
     {
-      "kind": "drum-rack",
-      "variant": 1,
+      "kind": "trolley",
+      "variant": 0,
       "anchor": "floor",
-      "x": 19.5,
+      "x": 18.5,
       "y": 0.5,
       "turn": 1,
-      "seed": 4438332389630598
+      "seed": 2807802842857893
     },
     {
       "kind": "trolley",
@@ -965,33 +983,6 @@
     },
     {
       "kind": "crate",
-      "variant": 2,
-      "anchor": "floor",
-      "x": 15.5,
-      "y": 12.5,
-      "turn": 0,
-      "seed": 1050197918082302
-    },
-    {
-      "kind": "crate-stack",
-      "variant": 1,
-      "anchor": "floor",
-      "x": 16.5,
-      "y": 12.5,
-      "turn": 1,
-      "seed": 2404023629308158
-    },
-    {
-      "kind": "barrel",
-      "variant": 0,
-      "anchor": "floor",
-      "x": 17.5,
-      "y": 12.5,
-      "turn": 3,
-      "seed": 5221940522693746
-    },
-    {
-      "kind": "crate",
       "variant": 1,
       "anchor": "floor",
       "x": 4.5,
@@ -1052,24 +1043,6 @@
       "y": 13.5,
       "turn": 3,
       "seed": 2236594032515375
-    },
-    {
-      "kind": "barrel",
-      "variant": 0,
-      "anchor": "floor",
-      "x": 15.5,
-      "y": 13.5,
-      "turn": 0,
-      "seed": 2404175042426391
-    },
-    {
-      "kind": "drum-rack",
-      "variant": 0,
-      "anchor": "floor",
-      "x": 16.5,
-      "y": 13.5,
-      "turn": 0,
-      "seed": 5536051053586255
     },
     {
       "kind": "trolley",
@@ -1133,6 +1106,15 @@
       "y": 0,
       "turn": 2,
       "seed": 1763104332357843
+    },
+    {
+      "kind": "duct",
+      "variant": 0,
+      "anchor": "ceiling",
+      "x": 18.5,
+      "y": 0,
+      "turn": 2,
+      "seed": 691739374341651
     },
     {
       "kind": "duct",
@@ -1343,19 +1325,6 @@
       "length": 0.25,
       "variant": 1,
       "seed": 7304603442331397
-    },
-    {
-      "kind": "chevrons",
-      "on": "face",
-      "x": 15.5,
-      "y": 12.2,
-      "turn": 0,
-      "along": 0,
-      "h": 0.05,
-      "width": 1.1,
-      "length": 0.25,
-      "variant": 1,
-      "seed": 8222226279496305
     },
     {
       "kind": "arrow",

@@ -236,23 +236,23 @@
   "scaffold": [],
   "heroes": [
     {
-      "kind": "gun-rack",
+      "kind": "gun-bench",
       "variant": 0,
-      "x": 0.5,
+      "x": 1.5,
       "y": 0,
       "turn": 2,
-      "seed": 927899948313516
+      "seed": 5559458880826450
     }
   ],
   "props": [
     {
-      "kind": "tool-board",
+      "kind": "locker-bank",
       "variant": 0,
       "anchor": "wall",
-      "x": 1.5,
+      "x": 0.5,
       "y": 0,
       "turn": 2,
-      "seed": 509947449060320
+      "seed": 7456095046636672
     },
     {
       "kind": "extinguisher",
@@ -408,15 +408,6 @@
       "seed": 4223718839267327
     },
     {
-      "kind": "barrel",
-      "variant": 1,
-      "anchor": "floor",
-      "x": 1.5,
-      "y": 0.5,
-      "turn": 0,
-      "seed": 4444195396393158
-    },
-    {
       "kind": "crate-stack",
       "variant": 1,
       "anchor": "floor",
@@ -424,6 +415,15 @@
       "y": 0.5,
       "turn": 1,
       "seed": 1683736641321623
+    },
+    {
+      "kind": "barrel",
+      "variant": 1,
+      "anchor": "floor",
+      "x": 0.5,
+      "y": 1.5,
+      "turn": 1,
+      "seed": 5298456062249828
     },
     {
       "kind": "crate-stack",

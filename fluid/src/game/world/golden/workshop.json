@@ -378,12 +378,12 @@
   ],
   "heroes": [
     {
-      "kind": "recruit-cabinet",
+      "kind": "mech-head",
       "variant": 0,
-      "x": 0,
-      "y": 1.5,
-      "turn": 1,
-      "seed": 4445078961519145
+      "x": 4.5,
+      "y": 8,
+      "turn": 2,
+      "seed": 91789315355248
     }
   ],
   "props": [
@@ -676,12 +676,12 @@
       "seed": 4971893340339831
     },
     {
-      "kind": "tool-cart",
+      "kind": "drum-rack",
       "variant": 1,
       "anchor": "floor",
       "x": 0.5,
       "y": 0.5,
-      "turn": 3,
+      "turn": 1,
       "seed": 2121700939364333
     },
     {
@@ -692,6 +692,15 @@
       "y": 0.5,
       "turn": 2,
       "seed": 3859923993177963
+    },
+    {
+      "kind": "traffic-cone",
+      "variant": 1,
+      "anchor": "floor",
+      "x": 0.5,
+      "y": 1.5,
+      "turn": 1,
+      "seed": 145678452425238
     },
     {
       "kind": "trolley",
@@ -784,10 +793,10 @@
       "seed": 639266737463208
     },
     {
-      "kind": "traffic-cone",
+      "kind": "tool-cart",
       "variant": 0,
       "anchor": "floor",
-      "x": 12.725,
+      "x": 12.688,
       "y": 6.5,
       "turn": 3,
       "seed": 1328588503872453
@@ -811,33 +820,6 @@
       "seed": 4291080290717434
     },
     {
-      "kind": "crate-stack",
-      "variant": 0,
-      "anchor": "floor",
-      "x": 3.5,
-      "y": 8.5,
-      "turn": 0,
-      "seed": 1644417555130042
-    },
-    {
-      "kind": "drum-rack",
-      "variant": 0,
-      "anchor": "floor",
-      "x": 4.5,
-      "y": 8.5,
-      "turn": 0,
-      "seed": 240820979767964
-    },
-    {
-      "kind": "crate-stack",
-      "variant": 1,
-      "anchor": "floor",
-      "x": 5.5,
-      "y": 8.5,
-      "turn": 0,
-      "seed": 3859043495101715
-    },
-    {
       "kind": "barrel",
       "variant": 1,
       "anchor": "floor",
@@ -845,15 +827,6 @@
       "y": 8.5,
       "turn": 2,
       "seed": 4075725073774393
-    },
-    {
-      "kind": "crate",
-      "variant": 2,
-      "anchor": "floor",
-      "x": 4.5,
-      "y": 9.5,
-      "turn": 1,
-      "seed": 5023562876663606
     },
     {
       "kind": "traffic-cone",
@@ -1199,19 +1172,6 @@
     },
     {
       "kind": "chevrons",
-      "on": "face",
-      "x": 3.5,
-      "y": 8.21,
-      "turn": 0,
-      "along": 0,
-      "h": 0.05,
-      "width": 1.06,
-      "length": 0.25,
-      "variant": 1,
-      "seed": 6118466011511249
-    },
-    {
-      "kind": "chevrons",
       "on": "floor",
       "x": 12.375,
       "y": 9.5,
@@ -1300,6 +1260,19 @@
       "length": 0.71,
       "variant": 0,
       "seed": 247836281868087
+    },
+    {
+      "kind": "grime",
+      "on": "wall",
+      "x": 0,
+      "y": 1.5,
+      "turn": 1,
+      "along": -0.121,
+      "h": 0,
+      "width": 0.979,
+      "length": 0.658,
+      "variant": 0,
+      "seed": 1783059261606951
     },
     {
       "kind": "grime",
