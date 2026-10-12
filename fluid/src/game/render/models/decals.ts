@@ -43,10 +43,12 @@
  *   centred in it, cut out of the stripe's and the baseboard's bands like
  *   any wall decal:
  *   - the **tag** (`tagPicture`) sets `MARKS.sprayTag`, slanted by
- *     shifting each row one cell left per two rows down, in its variant's
+ *     shifting each row one cell left per three rows down, in its variant's
  *     colour (`PIXEL_TINT.tag`), ringed by its outline: every cell next to
- *     a lit one (all eight ways) that is not lit itself, in a dark tint, so
- *     fill and outline never overlap at one depth;
+ *     a lit one (up, down, left or right) that is not lit itself, in a dark
+ *     tint. The dark silhouette (fill and outline together) lies at
+ *     `DECAL_LIFT` in long runs and the fill over it at twice that, which
+ *     takes fewer quads than the outline's broken runs alone;
  *   - the **scribble** (`scribblePicture`) sets `MARKS.numbers` mark by
  *     mark, a space's advance between two, each glyph raised or lowered
  *     a pixel or left in place from the decal's own seed, so it reads as
@@ -375,16 +377,17 @@ const MARK_GAP = ".....";
 
 /**
  * The spray tag's picture (0.25.1 D-4): `MARKS.sprayTag` through
- * `textRows`, each row shifted one cell left per two rows down (the top
- * row furthest right, the bottom row not at all), then a ring of one
- * dark cell round it. `#` the fill, `o` the outline: every cell next to a
- * lit one, all eight ways, that is not lit itself. Row 0 is the top.
+ * `textRows`, each row shifted one cell left per three rows down (the top
+ * two rows one cell right, the bottom three not at all), then a ring of
+ * one dark cell round it. `#` the fill, `o` the outline: every cell next
+ * to a lit one up, down, left or right that is not lit itself, so the
+ * corners stay open and the letters keep their shape. Row 0 is the top.
  */
 export function tagPicture(): string[] {
   const text = textRows(MARKS.sprayTag);
-  const slant = Math.floor((GLYPH_ROWS - 1) / 2);
+  const slant = Math.floor((GLYPH_ROWS - 1) / 3);
   const sheared = text.map((row, r) => {
-    const shift = Math.floor((GLYPH_ROWS - 1 - r) / 2);
+    const shift = Math.floor((GLYPH_ROWS - 1 - r) / 3);
     return ".".repeat(shift) + row + ".".repeat(slant - shift);
   });
   const width = (sheared[0]?.length ?? 0) + 2;
@@ -395,9 +398,9 @@ export function tagPicture(): string[] {
     [...row]
       .map((c, x) => {
         if (c === "#") return "#";
-        for (let dy = -1; dy <= 1; dy++)
-          for (let dx = -1; dx <= 1; dx++) if (lit(x + dx, y + dy)) return "o";
-        return ".";
+        const near =
+          lit(x - 1, y) || lit(x + 1, y) || lit(x, y - 1) || lit(x, y + 1);
+        return near ? "o" : ".";
       })
       .join(""),
   );
@@ -508,10 +511,17 @@ const inkOf = (tint: Rgb): Surface => ({
  */
 function pixelDecal(kitAt: KitAt, d: Decal, room: RoomSpec): void {
   if (d.kind === "tag") {
-    wallPicture(kitAt, d, room, tagPicture(), {
-      "#": surfaceOf(d),
-      o: inkOf(PIXEL_TINT.tagOutline),
-    });
+    // The dark silhouette (fill and outline) in long runs, the fill over
+    // it one lift higher: fewer quads than the outline's broken runs.
+    const pic = tagPicture();
+    wallPicture(
+      kitAt,
+      d,
+      room,
+      pic.map((r) => r.replaceAll("#", "o")),
+      { o: inkOf(PIXEL_TINT.tagOutline) },
+    );
+    wallPicture(kitAt, d, room, pic, { "#": surfaceOf(d) }, 2 * DECAL_LIFT);
   } else if (d.kind === "scribble") {
     wallPicture(kitAt, d, room, scribblePicture(d.seed), {
       "#": surfaceOf(d),

@@ -73,14 +73,15 @@
  *    draw `createRng(seedFor(room.seed, "decal", kind))`: a take, a roll,
  *    the variant, then the `along`, `h` and `width` fractions, all always
  *    drawn. Their candidate edges are the free edges (`sites.free`) in
- *    `wallRuns` order that pass the smears' wall rule (not reserved by a
- *    hero, no wall prop that is no run), carry no wall decal laid before
+ *    `wallRuns` order that no hero reserves and no wall prop takes (a run
+ *    segment included, unlike the smears' rule), carry no wall decal laid before
  *    (stencil, streak, bleed or smear) and no pixel decal laid before in
  *    this step, and lie in the hall or a bay (never the corridor).
  *    - The **tag** (rough rooms only, `ROUGH`, at `TAG_SHARE`, or
  *      `TAG_BESIDE_CANISTERS` when the room stands the ooze canisters): on
  *      the candidate the take picks, 1.2 to 1.6 m wide and 0.45 m tall,
- *      its bottom 0.6 to 1.2 m up, variant 0 to 2 (its fill colour).
+ *      its bottom 0.45 to 0.7 m up, so its whole box stays under the
+ *      accent stripe (1.2 m), variant 0 to 2 (its fill colour).
  *    - The **scribble** (rough rooms only, at `SCRIBBLE_SHARE`): on the
  *      candidate the take picks, 0.7 by 0.12 m, its bottom 1.1 to 1.5 m
  *      up, variant 0 or 1 (its ink).
@@ -784,6 +785,12 @@ export function placeDecals(room: DecalBase, cap = DECAL_CAP): Decal[] {
       .filter((d) => d.on === "wall")
       .map((d) => edgeKey(edgeOf(d))),
   );
+  // Every wall prop's edge, runs (conduits, pipe and cable runs) too.
+  const anyWallProp = new Set(
+    room.props
+      .filter((p) => p.anchor === "wall")
+      .map((p) => edgeKey(edgeOf(p))),
+  );
   const inRoom = (e: WallSlot) =>
     [room.hall, ...room.bays].some((r) => inside(r, e.x, e.y));
   const candidates = () =>
@@ -792,7 +799,7 @@ export function placeDecals(room: DecalBase, cap = DECAL_CAP): Decal[] {
       return (
         sites.free.has(k) &&
         !reserved.has(k) &&
-        !wallProps.has(k) &&
+        !anyWallProp.has(k) &&
         !used.has(k) &&
         inRoom(e)
       );
@@ -839,7 +846,7 @@ export function placeDecals(room: DecalBase, cap = DECAL_CAP): Decal[] {
     pixel(
       "tag",
       canisters ? TAG_BESIDE_CANISTERS : TAG_SHARE,
-      { w0: 1.2, w1: 1.6, length: 0.45, h0: 0.6, h1: 1.2 },
+      { w0: 1.2, w1: 1.6, length: 0.45, h0: 0.45, h1: 0.7 },
       anyEdge,
     );
     pixel(

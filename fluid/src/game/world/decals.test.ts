@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { seedFor } from "../core/seed";
 import { LOOK } from "../render/looks";
 import { normals, positions } from "../render/modelChecks";
 import { HOUSING_DEPTH } from "../render/models/doors";
@@ -773,7 +774,7 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
 
   it("keeps the new wall decals off text, props and each other, at their sizes", () => {
     // Mutation caught: a tag on a terminal's edge, on a hero's edge, on a
-    // wall prop's edge, on a smear's or a streak's edge, in the corridor,
+    // wall prop's edge (a run segment too), on a smear's or a streak's edge, in the corridor,
     // two pixel decals on one edge, or a size off the brief's.
     let seen = 0;
     for (const room of many()) {
@@ -783,7 +784,7 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
       const reserved = heroReserve(room.heroes).edges;
       const wallProps = new Set(
         room.props
-          .filter((p) => p.anchor === "wall" && !PROP_CATALOGUE[p.kind].run)
+          .filter((p) => p.anchor === "wall")
           .map((p) => edgeKey(edgeOf(p))),
       );
       for (const d of pixels) {
@@ -809,8 +810,10 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
           expect(d.width).toBeGreaterThanOrEqual(1.2);
           expect(d.width).toBeLessThanOrEqual(1.6);
           expect(d.length).toBe(0.45);
-          expect(d.h).toBeGreaterThanOrEqual(0.6);
-          expect(d.h).toBeLessThanOrEqual(1.2);
+          expect(d.h).toBeGreaterThanOrEqual(0.45);
+          expect(d.h).toBeLessThanOrEqual(0.7);
+          // The whole box under the accent stripe.
+          expect(d.h + d.length).toBeLessThanOrEqual(1.2);
           expect([0, 1, 2]).toContain(d.variant);
         } else if (d.kind === "scribble") {
           expect([d.width, d.length]).toEqual([0.7, 0.12]);
@@ -842,7 +845,7 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
       const reserved = heroReserve(room.heroes).edges;
       const wallProps = new Set(
         room.props
-          .filter((p) => p.anchor === "wall" && !PROP_CATALOGUE[p.kind].run)
+          .filter((p) => p.anchor === "wall")
           .map((p) => edgeKey(edgeOf(p))),
       );
       const taken = new Set(
@@ -883,11 +886,8 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
   }, 60_000);
 
   it("lays each new decal at a rate that is not zero", () => {
-    // Mutation caught: a rule that never finds an edge. The tag reaches at
-    // least half its share in rough rooms; the plate falls short of half
-    // of PLATE_SHARE even on the door's whole wall run (a door's wall is
-    // nearly all fixtures, keycard readers and sign plates; realized about
-    // 0.5 percent against 2.5), so it is held to an eighth.
+    // Mutation caught: a rule that never finds an edge. The tag and the
+    // scribble reach at least half their shares in rough rooms.
     const all = many();
     const count = (list: RoomSpec[], kind: string) =>
       list.filter((r) => r.decals.some((d) => d.kind === kind)).length;
@@ -898,10 +898,63 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
     expect(count(rough, "scribble") / rough.length).toBeGreaterThanOrEqual(
       SCRIBBLE_SHARE / 2,
     );
-    expect(count(all, "plate") / all.length).toBeGreaterThanOrEqual(
-      PLATE_SHARE / 8,
-    );
   }, 60_000);
+
+  it("lays the plate at its share wherever a door's wall has room for it", () => {
+    // Mutation caught: a plate rule that misses edges it may take (a rate
+    // far under PLATE_SHARE among the rooms with room for one), or a plate
+    // laid more often than its roll. A door's wall is nearly all fixtures,
+    // keycard readers and sign plates, so the rate is measured only where
+    // a door has a free hall edge on its wall run, worked out here apart
+    // from the generator: every room with such an edge, its decals laid
+    // again under 40 seeds (the plate's roll and the smears move with the
+    // seed, so each seed is judged on its own decals).
+    let open = 0;
+    let plates = 0;
+    let sampled = 0;
+    for (const room of many()) {
+      const sites = dressingSites(room);
+      const reserved = heroReserve(room.heroes).edges;
+      const props = new Set(
+        room.props
+          .filter((p) => p.anchor === "wall")
+          .map((p) => edgeKey(edgeOf(p))),
+      );
+      const runs = room.fixtures
+        .filter((f) => f.kind === "door")
+        .map((f) =>
+          sites.runs.find((r) => r.some((e) => edgeKey(e) === edgeKey(f.slot))),
+        );
+      const free = (k: string) =>
+        sites.free.has(k) && !reserved.has(k) && !props.has(k);
+      const near = runs.flatMap((r) =>
+        (r ?? []).filter(
+          (e) => inside(room.hall, e.x, e.y) && free(edgeKey(e)),
+        ),
+      );
+      if (near.length === 0) continue;
+      for (let i = 0; i < 40; i++) {
+        sampled++;
+        const decals = placeDecals(
+          { ...room, seed: seedFor(room.seed, "plate-rate", i) },
+          Infinity,
+        );
+        const taken = new Set(
+          decals
+            .filter((d) => d.on === "wall" && !PIXEL.has(d.kind))
+            .map((d) => edgeKey(edgeOf(d))),
+        );
+        if (!near.some((e) => !taken.has(edgeKey(e)))) continue;
+        open++;
+        if (decals.some((d) => d.kind === "plate")) plates++;
+      }
+    }
+    expect(open).toBeGreaterThan(5000);
+    const rate = plates / open;
+    expect(rate).toBeGreaterThanOrEqual(PLATE_SHARE / 2);
+    expect(rate).toBeLessThanOrEqual(PLATE_SHARE * 2);
+    expect(sampled).toBeGreaterThanOrEqual(open);
+  }, 120_000);
 
   it("never drops the new decals at the cap, and sorts them last", () => {
     // Mutation caught: the cap dropping them first, or counting them out

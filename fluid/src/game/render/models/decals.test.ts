@@ -229,11 +229,15 @@ describe("the decal recipe", () => {
       expect(q.layer).toBe(LAYER.decal);
       if (q.normal[1] > 0.99) expect(q.minY).toBeCloseTo(DECAL_LIFT, 6);
       // Four places: the mesh is float32, a few micrometres at 40 m. A
-      // door plate's numbers stand twice the lift off the wall, over the
-      // plate (0.25.1).
+      // door plate's numbers and a tag's fill stand twice the lift off the
+      // wall, over the plate and the tag's dark silhouette (0.25.1).
       else
         expect(q.offWall).toBeCloseTo(
-          (sameTint(q.tint, PIXEL_TINT.plateInk) ? 2 : 1) * DECAL_LIFT,
+          ([PIXEL_TINT.plateInk, ...PIXEL_TINT.tag].some((t) =>
+            sameTint(q.tint, t),
+          )
+            ? 2
+            : 1) * DECAL_LIFT,
           4,
         );
     }
@@ -736,9 +740,9 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
     return out;
   };
 
-  it("sets the tag slanted, one cell left per two rows down, ringed by its outline", () => {
+  it("sets the tag slanted, one cell left per three rows down, ringed by its outline", () => {
     // Mutation caught: a tag set unslanted, slanted the other way or
-    // mirrored, its outline drawn under the fill (two quads at one depth),
+    // mirrored, its fill at the silhouette's depth (two quads fighting),
     // or a fill off its variant's colour.
     for (const variant of [0, 1, 2]) {
       const d = onSouth("tag", { h: 0.6, width: 1.4, length: 0.45 }, variant);
@@ -750,18 +754,21 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
         [...line].forEach((ch, c) => {
           if (ch === "#")
             want.add(
-              `${String(r + 1)},${String(c + 1 + Math.floor((4 - r) / 2))}`,
+              `${String(r + 1)},${String(c + 1 + Math.floor((4 - r) / 3))}`,
             );
         }),
       );
       expect(cellsOf(quads, fill)).toEqual(want);
-      const ring = cellsOf(quads, PIXEL_TINT.tagOutline);
-      expect(ring.size).toBeGreaterThan(want.size / 2);
-      for (const c of ring) expect(want.has(c)).toBe(false);
+      // The dark silhouette under the fill: the fill and its outline ring.
+      const dark = cellsOf(quads, PIXEL_TINT.tagOutline);
+      const ring = [...dark].filter((c) => !want.has(c));
+      expect(ring.length).toBeGreaterThan(want.size / 2);
+      for (const c of want) expect(dark.has(c)).toBe(true);
+      expect(dark.size).toBe(tagPicture().join("").replace(/\./g, "").length);
       for (const q of quads) {
         expect(q.layer).toBe(LAYER.decal);
         expect(q.flag).toBe(FLAG.decal);
-        expect(q.off).toBeCloseTo(DECAL_LIFT, 6);
+        expect(q.off).toBeCloseTo((same(q.tint, fill) ? 2 : 1) * DECAL_LIFT, 6);
         expect(same(q.tint, fill) || same(q.tint, PIXEL_TINT.tagOutline)).toBe(
           true,
         );
@@ -780,18 +787,33 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
         6,
       );
     }
-    // Every outline cell touches the fill; every fill neighbour is outline.
+    // Every outline cell touches the fill up, down, left or right, and
+    // every such neighbour of the fill is outline; a cell that touches the
+    // fill only at a corner stays bare, so the letters keep their shape.
+    // Mutation caught: the outline grown all eight ways.
     const pic = tagPicture();
     const at = (r: number, c: number) => pic[r]?.[c] ?? ".";
+    let corners = 0;
     pic.forEach((line, r) =>
       [...line].forEach((ch, c) => {
-        let near = false;
-        for (let dr = -1; dr <= 1; dr++)
-          for (let dc = -1; dc <= 1; dc++)
-            if (at(r + dr, c + dc) === "#") near = true;
-        if (ch !== "#") expect(ch === "o").toBe(near);
+        if (ch === "#") return;
+        const side = [
+          [r - 1, c],
+          [r + 1, c],
+          [r, c - 1],
+          [r, c + 1],
+        ].some(([y, x]) => at(y!, x!) === "#");
+        const corner = [
+          [r - 1, c - 1],
+          [r - 1, c + 1],
+          [r + 1, c - 1],
+          [r + 1, c + 1],
+        ].some(([y, x]) => at(y!, x!) === "#");
+        expect(ch === "o").toBe(side);
+        if (corner && !side) corners++;
       }),
     );
+    expect(corners).toBeGreaterThan(0);
   });
 
   it("writes the scribble's numbers in order, each glyph a pixel up, down or level", () => {
@@ -877,8 +899,9 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
 
   it(`keeps the capped hub under ${String(DECAL_BUDGET)} triangles with a tag, a scribble and a plate on top (2.7 C21)`, () => {
     // Mutation caught: a tag's pixels drawn one quad per cell instead of
-    // one per run, which takes the full room past the budget. The tag and
-    // the scribble cross the stripe here, so its cuts count too.
+    // one per run, which takes the full room past the budget. The tag sits
+    // at its highest and the scribble crosses the stripe, so its cuts count
+    // too.
     const count = (room: RoomSpec) => {
       const mesh = buildRoomMesh(room, LOOK).static;
       let n = 0;
@@ -888,7 +911,7 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
     };
     const hub = cappedHub();
     const extra = [
-      onSouth("tag", { h: 1.0, width: 1.6, length: 0.45 }),
+      onSouth("tag", { h: 0.7, width: 1.6, length: 0.45 }),
       onSouth("scribble", { h: 1.15, width: 0.7, length: 0.12 }),
       onSouth("plate", { h: 1.55, width: 0.32, length: 0.08 }),
     ];
@@ -910,7 +933,9 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
     expect(quads.length).toBeGreaterThan(100);
     for (const q of quads) {
       expect(q.normal[1]).toBeLessThan(0.99);
-      const ink = same(q.tint, PIXEL_TINT.plateInk);
+      const ink = [PIXEL_TINT.plateInk, ...PIXEL_TINT.tag].some((t) =>
+        same(q.tint, t),
+      );
       expect(q.offWall).toBeCloseTo((ink ? 2 : 1) * DECAL_LIFT, 4);
       expect(
         q.y0 < ACCENT_STRIPE.h1 - 1e-4 && q.y1 > ACCENT_STRIPE.h0 + 1e-4,

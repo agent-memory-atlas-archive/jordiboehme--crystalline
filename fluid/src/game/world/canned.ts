@@ -809,7 +809,7 @@ function galleryDecals(seed: number, bay3: Rect, bay4: Rect): Decal[] {
     lay(
       "tag",
       { x: bay3.x0, y: bay3.y0 + 5, side: "w" },
-      { h: 0.9, width: 1.5, length: 0.45 },
+      { h: 0.6, width: 1.5, length: 0.45 },
     ),
     lay(
       "scribble",
