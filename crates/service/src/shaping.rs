@@ -166,6 +166,9 @@ fn without_verbatim(path: &str) -> &str {
 fn same_path(a: &str, b: &str, fold_case: bool) -> bool {
     let (a, b) = (without_verbatim(a), without_verbatim(b));
     if fold_case {
+        // Unicode lowercase, not the NTFS upcase table: they differ for a few
+        // characters only, and a difference here shows one extra mismatch
+        // note, nothing more.
         a.chars()
             .flat_map(char::to_lowercase)
             .eq(b.chars().flat_map(char::to_lowercase))
