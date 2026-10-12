@@ -13,7 +13,8 @@ use crate::error::RemoteError;
 /// Removes `path` and everything under it. A path that is not there is
 /// success. A symlink, junction or redirected folder is removed as a link and
 /// its target is never touched or walked. The first failure stops the
-/// removal and names the path it happened at.
+/// removal and names a path: on Windows the one it happened at, elsewhere
+/// the folder that was asked for.
 pub fn remove_tree(path: &Path) -> Result<(), RemoteError> {
     crystalline_core::tree::remove_tree(path)
         .map(|_| ())
