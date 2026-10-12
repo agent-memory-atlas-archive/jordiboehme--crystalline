@@ -7,8 +7,9 @@
  * blue and the green sword differ only in the blade's tint. The pistol's
  * glowing chamber sits on the body's top and is its highest part. The
  * gadget's top bulb stands off its base's axis, and the cluster stands on
- * three bases. The meter carries exactly seven wing lights, each on its
- * wing, whose groups make the chase visit them in the jumping order.
+ * three bases. The meter carries four wing lights on each wing, at
+ * mirrored places, whose groups rise from the hinge to the tip, so the
+ * chase climbs both wings together.
  */
 
 import { describe, expect, it } from "vitest";
@@ -25,7 +26,7 @@ import {
 } from "../../modelChecks";
 import { buildCurio, buildCurioMesh } from ".";
 import { curioHalf } from "./common";
-import { GADGET, HILT, METER, PISTOL, SWORD } from "./gear";
+import { GADGET, HILT, PISTOL, SWORD } from "./gear";
 
 /** A curio's recorded parts, built at the origin. */
 function partsOf(
@@ -211,12 +212,13 @@ describe("gear curio models", () => {
     expect(as[2]).toBeCloseTo(0.12, 6);
   });
 
-  it("carries seven wing lights, each on its wing, chasing in the jumping order", () => {
+  it("carries four wing lights on each wing, their chase climbing from the hinge to the tips on both at once", () => {
+    // Mutation caught: a light missing or on the wrong wing, the old
+    // jumping order, the groups falling from root to tip, or the two
+    // wings out of step or out of mirror.
     const parts = partsOf("wing-meter", 0);
     const lights = parts.filter(blinks);
-    expect(lights).toHaveLength(7);
-    const groups = lights.map((p) => p.flag - FLAG.blink).sort((x, y) => x - y);
-    expect(groups).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(lights).toHaveLength(8);
     // A wing is a long lit extrusion on one side of the body.
     const wings = parts.filter((p) => {
       const { lo, hi } = bounds(p);
@@ -226,24 +228,41 @@ describe("gear curio models", () => {
     });
     expect(wings).toHaveLength(2);
     const side = (p: Part) => Math.sign(centre(p)[0]);
-    // Positions 1 to 4 run root to tip on the left wing (`-a`, the
-    // viewer's left seen from the front), 5 to 7 on the right.
-    const left = lights
-      .filter((p) => side(p) < 0)
-      .sort((p, q) => centre(q)[0] - centre(p)[0]);
-    const right = lights
-      .filter((p) => side(p) > 0)
-      .sort((p, q) => centre(p)[0] - centre(q)[0]);
+    // Each wing's lights from the root (nearest the body's middle) out to
+    // the tip.
+    const fromRoot = (dir: number) =>
+      lights
+        .filter((p) => side(p) === dir)
+        .sort((p, q) => Math.abs(centre(p)[0]) - Math.abs(centre(q)[0]));
+    const left = fromRoot(-1);
+    const right = fromRoot(1);
     expect(left).toHaveLength(4);
-    expect(right).toHaveLength(3);
-    // The jumping order itself, pinned as a literal so a change fails here.
-    expect(METER.chase).toEqual([3, 5, 7, 4, 1, 6, 2]);
-    [...left, ...right].forEach((p, i) => {
-      expect(p.flag - FLAG.blink).toBe(METER.chase.indexOf(i + 1));
+    expect(right).toHaveLength(4);
+    const group = (p: Part) => p.flag - FLAG.blink;
+    expect(left.map(group)).toEqual([0, 1, 2, 3]);
+    for (const row of [left, right]) {
+      for (let i = 1; i < row.length; i++) {
+        const [p, q] = [row[i - 1], row[i]];
+        if (!p || !q) throw new Error("no light");
+        expect(group(q)).toBeGreaterThan(group(p));
+        expect(centre(q)[2]).toBeGreaterThan(centre(p)[2]);
+      }
+    }
+    right.forEach((p, i) => {
+      const twin = left[i];
+      if (!twin) throw new Error("no twin");
+      expect(group(p)).toBe(group(twin));
+      const [a, d, h] = centre(p);
+      const [ta, td, th] = centre(twin);
+      expect(a).toBeCloseTo(-ta, 9);
+      expect(d).toBeCloseTo(td, 9);
+      expect(h).toBeCloseTo(th, 9);
+    });
+    for (const p of lights) {
       const wing = wings.find((w) => side(w) === side(p));
       if (!wing) throw new Error("no wing");
       expect(meets(p, wing)).toBe(true);
       expect(centre(p)[1]).toBeGreaterThan(0);
-    });
+    }
   });
 });

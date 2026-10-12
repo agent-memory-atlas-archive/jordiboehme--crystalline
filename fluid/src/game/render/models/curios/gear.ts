@@ -30,9 +30,11 @@
  *
  * Blinking follows the curio bank rule (C16): the sword's blade (and, in
  * the cradle, its glass eye) and the pistol's chamber are group 0 of the
- * `breathe` bank, so they pulse slowly; the meter's seven wing lights take
- * the groups that make the `chase` bank visit them in the jumping order
- * `METER.chase`, with group 7 left as the dark beat. The gadget and the
+ * `breathe` bank, so they pulse slowly; the meter's eight wing lights, four
+ * on each wing, take the `chase` bank's group of their place from the
+ * hinge (root 0 to tip 3, the same on both wings), so the light climbs
+ * both wings together from the hinge to the tips, and groups 4 to 7 are
+ * the dark beat before it starts again at the root. The gadget and the
  * meter's readout do not blink.
  */
 
@@ -729,11 +731,11 @@ const pinkGadget: CurioRecipe = ({ kitAt, s, variant, kind }) => {
  * hinge's `a` either side at the body's side, the knuckle's radius and
  * half length along `d`, the fan angle up from `a`, length, width and half
  * thickness) and the lights (side, how far they stand proud of the wing's
- * front face, and their distances from the hinge, root to tip, on the
- * left wing for positions 1 to 4 and on the right for 5 to 7); and
- * `chase`, the order the lights' positions light in: position `p` takes
- * blink group `chase.indexOf(p)`, so the chase bank visits them 3, 5, 7,
- * 4, 1, 6, 2 and then holds its dark beat on group 7.
+ * front face, and their distances from the hinge, root to tip, the same
+ * on both wings, so the two rows mirror each other). The light at place
+ * `i` from the root takes chase group `i` on both wings, so the chase
+ * bank lights each pair in turn from the hinge out and up to the tips and
+ * holds its dark beat on the groups beyond the last light.
  *
  * The hinge's height is not in the table: it is set so the wings' upper
  * edge ends exactly at the curio's top (`wingHinge`).
@@ -757,10 +759,8 @@ export const METER = {
   light: {
     side: 0.012,
     proud: 0.005,
-    left: [0.032, 0.058, 0.084, 0.11],
-    right: [0.04, 0.075, 0.11],
+    at: [0.032, 0.058, 0.084, 0.11],
   },
-  chase: [3, 5, 7, 4, 1, 6, 2] as readonly number[],
 } as const;
 
 /**
@@ -778,9 +778,10 @@ function wingHinge(top: number): number {
  * plate, the dark faceplate on its front with the display (a black bezel
  * and the green readout, a steady `s.signal`) and two tiny knobs, and the
  * two silver wings, each on a hinge knuckle at the body's side near its
- * upper corner, fanned out and up. The seven amber lights stand on the
- * wings' front faces, rotated with them, four on the left (`-a`) and
- * three on the right, and take their blink groups from `METER.chase`.
+ * upper corner, fanned out and up. The eight amber lights stand on the
+ * wings' front faces, rotated with them, four on each wing at the same
+ * distances from the hinge, and each takes the chase group of its place
+ * from the root, so the light climbs both wings at once.
  */
 const wingMeter: CurioRecipe = ({ k, kitAt, s, variant, kind }) => {
   const { top } = curioHalf(kind, variant);
@@ -861,15 +862,13 @@ const wingMeter: CurioRecipe = ({ k, kitAt, s, variant, kind }) => {
     ];
     const [ca, ch] = along(W.length / 2);
     k.extrude(tiltedBar(ca, ch, ang, W.length, W.width), -W.hd, W.hd, silver);
-    const spots = dir < 0 ? L.left : L.right;
-    spots.forEach((t, i) => {
-      const position = dir < 0 ? i + 1 : L.left.length + i + 1;
+    L.at.forEach((t, i) => {
       const [la, lh] = along(t);
       k.extrude(
         tiltedBar(la, lh, ang, L.side, L.side),
         W.hd,
         W.hd + L.proud,
-        s.blink(WING_AMBER, M.chase.indexOf(position)),
+        s.blink(WING_AMBER, i),
       );
     });
   }
