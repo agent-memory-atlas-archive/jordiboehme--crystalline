@@ -7,9 +7,10 @@
  * inside lit white behind them; the neon bike's size inside its
  * footprint, its proportions (wheels against length and top, wheelbase,
  * canopy span, belly), its two wheels of one size as its ends on the
- * floor, its glowing rims and lines in one group, its dark body, canopy
- * and windows, its flank split into the arched band and the recessed
- * lower panel with a line along the split, and its triangle pin.
+ * floor, its glowing rims and lines in one group, its dark band and
+ * short canopy and no side window, its flank split into the dark arched
+ * band and the lighter recessed lower panel with a line along the split,
+ * and its triangle pin.
  */
 
 import { describe, expect, it } from "vitest";
@@ -44,6 +45,7 @@ import {
   CYCLE_BODY,
   CYCLE_CANOPY,
   CYCLE_GLOW,
+  CYCLE_LOWER,
   CYCLE_WHEELS,
   HUB_SILVER,
   NOTICE_INK,
@@ -505,10 +507,10 @@ describe("the neon bike (0.25.1)", () => {
     expect(CYCLE.top).toBeLessThan(3.0 - 0.05);
   });
 
-  it("keeps the film model's proportions: wheels a quarter of its length, its top 1.8 wheels high, its canopy over the front of its back", () => {
+  it("keeps the film model's proportions: wheels a quarter of its length, its top 1.8 wheels high, a short canopy behind the crown", () => {
     // Mutation caught: the wheels grown or shrunk against the body, the
     // wheels moved in under it, the top raised or lowered, or the canopy
-    // moved off the front half.
+    // grown long again or moved forward over the nose.
     expect(D / CYCLE.length).toBeGreaterThan(0.23);
     expect(D / CYCLE.length).toBeLessThan(0.27);
     expect(CYCLE.top / D).toBeGreaterThan(1.7);
@@ -516,14 +518,20 @@ describe("the neon bike (0.25.1)", () => {
     expect((front.a - rear.a) / CYCLE.length).toBeGreaterThan(0.73);
     expect((front.a - rear.a) / CYCLE.length).toBeLessThan(0.77);
     const fromRear = (a: number) => (a - (rear.a - rear.r)) / CYCLE.length;
-    expect(fromRear(CANOPY_SPAN.from)).toBeGreaterThan(0.5);
-    expect(fromRear(CANOPY_SPAN.from)).toBeLessThan(0.58);
-    expect(fromRear(CANOPY_SPAN.to)).toBeGreaterThan(0.82);
-    expect(fromRear(CANOPY_SPAN.to)).toBeLessThan(0.88);
+    // The canopy runs from 0.38 to 0.53 of the length from the rear: from
+    // behind the crown (0.55) forward to it, behind the original's longer
+    // strip (0.55 to 0.9), so it covers a sixth of the length and stays
+    // clear of the nose.
+    expect(fromRear(CANOPY_SPAN.from)).toBeCloseTo(0.379, 3);
+    expect(fromRear(CANOPY_SPAN.to)).toBeCloseTo(0.534, 3);
+    expect(fromRear(CANOPY_SPAN.to)).toBeLessThanOrEqual(0.55);
+    expect((CANOPY_SPAN.to - CANOPY_SPAN.from) / CYCLE.length).toBeLessThan(
+      0.2,
+    );
     // The shell's lowest point, its belly between the wheels, sits about
     // a quarter wheel up.
     const belly = Math.min(
-      ...inked(parts, CYCLE_BODY)
+      ...[...inked(parts, CYCLE_BODY), ...inked(parts, CYCLE_LOWER)]
         .flatMap(local)
         .map((q) => q[2]),
     );
@@ -569,51 +577,63 @@ describe("the neon bike (0.25.1)", () => {
     expect(lines.length).toBe(2 * left);
   });
 
-  it("keeps the body dark, the canopy on top of it and a window on each flank under the canopy", () => {
-    // Mutation caught: a lit or bright body, the canopy sunk under the
-    // back, or a window missing, on one side only or off the canopy span.
+  it("keeps the band and canopy dark, the canopy on top of it and no window on either flank", () => {
+    // Mutation caught: a lit or bright band, the canopy sunk under the
+    // back, or a side window (or any other unlit part) standing on a
+    // flank past the band's face.
     for (const c of [CYCLE_BODY, CYCLE_CANOPY])
       expect(Math.max(...c)).toBeLessThan(0.2);
-    const body = inked(parts, CYCLE_BODY);
+    const band = inked(parts, CYCLE_BODY);
     const smoked = inked(parts, CYCLE_CANOPY);
-    expect(body).toHaveLength(2);
-    expect(smoked).toHaveLength(3);
-    const b = body.find((p) => span(local(p), 2).hi > 1);
-    if (b === undefined) throw new Error("no band");
-    const canopy = smoked.filter(
-      (p) => span(local(p), 1).lo < 0 && span(local(p), 1).hi > 0,
-    );
-    const windows = smoked.filter((p) => !canopy.includes(p));
-    expect(canopy).toHaveLength(1);
-    const [c] = canopy;
-    if (c === undefined) throw new Error("no canopy");
+    expect(band).toHaveLength(1);
+    expect(smoked).toHaveLength(1);
+    const [b] = band;
+    const [c] = smoked;
+    if (b === undefined || c === undefined)
+      throw new Error("no band or canopy");
+    expect(span(local(c), 1).lo).toBeLessThan(0);
+    expect(span(local(c), 1).hi).toBeGreaterThan(0);
     expect(span(local(c), 2).hi).toBeGreaterThan(span(local(b), 2).hi);
     expect(span(local(c), 1).hi).toBeLessThan(span(local(b), 1).hi);
     expect(span(local(c), 0).lo).toBeCloseTo(CANOPY_SPAN.from, 6);
     expect(span(local(c), 0).hi).toBeCloseTo(CANOPY_SPAN.to, 6);
-    expect(windows.map((w) => Math.sign(span(local(w), 1).mid)).sort()).toEqual(
-      [-1, 1],
-    );
-    for (const w of windows) {
-      const pts = local(w);
-      expect(span(pts, 0).lo).toBeGreaterThanOrEqual(CANOPY_SPAN.from);
-      expect(span(pts, 0).hi).toBeLessThanOrEqual(CANOPY_SPAN.to);
-      expect(span(pts, 2).lo).toBeGreaterThan(D);
-      expect(Math.abs(span(pts, 1).mid)).toBeGreaterThan(
-        span(local(b), 1).hi - 0.001,
-      );
+    // Over the rider's place, behind the crown, the canopy stands well
+    // clear of the shell and its crests, so it reads as a dark piece.
+    const rearEnd = (q: V3) =>
+      q[0] > CANOPY_SPAN.from - 0.05 && q[0] < CANOPY_SPAN.from + 0.1;
+    const shell = parts
+      .filter((p) => p !== c && p.flag === FLAG.lit)
+      .flatMap(local)
+      .filter(rearEnd);
+    const over = local(c).filter(rearEnd);
+    expect(
+      Math.max(...over.map((q) => q[2])) - Math.max(...shell.map((q) => q[2])),
+    ).toBeGreaterThan(0.05);
+    // Only the glowing lines stand past the band's face.
+    const face = span(local(b), 1).hi;
+    for (const p of parts.filter((q) => q.flag === FLAG.lit)) {
+      const y = span(local(p), 1);
+      expect(Math.max(-y.lo, y.hi)).toBeLessThanOrEqual(face + 1e-9);
     }
   });
 
-  it("splits its flank into the arched band over the top and the lower panel set in under it, a glowing line along the split", () => {
+  it("splits its flank into the dark arched band over the top and the lighter lower panel set in under it, a glowing line along the split", () => {
     // Mutation caught: the panel flush with the band or standing proud,
-    // the band not hooding both wheels, the split up into the windows,
-    // or no line along the split.
-    const body = inked(parts, CYCLE_BODY);
-    const band = body.find((p) => span(local(p), 2).hi > 1);
-    const panel = body.find((p) => p !== band);
+    // the panel in the band's dark (one tone), the band not hooding both
+    // wheels, the split up into the top half, or no line along the split.
+    const [band] = inked(parts, CYCLE_BODY);
+    const panels = inked(parts, CYCLE_LOWER);
+    expect(panels).toHaveLength(1);
+    const [panel] = panels;
     if (band === undefined || panel === undefined)
       throw new Error("no band or panel");
+    // Two tones: the panel a lighter grey than the dark band.
+    expect(Math.min(...CYCLE_LOWER)).toBeGreaterThan(
+      Math.max(...CYCLE_BODY) + 0.1,
+    );
+    expect(Math.max(...CYCLE_LOWER) - Math.min(...CYCLE_LOWER)).toBeLessThan(
+      0.06,
+    );
     const [bp, pp] = [local(band), local(panel)];
     // The panel is set in from the band on both sides.
     expect(span(pp, 1).hi).toBeLessThan(span(bp, 1).hi - 0.02);
@@ -626,11 +646,8 @@ describe("the neon bike (0.25.1)", () => {
       expect(Math.min(...over.map((q) => q[2]))).toBeGreaterThan(2 * w.r);
     }
     // The panel is the lower part: from the belly up to the split, which
-    // stays under the windows' foot and runs between the wheels.
-    const windows = inked(parts, CYCLE_CANOPY).filter(
-      (p) => span(local(p), 1).lo > 0,
-    );
-    const foot = Math.min(...windows.flatMap(local).map((q) => q[2]));
+    // stays under 0.7 of the top and runs between the wheels.
+    const foot = 0.7 * CYCLE.top;
     expect(span(pp, 2).lo).toBeLessThan(D / 2);
     expect(span(pp, 2).hi).toBeLessThan(foot - 0.05);
     expect(span(pp, 2).hi).toBeGreaterThan(D);
@@ -659,6 +676,6 @@ describe("the neon bike (0.25.1)", () => {
   });
 
   it("stays under its triangle pin", () => {
-    expect(buildHeroMesh("neon-bike", 0, LOOK).count / 3).toBeLessThan(2600);
+    expect(buildHeroMesh("neon-bike", 0, LOOK).count / 3).toBeLessThan(2500);
   });
 });
