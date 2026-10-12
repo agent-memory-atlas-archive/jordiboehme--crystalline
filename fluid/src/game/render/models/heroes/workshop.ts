@@ -28,6 +28,7 @@ import type { HeroKind, SurfaceSpec } from "../../../world/types";
 import { DECAL_LIFT, frameAt, type Frame, type Kit } from "../../kit";
 import type { Rgb } from "../../looks";
 import { MARKS } from "../marks";
+import { toolPlate } from "../toolMark";
 import {
   discOutline,
   profileAlong,
@@ -580,6 +581,11 @@ const BENCH_TOOLS: readonly {
   { a: -0.56, h0: 1.02, h1: 1.3, head: 0.05 },
 ];
 
+/** The tool maker's mark plate on the pegboard: below the silhouettes, along the bench's left end. */
+const BENCH_MARK: readonly [number, number, number, number] = [
+  -0.87, -0.55, 0.915, 0.99,
+];
+
 /**
  * The gun bench: `workbench` at the catalogue surface's height, `bigGun`
  * lying over its right part (`BENCH_GUN_A0` to `BENCH_GUN_A1`) on three
@@ -606,6 +612,8 @@ const gunBench: HeroRecipe = ({ k, s, variant, kind }) => {
       s.tinted(PAD_RUBBER),
     );
   bigGun(k, s, BENCH_GUN_A0, BENCH_GUN_A1, BENCH_GUN_D0, BENCH_GUN_D1, h0);
+  // The tool maker's mark on the pegboard, under the silhouettes.
+  toolPlate(k, s, BENCH_MARK, 0.031);
   for (const t of BENCH_TOOLS) {
     k.box(t.a - 0.012, t.a + 0.012, 0.03, 0.045, t.h0, t.h1, s.dark);
     k.box(

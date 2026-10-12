@@ -30,6 +30,7 @@ import { PICTOGRAM, SIGN_PICTOGRAMS } from "../../text";
 import type { RarePropKind } from "../../../world/props";
 import type { WallPropKind } from "../../../world/types";
 import { discOutline, shade, tiltedBar, yawed } from "../common";
+import { toolPlate } from "../toolMark";
 import { RUN_BAND, type PropRecipe } from "./common";
 
 /** A warm hazard red: the extinguisher's cylinder and the first-aid cross. */
@@ -651,6 +652,13 @@ function toolBoard({ k, s, ctx, variant }: Parameters<PropRecipe>[0]): void {
       );
     }
   }
+  // The tool maker's mark on the top rail, over the hole rows.
+  toolPlate(
+    k,
+    s,
+    [-0.25, 0.25, T.h1 - 0.14, T.h1 - 0.04],
+    T.depth + DECAL_LIFT + 0.002,
+  );
   const near = T.depth + 0.005;
   const far = T.depth + 0.02;
   const row = T.h1 - 0.35;

@@ -48,6 +48,8 @@ export const MARKS = {
   towerClock: "40",
   /** The beige laptop's small mark, drawn on its screen. */
   laptopMark: "<=>",
+  /** The tool maker's mark, set on the tool props, the workbench machine and the gun bench's pegboard. */
+  toolMark: "BINFORD",
   /** The gravity console's readout. */
   gravity: "300G",
   /** Both desk computers' badge, in the original's lower-case wordmark. */
@@ -157,6 +159,17 @@ export function stencilMarks(t: StencilText): readonly (readonly string[])[] {
   ];
   return t.lines === 2 ? [[MARKS.deckWord, ...digits(t.deck)], bay] : [bay];
 }
+
+/**
+ * The tool maker's mark colours (0.25.1): red block capitals on a
+ * near-black field plate. Judged from the brief's starting values, since
+ * no source describes the original lettering; the mark is drawn in the
+ * station's own pixel font.
+ */
+export const TOOL_MARK: { ink: Rgb; field: Rgb } = {
+  ink: [0.9, 0.12, 0.1],
+  field: [0.08, 0.08, 0.08],
+};
 
 /** The capsule maker's round C: `o` the outer ring, `#` the C, open to the right. */
 export const CAPSULE_LOGO: readonly string[] = [

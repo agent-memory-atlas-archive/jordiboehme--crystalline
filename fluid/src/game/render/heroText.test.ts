@@ -153,6 +153,8 @@ const READABLE = new Set([
   // floor stencils inside its hazard ring.
   "AIRLOCK",
   "CYCLE",
+  // The tool maker's mark.
+  "BINFORD",
 ]);
 
 /**
@@ -205,6 +207,7 @@ const MARKS_ONLY = [
   "PLUTONIUM HANDLE WITH CARE",
   "AIRLOCK",
   "CYCLE",
+  "BINFORD",
 ];
 
 /** A source with its comments stripped: comments name constants in backticks (`CLUSTER`); only code draws. */
