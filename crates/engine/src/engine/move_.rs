@@ -135,9 +135,7 @@ impl Engine {
         // later as a collision; this is the move onto a missing one. The name
         // is compared in any letter case, as the write paths do: a
         // case-insensitive filesystem (the macOS and Windows defaults) opens
-        // `manifest.md` as the very `MANIFEST.md` routing reads. In a
-        // reviewing domain the draft's text is judged, since the draft is what
-        // the move writes.
+        // `manifest.md` as the very `MANIFEST.md` routing reads.
         if names_the_manifest(&dest_rel) {
             // In a reviewing domain the move writes the mover's draft, so the
             // text that lands is what they see: their own draft when they hold
