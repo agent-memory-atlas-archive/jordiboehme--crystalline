@@ -196,12 +196,12 @@ describe("optics hero models", () => {
     const [ta, td] = [la - sa, ld - sd];
     const cos = (fa * ta + fd * td) / (Math.hypot(fa, fd) * Math.hypot(ta, td));
     expect(cos).toBeLessThan(Math.cos((135 * Math.PI) / 180));
-    // Behind the stool's back, at a sitter's back height.
+    // Behind the stool's back, level with it: at a sitter's mid back.
     expect(Math.hypot(la - sa, ld - sd)).toBeGreaterThan(
       Math.hypot(ba - sa, bd - sd),
     );
-    expect(lh).toBeGreaterThan(B.h1);
-    expect(lh).toBeLessThan(1.4);
+    expect(lh).toBeGreaterThan(B.h0);
+    expect(lh).toBeLessThan(B.h1);
     // The lens is a thin disc standing upright, facing along d.
     const lb = bounds(local(lensDisc));
     expect(lb.hi[1] - lb.lo[1]).toBeLessThan(0.03);
@@ -233,27 +233,46 @@ describe("optics hero models", () => {
     expect(over).toEqual([]);
   });
 
-  it("runs the beam guide from the lens forward and a little down towards the stool (0.25.1)", () => {
-    // Mutation caught: the beam dropping from overhead, pointing away from
-    // the stool, rising, or ending inside the stool's back.
+  it("runs the beam guide level from inside the lens into the stool's back (0.25.1)", () => {
+    // Jordi, 2026-10-12: a sloping beam that does not move looks broken.
+    // Mutation caught: the beam tilted by more than 2 degrees, off the
+    // lens's axis, starting in front of the lens or in the air, ending
+    // short of the stool's back or running through it, or thick.
     const parts = partsOf("laser-desk");
     const beam = one(parts.filter((p) => p.flag === blinkFlag(1)));
     const lensDisc = one(parts.filter((p) => p.flag === blinkFlag(0)));
-    const [la, ld, lh] = centre(local(lensDisc));
+    const back = one(
+      parts.filter((p) => {
+        if (p.method !== "bevelBox") return false;
+        const hs = local(p).map((q) => q[2]);
+        return (
+          Math.abs(Math.min(...hs) - LAB_STOOL.back.h0) < 1e-6 &&
+          Math.abs(Math.max(...hs) - LAB_STOOL.back.h1) < 1e-6
+        );
+      }),
+    );
     const b = bounds(local(beam));
-    const { a, d } = LASER_DESK.stool;
-    // It starts at the lens and ends closer to the stool.
-    expect(b.hi[1]).toBeGreaterThan(ld - 0.03);
-    expect(Math.abs(b.lo[1] - d)).toBeLessThan(Math.abs(ld - d));
-    expect(Math.abs((b.lo[0] + b.hi[0]) / 2 - la)).toBeLessThan(1e-6);
-    expect(Math.abs(la - a)).toBeLessThan(1e-6);
-    // Mostly level: it drops less than it runs, and stays over the back.
+    const lb = bounds(local(lensDisc));
+    const kb = bounds(local(back));
+    const [la, , lh] = centre(local(lensDisc));
+    const width = LASER_DESK.beam.width;
+    // Thin, and centred on the lens's axis.
+    expect(b.hi[0] - b.lo[0]).toBeCloseTo(width, 9);
+    expect((b.lo[0] + b.hi[0]) / 2).toBeCloseTo(la, 9);
+    expect((b.lo[2] + b.hi[2]) / 2).toBeCloseTo(lh, 9);
+    // Level within 2 degrees: what it rises over its run beyond its own
+    // thickness.
     const run = b.hi[1] - b.lo[1];
-    const drop = b.hi[2] - b.lo[2];
-    expect(run).toBeGreaterThan(0.2);
-    expect(drop).toBeLessThan(run);
-    expect(b.hi[2]).toBeLessThanOrEqual(lh + 0.02);
-    expect(b.lo[2]).toBeGreaterThan(LAB_STOOL.back.h1);
+    const rise = b.hi[2] - b.lo[2] - width;
+    expect(run).toBeGreaterThan(0.1);
+    expect(Math.atan2(Math.abs(rise), run)).toBeLessThan((2 * Math.PI) / 180);
+    // It starts inside the lens disc and ends on the back's rear face.
+    expect(b.hi[1]).toBeGreaterThan(lb.lo[1]);
+    expect(b.hi[1]).toBeLessThan(lb.hi[1]);
+    expect(b.hi[2] - b.lo[2]).toBeLessThan(lb.hi[2] - lb.lo[2]);
+    expect(b.lo[1]).toBeCloseTo(kb.hi[1], 9);
+    expect(b.lo[2]).toBeGreaterThan(kb.lo[2]);
+    expect(b.hi[2]).toBeLessThan(kb.hi[2]);
   });
 
   it("gives the laser desk its five lights, one part each, in the breathe groups 0 to 4", () => {

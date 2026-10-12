@@ -272,7 +272,7 @@ export function lens(
 export const LAB_STOOL = {
   seat: [0.44, 0.5],
   seatR: 0.2,
-  back: { h0: 0.62, h1: 0.8, half: 0.16, d0: -0.27, d1: -0.24 },
+  back: { h0: 0.66, h1: 0.9, half: 0.16, d0: -0.27, d1: -0.24 },
   post: { half: 0.018, h0: 0.4, d0: -0.24, d1: -0.2 },
   arm: 0.27,
 } as const;
@@ -1061,8 +1061,8 @@ function strut(
  * `axis`, the chamber and its two rims, the front port and its flange (the flange's front
  * is the lens plane), the lens, the two angled ports (angle in the `a, h`
  * plane, length, width) and the side port, the top block, its valves, the
- * neck, the can and its flanges; the beam guide's far end (`d`, `h`, where
- * a sitter's back would be) and its width; the hose's points; the beam
+ * neck, the can and its flanges; the beam guide (how far into the lens it
+ * starts, and its width: it runs level from there to the stool's back); the hose's points; the beam
  * pipe (its `a` range, height, radius, the bands' places) and its post;
  * the control box and its post; and the tall cabinet with its round port.
  */
@@ -1090,10 +1090,10 @@ export const LASER_DESK = {
     [0.07, 0.42],
     [0, 0.42],
   ],
-  post: { r: 0.035, h1: 1.04 },
-  band: { r: 0.04, h0: 0.86, h1: 0.89 },
-  axis: 1.12,
-  chamber: { r: 0.08, h0: 1.02, h1: 1.24, rim: 0.095, rimT: 0.015 },
+  post: { r: 0.035, h1: 0.78 },
+  band: { r: 0.04, h0: 0.6, h1: 0.63 },
+  axis: 0.86,
+  chamber: { r: 0.08, h0: 0.76, h1: 0.98, rim: 0.095, rimT: 0.015 },
   port: { r: 0.05, d1: 1.25 },
   flange: { r: 0.085, d0: 1.12, d1: 1.155 },
   lensR: 0.045,
@@ -1104,39 +1104,39 @@ export const LASER_DESK = {
   armWidth: 0.05,
   armHalfDepth: 0.025,
   armFlange: { length: 0.025, width: 0.09, halfDepth: 0.045 },
-  sidePort: { a1: 0.6, r: 0.03, h: 1.1, flange: 0.048, flangeLength: 0.025 },
-  block: { half: 0.08, d0: 1.22, d1: 1.38, h1: 1.32 },
+  sidePort: { a1: 0.6, r: 0.03, h: 0.84, flange: 0.048, flangeLength: 0.025 },
+  block: { half: 0.08, d0: 1.22, d1: 1.38, h1: 1.06 },
   valves: [
     [0.05, -0.04],
     [-0.05, 0.04],
   ],
-  valve: { r: 0.015, h1: 1.37, capR: 0.018, cap: 0.015 },
-  neck: { r: 0.045, h1: 1.4 },
+  valve: { r: 0.015, h1: 1.11, capR: 0.018, cap: 0.015 },
+  neck: { r: 0.045, h1: 1.14 },
   canFlange: { r: 0.075, t: 0.025 },
-  can: { r: 0.065, h1: 1.66 },
-  beam: { d: 0.86, h: 1.02, width: 0.02 },
+  can: { r: 0.065, h1: 1.4 },
+  beam: { into: 0.005, width: 0.02 },
   hose: [
-    [0.05, 0, 1.05],
-    [0.14, -0.03, 0.92],
-    [0.17, -0.04, 0.62],
-    [0.15, -0.03, 0.3],
+    [0.05, 0, 0.79],
+    [0.14, -0.03, 0.68],
+    [0.17, -0.04, 0.48],
+    [0.15, -0.03, 0.25],
     [0.1, 0, 0.03],
   ],
   hoseWidth: 0.022,
   pipe: {
     a0: -0.95,
     a1: 0.33,
-    h: 1.28,
+    h: 1.02,
     r: 0.035,
     bands: [-0.7, -0.45, -0.2, 0.05],
     band: 0.03,
   },
-  pipePost: { a: -0.9, r: 0.045, foot: 0.09, tape: [0.5, 0.9], tapeH: 0.03 },
-  control: { a0: 0.63, a1: 0.86, d0: 1.26, d1: 1.42, h0: 0.95, h1: 1.12 },
+  pipePost: { a: -0.9, r: 0.045, foot: 0.09, tape: [0.4, 0.75], tapeH: 0.03 },
+  control: { a0: 0.63, a1: 0.86, d0: 1.26, d1: 1.42, h0: 0.72, h1: 0.89 },
   controlPost: { a: 0.745, d: 1.36, r: 0.025, foot: 0.06 },
-  controlLights: { a0: 0.67, pitch: 0.05, w: 0.03, h0: 1.06, h1: 1.085 },
-  buttons: { a0: 0.67, pitch: 0.035, w: 0.022, h0: 0.99, h1: 1.012, n: 5 },
-  card: { a0: 0.68, a1: 0.8, d0: 1.33, d1: 1.34, h1: 1.19 },
+  controlLights: { a0: 0.67, pitch: 0.05, w: 0.03, h0: 0.83, h1: 0.855 },
+  buttons: { a0: 0.67, pitch: 0.035, w: 0.022, h0: 0.76, h1: 0.782, n: 5 },
+  card: { a0: 0.68, a1: 0.8, d0: 1.33, d1: 1.34, h1: 0.96 },
   cabinet: { a0: 0.86, a1: 1.18, d0: 1.34, d1: 1.48, top: 2.15 },
   drum: { a: 1.03, h: 1.55, r: 0.11, inner: 0.065, out: 0.04 },
   seams: [0.9, 1.9],
@@ -1162,9 +1162,11 @@ export const LASER_DESK = {
  *   band) under a stainless vacuum chamber. Its front port looks along
  *   `-d` at the stool's back, its flange ringing a violet-white lens; two
  *   ports stand out at angles on its left and one to its right; on top a
- *   block with two valves, a neck and a tall chrome can. A cyan beam guide
- *   runs from the lens a little downwards to where a sitter's back would
- *   be, and a white hose loops from the chamber down to the foot.
+ *   block with two valves, a neck and a tall chrome can. The port's axis
+ *   is at a sitter's mid back (h 0.86), level with the stool's back. A
+ *   thin cyan beam guide runs level along `-d` from inside the lens to
+ *   the rear face of the stool's back, where a sitter's back would be,
+ *   and a white hose loops from the chamber down to the foot.
  * - On the laser's left a long beam pipe with chrome bands runs into its
  *   top block from a grey post with yellow tape; on its right a cream
  *   control box on a blue post, with three status lights, a row of
@@ -1365,22 +1367,18 @@ const laserDesk: HeroRecipe = ({ k, kitAt, s, variant, kind }) => {
   k.cylinder(la, ld, N.h1, N.h1 + CF.t, CF.r, 12, steel);
   k.cylinder(la, ld, N.h1 + CF.t, L.can.h1, L.can.r, 12, chrome);
   k.cylinder(la, ld, L.can.h1, L.can.h1 + CF.t, CF.r, 12, steel);
-  // The beam guide: from inside the lens down to a sitter's back.
+  // The beam guide: one level line of light along -d, from inside the
+  // lens to the rear face of the stool's back.
   const B = L.beam;
-  const start: readonly [number, number] = [L.flange.d0, H];
-  const end: readonly [number, number] = [B.d, B.h];
-  profileAlong(
-    kitAt,
-    ORIGIN,
-    tiltedBar(
-      (start[0] + end[0]) / 2,
-      (start[1] + end[1]) / 2,
-      Math.atan2(end[1] - start[1], end[0] - start[0]),
-      Math.hypot(end[0] - start[0], end[1] - start[1]),
-      B.width,
-    ),
-    la - B.width / 2,
-    la + B.width / 2,
+  const backFace = L.stool.d - LAB_STOOL.back.d0;
+  const w = B.width / 2;
+  k.box(
+    la - w,
+    la + w,
+    backFace,
+    L.flange.d0 + B.into,
+    H - w,
+    H + w,
     s.blink(BEAM_CYAN, 1),
   );
   // The hose, from the chamber's underside in a loop down to the foot.
