@@ -138,7 +138,7 @@ impl Engine {
         // `manifest.md` as the very `MANIFEST.md` routing reads. In a
         // reviewing domain the draft's text is judged, since the draft is what
         // the move writes.
-        if dest_rel.eq_ignore_ascii_case("MANIFEST.md") {
+        if names_the_manifest(&dest_rel) {
             // In a reviewing domain the move writes the mover's draft, so the
             // text that lands is what they see: their own draft when they hold
             // one, the base text otherwise.

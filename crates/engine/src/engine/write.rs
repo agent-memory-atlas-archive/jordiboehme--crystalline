@@ -235,9 +235,7 @@ impl Engine {
             if is_assets_reserved(&path) {
                 return Err(EngineError::Invalid(assets_reserved_error(&path)));
             }
-            if path.eq_ignore_ascii_case("MANIFEST.md")
-                && matches!(source, ContentSource::File { .. })
-            {
+            if names_the_manifest(&path) && matches!(source, ContentSource::File { .. }) {
                 return Err(EngineError::Invalid(MANIFEST_CAPTURE_REFUSAL.into()));
             }
         }
@@ -378,7 +376,7 @@ impl Engine {
         // MANIFEST changes through edit_engram. A virtual domain has no
         // filesystem to fold the case, and a capture titled after its MANIFEST
         // is how one is written there (Ruling I2), so it is left alone.
-        if rel.eq_ignore_ascii_case("MANIFEST.md")
+        if names_the_manifest(&rel)
             && matches!(self.read_source(&p.domain), ContentSource::File { .. })
         {
             return Err(EngineError::Invalid(MANIFEST_CAPTURE_REFUSAL.into()));
@@ -490,7 +488,7 @@ impl Engine {
         // (Ruling I2), so it meets the switch-on rule every MANIFEST writer
         // meets (decision D10): here, ahead of all three arms below and with
         // no lock in hand.
-        if path.eq_ignore_ascii_case("MANIFEST.md") {
+        if names_the_manifest(&path) {
             self.refuse_read_only_switch_on(&p.domain, &markdown, scope)
                 .await?;
         }
@@ -562,9 +560,7 @@ impl Engine {
             // that permalink IS the MANIFEST's. What lands there is this
             // capture's document, and the rules are owed their say about it
             // exactly as an edit of the MANIFEST gets it.
-            let manifest_text = path
-                .eq_ignore_ascii_case("MANIFEST.md")
-                .then(|| markdown.clone());
+            let manifest_text = names_the_manifest(&path).then(|| markdown.clone());
             let applied = rooms
                 .apply_text(&p.domain, &permalink, overlay, markdown, &actor, peer)
                 .await

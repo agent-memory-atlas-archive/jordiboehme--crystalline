@@ -7545,9 +7545,17 @@ pub fn read_only_sentence(domain: &str) -> String {
     format!("'{domain}' is read-only; its owner switches read_only off in the domain policies")
 }
 
-/// Whether a domain-relative path is the domain's MANIFEST.
+/// Whether `rel` is the MANIFEST's path exactly, the file routing reads on a
+/// case-sensitive file system.
 pub(crate) fn is_manifest_path(rel: &str) -> bool {
     rel == "MANIFEST.md"
+}
+
+/// Whether `rel` names the MANIFEST in any letter case. The write and move
+/// checks use this: a case-insensitive file system (the macOS and Windows
+/// defaults) opens `manifest.md` as the very `MANIFEST.md` routing reads.
+pub(crate) fn names_the_manifest(rel: &str) -> bool {
+    rel.eq_ignore_ascii_case("MANIFEST.md")
 }
 
 /// Put the MANIFEST rules' findings about `text` on a receipt, when there are
