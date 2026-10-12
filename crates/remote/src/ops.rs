@@ -704,6 +704,13 @@ pub async fn pull_with(
         Err(e) => return Err(e),
     };
 
+    // Before the first byte of the working tree changes: every file this pull
+    // may write, overwrite or delete must be openable. A pull that stopped in
+    // the middle of the loop below would leave removals on disk with the base
+    // still listing them, and every later share would offer those removals as
+    // the user's own deletions.
+    preflight_working_tree(state_dir, domain_root, &edits)?;
+
     let mut applied = Vec::new();
     let mut merged = Vec::new();
     let mut new_conflicts = Vec::new();
@@ -6294,6 +6301,69 @@ fn mirror_refresh_needed(
 /// whole tree.
 fn path_under_root(path: &str, root: &str) -> bool {
     root.is_empty() || path == root || path.starts_with(&format!("{root}/"))
+}
+
+/// Checks, without changing anything, that the pull can touch every file in
+/// `edits`: an existing file (to overwrite or delete) opens for reading, and
+/// a new file has a folder to land in that exists, lists and is not
+/// read-only. The first failure stops the pull with the file named.
+fn preflight_working_tree(
+    state_dir: &Path,
+    domain_root: &Path,
+    edits: &[UpstreamEdit],
+) -> Result<(), RemoteError> {
+    for edit in edits {
+        if crystalline_core::is_index_path(&edit.path) {
+            continue;
+        }
+        let wt_path = checked_working_path(state_dir, domain_root, &edit.path)?;
+        match std::fs::symlink_metadata(&wt_path) {
+            Ok(meta) => {
+                if meta.is_file() {
+                    std::fs::File::open(&wt_path).map_err(|e| working_tree_error(&wt_path, e))?;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if edit.content.is_some() {
+                    check_landing_folder(&wt_path)?;
+                }
+            }
+            Err(e) => return Err(working_tree_error(&wt_path, e)),
+        }
+    }
+    Ok(())
+}
+
+/// The nearest existing folder above the not yet existing `path` must be a
+/// folder the pull can list and write into.
+fn check_landing_folder(path: &Path) -> Result<(), RemoteError> {
+    for ancestor in path.ancestors().skip(1) {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(_) => {
+                // Through the link, as the write itself would go.
+                let meta = std::fs::metadata(ancestor).map_err(|e| working_tree_error(path, e))?;
+                if !meta.is_dir() {
+                    let source =
+                        std::io::Error::other(format!("'{}' is not a folder", ancestor.display()));
+                    return Err(working_tree_error(path, source));
+                }
+                std::fs::read_dir(ancestor).map_err(|e| working_tree_error(path, e))?;
+                // On Windows the read-only attribute of a folder is not a
+                // write lock (system folders carry it), so only unix asks.
+                if cfg!(unix) && meta.permissions().readonly() {
+                    let source = std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("the folder '{}' is read-only", ancestor.display()),
+                    );
+                    return Err(working_tree_error(path, source));
+                }
+                return Ok(());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(working_tree_error(path, e)),
+        }
+    }
+    Ok(())
 }
 
 /// Reads a working-tree file, returning `None` when it does not exist.

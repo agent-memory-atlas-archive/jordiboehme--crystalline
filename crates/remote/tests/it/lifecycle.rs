@@ -12424,3 +12424,60 @@ async fn a_withdrawn_share_s_own_pull_request_listed_as_open_does_not_keep_its_b
     );
     assert!(load_state(&sub.state_dir).retire_queue.is_empty());
 }
+
+// A pull that cannot open one of its targets stops before it changes anything:
+// no removal, no write, no base advance. Clearing the cause lets the same pull
+// finish.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pull_that_cannot_open_one_file_changes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mock = MockProvider::new();
+    let c1 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/d1.md", b"one\n"),
+            ("notes/d2.md", b"two\n"),
+            ("notes/x.md", b"locked\n"),
+        ]),
+        None,
+    );
+    let (sub, _) = subscribe_at(&mock, &c1).await;
+    let c2 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/x.md", b"locked, revised upstream\n"),
+        ]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+
+    let locked = sub.domain_root.join("notes/x.md");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&locked).is_ok() {
+        eprintln!("skipped: permissions are not enforced for this user");
+        return;
+    }
+    let state_before = std::fs::read(sub.state_dir.join("state.json")).ok();
+
+    let err = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect_err("the pull must stop");
+    assert!(err.to_string().contains("notes/x.md"), "{err}");
+    assert_eq!(read(&sub.domain_root.join("notes/d1.md")), b"one\n");
+    assert_eq!(read(&sub.domain_root.join("notes/d2.md")), b"two\n");
+    assert_eq!(load_state(&sub.state_dir).base_commit, c1);
+    assert_eq!(
+        std::fs::read(sub.state_dir.join("state.json")).ok(),
+        state_before
+    );
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let report = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .unwrap();
+    assert_eq!(report.applied.len(), 3, "{:?}", report.applied);
+    assert!(!sub.domain_root.join("notes/d1.md").exists());
+    assert_eq!(load_state(&sub.state_dir).base_commit, c2);
+}
