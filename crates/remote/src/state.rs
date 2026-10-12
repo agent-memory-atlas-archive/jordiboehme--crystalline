@@ -765,9 +765,9 @@ pub fn remove_base_file(dir: &Path, rel: &str) -> Result<(), RemoteError> {
 /// `base/` is left untouched.
 pub fn replace_base_tree(dir: &Path, files: &BTreeMap<String, Vec<u8>>) -> Result<(), RemoteError> {
     let tmp_root = dir.join(BASE_TMP_DIR_NAME);
-    if tmp_root.exists() {
-        crate::tree::remove_tree(&tmp_root)?;
-    }
+    // Unconditional: `exists()` follows a link, so a dangling one would skip
+    // the removal and the create below would fail on it.
+    crate::tree::remove_tree(&tmp_root)?;
     std::fs::create_dir_all(&tmp_root)?;
     for (rel, bytes) in files {
         let path = tmp_root.join(to_platform_path(rel)?);
@@ -778,9 +778,7 @@ pub fn replace_base_tree(dir: &Path, files: &BTreeMap<String, Vec<u8>>) -> Resul
     }
 
     let base_root = dir.join(BASE_DIR_NAME);
-    if base_root.exists() {
-        crate::tree::remove_tree(&base_root)?;
-    }
+    crate::tree::remove_tree(&base_root)?;
     std::fs::rename(&tmp_root, &base_root)?;
     Ok(())
 }
@@ -1436,6 +1434,49 @@ mod tests {
             Some(b"new content".to_vec())
         );
         assert!(!dir.path().join("base.tmp").exists());
+    }
+
+    /// Replaces the base and checks it is a real folder with the new file.
+    fn replace_and_expect_a_real_base(dir: &Path) {
+        let mut files = BTreeMap::new();
+        files.insert("notes/new.md".to_string(), b"new content".to_vec());
+        replace_base_tree(dir, &files).unwrap();
+        let meta = std::fs::symlink_metadata(dir.join("base")).unwrap();
+        assert!(meta.is_dir() && !meta.file_type().is_symlink());
+        assert_eq!(
+            read_base_file(dir, "notes/new.md").unwrap(),
+            Some(b"new content".to_vec())
+        );
+        assert!(std::fs::symlink_metadata(dir.join("base.tmp")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_at_base_tmp_or_base_does_not_break_the_next_replacement() {
+        for name in ["base.tmp", "base"] {
+            let dir = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join(name)).unwrap();
+            replace_and_expect_a_real_base(dir.path());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_dangling_junction_at_base_tmp_or_base_does_not_break_the_next_replacement() {
+        for name in ["base.tmp", "base"] {
+            let dir = tempfile::tempdir().unwrap();
+            let gone = dir.path().join("gone");
+            std::fs::create_dir(&gone).unwrap();
+            let out = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(dir.path().join(name))
+                .arg(&gone)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "mklink failed");
+            std::fs::remove_dir(&gone).unwrap();
+            replace_and_expect_a_real_base(dir.path());
+        }
     }
 
     #[test]
