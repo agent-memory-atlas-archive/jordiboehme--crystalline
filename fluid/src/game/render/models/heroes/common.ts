@@ -120,6 +120,7 @@ export const HERO_BANK = {
   "thunder-hammer": "steady",
   "police-box": "breathe",
   "slab-walker": "steady",
+  turntable: "breathe",
 } as const satisfies Record<HeroKind, BlinkBank>;
 
 /**

@@ -1253,7 +1253,9 @@ const HERO_HALL_TABLES: readonly (readonly [number, number])[] = [
  * interior at x 4, the first three turned east; and the police box standing
  * free by the east wall at (22, 13.5), a walkway all round it, turned to
  * face the hall's centre (2.6e). The 2.6d slab walker (C17) stands
- * at (21, 11), turn 2, a band hero clear of every other one. Each one frames
+ * at (21, 11), turn 2, a band hero clear of every other one. The 0.25.1
+ * turntable stands at (8.5, 3), turn 2, in the free north part of the west
+ * half. Each one frames
  * from the front with a clear sight line, and none meets another hero, a
  * pinned hero or prop spot, or a curio host's framing side. Every hero's seed
  * is `seedFor(seed, "hero", kind, variant)`, keyed by its kind and variant
@@ -1337,6 +1339,9 @@ export function heroHallRoom(): RoomSpec {
     // 2.6d C17: its 1.0 m moat clears every hero, and it frames from the
     // south with a clear sight line.
     at("slab-walker", 0, 21, 11, 2),
+    // 0.25.1: the exhibit heroes in the free north part of the west
+    // half, facing the entrance.
+    at("turntable", 0, 8.5, 3, 2),
   ].sort(HERO_ORDER);
 
   const base: RoomSpec = {

@@ -125,7 +125,7 @@ function heroAt(kind: HeroKind, variant: number, side: Side = "s"): Hero {
 describe("the hero catalogue", () => {
   it("lists every kind once, with a size per variant and a footing that matches its placement", () => {
     expect(new Set(HERO_KINDS).size).toBe(HERO_KINDS.length);
-    expect(HERO_KINDS).toHaveLength(28);
+    expect(HERO_KINDS).toHaveLength(29);
     const footing = {
       wall: "flush",
       backed: "backed",
@@ -284,6 +284,26 @@ describe("the hero catalogue", () => {
       top: 1.8,
     });
     expect(isTallHero("slab-walker")).toBe(false);
+  });
+
+  it("draws the turntable from the council pool alone, at weight 2, last (0.25.1)", () => {
+    // Mutation caught: the turntable missing from the council pool, put in
+    // another archetype's, given another weight or placed before an older
+    // kind (order is part of the seeded result).
+    for (const [a, pool] of Object.entries(HERO_POOLS)) {
+      const w = pool.find(([k]) => k === "turntable")?.[1] ?? 0;
+      expect(w, a).toBe(a === "council" ? 2 : 0);
+    }
+    expect(HERO_POOLS.council.at(-1)).toEqual(["turntable", 2]);
+    expect(HERO_CATALOGUE.turntable).toMatchObject({
+      placement: "band",
+      variants: 1,
+      top: 1.02,
+      surfaces: [],
+      under: [],
+      use: null,
+    });
+    expect(isTallHero("turntable")).toBe(false);
   });
 
   it("keeps a use point only where a later spec needs one, inside the reserve", () => {
@@ -1012,6 +1032,7 @@ describe("the hero pass", () => {
         ["mess-table", 6],
         ["arcade-cabinet", 1],
         ["recruit-cabinet", 1],
+        ["turntable", 2],
       ],
       engineering: [
         ["helper-robot", 3],

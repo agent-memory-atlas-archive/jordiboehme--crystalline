@@ -197,6 +197,7 @@ export const HERO_KINDS: readonly HeroKind[] = [
   "thunder-hammer",
   "police-box",
   "slab-walker",
+  "turntable",
 ];
 
 /**
@@ -575,6 +576,15 @@ export const HERO_CATALOGUE = {
     under: [],
     use: null,
   },
+  turntable: {
+    placement: "band",
+    variants: 1,
+    top: 1.02,
+    edges: 1,
+    surfaces: [],
+    under: [],
+    use: null,
+  },
 } satisfies Record<HeroKind, HeroEntry>;
 
 /**
@@ -583,7 +593,8 @@ export const HERO_CATALOGUE = {
  * are listed in catalogue order, and that order is part of the seeded result,
  * so do not reorder them. The archetype-only heroes stand at weight 2 (2.6f
  * C3): stone-hand (archive, lab), mech-head, red-bike, spider-tank
- * (engineering), garden-robot (lab) and slab-walker (bridge, engineering).
+ * (engineering), garden-robot (lab), slab-walker (bridge, engineering) and
+ * turntable (council, 0.25.1).
  */
 export const HERO_POOLS = {
   bridge: [
@@ -598,6 +609,7 @@ export const HERO_POOLS = {
     ["mess-table", 6],
     ["arcade-cabinet", 1],
     ["recruit-cabinet", 1],
+    ["turntable", 2],
   ],
   engineering: [
     ["helper-robot", 3],

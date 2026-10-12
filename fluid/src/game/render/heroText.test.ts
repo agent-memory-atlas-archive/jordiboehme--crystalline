@@ -178,6 +178,8 @@ const READABLE = new Set([
   "NORTON COMMANDER",
   "VERSION 4.0",
   "GEOS",
+  // The turntable's maker's name (0.25.1).
+  "Technics",
 ]);
 
 /**
@@ -246,6 +248,7 @@ const MARKS_ONLY = [
   "NORTON COMMANDER",
   "VERSION 4.0",
   "GEOS",
+  "Technics",
 ];
 
 /** A source with its comments stripped: comments name constants in backticks (`CLUSTER`); only code draws. */

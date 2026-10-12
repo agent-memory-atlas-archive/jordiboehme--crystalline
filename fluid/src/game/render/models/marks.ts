@@ -92,6 +92,8 @@ export const MARKS = {
   bikeStickers: ["CANON", "CITIZEN", "ARAI", "SHOEI"],
   /** The red bike's big two-line sticker on its right side: "BIG" over "1". */
   bikeBigOne: ["BIG", "1"],
+  /** The turntable's maker's name, black, flat on its silver top (0.25.1). */
+  deckMark: "Technics",
   /** The hoverboard's deck wordmark, one two-line block: "HOVER" over "BOARD". */
   boardLogo: ["HOVER", "BOARD"],
   /** The police box's left door notice, nine lines set as one block. */
