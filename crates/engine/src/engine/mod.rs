@@ -6371,17 +6371,23 @@ fn decide_alias_record(source: &str, old_f: &str, new_f: &str) -> AliasRecord {
     }
 }
 
-fn routing_bullets(root: &Path) -> Vec<String> {
-    let manifest = root.join("MANIFEST.md");
-    let Ok(source) = std::fs::read_to_string(&manifest) else {
-        return Vec::new();
+/// A file domain's lock and routing bullets from one read and one parse of
+/// its MANIFEST: the lock [`Engine::domain_is_read_only`] reads
+/// (`crystalline_core::read_only_at`) and the bullets a listing with routing
+/// shows. Unlocked with no bullets when the MANIFEST is missing, unreadable
+/// or does not parse, the answer each of the two reads gives on its own.
+fn manifest_lock_and_bullets(root: &Path) -> (bool, Vec<String>) {
+    let Ok(source) = std::fs::read_to_string(root.join("MANIFEST.md")) else {
+        return (false, Vec::new());
     };
     let Ok(engram) = parse_engram(&source) else {
-        return Vec::new();
+        return (false, Vec::new());
     };
-    Manifest::from_engram(&engram, &source)
-        .routing_bullets()
-        .to_vec()
+    let manifest = Manifest::from_engram(&engram, &source);
+    (
+        manifest.read_only().is_on(),
+        manifest.routing_bullets().to_vec(),
+    )
 }
 
 fn read_engram_file(root: &Path, rel: &str) -> Option<Engram> {

@@ -7,8 +7,10 @@
 //! everybody, so the lock is named first, even to an account whose write list
 //! names the domain.
 
+use std::collections::HashMap;
+
 use super::{Engine, OVERLAY_NEEDS_IDENTITY, Result, read_only_sentence};
-use crate::scope::{DomainRight, Scope};
+use crate::scope::{DomainRight, Scope, WriteRights};
 
 /// Why a write into one domain is refused for one caller.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,7 +73,8 @@ impl Engine {
     /// fails because this could not be decided: the row is served without
     /// the mark and a warning is logged. A write still runs its own check,
     /// which refuses on the same error.
-    pub(crate) async fn read_only_mark(&self, scope: &Scope, domain: &str) -> bool {
+    #[doc(hidden)]
+    pub async fn read_only_mark(&self, scope: &Scope, domain: &str) -> bool {
         match self.write_block(scope, domain).await {
             Ok(block) => block.is_some(),
             Err(e) => {
@@ -120,5 +123,98 @@ impl Engine {
                 None => WriteBlock::Role,
             },
         ))
+    }
+}
+
+/// One caller's write answers for a whole listing: the rights read once,
+/// and each domain's lock read at most once per listing. Built by
+/// [`Engine::write_marks`] for one request and asked through
+/// [`Engine::mark`]; never kept, since a lock or a right can change between
+/// requests.
+pub(crate) struct WriteMarks {
+    /// The caller's rights, read once. `None` in three cases that answer
+    /// differently: no resolver is installed (the machine owner writes
+    /// everywhere, so no row is marked for a right), the open tier (decided
+    /// by [`Engine::reviews_changes`] instead), or the rights could not be
+    /// read (then `per_row` is set).
+    rights: Option<WriteRights>,
+    /// Set when the rights could not be read (logged once for the listing):
+    /// every row then asks [`Engine::read_only_mark`] on its own, so a
+    /// failed batch read gives exactly the per-row answer, a Viewer's mark
+    /// included.
+    per_row: bool,
+    scope: Scope,
+    /// The MCP open tier: anonymous on an instance with `auth.mcp` off, as
+    /// [`Engine::write_access_block`] decides it.
+    open_tier: bool,
+    /// Each domain's lock, once read (or seeded from a MANIFEST the listing
+    /// already read for its routing bullets).
+    locks: HashMap<String, bool>,
+}
+
+impl WriteMarks {
+    /// Record `domain`'s lock as read from its MANIFEST elsewhere, so
+    /// [`Engine::mark`] does not read the file again.
+    pub(crate) fn seed_lock(&mut self, domain: &str, locked: bool) {
+        self.locks.insert(domain.to_string(), locked);
+    }
+}
+
+impl Engine {
+    /// The rights half of [`Engine::write_block`] for every row of one
+    /// listing, read from the accounts store once (B-3) rather than once or
+    /// twice per row. Never fails: a store that cannot answer leaves each
+    /// row to [`Engine::read_only_mark`], which serves it without the mark
+    /// where the answer needs the broken read.
+    pub(crate) async fn write_marks(&self, scope: &Scope) -> WriteMarks {
+        let open_tier = matches!(scope, Scope::Anonymous) && !self.auth_mcp();
+        let mut per_row = false;
+        let rights = match self.domain_access.get() {
+            Some(access) if !open_tier => match access.write_rights(scope).await {
+                Ok(rights) => Some(rights),
+                Err(e) => {
+                    tracing::warn!(
+                        "the read_only marks could not be read in one go, so each row is decided on its own: {e:#}"
+                    );
+                    per_row = true;
+                    None
+                }
+            },
+            _ => None,
+        };
+        WriteMarks {
+            rights,
+            per_row,
+            scope: scope.clone(),
+            open_tier,
+            locks: HashMap::new(),
+        }
+    }
+
+    /// Whether `domain` is marked read-only in this listing: the same answer
+    /// as `write_block(..).is_some()`, or as [`Engine::read_only_mark`] when
+    /// the rights could not be read.
+    pub(crate) async fn mark(&self, marks: &mut WriteMarks, domain: &str) -> bool {
+        if marks.per_row {
+            return self.read_only_mark(&marks.scope, domain).await;
+        }
+        let locked = match marks.locks.get(domain) {
+            Some(locked) => *locked,
+            None => {
+                let locked = self.domain_is_read_only(domain).await;
+                marks.locks.insert(domain.to_string(), locked);
+                locked
+            }
+        };
+        if locked {
+            return true;
+        }
+        if marks.open_tier {
+            return self.reviews_changes(domain);
+        }
+        match &marks.rights {
+            Some(rights) => rights.write_right(domain) < DomainRight::Write,
+            None => false,
+        }
     }
 }

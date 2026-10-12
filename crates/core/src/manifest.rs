@@ -665,7 +665,16 @@ pub fn sharing_at(root: &Path) -> Sharing {
 
 /// The [`ReadOnly`] switch a MANIFEST source declares. [`ReadOnly::Off`]
 /// whenever the source does not parse or declares nothing.
+///
+/// A source that cannot name the key is answered without the parse, since
+/// the lock is read for every domain row a listing serves (B-3). YAML spells
+/// a key's characters literally unless a double-quoted escape writes them,
+/// so a text with neither `read_only` nor a backslash in it has no such key
+/// and the full parse would say [`ReadOnly::Off`] too.
 pub fn read_only_of_source(markdown: &str) -> ReadOnly {
+    if !markdown.contains(READ_ONLY_KEY) && !markdown.contains('\\') {
+        return ReadOnly::Off;
+    }
     match parse_engram(markdown) {
         Ok(engram) => Manifest::from_engram(&engram, markdown).read_only(),
         Err(_) => ReadOnly::Off,
