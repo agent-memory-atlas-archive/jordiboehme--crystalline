@@ -4,7 +4,7 @@
  * its triangle pin and its stickers each on its own side; the police box's sign
  * layout, its sign on all four sides, the lines of its door notice, and
  * its door leaves handed over as two swinging movers, and its hollow
- * inside lit white behind them; the light cycle's size, its two wheels of
+ * inside lit white behind them; the neon bike's size, its two wheels of
  * one size as its ends on the floor, its glowing rims and lines in one
  * group, its dark body and canopy, and its triangle pin.
  */
@@ -478,8 +478,8 @@ describe("the police box's doors (2.6e C10, C16)", () => {
   });
 });
 
-describe("the light cycle (0.25.1)", () => {
-  const parts = partsOf("light-cycle");
+describe("the neon bike (0.25.1)", () => {
+  const parts = partsOf("neon-bike");
   const all = parts.flatMap(local);
   const along = all.map((q) => q[0]);
 
@@ -487,7 +487,7 @@ describe("the light cycle (0.25.1)", () => {
     // Mutation caught: the cycle scaled, the wheels moved in under the
     // shell, or the shell run out past its footprint.
     const { front, rear } = CYCLE_WHEELS;
-    const hw = heroHalf("light-cycle", 0).hw;
+    const hw = heroHalf("neon-bike", 0).hw;
     expect(front.a + front.r - (rear.a - rear.r)).toBeCloseTo(CYCLE.length, 6);
     expect(CYCLE.length).toBeLessThanOrEqual(BIKE.length + 1e-9);
     expect(Math.max(...along)).toBeGreaterThan(front.a + front.r);
@@ -556,6 +556,6 @@ describe("the light cycle (0.25.1)", () => {
   });
 
   it("stays under its triangle pin", () => {
-    expect(buildHeroMesh("light-cycle", 0, LOOK).count / 3).toBeLessThan(2600);
+    expect(buildHeroMesh("neon-bike", 0, LOOK).count / 3).toBeLessThan(2600);
   });
 });

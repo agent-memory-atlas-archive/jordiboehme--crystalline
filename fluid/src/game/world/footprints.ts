@@ -272,7 +272,7 @@ export const FOOTPRINTS: Footprints = {
     "slab-walker": [{ width: 0.9, depth: 1.5 }],
     turntable: [{ width: 0.8, depth: 0.6 }],
     camera: [{ width: 0.9, depth: 0.9 }],
-    "light-cycle": [{ width: 3.0, depth: 0.8 }],
+    "neon-bike": [{ width: 3.0, depth: 0.8 }],
   },
 };
 
@@ -426,7 +426,7 @@ export const HERO_FOOTING = {
   "slab-walker": "free",
   turntable: "free",
   camera: "free",
-  "light-cycle": "free",
+  "neon-bike": "free",
 } as const satisfies Record<HeroKind, "flush" | "backed" | "free">;
 
 /**

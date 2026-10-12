@@ -258,13 +258,13 @@ describe("the hero catalogue", () => {
       "police-box",
     ]);
     // 2.6d C9, C17: the slab walker appended at the end of the engineering
-    // pool, after the spider tank; the light cycle after it (0.25.1).
+    // pool, after the spider tank; the neon bike after it (0.25.1).
     expect(HERO_POOLS.engineering.slice(-5)).toEqual([
       ["mech-head", 2],
       ["red-bike", 2],
       ["spider-tank", 2],
       ["slab-walker", 2],
-      ["light-cycle", 2],
+      ["neon-bike", 2],
     ]);
     expect(HERO_POOLS.archive.slice(-2)).toEqual([
       ["stone-hand", 2],
@@ -331,17 +331,17 @@ describe("the hero catalogue", () => {
     expect(isTallHero("camera")).toBe(false);
   });
 
-  it("draws the light cycle from the bridge and engineering pools, at weight 2, last, standing like the red bike (0.25.1)", () => {
-    // Mutation caught: the light cycle missing from a pool, put in another
+  it("draws the neon bike from the bridge and engineering pools, at weight 2, last, standing like the red bike (0.25.1)", () => {
+    // Mutation caught: the neon bike missing from a pool, put in another
     // archetype's, given another weight, placed before an older kind, or
     // standing other than the red bike does.
     for (const [a, pool] of Object.entries(HERO_POOLS)) {
-      const w = pool.find(([k]) => k === "light-cycle")?.[1] ?? 0;
+      const w = pool.find(([k]) => k === "neon-bike")?.[1] ?? 0;
       expect(w, a).toBe(a === "bridge" || a === "engineering" ? 2 : 0);
     }
-    expect(HERO_POOLS.bridge.at(-1)).toEqual(["light-cycle", 2]);
-    expect(HERO_POOLS.engineering.at(-1)).toEqual(["light-cycle", 2]);
-    expect(HERO_CATALOGUE["light-cycle"]).toMatchObject({
+    expect(HERO_POOLS.bridge.at(-1)).toEqual(["neon-bike", 2]);
+    expect(HERO_POOLS.engineering.at(-1)).toEqual(["neon-bike", 2]);
+    expect(HERO_CATALOGUE["neon-bike"]).toMatchObject({
       placement: HERO_CATALOGUE["red-bike"].placement,
       variants: 1,
       top: 1.35,
@@ -349,11 +349,9 @@ describe("the hero catalogue", () => {
       under: [],
       use: null,
     });
-    expect(HERO_FOOTING["light-cycle"]).toBe(HERO_FOOTING["red-bike"]);
-    expect(FOOTPRINTS.hero["light-cycle"]).toEqual([
-      { width: 3.0, depth: 0.8 },
-    ]);
-    expect(isTallHero("light-cycle")).toBe(false);
+    expect(HERO_FOOTING["neon-bike"]).toBe(HERO_FOOTING["red-bike"]);
+    expect(FOOTPRINTS.hero["neon-bike"]).toEqual([{ width: 3.0, depth: 0.8 }]);
+    expect(isTallHero("neon-bike")).toBe(false);
   });
 
   it("keeps a use point only where a later spec needs one, inside the reserve", () => {
@@ -1078,7 +1076,7 @@ describe("the hero pass", () => {
         ["arcade-cabinet", 1],
         ["recruit-cabinet", 1],
         ["slab-walker", 2],
-        ["light-cycle", 2],
+        ["neon-bike", 2],
       ],
       council: [
         ["mess-table", 6],
@@ -1099,7 +1097,7 @@ describe("the hero pass", () => {
         ["red-bike", 2],
         ["spider-tank", 2],
         ["slab-walker", 2],
-        ["light-cycle", 2],
+        ["neon-bike", 2],
       ],
       archive: [
         ["core-wall", 6],

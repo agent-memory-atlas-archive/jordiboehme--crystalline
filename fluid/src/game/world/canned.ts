@@ -1308,7 +1308,7 @@ const HERO_HALL_ISLAND: readonly [number, number] = [2, 18.5];
  * face the hall's centre (2.6e). The 2.6d slab walker (C17) stands
  * at (21, 11), turn 2, a band hero clear of every other one. The 0.25.1
  * turntable and camera stand at (8.5, 3) and (12.5, 3), turn 2, in the free
- * north part of the hall, and the light cycle at (18, 22.5), turn 0, south
+ * north part of the hall, and the neon bike at (18, 22.5), turn 0, south
  * of the mess table, its side to the north. Each one frames
  * from the front with a clear sight line, and none meets another hero, a
  * pinned hero or prop spot, or a curio host's framing side. Every hero's seed
@@ -1399,7 +1399,7 @@ export function heroHallRoom(): RoomSpec {
     at("turntable", 0, 8.5, 3, 2),
     at("camera", 0, 12.5, 3, 2),
     // 0.25.1: south of the mess table, facing north, framed from its side.
-    at("light-cycle", 0, 18, 22.5, 0),
+    at("neon-bike", 0, 18, 22.5, 0),
   ].sort(HERO_ORDER);
 
   const base: RoomSpec = {

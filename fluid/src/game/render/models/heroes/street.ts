@@ -1,6 +1,6 @@
 /**
  * The street pieces: the red bike and the blue police box, two machines
- * from the street that ended up aboard, and the light cycle beside the
+ * from the street that ended up aboard, and the neon bike beside the
  * bike. All three are lit on the `breathe` bank (C13). The police box's
  * two door leaves are the one thing on any of them that moves.
  *
@@ -54,7 +54,7 @@
  *   `boxKey(index)`, so they open and close together. That is the one
  *   door motion; the recipe builds them in place, closed, only when asked
  *   to (`movers`), which the model checks are.
- * - The light cycle (`CYCLE`) is the enclosed racing cycle from inside
+ * - The neon bike (`CYCLE`) is the enclosed racing cycle from inside
  *   the computer, parked like the bike: its length along `a`, its nose at
  *   `+a`. Two wheels of one size are its ends (`CYCLE_WHEELS`), each a
  *   glowing tread under a dark cover on each side, so only the rim
@@ -70,7 +70,7 @@
  * The numbers each kind is built to are named above its recipe: `BIKE`,
  * `BIKE_WHEELS` and the profiles (`CORE`, `SKIRT`, `COWL`) for the bike,
  * `BOX` for the box, `CYCLE`, `CYCLE_WHEELS` and `CYCLE_SHELL` for the
- * light cycle. Round parts use few facets, as in every batch.
+ * neon bike. Round parts use few facets, as in every batch.
  */
 
 import { boxKey } from "../../../world/box";
@@ -312,7 +312,7 @@ function grown(poly: readonly P2[], g: number): [number, number][] {
  * A line along the side profile `pts` (`[a, h]`, open), `width` wide, laid
  * on the face between depths `d0` and `d1`: one flat bar per pair of
  * points, each a little longer than its piece so the joints close. The
- * bike's pinstripe and the light cycle's glowing lines.
+ * bike's pinstripe and the neon bike's glowing lines.
  */
 function profileLine(
   k: Kit,
@@ -912,23 +912,23 @@ const redBike: HeroRecipe = ({ k, kitAt, s }) => {
   );
 };
 
-/** The light cycle's body: a glossy near black with a cold blue cast. */
+/** The neon bike's body: a glossy near black with a cold blue cast. */
 export const CYCLE_BODY: Rgb = [0.03, 0.035, 0.06];
 
-/** The gloss on the light cycle's crests: a lighter blue-black. */
+/** The gloss on the neon bike's crests: a lighter blue-black. */
 const CYCLE_SHINE: Rgb = [0.07, 0.08, 0.13];
 
-/** The light cycle's canopy: a dark smoked blue. */
+/** The neon bike's canopy: a dark smoked blue. */
 export const CYCLE_CANOPY: Rgb = [0.05, 0.08, 0.16];
 
-/** The light cycle's hub covers: the body's black. */
+/** The neon bike's hub covers: the body's black. */
 const CYCLE_HUB: Rgb = [0.02, 0.022, 0.035];
 
-/** The light cycle's glow: the bright cyan blue of its lines and rims. */
+/** The neon bike's glow: the bright cyan blue of its lines and rims. */
 export const CYCLE_GLOW: Rgb = [0.3, 0.8, 1.0];
 
 /**
- * The light cycle's size, in metres: `length` from tyre to tyre along
+ * The neon bike's size, in metres: `length` from tyre to tyre along
  * `a` and `top`, the canopy's top. No source gives the original's size,
  * so it takes the red bike's footprint; its wheels are a third of its
  * length, as in the film.
@@ -936,7 +936,7 @@ export const CYCLE_GLOW: Rgb = [0.3, 0.8, 1.0];
 export const CYCLE = { length: 2.86, top: 1.35 } as const;
 
 /**
- * The light cycle's two wheels, the front one at `+a`: its axle at `a`
+ * The neon bike's two wheels, the front one at `+a`: its axle at `a`
  * (at height `r`), `r` the tyre's radius and `half` its half width. They
  * are the same size, and their treads are the cycle's two ends.
  */
@@ -949,7 +949,7 @@ export const CYCLE_WHEELS = {
 const CYCLE_ARCH = 0.52;
 
 /**
- * The light cycle's body, `[a, h]`: one closed shell from the nose over
+ * The neon bike's body, `[a, h]`: one closed shell from the nose over
  * the front wheel's arch (from in front of the axle round over the top to
  * behind it), along the belly to the rear wheel's arch and round it to
  * the tail, then over the top forward: rising from the tail to the long
@@ -1005,7 +1005,7 @@ const CYCLE_LINE_IN = 0.045;
 const CYCLE_LINE = { width: 0.016, out: 0.004 } as const;
 
 /**
- * The light cycle's glowing side lines, `[a, h]`, as open polylines: the
+ * The neon bike's glowing side lines, `[a, h]`, as open polylines: the
  * shell's outline traced `CYCLE_LINE_IN` inside it, all the way round,
  * closed on itself.
  */
@@ -1016,7 +1016,7 @@ export function cycleLine(): P2[] {
 }
 
 /**
- * One light cycle wheel: the tread a solid glowing disc, under a dark
+ * One neon bike wheel: the tread a solid glowing disc, under a dark
  * cover on each side that leaves only its rim lit, and the axle through
  * the body from side to side.
  */
@@ -1042,13 +1042,13 @@ function cycleWheel(k: Kit, s: Surfaces, w: BikeWheel, glow: Surface): void {
 }
 
 /**
- * The light cycle: two wheels of one size at its ends, their rims
+ * The neon bike: two wheels of one size at its ends, their rims
  * glowing; the dark glossy shell in slices over both wheels and between
  * them; the smoked canopy over the rider; and the glowing lines tracing
  * the shell's outline on both sides and the canopy's top edge. Every
  * light is in one group and breathes.
  */
-const lightCycle: HeroRecipe = ({ k, s }) => {
+const neonBike: HeroRecipe = ({ k, s }) => {
   const glow = s.blink(CYCLE_GLOW, 0);
   cycleWheel(k, s, CYCLE_WHEELS.front, glow);
   cycleWheel(k, s, CYCLE_WHEELS.rear, glow);
@@ -1608,8 +1608,8 @@ export function boxLeafMovers(hero: Hero, index: number, look: Look): Mover[] {
 export const STREET_RECIPES = {
   "red-bike": redBike,
   "police-box": policeBox,
-  "light-cycle": lightCycle,
+  "neon-bike": neonBike,
 } satisfies Record<
-  Extract<HeroKind, "red-bike" | "police-box" | "light-cycle">,
+  Extract<HeroKind, "red-bike" | "police-box" | "neon-bike">,
   HeroRecipe
 >;
