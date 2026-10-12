@@ -32,8 +32,10 @@ permissions:
 
 # A newer push to a pull request cancels the run it supersedes. A push to main
 # keeps one group per commit and never cancels, so dev.yml sees every main run.
+# A dispatched stress run has a group of its own, so it never queues behind or
+# replaces a main push at the same commit.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-${{ github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -362,7 +364,21 @@ jobs:
         # The `ci` profile is the default one plus a single retry, so an
         # environmental failure on a hosted runner reports FLAKY instead of
         # turning a green change red. A test that fails twice still fails.
-        run: cargo nextest run --workspace --profile ci --locked
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo nextest run --workspace --profile ci --locked 2>&1 | tee nextest.log
+
+      # A test that passed on its retry is FLAKY in the log. Show each as a
+      # warning on the run; the job stays green.
+      - name: flaky tests
+        if: ${{ success() && needs.changes.outputs.tested != 'true' }}
+        shell: bash
+        run: |
+          # CARGO_TERM_COLOR=always puts colour codes in the log; strip them.
+          sed $'s/\x1b\\[[0-9;]*m//g' nextest.log | grep -E '^ *FLAKY ' | while read -r line; do
+            echo "::warning::flaky test: ${line}"
+          done || true
 
       - name: cargo test --doc
         if: ${{ needs.changes.outputs.tested != 'true' }}

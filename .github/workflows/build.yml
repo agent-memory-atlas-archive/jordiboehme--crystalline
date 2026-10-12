@@ -668,6 +668,7 @@ jobs:
           while ($record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)) {
             $name = $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, @(1))
             $sequence[$name] = $record.GetType().InvokeMember('IntegerData', 'GetProperty', $null, $record, @(2))
+            [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($record)
           }
           $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
           # Let go of the package before msiexec opens it again for the
@@ -813,12 +814,12 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw 'the task is still registered after uninstall' }
           $global:LASTEXITCODE = 0
 
-      # Install v0.24.3 from its release, then this build over it: the task
+      # Install v0.25.0 from its release, then this build over it: the task
       # must survive the major upgrade, start the new binary and start a
       # daemon of the new version. The old product's removal ends its own
       # daemon (EndDaemonTasks, since v0.24.2), so no file stays in use. The
       # smoke test above uninstalled, so this starts from a clean machine.
-      - name: Upgrade test of the .msi from v0.24.3
+      - name: Upgrade test of the .msi from v0.25.0
         if: matrix.msi
         shell: pwsh
         env:
@@ -829,8 +830,8 @@ jobs:
           # package" gave the MSI and the one crystalline --version prints.
           $built = $env:RELEASE_VERSION.TrimStart('v').Split('-')[0]
           if ($built -eq '0.0.0') { $built = (Select-String -Path Cargo.toml -Pattern '^version = "([0-9.]+)"$' | Select-Object -First 1).Matches[0].Groups[1].Value }
-          if ([version]$built -le [version]'0.24.3') {
-            "::warning::this build is $built, not newer than 0.24.3, so there is nothing to upgrade from; the upgrade test runs on a release tag"
+          if ([version]$built -le [version]'0.25.0') {
+            "::warning::this build is $built, not newer than 0.25.0, so there is nothing to upgrade from; the upgrade test runs on a release tag"
             exit 0
           }
           function Show-MsiFailure($log) {
@@ -839,7 +840,7 @@ jobs:
             Select-String -Path $log -Pattern 'Error \d{4}|error code|CustomAction .* returned actual error|Product: Crystalline -- ' | Select-Object -First 40
           }
           # The smoke test's daemon left an index at this build's schema in the
-          # state directory, and v0.24.3 refuses a schema newer than it knows.
+          # state directory, and v0.25.0 refuses a schema newer than it knows.
           Get-Process -Name crystalline -ErrorAction SilentlyContinue | Stop-Process -Force
           $profileDir = Join-Path $env:APPDATA 'crystalline'
           Remove-Item -Recurse -Force $profileDir -ErrorAction SilentlyContinue
@@ -851,8 +852,8 @@ jobs:
             $daemonLog = Join-Path $profileDir 'daemon.log'
             if (Test-Path $daemonLog) { Get-Content $daemonLog -Tail 40 | Write-Host } else { Write-Host 'no daemon.log' }
           }
-          $old = Join-Path $env:RUNNER_TEMP "crystalline-v0.24.3-$env:LEG_PLATFORM.msi"
-          Invoke-WebRequest -Uri "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v0.24.3/crystalline-v0.24.3-$env:LEG_PLATFORM.msi" -OutFile $old
+          $old = Join-Path $env:RUNNER_TEMP "crystalline-v0.25.0-$env:LEG_PLATFORM.msi"
+          Invoke-WebRequest -Uri "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v0.25.0/crystalline-v0.25.0-$env:LEG_PLATFORM.msi" -OutFile $old
           $new = (Get-Item dist/*.msi).FullName
           $exe = 'C:\Program Files\Crystalline\bin\crystalline.exe'
           $task = '\Crystalline\Daemon'
@@ -861,14 +862,14 @@ jobs:
             $p = Start-Process msiexec -ArgumentList "/i `"$msi`" /qn /norestart /L*v `"$log`"" -Wait -PassThru
             $p.ExitCode
           }
-          $oldLog = Join-Path $env:RUNNER_TEMP 'msi-install-0.24.3.log'
+          $oldLog = Join-Path $env:RUNNER_TEMP 'msi-install-0.25.0.log'
           $code = & $install $old $oldLog
-          if ($code -notin 0, 3010) { Show-MsiFailure $oldLog; throw "the v0.24.3 install failed: $code" }
+          if ($code -notin 0, 3010) { Show-MsiFailure $oldLog; throw "the v0.25.0 install failed: $code" }
           $was = & $exe --version
-          if ("$was" -notlike '*0.24.3*') { throw "v0.24.3 did not install: $was" }
+          if ("$was" -notlike '*0.25.0*') { throw "v0.25.0 did not install: $was" }
           schtasks /Query /TN $task *> $null
-          if ($LASTEXITCODE -ne 0) { throw 'v0.24.3 registered no task' }
-          # A v0.24.3 daemon from the task holds the old crystalline.exe
+          if ($LASTEXITCODE -ne 0) { throw 'v0.25.0 registered no task' }
+          # A v0.25.0 daemon from the task holds the old crystalline.exe
           # open; the old product's removal must end it before its files go.
           schtasks /Run /TN $task | Out-Null
           $oldUp = $false
@@ -877,11 +878,11 @@ jobs:
             if ($LASTEXITCODE -eq 0) { $oldUp = $true; break }
             Start-Sleep -Milliseconds 500
           }
-          if (-not $oldUp) { Show-DaemonFailure; throw 'the v0.24.3 task started no daemon that answers' }
+          if (-not $oldUp) { Show-DaemonFailure; throw 'the v0.25.0 task started no daemon that answers' }
           $upgradeLog = Join-Path $env:RUNNER_TEMP 'msi-upgrade.log'
           $code = & $install $new $upgradeLog
           if ($code -notin 0, 3010) { Show-MsiFailure $upgradeLog; throw "the upgrade failed: $code" }
-          # v0.24.3's removal ends its own daemon (EndDaemonTasks). Whether
+          # v0.25.0's removal ends its own daemon (EndDaemonTasks). Whether
           # that nested removal is written to this log is not confirmed, so
           # the line is reported, not required.
           if (Select-String -Path $upgradeLog -Pattern 'ActionStart\(Name=EndDaemonTasks' -Quiet) {
