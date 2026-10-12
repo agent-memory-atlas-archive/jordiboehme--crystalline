@@ -12,7 +12,8 @@
  *   above its recipe (`TURRET`, `EYE_PANEL`, `PHOTO_CONSOLE`,
  *   `LASER_DESK`), so a recipe reads its numbers by name.
  * - Housings are bevelled boxes (`HOUSING_BEVEL`, a thin chamfer that
- *   catches the light), except where a crisp edge is the point (the slab).
+ *   catches the light), except where a crisp edge is the point (the slab)
+ *   and on the eye panel's small plate, which keeps a bevel of its own.
  * - Round parts use few facets: 10 to 16 around a body, a housing or a
  *   drum, 6 to 8 around a small post, pad or caster, 4 around a ring's
  *   tube, so every hero stays under 1500 triangles.
@@ -144,7 +145,11 @@ const HOUSING_BEVEL = 0.02;
 /** A lens bezel's tube radius as a share of the lens's radius. */
 const BEZEL_SHARE = 0.25;
 
-/** The thinnest a lens bezel's tube gets, in metres. */
+/**
+ * The thinnest a lens bezel's tube gets, in metres, unless a recipe
+ * passes its own tube to `lens` (only the eye panel does, to keep its
+ * ring the original's width on a plate this small).
+ */
 const BEZEL_MIN = 0.012;
 
 /** Facets around a lens: its bezel ring's segments and its disc's sides. */
@@ -158,7 +163,7 @@ export type LensFacing = "front" | "up" | "down";
 
 /**
  * A lens: a dark bezel ring of tube `max(BEZEL_MIN, radius * BEZEL_SHARE)`
- * whose hole is exactly `radius`, centred at `(a, d, h)`, with a glowing
+ * (or the `tube` a caller passes) whose hole is exactly `radius`, centred at `(a, d, h)`, with a glowing
  * disc of `radius` in it, drawn with `s.blink(tint, group)` so it pulses
  * with its hero's blink bank. The disc stands from the bezel's back to
  * half a tube in front of the bezel's middle plane, so it sits recessed in
@@ -180,8 +185,8 @@ export function lens(
   tint: Rgb,
   group: number,
   facing: LensFacing = "front",
+  tube: number = Math.max(BEZEL_MIN, radius * BEZEL_SHARE),
 ): void {
-  const tube = Math.max(BEZEL_MIN, radius * BEZEL_SHARE);
   const light = s.blink(tint, group);
   if (facing === "front") {
     k.ring(a, d, h, radius + tube, tube, 4, LENS_SIDES, s.dark, "inward");
@@ -494,69 +499,76 @@ const blackSlab: HeroRecipe = ({ k, s, variant, kind }) => {
 };
 
 /**
- * The eye panel's measures, in metres: the faceplate's half width, depth
- * and bottom (a portrait plate of about 3 : 1, 0.6 by 1.8 m); the name
- * badge at the top (half width, heights, depth, its blue field's `a`
- * range, lift and inset, and the margin its second word keeps inside the
- * blue); the eye (its height, the black bezel disc's
- * radius and depth, the lens radius, the red dome's radius and how far it
- * stands out of the bezel, the yellow centre dot's radius and reach); and
- * the grille (half width, heights, backing depth, the slats' count, first
- * height, pitch, height, depth and how far in from the backing's ends
- * they stop).
+ * The eye panel's measures, in metres, at the original's true size: the
+ * faceplate's half width, depth, bottom and own small bevel (a portrait
+ * plate of about 3 : 1, 0.116 by 0.346 m, h 1.454 to 1.8, so the eye sits
+ * at standing eye height); the name badge at the top (half width,
+ * heights, depth, its blue field's `a` range, lift and inset, and the
+ * margin its second word keeps inside the blue), sized so both words keep
+ * the 3 mm pixel floor; the eye (its height, the black bezel disc's
+ * radius and depth, the lens radius and its ring's tube, so the ring is
+ * 96 mm across round a 74 mm glass as on the original, the red dome's
+ * radius and how far it stands out of the bezel, the yellow centre dot's
+ * radius and reach); and the grille at the foot of the plate (half width,
+ * heights, backing depth, the slats' count, first height, pitch, height,
+ * depth and how far in from the backing's ends they stop).
  */
 const EYE_PANEL = {
-  half: 0.3,
-  depth: 0.05,
-  bottom: 0.4,
+  half: 0.058,
+  depth: 0.03,
+  bottom: 1.454,
+  bevel: 0.003,
   badge: {
-    half: 0.17,
-    h0: 1.98,
-    h1: 2.07,
-    depth: 0.012,
-    blue: [0.0, 0.155],
-    lift: 0.004,
-    inset: 0.014,
-    margin: 0.012,
+    half: 0.046,
+    h0: 1.766,
+    h1: 1.788,
+    depth: 0.003,
+    blue: [-0.008, 0.043],
+    lift: 0.001,
+    inset: 0.003,
+    margin: 0.0025,
   },
   eye: {
-    h: 1.62,
-    bezelR: 0.26,
-    bezel: 0.03,
-    r: 0.14,
-    domeR: 0.085,
-    domeOut: 0.075,
-    dotR: 0.02,
-    dotOut: 0.085,
+    h: 1.6,
+    bezelR: 0.053,
+    bezel: 0.006,
+    r: 0.037,
+    tube: 0.0055,
+    domeR: 0.022,
+    domeOut: 0.018,
+    dotR: 0.005,
+    dotOut: 0.02,
   },
   grille: {
-    half: 0.16,
-    h0: 0.78,
-    h1: 1.2,
-    back: 0.008,
+    half: 0.052,
+    h0: 1.458,
+    h1: 1.529,
+    back: 0.002,
     slats: 7,
-    first: 0.8,
-    pitch: 0.06,
-    slat: 0.028,
-    slatDepth: 0.008,
-    slatInset: 0.015,
+    first: 1.4625,
+    pitch: 0.0095,
+    slat: 0.005,
+    slatDepth: 0.002,
+    slatInset: 0.003,
   },
 } as const;
 
 /**
- * The eye panel, flush on its wall: a tall portrait faceplate of warm
- * brushed metal (d 0 to 0.05, h 0.4 to the top, 0.6 m wide), and on it,
- * from the top down:
+ * The eye panel, flush on its wall at the original's true size: a small
+ * portrait faceplate of warm brushed metal (d 0 to 0.03, h 1.454 to the
+ * top, 0.116 m wide), and on it, from the top down:
  * - a black name badge with a blue field on its right half, its two words
  *   (`MARKS.panelName`) split between them as the original splits them:
  *   the first on the black, the second on the blue, both in `BADGE_INK`
  *   one `DECAL_LIFT` proud of their field and at the one pixel size the
  *   blue field allows the second, so the two read at the same height;
- * - the eye, high on the plate (h 1.62): a black round bezel disc, a red
- *   `lens` (r 0.14) in it, a smaller red dome standing out of the lens
- *   like a fisheye's glass, and a small yellow dot at its very middle, all
- *   in blink group 0 so the whole eye breathes as one;
- * - a speaker grille of seven aluminium slats on a black backing.
+ * - the eye at standing eye height (h 1.6): a black round bezel disc, a
+ *   red `lens` (r 0.037, on a thinner ring than `BEZEL_MIN` so it fits
+ *   the plate as the original's does), a smaller red dome standing out of
+ *   the lens like a fisheye's glass, and a small yellow dot at its very
+ *   middle, all in blink group 0 so the whole eye breathes as one;
+ * - a speaker grille of seven aluminium slats on a black backing at the
+ *   foot of the plate.
  */
 const eyePanel: HeroRecipe = ({ k, s, variant, kind }) => {
   const P = EYE_PANEL;
@@ -570,7 +582,7 @@ const eyePanel: HeroRecipe = ({ k, s, variant, kind }) => {
     face,
     P.bottom,
     top,
-    HOUSING_BEVEL,
+    P.bevel,
     s.tinted(FACEPLATE_CHAMPAGNE, LAYER.metal),
   );
   const b = P.badge;
@@ -618,8 +630,7 @@ const eyePanel: HeroRecipe = ({ k, s, variant, kind }) => {
   const e = P.eye;
   const front = face + e.bezel;
   k.extrude(discOutline(0, e.h, e.bezelR, 16), face, front, black);
-  const tube = Math.max(BEZEL_MIN, e.r * BEZEL_SHARE);
-  lens(k, s, 0, front + tube, e.h, e.r, SIGNAL_RED, 0);
+  lens(k, s, 0, front + e.tube, e.h, e.r, SIGNAL_RED, 0, "front", e.tube);
   k.extrude(
     discOutline(0, e.h, e.domeR, LENS_SIDES),
     front,

@@ -5,8 +5,9 @@
  * here, the laser desk's own top stays clear in the recipe's own terms
  * too, the slab keeps its 1 : 4 : 9, the turret's eye looks out of its
  * front and a seam splits its shell, the eye panel is a portrait plate
- * with a small dot at the middle of its lens, the photo console's picture
- * leans back, and the laser's lens hangs over the chair's seat. The marks:
+ * at the original's true size with a small dot at the middle of its
+ * lens, the photo console's picture leans back, and the laser's lens
+ * hangs over the chair's seat. The marks:
  * the eye panel's two words on its badge, the first on the black and the
  * last on the blue field, and the photo console's wordmark on the lip
  * beside its print slot.
@@ -50,11 +51,24 @@ const heightOf = (p: Part): number => {
 
 /**
  * The eye panel's name badge, as `EYE_PANEL` builds it: its black plate's
- * `a` and `h` range and its front (the plate's face at 0.05 plus the
- * badge's 0.012), and the blue field's lift over that front.
+ * `a` and `h` range and its front (the plate's face at 0.03 plus the
+ * badge's 0.003), and the blue field's lift over that front.
  */
-const BADGE = { a0: -0.17, a1: 0.17, h0: 1.98, h1: 2.07, front: 0.062 };
-const BLUE_LIFT = 0.004;
+const BADGE = { a0: -0.046, a1: 0.046, h0: 1.766, h1: 1.788, front: 0.033 };
+const BLUE_LIFT = 0.001;
+
+/**
+ * The eye panel at the original's true size (0.25.1): the faceplate's
+ * width and its bottom and top, the eye's centre height (standing eye
+ * height) and the lens's radius (a 74 mm glass).
+ */
+const EYE_PANEL_SIZE = {
+  width: 0.116,
+  h0: 1.454,
+  h1: 1.8,
+  eyeH: 1.6,
+  r: 0.037,
+};
 
 /**
  * The photo console's lip under its screen, as `PHOTO_CONSOLE` builds it:
@@ -195,6 +209,36 @@ describe("optics hero models", () => {
     );
     const fb = bounds(front);
     expect(fb.hi[0] - fb.lo[0]).toBeLessThan(0.05);
+  });
+
+  it("builds the eye panel at the original's true size, its eye at standing eye height (0.25.1)", () => {
+    // Mutation caught: the plate, the eye or the lens back at the old,
+    // too large size, or the eye off its height.
+    const S = EYE_PANEL_SIZE;
+    expect(HERO_CATALOGUE["eye-panel"].top).toBe(S.h1);
+    const parts = partsOf("eye-panel");
+    const plate = bounds(
+      local(one(parts.filter((p) => p.method === "bevelBox"))),
+    );
+    expect(plate.hi[0] - plate.lo[0]).toBeCloseTo(S.width, 9);
+    expect(plate.lo[2]).toBeCloseTo(S.h0, 9);
+    expect(plate.hi[2]).toBeCloseTo(S.h1, 9);
+    const eye = parts.filter((p) => p.flag === blinkFlag(0)).map(local);
+    const mid = centre(eye[0] ?? []);
+    expect(mid[0]).toBeCloseTo(0, 9);
+    expect(mid[2]).toBeCloseTo(S.eyeH, 9);
+    const reach = (q: readonly V3[]) =>
+      Math.max(...q.map((p) => Math.hypot(p[0] - mid[0], p[2] - mid[2])));
+    const widest = Math.max(...eye.map(reach));
+    expect(widest).toBeCloseTo(S.r, 9);
+    // Every part stays on the plate.
+    for (const p of parts) {
+      const b = bounds(local(p));
+      expect(b.lo[0]).toBeGreaterThanOrEqual(-S.width / 2 - 1e-9);
+      expect(b.hi[0]).toBeLessThanOrEqual(S.width / 2 + 1e-9);
+      expect(b.lo[2]).toBeGreaterThanOrEqual(S.h0 - 1e-9);
+      expect(b.hi[2]).toBeLessThanOrEqual(S.h1 + 1e-9);
+    }
   });
 
   it("the photo console's picture leans back", () => {

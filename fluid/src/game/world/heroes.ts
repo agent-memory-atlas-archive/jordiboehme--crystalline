@@ -273,7 +273,7 @@ export const HERO_CATALOGUE = {
   "eye-panel": {
     placement: "wall",
     variants: 1,
-    top: 2.2,
+    top: 1.8,
     edges: 1,
     surfaces: [],
     under: [],

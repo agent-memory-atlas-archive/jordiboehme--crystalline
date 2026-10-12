@@ -234,7 +234,7 @@ export const FOOTPRINTS: Footprints = {
   hero: {
     turret: [{ width: 0.9, depth: 0.9 }],
     "black-slab": [{ width: 1.2, depth: 0.3 }],
-    "eye-panel": [{ width: 0.9, depth: 0.25 }],
+    "eye-panel": [{ width: 0.416, depth: 0.25 }],
     "photo-console": [{ width: 1.8, depth: 0.9 }],
     "laser-desk": [{ width: 2.4, depth: 3.0 }],
     "mess-table": [{ width: 5.0, depth: 2.6 }],
