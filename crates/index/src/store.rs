@@ -3195,6 +3195,9 @@ pub trait Store: Send + Sync {
     /// Drop one actor's draft at a path. Returns whether a row was there to
     /// drop, so a caller can tell "cleared" from "there was nothing to clear"
     /// without asking twice.
+    ///
+    /// Opens no transaction of its own: its caller (`clear_row`) holds one, so
+    /// the child rows and the unbinding go with the row or not at all.
     async fn clear_overlay_entry(&self, domain: DomainId, actor: &str, path: &str) -> Result<bool>;
 
     /// How many drafts each actor holds in a domain, ordered by actor. Base

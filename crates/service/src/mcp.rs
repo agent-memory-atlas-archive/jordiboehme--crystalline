@@ -1884,10 +1884,10 @@ impl McpServer {
         // The role and the write list are asked whatever the lock says, so a
         // locked domain never opens this gate: the collaboration verbs reach
         // origin paths that do not read the lock. The lock's own sentence is
-        // left to the engine's write view and to the MCP unlock refusal
-        // (`configure`, `edit_engram` on the MANIFEST), which run first, so
-        // this gate never answers it; `Reviewing` is the open tier's, which
-        // returned above.
+        // left to the engine's write view and to the MCP unlock refusal,
+        // which run before this gate in `edit_core` and `configure_domain`;
+        // on the collaboration verbs the engine's origin paths answer the
+        // lock. `Reviewing` is the open tier's, which returned above.
         match self
             .engine
             .write_access_block(scope, domain)

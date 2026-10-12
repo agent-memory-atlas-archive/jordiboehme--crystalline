@@ -740,9 +740,9 @@ struct JsonPrompt<'a> {
     domains: Vec<JsonPromptDomain<'a>>,
 }
 
-/// Render the prompt as JSON: `{version: 1, kind: "system", read_only,
-/// workspace, domains: [{name, bullets, preferred, read_only?}]}`. `read_only` is always
-/// present; `kind` is additive and `version` stays 1.
+/// Render the prompt as JSON: `{version: 1, kind: "system", read_only, workspace,
+/// domains: [{name, bullets, preferred, read_only?}]}`. `read_only` is always present;
+/// `kind` is additive and `version` stays 1.
 pub fn render_json(output: &PromptOutput) -> String {
     let wrapped = JsonPrompt {
         version: 1,

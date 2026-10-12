@@ -1797,11 +1797,11 @@ impl CollabSession {
     /// conflict) has to reach the room, or its alert keeps naming a reason
     /// that no longer applies.
     ///
-    /// `detail` is never composed here: every caller hands it `err.to_string()`
-    /// off whatever the engine's own save call refused with, so a move-blocked
-    /// author's room says the exact sentence [`crate::engine::joined_write_is_elsewhere`]
-    /// gives the request path for the same shape - one string, reached two
-    /// ways, never two dialects of one refusal.
+    /// `detail` comes from the caller: the engine's own refusal of the save
+    /// (`err.to_string()`), so a move-blocked author's room says the exact
+    /// sentence [`crate::engine::joined_write_is_elsewhere`] gives the request
+    /// path, or a room constant such as `ROOM_SWITCH_ON_REFUSAL` when the room
+    /// itself refuses. It is never composed here.
     fn fail_save(&self, state: &mut SessionState, detail: String) {
         let repeat = matches!(state.save_state, SaveStateTag::Failed)
             && state.failure_detail.as_deref() == Some(detail.as_str());

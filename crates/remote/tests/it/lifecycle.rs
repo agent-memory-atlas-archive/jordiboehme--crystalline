@@ -11533,8 +11533,8 @@ async fn a_withdrawn_share_keeps_its_branch_while_a_pull_request_is_based_on_it(
 }
 
 /// M32: a layer the forge declined is queued by the repair as declined, with
-/// its pull requests belonging on the layer below it. A suggestion based on its branch keeps the branch, so the entry
-/// stays to be read.
+/// its pull requests belonging on the layer below it. A suggestion based on
+/// its branch keeps the branch, so the entry stays to be read.
 #[tokio::test]
 async fn a_repair_queues_a_declined_layer_as_declined() {
     let mock = MockProvider::new();

@@ -83,7 +83,7 @@ crystalline users add bot --mcp-token bot --role editor --writes agents-bot
 
 `crystalline users writes bot agents-bot,agents-shared` replaces the list, `crystalline users writes bot` prints it, and `crystalline users writes bot --clear` removes it. `crystalline users list` shows each account's list. An entry that names no registered domain is accepted with a warning, since the domain may be created later. A domain rename updates the entries that name the domain exactly; an entry with `*` stays as it is.
 
-What the agent sees: its routing block marks every other domain "(read-only)", and a domain row in `list_domains` carries `read_only: true` for it. A write there is refused with "'eng' is not on the write list of 'bot'; an instance admin changes it with crystalline users writes".
+What the agent sees: its routing block marks every other domain "(read-only)", and a domain row in `list_domains` carries `read_only: true` for it. A write to any other domain, `eng` for example, is refused with "'eng' is not on the write list of 'bot'; an instance admin changes it with crystalline users writes".
 
 On the agent's machine, set the server and the token and nothing else:
 
