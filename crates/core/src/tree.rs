@@ -47,34 +47,88 @@ impl From<RemoveTreeError> for io::Error {
 /// anything to remove: a path that is not there is success with `false`. A
 /// symlink, junction or redirected folder is removed as a link and its target
 /// is never touched or walked. The first failure stops the removal and names
-/// the path it happened at.
+/// a path: on Windows the one it happened at, on unix the folder that std's
+/// own walk was removing.
 pub fn remove_tree(path: &Path) -> Result<bool, RemoveTreeError> {
     let meta = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(named(path, e)),
     };
-    remove_present(path, &meta)?;
-    Ok(true)
+    remove_present(path, &meta)
 }
 
-fn remove_present(path: &Path, meta: &std::fs::Metadata) -> Result<(), RemoveTreeError> {
+/// Removes what is at `path`, described by `meta`. Answers whether it was
+/// still there.
+fn remove_present(path: &Path, meta: &std::fs::Metadata) -> Result<bool, RemoveTreeError> {
     if is_link(meta) {
-        return remove_link(path, meta);
+        remove_link(path, meta)?;
+        return Ok(true);
     }
     if !meta.is_dir() {
-        return remove_ignoring_missing(std::fs::remove_file(path), path);
+        remove_regular_file(path)?;
+        return Ok(true);
     }
+    remove_real_folder(path)
+}
+
+/// A real folder on unix goes with std: its walk uses `openat` and `unlinkat`
+/// with `O_NOFOLLOW`, so a link inside is removed as a link, never followed,
+/// and a folder swapped for a link during the walk is not entered either.
+#[cfg(unix)]
+fn remove_real_folder(path: &Path) -> Result<bool, RemoveTreeError> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(named(path, e)),
+    }
+}
+
+/// A real folder elsewhere is walked by hand: std's walk on Windows answers
+/// error 4395 for a junction or a redirected folder inside.
+#[cfg(not(unix))]
+fn remove_real_folder(path: &Path) -> Result<bool, RemoveTreeError> {
     let entries = match std::fs::read_dir(path) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(named(path, e)),
     };
     for entry in entries {
         let entry = entry.map_err(|e| named(path, e))?;
         remove_tree(&entry.path())?;
     }
-    remove_ignoring_missing(std::fs::remove_dir(path), path)
+    remove_ignoring_missing(std::fs::remove_dir(path), path)?;
+    Ok(true)
+}
+
+/// Removes a file that is not a link.
+#[cfg(not(windows))]
+fn remove_regular_file(path: &Path) -> Result<(), RemoveTreeError> {
+    remove_ignoring_missing(std::fs::remove_file(path), path)
+}
+
+/// Removes a file that is not a link. Windows refuses to delete a read-only
+/// file, where std's own folder removal ignores the attribute, so a refused
+/// file loses the attribute and is tried once more. Never called for a link:
+/// clearing the attribute through a link would change its target.
+#[cfg(windows)]
+fn remove_regular_file(path: &Path) -> Result<(), RemoveTreeError> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            let meta = std::fs::symlink_metadata(path).map_err(|e| named(path, e))?;
+            if is_link(&meta) || !meta.permissions().readonly() {
+                return Err(named(path, e));
+            }
+            let mut writable = meta.permissions();
+            // Windows only: there this clears FILE_ATTRIBUTE_READONLY and
+            // nothing else, unlike the unix mode bits the lint warns about.
+            #[allow(clippy::permissions_set_readonly_false)]
+            writable.set_readonly(false);
+            std::fs::set_permissions(path, writable).map_err(|e| named(path, e))?;
+            remove_ignoring_missing(std::fs::remove_file(path), path)
+        }
+        result => remove_ignoring_missing(result, path),
+    }
 }
 
 fn named(path: &Path, source: io::Error) -> RemoveTreeError {
@@ -238,6 +292,21 @@ mod tests {
         remove_tree(&root).unwrap();
         assert!(!root.exists());
         assert!(outside.path().join("keep.md").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_with_a_read_only_file_inside_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("t");
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("locked.md");
+        std::fs::write(&file, b"x").unwrap();
+        let mut perms = std::fs::metadata(&file).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&file, perms).unwrap();
+        assert!(remove_tree(&root).unwrap());
+        assert!(!root.exists());
     }
 
     #[cfg(windows)]
