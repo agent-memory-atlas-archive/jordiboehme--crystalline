@@ -2093,6 +2093,34 @@ async fn an_admin_off_its_write_list_cannot_rename_set_policies_or_manage_the_do
     assert_eq!(set.status(), 200, "{:?}", set.text().await);
 }
 
+/// An admin whose write list names only `other` is told a domain does not
+/// exist when it names one that does not, not the write-list sentence: the
+/// MANIFEST save and the archive import look the domain up first.
+#[tokio::test]
+async fn an_unknown_domain_is_named_before_the_write_list_on_the_manifest_save_and_the_import() {
+    let ctx = RestCtx::two_domains().await;
+    ctx.auth
+        .set_write_list("boss", &["other".to_string()])
+        .await
+        .unwrap();
+    let boss = ctx.as_user("boss").await;
+    let answers = [
+        boss.put_json(
+            "/api/v1/domains/ghost/manifest",
+            json!({"markdown": "# ghost\n"}),
+        )
+        .await,
+        boss.post_json("/api/v1/domains/ghost/archive/import", json!({}))
+            .await,
+    ];
+    for answer in answers {
+        assert_eq!(answer.status(), 404);
+        let body = answer.text().await.unwrap();
+        assert!(!body.contains("write list"), "{body}");
+        assert!(body.contains("ghost"), "{body}");
+    }
+}
+
 const OWNER_RULE: &str = "only the owner of 'lab' or an instance admin may change `read_only`";
 
 /// Switching read_only on is the owner's (decision D10), on every REST
