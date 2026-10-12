@@ -21,6 +21,22 @@
  *   maker's name lies flat in the top's back left corner (`DECK_MARK`),
  *   reading from the front. The strobe lamp (group 0) and the lock light
  *   (group 1) breathe.
+ * - The camera is the black rangefinder-style mirrorless camera at its
+ *   true size (`CAMERA`), on a tripod at eye height, the tripod's three
+ *   legs standing on a low white round plinth like a museum piece. Its
+ *   lens points at the room (`+d`): a short fast prime (`LENS`) with its
+ *   mount, aperture ring, focus ring and round hood, set low and a little
+ *   left on the flat-topped body. The body is a black top plate over the
+ *   leatherette front, with the short grip at the front's left; the large
+ *   optical viewfinder window sits in the top plate's right corner, the
+ *   small frame window and the viewfinder lever below it and the square
+ *   focus assist lamp beside them. On top stand the exposure dial, the
+ *   shutter button in its collar with its thread, the shutter speed dial
+ *   and the hot shoe; at the back the screen and the eyepiece. The
+ *   maker's name runs across the top plate's front, left of the window
+ *   (`CAMERA_MARK`). The tripod (`TRIPOD`): its centre column through the
+ *   spider, a pan head with its tilt block, plate and handle, and three
+ *   legs of two sections each. The focus assist lamp (group 0) breathes.
  *
  * The numbers each kind is built to are named above its recipe. Round
  * parts use few facets, as in every batch.
@@ -29,10 +45,10 @@
 import type { HeroKind } from "../../../world/types";
 import { frameAt, type Frame, type Kit } from "../../kit";
 import type { Rgb } from "../../looks";
-import { yawed, type Surfaces } from "../common";
+import { sideways, tiltedBar, yawed, type Surfaces } from "../common";
 import { MARKS } from "../marks";
 import { STATUS_GREEN, heroHalf, type HeroRecipe } from "./common";
-import { MARK_PROUD, fit, pixelRuns, textRows } from "./pixels";
+import { MARK_PROUD, fit, pixelBoxes, pixelRuns, textRows } from "./pixels";
 
 /** The recipe's own frame: the origin, facing north. */
 const ORIGIN: Frame = frameAt([0, 0, 0], 0);
@@ -436,7 +452,306 @@ const turntable: HeroRecipe = ({ k, kitAt, s, variant, kind }) => {
   flatMark(k, MARKS.deckMark, DECK_MARK, P, s.tinted(DECK_INK));
 };
 
+/** The camera's black top plate, dials and lens barrel. */
+const CAMERA_BLACK: Rgb = [0.07, 0.07, 0.075];
+
+/** The camera's leatherette front and the lens's rubber focus ring. */
+export const LEATHERETTE: Rgb = [0.035, 0.035, 0.035];
+
+/** The lens mount, the shutter button and the strap lugs: bright metal. */
+const CAMERA_METAL: Rgb = [0.7, 0.7, 0.72];
+
+/** The viewfinder window's and the lens's glass: a dark blue-black. */
+export const FINDER_GLASS: Rgb = [0.07, 0.09, 0.14];
+
+/** The small frame window beside the viewfinder: a pale frosted grey. */
+const FRAME_WINDOW: Rgb = [0.72, 0.74, 0.74];
+
+/** The focus assist lamp: a warm amber that breathes. */
+export const ASSIST_LAMP: Rgb = [1.0, 0.55, 0.15];
+
+/** The maker's name on the top plate: a light grey on the black. */
+export const CAMERA_INK: Rgb = [0.85, 0.85, 0.84];
+
+/** The plinth: a museum white, its top a shade greyer. */
+const PLINTH_WHITE: Rgb = [0.86, 0.86, 0.84];
+
+/** The tripod's legs, column and head: a dark anodised grey. */
+const TRIPOD_GREY: Rgb = [0.2, 0.2, 0.22];
+
+/**
+ * The camera body, in metres, at its true size (140.5 by 82.8 mm, 34.8 mm
+ * at its thinnest): `w` along `a`, `h` tall from `bottom`, `d` deep
+ * centred on the tripod; `plate` the top plate's lower edge over the
+ * bottom (the leatherette below it); `grip` the grip's width at the
+ * front's left and how far it stands out.
+ */
+export const CAMERA = {
+  w: 0.1405,
+  h: 0.0828,
+  d: 0.0348,
+  bottom: 1.43,
+  plate: 0.058,
+  grip: { w: 0.02, out: 0.0055 },
+} as const;
+
+/**
+ * The lens, along `d` from the body's front: its axis at `a` and
+ * `h` over the body's bottom (it sits low, its underside level with the
+ * body's), and its rings, each `[from, to, radius]` in metres from the
+ * front: the mount, the aperture ring, the rubber focus ring and the
+ * front barrel; the glass at the front and the round hood.
+ */
+export const LENS = {
+  a: -0.01,
+  h: 0.031,
+  rings: [
+    [0, 0.005, 0.028],
+    [0.005, 0.015, 0.03],
+    [0.015, 0.038, 0.031],
+    [0.038, 0.055, 0.0295],
+  ],
+  glass: 0.024,
+  hood: { at: 0.059, r: 0.0315, tube: 0.0045 },
+} as const;
+
+/**
+ * The maker's name's box on the top plate's front, `[a0, a1, h0, h1]` in
+ * metres over the body's bottom: left of the viewfinder window, over the
+ * lens.
+ */
+export const CAMERA_MARK = [-0.067, 0.027, 0.062, 0.0785] as const;
+
+/** The viewfinder window's box on the front, `[a0, a1, h0, h1]`. */
+export const FINDER = [0.033, 0.062, 0.059, 0.077] as const;
+
+/**
+ * The tripod, in metres: the plinth's radius and height; the spider's
+ * height and radius; the legs' feet at `foot` from the centre on the
+ * plinth, their tops at `top` from the centre at the spider, their
+ * upper and lower widths; the pan head's base, the plate's top (the
+ * camera's bottom) and the handle's reach behind.
+ */
+export const TRIPOD = {
+  plinth: { r: 0.42, h: 0.1 },
+  spider: { h0: 1.18, h1: 1.24, r: 0.045 },
+  foot: 0.32,
+  top: 0.035,
+  upper: 0.026,
+  lower: 0.019,
+  head: 1.37,
+  handle: 0.2,
+} as const;
+
+/** The legs' turns about the column: one at the back, two at the front. */
+const LEG_TURNS = [-Math.PI / 2, Math.PI / 6, (5 * Math.PI) / 6] as const;
+
+/**
+ * The plinth and the tripod: three legs of two sections each from the
+ * spider down to the plinth's top, a rubber foot under each; the centre
+ * column, the pan head, the tilt block, the plate and the handle.
+ */
+function tripod(k: Kit, kitAt: (f: Frame) => Kit, s: Surfaces): void {
+  const t = TRIPOD;
+  const white = s.tinted(PLINTH_WHITE);
+  k.cylinder(0, 0, 0, t.plinth.h - 0.01, t.plinth.r, 32, white);
+  k.cylinder(
+    0,
+    0,
+    t.plinth.h - 0.01,
+    t.plinth.h,
+    t.plinth.r - 0.02,
+    32,
+    s.tinted([0.78, 0.78, 0.76]),
+  );
+
+  const grey = s.tinted(TRIPOD_GREY);
+  const metal = s.tinted(CAMERA_METAL);
+  const rubber = s.tinted(LEATHERETTE);
+  const top = (t.spider.h0 + t.spider.h1) / 2;
+  const floor = t.plinth.h;
+  const angle = Math.atan2(floor - top, t.foot - t.top);
+  const mid = [(t.top + t.foot) / 2, (top + floor) / 2] as const;
+  for (const turn of LEG_TURNS) {
+    const leg = kitAt(yawed(ORIGIN, 0, 0, turn));
+    const piece = (
+      from: readonly [number, number],
+      to: readonly [number, number],
+      width: number,
+    ) =>
+      leg.extrude(
+        tiltedBar(
+          (from[0] + to[0]) / 2,
+          (from[1] + to[1]) / 2,
+          angle,
+          Math.hypot(to[0] - from[0], to[1] - from[1]),
+          width,
+        ),
+        -width / 2,
+        width / 2,
+        grey,
+      );
+    piece([t.top, top], [mid[0] + 0.02, mid[1] - 0.08], t.upper);
+    piece([mid[0] - 0.02, mid[1] + 0.08], [t.foot, floor], t.lower);
+    // The lock where the lower section slides out of the upper one.
+    const lock = [mid[0] + 0.02, mid[1] - 0.08] as const;
+    leg.extrude(
+      tiltedBar(lock[0], lock[1], angle, 0.04, t.upper + 0.01),
+      -t.upper / 2 - 0.004,
+      t.upper / 2 + 0.004,
+      rubber,
+    );
+    leg.cylinder(t.foot, 0, floor, floor + 0.012, 0.016, 8, rubber);
+  }
+  k.cylinder(0, 0, t.spider.h0, t.spider.h1, t.spider.r, 12, grey);
+  k.cylinder(0, 0, 0.95, t.head, 0.014, 10, metal);
+  k.cylinder(0, 0, t.head, t.head + 0.02, 0.028, 14, grey);
+  k.box(
+    -0.016,
+    0.016,
+    -0.018,
+    0.018,
+    t.head + 0.02,
+    CAMERA.bottom - 0.01,
+    grey,
+  );
+  k.box(-0.026, 0.026, -0.02, 0.02, CAMERA.bottom - 0.01, CAMERA.bottom, grey);
+  const side = kitAt(sideways(ORIGIN));
+  const hh = t.head + 0.035;
+  side.cylinderAlong(0.015, t.handle - 0.06, 0, hh, 0.007, 8, grey);
+  side.cylinderAlong(t.handle - 0.06, t.handle, 0, hh, 0.011, 10, rubber);
+}
+
+/**
+ * The camera on its tripod on its plinth: the body with its top plate,
+ * leatherette and grip; the lens with its rings, glass and hood; the
+ * viewfinder window, the frame window, the lever and the focus assist
+ * lamp; the dials, the shutter button and the hot shoe on top; the
+ * screen and the eyepiece at the back; the strap lugs; and the maker's
+ * name across the front.
+ */
+const camera: HeroRecipe = ({ k, kitAt, s }) => {
+  tripod(k, kitAt, s);
+
+  const c = CAMERA;
+  const [w, dd] = [c.w / 2, c.d / 2];
+  const b = c.bottom;
+  const T = b + c.h;
+  const black = s.tinted(CAMERA_BLACK);
+  const leather = s.tinted(LEATHERETTE);
+  const metal = s.tinted(CAMERA_METAL);
+  const glass = s.tinted(FINDER_GLASS);
+
+  // The body: leatherette below the top plate, the grip at the front's
+  // left.
+  k.bevelBox(-w, w, -dd, dd, b, b + c.plate, 0.003, leather);
+  k.bevelBox(-w, w, -dd, dd, b + c.plate, T, 0.003, black);
+  k.bevelBox(
+    -w + 0.002,
+    -w + 0.002 + c.grip.w,
+    dd - 0.002,
+    dd + c.grip.out,
+    b + 0.004,
+    b + c.plate - 0.004,
+    0.003,
+    leather,
+  );
+  for (const sg of [-1, 1])
+    k.box(sg * w, sg * (w + 0.004), -0.003, 0.003, T - 0.012, T - 0.005, metal);
+
+  // The lens along `d`, low and a little left: its rings, glass and hood.
+  const side = kitAt(sideways(ORIGIN));
+  const lh = b + LENS.h;
+  for (const [from, to, r] of LENS.rings)
+    side.cylinderAlong(
+      -(dd + from),
+      -(dd + to),
+      LENS.a,
+      lh,
+      r,
+      20,
+      from === 0.015 ? leather : from === 0 ? metal : black,
+    );
+  const front = dd + (LENS.rings[LENS.rings.length - 1]?.[1] ?? 0);
+  side.cylinderAlong(
+    -front,
+    -(front + 0.001),
+    LENS.a,
+    lh,
+    LENS.glass,
+    16,
+    glass,
+  );
+  k.ring(
+    LENS.a,
+    dd + LENS.hood.at,
+    lh,
+    LENS.hood.r,
+    LENS.hood.tube,
+    6,
+    20,
+    black,
+    "inward",
+  );
+
+  // The front's right: the viewfinder window in its frame, the frame
+  // window and the lever under it, the focus assist lamp beside them.
+  const [f0, f1, g0, g1] = FINDER;
+  k.box(
+    f0 - 0.002,
+    f1 + 0.002,
+    dd,
+    dd + 0.0008,
+    b + g0 - 0.002,
+    b + g1 + 0.002,
+    metal,
+  );
+  k.box(f0, f1, dd + 0.0008, dd + 0.0014, b + g0, b + g1, glass);
+  k.box(
+    0.04,
+    0.05,
+    dd,
+    dd + 0.001,
+    b + 0.044,
+    b + 0.053,
+    s.tinted(FRAME_WINDOW),
+  );
+  k.box(0.056, 0.065, dd, dd + 0.004, b + 0.04, b + 0.054, metal);
+  k.box(
+    0.027,
+    0.033,
+    dd,
+    dd + 0.001,
+    b + 0.045,
+    b + 0.051,
+    s.blink(ASSIST_LAMP, 0),
+  );
+
+  // On top: the exposure dial at the left, the shutter button in its
+  // collar with its thread, the shutter speed dial and the hot shoe.
+  k.cylinder(-0.057, -0.004, T, T + 0.0085, 0.0125, 16, black);
+  k.cylinder(-0.04, 0.0095, T, T + 0.004, 0.008, 12, metal);
+  k.cylinder(-0.04, 0.0095, T + 0.004, T + 0.008, 0.0045, 10, metal);
+  k.cylinder(-0.04, 0.0095, T + 0.008, T + 0.0085, 0.0022, 8, black);
+  k.cylinder(-0.018, -0.003, T, T + 0.0075, 0.0145, 18, black);
+  k.cylinder(-0.018, -0.003, T + 0.0075, T + 0.009, 0.0115, 18, metal);
+  k.box(0, 0.022, -0.009, 0.009, T, T + 0.006, black);
+
+  // At the back: the screen and the eyepiece behind the window.
+  k.box(-0.055, 0.03, -dd - 0.001, -dd, b + 0.008, b + 0.056, glass);
+  k.box(0.035, 0.062, -dd - 0.008, -dd, b + 0.056, b + 0.078, leather);
+
+  // The maker's name across the top plate's front.
+  const [m0, m1, n0, n1] = CAMERA_MARK;
+  const rows = textRows(MARKS.cameraMark);
+  const { px, left, top } = fit(rows, m0, m1, b + n0, b + n1);
+  pixelBoxes(k, rows, left, top, px, dd, dd + MARK_PROUD, (ch) =>
+    ch === "#" ? s.tinted(CAMERA_INK) : null,
+  );
+};
+
 /** The gear kinds' recipes. */
 export const GEAR_RECIPES = {
   turntable,
-} satisfies Record<Extract<HeroKind, "turntable">, HeroRecipe>;
+  camera,
+} satisfies Record<Extract<HeroKind, "turntable" | "camera">, HeroRecipe>;

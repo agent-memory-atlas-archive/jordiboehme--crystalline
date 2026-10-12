@@ -499,7 +499,8 @@ export type HeroKind =
   | "thunder-hammer"
   | "police-box"
   | "slab-walker"
-  | "turntable";
+  | "turntable"
+  | "camera";
 
 /**
  * Where a hero kind stands (H8): flush on one or two hall wall edges

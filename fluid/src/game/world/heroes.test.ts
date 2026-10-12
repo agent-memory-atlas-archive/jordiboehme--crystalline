@@ -125,7 +125,7 @@ function heroAt(kind: HeroKind, variant: number, side: Side = "s"): Hero {
 describe("the hero catalogue", () => {
   it("lists every kind once, with a size per variant and a footing that matches its placement", () => {
     expect(new Set(HERO_KINDS).size).toBe(HERO_KINDS.length);
-    expect(HERO_KINDS).toHaveLength(29);
+    expect(HERO_KINDS).toHaveLength(30);
     const footing = {
       wall: "flush",
       backed: "backed",
@@ -265,10 +265,14 @@ describe("the hero catalogue", () => {
       ["spider-tank", 2],
       ["slab-walker", 2],
     ]);
-    expect(HERO_POOLS.archive.at(-1)).toEqual(["stone-hand", 2]);
-    expect(HERO_POOLS.lab.slice(-2)).toEqual([
+    expect(HERO_POOLS.archive.slice(-2)).toEqual([
+      ["stone-hand", 2],
+      ["camera", 2],
+    ]);
+    expect(HERO_POOLS.lab.slice(-3)).toEqual([
       ["stone-hand", 2],
       ["garden-robot", 2],
+      ["camera", 2],
     ]);
   });
 
@@ -304,6 +308,26 @@ describe("the hero catalogue", () => {
       use: null,
     });
     expect(isTallHero("turntable")).toBe(false);
+  });
+
+  it("draws the camera from the archive and lab pools, at weight 2, last (0.25.1)", () => {
+    // Mutation caught: the camera missing from a pool, put in another
+    // archetype's, given another weight or placed before an older kind.
+    for (const [a, pool] of Object.entries(HERO_POOLS)) {
+      const w = pool.find(([k]) => k === "camera")?.[1] ?? 0;
+      expect(w, a).toBe(a === "archive" || a === "lab" ? 2 : 0);
+    }
+    expect(HERO_POOLS.archive.at(-1)).toEqual(["camera", 2]);
+    expect(HERO_POOLS.lab.at(-1)).toEqual(["camera", 2]);
+    expect(HERO_CATALOGUE.camera).toMatchObject({
+      placement: "band",
+      variants: 1,
+      top: 1.53,
+      surfaces: [],
+      under: [],
+      use: null,
+    });
+    expect(isTallHero("camera")).toBe(false);
   });
 
   it("keeps a use point only where a later spec needs one, inside the reserve", () => {
@@ -1053,6 +1077,7 @@ describe("the hero pass", () => {
         ["arcade-cabinet", 1],
         ["recruit-cabinet", 1],
         ["stone-hand", 2],
+        ["camera", 2],
       ],
       lab: [
         ["photo-console", 3],
@@ -1064,6 +1089,7 @@ describe("the hero pass", () => {
         ["recruit-cabinet", 1],
         ["stone-hand", 2],
         ["garden-robot", 2],
+        ["camera", 2],
       ],
     });
   });
@@ -1625,15 +1651,19 @@ describe("the hero pass", () => {
   });
 
   it("pins the empty place's own hero exactly, so a change to the candidate order shows", () => {
-    // A 5 by 6 lab hall at its own seed (GAME_VERSION 4) draws the stone
-    // hand. It stands in the band at (2.5, 2.5), on the half-cell point
-    // (5, 5) of the band's candidates, turned 2 by its own roll, on the
-    // seed of that band candidate.
+    // A 5 by 6 lab hall at its own seed (GAME_VERSION 4): since the camera
+    // joined the lab pool (0.25.1) its pool slot's roll picks the garden
+    // robot, whose 3.7 m ceiling the hall's 3.6 m does not reach, so the
+    // slot stays empty and the any-archetype draw places the flying cloud.
+    // It stands in the band at (2.5, 2.5), on the half-cell point (5, 5)
+    // of the band's candidates, turned 2 by its own roll, on the seed of
+    // that band candidate.
     const room = generateRoom(DEGENERATE_PLACES.empty);
     expect(room.hall).toEqual({ x0: 0, y0: 0, x1: 5, y1: 6 });
+    expect(room.ceiling).toBe(3.6);
     expect(room.heroes).toEqual([
       {
-        kind: "stone-hand",
+        kind: "flying-cloud",
         variant: 0,
         x: 2.5,
         y: 2.5,

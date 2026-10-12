@@ -94,6 +94,8 @@ export const MARKS = {
   bikeBigOne: ["BIG", "1"],
   /** The turntable's maker's name, black, flat on its silver top (0.25.1). */
   deckMark: "Technics",
+  /** The camera's maker's name, light grey across its top plate's front (0.25.1). */
+  cameraMark: "FUJIFILM",
   /** The hoverboard's deck wordmark, one two-line block: "HOVER" over "BOARD". */
   boardLogo: ["HOVER", "BOARD"],
   /** The police box's left door notice, nine lines set as one block. */

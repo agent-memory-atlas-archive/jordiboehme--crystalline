@@ -78,6 +78,7 @@ describe("roomWithForcedHero", () => {
       "police-box",
       "slab-walker",
       "turntable",
+      "camera",
     ] as const) {
       const { room, placed } = roomWithForcedHero(CANNED_WORKSHOP, kind);
       expect(placed, kind).toBe(kind);

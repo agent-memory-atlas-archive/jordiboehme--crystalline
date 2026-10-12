@@ -5,7 +5,10 @@
  * and the record on the mat, the tonearm at its true reach from the
  * spindle, the crate of sleeves on the shelf, its two lights in their
  * corners, the maker's name read back from the top, and its triangle
- * pin.
+ * pin. The camera at its true size at eye height on its tripod, the lens
+ * pointing at the room, the viewfinder window in the front's right corner,
+ * its one light on the front, the maker's name read back from the front,
+ * the three legs standing on the plinth, and its triangle pin.
  */
 
 import { describe, expect, it } from "vitest";
@@ -26,15 +29,24 @@ import { buildHeroMesh } from ".";
 import { STATUS_GREEN } from "./common";
 import {
   ARM,
+  ASSIST_LAMP,
+  CAMERA,
+  CAMERA_INK,
+  CAMERA_MARK,
   DECK,
   DECK_INK,
   DECK_MARK,
   DECK_SILVER,
+  FINDER,
+  FINDER_GLASS,
+  LEATHERETTE,
+  LENS,
   PLATTER,
   STROBE_DOT,
   STROBE_LAMP,
   STROBE_ROWS,
   TABLE,
+  TRIPOD,
 } from "./gear";
 import { textRows } from "./pixels";
 
@@ -184,5 +196,116 @@ describe("the turntable's model", () => {
 
   it("stays under its triangle pin", () => {
     expect(buildHeroMesh("turntable", 0, LOOK).count / 3).toBeLessThan(3300);
+  });
+});
+
+describe("the camera's model", () => {
+  const parts = partsOf("camera");
+  const [w, dd] = [CAMERA.w / 2, CAMERA.d / 2];
+  const b = CAMERA.bottom;
+
+  it("holds the body at its true size at eye height over the tripod's plate", () => {
+    // Mutation caught: the body scaled, or lowered off eye height.
+    const body = pointsOf(
+      parts.filter(
+        (p) =>
+          p.method === "bevelBox" &&
+          Math.abs(span(local(p), 0).hi - span(local(p), 0).lo - CAMERA.w) <
+            1e-6,
+      ),
+    );
+    expect(span(body, 0).hi - span(body, 0).lo).toBeCloseTo(0.1405, 4);
+    expect(span(body, 1).hi - span(body, 1).lo).toBeCloseTo(0.0348, 4);
+    expect(span(body, 2).hi - span(body, 2).lo).toBeCloseTo(0.0828, 4);
+    expect(span(body, 2).lo).toBeCloseTo(b, 6);
+    expect(b).toBeGreaterThan(1.35);
+    expect(b + CAMERA.h).toBeLessThan(1.6);
+  });
+
+  it("points the lens at the room, low and a little left, with its glass at the front", () => {
+    // Mutation caught: the lens pointing back, centred, or above the name.
+    const glass = inked(parts, FINDER_GLASS, "cylinderAlong");
+    expect(glass).toHaveLength(1);
+    const [g] = glass;
+    if (g === undefined) throw new Error("no lens glass");
+    const pts = local(g);
+    expect(span(pts, 1).lo).toBeGreaterThan(dd + 0.04);
+    expect(span(pts, 0).mid).toBeCloseTo(LENS.a, 6);
+    expect(LENS.a).toBeLessThan(0);
+    const top = b + LENS.h + Math.max(...LENS.rings.map((r) => r[2]));
+    expect(top).toBeLessThanOrEqual(b + CAMERA_MARK[2] + 1e-9);
+  });
+
+  it("sets the viewfinder window in the top plate's right corner, right of the name", () => {
+    // Mutation caught: the window on the left or overlapping the name.
+    const [f0, f1, g0, g1] = FINDER;
+    expect(f0).toBeGreaterThan(CAMERA_MARK[1]);
+    expect(f1).toBeLessThan(w);
+    expect(g0).toBeGreaterThanOrEqual(CAMERA.plate - 1e-9);
+    expect(g1).toBeLessThan(CAMERA.h);
+    const window = inked(parts, FINDER_GLASS, "box").filter(
+      (p) => span(local(p), 1).lo > 0,
+    );
+    expect(window).toHaveLength(1);
+  });
+
+  it("lights only the focus assist lamp, on the front between the lens and the window", () => {
+    // Mutation caught: a second light, or the lamp off the front.
+    const lit = parts.filter((p) => p.flag !== FLAG.lit);
+    expect(lit).toHaveLength(1);
+    const lamp = inked(parts, ASSIST_LAMP);
+    expect(lamp.map((p) => p.flag)).toEqual([blinkFlag(0)]);
+    const [l] = lamp;
+    if (l === undefined) throw new Error("no lamp");
+    const pts = local(l);
+    expect(span(pts, 1).lo).toBeCloseTo(dd, 6);
+    expect(span(pts, 0).mid).toBeGreaterThan(LENS.a);
+    expect(span(pts, 0).mid).toBeLessThan(FINDER[0]);
+  });
+
+  it("reads the maker's name from the front across the top plate, at 3 mm pixels or more", () => {
+    // Mutation caught: the name mirrored, under the 3 mm floor, or off the
+    // top plate's front.
+    const ink = inked(parts, CAMERA_INK);
+    expect(ink.length).toBeGreaterThan(0);
+    const { rows, px } = cellsOf(ink, (q) => {
+      const [a, , h] = toLocal(frameAt([0, 0, 0], 0), q);
+      return [a, -h];
+    });
+    expect(trimmed(rows)).toEqual(trimmed(textRows(MARKS.cameraMark)));
+    expect(px).toBeGreaterThanOrEqual(0.003 - 1e-9);
+    for (const q of pointsOf(ink)) {
+      expect(q[1]).toBeGreaterThanOrEqual(dd - 1e-9);
+      expect(q[2]).toBeGreaterThanOrEqual(b + CAMERA.plate);
+      expect(q[2]).toBeLessThanOrEqual(b + CAMERA.h);
+      expect(q[0]).toBeLessThan(FINDER[0]);
+    }
+  });
+
+  it("stands the tripod's three legs on the plinth, spread round the column", () => {
+    // Mutation caught: a leg dropped, through the plinth or off its edge.
+    const feet = parts.filter(
+      (p) =>
+        p.method === "cylinder" &&
+        p.tint?.join() === LEATHERETTE.join() &&
+        Math.abs(span(local(p), 2).lo - TRIPOD.plinth.h) < 1e-6,
+    );
+    expect(feet).toHaveLength(3);
+    const turns = feet.map((p) => {
+      const pts = local(p);
+      const [a, d] = [span(pts, 0).mid, span(pts, 1).mid];
+      expect(Math.hypot(a, d)).toBeCloseTo(TRIPOD.foot, 3);
+      expect(Math.hypot(a, d)).toBeLessThan(TRIPOD.plinth.r);
+      return Math.atan2(d, a);
+    });
+    turns.sort((x, y) => x - y);
+    const gaps = turns.map(
+      (t, i) => ((turns[(i + 1) % 3] ?? 0) - t + 2 * Math.PI) % (2 * Math.PI),
+    );
+    for (const g of gaps) expect(g).toBeCloseTo((2 * Math.PI) / 3, 3);
+  });
+
+  it("stays under its triangle pin", () => {
+    expect(buildHeroMesh("camera", 0, LOOK).count / 3).toBeLessThan(2700);
   });
 });

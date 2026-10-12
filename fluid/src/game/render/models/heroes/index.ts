@@ -19,7 +19,8 @@
  * The recipes live in ten batch files grouped by the parts they share:
  * `optics.ts`, `living.ts`, `workshop.ts` and `arcade.ts`, and the large ones
  * in `floaters.ts` (the three hovering heroes), `exhibits.ts`, `mechs.ts`,
- * `street.ts` and `gear.ts` (the small machines on their exhibit pieces),
+ * `street.ts` and `gear.ts` (the turntable and the camera on their exhibit
+ * pieces),
  * all built on `common.ts`; `walker.ts` holds the slab walker's recipe
  * alone. The hero test (`heroModels.test.ts`)
  * builds every kind and variant, places it at every turn the way the GPU does
