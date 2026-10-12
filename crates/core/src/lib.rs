@@ -42,6 +42,7 @@ pub mod skills;
 pub mod tags;
 pub mod temporal;
 pub mod text;
+pub mod tree;
 pub mod verify;
 pub mod yaml;
 
