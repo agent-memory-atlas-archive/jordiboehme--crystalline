@@ -10,7 +10,7 @@
  * recipe since it is the original's image, not a logo or a text mark.
  *
  * The block-pixel font has capitals, lower-case letters, digits, the
- * space, the period, `&` and `<`, `=`, `>`, so a badge is set as the
+ * space, the period, `&`, the hyphen and `<`, `=`, `>`, so a badge is set as the
  * original sets it: in capitals, or in lower case where the original's
  * wordmark is lower case, and a number in numerals. A mark that is no
  * text (the round C, the signature, the planet badge, the computers'
@@ -96,6 +96,8 @@ export const MARKS = {
   deckMark: "Technics",
   /** The camera's maker's name, light grey across its top plate's front (0.25.1). */
   cameraMark: "FUJIFILM",
+  /** The camera's model name, light grey on the back of its top plate (0.25.1). */
+  cameraModel: "X-Pro2",
   /** The hoverboard's deck wordmark, one two-line block: "HOVER" over "BOARD". */
   boardLogo: ["HOVER", "BOARD"],
   /** The police box's left door notice, nine lines set as one block. */

@@ -27,7 +27,7 @@ const TITLES = ["TILEFALL", "ROCK RAIN", "MAZE HUNT", "VOID WING"];
 describe("block-pixel font", () => {
   it("draws every glyph as 5 rows of 3 lit or dark cells", () => {
     const keys = Object.keys(PIXEL_FONT);
-    for (const c of "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .<=>&!?,")
+    for (const c of "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .<=>&!?,-")
       expect(keys, c).toContain(c);
     for (const [c, rows] of Object.entries(PIXEL_FONT)) {
       expect(rows, c).toHaveLength(5);
@@ -104,6 +104,15 @@ describe("block-pixel font", () => {
         if (other !== c)
           expect(h.join(), `${c} vs ${other}`).not.toBe(g?.join());
     }
+  });
+
+  it("draws the hyphen as the middle row lit, apart from every other glyph (0.25.1)", () => {
+    // Mutation caught: the hyphen lit in another row (an underscore or an
+    // overbar), narrower than its cell, or the same as "=".
+    expect(PIXEL_FONT["-"]).toEqual(["...", "...", "###", "...", "..."]);
+    const g = PIXEL_FONT["-"];
+    for (const [other, h] of Object.entries(PIXEL_FONT))
+      if (other !== "-") expect(h.join(), `- vs ${other}`).not.toBe(g?.join());
   });
 
   it("refuses a character the font lacks", () => {

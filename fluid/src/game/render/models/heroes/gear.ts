@@ -34,9 +34,12 @@
  *   shutter button in its collar with its thread, the shutter speed dial
  *   and the hot shoe; at the back the screen and the eyepiece. The
  *   maker's name runs across the top plate's front, left of the window
- *   (`CAMERA_MARK`). The tripod (`TRIPOD`): its centre column through the
- *   spider, a pan head with its tilt block, plate and handle, and three
- *   legs of two sections each. The focus assist lamp (group 0) breathes.
+ *   (`CAMERA_MARK`); its model name runs across the back of the top
+ *   plate over the screen, reading from behind (`CAMERA_MODEL_MARK`), the
+ *   one strip of the top plate where it fits at the 3 mm pixel floor. The
+ *   tripod (`TRIPOD`): its centre column through the spider, a pan head
+ *   with its tilt block, plate and handle, and three legs of two sections
+ *   each. The focus assist lamp (group 0) breathes.
  *
  * The numbers each kind is built to are named above its recipe. Round
  * parts use few facets, as in every batch.
@@ -476,6 +479,12 @@ export const ASSIST_LAMP: Rgb = [1.0, 0.55, 0.15];
 /** The maker's name on the top plate: a light grey on the black. */
 export const CAMERA_INK: Rgb = [0.85, 0.85, 0.84];
 
+/**
+ * The camera's model name on the back of its top plate: a grey a shade
+ * darker than the maker's name, so the two marks stay apart.
+ */
+export const MODEL_INK: Rgb = [0.78, 0.78, 0.77];
+
 /** The plinth: a museum white, its top a shade greyer. */
 const PLINTH_WHITE: Rgb = [0.86, 0.86, 0.84];
 
@@ -524,6 +533,14 @@ export const LENS = {
  * lens.
  */
 export const CAMERA_MARK = [-0.067, 0.027, 0.062, 0.0785] as const;
+
+/**
+ * The model name's box on the back of the top plate, `[a0, a1, h0, h1]`
+ * in the back view's terms (`a` running the other way, from the
+ * eyepiece's side), over the screen and clear of the eyepiece: the one
+ * strip of the top plate where it fits at the 3 mm floor.
+ */
+export const CAMERA_MODEL_MARK = [-0.032, 0.068, 0.0615, 0.0785] as const;
 
 /** The viewfinder window's box on the front, `[a0, a1, h0, h1]`. */
 export const FINDER = [0.033, 0.062, 0.059, 0.077] as const;
@@ -630,8 +647,8 @@ function tripod(k: Kit, kitAt: (f: Frame) => Kit, s: Surfaces): void {
  * leatherette and grip; the lens with its rings, glass and hood; the
  * viewfinder window, the frame window, the lever and the focus assist
  * lamp; the dials, the shutter button and the hot shoe on top; the
- * screen and the eyepiece at the back; the strap lugs; and the maker's
- * name across the front.
+ * screen and the eyepiece at the back; the strap lugs; the maker's name
+ * across the front and the model name across the back.
  */
 const camera: HeroRecipe = ({ k, kitAt, s }) => {
   tripod(k, kitAt, s);
@@ -750,6 +767,15 @@ const camera: HeroRecipe = ({ k, kitAt, s }) => {
   const { px, left, top } = fit(rows, m0, m1, b + n0, b + n1);
   pixelBoxes(k, rows, left, top, px, dd, dd + MARK_PROUD, (ch) =>
     ch === "#" ? s.tinted(CAMERA_INK) : null,
+  );
+
+  // The model name on the back of the top plate, reading from behind.
+  const back = kitAt(yawed(ORIGIN, 0, 0, Math.PI));
+  const [r0, r1, q0, q1] = CAMERA_MODEL_MARK;
+  const model = textRows(MARKS.cameraModel);
+  const at = fit(model, r0, r1, b + q0, b + q1);
+  pixelBoxes(back, model, at.left, at.top, at.px, dd, dd + MARK_PROUD, (ch) =>
+    ch === "#" ? s.tinted(MODEL_INK) : null,
   );
 };
 

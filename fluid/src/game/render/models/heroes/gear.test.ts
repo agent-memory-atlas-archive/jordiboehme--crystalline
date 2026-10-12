@@ -33,6 +33,7 @@ import {
   CAMERA,
   CAMERA_INK,
   CAMERA_MARK,
+  CAMERA_MODEL_MARK,
   DECK,
   DECK_INK,
   DECK_MARK,
@@ -41,6 +42,7 @@ import {
   FINDER_GLASS,
   LEATHERETTE,
   LENS,
+  MODEL_INK,
   PLATTER,
   STROBE_DOT,
   STROBE_LAMP,
@@ -326,6 +328,30 @@ describe("the camera's model", () => {
     }
   });
 
+  it("reads the model name from behind across the top plate's back, at 3 mm pixels or more, clear of the eyepiece", () => {
+    // Mutation caught: the name mirrored, read from the front through the
+    // body, under the 3 mm floor, or run onto the eyepiece or the screen.
+    const ink = inked(parts, MODEL_INK);
+    expect(ink.length).toBeGreaterThan(0);
+    // Seen from behind, the reader's right is `-a`.
+    const { rows, px } = cellsOf(ink, (q) => {
+      const [a, , h] = toLocal(frameAt([0, 0, 0], 0), q);
+      return [-a, -h];
+    });
+    expect(trimmed(rows)).toEqual(trimmed(textRows(MARKS.cameraModel)));
+    expect(px).toBeGreaterThanOrEqual(0.003 - 1e-9);
+    const [r0, r1] = CAMERA_MODEL_MARK;
+    for (const q of pointsOf(ink)) {
+      expect(q[1]).toBeLessThanOrEqual(-dd + 1e-9);
+      expect(q[2]).toBeGreaterThanOrEqual(b + CAMERA.plate);
+      expect(q[2]).toBeLessThanOrEqual(b + CAMERA.h);
+      expect(-q[0]).toBeGreaterThanOrEqual(r0 - 1e-9);
+      expect(-q[0]).toBeLessThanOrEqual(r1 + 1e-9);
+      // The eyepiece spans a 0.035 to 0.062 on the back.
+      expect(q[0]).toBeLessThan(0.035);
+    }
+  });
+
   it("stands the tripod's three legs on the plinth, spread round the column", () => {
     // Mutation caught: a leg dropped, through the plinth or off its edge.
     const feet = parts.filter(
@@ -350,6 +376,6 @@ describe("the camera's model", () => {
   });
 
   it("stays under its triangle pin", () => {
-    expect(buildHeroMesh("camera", 0, LOOK).count / 3).toBeLessThan(2700);
+    expect(buildHeroMesh("camera", 0, LOOK).count / 3).toBeLessThan(3000);
   });
 });

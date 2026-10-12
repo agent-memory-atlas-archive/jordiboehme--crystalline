@@ -4,7 +4,7 @@
  * rule allows only the station's own titles and the approved exceptions
  * (2.6a to 2.6c), and the 2.6d and 2.6f marks of `marks.ts`. Every
  * double-quoted literal of letters, digits, spaces, periods and the
- * marks `<`, `=`, `>`, `&`, `?`, `!`, `,` and `:` in a recipe file or in `marks.ts` that
+ * marks `<`, `=`, `>`, `&`, `?`, `!`, `,`, `:` and `-` in a recipe file or in `marks.ts` that
  * holds a digit or one of those marks, or capitals and no lower case,
  * must be on the list, and so must every backtick literal of the same
  * shape in code (comments, which name constants in backticks, are
@@ -23,6 +23,26 @@
  */
 
 import { describe, expect, it } from "vitest";
+
+import { INTERIOR_CATALOGUE } from "../world/consoleRoom";
+import { CURIO_KINDS } from "../world/curios";
+import { MACHINE_KINDS } from "../world/generate";
+import { HERO_KINDS } from "../world/heroes";
+import { PROP_KINDS } from "../world/props";
+
+/**
+ * The registered kind names (hero, curio, prop, machine and interior
+ * kinds): the recipes key their tables by them, and since the hyphen is a
+ * mark a name like "red-bike" or "disk-525" would pass for readable text.
+ * The scan skips exactly these names, nothing else.
+ */
+const KIND_NAMES: ReadonlySet<string> = new Set<string>([
+  ...HERO_KINDS,
+  ...CURIO_KINDS,
+  ...PROP_KINDS,
+  ...MACHINE_KINDS,
+  ...Object.keys(INTERIOR_CATALOGUE),
+]);
 
 /**
  * Every hero, curio and prop recipe file, `marks.ts`, the decal recipe
@@ -181,6 +201,8 @@ const READABLE = new Set([
   // The turntable's and the camera's maker's names (0.25.1).
   "Technics",
   "FUJIFILM",
+  // The camera's model name (0.25.1).
+  "X-Pro2",
 ]);
 
 /**
@@ -251,6 +273,7 @@ const MARKS_ONLY = [
   "GEOS",
   "Technics",
   "FUJIFILM",
+  "X-Pro2",
 ];
 
 /** A source with its comments stripped: comments name constants in backticks (`CLUSTER`); only code draws. */
@@ -297,7 +320,8 @@ function picturesFound(): Set<string> {
  * that holds a digit or a mark, or capitals and no lower case. Each literal
  * is cut out whole first and then tested against the class, so the code
  * between two literals is never taken for one. The class covers letters,
- * digits, spaces and the marks `.?<=>&!,:`. A literal of separators only
+ * digits, spaces and the marks `.?<=>&!,:-`; a registered kind name
+ * (`KIND_NAMES`) is skipped. A literal of separators only
  * (spaces, commas, colons, periods) is skipped; a literal of marks alone
  * ("?", "<=>") is scanned. A literal inside a `${}` of a template is not
  * scanned on its own; `textCalls.test.ts` covers what is drawn.
@@ -307,9 +331,10 @@ function scanLiterals(code: string): string[] {
     .map((m) => m[1] ?? m[2] ?? "")
     .filter(
       (t) =>
-        /^[A-Za-z0-9 .?<=>&!,:]+$/.test(t) &&
+        /^[A-Za-z0-9 .?<=>&!,:-]+$/.test(t) &&
         !/^[ ,:.]+$/.test(t) &&
-        (/[0-9?<=>&!,:]/.test(t) || (/[A-Z]/.test(t) && !/[a-z]/.test(t))),
+        !KIND_NAMES.has(t) &&
+        (/[0-9?<=>&!,:-]/.test(t) || (/[A-Z]/.test(t) && !/[a-z]/.test(t))),
     );
 }
 
@@ -319,6 +344,17 @@ describe("readable text in the recipes", () => {
     // skips "HACK THE PLANET!" and any line with a comma.
     const found = scanLiterals('const a = "FOO BAR!"; const b = "A, B";');
     expect(found).toEqual(["FOO BAR!", "A, B"]);
+  });
+
+  it("catches a literal with a hyphen and skips the registered kind names (0.25.1)", () => {
+    // Mutation caught: the scan class left without `-`, which skips a
+    // model name like "X-Pro2", or a kind name such as "disk-525" or
+    // "red-bike" taken for text.
+    expect(
+      scanLiterals(
+        'const a = "X-Pro2"; const b = "lo-fi"; const c = "disk-525"; const d = "red-bike";',
+      ),
+    ).toEqual(["X-Pro2", "lo-fi"]);
   });
 
   it("catches a literal of marks alone and ignores separators", () => {
