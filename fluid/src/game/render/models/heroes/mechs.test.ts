@@ -1,8 +1,10 @@
 /**
  * The mechs' shape tests: the head's one horn sweeps forward and up over
- * two eyes; the tank's four legs end in wheels on the floor and its lower
- * lens is the largest; the garden robot's arms hang almost to the floor
- * and it has one eye.
+ * two eyes; the tank's four legs end in wheels on the floor, its lower
+ * lens is the largest, each lens carries three pinholes, its tall pod is
+ * split by three darker seams, and two three-fingered arms and the
+ * snout's gun hang under its head; the garden robot's arms hang almost to
+ * the floor and it has one eye.
  */
 
 import { describe, expect, it } from "vitest";
@@ -50,6 +52,89 @@ describe("mech hero models", () => {
     if (lowest === undefined) throw new Error("no lens");
     for (const l of lenses)
       if (l !== lowest) expect(radius(lowest)).toBeGreaterThan(radius(l));
+  });
+
+  it("gives each of the tank's lenses three dark pinholes on its front", () => {
+    // Mutation caught: a lens without its pinholes, or pinholes left
+    // behind the glow where the lens hides them.
+    const parts = partsOf("spider-tank");
+    const lenses = parts.filter((p) => p.flag >= FLAG.blink);
+    expect(lenses).toHaveLength(3);
+    for (const lens of lenses) {
+      const l = local(lens);
+      const front = Math.max(...l.map((q) => q[1]));
+      const within = (q: V3) =>
+        q[0] >= Math.min(...l.map((x) => x[0])) - 1e-6 &&
+        q[0] <= Math.max(...l.map((x) => x[0])) + 1e-6 &&
+        q[2] >= lo(lens) - 1e-6 &&
+        q[2] <= hi(lens) + 1e-6;
+      const pins = parts.filter(
+        (p) =>
+          p !== lens &&
+          p.flag < FLAG.blink &&
+          local(p).every((q) => q[1] >= front - 1e-6 && within(q)),
+      );
+      expect(pins).toHaveLength(3);
+    }
+  });
+
+  it("builds the tank's tall pod in panels split by three darker seams", () => {
+    // Mutation caught: the pod back to one smooth shell, a seam the same
+    // shade as its panels, or a pod squashed wider than it is tall.
+    const bands = partsOf("spider-tank")
+      .filter((p) => {
+        const l = local(p);
+        const d =
+          (Math.min(...l.map((q) => q[1])) + Math.max(...l.map((q) => q[1]))) /
+          2;
+        return p.method === "lathe" && d < -0.3 && extent(l, 0) > 1;
+      })
+      .sort((x, y) => lo(x) - lo(y));
+    expect(bands.length).toBeGreaterThanOrEqual(6);
+    const bright = (p: Part) =>
+      (p.tint ?? [0, 0, 0]).reduce((n, c) => n + c, 0);
+    const seams = bands.filter((b, i) => {
+      const [below, above] = [bands[i - 1], bands[i + 1]];
+      return (
+        below !== undefined &&
+        above !== undefined &&
+        bright(b) < bright(below) &&
+        bright(b) < bright(above)
+      );
+    });
+    expect(seams).toHaveLength(3);
+    const pts = bands.flatMap(local);
+    const tall =
+      Math.max(...pts.map((q) => q[2])) - Math.min(...pts.map((q) => q[2]));
+    expect(tall).toBeGreaterThan(extent(pts, 0) * 1.0);
+  });
+
+  it("hangs two three-fingered arms and the snout's gun under the tank's head", () => {
+    // Mutation caught: an arm missing, a hand with two fingers, or the gun
+    // back on the roof.
+    const parts = partsOf("spider-tank");
+    const front = (p: Part) => Math.max(...local(p).map((q) => q[1]));
+    const fingers = parts.filter(
+      (p) =>
+        p.method === "extrude" &&
+        front(p) > 1.55 &&
+        hi(p) < 0.9 &&
+        extent(local(p), 0) < 0.04,
+    );
+    for (const sign of [-1, 1])
+      expect(
+        fingers.filter((p) => Math.sign(local(p)[0]?.[0] ?? 0) === sign),
+      ).toHaveLength(3);
+    const lenses = parts.filter((p) => p.flag >= FLAG.blink);
+    const lowestLens = Math.min(...lenses.map(lo));
+    const guns = parts.filter(
+      (p) =>
+        p.method === "cylinderAlong" &&
+        hi(p) < lowestLens &&
+        front(p) > 1.25 &&
+        local(p).every((q) => Math.abs(q[0]) < 0.1),
+    );
+    expect(guns).toHaveLength(1);
   });
 
   it("hangs the garden robot's arms almost to the floor and gives it one eye", () => {
