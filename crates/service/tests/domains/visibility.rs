@@ -1235,6 +1235,62 @@ async fn a_capture_over_a_virtual_manifest_cannot_switch_read_only_on() {
     assert!(!engine.domain_is_read_only("scratch").await);
 }
 
+/// The switch-on rule refuses only a change of the flag: an editor who does
+/// not own the domain still rewrites a virtual MANIFEST that leaves it off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_capture_over_a_virtual_manifest_that_leaves_the_flag_alone_lands() {
+    let (_tmp, engine) = fixture().await;
+    engine.domain_add_virtual("scratch").await.unwrap();
+    let p = crystalline_service::params::WriteParams {
+        domain: "scratch".into(),
+        title: "MANIFEST".into(),
+        content: "## Scope\n\n- x\n\n## When to Use\n\n- y\n".into(),
+        folder: None,
+        engram_type: Some("manifest".into()),
+        tags: vec!["manifest".into()],
+        status: None,
+        metadata: None,
+        overwrite: true,
+        model: None,
+        share_link: None,
+    };
+    engine
+        .write_engram_as(&p, None, &user("out"))
+        .await
+        .expect("a MANIFEST that leaves read_only alone lands");
+    assert!(!engine.domain_is_read_only("scratch").await);
+}
+
+/// A member who does not own a domain that is already locked is still refused
+/// when they set `read_only: on` again: the key is the owner's whatever its
+/// current value, so a non-owner cannot even re-state it. The MANIFEST is
+/// byte-identical afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_non_owner_setting_read_only_on_a_locked_domain_gets_the_owner_sentence() {
+    let (tmp, engine) = fixture().await;
+    std::fs::write(
+        tmp.path().join("lab/MANIFEST.md"),
+        switch_on(&lab_manifest(&tmp)),
+    )
+    .unwrap();
+    let before = lab_manifest(&tmp);
+    assert!(engine.domain_is_read_only("lab").await);
+    let on = [("read_only".to_string(), "on".to_string())];
+    for member in ["mem", "ed"] {
+        let refused = engine
+            .set_manifest_policies("lab", &on, &user(member))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(refused, crystalline_service::EngineError::Forbidden(_)),
+            "{member}: {refused:?}"
+        );
+        assert_eq!(refused.to_string(), OWNER_RULE);
+    }
+    assert_eq!(lab_manifest(&tmp), before, "the MANIFEST is byte-identical");
+    assert!(engine.domain_is_read_only("lab").await);
+}
+
 /// B-1 item 1: in a reviewing domain a move onto the MANIFEST writes the
 /// mover's draft, so the draft's text is what meets the switch-on rule. A
 /// draft-only engram is found (no "unreadable" error), a non-owner whose draft

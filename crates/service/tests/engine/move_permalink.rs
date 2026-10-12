@@ -490,6 +490,71 @@ async fn a_permalink_change_rewrites_every_kind_of_reference() {
     );
 }
 
+/// A locked domain's references are left as they were: the move rewrites the
+/// notes that point at the moved engram and skips `ops/far.md`, because `ops`
+/// says `read_only: on`.
+#[tokio::test]
+async fn a_permalink_change_leaves_a_read_only_domains_references_alone() {
+    let f = Fixture::new().await;
+    let manifest = crystalline_core::manifest_template("ops", "2026-01-01").replacen(
+        "\n---\n",
+        "\nread_only: on\n---\n",
+        1,
+    );
+    assert!(manifest.contains("read_only: on"), "{manifest}");
+    std::fs::write(f.ops().join("MANIFEST.md"), manifest).unwrap();
+    seed(
+        f.notes(),
+        "projects/velog/alpha.md",
+        &engram("Alpha", "velog/alpha", "the alpha body"),
+    );
+    seed(
+        f.notes(),
+        "linker.md",
+        &engram("Linker", "linker", "See [[velog/alpha]]."),
+    );
+    seed(
+        f.ops(),
+        "far.md",
+        &engram("Far", "far", "From afar: [[notes:velog/alpha]]."),
+    );
+    f.sync().await;
+    let before = read(f.ops(), "far.md");
+
+    let receipt = f
+        .mv(
+            "velog/alpha",
+            "notes",
+            "projects/velog/alpha.md",
+            None,
+            Some("path"),
+        )
+        .await
+        .unwrap();
+    let rewritten: Vec<String> = receipt["rewritten"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            format!(
+                "{}:{}",
+                r["domain"].as_str().unwrap(),
+                r["permalink"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(rewritten, vec!["notes:linker"], "{receipt}");
+    assert_eq!(
+        read(f.ops(), "far.md"),
+        before,
+        "the locked file is untouched"
+    );
+    assert!(
+        read(f.notes(), "linker.md").contains("[[projects/velog/alpha]]"),
+        "while the writable linker followed"
+    );
+}
+
 #[tokio::test]
 async fn a_cross_domain_move_rewrites_references_into_a_virtual_domain() {
     let f = Fixture::new().await;

@@ -49,6 +49,19 @@ async fn instance_with(
     private: &[Private<'_>],
     break_write_list: bool,
 ) -> (tempfile::TempDir, Arc<Engine>) {
+    instance_full(domains, locked, accounts, private, break_write_list, &[]).await
+}
+
+/// [`instance_with`], with the accounts `disabled` names switched off after
+/// they are created.
+async fn instance_full(
+    domains: &[&str],
+    locked: &[&str],
+    accounts: &[(&str, Role, Option<&[&str]>)],
+    private: &[Private<'_>],
+    break_write_list: bool,
+    disabled: &[&str],
+) -> (tempfile::TempDir, Arc<Engine>) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_path_buf();
     let mut cfg = GlobalConfig::default();
@@ -86,6 +99,9 @@ async fn instance_with(
             let patterns: Vec<String> = writes.iter().map(|w| w.to_string()).collect();
             auth.set_write_list(name, &patterns).await.unwrap();
         }
+    }
+    for name in disabled {
+        auth.set_disabled(name, true).await.unwrap();
     }
     for (domain, owner, members) in private {
         auth.set_domain_visibility(domain, true, owner)
@@ -344,6 +360,7 @@ async fn a_mark_that_cannot_be_decided_leaves_the_read_standing() {
         true, // break the write-list table before the resolver is installed
     )
     .await;
+    let (logs, _guard) = crate::support::capture_logs();
     let scope = user("ed");
     let listed = engine
         .list_domains(&ListDomainsParams::default(), &scope)
@@ -377,6 +394,11 @@ async fn a_mark_that_cannot_be_decided_leaves_the_read_standing() {
         .await
         .expect("the read still answers");
     assert!(read.get("read_only").is_none(), "{read}");
+    assert!(
+        logs.any_contains("the read_only mark could not be decided"),
+        "the undecided mark is logged as a warning: {:?}",
+        logs.lines()
+    );
 }
 
 /// A Viewer's mark does not depend on the write list (a role below Write is
@@ -397,7 +419,7 @@ async fn a_viewer_stays_marked_when_the_write_list_table_is_broken() {
 /// kind of caller and every domain, a private one with members included.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn batched_marks_equal_the_per_row_answer() {
-    let (_tmp, engine) = instance_with(
+    let (_tmp, engine) = instance_full(
         &["agents-bot", "eng", "lab", "locked"],
         &["locked"],
         &[
@@ -406,11 +428,15 @@ async fn batched_marks_equal_the_per_row_answer() {
             ("viewer", Role::Viewer, None),
             ("boss", Role::Admin, None),
             ("member", Role::Editor, None),
+            ("gone", Role::Editor, None),
         ],
         &[("lab", "ed", &[("member", MemberLevel::Viewer)][..])],
         false,
+        &["gone"],
     )
     .await;
+    // The anonymous scope below is the open tier: `auth.mcp` is off here.
+    assert!(!engine.auth_mcp());
     let admin = Scope::User {
         account: "boss".into(),
         admin: true,
@@ -421,6 +447,7 @@ async fn batched_marks_equal_the_per_row_answer() {
         user("viewer"),
         user("member"),
         user("nobody"),
+        user("gone"),
         admin,
         Scope::Anonymous,
         Scope::Unrestricted,

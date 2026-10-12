@@ -6650,11 +6650,29 @@ async fn a_pull_still_updates_a_read_only_copy() {
             .contains("version two")
     );
 
+    assert!(
+        eng.domain_is_read_only("brand").await,
+        "the pull keeps the lock"
+    );
+    let calls_before = mock.calls().len();
     let share = eng
         .origin_share("brand", None, None, None, None, ShareActor::Owner)
         .await
         .unwrap_err();
     assert!(matches!(share, EngineError::DomainReadOnly(_)), "{share}");
+    let written: Vec<String> = mock.calls()[calls_before..]
+        .iter()
+        .filter(|c| {
+            ["create_", "update_", "close_", "delete_", "dissolve_"]
+                .iter()
+                .any(|write| c.starts_with(write))
+        })
+        .cloned()
+        .collect();
+    assert!(
+        written.is_empty(),
+        "the refused share wrote nothing upstream: {written:?}"
+    );
 
     let c3 = mock.add_commit(commit_files(&[
         ("MANIFEST.md", manifest()),
@@ -6719,6 +6737,12 @@ async fn a_conflict_takes_the_teams_side_on_a_read_only_domain() {
         .await
         .unwrap_err();
     assert!(matches!(mine, EngineError::DomainReadOnly(_)), "{mine}");
+    assert!(
+        std::fs::read_to_string(root.join("notes/a.md"))
+            .unwrap()
+            .contains("line one LOCAL"),
+        "a refused mine leaves the file as it was"
+    );
     eng.origin_resolve(
         "brand",
         "notes/a.md",

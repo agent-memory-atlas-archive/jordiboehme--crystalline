@@ -825,6 +825,42 @@ async fn nameless_add_writes_the_basename_default_back_into_a_bare_manifest() {
     );
 }
 
+/// The same nameless add over a MANIFEST that says `read_only: on` keeps the
+/// file as the team wrote it: the basename default is the registration's name
+/// and is not written back.
+#[tokio::test]
+async fn nameless_add_leaves_a_read_only_manifest_without_a_written_back_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = bare_manifest_folder(tmp.path(), "My Notes", "My Notes");
+    let path = folder.join("MANIFEST.md");
+    let locked =
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .replacen("\n---\n", "\nread_only: on\n---\n", 1);
+    assert!(locked.contains("read_only: on"), "{locked}");
+    std::fs::write(&path, &locked).unwrap();
+    let engine = engine(memory_store().await, tmp.path(), vec![]);
+    let (logs, _guard) = crate::support::capture_logs();
+
+    let report = engine
+        .domain_add_local(None, Some(folder.to_str().unwrap()))
+        .await
+        .unwrap();
+
+    assert_eq!(report["domain"], "my-notes");
+    assert_eq!(report["name_origin"], "derived");
+    // The write view would refuse a locked domain anyway and the add would
+    // swallow it as a warning; the write-back must not even try.
+    assert!(
+        !logs.any_contains("writing the domain name back"),
+        "no write-back was attempted: {:?}",
+        logs.lines()
+    );
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(after, locked, "the MANIFEST bytes are unchanged");
+    assert!(!after.contains("domain_name:"), "{after}");
+}
+
 /// A brand-new folder with no MANIFEST at all gets one scaffolded that
 /// already carries the derived basename as its `domain_name`; the
 /// write-back path itself has nothing left to do.

@@ -261,9 +261,19 @@ async fn the_read_tools_mark_the_locked_domain() {
     let h = Harness::new().await;
     let (client, _server) = h.connect().await;
     let peer = client.peer();
-    // TOON-encoded: asked for the field name only.
     let listed = call(peer, "list_domains", json!({ "include_routing": true })).await;
-    assert!(text(&listed).contains("read_only"), "{listed}");
+    let listing: Value = serde_json::from_str(&text(&listed)).unwrap();
+    let row = |name: &str| -> Value {
+        listing["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["name"] == name)
+            .unwrap_or_else(|| panic!("{name} in {listing}"))
+            .clone()
+    };
+    assert_eq!(row("archive")["read_only"], true, "{listing}");
+    assert!(row("eng").get("read_only").is_none(), "{listing}");
     let read: Value = serde_json::from_str(&text(
         &call(
             peer,

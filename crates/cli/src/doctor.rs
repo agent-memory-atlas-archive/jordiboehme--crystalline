@@ -8065,6 +8065,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fix_leaves_a_stray_pair_alone_in_a_locked_domain_and_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("kb");
+        let original = review_standards("The old rule.", OLDER);
+        let stray = review_standards("The new rule.", NEWER);
+        put(&root, O_PATH, &original);
+        put(&root, S_PATH, &stray);
+        set_mtime(&root, O_PATH, 60);
+        set_mtime(&root, S_PATH, 120);
+        let pairs = stray_pairs(&root);
+        assert_eq!(pairs.len(), 1);
+        let sentence = crystalline_service::engine::read_only_sentence("kb");
+        let s = settle_stray(&root, &pairs[0], false, Some(&sentence), true);
+        assert!(!s.fixed, "{s:?}");
+        assert_eq!(s.note.as_deref(), Some(sentence.as_str()), "{s:?}");
+        assert_eq!(
+            std::fs::read_to_string(root.join(O_PATH)).unwrap(),
+            original
+        );
+        assert_eq!(std::fs::read_to_string(root.join(S_PATH)).unwrap(), stray);
+    }
+
+    #[tokio::test]
     async fn fix_runs_in_a_team_domain_and_leaves_local_changes() {
         use crystalline_remote::changes::{LocalChange, detect_local_changes};
         use crystalline_remote::state::BaseStamp;

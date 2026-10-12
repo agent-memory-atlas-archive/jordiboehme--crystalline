@@ -555,6 +555,43 @@ async fn a_viewer_role_grantee_opens_read_only_with_a_reason() {
     );
 }
 
+/// The reason a write list gives for a read-only draft names the list and who
+/// changes it, in the words the CLI command carries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_list_grantee_opens_read_only_with_the_list_named() {
+    let _serialized = crate::support::maintenance_guard().await;
+    let f = serve().await;
+    let path = f.draft("alice", "Fresh", "A page only alice has.").await;
+    f.auth
+        .set_write_list("bob", &["other".to_string()])
+        .await
+        .unwrap();
+    let alice = login(f.addr, "alice").await;
+    let bob = login(f.addr, "bob").await;
+    let token = f.mint(&alice, &path).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let accepted: serde_json::Value = bob
+        .request(f.addr, reqwest::Method::POST, "/api/v1/draft-links/accept")
+        .json(&serde_json::json!({"token": token}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(accepted["editable"], serde_json::json!(false), "{accepted}");
+    let reason = accepted["reason"].as_str().unwrap();
+    assert!(
+        reason.contains(
+            "you are reading this draft: 'team' is not on the write list of 'bob'; an instance \
+             admin changes it with crystalline users writes"
+        ),
+        "the reason names the list and who changes it: {reason}"
+    );
+}
+
 /// The grant widens one path and nothing else.
 ///
 /// The property the whole mode rests on, asserted from the one direction that
@@ -1152,6 +1189,55 @@ async fn a_granted_read_answers_the_draft_and_names_whose() {
         stranger.status(),
         404,
         "while somebody holding no link sees exactly what they saw before"
+    );
+}
+
+/// A granted draft read carries the same read-only mark every other read does:
+/// the viewer who was handed the link cannot write in the domain, the editor
+/// who accepts the same link can, so only the viewer's answer says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_granted_draft_read_carries_the_read_only_mark() {
+    let _serialized = crate::support::maintenance_guard().await;
+    let f = serve().await;
+    let path = f.draft("alice", "Fresh", "A page only alice has.").await;
+    let alice = login(f.addr, "alice").await;
+    let vera = login(f.addr, "vera").await;
+    let bob = login(f.addr, "bob").await;
+    for who in [&vera, &bob] {
+        // A link binds the first account that accepts it, so each grantee
+        // holds a link of their own.
+        let token = f.mint(&alice, &path).await["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let accepted = who
+            .request(f.addr, reqwest::Method::POST, "/api/v1/draft-links/accept")
+            .json(&serde_json::json!({"token": token}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), 200, "the link is accepted");
+    }
+    let read_as = |who: &Session| {
+        who.request(
+            f.addr,
+            reqwest::Method::GET,
+            "/api/v1/domains/team/engrams/fresh",
+        )
+        .send()
+    };
+    let hers: serde_json::Value = read_as(&vera).await.unwrap().json().await.unwrap();
+    assert_eq!(hers["draft"], serde_json::json!(true), "{hers}");
+    assert_eq!(
+        hers["read_only"],
+        serde_json::json!(true),
+        "a viewer reading a granted draft is told she cannot write: {hers}"
+    );
+    let his: serde_json::Value = read_as(&bob).await.unwrap().json().await.unwrap();
+    assert_eq!(his["draft"], serde_json::json!(true), "{his}");
+    assert!(
+        his.get("read_only").is_none(),
+        "an editor's granted read has no read_only key: {his}"
     );
 }
 
@@ -3310,6 +3396,38 @@ fn append_edit(line: &str) -> crystalline_service::params::EditParams {
         operation: "append".to_string(),
         content: Some(line.to_string()),
         ..crystalline_service::params::EditParams::default()
+    }
+}
+
+/// An agent presenting a link while its account's write list leaves the
+/// domain out reads the draft and is told which list says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_off_the_write_list_is_handed_the_link_read_only() {
+    let _serialized = crate::support::maintenance_guard().await;
+    let f = serve().await;
+    let path = f.draft("alice", "Fresh", "A page only alice has.").await;
+    f.auth
+        .set_write_list("bob", &["other".to_string()])
+        .await
+        .unwrap();
+    let alice = login(f.addr, "alice").await;
+    let token = f.mint(&alice, &path).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    match f
+        .engine
+        .open_share_link(&token, &as_account("bob"), &agent_holder("bob"))
+        .await
+        .expect("the link still opens")
+    {
+        crystalline_service::engine::OpenedLink::ReadOnly(reason) => assert!(
+            reason.contains("is not on the write list of 'bob'"),
+            "{reason}"
+        ),
+        crystalline_service::engine::OpenedLink::Joined { .. } => {
+            panic!("a write-list exclusion must not open a join")
+        }
     }
 }
 

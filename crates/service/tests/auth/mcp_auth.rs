@@ -1254,6 +1254,9 @@ struct VisibilityCtx {
     tmp: tempfile::TempDir,
     store: Arc<AuthStore>,
     engine: Arc<Engine>,
+    /// The forge double the engine was built with, when the test asked for
+    /// one: its recorded calls say whether anything reached the network.
+    mock: Option<Arc<crate::support::MockProvider>>,
 }
 
 impl VisibilityCtx {
@@ -1354,6 +1357,27 @@ async fn mcp_team_ctx() -> VisibilityCtx {
 }
 
 async fn mcp_ctx_with(mcp_auth: bool, fault: Option<Fault>, team: bool) -> VisibilityCtx {
+    mcp_ctx_built(mcp_auth, fault, team, None).await
+}
+
+/// [`mcp_team_ctx`] with a forge double injected, so a test can assert that a
+/// refusal answered before any provider call was made.
+async fn mcp_team_ctx_with_forge() -> VisibilityCtx {
+    mcp_ctx_built(
+        true,
+        None,
+        true,
+        Some(Arc::new(crate::support::MockProvider::new())),
+    )
+    .await
+}
+
+async fn mcp_ctx_built(
+    mcp_auth: bool,
+    fault: Option<Fault>,
+    team: bool,
+    mock: Option<Arc<crate::support::MockProvider>>,
+) -> VisibilityCtx {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_path_buf();
     let mut cfg = GlobalConfig::default();
@@ -1409,12 +1433,14 @@ async fn mcp_ctx_with(mcp_auth: bool, fault: Option<Fault>, team: bool) -> Visib
     let config_path = root.join("config.yaml");
     crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
     let store = TursoStore::open_in_memory().await.unwrap();
-    let engine = Arc::new(
-        Engine::new(Arc::new(Mutex::new(store)), cfg, None, Some(config_path))
-            // An empty temp directory, so nothing here ever reads the developer's
-            // real OS keychain looking for a GitHub credential.
-            .with_token_store_dir(root.join("tokens")),
-    );
+    let mut built = Engine::new(Arc::new(Mutex::new(store)), cfg, None, Some(config_path))
+        // An empty temp directory, so nothing here ever reads the developer's
+        // real OS keychain looking for a GitHub credential.
+        .with_token_store_dir(root.join("tokens"));
+    if let Some(mock) = &mock {
+        built = built.with_origin_provider(mock.clone());
+    }
+    let engine = Arc::new(built);
     engine.sync(None).await.unwrap();
 
     let auth = Arc::new(AuthStore::open(&root.join("web-auth.db")).await.unwrap());
@@ -1479,6 +1505,7 @@ async fn mcp_ctx_with(mcp_auth: bool, fault: Option<Fault>, team: bool) -> Visib
         tmp,
         store: auth,
         engine,
+        mock,
     }
 }
 
@@ -4601,13 +4628,53 @@ async fn the_open_tier_has_no_write_list() {
     );
 }
 
+/// A non-owner who sets `read_only: on` over MCP `configure` on a domain that
+/// is already locked is refused with the owner sentence, and the MANIFEST is
+/// byte-identical afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_non_owner_cannot_restate_read_only_on_a_locked_domain_over_mcp() {
+    let ctx = mcp_team_ctx().await;
+    ctx.add_member("lab", "mem", crystalline_service::rest::MemberLevel::Editor)
+        .await;
+    let manifest = std::fs::read_to_string(ctx.path("lab", "MANIFEST.md")).unwrap();
+    assert!(manifest.contains("status: stable\n"));
+    std::fs::write(
+        ctx.path("lab", "MANIFEST.md"),
+        manifest.replacen("status: stable\n", "status: stable\nread_only: on\n", 1),
+    )
+    .unwrap();
+    ctx.engine.sync(None).await.unwrap();
+    assert!(ctx.engine.domain_is_read_only("lab").await);
+    let locked = std::fs::read_to_string(ctx.path("lab", "MANIFEST.md")).unwrap();
+
+    let token = ctx.token_for("mem").await;
+    let session = McpTestSession::open(&ctx.addr, Some(&token)).await;
+    let refused = session
+        .call_tool(
+            "configure",
+            serde_json::json!({ "domain": "lab", "set": { "read_only": "on" } }),
+        )
+        .await;
+    assert!(
+        refused.contains("only the owner of 'lab' or an instance admin may change `read_only`"),
+        "{refused}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ctx.path("lab", "MANIFEST.md")).unwrap(),
+        locked,
+        "the MANIFEST is byte-identical"
+    );
+}
+
 /// A locked domain does not open the MCP write gate: the collaboration verbs,
 /// whose origin paths do not read the lock, still ask the role and the write
 /// list first, so a viewer and an off-list editor are refused with their own
 /// sentences, as REST refuses them, and nothing is shared or discarded.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_locked_domain_still_refuses_a_viewer_and_an_off_list_editor_over_mcp() {
-    let ctx = mcp_team_ctx().await;
+    let ctx = mcp_team_ctx_with_forge().await;
+    let mock = ctx.mock.clone().expect("the forge double");
+    let calls_before = mock.calls();
     ctx.add_member("lab", "mem", crystalline_service::rest::MemberLevel::Viewer)
         .await;
     ctx.store
@@ -4637,6 +4704,13 @@ async fn a_locked_domain_still_refuses_a_viewer_and_an_off_list_editor_over_mcp(
                 "discard_changes",
                 serde_json::json!({ "domain": "lab", "paths": ["lab-note.md"] }),
             ),
+            ("withdraw_proposal", serde_json::json!({ "domain": "lab" })),
+            // A path other than the MANIFEST on purpose: on a locked MANIFEST
+            // `resolve_conflict` answers the unlock refusal first.
+            (
+                "resolve_conflict",
+                serde_json::json!({ "domain": "lab", "path": "lab-note.md", "resolution": "mine" }),
+            ),
         ] {
             let refused = session.call_tool(tool, args).await;
             assert!(refused.contains(sentence), "{account} {tool}: {refused}");
@@ -4649,4 +4723,9 @@ async fn a_locked_domain_still_refuses_a_viewer_and_an_off_list_editor_over_mcp(
     );
     // Nothing was shared: the refusal above is the gate's own sentence, which
     // answers before `origin_share_with` and so before any network call.
+    assert_eq!(
+        mock.calls(),
+        calls_before,
+        "the forge saw no call from any refused verb"
+    );
 }

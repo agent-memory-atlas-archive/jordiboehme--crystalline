@@ -2160,6 +2160,12 @@ async fn only_the_owner_or_an_admin_switches_read_only_on_over_rest() {
         .patch_json("/api/v1/domains/lab/manifest", on.clone())
         .await;
     assert_eq!(set.status(), 200, "{:?}", set.text().await);
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("read_only: on"),
+        "the owner's switch-on reached the MANIFEST"
+    );
     let unset = owner
         .patch_json("/api/v1/domains/lab/manifest", off.clone())
         .await;

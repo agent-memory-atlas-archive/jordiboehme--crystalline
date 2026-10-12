@@ -1618,4 +1618,73 @@ mod tests {
         assert!(data.get("embedded_chunks").is_none(), "{data}");
         assert!(data.get("embed_scheduled").is_none(), "{data}");
     }
+
+    /// The daemon's `mounted_routing` answer carries each mounted row's
+    /// `domain_read_only` from the source's cached routing model, so the
+    /// session-start block can mark a locked mounted domain.
+    #[tokio::test]
+    async fn mounted_routing_carries_each_rows_read_only_mark() {
+        use crystalline_remote::{
+            Cached, CredentialKind, ROUTING_FILE, SourceRecord, SourceSet, update_sources,
+            write_cached,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let remote_dir = tmp.path().join("remote");
+        let record = SourceRecord {
+            url: "http://127.0.0.1:9".to_string(),
+            name: "acme".to_string(),
+            account: "keeper".to_string(),
+            kind: CredentialKind::Token,
+            token_endpoint: None,
+            revocation_endpoint: None,
+            connected_at: chrono::Utc::now(),
+            mounts: Vec::new(),
+            domains: None,
+            from_env: false,
+        };
+        let host = record.host_dir(&remote_dir);
+        update_sources(&remote_dir, |file| {
+            file.upsert(record.clone());
+            Ok(())
+        })
+        .unwrap();
+        write_cached(
+            &host,
+            ROUTING_FILE,
+            &Cached {
+                account: "keeper".to_string(),
+                etag: "e".to_string(),
+                fetched_at: chrono::Utc::now(),
+                data: json!({ "domains": [
+                    { "name": "locked", "bullets": ["Route here"], "domain_read_only": true },
+                    { "name": "open", "bullets": ["Route there"] },
+                ] }),
+                last_failure: None,
+            },
+        )
+        .unwrap();
+
+        let store = crystalline_index::TursoStore::open_in_memory()
+            .await
+            .unwrap();
+        let engine = Arc::new(Engine::new(
+            Arc::new(tokio::sync::Mutex::new(store)),
+            crystalline_core::config::GlobalConfig::default(),
+            None,
+            None,
+        ));
+        engine.set_sources(Arc::new(SourceSet::load(remote_dir, Vec::new(), |_| None)));
+        let shared = Arc::new(Shared::for_test(engine));
+
+        let (reply, _) = handle(
+            &json!({ "v": 1, "cmd": "mounted_routing", "deadline_ms": 1 }),
+            &shared,
+        )
+        .await;
+        assert_eq!(reply["ok"], true, "{reply}");
+        let rows = reply["data"]["domains"].as_array().unwrap();
+        let row = |name: &str| rows.iter().find(|d| d["name"] == name).unwrap();
+        assert_eq!(row("locked")["domain_read_only"], true, "{reply}");
+        assert_eq!(row("open")["domain_read_only"], false, "{reply}");
+    }
 }

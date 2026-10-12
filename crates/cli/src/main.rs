@@ -5239,6 +5239,34 @@ fn mounted_row(
     })
 }
 
+/// The strings of a JSON array, anything else skipped.
+fn json_strings(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s.as_str().map(str::to_string))
+        .collect()
+}
+
+/// The mounted rows a daemon's `mounted_routing` answer carries, each held to
+/// what [`mounted_row`] allows. A row marked `domain_read_only: true` stays
+/// marked; a row without the key is writable.
+fn mounted_rows_of(answer: &serde_json::Value) -> Vec<crystalline_core::PromptDomain> {
+    answer["domains"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|d| {
+            mounted_row(
+                d["name"].as_str()?,
+                &json_strings(&d["bullets"]),
+                d["domain_read_only"].as_bool().unwrap_or(false),
+            )
+        })
+        .collect()
+}
+
 /// What a running daemon said, if anything, when session start asked it.
 enum DaemonRouting {
     /// The daemon answered with its sources' mounted part.
@@ -5303,14 +5331,6 @@ fn mounted_part(
         }
     })
     .unwrap_or(DaemonRouting::Unavailable);
-    let strings = |value: &serde_json::Value| -> Vec<String> {
-        value
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|s| s.as_str().map(str::to_string))
-            .collect()
-    };
     let from_cache = |routing: crystalline_remote::MountedRouting| {
         let rows = routing
             .domains
@@ -5323,20 +5343,9 @@ fn mounted_part(
         // The daemon's view throughout, so what it hides and what it mounts
         // come from one table.
         DaemonRouting::Answered(answer) => (
-            strings(&answer["shadowed"]).into_iter().collect(),
-            answer["domains"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|d| {
-                    mounted_row(
-                        d["name"].as_str()?,
-                        &strings(&d["bullets"]),
-                        d["domain_read_only"].as_bool().unwrap_or(false),
-                    )
-                })
-                .collect(),
-            strings(&answer["stale"]),
+            json_strings(&answer["shadowed"]).into_iter().collect(),
+            mounted_rows_of(&answer),
+            json_strings(&answer["stale"]),
         ),
         DaemonRouting::TimedOut => from_cache(set.mounted_routing_unchecked()),
         DaemonRouting::Unavailable => from_cache(set.mounted_routing_from_cache()),
@@ -5551,6 +5560,25 @@ mod tests {
             std::time::Duration::from_millis(request["deadline_ms"].as_u64().unwrap())
                 < SESSION_ROUTING_WAIT
         );
+    }
+
+    /// A daemon's `mounted_routing` answer keeps a locked domain's mark and a
+    /// row without the key is writable.
+    #[test]
+    fn a_daemon_answer_keeps_the_read_only_mark_of_a_mounted_row() {
+        let answer = serde_json::json!({
+            "shadowed": [],
+            "domains": [
+                { "name": "locked", "bullets": ["Route here"], "domain_read_only": true },
+                { "name": "open", "bullets": ["Route there"] },
+            ],
+        });
+        let rows = mounted_rows_of(&answer);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "locked");
+        assert!(rows[0].read_only);
+        assert_eq!(rows[1].name, "open");
+        assert!(!rows[1].read_only);
     }
 
     /// Review I3: a server's bullet stays on its line and a name that could

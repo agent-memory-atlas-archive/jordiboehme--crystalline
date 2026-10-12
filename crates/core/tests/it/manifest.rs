@@ -1111,6 +1111,26 @@ fn read_only_of_source_answers_the_full_parse_whichever_path_it_takes() {
             ReadOnly::Off,
         ),
         (format!("{head}read_only: [on\n{body}"), ReadOnly::Off),
+        // Windows line endings still lock. A leading byte-order mark and a
+        // double-quoted key folded across lines with a backslash-newline
+        // (a multi-line implicit key, which YAML refuses) do not: the
+        // shortcut answers what the full parse answers for each.
+        (
+            format!("{head}read_only: on\n{body}").replace('\n', "\r\n"),
+            ReadOnly::On,
+        ),
+        (
+            format!("\u{feff}{head}read_only: on\n{body}"),
+            ReadOnly::Off,
+        ),
+        (
+            format!("{head}\"read\\\n  _only\": on\n{body}"),
+            ReadOnly::Off,
+        ),
+        (
+            format!("{head}\"read\\\n  _only\": on\n{body}").replace('\n', "\r\n"),
+            ReadOnly::Off,
+        ),
         ("no frontmatter at all".to_string(), ReadOnly::Off),
         ("---\nread_only: on\n".to_string(), ReadOnly::Off),
         (String::new(), ReadOnly::Off),
