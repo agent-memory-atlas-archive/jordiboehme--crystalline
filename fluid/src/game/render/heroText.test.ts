@@ -155,6 +155,11 @@ const READABLE = new Set([
   "CYCLE",
   // The tool maker's mark.
   "BINFORD",
+  // The terminals' handle lines.
+  "LOGIN: ZERO COOL",
+  "LOGIN: CRASH OVERRIDE",
+  "LOGIN: ACID BURN",
+  "MESS WITH THE BEST, DIE LIKE THE REST.",
 ]);
 
 /**
@@ -208,6 +213,10 @@ const MARKS_ONLY = [
   "AIRLOCK",
   "CYCLE",
   "BINFORD",
+  "LOGIN: ZERO COOL",
+  "LOGIN: CRASH OVERRIDE",
+  "LOGIN: ACID BURN",
+  "MESS WITH THE BEST, DIE LIKE THE REST.",
 ];
 
 /** A source with its comments stripped: comments name constants in backticks (`CLUSTER`); only code draws. */

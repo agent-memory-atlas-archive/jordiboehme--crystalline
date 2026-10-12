@@ -24,6 +24,7 @@
 
 import { LIFT_LINES, moreLine } from "../world/lifts";
 import type { Fixture, RoomSpec } from "../world/types";
+import { handleOf } from "./handles";
 
 /**
  * The procedural layers, made once at start and shared by every room. Their
@@ -127,6 +128,8 @@ export interface TextRequest {
   key: string;
   kind: TextKind;
   lines: string[];
+  /** A terminal's handle line, drawn as the screen's last row; absent when it shows none. */
+  footer?: string;
   row: number | null;
 }
 
@@ -155,7 +158,8 @@ function isLabel(kind: TextKind): boolean {
 /**
  * The text a room needs, in plan order: the placard first, then the
  * fixtures in `room.fixtures` order - a terminal gives a screen with its
- * heading on the first line, a poster a placard-shaped sheet with its
+ * heading on the first line (and its handle line, when it shows one, as
+ * `footer`), a poster a placard-shaped sheet with its
  * category on the first line, a door, a portal, a machine and an exit a
  * one-line label (a sealed door or portal says why it is sealed instead),
  * and a hatch a one-line hatch label. A lift gives a `panel` (`liftLines`)
@@ -172,13 +176,16 @@ export function textRequests(room: RoomSpec): TextRequest[] {
   }
   room.fixtures.forEach((f, i) => {
     switch (f.kind) {
-      case "terminal":
+      case "terminal": {
+        const footer = handleOf(f);
         out.push({
           key: `terminal:${i}`,
           kind: "screen",
           lines: [f.heading, ...f.lines],
+          ...(footer === null ? {} : { footer }),
         });
         break;
+      }
       case "door":
         out.push({
           key: `door:${i}`,
