@@ -20,6 +20,9 @@
  * `readonly string[]` of lines, set through `textBlock`/`markLines`
  * (`heroes/pixels.ts`), never a picture of its own.
  *
+ * The wall decals' marks live here too (0.25.1): the spray tag, and the
+ * numbers the scribble and the door plate set.
+ *
  * The deck and bay stencils' words, numerals and letters (2.7 C19) live
  * here too, and `stencilMarks` sets a stencil from them, mark by mark; so
  * do the airlock's words (M3 C24): its hatch's stencil and its floor's
@@ -74,6 +77,8 @@ export const MARKS = {
   diskLabel: "GEOS",
   /** The pizza box's lid print (0.25.1 D-4). */
   pizzaLid: "PIZZA POWER",
+  /** The spray-painted tag on a rough room's wall (0.25.1 D-4). */
+  sprayTag: "COWABUNGA!",
   /** The six numbers of the lottery ticket, and later of the scribble, the plate and the hatch variant, each set on its own (0.25.1 D-2). */
   numbers: ["4", "8", "15", "16", "23", "42"],
 

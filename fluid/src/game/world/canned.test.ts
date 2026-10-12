@@ -433,6 +433,36 @@ describe("galleryRoom", () => {
   it("is the same room every time", () => {
     expect(JSON.stringify(galleryRoom())).toBe(JSON.stringify(room));
   });
+
+  it("lays a tag, a scribble and a plate on bay walls no prop or fixture takes (0.25.1)", () => {
+    // Mutation caught: a gallery decal on a prop's or a fixture's edge, on
+    // the hall's walls, two on one edge, or one of the three left out.
+    expect(room.decals.map((d) => d.kind)).toEqual([
+      "tag",
+      "scribble",
+      "plate",
+    ]);
+    const sites = dressingSites(room);
+    const wallProps = new Set(
+      room.props
+        .filter((p) => p.anchor === "wall")
+        .map((p) => edgeKey(anchorEdge(p))),
+    );
+    const edges = room.decals.map((d) => edgeKey(anchorEdge(d)));
+    expect(new Set(edges).size).toBe(3);
+    room.decals.forEach((d, i) => {
+      const e = anchorEdge(d);
+      const k = edges[i]!;
+      expect(d.on).toBe("wall");
+      expect(sites.free.has(k), k).toBe(true);
+      expect(wallProps.has(k), k).toBe(false);
+      expect(
+        room.bays.some(
+          (b) => e.x >= b.x0 && e.x < b.x1 && e.y >= b.y0 && e.y < b.y1,
+        ),
+      ).toBe(true);
+    });
+  });
 });
 
 /**

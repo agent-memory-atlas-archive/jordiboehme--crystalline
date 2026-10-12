@@ -33,7 +33,16 @@ import { DECAL_LIFT, createKit } from "../kit";
 import { LAYER, TEXT_BASE } from "../layers";
 import { LOOK } from "../looks";
 import { DECAL_TILES } from "../textures";
-import { DECAL_BUDGET, DECAL_TINT, buildDecals } from "./decals";
+import {
+  DECAL_BUDGET,
+  DECAL_TINT,
+  PIXEL_TINT,
+  buildDecals,
+  platePicture,
+  scribblePicture,
+  tagPicture,
+} from "./decals";
+import { textRows } from "./heroes/pixels";
 import { MARKS, stencilMarks } from "./marks";
 
 /** One vertex read back from a mesh. */
@@ -92,6 +101,10 @@ interface DecalQuad extends Flat {
 }
 
 const dot = (p: V3, q: V3) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+
+/** Whether a vertex tint is `t`, to float32's precision. */
+const sameTint = (p: V3, t: readonly number[]) =>
+  p.every((x, i) => Math.abs(x - (t[i] ?? NaN)) < 1e-6);
 
 /** The horizontal axis of a vertical plane with normal `n`. */
 const acrossOf = (n: V3): V3 => {
@@ -215,8 +228,14 @@ describe("the decal recipe", () => {
     for (const q of quads) {
       expect(q.layer).toBe(LAYER.decal);
       if (q.normal[1] > 0.99) expect(q.minY).toBeCloseTo(DECAL_LIFT, 6);
-      // Four places: the mesh is float32, a few micrometres at 40 m.
-      else expect(q.offWall).toBeCloseTo(DECAL_LIFT, 4);
+      // Four places: the mesh is float32, a few micrometres at 40 m. A
+      // door plate's numbers stand twice the lift off the wall, over the
+      // plate (0.25.1).
+      else
+        expect(q.offWall).toBeCloseTo(
+          (sameTint(q.tint, PIXEL_TINT.plateInk) ? 2 : 1) * DECAL_LIFT,
+          4,
+        );
     }
   });
 
@@ -293,6 +312,13 @@ describe("the decal recipe", () => {
       p.every((x, i) => Math.abs(x - (q[i] ?? NaN)) < 1e-6);
     const inTiles = (k: keyof typeof DECAL_TILES, t: number) =>
       DECAL_TILES[k].includes(t);
+    const pixelTints: readonly (readonly number[])[] = [
+      ...PIXEL_TINT.tag,
+      PIXEL_TINT.tagOutline,
+      ...PIXEL_TINT.scribble,
+      PIXEL_TINT.plate,
+      PIXEL_TINT.plateInk,
+    ];
     for (const q of quads) {
       if (inTiles("chevrons", q.tile)) {
         expect(same(q.tint, DECAL_TINT.chevrons)).toBe(true);
@@ -309,6 +335,10 @@ describe("the decal recipe", () => {
       } else if (inTiles("rust", q.tile)) {
         expect(same(q.tint, DECAL_TINT.rust)).toBe(true);
         kinds.add("rust");
+      } else if (pixelTints.some((t) => same(q.tint, t))) {
+        // A tag, scribble or plate (0.25.1): its own tints, on the wall.
+        expect(q.tile).toBe(DECAL_TILES.solid[0]);
+        expect(q.normal[1]).toBeLessThan(0.99);
       } else {
         expect(q.tile).toBe(DECAL_TILES.solid[0]);
         const floor = q.normal[1] > 0.99;
@@ -619,6 +649,272 @@ describe("the airlock's hazard ring (M3 C24)", () => {
       expect(tinted(v, DECAL_TINT.ring)).toBe(true);
       const tile = Math.floor(v.v * 4 - 1e-9) * 4 + Math.floor(v.u * 4 - 1e-9);
       expect(DECAL_TILES.chevrons).toContain(tile);
+    }
+  });
+});
+
+describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
+  /** A wall decal on a south wall's edge (2, 3): its anchor, turn 0. */
+  const onSouth = (
+    kind: "tag" | "scribble" | "plate",
+    size: { h: number; width: number; length: number },
+    variant = 0,
+  ): Decal => ({
+    kind,
+    on: "wall",
+    x: 2.5,
+    y: 4,
+    turn: 0,
+    along: 0.1,
+    variant,
+    seed: 1234,
+    ...size,
+  });
+
+  /** One quad of a built decal, in the wall's terms: `a` along (the slot frame's, -x here), `y` up. */
+  interface WallQuad {
+    a0: number;
+    a1: number;
+    y0: number;
+    y1: number;
+    off: number;
+    tint: V3;
+    layer: number;
+    flag: number;
+  }
+  const quadsOf = (d: Decal): WallQuad[] => {
+    const b = createBuilder();
+    buildDecals((f) => createKit(b, f), b, { ...galleryRoom(), decals: [d] });
+    const mesh = b.build();
+    expect(mesh.count % 6).toBe(0);
+    return Array.from({ length: mesh.count / 6 }, (_, q) => {
+      const vs = Array.from({ length: 6 }, (_, k) => vertexAt(mesh, q * 6 + k));
+      const as = vs.map((v) => d.x * CELL - v.p[0]);
+      const ys = vs.map((v) => v.p[1]);
+      for (const v of vs) expect(v.n[2]).toBeCloseTo(-1, 6);
+      return {
+        a0: Math.min(...as),
+        a1: Math.max(...as),
+        y0: Math.min(...ys),
+        y1: Math.max(...ys),
+        off: d.y * CELL - vs[0]!.p[2],
+        tint: vs[0]!.tint,
+        layer: vs[0]!.layer,
+        flag: vs[0]!.flag,
+      };
+    });
+  };
+  const same = (p: V3, q: readonly number[]) =>
+    p.every((x, i) => Math.abs(x - (q[i] ?? NaN)) < 1e-6);
+  /**
+   * The lit cells `"row,col"` the quads in `ink` cover, on the grid all
+   * of `quads` share: its pixel the smallest quad height, its left and
+   * top the quads' own extremes.
+   */
+  const cellsOf = (quads: WallQuad[], ink: readonly number[]) => {
+    const px = Math.min(...quads.map((q) => q.y1 - q.y0));
+    const left = Math.min(...quads.map((q) => q.a0));
+    const top = Math.max(...quads.map((q) => q.y1));
+    const out = new Set<string>();
+    for (const q of quads) {
+      if (!same(q.tint, ink)) continue;
+      const row = Math.round((top - q.y1) / px);
+      const col = Math.round((q.a0 - left) / px);
+      const len = Math.round((q.a1 - q.a0) / px);
+      for (let c = col; c < col + len; c++)
+        out.add(`${String(row)},${String(c)}`);
+    }
+    return out;
+  };
+  const litCells = (rows: readonly string[], dr = 0, dc = 0) => {
+    const out = new Set<string>();
+    rows.forEach((line, r) =>
+      [...line].forEach((ch, c) => {
+        if (ch === "#") out.add(`${String(r + dr)},${String(c + dc)}`);
+      }),
+    );
+    return out;
+  };
+
+  it("sets the tag slanted, one cell left per two rows down, ringed by its outline", () => {
+    // Mutation caught: a tag set unslanted, slanted the other way or
+    // mirrored, its outline drawn under the fill (two quads at one depth),
+    // or a fill off its variant's colour.
+    for (const variant of [0, 1, 2]) {
+      const d = onSouth("tag", { h: 0.6, width: 1.4, length: 0.45 }, variant);
+      const quads = quadsOf(d);
+      const fill = PIXEL_TINT.tag[variant]!;
+      const text = textRows(MARKS.sprayTag);
+      const want = new Set<string>();
+      text.forEach((line, r) =>
+        [...line].forEach((ch, c) => {
+          if (ch === "#")
+            want.add(
+              `${String(r + 1)},${String(c + 1 + Math.floor((4 - r) / 2))}`,
+            );
+        }),
+      );
+      expect(cellsOf(quads, fill)).toEqual(want);
+      const ring = cellsOf(quads, PIXEL_TINT.tagOutline);
+      expect(ring.size).toBeGreaterThan(want.size / 2);
+      for (const c of ring) expect(want.has(c)).toBe(false);
+      for (const q of quads) {
+        expect(q.layer).toBe(LAYER.decal);
+        expect(q.flag).toBe(FLAG.decal);
+        expect(q.off).toBeCloseTo(DECAL_LIFT, 6);
+        expect(same(q.tint, fill) || same(q.tint, PIXEL_TINT.tagOutline)).toBe(
+          true,
+        );
+        // Inside its box: the pixels as large as the box allows.
+        expect(q.a0).toBeGreaterThanOrEqual(d.along - d.width / 2 - 1e-6);
+        expect(q.a1).toBeLessThanOrEqual(d.along + d.width / 2 + 1e-6);
+        expect(q.y0).toBeGreaterThanOrEqual(d.h - 1e-6);
+        expect(q.y1).toBeLessThanOrEqual(d.h + d.length + 1e-6);
+      }
+      // The pixel is as large as the box allows: the picture's columns
+      // fill its width (a tag is long, so width binds, not height).
+      const pic = tagPicture();
+      const px = Math.min(...quads.map((q) => q.y1 - q.y0));
+      expect(px).toBeCloseTo(
+        Math.min(d.width / pic[0]!.length, d.length / pic.length),
+        6,
+      );
+    }
+    // Every outline cell touches the fill; every fill neighbour is outline.
+    const pic = tagPicture();
+    const at = (r: number, c: number) => pic[r]?.[c] ?? ".";
+    pic.forEach((line, r) =>
+      [...line].forEach((ch, c) => {
+        let near = false;
+        for (let dr = -1; dr <= 1; dr++)
+          for (let dc = -1; dc <= 1; dc++)
+            if (at(r + dr, c + dc) === "#") near = true;
+        if (ch !== "#") expect(ch === "o").toBe(near);
+      }),
+    );
+  });
+
+  it("writes the scribble's numbers in order, each glyph a pixel up, down or level", () => {
+    // Mutation caught: the numbers out of order, one left out, every glyph
+    // on one line (no hand), or an ink off the variant's.
+    const glyphsOf = (mark: string) => {
+      const rows = textRows(mark);
+      const n = ((rows[0]?.length ?? 0) + 1) / 4;
+      return Array.from({ length: n }, (_, g) =>
+        rows.map((r) => r.slice(g * 4, g * 4 + 3)),
+      );
+    };
+    for (const seed of [1, 2, 3, 1234]) {
+      const pic = scribblePicture(seed);
+      expect(pic.length).toBe(7);
+      let col = 0;
+      const shifts: number[] = [];
+      MARKS.numbers.forEach((mark, i) => {
+        if (i > 0) col += 5;
+        glyphsOf(mark).forEach((glyph, g) => {
+          if (g > 0) col += 1;
+          const cut = pic.map((r) => r.slice(col, col + 3));
+          const shift = [0, 1, 2].find((s) =>
+            cut.every((line, r) => line === (glyph[r - s] ?? "...")),
+          );
+          expect(shift, `${String(seed)} ${mark} ${String(g)}`).toBeDefined();
+          shifts.push(shift!);
+          col += 3;
+        });
+      });
+      expect(col).toBe(pic[0]!.length);
+      expect(new Set(shifts).size).toBeGreaterThan(1);
+    }
+    for (const variant of [0, 1]) {
+      const d = onSouth(
+        "scribble",
+        { h: 1.3, width: 0.7, length: 0.12 },
+        variant,
+      );
+      const quads = quadsOf(d);
+      const ink = PIXEL_TINT.scribble[variant]!;
+      for (const q of quads) expect(same(q.tint, ink)).toBe(true);
+      const pic = scribblePicture(d.seed);
+      // The picture's first row may be dark: the grid's top is the topmost lit row.
+      const first = pic.findIndex((r) => r.includes("#"));
+      const lead = Math.min(
+        ...pic.map((r) => (r.includes("#") ? r.indexOf("#") : Infinity)),
+      );
+      expect(cellsOf(quads, ink)).toEqual(litCells(pic, -first, -lead));
+    }
+  });
+
+  it("stencils the plate's numbers black over its grey plate, each at its own lift", () => {
+    // Mutation caught: the numbers at the plate's depth (fighting it), the
+    // plate missing, or numbers other than MARKS.numbers.
+    const d = onSouth("plate", { h: 1.55, width: 0.32, length: 0.08 });
+    const quads = quadsOf(d);
+    const plate = quads.filter((q) => same(q.tint, PIXEL_TINT.plate));
+    expect(plate.length).toBe(1);
+    expect(plate[0]!.off).toBeCloseTo(DECAL_LIFT, 6);
+    expect(plate[0]!.a1 - plate[0]!.a0).toBeCloseTo(d.width, 6);
+    expect(plate[0]!.y0).toBeCloseTo(d.h, 6);
+    expect(plate[0]!.y1).toBeCloseTo(d.h + d.length, 6);
+    const ink = quads.filter((q) => same(q.tint, PIXEL_TINT.plateInk));
+    expect(ink.length + plate.length).toBe(quads.length);
+    for (const q of ink) expect(q.off).toBeCloseTo(2 * DECAL_LIFT, 6);
+    const want = Array.from({ length: 5 }, () => "");
+    MARKS.numbers.forEach((mark, i) =>
+      textRows(mark).forEach((r, k) => {
+        want[k] += (i === 0 ? "" : ".....") + r;
+      }),
+    );
+    expect(
+      platePicture()
+        .slice(1, 6)
+        .map((r) => r.slice(1, -1)),
+    ).toEqual(want);
+    const lead = Math.min(
+      ...want.map((r) => (r.includes("#") ? r.indexOf("#") : Infinity)),
+    );
+    expect(cellsOf(ink, PIXEL_TINT.plateInk)).toEqual(litCells(want, 0, -lead));
+  });
+
+  it(`keeps the capped hub under ${String(DECAL_BUDGET)} triangles with a tag, a scribble and a plate on top (2.7 C21)`, () => {
+    // Mutation caught: a tag's pixels drawn one quad per cell instead of
+    // one per run, which takes the full room past the budget. The tag and
+    // the scribble cross the stripe here, so its cuts count too.
+    const count = (room: RoomSpec) => {
+      const mesh = buildRoomMesh(room, LOOK).static;
+      let n = 0;
+      for (let i = 0; i < mesh.count; i++)
+        if (mesh.vertices[i * FLOATS_PER_VERTEX + 12] === FLAG.decal) n++;
+      return n / 3;
+    };
+    const hub = cappedHub();
+    const extra = [
+      onSouth("tag", { h: 1.0, width: 1.6, length: 0.45 }),
+      onSouth("scribble", { h: 1.15, width: 0.7, length: 0.12 }),
+      onSouth("plate", { h: 1.55, width: 0.32, length: 0.08 }),
+    ];
+    const pixels = count({ ...galleryRoom(), decals: extra });
+    expect(pixels).toBeGreaterThan(100);
+    expect(count(hub) + pixels).toBeLessThan(DECAL_BUDGET);
+  }, 30_000);
+
+  it("draws the gallery's tag, scribble and plate, lifted off their walls and off the stripe", () => {
+    // Mutation caught: a pixel decal dropped by the recipe, or one laid
+    // across the accent stripe in one quad.
+    const room = galleryRoom();
+    expect(room.decals.map((d) => d.kind)).toEqual([
+      "tag",
+      "scribble",
+      "plate",
+    ]);
+    const quads = decalQuads(buildRoomMesh(room, LOOK).static, room);
+    expect(quads.length).toBeGreaterThan(100);
+    for (const q of quads) {
+      expect(q.normal[1]).toBeLessThan(0.99);
+      const ink = same(q.tint, PIXEL_TINT.plateInk);
+      expect(q.offWall).toBeCloseTo((ink ? 2 : 1) * DECAL_LIFT, 4);
+      expect(
+        q.y0 < ACCENT_STRIPE.h1 - 1e-4 && q.y1 > ACCENT_STRIPE.h0 + 1e-4,
+      ).toBe(false);
     }
   });
 });

@@ -111,7 +111,6 @@ import type {
   Curio,
   CurioKind,
   Decal,
-  DecalKind,
   Decor,
   DecorKind,
   Fixture,
@@ -127,6 +126,7 @@ import type {
   RoomSpec,
   Side,
   SurfaceClass,
+  TiledDecalKind,
   WallSlot,
 } from "./types";
 import { CELL } from "./units";
@@ -563,6 +563,8 @@ const GALLERY_LIGHT = 210;
  *   hall instead, at `GALLERY_HALL_PROPS` (2.6d C19): the canisters, the
  *   console and the marked crates east of the specimen tank, the designer
  *   tower north of the west wall's northern terminal.
+ * - **Decals.** The pixel wall decals alone, laid by hand on bay 3's and
+ *   bay 4's free walls (`galleryDecals`): a tag, a scribble and a plate.
  * - **Light.** One steady zone per block of four by four cells, so every
  *   floor cell is lit and nothing flickers while a model is looked at.
  *
@@ -773,12 +775,53 @@ export function galleryRoom(): RoomSpec {
     props,
     curios: [],
     finish: plainFinish(layout.bays.length),
-    decals: [],
+    decals: galleryDecals(seed, bay3, bay4),
     lights,
     dropped: 0,
     inboundMore: 0,
   };
   return { ...base, curios: galleryCurios(seed, base) };
+}
+
+/**
+ * The gallery's pixel wall decals (0.25.1 D-2, D-4), laid by hand for the
+ * look pass on bay walls no prop takes: the tag and the scribble on bay
+ * 3's west wall (its sixth and third rows), the plate on bay 4's south
+ * wall (its second column), each variant 0, at the sizes `placeDecals`
+ * gives them. `canned.test.ts` pins that the three edges are free and
+ * carry no wall prop.
+ */
+function galleryDecals(seed: number, bay3: Rect, bay4: Rect): Decal[] {
+  const lay = (
+    kind: "tag" | "scribble" | "plate",
+    edge: WallSlot,
+    size: { h: number; width: number; length: number },
+  ): Decal => ({
+    kind,
+    on: "wall",
+    ...wallAnchor(edge),
+    along: 0,
+    ...size,
+    variant: 0,
+    seed: seedFor(seed, "decal", kind),
+  });
+  return [
+    lay(
+      "tag",
+      { x: bay3.x0, y: bay3.y0 + 5, side: "w" },
+      { h: 0.9, width: 1.5, length: 0.45 },
+    ),
+    lay(
+      "scribble",
+      { x: bay3.x0, y: bay3.y0 + 2, side: "w" },
+      { h: 1.3, width: 0.7, length: 0.12 },
+    ),
+    lay(
+      "plate",
+      { x: bay4.x0 + 1, y: bay4.y1 - 1, side: "s" },
+      { h: 1.55, width: 0.32, length: 0.08 },
+    ),
+  ];
 }
 
 /**
@@ -1753,7 +1796,7 @@ function variantsHallCouncil(hall: Rect, seed: number): Decor[] {
  * whose counts `canned.test.ts` checks this list against).
  */
 const VARIANTS_HALL_DECAL_KINDS: readonly {
-  kind: Exclude<DecalKind, "stencil" | "ring">;
+  kind: TiledDecalKind;
   variants: number;
 }[] = [
   { kind: "chevrons", variants: 2 },
@@ -1768,7 +1811,7 @@ const VARIANTS_HALL_DECAL_KINDS: readonly {
  * and `length` up the wall or along the floor decal's turn.
  */
 const VARIANTS_HALL_DECAL_SIZE: Record<
-  Exclude<DecalKind, "stencil" | "ring">,
+  TiledDecalKind,
   { width: number; length: number }
 > = {
   chevrons: { width: 1.2, length: 0.3 },
@@ -1859,7 +1902,7 @@ function variantsHallDecals(
     y: number;
     gap: number;
     items: {
-      kind: Exclude<DecalKind, "ring">;
+      kind: TiledDecalKind | "stencil";
       variant: number;
       turn: number;
     }[];

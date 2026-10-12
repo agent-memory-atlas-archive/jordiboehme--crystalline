@@ -203,6 +203,8 @@ const READABLE = new Set([
   "FUJIFILM",
   // The camera's model name (0.25.1).
   "X-Pro2",
+  // The spray tag on a rough room's wall (0.25.1).
+  "COWABUNGA!",
 ]);
 
 /**
@@ -274,6 +276,7 @@ const MARKS_ONLY = [
   "Technics",
   "FUJIFILM",
   "X-Pro2",
+  "COWABUNGA!",
 ];
 
 /** A source with its comments stripped: comments name constants in backticks (`CLUSTER`); only code draws. */

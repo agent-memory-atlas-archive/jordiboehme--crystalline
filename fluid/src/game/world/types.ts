@@ -704,11 +704,32 @@ export interface Finish {
 }
 
 /**
- * The decal kinds (2.7 C14), and the airlock's hazard `ring` round its
- * floor's centre (M3 C24), which no generated room lays.
+ * The decal kinds (2.7 C14), the airlock's hazard `ring` round its
+ * floor's centre (M3 C24), which no generated room lays, and the three
+ * pixel-set wall decals of 0.25.1 (`PixelDecalKind`).
  */
 export type DecalKind =
-  "chevrons" | "arrow" | "grime" | "streak" | "rust" | "stencil" | "ring";
+  | "chevrons"
+  | "arrow"
+  | "grime"
+  | "streak"
+  | "rust"
+  | "stencil"
+  | "ring"
+  | PixelDecalKind;
+
+/**
+ * The wall decals set in pixels rather than from an atlas tile (0.25.1
+ * D-2, D-4): the spray-painted `tag`, the hand-written numbers `scribble`
+ * and the numbers `plate` beside a door. `variant` picks the colour.
+ */
+export type PixelDecalKind = "tag" | "scribble" | "plate";
+
+/** The decal kinds drawn from a tile of the decal atlas. */
+export type TiledDecalKind = Exclude<
+  DecalKind,
+  "stencil" | "ring" | PixelDecalKind
+>;
 
 /**
  * The words a floor stencil may read instead of a bay (M3 C24): `cycle`,
