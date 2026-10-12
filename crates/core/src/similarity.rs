@@ -136,9 +136,48 @@ pub fn word_bigram_dice(a: &str, b: &str) -> f64 {
     2.0 * intersection as f64 / ((wa.len() - 1) + (wb.len() - 1)) as f64
 }
 
+/// The fewest words a normalized text needs before the word check in
+/// [`near_duplicate`] applies to it.
+///
+/// A text of `n` words has `n - 1` word pairs and one changed word costs up to
+/// two of them, so a copy with one edit keeps `(n - 3) / (n - 1)` of its pairs.
+/// That reaches [`WORD_BIGRAM_FLOOR`] from five words on; below, a single
+/// edit can already fail the word check, so the character score decides alone.
+pub const WORD_GATE_MIN_WORDS: usize = 5;
+
+/// The longest mean word length, in characters, at which the word check in
+/// [`near_duplicate`] still applies to a normalized text.
+///
+/// Languages written without spaces, such as Chinese and Japanese, fold into
+/// a few clause-long "words" (the fold turns their punctuation into spaces),
+/// so one changed character costs a whole word and its pairs. English prose
+/// averages about five characters a word and German technical prose about
+/// seven, while comma-split Chinese clauses already average 12 and Japanese
+/// ones more (the tests measure both). 10 leaves room on either side. Above
+/// it, the character score decides alone, as it did before the word check
+/// existed.
+pub const WORD_GATE_MAX_MEAN_LEN: usize = 10;
+
+/// Whether a normalized text is split into enough short words for the word
+/// bigram score to say something about it: at least [`WORD_GATE_MIN_WORDS`]
+/// words with a mean length of at most [`WORD_GATE_MAX_MEAN_LEN`] characters.
+fn word_gate_applies(text: &str) -> bool {
+    let (words, chars) = text
+        .split_whitespace()
+        .fold((0usize, 0usize), |(w, c), word| {
+            (w + 1, c + word.chars().count())
+        });
+    words >= WORD_GATE_MIN_WORDS && chars <= WORD_GATE_MAX_MEAN_LEN * words
+}
+
 /// Decide whether two normalized texts are near-duplicates: the character
 /// bigram Dice score reaches `char_threshold` and the word bigram Dice score
 /// reaches [`WORD_BIGRAM_FLOOR`].
+///
+/// The word check only applies when both texts are split into words well
+/// enough for it (see [`WORD_GATE_MIN_WORDS`] and [`WORD_GATE_MAX_MEAN_LEN`]).
+/// A short text or one in a language written without spaces is decided by the
+/// character score alone.
 ///
 /// Returns the character score on a match, so callers keep reporting the
 /// number they always did, and `None` otherwise.
@@ -152,7 +191,11 @@ pub fn word_bigram_dice(a: &str, b: &str) -> f64 {
 /// ```
 pub fn near_duplicate(a: &str, b: &str, char_threshold: f64) -> Option<f64> {
     let chars = dice_coefficient(a, b);
-    if chars >= char_threshold && word_bigram_dice(a, b) >= WORD_BIGRAM_FLOOR {
+    let words_agree = || {
+        !(word_gate_applies(a) && word_gate_applies(b))
+            || word_bigram_dice(a, b) >= WORD_BIGRAM_FLOOR
+    };
+    if chars >= char_threshold && words_agree() {
         Some(chars)
     } else {
         None
@@ -301,5 +344,76 @@ mod tests {
             .replace("storage", "the bucket");
         let score = near_duplicate(&a, &edited, 0.85);
         assert!(score.is_some(), "edited copy lost: {score:?}");
+    }
+
+    /// A Japanese paragraph. The fold turns its punctuation into spaces, so
+    /// it splits into four clause-long "words".
+    const JAPANESE: &str = "ビルドはメインブランチへのプッシュごとに実行されテストスイート全体を\
+        走らせる前にワークスペース全体をコンパイルします。その後成果物をストレージに\
+        アップロードし、どこかで失敗するとリリースは止まり当番のエンジニアにすぐ連絡が\
+        届きます。壊れたビルドを出荷する人はいません。";
+
+    /// A Chinese paragraph of the same text, four clauses after the fold.
+    const CHINESE: &str = "每次推送到主分支时都会先编译整个工作区再执行完整的测试套件。\
+        之后它把产物上传到存储中，链条中任何一处失败都会停止发布并立即通知值班工程师。\
+        这样就没有人会发布一个损坏的构建。";
+
+    #[test]
+    fn languages_without_spaces_skip_the_word_check() {
+        for text in [JAPANESE, CHINESE] {
+            let a = normalize(text);
+            assert!(!word_gate_applies(&a), "gate applies to {a}");
+        }
+        // The same Chinese text with a comma at every clause still folds
+        // into clauses averaging over ten characters.
+        let commas = normalize(
+            "每次推送到主分支时都会运行构建，先编译整个工作区，然后执行完整的测试套件。\
+             之后它把产物上传到存储中，链条中任何一处失败都会停止发布，并立即通知值班工程师，\
+             这样就没有人会发布一个损坏的构建。",
+        );
+        assert!(!word_gate_applies(&commas), "gate applies to {commas}");
+        assert!(word_gate_applies(&normalize(PARAGRAPH)));
+        let german = normalize(
+            "Der Build läuft bei jedem Push auf den Hauptzweig, übersetzt den ganzen \
+             Arbeitsbereich und führt danach die vollständige Testsammlung aus.",
+        );
+        assert!(word_gate_applies(&german), "gate skips {german}");
+    }
+
+    #[test]
+    fn near_duplicate_accepts_a_japanese_copy_with_one_character_changed() {
+        let a = normalize(JAPANESE);
+        let b = normalize(&JAPANESE.replace("すぐ", "すく"));
+        assert_ne!(a, b);
+        // The fixture only proves the fix if the word check alone would have
+        // rejected it.
+        assert!(word_bigram_dice(&a, &b) < WORD_BIGRAM_FLOOR);
+        let score = near_duplicate(&a, &b, 0.85);
+        assert!(score.is_some_and(|s| s > 0.95), "{score:?}");
+    }
+
+    #[test]
+    fn near_duplicate_accepts_a_chinese_copy_with_one_character_changed() {
+        let a = normalize(CHINESE);
+        let b = normalize(&CHINESE.replace("立即", "立刻"));
+        assert_ne!(a, b);
+        assert!(word_bigram_dice(&a, &b) < WORD_BIGRAM_FLOOR);
+        let score = near_duplicate(&a, &b, 0.85);
+        assert!(score.is_some_and(|s| s > 0.95), "{score:?}");
+    }
+
+    #[test]
+    fn short_text_is_decided_by_the_character_score() {
+        // One edit in the middle of four words costs two of three word pairs.
+        let a = "alpha beta gamma delta";
+        let b = "alpha betas gamma delta";
+        assert!(!word_gate_applies(a));
+        assert!(word_bigram_dice(a, b) < WORD_BIGRAM_FLOOR);
+        assert!(near_duplicate(a, b, 0.85).is_some());
+        // From five words on the word check applies and one edit passes it.
+        let a = "alpha beta gamma delta epsilon";
+        let b = "alpha beta gammas delta epsilon";
+        assert!(word_gate_applies(a));
+        assert!(word_bigram_dice(a, b) >= WORD_BIGRAM_FLOOR);
     }
 }
