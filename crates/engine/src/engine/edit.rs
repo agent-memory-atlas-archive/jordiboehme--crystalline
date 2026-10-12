@@ -155,6 +155,9 @@ impl Engine {
                 model.as_deref(),
                 scope,
                 peer,
+                // A set_frontmatter that leaves the engram saying what it
+                // said writes nothing; every other operation writes as sent.
+                p.operation == "set_frontmatter",
                 |current| {
                     // The REPORTED model here, not the one resolved against
                     // this actor: the block this call stamps is held against
@@ -203,6 +206,11 @@ impl Engine {
         if let Some(live) = &edited.live {
             response["landed"] = json!("live");
             response["present"] = json!(live.participants);
+        }
+        // An edit that changed nothing wrote nothing, and says so; the key is
+        // absent on every edit that wrote.
+        if edited.unchanged {
+            response["unchanged"] = json!(true);
         }
         note_unmirrored(&mut response, edited.warning);
         note_domain_names_normalized(&mut response, edited.normalized);
@@ -264,6 +272,7 @@ impl Engine {
             model,
             scope,
             None,
+            false,
             apply,
         )
         .await
@@ -291,6 +300,7 @@ impl Engine {
         model: Option<&str>,
         scope: &crate::scope::Scope,
         peer: Option<&AgentPeer>,
+        skip_unchanged: bool,
         mut apply: F,
     ) -> std::result::Result<SourceEdited, SourceEditFailure>
     where
@@ -303,6 +313,23 @@ impl Engine {
         // `expected_checksum` against the bytes it read BEFORE this
         // conversion, which is what a read handed out.
         let mut apply = move |current: &str| apply(&crystalline_core::to_lf(current));
+        // Whether an edit's result says what the text it was applied to said,
+        // compared as parsed values against the LF form `apply` saw. Asked
+        // after `apply` and before the generated stamp, so an edit that
+        // changes nothing never reaches the stamp or a write.
+        let unchanged = |current: &str, edited: &str| {
+            skip_unchanged
+                && crystalline_core::frontmatter::same_content(
+                    &crystalline_core::to_lf(current),
+                    edited,
+                )
+        };
+        let nothing_written = || SourceEdited {
+            warning: None,
+            live: None,
+            normalized: 0,
+            unchanged: true,
+        };
         // A MANIFEST edit may switch read_only on, which is the owner's
         // (decision D10, on every tier). The verdict is asked here, before any
         // lock, because `domain_is_read_only` may take the store lock and
@@ -370,6 +397,10 @@ impl Engine {
                     }
                 }
                 let edited = apply(&live.text).map_err(SourceEditFailure::before)?;
+                // Nothing to compose: the document already says it.
+                if unchanged(&live.text, &edited) {
+                    return Ok(nothing_written());
+                }
                 // The same two passes every other arm makes, in the same
                 // order. An edit that skipped them would put a document in
                 // front of a person that the saver then refuses, minutes
@@ -390,6 +421,7 @@ impl Engine {
                     warning: None,
                     live: Some(applied),
                     normalized,
+                    unchanged: false,
                 });
             }
         }
@@ -435,6 +467,10 @@ impl Engine {
             // `Engine::hold_next_draft_edit`.
             self.take_draft_hold().await;
             let edited = apply(&current).map_err(SourceEditFailure::before)?;
+            // No draft is written, so none is created either.
+            if unchanged(&current, &edited) {
+                return Ok(nothing_written());
+            }
             let edited = touch_generated(&edited, actor, model, now_offset());
             let edited = Self::enforce_temporal(edited).map_err(SourceEditFailure::before)?;
             let (edited, normalized) = self
@@ -458,6 +494,7 @@ impl Engine {
                 warning,
                 live: None,
                 normalized,
+                unchanged: false,
             });
         }
 
@@ -482,6 +519,11 @@ impl Engine {
                     }
                 }
                 let edited = apply(&current).map_err(SourceEditFailure::before)?;
+                // Returned rather than handed to the tail below: the tail is
+                // the announcement and the index work a write owes.
+                if unchanged(&current, &edited) {
+                    return Ok(nothing_written());
+                }
                 let edited = touch_generated(&edited, actor, model, now_offset());
                 let edited = Self::enforce_temporal(edited).map_err(SourceEditFailure::before)?;
                 let (edited, count) = self
@@ -538,6 +580,9 @@ impl Engine {
                         .map(str::to_string)
                         .unwrap_or_else(|| sha256_hex(current.as_bytes()));
                     let edited = apply(&current).map_err(SourceEditFailure::before)?;
+                    if unchanged(&current, &edited) {
+                        return Ok(nothing_written());
+                    }
                     let edited = touch_generated(&edited, actor, model, now_offset());
                     let edited =
                         Self::enforce_temporal(edited).map_err(SourceEditFailure::before)?;
@@ -643,6 +688,7 @@ impl Engine {
             warning: None,
             live: None,
             normalized,
+            unchanged: false,
         })
     }
 
@@ -1310,7 +1356,7 @@ mod list_keys_tests {
         ] {
             let out = set_values(&engram(old), "tags", &["old", "new"]).unwrap();
             assert_eq!(tags_of(&out), ["old", "new"], "{old:?}: {out}");
-            assert!(out.contains("tags:\n  - old\n  - new\n"), "{old:?}: {out}");
+            assert!(out.contains("tags:\n- old\n- new\n"), "{old:?}: {out}");
             assert_eq!(out.matches("old").count(), 1, "{old:?}: {out}");
         }
     }
@@ -1420,7 +1466,7 @@ mod list_keys_tests {
                 "{old:?}: {out}"
             );
             assert!(
-                out.contains("sources:\n  - https://a.example\n  - https://b.example\n"),
+                out.contains("sources:\n- https://a.example\n- https://b.example\n"),
                 "{old:?}: {out}"
             );
             let out = set_values(&out, "sources", &["https://b.example"]).unwrap();

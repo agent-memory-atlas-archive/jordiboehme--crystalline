@@ -374,6 +374,53 @@ async fn an_agent_edit_composes_with_a_typed_line_and_lands_live() {
     );
 }
 
+/// A set_frontmatter that leaves the live document saying what it says
+/// composes nothing: the document keeps its text and its generated block,
+/// the receipt says unchanged: true and names no landing. A stale checksum is
+/// still refused first.
+#[tokio::test]
+async fn an_unchanged_set_frontmatter_composes_nothing_into_a_live_document() {
+    let (_tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "a person typed this").await;
+    let before = client_text(&doc);
+    let tags = |expected_checksum: Option<String>| EditParams {
+        identifier: "alpha".to_string(),
+        domain: "eng".to_string(),
+        operation: "set_frontmatter".to_string(),
+        key: Some("tags".to_string()),
+        values: Some(vec!["Eng".to_string()]),
+        expected_checksum,
+        ..EditParams::default()
+    };
+
+    let err = engine
+        .edit_engram_as(
+            &tags(Some("0".repeat(64))),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("stale edit"), "{err}");
+
+    let receipt = engine
+        .edit_engram_as(
+            &tags(Some(sha256_hex_of(&before))),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("the edit is answered");
+    assert_eq!(receipt["unchanged"], json!(true), "{receipt}");
+    assert!(receipt.get("landed").is_none(), "{receipt}");
+    resync(&joined, &doc).await;
+    assert_eq!(client_text(&doc), before, "nothing composed");
+}
+
 /// An edit that composed into an open room announces nothing: nothing
 /// landed. The room's save a moment later is what announces, once.
 #[tokio::test]

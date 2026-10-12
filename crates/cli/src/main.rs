@@ -551,7 +551,8 @@ enum Command {
         /// The frontmatter field to assign, for set_frontmatter: tags or
         /// sources (with --values), or status, valid_from, valid_to,
         /// stale_after, source_date, resource, source_version, salience or
-        /// verified (with --value).
+        /// verified (with --value). A set_frontmatter that changes nothing
+        /// writes nothing and answers unchanged: true.
         #[arg(long)]
         key: Option<String>,
         /// The value to assign, for set_frontmatter. Omit to remove the field;

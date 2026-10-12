@@ -6279,6 +6279,10 @@ struct SourceEdited {
     /// How many domain spellings the final text had rewritten to their
     /// canonical name, `0` when none were.
     normalized: usize,
+    /// Whether the edit was found to change nothing and so wrote nothing:
+    /// no file, no row, no draft, no live compose and no generated stamp.
+    /// Only an edit that asked for the check (`skip_unchanged`) reports it.
+    unchanged: bool,
 }
 
 /// A source edit that failed, and whether the source may already carry the new

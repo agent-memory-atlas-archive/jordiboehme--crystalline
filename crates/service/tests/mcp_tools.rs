@@ -4368,6 +4368,244 @@ async fn plant(h: &Harness, domain: &str, slug: &str, fields: &str) -> std::path
     path
 }
 
+/// The lines a line diff of `before` and `after` reports as removed and
+/// added, with the `generated` line left out of both sides first: a real
+/// edit restamps it, and that line moving is expected. Common leading and
+/// trailing lines are dropped, which is exact for one block of change.
+fn changed_lines(before: &str, after: &str) -> (Vec<String>, Vec<String>) {
+    let keep = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|l| !l.starts_with("generated:"))
+            .map(str::to_string)
+            .collect()
+    };
+    let (a, b) = (keep(before), keep(after));
+    let mut start = 0;
+    while start < a.len() && start < b.len() && a[start] == b[start] {
+        start += 1;
+    }
+    let (mut ea, mut eb) = (a.len(), b.len());
+    while ea > start && eb > start && a[ea - 1] == b[eb - 1] {
+        ea -= 1;
+        eb -= 1;
+    }
+    (a[start..ea].to_vec(), b[start..eb].to_vec())
+}
+
+/// The checksum a read hands out for an engram.
+async fn checksum_of(peer: &Peer<RoleClient>, domain: &str, identifier: &str) -> String {
+    let read = call(
+        peer,
+        "read_engram",
+        json!({ "domain": domain, "identifier": identifier }),
+    )
+    .await
+    .unwrap();
+    read["checksum"].as_str().unwrap().to_string()
+}
+
+/// A list set_frontmatter writes is the list write_engram writes: one more
+/// item right after a write adds exactly one line. Only the generated line
+/// moves beside it, because a real edit is stamped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn set_frontmatter_after_a_write_changes_only_the_line_it_adds() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    let sources = [
+        "https://example.com/page#frag",
+        "notedown://jordi/n1/p0#b1",
+        "a: b",
+        "#hash",
+        "\"quoted\"",
+        "Grüße",
+    ];
+    call(
+        peer,
+        "write_engram",
+        json!({
+            "domain": "eng", "title": "Listed", "content": "A rule.",
+            "tags": ["alpha", "beta"],
+            "metadata": { "sources": sources },
+        }),
+    )
+    .await
+    .unwrap();
+    let path = h.root.join("eng/listed.md");
+
+    let before = std::fs::read_to_string(&path).unwrap();
+    call(
+        peer,
+        "edit_engram",
+        json!({
+            "domain": "eng", "identifier": "listed", "operation": "set_frontmatter",
+            "key": "tags", "values": ["alpha", "beta", "gamma"],
+        }),
+    )
+    .await
+    .unwrap();
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        changed_lines(&before, &after),
+        (vec![], vec!["- gamma".to_string()]),
+        "{before}\n=====\n{after}"
+    );
+
+    let before = after;
+    let mut more: Vec<&str> = sources.to_vec();
+    more.push("https://example.com/new#x");
+    call(
+        peer,
+        "edit_engram",
+        json!({
+            "domain": "eng", "identifier": "listed", "operation": "set_frontmatter",
+            "key": "sources", "values": more,
+        }),
+    )
+    .await
+    .unwrap();
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        changed_lines(&before, &after),
+        (vec![], vec!["- https://example.com/new#x".to_string()]),
+        "{before}\n=====\n{after}"
+    );
+    let out = call(
+        peer,
+        "read_engram",
+        json!({ "domain": "eng", "identifier": "listed" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["frontmatter"]["extra"]["sources"], json!(more), "{out}");
+}
+
+/// A set_frontmatter that leaves the engram saying what it said writes
+/// nothing: the file keeps its bytes, the checksum and the generated block
+/// stay, and the receipt says unchanged: true. Compared as values, so tags
+/// that fold to the stored ones and a 0.25.1-style indented list are equal,
+/// while a new order is a change. A stale checksum is still refused first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn set_frontmatter_that_changes_nothing_writes_nothing() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    call(
+        peer,
+        "write_engram",
+        json!({
+            "domain": "eng", "title": "Same", "content": "A rule.",
+            "tags": ["alpha", "beta"],
+            "metadata": { "sources": ["https://example.com/a", "https://example.com/b#c"] },
+        }),
+    )
+    .await
+    .unwrap();
+    let path = h.root.join("eng/same.md");
+    let stored = std::fs::read_to_string(&path).unwrap();
+    let checksum = checksum_of(peer, "eng", "same").await;
+
+    for (key, values) in [
+        ("tags", json!(["alpha", "beta"])),
+        // Folded, deduplicated and blank-dropped the way the write folds.
+        ("tags", json!(["Alpha", " beta ", "alpha", ""])),
+        (
+            "sources",
+            json!(["https://example.com/a", "https://example.com/b#c"]),
+        ),
+        (
+            "sources",
+            json!([
+                " https://example.com/a",
+                "https://example.com/b#c",
+                "https://example.com/a",
+                " "
+            ]),
+        ),
+    ] {
+        let receipt = call(
+            peer,
+            "edit_engram",
+            json!({
+                "domain": "eng", "identifier": "same", "operation": "set_frontmatter",
+                "key": key, "values": values, "expected_checksum": checksum,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            receipt["unchanged"],
+            json!(true),
+            "{key} {values}: {receipt}"
+        );
+        assert_eq!(receipt["permalink"], json!("same"), "{receipt}");
+        assert_eq!(
+            stored,
+            std::fs::read_to_string(&path).unwrap(),
+            "{key} {values}"
+        );
+        assert_eq!(checksum, checksum_of(peer, "eng", "same").await);
+    }
+    let receipt = call(
+        peer,
+        "edit_engram",
+        json!({
+            "domain": "eng", "identifier": "same", "operation": "set_frontmatter",
+            "key": "status", "value": "stable",
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(receipt["unchanged"], json!(true), "{receipt}");
+    assert_eq!(stored, std::fs::read_to_string(&path).unwrap());
+
+    // A stale checksum is refused even when the edit would change nothing.
+    let err = call(
+        peer,
+        "edit_engram",
+        json!({
+            "domain": "eng", "identifier": "same", "operation": "set_frontmatter",
+            "key": "tags", "values": ["alpha", "beta"],
+            "expected_checksum": "0".repeat(64),
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("stale edit"), "{err}");
+
+    // A new order is a change: written, stamped and without the key.
+    let receipt = call(
+        peer,
+        "edit_engram",
+        json!({
+            "domain": "eng", "identifier": "same", "operation": "set_frontmatter",
+            "key": "tags", "values": ["beta", "alpha"],
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(receipt.get("unchanged").is_none(), "{receipt}");
+    assert_ne!(stored, std::fs::read_to_string(&path).unwrap());
+    assert_ne!(checksum, checksum_of(peer, "eng", "same").await);
+
+    // An older file in the indented 0.25.1 style with an equal list is left
+    // alone too.
+    let legacy = plant(&h, "eng", "legacy", "status: stable\n").await;
+    let planted = std::fs::read_to_string(&legacy).unwrap();
+    let receipt = call(
+        peer,
+        "edit_engram",
+        json!({
+            "domain": "eng", "identifier": "legacy", "operation": "set_frontmatter",
+            "key": "tags", "values": ["eng"],
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(receipt["unchanged"], json!(true), "{receipt}");
+    assert_eq!(planted, std::fs::read_to_string(&legacy).unwrap());
+}
+
 /// set_frontmatter flips a status by field assignment rather than text
 /// substitution, so it lands whichever spelling the file carries: the current
 /// `stable` a write produces and the legacy `current` an older file holds.
@@ -4587,7 +4825,7 @@ async fn set_frontmatter_values_adds_a_tag_that_search_and_vocabulary_see() {
     .unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(
-        text.contains("tags:\n  - retries\n  - network-policy\n"),
+        text.contains("tags:\n- retries\n- network-policy\n"),
         "{text}"
     );
 
@@ -4712,7 +4950,7 @@ async fn set_frontmatter_sources_adds_and_drops_a_location_that_contains_sees() 
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(
         text.contains(
-            "sources:\n  - https://github.com/acme/api/blob/main/src/a.rs\n  - https://github.com/acme/api/blob/main/src/new.rs\n  - \"https://example.com/straße?a=1,2#x\"\n"
+            "sources:\n- https://github.com/acme/api/blob/main/src/a.rs\n- https://github.com/acme/api/blob/main/src/new.rs\n- https://example.com/straße?a=1,2#x\n"
         ),
         "{text}"
     );
@@ -4869,6 +5107,27 @@ async fn in_review_mode_set_frontmatter_sources_is_a_draft() {
     .await;
     let (client, _server) = h.connect().await;
     let peer = client.peer();
+    // The list the page already holds, spelled the 0.25.1 way on disk: no
+    // draft is written, so the caller's read is still the reviewed page.
+    let out = call(
+        peer,
+        "edit_engram",
+        json!({
+            "domain": "eng", "identifier": "page", "operation": "set_frontmatter",
+            "key": "sources", "values": ["https://example.com/a"],
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["unchanged"], true, "{out}");
+    let read = call(
+        peer,
+        "read_engram",
+        json!({ "domain": "eng", "identifier": "page" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(read["content"], PAGE, "no draft: {read}");
     let out = call(
         peer,
         "edit_engram",
@@ -4880,6 +5139,7 @@ async fn in_review_mode_set_frontmatter_sources_is_a_draft() {
     .await
     .unwrap();
     assert_eq!(out["draft"], true, "{out}");
+    assert!(out.get("unchanged").is_none(), "{out}");
     assert_eq!(
         std::fs::read_to_string(h.root.join("eng/page.md")).unwrap(),
         PAGE,
@@ -4896,7 +5156,7 @@ async fn in_review_mode_set_frontmatter_sources_is_a_draft() {
         read["content"]
             .as_str()
             .unwrap()
-            .contains("sources:\n  - https://example.com/a\n  - https://example.com/b\n"),
+            .contains("sources:\n- https://example.com/a\n- https://example.com/b\n"),
         "{read}"
     );
 }

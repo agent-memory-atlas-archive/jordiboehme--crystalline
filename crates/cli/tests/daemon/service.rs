@@ -3181,10 +3181,7 @@ fn edit_set_frontmatter_sets_tags_from_a_comma_list() {
     ]);
     assert!(ok, "edit set_frontmatter tags: {out}");
     let text = std::fs::read_to_string(env.dir.join("kb-eng/seed.md")).unwrap();
-    assert!(
-        text.contains("tags:\n  - api\n  - retry-policy\n"),
-        "{text}"
-    );
+    assert!(text.contains("tags:\n- api\n- retry-policy\n"), "{text}");
 
     // --values with nothing after it is the empty list: every tag goes.
     let (ok, out) = env.run(&[
