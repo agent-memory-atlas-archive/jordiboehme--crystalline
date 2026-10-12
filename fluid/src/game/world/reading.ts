@@ -278,6 +278,22 @@ export function computersOf(
 }
 
 /**
+ * The room's gravity consoles' use points, in the same shape as a
+ * computer's (`computerFocus` finds the one the player faces). Apart from
+ * `computersOf`, which is empty for a room with no reading: the console's
+ * switch works in any room that has one.
+ */
+export function gravityConsolesOf(room: RoomSpec): ComputerPoint[] {
+  const points: ComputerPoint[] = [];
+  for (const [index, p] of room.props.entries()) {
+    if (p.kind !== "gravity-console") continue;
+    const point = facingPoint(p.x * CELL, p.y * CELL, p.turn);
+    points.push({ list: "props", index, point, wall: p.anchor === "wall" });
+  }
+  return points;
+}
+
+/**
  * The computer the player faces and can use, or null: `focusOf`'s rule
  * over the points (the nearest within `REACH` and within `FACING` of the
  * view); a wall point also needs the player in front of it, so nothing is

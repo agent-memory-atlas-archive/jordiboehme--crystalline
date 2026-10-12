@@ -59,6 +59,8 @@ export interface Intent {
   lookDy: number;
   /** Whether the run key is held: `RUN_FACTOR` times the walk speed. */
   run: boolean;
+  /** Whether heavy gravity is on: `HEAVY_FACTOR` times the speed, slower to get going, a slower and deeper bob. Turning and looking are unchanged. */
+  heavy?: boolean;
 }
 
 /** The player's collision radius, in metres. */
@@ -77,6 +79,22 @@ const MAX_SPEED = 7;
 export const RUN_FACTOR = 2;
 /** Fraction of velocity kept per tick with no input: quick stops. */
 const FRICTION = 0.55;
+/**
+ * The speed factor of heavy gravity (the gravity console): walking and
+ * running both reach 55 percent of their usual top speed.
+ */
+export const HEAVY_FACTOR = 0.55;
+/**
+ * Fraction of velocity kept per tick while heavy and asking for a move:
+ * slightly more than `FRICTION`, so the player gets going a little slower.
+ * With no input the plain `FRICTION` applies, so a heavy player stops as
+ * fast as any.
+ */
+const HEAVY_KEPT = 0.68;
+/** How much longer the heavy stride's period is than a light one's at the same input. */
+const HEAVY_BOB_PERIOD = 1.4;
+/** How much deeper the heavy head bob is. */
+const HEAVY_BOB_DEPTH = 1.3;
 const TURN_SPEED = 3;
 const MOUSE_SENSITIVITY = 0.0025;
 
@@ -353,9 +371,12 @@ export function stepPlayer(
     wz /= len;
   }
   // Blend towards the wished velocity: most of the way in one tick.
-  const top = intent.run ? MAX_SPEED * RUN_FACTOR : MAX_SPEED;
-  let vx = p.vx * FRICTION + wx * top * (1 - FRICTION);
-  let vz = p.vz * FRICTION + wz * top * (1 - FRICTION);
+  const heavy = intent.heavy === true;
+  const base = intent.run ? MAX_SPEED * RUN_FACTOR : MAX_SPEED;
+  const top = heavy ? base * HEAVY_FACTOR : base;
+  const kept = heavy && len > 0 ? HEAVY_KEPT : FRICTION;
+  let vx = p.vx * kept + wx * top * (1 - kept);
+  let vz = p.vz * kept + wz * top * (1 - kept);
 
   // A move longer than the player's radius is taken in equal steps no
   // longer than it (running is two), so the push-out never finds the
@@ -394,14 +415,22 @@ export function stepPlayer(
     vz,
     yaw,
     pitch,
-    bob: p.bob + speed * DT * 2.2,
+    // The heavy stride's rate makes its period `HEAVY_BOB_PERIOD` times a
+    // light one's at the same input, though the speed itself is lower.
+    bob:
+      p.bob +
+      speed * DT * 2.2 * (heavy ? 1 / (HEAVY_FACTOR * HEAVY_BOB_PERIOD) : 1),
   };
 }
 
-/** The head bob for the current stride, in metres. */
-export function headBob(p: Player): number {
-  const speed = Math.min(1, Math.hypot(p.vx, p.vz) / MAX_SPEED);
-  return Math.sin(p.bob) * 0.045 * speed;
+/**
+ * The head bob for the current stride, in metres: deeper while `heavy`,
+ * scaled to the heavy walking speed so a heavy walk bobs fully.
+ */
+export function headBob(p: Player, heavy = false): number {
+  const top = heavy ? MAX_SPEED * HEAVY_FACTOR : MAX_SPEED;
+  const speed = Math.min(1, Math.hypot(p.vx, p.vz) / top);
+  return Math.sin(p.bob) * 0.045 * (heavy ? HEAVY_BOB_DEPTH : 1) * speed;
 }
 
 /**

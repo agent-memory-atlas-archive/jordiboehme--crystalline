@@ -59,6 +59,8 @@ export type Ambience =
  * - `ride`: a lift ride left (`depart`) or ended (`arrive`).
  * - `box`: the police box took off (the cut into the console room) or
  *   landed (the step out onto a bridge).
+ * - `gravity`: the gravity console switched heavy gravity on (a low
+ *   thud) or off (a soft lift).
  * - `jump`: the level select's jump.
  * - `answer`: a terminal answered (Task 9), placed.
  * - `room`: a room was entered, with its ambience and seed.
@@ -83,6 +85,7 @@ export type Cue =
   | { kind: "terminal" }
   | { kind: "ride"; phase: "depart" | "arrive" }
   | { kind: "box"; phase: "takeoff" | "landing" }
+  | { kind: "gravity"; on: boolean }
   | { kind: "jump" }
   | { kind: "answer"; pan: number; gain: number }
   | { kind: "room"; ambience: Ambience; seed: number };

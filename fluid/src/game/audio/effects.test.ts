@@ -5,6 +5,7 @@ import type { DoorSound } from "./cues";
 import {
   doorPatch,
   faultPatch,
+  gravityPatch,
   hatchPatch,
   portalPatch,
   ridePatch,
@@ -31,6 +32,8 @@ function everyEffect(): Patch[] {
     stepPatch(8, true, 1),
     ...DOORS.flatMap((s) => [doorPatch(s, true), doorPatch(s, false)]),
     hatchPatch(),
+    gravityPatch(true),
+    gravityPatch(false),
     portalPatch(),
     terminalPatch(),
     ...WAYS.flatMap((w) => [1, 2, 3].map((run) => faultPatch(w, run))),
@@ -112,5 +115,19 @@ describe("effects", () => {
       expect(valueAt(v.pitch, 0)).toBeLessThan(top);
     }
     expect(ridePatch("arrive").loop).not.toBe(true);
+  });
+
+  // Mutation caught: one sound for both directions, a thud that rises or a
+  // lift that falls.
+  it("sounds gravity on as a low falling thud and off as a rising lift", () => {
+    const on = gravityPatch(true);
+    const off = gravityPatch(false);
+    expect(on.voices).not.toEqual(off.voices);
+    const down = thump(on);
+    const up = thump(off);
+    expect(valueAt(down.pitch, 0.25)).toBeLessThan(valueAt(down.pitch, 0));
+    expect(valueAt(down.pitch, 0)).toBeLessThan(100);
+    expect(valueAt(up.pitch, 0.35)).toBeGreaterThan(valueAt(up.pitch, 0));
+    expect(down.gain).toBeGreaterThan(up.gain);
   });
 });
