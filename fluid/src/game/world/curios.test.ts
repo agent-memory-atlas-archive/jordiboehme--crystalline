@@ -476,6 +476,11 @@ const ALL_FORCED: CurioDraws = {
   gear: { take: true, roll: 0.5 },
   ball: { take: true, roll: 0.5, floor: false },
   under: { take: true, roll: 0.5 },
+  desk: { take: true, roll: 0.5 },
+  snack: { take: true, roll: 0.5 },
+  figure: { take: true, roll: 0.5 },
+  paper: { take: true, roll: 0.5 },
+  radio: { take: true, roll: 0.5 },
 };
 const WORKSHOPS = matrix(CANNED_WORKSHOP);
 const ROOMS = [...WORKSHOPS, ...matrix(CANNED_BRIDGE), ...matrix(CANNED_HUB)];
@@ -1720,7 +1725,7 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
     ).toBe(true);
   });
 
-  it("places every new kind with a host in the hub and keeps every invariant with all seven slots forced", () => {
+  it("places every new kind with a host in the hub and keeps every invariant with every slot forced", () => {
     // Mutation caught: a new kind that finds no candidate in the hub (its
     // classes emptied), or a new slot placing a curio that clashes with
     // or stands off its surface.
@@ -1730,8 +1735,30 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
       radar: { take: true, paired: true, roll: 0.5 },
       capsule: { take: true, paired: true, roll: 0.5 },
     };
-    for (const { name, room } of ROOMS)
-      expectInvariants(base(room), placeCurios(base(room), ALL), name);
+    const landed = new Set<CurioSlot>();
+    for (const { name, room } of ROOMS) {
+      const got = placeCurios(base(room), ALL);
+      for (const c of got) landed.add(CURIO_CATALOGUE[c.kind].slot);
+      expectInvariants(base(room), got, name);
+    }
+    // Every slot lands somewhere, so each one is clash-checked against the
+    // others at least once.
+    expect([...landed].sort()).toEqual(
+      [
+        "retro",
+        "gear",
+        "ball",
+        "under",
+        "tech",
+        "radar",
+        "capsule",
+        "desk",
+        "snack",
+        "figure",
+        "paper",
+        "radio",
+      ].sort(),
+    );
     // The report sheets (0.25.1) stand on desk, bench and table tops at
     // least 0.256 m wide. The hub's desks are its terminals' 0.22 m ends,
     // too narrow, so there they land on a bench; they are also held to
