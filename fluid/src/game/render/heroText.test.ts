@@ -155,6 +155,8 @@ const READABLE = new Set([
   "CYCLE",
   // The tool maker's mark.
   "BINFORD",
+  // The big gun's badge (0.25.1).
+  "BFG",
   // The terminals' handle lines.
   "LOGIN: ZERO COOL",
   "LOGIN: CRASH OVERRIDE",
@@ -222,6 +224,7 @@ const MARKS_ONLY = [
   "AIRLOCK",
   "CYCLE",
   "BINFORD",
+  "BFG",
   "LOGIN: ZERO COOL",
   "LOGIN: CRASH OVERRIDE",
   "LOGIN: ACID BURN",

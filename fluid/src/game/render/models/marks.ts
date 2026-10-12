@@ -48,6 +48,8 @@ export const MARKS = {
   towerClock: "40",
   /** The beige laptop's small mark, drawn on its screen. */
   laptopMark: "<=>",
+  /** The big gun's badge, light letters on a small dark plate on its flank (0.25.1). */
+  gunBadge: "BFG",
   /** The tool maker's mark, set on the tool props, the workbench machine and the gun bench's pegboard. */
   toolMark: "BINFORD",
   /** The terminals' handle lines, each the whole last row of a screen (0.25.1). */

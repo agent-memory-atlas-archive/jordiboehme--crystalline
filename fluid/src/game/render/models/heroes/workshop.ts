@@ -46,7 +46,7 @@ import {
   STATUS_GREEN,
   type HeroRecipe,
 } from "./common";
-import { markLines, pixelPanel, textRows } from "./pixels";
+import { MARK_PROUD, markLines, pixelPanel, textRows } from "./pixels";
 
 /** A status light that says trouble, and a tool's red handle. */
 const STATUS_RED: Rgb = [1.0, 0.15, 0.1];
@@ -68,54 +68,154 @@ const ORIGIN: Frame = frameAt([0, 0, 0], 0);
 
 // --- The big gun ---------------------------------------------------
 
-/** The big gun's shell: a dark gunmetal grey, darker than any look's metal. */
-const GUN_GREY: Rgb = [0.2, 0.2, 0.22];
+/** The big gun's shell: a neutral silver-grey, as the original's sprites. */
+const GUN_SILVER: Rgb = [0.6, 0.61, 0.63];
 
-/** The big gun's core window and muzzle glow: a vivid plasma green. */
+/** Its dark parts: the muzzle housing, the vent core, the grip, seams and bolts. */
+const GUN_DARK: Rgb = [0.16, 0.16, 0.17];
+
+/** The power cylinders along the body's top: a brighter silver. */
+const GUN_CELL: Rgb = [0.72, 0.73, 0.75];
+
+/** The light vent slats behind the muzzle housing and the badge's letters. */
+const GUN_SLAT: Rgb = [0.82, 0.82, 0.84];
+
+/** The copper accents on the frame and the body. */
+const GUN_COPPER: Rgb = [0.55, 0.33, 0.16];
+
+/** The black cable that loops from the rear frame. */
+const GUN_CABLE: Rgb = [0.06, 0.06, 0.06];
+
+/** The big gun's plasma glow, in its muzzle and its vents: a vivid green. */
 const CORE_GREEN: Rgb = [0.25, 0.95, 0.3];
 
 /** The rubber pads a gun rests on, on the rack and the bench: a worn brown-grey. */
 const PAD_RUBBER: Rgb = [0.35, 0.31, 0.27];
 
-/** The big gun's overall length, stock to muzzle, in metres. */
+/** The big gun's overall length, rear frame to muzzle, in metres. */
 const GUN_LENGTH = 1.3;
 /** The body's depth (back to front) and height, in metres. */
 const GUN_DEPTH = 0.22;
 const GUN_HEIGHT = 0.3;
-/** The stock's length at the rear, its height band above `h0` and its depth. */
+/** The rear frame's length and how far above `h0` its lower rail's belly sits. */
 const STOCK_LEN = 0.2;
 const STOCK_H0 = 0.05;
-const STOCK_H1 = 0.25;
-const STOCK_DEPTH = 0.14;
-/** The body's length after the stock; the square barrel takes the rest. */
+/** The body's length after the rear frame; the vents and the muzzle housing take the rest. */
 const BODY_LEN = 0.6;
-/** The square barrel's side and its vent collars' side, in metres. */
+/** The muzzle housing's ribs' diameter: the gun's full depth. */
 const BARREL_SIDE = 0.22;
-const COLLAR_SIDE = 0.25;
-/** The core window on the body's front: its span along the body and its margins. */
-const WINDOW_A0 = 0.1;
-const WINDOW_A1 = 0.52;
-const WINDOW_H0 = 0.06;
-const WINDOW_H1 = 0.24;
-/** How far the window's dark bezel stands proud of the body's front. */
-const BEZEL_T = 0.012;
 /** The grip's top point along the body (from the body's rear), and how far it hangs. */
 const GRIP_AT = 0.12;
 /** How far the grip hangs below the gun's belly: every support keeps this clear. */
 const GRIP_DROP = 0.14;
-/** Where the barrel's rest sits along it, between its first two vent collars. */
+/** Where the front rest sits along the vents and the housing, under a slat and a rib. */
 const BARREL_REST = 0.165;
-/** The vent collars' places along the barrel. */
-const COLLARS: readonly number[] = [0.08, 0.25, 0.42];
 /** A gun rest's half width along `a`. */
 const REST_HALF = 0.06;
 
 /**
+ * The big gun's measures past the constants above, in metres, along `a`
+ * from the part's start (`aStart`, `aBody` or `aBarrel`) and in height
+ * from `h0`; `d` is out from the gun's middle `dc`:
+ * - `frame`: the open rear frame: the lower `rail` (`d` half, height
+ *   band), the `butt` plate at the very rear, the rear `upright` from its
+ *   foot to its head, the `top` rail from the upright forward into the
+ *   body, and the diagonal `brace` across them, every bar `bar` wide and
+ *   `barHalf` thick; `copper` the two accent bands on the lower rail;
+ * - `cable`: the black cable looping back from the top rail, its points
+ *   and width, beside the frame at `d`;
+ * - `body`: the body's height and bevel; `cells`: the two power
+ *   cylinders along its top edges, `d` out, height, radius, their span
+ *   from before the body's rear to past its front, and their dark end
+ *   caps; `trough`: the dark strip between them;
+ * - `flank`: on the body's front face: the seam lines (`seamH`, `seamA`,
+ *   `seamHalf`), the bolt heads (`bolts`, `bolt` half side, `boltProud`),
+ *   the red light in its bezel (`light`) and the copper strip
+ *   (`copper`), and the badge plate (`badge`);
+ * - `vents`: the dark vent core's half side and length, the light slats
+ *   (`slats` of them, `slat` thick, spaced `pitch` from `first`) out to
+ *   the gun's full depth, and the green glow between them, `glowHalf`
+ *   tall;
+ * - `housing`: the round muzzle housing from `start`, its radius, the
+ *   three silver `ribs` (`rib` long, out to `BARREL_SIDE`), the thick
+ *   `lip` round the muzzle, the dark `aperture` inside it and the green
+ *   `glow` in its middle, each 8 mm proud of the one round it, so the
+ *   steps hold in the depth buffer across a hall.
+ */
+const GUN = {
+  frame: {
+    rail: { half: 0.045, h0: STOCK_H0, h1: 0.1 },
+    butt: { len: 0.04, half: 0.07, h0: STOCK_H0, h1: 0.2 },
+    upright: [
+      [0.03, 0.08],
+      [0.1, 0.27],
+    ],
+    top: { a0: 0.08, h0: 0.25, h1: 0.28 },
+    brace: [
+      [0.06, 0.1],
+      [0.19, 0.25],
+    ],
+    bar: 0.035,
+    barHalf: 0.025,
+    copper: [0.06, 0.13],
+  },
+  cable: {
+    points: [
+      [0.15, 0.265],
+      [0.07, 0.29],
+      [0.02, 0.255],
+      [0.025, 0.18],
+    ],
+    width: 0.018,
+    d0: 0.02,
+    d1: 0.038,
+  },
+  body: { h1: 0.23, bevel: 0.025 },
+  cells: { d: 0.057, h: 0.24, r: 0.05, a0: -0.02, a1: 0.04, cap: 0.015 },
+  trough: { in: 0.05, half: 0.02, h1: 0.25 },
+  flank: {
+    seamH: 0.08,
+    seamA: [0.2, 0.42],
+    seamHalf: 0.004,
+    bolts: [
+      [0.03, 0.03],
+      [0.03, 0.2],
+      [0.57, 0.03],
+      [0.57, 0.2],
+    ],
+    bolt: 0.008,
+    boltProud: 0.006,
+    light: { a: 0.3, h: 0.17, half: 0.016, bezel: 0.026, proud: 0.008 },
+    copper: { a0: 0.06, a1: 0.18, h0: 0.03, h1: 0.045, proud: 0.004 },
+    badge: { a0: 0.44, a1: 0.56, h0: 0.12, h1: 0.165, proud: 0.004 },
+  },
+  vents: {
+    half: 0.09,
+    len: 0.165,
+    slats: 5,
+    slat: 0.014,
+    first: 0.015,
+    pitch: 0.033,
+    glowHalf: 0.06,
+  },
+  housing: {
+    start: 0.16,
+    r: 0.1,
+    ribs: [0.175, 0.24, 0.305],
+    rib: 0.025,
+    lip: { len: 0.04, r: BARREL_SIDE / 2 },
+    aperture: { len: 0.05, r: 0.07 },
+    glow: { len: 0.05, r: 0.04 },
+  },
+} as const;
+
+/**
  * Where the big gun's three rests go for a gun placed with `bigGun(k, s,
- * a0, a1, ..., h0)`: under the stock, under the body's front end and under
- * the barrel, each with the height its top must reach to carry the gun
- * there. Every rest is `REST_HALF` either side of its `a` and stays clear
- * of the grip, which hangs between the stock rest and the body rest.
+ * a0, a1, ..., h0)`: under the rear frame's lower rail, under the body's
+ * front end and under the vents and the housing's first rib, each with
+ * the height its top must reach to carry the gun there. Every rest is
+ * `REST_HALF` either side of its `a` and stays clear of the grip, which
+ * hangs between the rear rest and the body rest.
  */
 export function gunRests(
   a0: number,
@@ -134,19 +234,25 @@ export function gunRests(
 }
 
 /**
- * The big green gun: an oversized energy weapon lying along `a`, the same
- * part sizes wherever it is called (only its placement moves). It is
- * `GUN_LENGTH` long, centred between `a0` and `a1`, and its body
+ * The big gun: an oversized silver-grey energy weapon lying along `a`,
+ * the same part sizes wherever it is called (only its placement moves).
+ * It is `GUN_LENGTH` long, centred between `a0` and `a1`, and
  * `GUN_DEPTH` deep, centred between `d0` and `d1` (the caller keeps both
  * spans at least that long; nothing is stretched to fill them), and
- * `GUN_HEIGHT` tall from `h0`. From
- * the rear: a narrower stock, a bulky bevelled body with a large glowing
- * green core window on its front face in a dark bezel and a dark spine rib
- * on top, and a long square barrel with three vent collars, dark vent
- * slots between them and a green glow in its muzzle. A raked dark grip
- * hangs `GRIP_DROP` under the body's rear; `gunRests` says where supports
- * go to miss it. The window and the muzzle are blink group 0 (the kind's
- * breathe bank).
+ * `GUN_HEIGHT` tall from `h0`. From the rear: an open frame instead of a
+ * stock (a lower rail with two copper bands, a dark butt plate, a rear
+ * upright, a top rail and a diagonal brace) with a black cable looping
+ * back from its top; a bevelled body with two power cylinders along its
+ * top edges and a dark trough between them, and on its front face seam
+ * lines, four bolt heads, a red light in a dark bezel, a copper strip and
+ * a small dark badge plate with the gun's letters (`MARKS.gunBadge`); a
+ * band of light vent slats round a dark core with green glowing slots
+ * between them; and a round dark muzzle housing with three silver ribs,
+ * a thick silver lip and a dark round aperture with the green glow in its
+ * middle. A raked dark grip hangs `GRIP_DROP` under the body's rear;
+ * `gunRests` says where supports go to miss it. The vents' slots and the
+ * muzzle glow are blink group 0 (the kind's breathe bank); the red light
+ * is steady.
  */
 export function bigGun(
   k: Kit,
@@ -161,74 +267,25 @@ export function bigGun(
   const aBody = aStart + STOCK_LEN;
   const aBarrel = aBody + BODY_LEN;
   const aEnd = aStart + GUN_LENGTH;
-  const dBack = (d0 + d1) / 2 - GUN_DEPTH / 2;
-  const dFront = dBack + GUN_DEPTH;
-  const dc = (dBack + dFront) / 2;
-  const hTop = h0 + GUN_HEIGHT;
+  const dc = (d0 + d1) / 2;
+  const dBack = dc - GUN_DEPTH / 2;
+  const dFront = dc + GUN_DEPTH / 2;
   const hc = h0 + GUN_HEIGHT / 2;
-  const shell = s.tinted(GUN_GREY);
-  const core = s.blink(CORE_GREEN, 0);
+  const silver = s.tinted(GUN_SILVER);
+  const dark = s.tinted(GUN_DARK);
+  const copper = s.tinted(GUN_COPPER);
+  const glow = s.blink(CORE_GREEN, 0);
+  /** A bar between two `[a, h]` points of the frame, `GUN.frame.bar` wide. */
+  const bar = (p: readonly number[], q: readonly number[], w: number) =>
+    tiltedBar(
+      aStart + ((p[0] ?? 0) + (q[0] ?? 0)) / 2,
+      h0 + ((p[1] ?? 0) + (q[1] ?? 0)) / 2,
+      Math.atan2((q[1] ?? 0) - (p[1] ?? 0), (q[0] ?? 0) - (p[0] ?? 0)),
+      Math.hypot((q[1] ?? 0) - (p[1] ?? 0), (q[0] ?? 0) - (p[0] ?? 0)),
+      w,
+    );
 
-  k.bevelBox(
-    aStart,
-    aBody + 0.02,
-    dc - STOCK_DEPTH / 2,
-    dc + STOCK_DEPTH / 2,
-    h0 + STOCK_H0,
-    h0 + STOCK_H1,
-    HOUSING_BEVEL,
-    shell,
-  );
-  k.bevelBox(aBody, aBarrel, dBack, dFront, h0, hTop, 0.025, shell);
-  k.box(
-    aBody + 0.1,
-    aBarrel - 0.08,
-    dc - 0.04,
-    dc + 0.04,
-    hTop,
-    hTop + 0.025,
-    s.dark,
-  );
-  k.box(
-    aBody + WINDOW_A0 - 0.025,
-    aBody + WINDOW_A1 + 0.025,
-    dFront,
-    dFront + BEZEL_T,
-    h0 + WINDOW_H0 - 0.025,
-    h0 + WINDOW_H1 + 0.025,
-    s.dark,
-  );
-  k.panel(
-    aBody + WINDOW_A0,
-    aBody + WINDOW_A1,
-    dFront + BEZEL_T + DECAL_LIFT,
-    h0 + WINDOW_H0,
-    h0 + WINDOW_H1,
-    core,
-  );
-
-  const b = BARREL_SIDE / 2;
-  const c = COLLAR_SIDE / 2;
-  k.box(aBarrel, aEnd - 0.005, dc - b, dc + b, hc - b, hc + b, shell);
-  const collars = COLLARS.map((t) => aBarrel + t);
-  for (const a of collars)
-    k.box(a - 0.02, a + 0.02, dc - c, dc + c, hc - c, hc + c, s.dark);
-  for (let i = 0; i + 1 < collars.length; i++) {
-    const [ca, cb] = [collars[i] ?? 0, collars[i + 1] ?? 0];
-    for (const t of [0.35, 0.65]) {
-      const a = ca + (cb - ca) * t;
-      k.panel(
-        a - 0.008,
-        a + 0.008,
-        dc + b + DECAL_LIFT,
-        hc - 0.07,
-        hc + 0.07,
-        s.dark,
-      );
-    }
-  }
-  k.box(aEnd - 0.03, aEnd, dc - 0.07, dc + 0.07, hc - 0.07, hc + 0.07, core);
-
+  // The grip first: the workshop test finds it as the gun's lowest part.
   const gripTopA = aBody + GRIP_AT;
   const gripFootA = gripTopA - 0.06;
   const gripFootH = h0 - GRIP_DROP + 0.015;
@@ -243,8 +300,232 @@ export function bigGun(
     ),
     dc - 0.03,
     dc + 0.03,
-    s.dark,
+    dark,
   );
+
+  const F = GUN.frame;
+  k.bevelBox(
+    aStart,
+    aBody + 0.02,
+    dc - F.rail.half,
+    dc + F.rail.half,
+    h0 + F.rail.h0,
+    h0 + F.rail.h1,
+    0.01,
+    silver,
+  );
+  k.bevelBox(
+    aStart,
+    aStart + F.butt.len,
+    dc - F.butt.half,
+    dc + F.butt.half,
+    h0 + F.butt.h0,
+    h0 + F.butt.h1,
+    0.01,
+    dark,
+  );
+  const [u0 = [0, 0], u1 = [0, 0]] = F.upright;
+  const [b0 = [0, 0], b1 = [0, 0]] = F.brace;
+  k.extrude(bar(u0, u1, F.bar), dc - F.barHalf, dc + F.barHalf, silver);
+  k.box(
+    aStart + F.top.a0,
+    aBody + 0.02,
+    dc - F.barHalf,
+    dc + F.barHalf,
+    h0 + F.top.h0,
+    h0 + F.top.h1,
+    silver,
+  );
+  k.extrude(bar(b0, b1, F.bar), dc - F.barHalf, dc + F.barHalf, silver);
+  for (const a of F.copper)
+    k.box(
+      aStart + a - 0.012,
+      aStart + a + 0.012,
+      dc - F.rail.half - 0.004,
+      dc + F.rail.half + 0.004,
+      h0 + F.rail.h0 + 0.004,
+      h0 + F.rail.h1 - 0.004,
+      copper,
+    );
+  const C = GUN.cable;
+  for (let i = 0; i + 1 < C.points.length; i++) {
+    const [p, q] = [C.points[i], C.points[i + 1]];
+    if (!p || !q) continue;
+    k.extrude(bar(p, q, C.width), dc + C.d0, dc + C.d1, s.tinted(GUN_CABLE));
+  }
+
+  const B = GUN.body;
+  k.bevelBox(aBody, aBarrel, dBack, dFront, h0, h0 + B.h1, B.bevel, silver);
+  const Ce = GUN.cells;
+  for (const sg of [-1, 1]) {
+    const d = dc + sg * Ce.d;
+    const h = h0 + Ce.h;
+    k.cylinderAlong(
+      aBody + Ce.a0,
+      aBarrel + Ce.a1,
+      d,
+      h,
+      Ce.r,
+      10,
+      s.tinted(GUN_CELL),
+    );
+    // The caps reach a few millimetres past the cylinder's ends, so no
+    // end face shares a plane with the cylinder's own.
+    for (const a of [aBody + Ce.a0 - 0.004, aBarrel + Ce.a1 + 0.004 - Ce.cap])
+      k.cylinderAlong(a, a + Ce.cap, d, h, Ce.r + 0.003, 10, dark);
+  }
+  const T = GUN.trough;
+  k.box(
+    aBody + T.in,
+    aBarrel - T.in,
+    dc - T.half,
+    dc + T.half,
+    h0 + B.h1 - 0.005,
+    h0 + T.h1,
+    dark,
+  );
+
+  const Fl = GUN.flank;
+  const face = dFront + DECAL_LIFT;
+  k.panel(
+    aBody + B.bevel,
+    aBarrel - B.bevel,
+    face,
+    h0 + Fl.seamH - Fl.seamHalf,
+    h0 + Fl.seamH + Fl.seamHalf,
+    dark,
+  );
+  for (const a of Fl.seamA)
+    k.panel(
+      aBody + a - Fl.seamHalf,
+      aBody + a + Fl.seamHalf,
+      face,
+      h0 + B.bevel,
+      h0 + B.h1 - B.bevel,
+      dark,
+    );
+  for (const [a, h] of Fl.bolts)
+    k.box(
+      aBody + a - Fl.bolt,
+      aBody + a + Fl.bolt,
+      dFront - 0.002,
+      dFront + Fl.boltProud,
+      h0 + h - Fl.bolt,
+      h0 + h + Fl.bolt,
+      dark,
+    );
+  const Li = Fl.light;
+  k.box(
+    aBody + Li.a - Li.bezel,
+    aBody + Li.a + Li.bezel,
+    dFront - 0.002,
+    dFront + Li.proud / 2,
+    h0 + Li.h - Li.bezel,
+    h0 + Li.h + Li.bezel,
+    dark,
+  );
+  k.box(
+    aBody + Li.a - Li.half,
+    aBody + Li.a + Li.half,
+    dFront,
+    dFront + Li.proud,
+    h0 + Li.h - Li.half,
+    h0 + Li.h + Li.half,
+    s.signal(STATUS_RED),
+  );
+  const Cu = Fl.copper;
+  k.box(
+    aBody + Cu.a0,
+    aBody + Cu.a1,
+    dFront - 0.002,
+    dFront + Cu.proud,
+    h0 + Cu.h0,
+    h0 + Cu.h1,
+    copper,
+  );
+  const Bd = Fl.badge;
+  k.box(
+    aBody + Bd.a0,
+    aBody + Bd.a1,
+    dFront - 0.002,
+    dFront + Bd.proud,
+    h0 + Bd.h0,
+    h0 + Bd.h1,
+    dark,
+  );
+  markLines(
+    k,
+    MARKS.gunBadge,
+    [
+      aBody + Bd.a0 + 0.008,
+      aBody + Bd.a1 - 0.008,
+      h0 + Bd.h0 + 0.006,
+      h0 + Bd.h1 - 0.006,
+    ],
+    dFront + Bd.proud + MARK_PROUD,
+    s.tinted(GUN_SLAT),
+  );
+
+  const V = GUN.vents;
+  k.box(
+    aBarrel - 0.005,
+    aBarrel + V.len,
+    dc - V.half,
+    dc + V.half,
+    hc - V.half,
+    hc + V.half,
+    dark,
+  );
+  const r = BARREL_SIDE / 2;
+  const slats = Array.from(
+    { length: V.slats },
+    (_, i) => aBarrel + V.first + i * V.pitch,
+  );
+  for (const a of slats)
+    k.box(a, a + V.slat, dc - r, dc + r, hc - r, hc + r, s.tinted(GUN_SLAT));
+  for (let i = 0; i + 1 < slats.length; i++) {
+    const [p = 0, q = 0] = [slats[i], slats[i + 1]];
+    k.panel(
+      p + V.slat + 0.004,
+      q - 0.004,
+      dc + V.half + DECAL_LIFT,
+      hc - V.glowHalf,
+      hc + V.glowHalf,
+      glow,
+    );
+  }
+
+  const Ho = GUN.housing;
+  k.cylinderAlong(
+    aBarrel + Ho.start,
+    aEnd - Ho.lip.len,
+    dc,
+    hc,
+    Ho.r,
+    16,
+    dark,
+  );
+  for (const a of Ho.ribs)
+    k.cylinderAlong(aBarrel + a, aBarrel + a + Ho.rib, dc, hc, r, 16, silver);
+  k.cylinderAlong(
+    aEnd - Ho.lip.len,
+    aEnd - 0.016,
+    dc,
+    hc,
+    Ho.lip.r,
+    16,
+    silver,
+  );
+  k.cylinderAlong(
+    aEnd - Ho.aperture.len,
+    aEnd - 0.008,
+    dc,
+    hc,
+    Ho.aperture.r,
+    16,
+    s.tinted(GUN_CABLE),
+  );
+  k.cylinderAlong(aEnd - Ho.glow.len, aEnd, dc, hc, Ho.glow.r, 12, glow);
 }
 
 // --- The workbench ---------------------------------------------------
@@ -525,8 +806,8 @@ const CRADLE_TALL = 0.12;
  * `RACK_BACK_H1`, the width less 0.05 m each side) carries three rubber
  * cradle brackets at `gunRests`, and `bigGun` lies across them along `a`
  * from `RACK_GUN_A0` to `RACK_GUN_A1`, its grip hanging free between two
- * of them in front of the board. The gun's core blinks group 0 of the
- * breathe bank.
+ * of them in front of the board. The gun's vent slots and muzzle glow
+ * blink group 0 of the breathe bank.
  */
 const gunRack: HeroRecipe = ({ k, s, variant, kind }) => {
   const { hw } = heroHalf(kind, variant);
@@ -592,7 +873,8 @@ const BENCH_MARK: readonly [number, number, number, number] = [
  * rubber pads at `gunRests`, its belly `BENCH_GUN_LIFT` above the top so
  * the grip hangs clear, and a few tool silhouettes (a handle and a head
  * each) on the pegboard. The bench's left end, the catalogue's surface,
- * is left clear. The gun's core blinks group 0 of the breathe bank.
+ * is left clear. The gun's vent slots and muzzle glow blink group 0 of
+ * the breathe bank.
  */
 const gunBench: HeroRecipe = ({ k, s, variant, kind }) => {
   const { hw, d1 } = heroHalf(kind, variant);
