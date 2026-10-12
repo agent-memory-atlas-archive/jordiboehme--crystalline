@@ -480,7 +480,7 @@ fn carry_team_state(
     match copied {
         Ok(()) => Ok(Some(to)),
         Err(e) => {
-            let _ = std::fs::remove_dir_all(&staging);
+            let _ = crystalline_core::tree::remove_tree(&staging);
             if e.kind() == std::io::ErrorKind::AlreadyExists && to.exists() {
                 return Err(taken());
             }
@@ -624,7 +624,7 @@ pub async fn merge_into(
     if !registered.is_empty() || !github_carried.is_empty() {
         if let Err(e) = crystalline_core::config::save_yaml(&loaded.path, &file) {
             for (_, to) in &carried {
-                let _ = std::fs::remove_dir_all(to);
+                let _ = crystalline_core::tree::remove_tree(to);
             }
             return Err(e.into());
         }

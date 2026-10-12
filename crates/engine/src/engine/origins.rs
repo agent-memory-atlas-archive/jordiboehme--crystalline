@@ -3165,7 +3165,7 @@ impl Engine {
             // it is the one resolver in this file that does. Every other one
             // reaching a real machine path costs a test a read; this one is
             // reached by `journal_remove_domain`, which is
-            // `std::fs::remove_dir_all` under `<state_dir>/overlays/<domain>`.
+            // `crystalline_core::tree::remove_tree` under `<state_dir>/overlays/<domain>`.
             // A fixture that forgot [`Engine::with_state_dir`] would delete a
             // developer's own drafts by domain name, silently (the sweep is
             // best effort) and unrecoverably (the journal is the only copy of a

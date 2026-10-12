@@ -1243,10 +1243,8 @@ pub async fn disconnect_within(
     })
     .map_err(store_error)?;
     store.delete().map_err(store_error)?;
-    match std::fs::remove_dir_all(&host_dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(SignInError::Store(e.to_string())),
+    if let Err(e) = crystalline_core::tree::remove_tree(&host_dir) {
+        return Err(SignInError::Store(e.to_string()));
     }
     Ok(Some(Disconnected {
         name: source.name,
@@ -1436,7 +1434,7 @@ fn save(
                 );
             }
             if !host_dir_was_there {
-                let _ = std::fs::remove_dir_all(&host_dir);
+                let _ = crystalline_core::tree::remove_tree(&host_dir);
             }
             return Err(store_error(e));
         }

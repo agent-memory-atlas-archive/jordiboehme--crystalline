@@ -1036,7 +1036,7 @@ impl Engine {
         // Counted here and not after the sweep, and here rather than below the
         // registry step: the files overlay is only walked for a domain that
         // reviews changes, and one line further down this domain is not
-        // registered at all. The journal's own `remove_dir_all` takes these
+        // registered at all. The journal's own `remove_tree` takes these
         // files with the drafts by construction, so what is missing without
         // this line is the NUMBER - a removal that swept files it never
         // mentioned in front of the person who confirmed it.

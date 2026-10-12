@@ -23,7 +23,7 @@
 //! files they wrote drafting them are one person's private work with one
 //! lifetime, so putting this tree under
 //! `crate::overlay_journal::actor_dir` makes the removals agree by
-//! construction: `journal_remove_domain`'s single `remove_dir_all` takes the
+//! construction: `journal_remove_domain`'s single `remove_tree` takes the
 //! files with the drafts, and there is no second sweep for a later caller to
 //! forget. The two trees cannot collide, and the reason is worth stating on
 //! both sides. The journal's walk keeps only `.md` and `.md.tombstone`; an
@@ -425,10 +425,10 @@ pub(crate) fn by_actor(state_dir: &Path, domain: &str) -> DomainFiles {
 pub(crate) fn remove_actor(state_dir: &Path, domain: &str, actor: &str) -> io::Result<u64> {
     let dir = files_dir(state_dir, domain, actor)?;
     let held = entries(state_dir, domain, actor).entries.len() as u64;
-    match std::fs::remove_dir_all(&dir) {
-        Ok(()) => Ok(held),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
-        Err(e) => Err(e),
+    match crystalline_core::tree::remove_tree(&dir) {
+        Ok(true) => Ok(held),
+        Ok(false) => Ok(0),
+        Err(e) => Err(e.into()),
     }
 }
 

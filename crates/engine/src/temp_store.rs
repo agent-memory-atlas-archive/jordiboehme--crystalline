@@ -116,11 +116,8 @@ pub fn sweep(dir: &Path) -> SweepReport {
             continue;
         }
         let size = dir_size(&path, meta.is_dir());
-        let removed = if meta.is_dir() {
-            std::fs::remove_dir_all(&path).is_ok()
-        } else {
-            std::fs::remove_file(&path).is_ok()
-        };
+        // A link is removed as the link, never walked into.
+        let removed = matches!(crystalline_core::tree::remove_tree(&path), Ok(true));
         if removed {
             report.removed += 1;
             report.bytes += size;
