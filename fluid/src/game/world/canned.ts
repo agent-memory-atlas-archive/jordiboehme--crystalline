@@ -47,10 +47,11 @@
  *
  * `heroHallRoom` (H15) is the gallery's second hand-built room, for the
  * `?hall=heroes` dev route: one of every hero kind and variant, hand-placed
- * in a 23 by 24 hall with no fixture but the placard, one round table that
- * carries the 2.6d curios, and no props, so nothing competes with a hero
- * for a screenshot. It holds one of every curio kind and variant,
- * hand-placed on the hero and round-table surfaces they fit
+ * in a 23 by 24 hall with no fixture but the placard, four round tables
+ * and a lab island that carry the curios, and no props, so nothing
+ * competes with a hero for a screenshot. It holds one of every curio kind
+ * and variant, hand-placed on the hero, round-table and island surfaces
+ * they fit
  * (`heroHallCurios`, `row`), for the `?at=prop:<kind>:<n>` shots that frame
  * them close and tilted (`spotView` in `dev/spots.ts`). `row` lays each row
  * along its host's local `a` axis, the wall-parallel one, whatever its own
@@ -1317,11 +1318,12 @@ const HERO_HALL_ISLAND: readonly [number, number] = [2, 18.5];
  * heroes keep.
  *
  * No fixture but the placard, which tells the visitor how to frame one hero
- * at a time (`?AT=PROP:KIND:N`); three round tables at turn 0
+ * at a time (`?AT=PROP:KIND:N`); four round tables at turn 0
  * (`HERO_HALL_TABLES`), the first at (20, 16.5) carrying the 2.6d curios
- * and the other two the 0.25.1 ones, and no props, so nothing but the
- * heroes and those tables stands between the camera and what is being
- * judged. One
+ * and the other three the 0.25.1 ones, and the lab island
+ * (`HERO_HALL_ISLAND`) with the radio set; no props, so nothing but the
+ * heroes, those tables and the island stands between the camera and what
+ * is being judged. One
  * steady light zone per four by four block, as `galleryRoom`'s. The same
  * call gives the same room byte for byte.
  */
@@ -2357,8 +2359,8 @@ function heroHallCurios(seed: number, room: RoomSpec): Curio[] {
       [item("soot-puffs", 0), item("soot-puffs", 1)],
       2,
     ),
-    // 0.25.1: the second table's four places, each turned out from its
-    // centre, and the third table's south place.
+    // 0.25.1: the second and the third table's four places each, turned
+    // out from their centres.
     ...row(
       at("decor-round-table-0", 1),
       [item("floppy-disk", 0), item("lottery-ticket", 0)],

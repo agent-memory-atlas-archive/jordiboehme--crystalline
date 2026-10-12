@@ -47,8 +47,9 @@ const KIND_NAMES: ReadonlySet<string> = new Set<string>([
 /**
  * Every hero, curio and prop recipe file, `marks.ts`, the decal recipe
  * (`decals.ts`, whose stencils set deck and bay numbers and the airlock's
- * `CYCLE`) and the airlock's fittings (`interior/airlock.ts`, whose outer
- * hatch sets its stencil, M3 C24), raw, by path:
+ * `CYCLE`), the tool mark (`toolMark.ts`) and the airlock's fittings
+ * (`interior/airlock.ts`, whose outer hatch sets its stencil, M3 C24), raw,
+ * by path:
  * gathered by glob, so a batch file a later task adds is scanned without
  * anyone listing it. `pixels.ts` is left out (its glyph keys are the font,
  * not text drawn), and so are the tests.
@@ -60,6 +61,7 @@ const SOURCES = Object.fromEntries(
         "./models/{heroes,curios,props}/*.ts",
         "./models/marks.ts",
         "./models/decals.ts",
+        "./models/toolMark.ts",
         "./models/interior/airlock.ts",
         "./models/machines.ts",
         "./models/escape.ts",

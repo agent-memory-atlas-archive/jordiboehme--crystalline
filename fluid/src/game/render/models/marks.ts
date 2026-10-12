@@ -10,7 +10,8 @@
  * recipe since it is the original's image, not a logo or a text mark.
  *
  * The block-pixel font has capitals, lower-case letters, digits, the
- * space, the period, `&`, the hyphen and `<`, `=`, `>`, so a badge is set as the
+ * space, the period, `&`, `!`, `?`, the comma, the hyphen and `<`, `=`,
+ * `>`, so a badge is set as the
  * original sets it: in capitals, or in lower case where the original's
  * wordmark is lower case, and a number in numerals. A mark that is no
  * text (the round C, the signature, the planet badge, the computers'
@@ -85,7 +86,7 @@ export const MARKS = {
   radioNote: "Melmac?",
   /** The spray-painted tag on a rough room's wall (0.25.1 D-4). */
   sprayTag: "COWABUNGA!",
-  /** The six numbers of the lottery ticket, and later of the scribble, the plate and the hatch variant, each set on its own (0.25.1 D-2). */
+  /** The six numbers of the lottery ticket (`curios/office.ts`) and of the wall scribble and the door plate (`decals.ts`), each set on its own (0.25.1 D-2). */
   numbers: ["4", "8", "15", "16", "23", "42"],
 
   /** The eye panel's badge: two separate fields, not one block, "HAL" on the panel's own dark trim and "9000" on a blue field. */
