@@ -176,11 +176,14 @@ pub const EVOLVE_GUIDANCE: &str = "This queue changes nothing by itself. Present
 /// the lifecycle surface an agent tends while keeping knowledge honest, plus
 /// one engram's `tags`. `resource` and `source_version` are the source a piece
 /// of knowledge was taken from and the version of it that was read; a
-/// re-ingest moves both. Every other key is refused there, because identity
-/// (`permalink`, `title`, `type`), the record of when knowledge was captured
-/// (`recorded_at`) and the write provenance (`generated`) are owned by the
-/// tools that maintain them and a blind assignment would corrupt an address or
-/// a history. Bulk tag hygiene across a domain stays with `crystalline tags`.
+/// re-ingest moves both. `sources` lists every location the engram was
+/// distilled from, which a `$contains` filter finds it by, so an ingesting
+/// agent keeps it current as locations change. Every other key is refused
+/// there, because identity (`permalink`, `title`, `type`), the record of when
+/// knowledge was captured (`recorded_at`) and the write provenance
+/// (`generated`) are owned by the tools that maintain them and a blind
+/// assignment would corrupt an address or a history. Bulk tag hygiene across a
+/// domain stays with `crystalline tags`.
 pub const SETTABLE_FRONTMATTER_KEYS: &[&str] = &[
     "tags",
     "status",
@@ -190,6 +193,7 @@ pub const SETTABLE_FRONTMATTER_KEYS: &[&str] = &[
     "source_date",
     "resource",
     "source_version",
+    "sources",
     "salience",
     "verified",
     "evolve_ack",
@@ -197,8 +201,9 @@ pub const SETTABLE_FRONTMATTER_KEYS: &[&str] = &[
 
 /// The settable keys whose value is a list: `set_frontmatter` takes the whole
 /// new list as `values` and writes it as a block list, where every other key
-/// takes one `value`.
-pub const LIST_FRONTMATTER_KEYS: &[&str] = &["tags"];
+/// takes one `value`. `tags` folds each entry to the tag spelling; `sources`
+/// keeps each entry exactly as given.
+pub const LIST_FRONTMATTER_KEYS: &[&str] = &["tags", "sources"];
 
 /// [`SETTABLE_FRONTMATTER_KEYS`] rendered for an error message.
 fn settable_keys() -> String {

@@ -165,18 +165,21 @@ pub struct EditParams {
     /// set_frontmatter, which takes key and value instead.
     #[serde(default)]
     pub content: Option<String>,
-    /// The frontmatter field to assign, for set_frontmatter. tags takes values
-    /// (a list); status, valid_from, valid_to, stale_after, source_date,
-    /// resource, source_version, salience, verified and evolve_ack take value.
+    /// The frontmatter field to assign, for set_frontmatter. tags and sources
+    /// take values (a list); status, valid_from, valid_to, stale_after,
+    /// source_date, resource, source_version, salience, verified and
+    /// evolve_ack take value.
     /// No other key is settable here: type, title, permalink, recorded_at and
     /// the generated provenance block carry identity and provenance.
     #[serde(default)]
     pub key: Option<String>,
-    /// The whole new list, for set_frontmatter on tags (add a tag, remove a
-    /// tag, set tags): read the engram, then pass every tag it should carry.
-    /// Each is folded to lowercase-with-hyphens and deduplicated, and a tag
-    /// that cannot be folded is refused by name; an empty list removes the
-    /// key.
+    /// The whole new list, for set_frontmatter on tags or sources: read the
+    /// engram, then pass every entry it should carry. A tag is folded to
+    /// lowercase-with-hyphens and deduplicated, and a tag that cannot be
+    /// folded is refused by name. A location in sources is trimmed and kept
+    /// exactly as spelled, repeats kept once, and one whose JSON is over 1024
+    /// bytes is refused by its position, since a $contains filter could not
+    /// find it. An empty list removes the key.
     #[serde(default)]
     pub values: Option<Vec<String>>,
     /// The value to assign, for set_frontmatter. Omit it (or pass null) to

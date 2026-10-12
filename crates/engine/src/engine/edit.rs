@@ -819,6 +819,9 @@ impl Engine {
         // through to the refusal that names that set.
         if LIST_FRONTMATTER_KEYS.contains(&key) {
             return match (&p.values, value) {
+                // Each list key has its own writer: tags fold to the tag
+                // spelling, a location is kept exactly as given.
+                (Some(values), None) if key == "sources" => Self::set_sources_list(source, values),
                 (Some(values), None) => Self::set_tags(source, values),
                 _ => Err(EngineError::Invalid(format!(
                     "{key} is a list: pass the whole new list as values"
@@ -1010,6 +1013,39 @@ impl Engine {
         ))
     }
 
+    /// Replace an engram's whole `sources` list, the locations it was
+    /// distilled from, the list form of `set_frontmatter`. Each entry is
+    /// trimmed, blanks are dropped and repeats are kept once in first order.
+    /// The spelling is kept exactly: a `$contains` filter matches a location
+    /// byte for byte, so folding one would hide it. An entry the metadata
+    /// index cannot hold (its compact JSON over
+    /// [`crystalline_core::META_VALUE_MAX_BYTES`], measured with
+    /// [`crystalline_core::meta_value_text`] as the index measures it)
+    /// refuses the whole edit by its 1-based position in `values`, blanks
+    /// counted, the way verify's E011 counts elements. An empty list removes
+    /// the key.
+    fn set_sources_list(source: &str, values: &[String]) -> Result<String> {
+        let mut sources: Vec<String> = Vec::with_capacity(values.len());
+        for (i, raw) in values.iter().enumerate() {
+            let entry = raw.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            if crystalline_core::meta_value_text(&Value::String(entry.to_string())).is_none() {
+                return Err(EngineError::Invalid(format!(
+                    "sources element {} is too long for the metadata index, so a $contains filter could not find it",
+                    i + 1
+                )));
+            }
+            if !sources.iter().any(|s| s == entry) {
+                sources.push(entry.to_string());
+            }
+        }
+        Ok(crystalline_core::emit::set_frontmatter_list(
+            source, "sources", &sources,
+        ))
+    }
+
     fn require_content<'a>(&self, p: &'a EditParams) -> Result<&'a str> {
         p.content.as_deref().ok_or_else(|| {
             EngineError::Invalid(format!("operation '{}' requires content", p.operation))
@@ -1094,6 +1130,8 @@ mod settable_keys_tests {
         assert!(SETTABLE_FRONTMATTER_KEYS.contains(&"resource"));
         assert!(SETTABLE_FRONTMATTER_KEYS.contains(&"source_version"));
         assert!(SETTABLE_FRONTMATTER_KEYS.contains(&"tags"));
+        assert!(SETTABLE_FRONTMATTER_KEYS.contains(&"sources"));
+        assert!(LIST_FRONTMATTER_KEYS.contains(&"sources"));
         for key in LIST_FRONTMATTER_KEYS {
             assert!(
                 SETTABLE_FRONTMATTER_KEYS.contains(key),
@@ -1253,6 +1291,15 @@ mod list_keys_tests {
             .tags
     }
 
+    fn sources_of(source: &str) -> Vec<String> {
+        let parsed = crystalline_core::parse_engram(source).unwrap();
+        match parsed.frontmatter.extra.get("sources") {
+            None => Vec::new(),
+            Some(value) => serde_json::from_value(serde_json::to_value(value).unwrap())
+                .unwrap_or_else(|e| panic!("sources is not a list of strings ({e}): {source}")),
+        }
+    }
+
     #[test]
     fn a_tag_is_added_whatever_shape_the_old_tags_had() {
         for old in [
@@ -1348,5 +1395,130 @@ mod list_keys_tests {
             .expect_err("title")
             .to_string();
         assert!(e.contains("cannot set 'title'"), "{e}");
+    }
+
+    /// sources is a list key: the whole new list replaces the old one, in
+    /// every shape a hand or write_engram may have left it in (serde_yaml_ng
+    /// writes a metadata list without indent).
+    #[test]
+    fn a_location_is_added_and_dropped_whatever_shape_sources_had() {
+        for old in [
+            "sources:\n  - https://a.example\n",
+            "sources:\n- https://a.example\n",
+            "sources: [https://a.example]\n",
+            "sources: https://a.example\n",
+        ] {
+            let out = set_values(
+                &engram(old),
+                "sources",
+                &["https://a.example", "https://b.example"],
+            )
+            .unwrap();
+            assert_eq!(
+                sources_of(&out),
+                ["https://a.example", "https://b.example"],
+                "{old:?}: {out}"
+            );
+            assert!(
+                out.contains("sources:\n  - https://a.example\n  - https://b.example\n"),
+                "{old:?}: {out}"
+            );
+            let out = set_values(&out, "sources", &["https://b.example"]).unwrap();
+            assert_eq!(sources_of(&out), ["https://b.example"], "{old:?}: {out}");
+        }
+    }
+
+    #[test]
+    fn an_empty_sources_list_removes_the_key() {
+        let source = engram("sources:\n  - https://a.example\n");
+        for empty in [&[][..], &["", "   "][..]] {
+            let out = set_values(&source, "sources", empty).unwrap();
+            assert!(!out.contains("sources"), "{empty:?}: {out}");
+            crystalline_core::parse_engram(&out).unwrap();
+        }
+    }
+
+    /// Entries are trimmed, blanks dropped and repeats kept once in first
+    /// order, but never folded: a location is matched byte for byte.
+    #[test]
+    fn sources_are_trimmed_and_deduped_but_never_folded() {
+        let out = set_values(
+            &engram(""),
+            "sources",
+            &[
+                "  https://Example.com/A  ",
+                "",
+                "https://example.com/a",
+                "https://Example.com/A",
+                "notedown://jordi/n1/p0#b3",
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            sources_of(&out),
+            [
+                "https://Example.com/A",
+                "https://example.com/a",
+                "notedown://jordi/n1/p0#b3",
+            ],
+            "{out}"
+        );
+        // tags still fold: the dispatch is by key, not by "is a list".
+        let out = set_values(&engram(""), "tags", &["Retry Policy"]).unwrap();
+        assert_eq!(tags_of(&out), ["retry-policy"], "{out}");
+    }
+
+    /// A comma, a fragment, a query, a quote, a backslash and non-ASCII text
+    /// all survive the write as the exact same string.
+    #[test]
+    fn sources_keep_their_spelling_through_a_round_trip() {
+        let entries = [
+            "https://example.com/straße?a=1,2#x",
+            "github:acme/api:src/lib.rs",
+            "say \"hi\" \\ there",
+            "-leading-hyphen",
+            "trailing:",
+        ];
+        let out = set_values(&engram(""), "sources", &entries).unwrap();
+        assert_eq!(sources_of(&out), entries, "{out}");
+    }
+
+    /// The limit is the index's: the compact JSON text of the entry, quotes
+    /// and escapes included. The refusal names the position in the list the
+    /// caller sent, blanks counted, and stays on one line.
+    #[test]
+    fn a_sources_entry_is_measured_as_the_index_measures_it() {
+        let fits = "x".repeat(crystalline_core::META_VALUE_MAX_BYTES - 2);
+        let out = set_values(&engram(""), "sources", &[fits.as_str()]).unwrap();
+        assert_eq!(sources_of(&out), std::slice::from_ref(&fits));
+
+        let over = "x".repeat(crystalline_core::META_VALUE_MAX_BYTES - 1);
+        let quotes = "\"".repeat(600);
+        for (list, n) in [
+            (vec!["https://a.example", over.as_str()], 2),
+            (vec!["", "  ", quotes.as_str()], 3),
+        ] {
+            let e = set_values(&engram(""), "sources", &list)
+                .expect_err("over the index limit")
+                .to_string();
+            assert_eq!(
+                e,
+                format!(
+                    "sources element {n} is too long for the metadata index, so a $contains filter could not find it"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn value_on_sources_points_at_values() {
+        let p = params("sources", Some("https://a.example"), None);
+        let e = Engine::apply_set_frontmatter(&engram(""), &p, "t", "tester", None, None)
+            .expect_err("value on sources")
+            .to_string();
+        assert!(
+            e.contains("sources is a list: pass the whole new list as values"),
+            "{e}"
+        );
     }
 }
