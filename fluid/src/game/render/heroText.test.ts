@@ -263,7 +263,10 @@ function picturesFound(): Set<string> {
  * that holds a digit or a mark, or capitals and no lower case. Each literal
  * is cut out whole first and then tested against the class, so the code
  * between two literals is never taken for one. The class covers letters,
- * digits, spaces and the marks `.?<=>&!,:`.
+ * digits, spaces and the marks `.?<=>&!,:`. A literal of separators only
+ * (spaces, commas, colons, periods) is skipped; a literal of marks alone
+ * ("?", "<=>") is scanned. A literal inside a `${}` of a template is not
+ * scanned on its own; `textCalls.test.ts` covers what is drawn.
  */
 function scanLiterals(code: string): string[] {
   return [...code.matchAll(/"([^"\n]*)"|`([^`\n]*)`/g)]
@@ -271,7 +274,7 @@ function scanLiterals(code: string): string[] {
     .filter(
       (t) =>
         /^[A-Za-z0-9 .?<=>&!,:]+$/.test(t) &&
-        /[A-Za-z0-9]/.test(t) &&
+        !/^[ ,:.]+$/.test(t) &&
         (/[0-9?<=>&!,:]/.test(t) || (/[A-Z]/.test(t) && !/[a-z]/.test(t))),
     );
 }
@@ -284,7 +287,12 @@ describe("readable text in the recipes", () => {
     expect(found).toEqual(["FOO BAR!", "A, B"]);
   });
 
-  it("ignores a separator with no letter or digit", () => {
+  it("catches a literal of marks alone and ignores separators", () => {
+    // Mutation caught: a letter-or-digit requirement that hides "?" or "<=>".
+    expect(scanLiterals('const a = "?"; const b = "<=>";')).toEqual([
+      "?",
+      "<=>",
+    ]);
     expect(scanLiterals('const a = ", "; const b = ":";')).toEqual([]);
   });
 
