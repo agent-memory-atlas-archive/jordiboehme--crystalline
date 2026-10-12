@@ -581,6 +581,18 @@ impl Engine {
                         .unwrap_or_else(|| sha256_hex(current.as_bytes()));
                     let edited = apply(&current).map_err(SourceEditFailure::before)?;
                     if unchanged(&current, &edited) {
+                        // The store's compare and swap is never reached on
+                        // this return, so a checksum the caller presented is
+                        // compared here, exactly as the other arms compare it:
+                        // a stale one is refused even when nothing would change.
+                        if let Some(presented) = expected_checksum {
+                            let found = sha256_hex(current.as_bytes());
+                            if found != presented {
+                                return Err(SourceEditFailure::before(EngineError::Conflict(
+                                    stale_edit_message(presented, &found),
+                                )));
+                            }
+                        }
                         return Ok(nothing_written());
                     }
                     let edited = touch_generated(&edited, actor, model, now_offset());

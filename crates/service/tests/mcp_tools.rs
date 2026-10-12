@@ -5107,6 +5107,19 @@ async fn in_review_mode_set_frontmatter_sources_is_a_draft() {
     .await;
     let (client, _server) = h.connect().await;
     let peer = client.peer();
+    // A stale checksum is refused even when the edit would change nothing.
+    let err = call(
+        peer,
+        "edit_engram",
+        json!({
+            "domain": "eng", "identifier": "page", "operation": "set_frontmatter",
+            "key": "sources", "values": ["https://example.com/a"],
+            "expected_checksum": "0".repeat(64),
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("stale edit"), "{err}");
     // The list the page already holds, spelled the 0.25.1 way on disk: no
     // draft is written, so the caller's read is still the reviewed page.
     let out = call(

@@ -341,6 +341,15 @@ async fn unchanged_sources_edit(store: Arc<Mutex<dyn Store>>) {
         assert_eq!(after["checksum"], before["checksum"]);
         assert_eq!(after["content"], before["content"]);
     }
+    // A stale checksum is refused even when the edit would change nothing.
+    let mut stale = edit(
+        "sources",
+        &["notedown://jordi/n1/p0#b1", "notedown://jordi/n1/p0#b2"],
+    );
+    stale.expected_checksum = Some("0".repeat(64));
+    let err = engine.edit_engram(&stale).await.unwrap_err();
+    assert!(err.to_string().contains("stale edit"), "{err}");
+    assert_eq!(read().await["checksum"], before["checksum"]);
     let receipt = engine
         .edit_engram(&edit(
             "sources",
