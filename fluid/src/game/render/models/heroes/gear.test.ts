@@ -172,7 +172,7 @@ describe("the turntable's model", () => {
 
   it("reads the maker's name from the front, flat in the top's back left corner, at 3 mm pixels or more", () => {
     // Mutation caught: the name mirrored, read from the back, under the
-    // 3 mm floor, or run onto the platter.
+    // 3 mm floor, run onto the platter, or over the top's bevel.
     const ink = inked(parts, DECK_INK);
     expect(ink.length).toBeGreaterThan(0);
     const { rows, px } = cellsOf(ink, (q) => {
@@ -187,6 +187,8 @@ describe("the turntable's model", () => {
       expect(q[0]).toBeLessThanOrEqual(a1 + 1e-9);
       expect(q[1]).toBeGreaterThanOrEqual(d0 - 1e-9);
       expect(q[1]).toBeLessThanOrEqual(d1 + 1e-9);
+      expect(Math.abs(q[0])).toBeLessThanOrEqual(DECK.w / 2 - DECK.bevel);
+      expect(Math.abs(q[1])).toBeLessThanOrEqual(DECK.d / 2 - DECK.bevel);
       expect(q[2]).toBeGreaterThanOrEqual(PLATE - 1e-9);
       expect(Math.hypot(q[0] - PLATTER.a, q[1] - PLATTER.d)).toBeGreaterThan(
         PLATTER.r,

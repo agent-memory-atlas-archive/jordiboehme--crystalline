@@ -123,7 +123,8 @@ export const TABLE = {
  * The deck, in metres, at its true size (453 by 360 by 162 mm): `w` along
  * `a` and `d` deep, centred on the table. `feet` the round feet's height
  * and radius, `base` the rubber base's top over the feet, `plate` the
- * silver top over the table (the top face the parts stand on).
+ * silver top over the table (the top face the parts stand on), `bevel`
+ * the silver top's bevel, inside which its face is flat.
  */
 export const DECK = {
   w: 0.453,
@@ -131,6 +132,7 @@ export const DECK = {
   feet: { h: 0.018, r: 0.033 },
   base: 0.045,
   plate: 0.093,
+  bevel: 0.006,
 } as const;
 
 /**
@@ -198,9 +200,10 @@ const PITCH = {
 
 /**
  * The maker's name in the top's back left corner: the box it is fitted
- * in, `[a0, a1, d0, d1]` on the top, clear of the platter.
+ * in, `[a0, a1, d0, d1]` on the top, clear of the platter and inside the
+ * top's flat face, off its bevel (`DECK.bevel`).
  */
-export const DECK_MARK = [-0.22, -0.125, -0.178, -0.162] as const;
+export const DECK_MARK = [-0.22, -0.125, -0.172, -0.156] as const;
 
 /**
  * Lays `text` flat on a face that looks up at height `h`, fitted into
@@ -299,7 +302,7 @@ const turntable: HeroRecipe = ({ k, kitAt, s, variant, kind }) => {
     for (const d of [-1, 1])
       k.cylinder(a * (w - 0.04), d * (dd - 0.04), T, T + f.h, f.r, 12, rubber);
   k.bevelBox(-w, w, -dd, dd, T + f.h, T + DECK.base, 0.004, rubber);
-  k.bevelBox(-w, w, -dd, dd, T + DECK.base, P, 0.006, silver);
+  k.bevelBox(-w, w, -dd, dd, T + DECK.base, P, DECK.bevel, silver);
 
   // The platter, its strobe dots, the mat, the record and the spindle.
   const p = PLATTER;
