@@ -46,7 +46,11 @@ impl From<RemoveTreeError> for io::Error {
 /// Removes `path` and everything under it. Answers whether there was
 /// anything to remove: a path that is not there is success with `false`. A
 /// symlink, junction or redirected folder is removed as a link and its target
-/// is never touched or walked. The first failure stops the removal and names
+/// is never touched or walked. On unix this holds even against a folder
+/// swapped for a link during the removal, because std's walk opens every
+/// child with `openat` and `O_NOFOLLOW`. On Windows the walk is best effort
+/// there: a folder swapped for a junction between the check and the read is
+/// read through the junction. The first failure stops the removal and names
 /// a path: on Windows the one it happened at, on unix the folder that std's
 /// own walk was removing.
 pub fn remove_tree(path: &Path) -> Result<bool, RemoveTreeError> {
@@ -107,9 +111,10 @@ fn remove_regular_file(path: &Path) -> Result<(), RemoveTreeError> {
     remove_ignoring_missing(std::fs::remove_file(path), path)
 }
 
-/// Removes a file that is not a link. Windows refuses to delete a read-only
-/// file, where std's own folder removal ignores the attribute, so a refused
-/// file loses the attribute and is tried once more. Never called for a link:
+/// Removes a file that is not a link. Older std releases on Windows refuse to
+/// delete a read-only file, where std's own folder removal ignores the
+/// attribute; newer ones may delete it right away. When the call still
+/// refuses one, the file loses the attribute and is tried once more. Never called for a link:
 /// clearing the attribute through a link would change its target.
 #[cfg(windows)]
 fn remove_regular_file(path: &Path) -> Result<(), RemoveTreeError> {
