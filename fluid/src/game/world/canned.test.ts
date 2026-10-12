@@ -24,6 +24,7 @@ import {
   HERO_KINDS,
   faceCentre,
   heroEdges,
+  heroReserve,
   standsFree,
 } from "./heroes";
 import { blockersFor, PLAYER_RADIUS, spawnPlayer } from "./move";
@@ -562,6 +563,38 @@ describe("heroHallRoom", () => {
 
   it("is the same room on every call", () => {
     expect(JSON.stringify(heroHallRoom())).toBe(JSON.stringify(hall));
+  });
+
+  it("stands every round table clear of the heroes, the lanes and the other tables (0.25.1)", () => {
+    // Mutation caught: a table moved into a hero's reserve or onto a lane
+    // (the entrance lane up column 11), or two tables overlapping.
+    const tables = hall.decor.filter((d) => d.kind === "round-table");
+    expect(tables).toHaveLength(3);
+    const reserve = heroReserve(hall.heroes).boxes;
+    const heroBoxes = hall.heroes.flatMap((h) => {
+      const blocker = heroBlocker(h);
+      return blocker === null
+        ? [heroFootprint(h)]
+        : [blocker, heroFootprint(h)];
+    });
+    const lanes = dressingSites(hall).lanes;
+    const feet = tables.map((d) => {
+      const f = decorFootprint(d);
+      if (f === null) throw new Error("a round table has a footprint");
+      return f;
+    });
+    feet.forEach((f, i) => {
+      const at = `table ${String(i)}`;
+      for (const b of reserve)
+        expect(overlaps(f, b), `${at} reserve`).toBe(false);
+      for (const b of heroBoxes)
+        expect(overlaps(f, b), `${at} hero`).toBe(false);
+      for (const b of lanes) expect(overlaps(f, b), `${at} lane`).toBe(false);
+      feet.forEach((g, j) => {
+        if (j !== i)
+          expect(overlaps(f, g), `${at} table ${String(j)}`).toBe(false);
+      });
+    });
   });
 
   it("holds one of every curio kind and variant, each fitting its host's surface", () => {

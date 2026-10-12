@@ -905,8 +905,9 @@ export const DECOR_SURFACES = {
  * each lid, so each spot keeps inside the rim's inner edge (v0 at +-0.3085,
  * v1 at +-0.5, v2 at `a` -0.025 to 0.465 and `d` -0.465 to -0.035) and
  * inside the flat of each lid's bevel. The marked crate, which replaces a
- * crate now and then, carries none. `curios.test.ts` pins the heights and
- * the extents against the built mesh.
+ * crate now and then, carries none. `render/hostSurfaces.test.ts` pins
+ * the heights and the extents against the built mesh (its `PROP_SURFACES`
+ * loop, in a look that draws the rim).
  *
  * The bench (`render/models/props/floor.ts`'s `bench`) is a slab seat from
  * 0.42 m on two slab legs whose inner faces stand at `a` of +-0.59, open
