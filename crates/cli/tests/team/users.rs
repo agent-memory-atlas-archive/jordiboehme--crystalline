@@ -1260,8 +1260,10 @@ fn users_writes_refuses_a_slash() {
     );
     let refused = users_err(home.path(), &["writes", "bot", "open,agents-bot/"], None);
     assert!(
-        refused
-            .contains("'agents-bot/' is not a domain name or a name prefix with one * at the end"),
+        refused.contains(&format!(
+            "'agents-bot/' is not a domain name or a name prefix with one * at the end: {}",
+            crystalline_core::config::registration::DOMAIN_NAME_RULE
+        )),
         "{refused}"
     );
     for bad in ["*", "a*b*", "*agents"] {
@@ -1379,4 +1381,83 @@ fn users_list_shows_the_write_list() {
         json["users"][1]["writes"],
         serde_json::json!(["agents-bot", "team-*"])
     );
+}
+
+/// B-2: every editing form of `users writes` and `users add` answers JSON
+/// with --json, in the shape `users writes <name> --json` shows.
+#[test]
+fn users_writes_and_add_print_json() {
+    let home = tempfile::tempdir().unwrap();
+    let added: serde_json::Value = serde_json::from_str(&users_ok(
+        home.path(),
+        &[
+            "--json",
+            "add",
+            "bot",
+            "--mcp-token",
+            "bot",
+            "--role",
+            "editor",
+            "--writes",
+            "agents-bot",
+        ],
+        None,
+    ))
+    .unwrap();
+    assert_eq!(added["name"], "bot");
+    assert_eq!(added["writes"], serde_json::json!(["agents-bot"]));
+    assert!(added["token"].as_str().is_some());
+
+    let set: serde_json::Value = serde_json::from_str(&users_ok(
+        home.path(),
+        &["--json", "writes", "bot", "agents-bot,team-*"],
+        None,
+    ))
+    .unwrap();
+    assert_eq!(
+        set,
+        serde_json::json!({ "name": "bot", "writes": ["agents-bot", "team-*"] })
+    );
+
+    let cleared: serde_json::Value = serde_json::from_str(&users_ok(
+        home.path(),
+        &["--json", "writes", "bot", "--clear"],
+        None,
+    ))
+    .unwrap();
+    assert_eq!(
+        cleared,
+        serde_json::json!({ "name": "bot", "writes": null })
+    );
+
+    let ada: serde_json::Value = serde_json::from_str(&users_ok(
+        home.path(),
+        &[
+            "--json",
+            "add",
+            "ada",
+            "--role",
+            "viewer",
+            "--password-stdin",
+        ],
+        Some("pw12345678\n"),
+    ))
+    .unwrap();
+    assert_eq!(
+        ada,
+        serde_json::json!({ "name": "ada", "role": "viewer", "writes": null })
+    );
+}
+
+/// B-2: a 64-character stem with `*` is a valid prefix (a 64-character
+/// domain name is legal and matches it); a 65-character one is not.
+#[test]
+fn a_full_length_stem_with_a_star_is_accepted() {
+    let home = tempfile::tempdir().unwrap();
+    users_ok(home.path(), &["add", "bot", "--mcp-token", "bot"], None);
+    let stem = "a".repeat(64);
+    users_ok(home.path(), &["writes", "bot", &format!("{stem}*")], None);
+    let long = "a".repeat(65);
+    let refused = users_err(home.path(), &["writes", "bot", &format!("{long}*")], None);
+    assert!(refused.contains("is not a domain name"), "{refused}");
 }

@@ -22,16 +22,17 @@ use std::io::{IsTerminal, Read, Write};
 
 use anyhow::{Context, Result, bail};
 
-use crystalline_core::config::registration::{DOMAIN_NAME_RULE, validate_domain_name};
+use crystalline_core::config::registration::{
+    DOMAIN_NAME_RULE, MAX_DOMAIN_NAME_CHARS, validate_domain_name,
+};
 use crystalline_service::rest::{AuthStore, LINKED_BY_CLI, Role, User};
 use crystalline_service::write_list_matches;
 
 use crate::UsersCommand;
 
 /// Run one `users` subcommand against the auth database in the state
-/// directory. `json` switches `list` to machine-readable output; the editing
-/// commands always confirm in one human line, since there is nothing to
-/// script off beyond the exit code.
+/// directory. `json` switches `list`, `add` and `writes` to machine-readable
+/// output; the other editing commands confirm in one human line.
 pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
     let path = crystalline_core::config::web_auth_db_path()?;
     let store = AuthStore::open(&path).await?;
@@ -89,10 +90,7 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
             // An agent account must never stand without the list it was
             // created for: a failed list write takes the account back out.
             if let Some(entries) = &writes {
-                if let Err(e) = store.set_write_list(&name, entries).await {
-                    let _ = store.remove_user_force(&name).await;
-                    return Err(e.context("setting the write list; the account was not kept"));
-                }
+                keep_write_list_or_remove(&store, &name, entries).await?;
                 warn_unmatched(entries);
             }
             match issued {
@@ -106,12 +104,30 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
                             println!("Write list: {}.", entries.join(", "));
                         }
                     }
-                    print_issued_token(&issued, &stored_name(&name), json, None, Some(role));
+                    print_issued_token(
+                        &issued,
+                        &stored_name(&name),
+                        json,
+                        None,
+                        Some(role),
+                        writes.as_deref(),
+                    );
                 }
                 None => {
-                    println!("Added user '{}' with role {role}.", stored_name(&name));
-                    if let Some(entries) = &writes {
-                        println!("Write list: {}.", entries.join(", "));
+                    if json {
+                        crate::print_value(
+                            &serde_json::json!({
+                                "name": stored_name(&name),
+                                "role": role.to_string(),
+                                "writes": writes,
+                            }),
+                            true,
+                        );
+                    } else {
+                        println!("Added user '{}' with role {role}.", stored_name(&name));
+                        if let Some(entries) = &writes {
+                            println!("Write list: {}.", entries.join(", "));
+                        }
                     }
                 }
             }
@@ -224,14 +240,14 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
                 );
             } else if let Some(id) = rotate {
                 let issued = store.rotate_mcp_token(&name, id).await?;
-                print_issued_token(&issued, &stored_name(&name), json, Some(id), None);
+                print_issued_token(&issued, &stored_name(&name), json, Some(id), None, None);
             } else {
                 // The account must exist before a token is minted for it; the
                 // store says so itself, so a mistyped name is reported rather
                 // than silently issuing against nothing.
                 let label = label.unwrap_or_else(|| "cli".to_string());
                 let issued = store.issue_mcp_token(&name, &label).await?;
-                print_issued_token(&issued, &stored_name(&name), json, None, None);
+                print_issued_token(&issued, &stored_name(&name), json, None, None, None);
             }
         }
         UsersCommand::Writes {
@@ -242,15 +258,26 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
             let shown = stored_name(&name);
             if clear {
                 store.clear_write_list(&name).await?;
-                println!(
-                    "Removed the write list of '{shown}'. It writes wherever its role and \
-                     memberships allow."
-                );
+                if json {
+                    crate::print_value(&serde_json::json!({ "name": shown, "writes": null }), true);
+                } else {
+                    println!(
+                        "Removed the write list of '{shown}'. It writes wherever its role and \
+                         memberships allow."
+                    );
+                }
             } else if let Some(raw) = domains {
                 let entries = parse_write_list(&raw)?;
                 store.set_write_list(&name, &entries).await?;
                 warn_unmatched(&entries);
-                println!("Set the write list of '{shown}': {}.", entries.join(", "));
+                if json {
+                    crate::print_value(
+                        &serde_json::json!({ "name": shown, "writes": entries }),
+                        true,
+                    );
+                } else {
+                    println!("Set the write list of '{shown}': {}.", entries.join(", "));
+                }
             } else {
                 if store.user(&name).await?.is_none() {
                     bail!("no such user: '{shown}'");
@@ -403,6 +430,21 @@ async fn sweep_personal_credential(name: &str) {
     }
 }
 
+/// Store the write list of an account created a moment ago, and take the
+/// account back out when that fails: an agent account must never stand
+/// without the list it was created for.
+async fn keep_write_list_or_remove(
+    store: &AuthStore,
+    name: &str,
+    entries: &[String],
+) -> Result<()> {
+    if let Err(e) = store.set_write_list(name, entries).await {
+        let _ = store.remove_user_force(name).await;
+        return Err(e.context("setting the write list; the account was not kept"));
+    }
+    Ok(())
+}
+
 /// Print a freshly issued (or rotated) token, which is the one and only time
 /// anybody sees it, and say what to do with it.
 ///
@@ -419,6 +461,7 @@ fn print_issued_token(
     json: bool,
     replaced: Option<i64>,
     created_with_role: Option<Role>,
+    writes: Option<&[String]>,
 ) {
     if json {
         let mut object = serde_json::json!({
@@ -430,6 +473,7 @@ fn print_issued_token(
         if let Some(role) = created_with_role {
             object["name"] = account.into();
             object["role"] = role.to_string().into();
+            object["writes"] = serde_json::json!(writes);
         }
         crate::print_value(&object, true);
         eprintln!("{TOKEN_TEACHING}");
@@ -625,7 +669,10 @@ fn check_write_entry(entry: &str) -> Result<()> {
         Some(stem) => (stem, true),
         None => (entry, false),
     };
-    let probe = if prefix {
+    // A prefix is checked as the shortest name it can match, the stem plus
+    // one character. A stem already at the length limit can only match
+    // itself, so it is checked as it is.
+    let probe = if prefix && stem.chars().count() < MAX_DOMAIN_NAME_CHARS {
         format!("{stem}x")
     } else {
         stem.to_string()
@@ -710,4 +757,35 @@ fn read_password(from_stdin: bool, from_file: Option<&std::path::Path>) -> Resul
         bail!("the password is empty; pick one with at least one character");
     }
     Ok(password)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// B-2: when storing the list fails, the new account is removed again.
+    #[tokio::test]
+    async fn a_failed_write_list_takes_the_new_account_back_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AuthStore::open(&dir.path().join("web-auth.db"))
+            .await
+            .unwrap();
+        store
+            .add_token_only_user("bot", "bot", None, Role::Editor, "bot")
+            .await
+            .unwrap();
+        // The store refuses an empty list ("a write list needs at least one
+        // entry"), the one failure a test can cause without a broken file.
+        let err = keep_write_list_or_remove(&store, "bot", &[])
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("the account was not kept"),
+            "{err:#}"
+        );
+        assert!(
+            store.user("bot").await.unwrap().is_none(),
+            "the account is gone"
+        );
+    }
 }
