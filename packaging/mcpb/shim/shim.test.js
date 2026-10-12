@@ -113,11 +113,21 @@ test("an old Crystalline is reported with its path and version", () => {
 test("with no binary on macOS the stub names brew and the Desktop-only bundle", () => {
   const note = shim.notice({ kind: "missing" }, "darwin", "0.24.0");
   assert.match(note.instructions, /brew install jordiboehme\/tap\/crystalline/);
-  assert.match(note.instructions, /crystalline-claude-desktop-only-v0\.24\.0-macos\.mcpb/);
-  assert.match(note.fix, /crystalline-claude-desktop-only-v0\.24\.0-macos\.mcpb/);
+  for (const text of [note.instructions, note.fix]) {
+    assert.match(text, /releases\/latest/);
+    assert.match(text, /Desktop-only extension/);
+    assert.doesNotMatch(text, /\.mcpb/);
+  }
   assert.match(note.instructions, /restart Claude Desktop/);
   assert.equal(note.payload.available, false);
   assert.equal(note.payload.needed_version, "0.24.0");
+});
+
+test("the child learns which launcher started it", () => {
+  const env = shim.childEnv({ PATH: "/bin" }, "0.25.1");
+  assert.equal(env.CRYSTALLINE_CHANNEL, "desktop");
+  assert.equal(env.CRYSTALLINE_LAUNCHER_VERSION, "0.25.1");
+  assert.equal(env.PATH, "/bin");
 });
 
 test("with no binary on Windows the stub names the MSI", () => {

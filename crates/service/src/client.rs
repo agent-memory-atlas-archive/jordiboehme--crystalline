@@ -341,6 +341,77 @@ fn prime_reader(
     Prefixed { prefix, inner }
 }
 
+/// The oldest Claude Desktop extension launcher this binary works with, as a
+/// numeric triple. Raised only when a launcher fix matters: the launcher hands
+/// every message to the installed binary, so users update Crystalline, not the
+/// extension, and this is how the binary says when the extension itself needs
+/// an update.
+pub const MINIMUM_LAUNCHER: (u32, u32, u32) = (0, 24, 0);
+
+/// The line the bridge adds to the onboarding instructions when the launcher
+/// that started it is older than [`MINIMUM_LAUNCHER`].
+const LAUNCHER_NOTE: &str = "The Claude Desktop extension that starts Crystalline is older than this Crystalline supports. Ask the user to install the newest Claude Desktop extension from https://github.com/jordiboehme/crystalline/releases/latest.";
+
+/// The numeric triple of a launcher version such as `0.25.1` or
+/// `0.26.0-rc.1`, read like the launcher's own `parseVersion`: a pre-release
+/// suffix is dropped. `None` for anything else.
+fn launcher_version(text: &str) -> Option<(u32, u32, u32)> {
+    let text = text.trim();
+    let core = text.split_once('-').map_or(text, |(core, _)| core);
+    let mut parts = core.split('.');
+    let mut next = || -> Option<u32> {
+        let part = parts.next()?;
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        part.parse().ok()
+    };
+    let triple = (next()?, next()?, next()?);
+    parts.next().is_none().then_some(triple)
+}
+
+/// Whether the launcher that started this bridge is older than
+/// [`MINIMUM_LAUNCHER`]. Only the standard Claude Desktop extension (channel
+/// `desktop`) has a launcher; any other channel is never too old. On that
+/// channel an absent value is a launcher from 0.24.0 to 0.25.0, which did not
+/// pass its version yet, judged as 0.24.0. A value that cannot be read is
+/// never too old: the bridge does not nag on a guess.
+fn launcher_too_old(env_value: Option<&str>, channel: Option<&str>) -> bool {
+    if channel != Some("desktop") {
+        return false;
+    }
+    let version = match env_value {
+        None => (0, 24, 0),
+        Some(text) => match launcher_version(text) {
+            Some(version) => version,
+            None => return false,
+        },
+    };
+    version < MINIMUM_LAUNCHER
+}
+
+/// The note to add to this session's onboarding instructions, read once from
+/// this process's environment when the bridge starts.
+fn launcher_note_from_env() -> Option<&'static str> {
+    let version = std::env::var(overlay::LAUNCHER_VERSION_ENV).ok();
+    let channel = std::env::var(overlay::CHANNEL_ENV).ok();
+    launcher_too_old(version.as_deref(), channel.as_deref()).then_some(LAUNCHER_NOTE)
+}
+
+/// `line` with `note` added after a blank line at the end of
+/// `result.instructions`, where both an `initialize` answer and a
+/// `server/discover` answer carry the onboarding text. `None` when the line is
+/// not JSON or has no instructions text, so it is forwarded unchanged.
+fn with_launcher_note(line: &str, note: &str) -> Option<String> {
+    let mut msg: Value = serde_json::from_str(line).ok()?;
+    let Some(Value::String(text)) = msg.get_mut("result")?.get_mut("instructions") else {
+        return None;
+    };
+    text.push_str("\n\n");
+    text.push_str(note);
+    Some(msg.to_string())
+}
+
 /// How one relay session over a daemon socket ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionEnd {
@@ -353,12 +424,20 @@ enum SessionEnd {
 /// What the relay remembers across daemon restarts: the client's handshake
 /// lines to replay verbatim and the ids of requests still waiting for a
 /// response, which get an error answer after a restart instead of silence.
+/// It also holds the launcher note, when there is one, and the ids of the
+/// requests whose answers carry the onboarding instructions it goes into.
 #[derive(Default)]
 struct RelayState {
     init_request: Option<String>,
     init_id: Option<Value>,
     initialized_note: Option<String>,
     outstanding: std::collections::HashMap<String, Value>,
+    /// The line to add to the onboarding instructions, set when the launcher
+    /// that started this bridge is too old (see [`launcher_too_old`]).
+    launcher_note: Option<&'static str>,
+    /// The ids of `initialize` and `server/discover` requests still waiting
+    /// for their answer, keyed like `outstanding`.
+    onboarding: HashSet<String>,
 }
 
 impl RelayState {
@@ -377,6 +456,11 @@ impl RelayState {
                 self.init_request = Some(line.to_string());
                 self.init_id = Some(id.clone());
                 self.outstanding.insert(id.to_string(), id.clone());
+                self.onboarding.insert(id.to_string());
+            }
+            (Some("server/discover"), Some(id)) => {
+                self.outstanding.insert(id.to_string(), id.clone());
+                self.onboarding.insert(id.to_string());
             }
             (Some("notifications/initialized"), _) => {
                 self.initialized_note = Some(line.to_string());
@@ -390,6 +474,7 @@ impl RelayState {
             (Some("notifications/cancelled"), _) => {
                 if let Some(id) = msg.get("params").and_then(|p| p.get("requestId")) {
                     self.outstanding.remove(&id.to_string());
+                    self.onboarding.remove(&id.to_string());
                 }
             }
             (Some(_), Some(id)) => {
@@ -400,16 +485,25 @@ impl RelayState {
     }
 
     /// Record a daemon-to-client line: a response (an id without a method)
-    /// settles its outstanding request.
-    fn note_server_line(&mut self, line: &str) {
+    /// settles its outstanding request. Returns the line to write instead
+    /// when it answers an `initialize` or `server/discover` request and a
+    /// launcher note is held; every other line is forwarded verbatim.
+    fn note_server_line(&mut self, line: &str) -> Option<String> {
         let Ok(msg) = serde_json::from_str::<Value>(line) else {
-            return;
+            return None;
         };
         if msg.get("method").is_none()
             && let Some(id) = msg.get("id")
         {
-            self.outstanding.remove(&id.to_string());
+            let key = id.to_string();
+            self.outstanding.remove(&key);
+            if self.onboarding.remove(&key)
+                && let Some(note) = self.launcher_note
+            {
+                return with_launcher_note(line, note);
+            }
         }
+        None
     }
 }
 
@@ -469,7 +563,7 @@ where
             },
             line = session.sock_lines.next_line() => match line {
                 Ok(Some(line)) => {
-                    relay.note_server_line(&line);
+                    let line = relay.note_server_line(&line).unwrap_or(line);
                     stdout.write_all(line.as_bytes()).await?;
                     stdout.write_all(b"\n").await?;
                     stdout.flush().await?;
@@ -529,6 +623,10 @@ where
         .filter(|(key, _)| Some(key) != relay.init_id.as_ref().map(|id| id.to_string()).as_ref())
         .map(|(_, id)| id)
         .collect();
+    // Every onboarding request is now either the replayed `initialize`, whose
+    // answer was swallowed above, or orphaned and answered with an error
+    // below: none is waiting for the note any more.
+    relay.onboarding.clear();
     for id in orphaned {
         let error = serde_json::json!({
             "jsonrpc": "2.0",
@@ -560,7 +658,10 @@ async fn pump_stdio<R>(
 where
     R: AsyncRead + Unpin,
 {
-    let mut relay = RelayState::default();
+    let mut relay = RelayState {
+        launcher_note: launcher_note_from_env(),
+        ..RelayState::default()
+    };
     let mut stdin = BufReader::new(reader).lines();
     let mut stdout = tokio::io::stdout();
     let mut session = Session::new(stream);
@@ -2665,6 +2766,149 @@ mod tests {
             relay.outstanding.contains_key("0"),
             "a server request never settles an id"
         );
+    }
+
+    #[test]
+    fn launcher_too_old_reads_the_version_only_on_the_desktop_channel() {
+        assert_eq!(MINIMUM_LAUNCHER, (0, 24, 0));
+        // A launcher from 0.24.0 to 0.25.0 passed no version: judged 0.24.0.
+        assert!(!launcher_too_old(None, Some("desktop")));
+        assert!(launcher_too_old(Some("0.23.9"), Some("desktop")));
+        assert!(launcher_too_old(Some("0.23.0-rc.1"), Some("desktop")));
+        assert!(!launcher_too_old(Some("0.24.0"), Some("desktop")));
+        assert!(!launcher_too_old(Some("0.25.1"), Some("desktop")));
+        assert!(!launcher_too_old(Some("1.0.0"), Some("desktop")));
+        // Never nag on a value that cannot be read.
+        for garbage in ["garbage", "", "0.25", "0.25.1.2", "v0.23.0", "0.x.1"] {
+            assert!(
+                !launcher_too_old(Some(garbage), Some("desktop")),
+                "{garbage:?}"
+            );
+        }
+        // Only the standard extension has a launcher.
+        for channel in [Some("mcpb"), Some("other"), None] {
+            assert!(!launcher_too_old(Some("0.1.0"), channel), "{channel:?}");
+            assert!(!launcher_too_old(None, channel), "{channel:?}");
+        }
+    }
+
+    const LAUNCHER_INIT: &str = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#;
+    const LAUNCHER_DISCOVER: &str =
+        r#"{"jsonrpc":"2.0","id":"d","method":"server/discover","params":{}}"#;
+
+    fn instructions_of(line: &str) -> String {
+        let msg: Value = serde_json::from_str(line).unwrap();
+        msg["result"]["instructions"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn an_old_launcher_adds_its_note_to_the_initialize_and_discover_answers() {
+        let mut relay = RelayState {
+            launcher_note: Some(LAUNCHER_NOTE),
+            ..RelayState::default()
+        };
+        relay.note_client_line(LAUNCHER_INIT);
+        relay.note_client_line(LAUNCHER_DISCOVER);
+        relay.note_client_line(r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#);
+
+        let init = relay
+            .note_server_line(r#"{"jsonrpc":"2.0","id":0,"result":{"instructions":"Route."}}"#)
+            .expect("the initialize answer gets the note");
+        assert_eq!(instructions_of(&init), format!("Route.\n\n{LAUNCHER_NOTE}"));
+        let discover = relay
+            .note_server_line(
+                r#"{"jsonrpc":"2.0","id":"d","result":{"resultType":"complete","instructions":"Route."}}"#,
+            )
+            .expect("the server/discover answer gets the note");
+        assert!(instructions_of(&discover).ends_with(&format!("\n\n{LAUNCHER_NOTE}")));
+        assert!(
+            relay
+                .note_server_line(r#"{"jsonrpc":"2.0","id":3,"result":{"instructions":"x"}}"#)
+                .is_none(),
+            "a tools/list answer is forwarded as it is"
+        );
+        // A second answer to the same id (a replay) gets nothing more.
+        assert!(
+            relay
+                .note_server_line(r#"{"jsonrpc":"2.0","id":0,"result":{"instructions":"x"}}"#)
+                .is_none()
+        );
+        assert!(relay.onboarding.is_empty());
+    }
+
+    #[test]
+    fn the_launcher_note_leaves_other_answers_alone() {
+        // No note held: the initialize answer is forwarded as it is.
+        let mut relay = RelayState::default();
+        relay.note_client_line(LAUNCHER_INIT);
+        assert!(
+            relay
+                .note_server_line(r#"{"jsonrpc":"2.0","id":0,"result":{"instructions":"x"}}"#)
+                .is_none()
+        );
+        // A note held, but the answer has no instructions or is an error.
+        let mut relay = RelayState {
+            launcher_note: Some(LAUNCHER_NOTE),
+            ..RelayState::default()
+        };
+        relay.note_client_line(LAUNCHER_INIT);
+        relay.note_client_line(LAUNCHER_DISCOVER);
+        assert!(
+            relay
+                .note_server_line(r#"{"jsonrpc":"2.0","id":0,"result":{"serverInfo":{}}}"#)
+                .is_none()
+        );
+        assert!(
+            relay
+                .note_server_line(
+                    r#"{"jsonrpc":"2.0","id":"d","error":{"code":-32602,"message":"m"}}"#
+                )
+                .is_none()
+        );
+        assert!(with_launcher_note("not json", LAUNCHER_NOTE).is_none());
+        assert!(with_launcher_note(r#"{"result":{"instructions":7}}"#, LAUNCHER_NOTE).is_none());
+    }
+
+    #[tokio::test]
+    async fn the_launcher_note_reaches_the_client_through_the_relay_loop() {
+        let (bridge_side, daemon_side) = tokio::io::duplex(4096);
+        let daemon = tokio::spawn(async move {
+            let (read, mut write) = tokio::io::split(daemon_side);
+            let mut lines = BufReader::new(read).lines();
+            let request = lines.next_line().await.unwrap().unwrap();
+            assert!(request.contains("initialize"));
+            write
+                .write_all(
+                    b"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"instructions\":\"Route.\"}}\n",
+                )
+                .await
+                .unwrap();
+            write.flush().await.unwrap();
+            drop(write);
+            drop(lines);
+        });
+        let (mut stdin_feed, stdin_read) = tokio::io::duplex(1024);
+        stdin_feed
+            .write_all(format!("{LAUNCHER_INIT}\n").as_bytes())
+            .await
+            .unwrap();
+        let mut relay = RelayState {
+            launcher_note: Some(LAUNCHER_NOTE),
+            ..RelayState::default()
+        };
+        let mut stdin = BufReader::new(stdin_read).lines();
+        let mut stdout = Vec::new();
+        let mut session = Session::new(bridge_side);
+        relay_loop(&mut relay, &mut stdin, &mut stdout, &mut session)
+            .await
+            .unwrap();
+        let out = String::from_utf8(stdout).unwrap();
+        assert!(
+            instructions_of(out.trim_end()).ends_with(LAUNCHER_NOTE),
+            "{out}"
+        );
+        daemon.await.unwrap();
+        drop(stdin_feed);
     }
 
     #[test]

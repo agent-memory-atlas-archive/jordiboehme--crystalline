@@ -7737,3 +7737,41 @@ async fn tool_descriptions_teach_a_domain_rows_read_only() {
         );
     }
 }
+
+/// The tool names `packaging/mcpb/generate-manifest.sh` writes into the
+/// Claude Desktop manifest's `"tools"` block. Only the names are read: the
+/// descriptions there are short hand-written summaries.
+fn desktop_manifest_tool_names() -> Vec<String> {
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/mcpb/generate-manifest.sh");
+    let text = std::fs::read_to_string(&script).unwrap();
+    let start = text
+        .find("\"tools\": [")
+        .expect("the manifest has a tools block");
+    let block = &text[start..];
+    let block = &block[..block.find("\n  ]").expect("the tools block ends")];
+    block
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("\"name\": \""))
+        .map(|rest| rest.trim_end_matches(['"', ',']).to_string())
+        .collect()
+}
+
+/// The Claude Desktop manifest names exactly the tools the binary lists.
+/// The default configuration is what is compared: `github.enabled` is off,
+/// so the six collaboration tools it gates are withheld here and are left out
+/// of the Desktop manifest too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_desktop_manifest_names_the_tools_a_default_install_lists() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let tools = client.peer().list_tools(Default::default()).await.unwrap();
+    let mut listed: Vec<String> = tools.tools.iter().map(|t| t.name.to_string()).collect();
+    listed.sort();
+    let mut manifest = desktop_manifest_tool_names();
+    manifest.sort();
+    assert_eq!(
+        manifest, listed,
+        "packaging/mcpb/generate-manifest.sh's tools block differs from the binary's tool list"
+    );
+}

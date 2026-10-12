@@ -20,6 +20,12 @@ Claude Desktop runs its extensions inside its own app package. So the extension 
 
 When you sign out or shut down, the daemon stops cleanly.
 
+## Updating
+
+You do not need to update the extension. Update Crystalline (`brew upgrade crystalline` on macOS, the newest MSI on Windows), and the extension uses the new version. If the extension itself ever needs an update, your agent tells you.
+
+The Desktop-only bundle is different: it carries Crystalline, so to update it, install the newer bundle over the old one.
+
 ## How it starts
 
 It starts with no domains: the agent creates one with the `add_domain` tool whenever it needs somewhere to capture knowledge - a folder of markdown files under your `Documents/Crystalline` folder, a database-backed domain or a GitHub team domain. Onboarding is automatic on every connection (see [Session onboarding](../learning-loop.md#session-onboarding)). The daemon serves the web UI at `http://localhost:7411` by default, where the first visit creates your admin account. The [Claude Desktop extension scenario](../deployment.md#claude-desktop-extension) shows how it works underneath.

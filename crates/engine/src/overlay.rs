@@ -102,6 +102,11 @@ pub const GITHUB_TOKEN_ENV: &str = "CRYSTALLINE_GITHUB_TOKEN";
 /// The install-channel marker env var. The mcpb manifest sets it to "mcpb".
 pub const CHANNEL_ENV: &str = "CRYSTALLINE_CHANNEL";
 
+/// The launcher version env var. The standard Claude Desktop extension's
+/// launcher sets it to its own version, so the bridge can tell the agent when
+/// that extension is older than this binary supports.
+pub const LAUNCHER_VERSION_ENV: &str = "CRYSTALLINE_LAUNCHER_VERSION";
+
 /// The test-only variable that parks a blocking task in a daemon; see
 /// `parked_blocking_task`.
 pub const PARK_BLOCKING_ENV: &str = "CRYSTALLINE_TEST_PARK_BLOCKING_SECS";
@@ -165,6 +170,11 @@ pub const RESERVED_VARS: &[&str] = &[
     // environment in `crate::stub`, never through the settings registry, so
     // reserve it here or every mcpb session logs a spurious warning.
     CHANNEL_ENV,
+    // The launcher's version (see [`LAUNCHER_VERSION_ENV`]): the standard
+    // Claude Desktop extension's launcher sets it beside the channel marker,
+    // and the bridge in the service crate reads it straight from its own
+    // environment, so reserved here for the same reason.
+    LAUNCHER_VERSION_ENV,
     // A connected server from the environment (`crystalline_remote::env_source`):
     // its URL, a personal MCP token for it and the list of domains it takes. Read straight from the
     // environment, never through the settings registry, and sharing the
