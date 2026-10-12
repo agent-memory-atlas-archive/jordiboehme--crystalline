@@ -203,6 +203,10 @@ const READABLE = new Set([
   "FUJIFILM",
   // The camera's model name (0.25.1).
   "X-Pro2",
+  // The laser desk terminal's two screen lines and its mark (0.25.1).
+  "REQUEST",
+  "ACCESS CODE 6",
+  "ENCOM",
   // The spray tag on a rough room's wall (0.25.1).
   "COWABUNGA!",
 ]);
@@ -276,6 +280,9 @@ const MARKS_ONLY = [
   "Technics",
   "FUJIFILM",
   "X-Pro2",
+  "REQUEST",
+  "ACCESS CODE 6",
+  "ENCOM",
   "COWABUNGA!",
 ];
 

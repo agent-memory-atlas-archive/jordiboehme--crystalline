@@ -6,11 +6,12 @@
  * too, the slab keeps its 1 : 4 : 9, the turret's eye looks out of its
  * front and a seam splits its shell, the eye panel is a portrait plate
  * at the original's true size with a small dot at the middle of its
- * lens, the photo console's picture leans back, and the laser's lens
- * hangs over the chair's seat. The marks:
- * the eye panel's two words on its badge, the first on the black and the
- * last on the blue field, and the photo console's wordmark on the lip
- * beside its print slot.
+ * lens, the photo console's picture leans back, and the laser desk's
+ * laser stands on the floor behind its stool and fires into the sitter's
+ * back (0.25.1). The marks: the eye panel's two words on its badge, the
+ * first on the black and the last on the blue field, the photo console's
+ * wordmark on the lip beside its print slot, and the laser desk
+ * terminal's two blue lines and its boxed mark on its screen.
  */
 
 import { describe, expect, it } from "vitest";
@@ -30,12 +31,20 @@ import {
 } from "../../modelChecks";
 import { MARKS } from "../marks";
 import { buildHeroMesh } from ".";
-import { BADGE_BLUE, BADGE_INK, DESK_BADGE_INK, OFFICE_CHAIR } from "./optics";
+import {
+  BADGE_BLUE,
+  BADGE_INK,
+  DESK_BADGE_INK,
+  LAB_STOOL,
+  LASER_DESK,
+  MARK_GREY,
+  SCREEN_BLUE,
+} from "./optics";
 
 /**
  * How high the laser desk's catalogue top must stay clear of a part, in
- * the recipe's own `h`, in metres: below the arm, which passes over it
- * from 1.92.
+ * the recipe's own `h`, in metres: the top's own headroom (h 0.74 plus a
+ * clear 1.15) and a little more.
  */
 const CLEAR_TO = 1.9;
 
@@ -104,10 +113,9 @@ function centre(points: readonly V3[]): V3 {
 
 describe("optics hero models", () => {
   it("keeps the laser desk's catalogue top clear in the recipe's own terms", () => {
-    // The catalogue's own rectangle and height; the arm passes high over
-    // it (from h 1.92), so nothing may stand on it below `CLEAR_TO`,
-    // neither a vertex nor a part whose bounds span the area (a long box
-    // whose corners all lie outside it).
+    // The catalogue's own rectangle and height: nothing may stand on it
+    // below `CLEAR_TO`, neither a vertex nor a part whose bounds span the
+    // area (a long box whose corners all lie outside it).
     const [surf] = HERO_CATALOGUE["laser-desk"].surfaces;
     if (!surf) throw new Error("laser-desk has no catalogue surface");
     const { a0, a1, d0, d1, h: h0 } = surf;
@@ -155,26 +163,169 @@ describe("optics hero models", () => {
     expect(h).toBeLessThan(1.1);
   });
 
-  it("the laser points at the chair", () => {
+  it("stands the laser on the floor behind the stool, aimed at the sitter's back (0.25.1)", () => {
+    // Jordi, 2026-10-12: the laser fires from behind the seated person, as
+    // in the original's shot. Mutation caught: the laser back over the
+    // stool or in front of it, its lens turned away from the stool, its
+    // lens below the seat or far above a sitter's shoulders, the stool
+    // turned with its back away from the laser, or the pedestal off the
+    // floor.
     const parts = partsOf("laser-desk");
-    const lens = one(
-      parts.filter((p) => p.method === "cylinder" && p.flag === blinkFlag(0)),
-    );
-    const [s0, s1] = OFFICE_CHAIR.seat;
+    const [s0, s1] = LAB_STOOL.seat;
+    const B = LAB_STOOL.back;
+    const spans = (p: Part, h0: number, h1: number) => {
+      const hs = local(p).map((q) => q[2]);
+      return (
+        Math.abs(Math.min(...hs) - h0) < 1e-6 &&
+        Math.abs(Math.max(...hs) - h1) < 1e-6
+      );
+    };
     const seat = one(
-      parts.filter((p) => {
-        if (p.method !== "bevelBox") return false;
-        const hs = local(p).map((q) => q[2]);
-        return (
-          Math.abs(Math.min(...hs) - s0) < 1e-6 &&
-          Math.abs(Math.max(...hs) - s1) < 1e-6
-        );
-      }),
+      parts.filter((p) => p.method === "lathe" && spans(p, s0, s1)),
     );
-    const [la, ld, lh] = centre(local(lens));
+    const back = one(
+      parts.filter((p) => p.method === "bevelBox" && spans(p, B.h0, B.h1)),
+    );
+    const lensDisc = one(parts.filter((p) => p.flag === blinkFlag(0)));
     const [sa, sd] = centre(local(seat));
-    expect(Math.hypot(la - sa, ld - sd)).toBeLessThan(0.25);
-    expect(lh).toBeGreaterThan(s1);
+    const [ba, bd] = centre(local(back));
+    const [la, ld, lh] = centre(local(lensDisc));
+    // The stool faces from its back towards its seat; the lens lies in its
+    // rear arc, more than 135 degrees off the way it faces.
+    const [fa, fd] = [sa - ba, sd - bd];
+    const [ta, td] = [la - sa, ld - sd];
+    const cos = (fa * ta + fd * td) / (Math.hypot(fa, fd) * Math.hypot(ta, td));
+    expect(cos).toBeLessThan(Math.cos((135 * Math.PI) / 180));
+    // Behind the stool's back, at a sitter's back height.
+    expect(Math.hypot(la - sa, ld - sd)).toBeGreaterThan(
+      Math.hypot(ba - sa, bd - sd),
+    );
+    expect(lh).toBeGreaterThan(B.h1);
+    expect(lh).toBeLessThan(1.4);
+    // The lens is a thin disc standing upright, facing along d.
+    const lb = bounds(local(lensDisc));
+    expect(lb.hi[1] - lb.lo[1]).toBeLessThan(0.03);
+    expect(lb.hi[2] - lb.lo[2]).toBeGreaterThan(0.08);
+    // The pedestal's foot stands on the floor just behind the lens.
+    const foot = parts.filter((p) => {
+      if (p.method !== "cylinder") return false;
+      const b = bounds(local(p));
+      const [ca, cd] = centre(local(p));
+      return (
+        Math.abs(b.lo[2]) < 1e-9 &&
+        Math.abs(ca - la) < 1e-6 &&
+        cd > ld &&
+        cd - ld < 0.25 &&
+        b.hi[0] - b.lo[0] > 0.25
+      );
+    });
+    expect(foot).toHaveLength(1);
+    // Nothing of the laser hangs over the stool: no part but the beam
+    // guide reaches over the seat above the stool's back.
+    const over = parts.filter((p) => {
+      if (p.flag === blinkFlag(1)) return false;
+      return local(p).some(
+        (q) =>
+          Math.hypot(q[0] - sa, q[1] - sd) < LAB_STOOL.seatR &&
+          q[2] > B.h1 + 1e-6,
+      );
+    });
+    expect(over).toEqual([]);
+  });
+
+  it("runs the beam guide from the lens forward and a little down towards the stool (0.25.1)", () => {
+    // Mutation caught: the beam dropping from overhead, pointing away from
+    // the stool, rising, or ending inside the stool's back.
+    const parts = partsOf("laser-desk");
+    const beam = one(parts.filter((p) => p.flag === blinkFlag(1)));
+    const lensDisc = one(parts.filter((p) => p.flag === blinkFlag(0)));
+    const [la, ld, lh] = centre(local(lensDisc));
+    const b = bounds(local(beam));
+    const { a, d } = LASER_DESK.stool;
+    // It starts at the lens and ends closer to the stool.
+    expect(b.hi[1]).toBeGreaterThan(ld - 0.03);
+    expect(Math.abs(b.lo[1] - d)).toBeLessThan(Math.abs(ld - d));
+    expect(Math.abs((b.lo[0] + b.hi[0]) / 2 - la)).toBeLessThan(1e-6);
+    expect(Math.abs(la - a)).toBeLessThan(1e-6);
+    // Mostly level: it drops less than it runs, and stays over the back.
+    const run = b.hi[1] - b.lo[1];
+    const drop = b.hi[2] - b.lo[2];
+    expect(run).toBeGreaterThan(0.2);
+    expect(drop).toBeLessThan(run);
+    expect(b.hi[2]).toBeLessThanOrEqual(lh + 0.02);
+    expect(b.lo[2]).toBeGreaterThan(LAB_STOOL.back.h1);
+  });
+
+  it("gives the laser desk its five lights, one part each, in the breathe groups 0 to 4", () => {
+    // Mutation caught: a light dropped or doubled, or a group moved.
+    const parts = partsOf("laser-desk");
+    for (let g = 0; g < 5; g++)
+      expect(
+        parts.filter((p) => p.flag === blinkFlag(g)),
+        `group ${String(g)}`,
+      ).toHaveLength(1);
+    const blinking = parts.filter((p) => p.flag >= FLAG.blink);
+    expect(blinking).toHaveLength(5);
+  });
+
+  it("keeps every laser desk part inside its footprint and on or over the floor", () => {
+    // Mutation caught: a part of the new laser, its pipe or its cabinet
+    // pushed past the 2.4 by 3.0 m footprint or under the floor.
+    for (const p of partsOf("laser-desk"))
+      for (const q of local(p)) {
+        expect(Math.abs(q[0])).toBeLessThanOrEqual(1.2 + 1e-9);
+        expect(Math.abs(q[1])).toBeLessThanOrEqual(1.5 + 1e-9);
+        expect(q[2]).toBeGreaterThanOrEqual(-1e-9);
+      }
+  });
+
+  it("keeps the laser desk under its triangle pin", () => {
+    // 0.25.1: the rebuilt laser, stool and terminal; the 4000 hero cap
+    // stays well clear.
+    expect(buildHeroMesh("laser-desk", 0, LOOK).count / 3).toBeLessThan(3300);
+  });
+
+  it("sets the terminal's two lines in blue and its boxed mark in grey on the screen (0.25.1)", () => {
+    // Mutation caught: a line or the mark missing, set from the wrong
+    // string, under the 3 mm floor, off the screen, or the second line not
+    // set in under the end of the first.
+    const parts = partsOf("laser-desk");
+    const S = LASER_DESK.screen;
+    const M = LASER_DESK.monitor;
+    const onScreen = (p: Part) =>
+      local(p).every(
+        (q) =>
+          q[0] >= S.a0 - 1e-9 &&
+          q[0] <= S.a1 + 1e-9 &&
+          q[2] >= S.h0 - 1e-9 &&
+          q[2] <= S.h1 + 1e-9 &&
+          q[1] > M.d1 + S.depth &&
+          q[1] < M.d1 + S.depth + 0.003,
+      );
+    const blue = inked(parts, SCREEN_BLUE, "panel");
+    expect(blue).toHaveLength(runsOfLines(MARKS.terminalLines));
+    const grey = inked(parts, MARK_GREY, "panel");
+    // The mark's runs and the four lines of its box.
+    expect(grey).toHaveLength(runsOfLines(MARKS.terminalMark) + 4);
+    for (const p of [...blue, ...grey]) expect(onScreen(p)).toBe(true);
+    for (const p of blue) expect(heightOf(p)).toBeGreaterThanOrEqual(0.003);
+    // Every stroke of the mark and its box is at least 3 mm across.
+    for (const p of grey) {
+      const b = bounds(local(p));
+      expect(b.hi[0] - b.lo[0]).toBeGreaterThanOrEqual(0.003 - 1e-9);
+      expect(b.hi[2] - b.lo[2]).toBeGreaterThanOrEqual(0.003 - 1e-9);
+    }
+    // The second line starts right of the first line's end and lower.
+    const [first = ""] = MARKS.terminalLines;
+    const firstRuns = runsOfLines(first);
+    const firstBox = bounds(blue.slice(0, firstRuns).flatMap(local));
+    const secondBox = bounds(blue.slice(firstRuns).flatMap(local));
+    expect(secondBox.lo[0]).toBeGreaterThan(firstBox.hi[0]);
+    expect(secondBox.hi[2]).toBeLessThan(firstBox.lo[2]);
+    // The mark sits in the lower right, under and right of the text.
+    const markBox = bounds(grey.flatMap(local));
+    expect(markBox.hi[2]).toBeLessThan(secondBox.lo[2]);
+    expect(markBox.lo[0]).toBeGreaterThan((S.a0 + S.a1) / 2);
   });
 
   it("splits the turret's shell with a seam down its front", () => {

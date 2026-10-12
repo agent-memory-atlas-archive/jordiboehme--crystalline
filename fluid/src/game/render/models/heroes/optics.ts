@@ -16,7 +16,8 @@
  *   and on the eye panel's small plate, which keeps a bevel of its own.
  * - Round parts use few facets: 10 to 16 around a body, a housing or a
  *   drum, 6 to 8 around a small post, pad or caster, 4 around a ring's
- *   tube, so every hero stays under 1500 triangles.
+ *   tube, so every hero stays well under the 4000 hero cap and its own
+ *   triangle pin.
  * - A lens is always `lens`: a dark bezel ring with a glowing disc set just
  *   in front of its middle, so every eye in the station is built the same
  *   way and blinks with its kind's bank. Extras may sit on top of a `lens`
@@ -47,7 +48,7 @@ import {
   STATUS_GREEN,
   type HeroRecipe,
 } from "./common";
-import { fit, markLines, textRows } from "./pixels";
+import { fit, MARK_PROUD, markLines, pixelPanel, textRows } from "./pixels";
 
 /** The turret's shell: a clean glossy white, the same in every look. */
 const WHITE_SHELL: Rgb = [0.92, 0.92, 0.9];
@@ -59,8 +60,8 @@ const WHITE_SHELL: Rgb = [0.92, 0.92, 0.9];
 const TURRET_BLACK: Rgb = [0.12, 0.12, 0.13];
 
 /**
- * A deep warning red, for every red light here: the lenses, the laser's
- * beam guide and the red status lights.
+ * A deep warning red, for every red light here: the lenses and the red
+ * status lights.
  */
 const SIGNAL_RED: Rgb = [1.0, 0.1, 0.06];
 
@@ -127,17 +128,65 @@ const TRACKBALL_GREY: Rgb = [0.6, 0.6, 0.62];
 /** The photo console's grid lines over the picture: a paler blue. */
 const SCREEN_GRID: Rgb = [0.72, 0.82, 0.9];
 
-/** The laser's barrel and nose: a matte black. */
-const LASER_BLACK: Rgb = [0.07, 0.07, 0.08];
+/**
+ * The laser desk's laser and its pedestal, cabinet and stool seat: an
+ * off-white, a little warm, like painted lab equipment.
+ */
+const LAB_WHITE: Rgb = [0.86, 0.86, 0.83];
 
-/** The laser rig's column, arm and foot: an industrial off-white grey. */
-const RIG_GREY: Rgb = [0.65, 0.65, 0.63];
+/** The laser's vacuum chamber and ports: a polished stainless steel. */
+const STAINLESS: Rgb = [0.74, 0.75, 0.77];
 
-/** The laser desk's monitor: a dark cyan glow, a terminal late at night. */
-const DARK_CYAN: Rgb = [0.1, 0.42, 0.48];
+/** The laser's tall can, the stool's post and the beam pipe's bands: chrome. */
+const CHROME: Rgb = [0.84, 0.85, 0.87];
 
-/** The office chair's cushions: a charcoal fabric. */
-const CHAIR_FABRIC: Rgb = [0.16, 0.16, 0.18];
+/** The red band round the laser's pedestal post. */
+const BAND_RED: Rgb = [0.75, 0.12, 0.1];
+
+/** The laser desk's control box: a cream instrument case. */
+const CONTROL_CREAM: Rgb = [0.85, 0.82, 0.72];
+
+/** The control box's post: a dark blue steel. */
+const POST_BLUE: Rgb = [0.12, 0.2, 0.42];
+
+/** The yellow tape round the beam pipe's post. */
+const TAPE_YELLOW: Rgb = [0.92, 0.78, 0.15];
+
+/** The white hose that loops from the laser's head to its foot. */
+const HOSE_WHITE: Rgb = [0.9, 0.9, 0.88];
+
+/** The laser's beam guide: a cyan blue-white. */
+const BEAM_CYAN: Rgb = [0.45, 0.85, 1.0];
+
+/** The laser's lens: the violet-white glare at its port. */
+const GLARE_VIOLET: Rgb = [0.8, 0.7, 1.0];
+
+/** The laser desk's table: a light grey. */
+const DESK_GREY: Rgb = [0.78, 0.79, 0.8];
+
+/** The laser desk's terminal, keyboard and side unit: a pale cream plastic. */
+const TERMINAL_CREAM: Rgb = [0.85, 0.84, 0.79];
+
+/** The terminal's screen glass: near black. */
+const SCREEN_BLACK: Rgb = [0.03, 0.03, 0.04];
+
+/**
+ * The terminal's text: a bright blue on the black screen. No other part of
+ * the desk wears it, so a test can count the letters.
+ */
+export const SCREEN_BLUE: Rgb = [0.35, 0.65, 1.0];
+
+/**
+ * The terminal's mark in its screen's corner and its box: a light grey. No
+ * other part of the desk wears it, so a test can count the letters.
+ */
+export const MARK_GREY: Rgb = [0.7, 0.7, 0.72];
+
+/** The stool's seat: a white vinyl. */
+const STOOL_WHITE: Rgb = [0.9, 0.9, 0.88];
+
+/** The stool's column and its small back: a black. */
+const STOOL_BLACK: Rgb = [0.08, 0.08, 0.09];
 
 /** The chamfer of a hero's housings, in metres. */
 const HOUSING_BEVEL = 0.02;
@@ -212,27 +261,33 @@ export function lens(
 }
 
 /**
- * The office chair's heights: its seat cushion (`seat`, bottom to top),
- * the back cushion and the reach of the five-star base's arms, in metres.
- * Exported so the laser desk's test can find the seat among the parts.
+ * The lab stool's measures, in metres: its seat (`seat`, bottom to top of
+ * the round white seat, and its radius), the small black back (its height
+ * band, half width and depth range behind the column, `-d` of the stool's
+ * own frame), the chrome post that carries it (its half width, its arm
+ * under the seat and its upright behind the seat's edge) and the reach of
+ * the five-star base's arms. Exported so the laser desk's test can find
+ * the seat and the back among the parts.
  */
-export const OFFICE_CHAIR = {
-  seat: [0.42, 0.5],
-  seatHalf: 0.23,
-  back: [0.58, 0.98],
-  arm: 0.28,
+export const LAB_STOOL = {
+  seat: [0.44, 0.5],
+  seatR: 0.2,
+  back: { h0: 0.62, h1: 0.8, half: 0.16, d0: -0.27, d1: -0.24 },
+  post: { half: 0.018, h0: 0.4, d0: -0.24, d1: -0.2 },
+  arm: 0.27,
 } as const;
 
 /**
- * An office chair centred at `(a, d)` of the frame `f`: a five-star base
- * on casters, a gas column, a square seat cushion and a back cushion on a
- * post, the charcoal cushions on dark metal. It faces `+d` of `f` at
- * `turn` 0 and is turned about its column by `turn` quarter turns the way
- * `yawed` turns (each quarter swings its front from `+d` towards `-a`), so
- * 2 faces `-d`. It takes `kitAt` and a frame, not a kit: the base's arms
- * run at fifths of a turn, which only a yawed sub-frame can build.
+ * A lab stool centred at `(a, d)` of the frame `f`: a five-star base on
+ * casters, one black column, a round white seat with a rounded rim, and a
+ * chrome post that runs back under the seat and up behind it to a small
+ * black back. It faces `+d` of `f` at `turn` 0 (its back towards `-d`)
+ * and is turned about its column by `turn` quarter turns the way `yawed`
+ * turns (each quarter swings its front from `+d` towards `-a`), so 2 faces
+ * `-d`. It takes `kitAt` and a frame, not a kit: the base's arms run at
+ * fifths of a turn, which only a yawed sub-frame can build.
  */
-export function officeChair(
+export function labStool(
   kitAt: KitAt,
   f: Frame,
   s: Surfaces,
@@ -240,38 +295,39 @@ export function officeChair(
   d: number,
   turn: number,
 ): void {
-  const C = OFFICE_CHAIR;
+  const C = LAB_STOOL;
   const fc = yawed(f, a, d, (turn * Math.PI) / 2);
   const k = kitAt(fc);
-  const fabric = s.tinted(CHAIR_FABRIC);
+  const black = s.tinted(STOOL_BLACK);
+  const chrome = s.tinted(CHROME, LAYER.metal);
   for (let i = 0; i < 5; i++) {
     const arm = kitAt(yawed(fc, 0, 0, (2 * Math.PI * i) / 5));
-    arm.box(-0.02, 0.02, 0.03, C.arm, 0.04, 0.08, s.dark);
+    arm.box(-0.02, 0.02, 0.03, C.arm, 0.04, 0.07, s.dark);
     arm.cylinder(0, C.arm - 0.02, 0, 0.04, 0.025, 6, s.dark);
   }
   k.cylinder(0, 0, 0.03, 0.09, 0.05, 8, s.dark);
-  k.cylinder(0, 0, 0.09, C.seat[0], 0.025, 8, s.metal);
-  const w = C.seatHalf;
-  k.bevelBox(-w, w, -w, w, C.seat[0], C.seat[1], 0.03, fabric);
-  k.box(
-    -0.03,
-    0.03,
-    -w + 0.01,
-    -w + 0.06,
-    C.seat[1],
-    C.back[0] + 0.04,
-    s.metal,
+  const [s0, s1] = C.seat;
+  k.cylinder(0, 0, 0.09, s0, 0.025, 8, black);
+  const r = C.seatR;
+  k.lathe(
+    0,
+    0,
+    [
+      [0, s0],
+      [r - 0.03, s0],
+      [r, s0 + 0.02],
+      [r, s1 - 0.015],
+      [r - 0.02, s1],
+      [0, s1],
+    ],
+    14,
+    s.tinted(STOOL_WHITE),
   );
-  k.bevelBox(
-    -0.2,
-    0.2,
-    -w - 0.01,
-    -w + 0.05,
-    C.back[0],
-    C.back[1],
-    0.025,
-    fabric,
-  );
+  const P = C.post;
+  k.box(-P.half, P.half, P.d1 - 0.02, -0.02, P.h0, s0, chrome);
+  k.box(-P.half, P.half, P.d0, P.d1, P.h0, C.back.h0 + 0.08, chrome);
+  const B = C.back;
+  k.bevelBox(-B.half, B.half, B.d0, B.d1, B.h0, B.h1, 0.012, black);
 }
 
 /**
@@ -962,218 +1018,466 @@ const photoConsole: HeroRecipe = ({ k, kitAt, s, variant, kind }) => {
 const LIGHT_DEPTH = 0.01;
 
 /**
- * The laser desk's measures, in metres: the desk (its top's depth range
- * and height, the slab's underside), the monitor and its screen, the
- * keyboard, the chair's place; the rig: the column (its place, the foot
- * plate's half sizes and height, its own half side and top), the
- * counterweight behind the shoulder, the brace under the upper arm (its
- * two ends `[d, h]`, width and half thickness), the column lights, the arm
- * (its height band and half width, the elbow's `d`, the drums' radius and
- * foot); the emitter: the barrel (foot and radius), its nose collar, the
- * fins (count, radius, thickness, lowest height, pitch), the lens radius
- * and the beam guide (radius, lowest height).
+ * One straight square bar of `width` from `p` to `q` (each `[a, d, h]` in
+ * the recipe's frame): a bar extruded in the upright plane through both
+ * points, so it may run at any slope and heading, and a bar's width past
+ * each end so two bars meeting at a point close the joint. The laser
+ * desk's hose is a chain of these.
  */
-const LASER_DESK = {
-  desk: { d0: -0.3, d1: 0.5, under: 0.7, top: 0.74 },
-  monitor: { a0: 0.1, a1: 0.7, d0: -0.25, d1: 0.15, top: 1.2 },
-  screen: { a0: 0.16, a1: 0.64, h0: 0.83, h1: 1.13 },
-  keyboard: { a0: 0.15, a1: 0.65, d0: 0.2, d1: 0.4 },
-  chair: { a: 0.3, d: 1.0 },
-  column: {
-    a: -0.9,
-    d: -1.3,
-    plateA: 0.3,
-    plateD: 0.19,
-    plateH: 0.08,
-    half: 0.14,
-    top: 2.12,
+function strut(
+  kitAt: KitAt,
+  p: readonly [number, number, number],
+  q: readonly [number, number, number],
+  width: number,
+  s: Surface,
+): void {
+  const run = Math.hypot(q[0] - p[0], q[1] - p[1]);
+  const rise = q[2] - p[2];
+  const fs = yawed(ORIGIN, p[0], p[1], Math.atan2(q[1] - p[1], q[0] - p[0]));
+  kitAt(fs).extrude(
+    tiltedBar(
+      run / 2,
+      (p[2] + q[2]) / 2,
+      Math.atan2(rise, run),
+      Math.hypot(run, rise) + width,
+      width,
+    ),
+    -width / 2,
+    width / 2,
+    s,
+  );
+}
+
+/**
+ * The laser desk's measures, in metres (0.25.1, after the film's frames).
+ * The desk: its top's depth range, underside and top, the legs' inset and
+ * half side, and the rails' height band. The terminal: the front case and
+ * the deeper, narrower back, the screen glass, the text's pixel size and
+ * places (the first line's left edge and top, the gap before the second
+ * line), the mark's pixel size and its box's right and bottom edges and
+ * line; the keyboard and its key field; the low side unit and its green
+ * readout. The stool's place. The laser: its place (`a`, `d`), the foot,
+ * column and post of its pedestal and the red band, the port axis height
+ * `axis`, the chamber and its two rims, the front port and its flange (the flange's front
+ * is the lens plane), the lens, the two angled ports (angle in the `a, h`
+ * plane, length, width) and the side port, the top block, its valves, the
+ * neck, the can and its flanges; the beam guide's far end (`d`, `h`, where
+ * a sitter's back would be) and its width; the hose's points; the beam
+ * pipe (its `a` range, height, radius, the bands' places) and its post;
+ * the control box and its post; and the tall cabinet with its round port.
+ */
+export const LASER_DESK = {
+  desk: { d0: -0.3, d1: 0.5, under: 0.7, top: 0.74, leg: 0.05, legHalf: 0.02 },
+  rails: { h0: 0.12, h1: 0.15 },
+  monitor: { a0: 0.1, a1: 0.7, d0: -0.02, d1: 0.16, top: 1.22 },
+  monitorBack: { a0: 0.18, a1: 0.62, d0: -0.27, top: 1.12 },
+  screen: { a0: 0.15, a1: 0.65, h0: 0.8, h1: 1.17, depth: 0.004 },
+  text: { px: 0.005, a0: 0.2, top: 1.11, gap: 0.01, indent: 0.015 },
+  mark: { px: 0.004, a1: 0.625, h0: 0.83, pad: 0.005, line: 0.003 },
+  keyboard: { a0: 0.15, a1: 0.65, d0: 0.2, d1: 0.42, h: 0.025 },
+  keys: { inset: 0.02, d0: 0.23, d1: 0.38, h: 0.01 },
+  unit: { a0: 0.78, a1: 1.12, d0: -0.2, d1: 0.3, top: 0.86 },
+  readout: { a0: 1.0, a1: 1.07, h0: 0.8, h1: 0.825 },
+  stool: { a: 0.4, d: 0.66 },
+  laser: { a: 0.4, d: 1.3 },
+  foot: { r: 0.16, h: 0.035, bolts: 6, boltAt: 0.13, boltR: 0.012 },
+  column: [
+    [0, 0.035],
+    [0.08, 0.035],
+    [0.06, 0.09],
+    [0.055, 0.38],
+    [0.07, 0.38],
+    [0.07, 0.42],
+    [0, 0.42],
+  ],
+  post: { r: 0.035, h1: 1.04 },
+  band: { r: 0.04, h0: 0.86, h1: 0.89 },
+  axis: 1.12,
+  chamber: { r: 0.08, h0: 1.02, h1: 1.24, rim: 0.095, rimT: 0.015 },
+  port: { r: 0.05, d1: 1.25 },
+  flange: { r: 0.085, d0: 1.12, d1: 1.155 },
+  lensR: 0.045,
+  arms: [
+    { angle: (3 * Math.PI) / 4, length: 0.2 },
+    { angle: (-3 * Math.PI) / 4, length: 0.24 },
+  ],
+  armWidth: 0.05,
+  armHalfDepth: 0.025,
+  armFlange: { length: 0.025, width: 0.09, halfDepth: 0.045 },
+  sidePort: { a1: 0.6, r: 0.03, h: 1.1, flange: 0.048, flangeLength: 0.025 },
+  block: { half: 0.08, d0: 1.22, d1: 1.38, h1: 1.32 },
+  valves: [
+    [0.05, -0.04],
+    [-0.05, 0.04],
+  ],
+  valve: { r: 0.015, h1: 1.37, capR: 0.018, cap: 0.015 },
+  neck: { r: 0.045, h1: 1.4 },
+  canFlange: { r: 0.075, t: 0.025 },
+  can: { r: 0.065, h1: 1.66 },
+  beam: { d: 0.86, h: 1.02, width: 0.02 },
+  hose: [
+    [0.05, 0, 1.05],
+    [0.14, -0.03, 0.92],
+    [0.17, -0.04, 0.62],
+    [0.15, -0.03, 0.3],
+    [0.1, 0, 0.03],
+  ],
+  hoseWidth: 0.022,
+  pipe: {
+    a0: -0.95,
+    a1: 0.33,
+    h: 1.28,
+    r: 0.035,
+    bands: [-0.7, -0.45, -0.2, 0.05],
+    band: 0.03,
   },
-  weight: { half: 0.13, d0: -1.48, h0: 1.78 },
-  brace: { foot: [-1.16, 1.5], head: [-0.6, 1.93], width: 0.06, half: 0.04 },
-  lights: { h0: 1.0, pitch: 0.12, h: 0.06 },
-  arm: { h0: 1.92, h1: 2.12, half: 0.1, elbowD: 0, drumR: 0.15, drumH0: 1.905 },
-  barrel: { h0: 1.12, r: 0.11 },
-  nose: { r: 0.14, h1: 1.2 },
-  fins: { n: 6, r: 0.19, t: 0.016, h0: 1.32, pitch: 0.09 },
-  lensR: 0.09,
-  beam: { r: 0.008, h0: 0.52 },
+  pipePost: { a: -0.9, r: 0.045, foot: 0.09, tape: [0.5, 0.9], tapeH: 0.03 },
+  control: { a0: 0.63, a1: 0.86, d0: 1.26, d1: 1.42, h0: 0.95, h1: 1.12 },
+  controlPost: { a: 0.745, d: 1.36, r: 0.025, foot: 0.06 },
+  controlLights: { a0: 0.67, pitch: 0.05, w: 0.03, h0: 1.06, h1: 1.085 },
+  buttons: { a0: 0.67, pitch: 0.035, w: 0.022, h0: 0.99, h1: 1.012, n: 5 },
+  card: { a0: 0.68, a1: 0.8, d0: 1.33, d1: 1.34, h1: 1.19 },
+  cabinet: { a0: 0.86, a1: 1.18, d0: 1.34, d1: 1.48, top: 2.15 },
+  drum: { a: 1.03, h: 1.55, r: 0.11, inner: 0.065, out: 0.04 },
+  seams: [0.9, 1.9],
 } as const;
 
 /**
  * The laser desk, standing free: `d` from -1.5 to 1.5, its front at `+d`.
- * - A terminal desk: a top slab (h 0.70 to 0.74) over `a` -1.2 to 1.2 and
- *   `d` -0.3 to 0.5 on four legs, a boxy monitor on its right (`a` 0.1 to
- *   0.7, h 0.74 to 1.2) with a dark cyan `s.glow` screen facing `+d`, and a
- *   keyboard in front of it (`d` 0.2 to 0.4). The desk top from `a` -1.1
- *   to -0.35 stays clear: it is the catalogue's surface.
- * - An empty office chair at `a` 0.3, `d` 1.0, facing the desk.
- * - The rig, in an off-white industrial grey: a heavy column on a bevelled
- *   foot plate at `a` -0.9, `d` -1.3, carrying three status lights, with a
- *   black counterweight behind its shoulder and a diagonal brace under the
- *   arm; a heavy articulated arm (h 1.92 to 2.12) from a shoulder drum
- *   forward to an elbow drum at `d` 0, then on a diagonal forearm to a
- *   wrist drum right over the chair. Everything over the clear desk top
- *   stays above h 1.9.
- * - The emitter hangs from the wrist: a long black barrel (r 0.11, h 1.12
- *   up to the wrist) with six thin cooling fins and a nose collar, a red
- *   lens at its foot looking down at the seat, and a thin red beam guide
- *   dropping from the lens to just over the seat.
- * Lights: the lens is blink group 0, the beam guide group 1 and the column
- * lights groups 2 to 4, all in the breathe bank.
+ * Rebuilt in 0.25.1 after the film's laser bay: the laser stands on the
+ * floor behind the person at the terminal and fires into their back.
+ * - A lab table: a thin light-grey top (h 0.70 to 0.74) over `a` -1.2 to
+ *   1.2 and `d` -0.3 to 0.5 on four slim legs with side and back rails
+ *   low down. The top from `a` -1.1 to -0.35 stays clear, and so does the
+ *   space under it: they are the catalogue's surface and under space.
+ * - A chunky cream terminal on its right (`a` 0.1 to 0.7) facing `+d`: a
+ *   black screen glass with two lines of blue text and the light-grey
+ *   mark in a thin box in its lower right corner, a cream keyboard with a
+ *   dark key field in front, and a low cream unit with a green readout
+ *   at the table's right end.
+ * - A lab stool at `a` 0.4, `d` 0.66, facing the terminal (`-d`), its
+ *   back towards the laser.
+ * - The laser at `a` 0.4, `d` 1.3, right behind the stool: a white
+ *   pedestal (a flanged foot with bolt heads, a column, a post with a red
+ *   band) under a stainless vacuum chamber. Its front port looks along
+ *   `-d` at the stool's back, its flange ringing a violet-white lens; two
+ *   ports stand out at angles on its left and one to its right; on top a
+ *   block with two valves, a neck and a tall chrome can. A cyan beam guide
+ *   runs from the lens a little downwards to where a sitter's back would
+ *   be, and a white hose loops from the chamber down to the foot.
+ * - On the laser's left a long beam pipe with chrome bands runs into its
+ *   top block from a grey post with yellow tape; on its right a cream
+ *   control box on a blue post, with three status lights, a row of
+ *   buttons and a white card on top; behind that, in the corner, a tall
+ *   off-white cabinet with a round dark port, which takes the model to
+ *   its catalogue top.
+ * Lights: the lens is blink group 0, the beam guide group 1 and the
+ * control box's lights groups 2 to 4, all in the breathe bank. The
+ * screen's text and the readout glow steadily.
  */
 const laserDesk: HeroRecipe = ({ k, kitAt, s, variant, kind }) => {
   const L = LASER_DESK;
-  const { hw, top } = heroHalf(kind, variant);
-  // The desk.
+  const { hw } = heroHalf(kind, variant);
+  const white = s.tinted(LAB_WHITE);
+  const steel = s.tinted(STAINLESS, LAYER.metal);
+  const chrome = s.tinted(CHROME, LAYER.metal);
+  const cream = s.tinted(TERMINAL_CREAM);
+  // The table.
   const D = L.desk;
-  k.bevelBox(-hw, hw, D.d0, D.d1, D.under, D.top, 0.01, s.body);
-  for (const a of [-hw + 0.05, hw - 0.05])
-    for (const d of [D.d0 + 0.05, D.d1 - 0.05])
-      k.box(a - 0.025, a + 0.025, d - 0.025, d + 0.025, 0, D.under, s.metal);
+  const grey = s.tinted(DESK_GREY);
+  k.bevelBox(-hw, hw, D.d0, D.d1, D.under, D.top, 0.008, grey);
+  const legA = hw - D.leg;
+  const legDs = [D.d0 + D.leg, D.d1 - D.leg] as const;
+  const q = D.legHalf;
+  for (const a of [-legA, legA])
+    for (const d of legDs)
+      k.box(a - q, a + q, d - q, d + q, 0, D.under, s.metal);
+  const R = L.rails;
+  for (const a of [-legA, legA])
+    k.box(a - q, a + q, legDs[0] + q, legDs[1] - q, R.h0, R.h1, s.metal);
+  k.box(-legA + q, legA - q, legDs[0] - q, legDs[0] + q, R.h0, R.h1, s.metal);
+  // The terminal: front case, deeper back, screen glass, text and mark.
   const M = L.monitor;
-  k.bevelBox(M.a0, M.a1, M.d0, M.d1, D.top, M.top, HOUSING_BEVEL, s.body);
-  k.box(
-    M.a0 + 0.03,
-    M.a1 - 0.03,
-    M.d1,
-    M.d1 + 0.01,
-    D.top + 0.06,
-    M.top - 0.04,
-    s.dark,
-  );
+  const MB = L.monitorBack;
+  k.bevelBox(MB.a0, MB.a1, MB.d0, M.d0, D.top, MB.top, HOUSING_BEVEL, cream);
+  k.bevelBox(M.a0, M.a1, M.d0, M.d1, D.top, M.top, HOUSING_BEVEL, cream);
   const sc = L.screen;
-  k.panel(
-    sc.a0,
-    sc.a1,
-    M.d1 + 0.01 + DECAL_LIFT,
-    sc.h0,
-    sc.h1,
-    s.glow(DARK_CYAN),
+  const glass = M.d1 + sc.depth;
+  k.box(sc.a0, sc.a1, M.d1, glass, sc.h0, sc.h1, s.tinted(SCREEN_BLACK));
+  const T = L.text;
+  const ink = s.glow(SCREEN_BLUE);
+  const [first, second] = MARKS.terminalLines;
+  const firstRows = textRows(first);
+  pixelPanel(k, firstRows, T.a0, T.top, T.px, glass + MARK_PROUD, (ch) =>
+    ch === "#" ? ink : null,
   );
+  pixelPanel(
+    k,
+    textRows(second),
+    T.a0 + (firstRows[0]?.length ?? 0) * T.px + T.indent,
+    T.top - firstRows.length * T.px - T.gap,
+    T.px,
+    glass + MARK_PROUD,
+    (ch) => (ch === "#" ? ink : null),
+  );
+  const MK = L.mark;
+  const markRows = textRows(MARKS.terminalMark);
+  const markA0 = MK.a1 - (markRows[0]?.length ?? 0) * MK.px;
+  const markH1 = MK.h0 + markRows.length * MK.px;
+  const grey2 = s.tinted(MARK_GREY);
+  pixelPanel(k, markRows, markA0, markH1, MK.px, glass + MARK_PROUD, (ch) =>
+    ch === "#" ? grey2 : null,
+  );
+  // The mark's thin box, a line `MK.line` wide `MK.pad` outside its letters.
+  const [ba0, ba1] = [markA0 - MK.pad, MK.a1 + MK.pad];
+  const [bh0, bh1] = [MK.h0 - MK.pad, markH1 + MK.pad];
+  const line = MK.line;
+  const lineD = glass + MARK_PROUD;
+  k.panel(ba0, ba1, lineD, bh0, bh0 + line, grey2);
+  k.panel(ba0, ba1, lineD, bh1 - line, bh1, grey2);
+  k.panel(ba0, ba0 + line, lineD, bh0 + line, bh1 - line, grey2);
+  k.panel(ba1 - line, ba1, lineD, bh0 + line, bh1 - line, grey2);
+  // The keyboard and the side unit.
   const kb = L.keyboard;
-  k.box(kb.a0, kb.a1, kb.d0, kb.d1, D.top, D.top + 0.025, s.dark);
-  // The chair, pulled up to the desk.
-  const { a: chairA, d: chairD } = L.chair;
-  officeChair(kitAt, ORIGIN, s, chairA, chairD, 2);
-  // The column, its lights, the counterweight and the brace.
-  const rig = s.tinted(RIG_GREY);
-  const black = s.tinted(LASER_BLACK);
-  const C = L.column;
-  const A = L.arm;
-  k.bevelBox(
-    C.a - C.plateA,
-    C.a + C.plateA,
-    C.d - C.plateD,
-    C.d + C.plateD,
-    0,
-    C.plateH,
-    HOUSING_BEVEL,
+  k.box(kb.a0, kb.a1, kb.d0, kb.d1, D.top, D.top + kb.h, cream);
+  const ky = L.keys;
+  k.box(
+    kb.a0 + ky.inset,
+    kb.a1 - ky.inset,
+    ky.d0,
+    ky.d1,
+    D.top + kb.h,
+    D.top + kb.h + ky.h,
     s.dark,
   );
-  k.bevelBox(
-    C.a - C.half,
-    C.a + C.half,
-    C.d - C.half,
-    C.d + C.half,
-    C.plateH,
-    C.top,
-    HOUSING_BEVEL,
-    rig,
-  );
-  const face = C.d + C.half;
-  [STATUS_GREEN, STATUS_AMBER, SIGNAL_RED].forEach((tint, i) => {
-    const h = L.lights.h0 + i * L.lights.pitch;
-    k.box(
-      C.a - 0.04,
-      C.a + 0.04,
-      face,
-      face + LIGHT_DEPTH,
-      h,
-      h + L.lights.h,
-      s.blink(tint, 2 + i),
+  const U = L.unit;
+  k.bevelBox(U.a0, U.a1, U.d0, U.d1, D.top, U.top, 0.01, cream);
+  const ro = L.readout;
+  k.panel(ro.a0, ro.a1, U.d1 + DECAL_LIFT, ro.h0, ro.h1, s.glow(STATUS_GREEN));
+  // The stool, pulled in to the terminal, its back to the laser.
+  labStool(kitAt, ORIGIN, s, L.stool.a, L.stool.d, 2);
+  // The laser's pedestal.
+  const { a: la, d: ld } = L.laser;
+  const F = L.foot;
+  k.cylinder(la, ld, 0, F.h, F.r, 16, white);
+  for (let i = 0; i < F.bolts; i++) {
+    const t = (2 * Math.PI * (i + 0.5)) / F.bolts;
+    k.cylinder(
+      la + F.boltAt * Math.cos(t),
+      ld + F.boltAt * Math.sin(t),
+      F.h,
+      F.h + 0.012,
+      F.boltR,
+      6,
+      steel,
     );
-  });
-  const W = L.weight;
-  k.bevelBox(
-    C.a - W.half,
-    C.a + W.half,
-    W.d0,
-    C.d,
-    W.h0,
-    A.h1,
-    HOUSING_BEVEL,
-    black,
+  }
+  k.lathe(la, ld, L.column, 12, white);
+  const lastColumn = L.column[L.column.length - 1];
+  k.cylinder(la, ld, lastColumn?.[1] ?? 0, L.post.h1, L.post.r, 12, white);
+  k.cylinder(la, ld, L.band.h0, L.band.h1, L.band.r, 12, s.tinted(BAND_RED));
+  // The chamber, its front port and flange, and the lens looking at -d.
+  const H = L.axis;
+  const ch = L.chamber;
+  k.cylinder(la, ld, ch.h0, ch.h1, ch.r, 12, steel);
+  k.cylinder(la, ld, ch.h0, ch.h0 + ch.rimT, ch.rim, 12, steel);
+  k.cylinder(la, ld, ch.h1 - ch.rimT, ch.h1, ch.rim, 12, steel);
+  k.extrude(discOutline(la, H, L.port.r, 12), L.flange.d1, L.port.d1, steel);
+  k.extrude(
+    discOutline(la, H, L.flange.r, 12),
+    L.flange.d0,
+    L.flange.d1,
+    steel,
   );
-  const [[fd, fh], [bd, bh]] = [L.brace.foot, L.brace.head];
+  lens(
+    kitAt(yawed(ORIGIN, la, L.flange.d0, Math.PI)),
+    s,
+    0,
+    0,
+    H,
+    L.lensR,
+    GLARE_VIOLET,
+    0,
+  );
+  // The angled ports on the left, each with a square flange at its end.
+  for (const { angle, length } of L.arms) {
+    const [ca, sa] = [Math.cos(angle), Math.sin(angle)];
+    k.extrude(
+      tiltedBar(
+        la + (ca * length) / 2,
+        H + (sa * length) / 2,
+        angle,
+        length,
+        L.armWidth,
+      ),
+      ld - L.armHalfDepth,
+      ld + L.armHalfDepth,
+      steel,
+    );
+    const AF = L.armFlange;
+    k.extrude(
+      tiltedBar(la + ca * length, H + sa * length, angle, AF.length, AF.width),
+      ld - AF.halfDepth,
+      ld + AF.halfDepth,
+      steel,
+    );
+  }
+  // The side port on the right.
+  const SP = L.sidePort;
+  k.cylinderAlong(la, SP.a1, ld, SP.h, SP.r, 10, steel);
+  k.cylinderAlong(
+    SP.a1,
+    SP.a1 + SP.flangeLength,
+    ld,
+    SP.h,
+    SP.flange,
+    12,
+    steel,
+  );
+  // The top block, its valves, the neck and the can.
+  const BK = L.block;
+  k.bevelBox(
+    la - BK.half,
+    la + BK.half,
+    BK.d0,
+    BK.d1,
+    ch.h1,
+    BK.h1,
+    0.01,
+    steel,
+  );
+  const V = L.valve;
+  for (const [va, vd] of L.valves) {
+    k.cylinder(la + va, ld + vd, BK.h1, V.h1, V.r, 8, chrome);
+    k.cylinder(
+      la + va,
+      ld + vd,
+      V.h1,
+      V.h1 + V.cap,
+      V.capR,
+      8,
+      s.tinted(BAND_RED),
+    );
+  }
+  const N = L.neck;
+  k.cylinder(la, ld, BK.h1, N.h1, N.r, 12, steel);
+  const CF = L.canFlange;
+  k.cylinder(la, ld, N.h1, N.h1 + CF.t, CF.r, 12, steel);
+  k.cylinder(la, ld, N.h1 + CF.t, L.can.h1, L.can.r, 12, chrome);
+  k.cylinder(la, ld, L.can.h1, L.can.h1 + CF.t, CF.r, 12, steel);
+  // The beam guide: from inside the lens down to a sitter's back.
+  const B = L.beam;
+  const start: readonly [number, number] = [L.flange.d0, H];
+  const end: readonly [number, number] = [B.d, B.h];
   profileAlong(
     kitAt,
     ORIGIN,
     tiltedBar(
-      (fd + bd) / 2,
-      (fh + bh) / 2,
-      Math.atan2(bh - fh, bd - fd),
-      Math.hypot(bd - fd, bh - fh),
-      L.brace.width,
+      (start[0] + end[0]) / 2,
+      (start[1] + end[1]) / 2,
+      Math.atan2(end[1] - start[1], end[0] - start[0]),
+      Math.hypot(end[0] - start[0], end[1] - start[1]),
+      B.width,
     ),
-    C.a - L.brace.half,
-    C.a + L.brace.half,
-    rig,
+    la - B.width / 2,
+    la + B.width / 2,
+    s.blink(BEAM_CYAN, 1),
   );
-  // The arm: shoulder, upper arm along d, elbow, diagonal forearm, wrist.
-  const drum = (a: number, d: number) =>
-    k.cylinder(a, d, A.drumH0, top - 0.02, A.drumR, 12, s.dark);
-  drum(C.a, C.d);
-  k.bevelBox(
-    C.a - A.half,
-    C.a + A.half,
-    C.d,
-    A.elbowD,
-    A.h0,
-    A.h1,
-    HOUSING_BEVEL,
-    rig,
-  );
-  drum(C.a, A.elbowD);
-  const reach = Math.hypot(chairA - C.a, chairD - A.elbowD);
-  const fore = yawed(
-    ORIGIN,
-    C.a,
-    A.elbowD,
-    Math.atan2(C.a - chairA, chairD - A.elbowD),
-  );
-  kitAt(fore).bevelBox(
-    -A.half,
-    A.half,
-    0,
-    reach,
-    A.h0,
-    A.h1,
-    HOUSING_BEVEL,
-    rig,
-  );
-  drum(chairA, chairD);
-  // The emitter, pointing down at the seat.
-  const B = L.barrel;
-  k.cylinder(chairA, chairD, B.h0, A.drumH0, B.r, 12, black);
-  k.cylinder(chairA, chairD, B.h0, L.nose.h1, L.nose.r, 12, black);
-  const F = L.fins;
-  for (let i = 0; i < F.n; i++) {
-    const h = F.h0 + i * F.pitch;
-    k.cylinder(chairA, chairD, h, h + F.t, F.r, 12, s.dark);
+  // The hose, from the chamber's underside in a loop down to the foot.
+  const hose = s.tinted(HOSE_WHITE);
+  for (let i = 0; i + 1 < L.hose.length; i++) {
+    const p = L.hose[i];
+    const q2 = L.hose[i + 1];
+    if (!p || !q2) continue;
+    strut(
+      kitAt,
+      [la + p[0], ld + p[1], p[2]],
+      [la + q2[0], ld + q2[1], q2[2]],
+      L.hoseWidth,
+      hose,
+    );
   }
-  // The lens hangs under the nose, its bezel's top on the nose's foot.
-  const tube = Math.max(BEZEL_MIN, L.lensR * BEZEL_SHARE);
-  const lensH = B.h0 - tube;
-  lens(k, s, chairA, chairD, lensH, L.lensR, SIGNAL_RED, 0, "down");
-  // The beam guide: from inside the lens down to just over the seat.
-  k.cylinder(
-    chairA,
-    chairD,
-    L.beam.h0,
-    lensH,
-    L.beam.r,
-    6,
-    s.blink(SIGNAL_RED, 1),
+  // The beam pipe, its chrome bands and its taped post.
+  const PP = L.pipe;
+  k.cylinderAlong(PP.a0, PP.a1, ld, PP.h, PP.r, 10, steel);
+  for (const a of PP.bands)
+    k.cylinderAlong(a, a + PP.band, ld, PP.h, PP.r + 0.006, 10, chrome);
+  const PO = L.pipePost;
+  k.cylinder(PO.a, ld, 0, 0.02, PO.foot, 10, s.dark);
+  k.cylinder(PO.a, ld, 0.02, PP.h - PP.r + 0.005, PO.r, 10, s.metal);
+  for (const h of PO.tape)
+    k.cylinder(
+      PO.a,
+      ld,
+      h,
+      h + PO.tapeH,
+      PO.r + 0.004,
+      10,
+      s.tinted(TAPE_YELLOW),
+    );
+  // The control box on its blue post, its lights, buttons and card.
+  const CP = L.controlPost;
+  const CB = L.control;
+  k.box(
+    CP.a - CP.foot,
+    CP.a + CP.foot,
+    CP.d - CP.foot,
+    CP.d + CP.foot,
+    0,
+    0.02,
+    s.dark,
+  );
+  k.cylinder(CP.a, CP.d, 0.02, CB.h0, CP.r, 8, s.tinted(POST_BLUE));
+  k.bevelBox(
+    CB.a0,
+    CB.a1,
+    CB.d0,
+    CB.d1,
+    CB.h0,
+    CB.h1,
+    0.01,
+    s.tinted(CONTROL_CREAM),
+  );
+  const CL = L.controlLights;
+  [STATUS_GREEN, STATUS_AMBER, SIGNAL_RED].forEach((tint, i) => {
+    const a = CL.a0 + i * CL.pitch;
+    k.box(
+      a,
+      a + CL.w,
+      CB.d0 - LIGHT_DEPTH,
+      CB.d0,
+      CL.h0,
+      CL.h1,
+      s.blink(tint, 2 + i),
+    );
+  });
+  const BT = L.buttons;
+  for (let i = 0; i < BT.n; i++) {
+    const a = BT.a0 + i * BT.pitch;
+    k.box(a, a + BT.w, CB.d0 - LIGHT_DEPTH, CB.d0, BT.h0, BT.h1, s.dark);
+  }
+  const CD = L.card;
+  k.box(CD.a0, CD.a1, CD.d0, CD.d1, CB.h1, CD.h1, s.tinted(STOOL_WHITE));
+  // The tall cabinet in the corner, its seams and its round port.
+  const CA = L.cabinet;
+  k.bevelBox(CA.a0, CA.a1, CA.d0, CA.d1, 0, CA.top, HOUSING_BEVEL, white);
+  for (const h of L.seams)
+    k.box(
+      CA.a0 + 0.02,
+      CA.a1 - 0.02,
+      CA.d0 - 0.003,
+      CA.d0,
+      h,
+      h + 0.006,
+      s.dark,
+    );
+  const DR = L.drum;
+  k.extrude(discOutline(DR.a, DR.h, DR.r, 14), CA.d0 - DR.out, CA.d0, s.dark);
+  k.extrude(
+    discOutline(DR.a, DR.h, DR.inner, 12),
+    CA.d0 - DR.out - 0.006,
+    CA.d0 - DR.out,
+    s.tinted(POST_BLUE),
   );
 };
 

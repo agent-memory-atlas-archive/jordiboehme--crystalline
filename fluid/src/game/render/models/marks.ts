@@ -103,6 +103,13 @@ export const MARKS = {
   cameraMark: "FUJIFILM",
   /** The camera's model name, light grey on the back of its top plate (0.25.1). */
   cameraModel: "X-Pro2",
+  /**
+   * The laser desk terminal's two screen lines, blue on its black screen,
+   * the second set in under the end of the first (0.25.1).
+   */
+  terminalLines: ["REQUEST", "ACCESS CODE 6"],
+  /** The laser desk terminal's mark, light grey in a thin box in its screen's lower right corner (0.25.1). */
+  terminalMark: "ENCOM",
   /** The hoverboard's deck wordmark, one two-line block: "HOVER" over "BOARD". */
   boardLogo: ["HOVER", "BOARD"],
   /** The police box's left door notice, nine lines set as one block. */
