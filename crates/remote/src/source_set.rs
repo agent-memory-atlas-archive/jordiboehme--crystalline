@@ -334,7 +334,8 @@ impl SourceSet {
     /// The same set, treating this process's HTTP client as still being
     /// built until `gate` reads `true`. Tests use one to hold the cold start
     /// open, so what a call or a refresh does inside it does not depend on
-    /// how fast the machine builds its first client.
+    /// how fast the machine builds its first client. A test seam only.
+    #[doc(hidden)]
     pub fn with_client_gate(mut self, gate: tokio::sync::watch::Receiver<bool>) -> SourceSet {
         self.client_ready = ClientReady::Gate(gate);
         self

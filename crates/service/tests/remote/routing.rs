@@ -61,8 +61,9 @@ async fn connect_fake(
 ) -> String {
     // This process's first HTTP client, built before any budget a test sets
     // starts: under a loaded machine its system proxy lookup can take
-    // seconds, and a call inside that wait answers that it did not get to
-    // ask the source at all.
+    // seconds (a crowded directory is the cause, see `warm_http_client` in
+    // crates/remote/src/server_client.rs), and a call inside that wait
+    // answers that it did not get to ask the source at all.
     crystalline_remote::warm_http_client().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());

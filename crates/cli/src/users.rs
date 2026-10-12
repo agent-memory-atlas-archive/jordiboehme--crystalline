@@ -452,7 +452,8 @@ async fn keep_write_list_or_remove(
 /// to paste is a token that gets pasted somewhere worse. `replaced` names the
 /// id a rotation retired, so the operator can tell the two ids apart.
 ///
-/// `--json` prints the same three fields as an object, for provisioning
+/// `--json` prints the id, the token and the label as an object (plus the
+/// name, role and writes of an account created with it), for provisioning
 /// scripts; the teaching goes to stderr there, so a piped stdout stays valid
 /// JSON.
 fn print_issued_token(
@@ -661,8 +662,8 @@ fn parse_write_list(raw: &str) -> Result<Vec<String>> {
 
 /// One entry: a domain name, or a name prefix with one `*` at the end. The
 /// stem is checked with the domain-name rule; a prefix is checked with one
-/// letter after it, so `agents-*` and `team.*` pass while `agents/*` does
-/// not. A bare `*` names every domain, which is the same as no list, and is
+/// letter after it (unless the stem is already at the length limit), so
+/// `agents-*` and `team.*` pass while `agents/*` does not. A bare `*` names every domain, which is the same as no list, and is
 /// refused.
 fn check_write_entry(entry: &str) -> Result<()> {
     let (stem, prefix) = match entry.strip_suffix('*') {

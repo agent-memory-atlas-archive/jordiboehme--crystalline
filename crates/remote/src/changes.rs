@@ -512,9 +512,6 @@ pub(crate) fn detect_local_changes_with(
                     });
                 }
             }
-            // Too large to hash or share, so no change either way; claiming
-            // the base entry above is the whole point, so it is not reported
-            // gone.
             // Refused rather than guessed: the file is too large to read, so
             // nothing can show that the base spelling and this one are the
             // same file, and the share would carry the base spelling's fate.
@@ -1800,15 +1797,8 @@ mod tests {
         write(dir.path(), "notes/Big.md", &big);
         let mut base = BTreeMap::new();
         base.insert("notes/big.md".to_string(), stamp_for(b"small"));
-        let sensitive = !dir.path().join("notes/big.md").exists();
-        if !sensitive {
-            eprintln!("skipped: this filesystem is case-insensitive");
-        }
-        let result =
-            detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None);
-        if sensitive {
-            let err = result.expect_err("a large alias must be refused");
-            assert!(err.to_string().contains("notes/Big.md"), "{err}");
-        }
+        let err = detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None)
+            .expect_err("a large alias must be refused");
+        assert!(err.to_string().contains("notes/Big.md"), "{err}");
     }
 }

@@ -461,6 +461,18 @@ async fn batched_marks_equal_the_per_row_answer() {
             )
             .await
             .unwrap();
+        if scope == user("gone") {
+            // A disabled account still lists the domains, every one marked.
+            let rows = listed["domains"].as_array().unwrap();
+            assert!(
+                !rows.is_empty(),
+                "the disabled account lists rows: {listed}"
+            );
+            assert!(
+                rows.iter().all(|row| row["read_only"] == true),
+                "every row of a disabled account is read-only: {listed}"
+            );
+        }
         for row in listed["domains"].as_array().unwrap() {
             let name = row["name"].as_str().unwrap();
             let per_row = engine.write_block(&scope, name).await.unwrap().is_some();

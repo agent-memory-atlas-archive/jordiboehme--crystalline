@@ -1164,10 +1164,12 @@ pub(crate) async fn refuse_off_write_list(
 /// 2. then the instance role, unchanged: a domain invitation widens what an
 ///    account may *reach*, never what its instance role lets it *do*, so a
 ///    domain editor who is an instance viewer is still refused here;
-///    2b. then the write list, which names itself (`refuse_off_write_list`);
-/// 3. then the membership level, which is what a private domain adds. The
-///    message names the level the caller holds, because "forbidden" on a
-///    domain they can see and read is otherwise indistinguishable from a bug.
+/// 3. then the capped right (`DomainAccess::write_right`), which carries the
+///    membership level, what a private domain adds, and the write list. A
+///    caller off the write list is refused with the sentence that names the
+///    list (`refuse_off_write_list`); otherwise the message names the level
+///    the caller holds, because "forbidden" on a domain they can see and read
+///    is otherwise indistinguishable from a bug.
 ///
 /// Step 3 can only fire on a private domain. On a shared one the right is the
 /// instance role's own (the policy in `crate::scope`), so a caller past step 2
