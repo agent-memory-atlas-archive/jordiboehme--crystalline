@@ -344,7 +344,7 @@ describe("the hero catalogue", () => {
     expect(HERO_CATALOGUE["neon-bike"]).toMatchObject({
       placement: HERO_CATALOGUE["red-bike"].placement,
       variants: 1,
-      top: 1.35,
+      top: 1.28,
       surfaces: [],
       under: [],
       use: null,

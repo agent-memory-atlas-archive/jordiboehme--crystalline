@@ -56,21 +56,26 @@
  *   to (`movers`), which the model checks are.
  * - The neon bike (`CYCLE`) is the enclosed racing cycle from inside
  *   the computer, parked like the red bike: its length along `a`, its nose at
- *   `+a`. Two wheels of one size are its ends (`CYCLE_WHEELS`), each a
- *   glowing tread under a dark cover on each side, so only the rim
- *   glows, set into the narrow shell between the shell's arches. The
- *   shell (`CYCLE_SHELL`) is one dark glossy piece in slices like the
- *   bike's panels (`grown`), running from the nose over the front wheel,
- *   along the belly and over the rear wheel to the tail, its long back
- *   under a smoked canopy. Glowing lines trace the shell's outline a
- *   little inside it on both sides (`cycleLine`, laid by `profileLine`,
- *   which the red bike's pinstripe shares) and the canopy's ridge. Every
- *   light is in one group and breathes; the body carries no text.
+ *   `+a`, built to the film model's proportions. Two fat wheels of one
+ *   size, a quarter of its length across, are its ends (`CYCLE_WHEELS`),
+ *   each a glowing tread under a dark cover on each side, so only the
+ *   rim glows. The shell (`CYCLE_SHELL`) is one dark glossy piece in
+ *   slices like the bike's panels (`grown`), its top 1.8 wheels high: its
+ *   arches hood both wheels over their tops, the belly runs low between
+ *   them to a square back edge that hides the rear wheel's front, and its
+ *   back (`CYCLE_SPINE`) rises from a short tail over the rear wheel to a
+ *   crown a little ahead of the middle and falls in a long curve to the
+ *   nose. A smoked canopy runs along the front of the back, over the
+ *   hidden rider, with a smoked window on each flank under it. Glowing
+ *   lines trace the shell's outline a little inside it on both sides
+ *   (`cycleLine`, laid by `profileLine`, which the red bike's pinstripe
+ *   shares) and the canopy's ridge. Every light is in one group and
+ *   breathes; the body carries no text.
  *
  * The numbers each kind is built to are named above its recipe: `BIKE`,
  * `BIKE_WHEELS` and the profiles (`CORE`, `SKIRT`, `COWL`) for the bike,
- * `BOX` for the box, `CYCLE`, `CYCLE_WHEELS` and `CYCLE_SHELL` for the
- * neon bike. Round parts use few facets, as in every batch.
+ * `BOX` for the box, `CYCLE`, `CYCLE_WHEELS`, `CYCLE_SPINE` and `CYCLE_SHELL`
+ * for the neon bike. Round parts use few facets, as in every batch.
  */
 
 import { boxKey } from "../../../world/box";
@@ -930,43 +935,92 @@ export const CYCLE_GLOW: Rgb = [0.3, 0.8, 1.0];
 /**
  * The neon bike's size, in metres: `length` from tyre to tyre along
  * `a` and `top`, the canopy's top. No source gives the original's size,
- * so it takes the red bike's footprint; its wheels are a third of its
- * length, as in the film.
+ * so it fills the hall footprint it already had (3.0 m); its proportions
+ * are the film model's, measured off a side view of a kit cut from the
+ * film's own files: the wheels a quarter of its length, the top 0.44 of
+ * it and so 1.8 times a wheel.
  */
-export const CYCLE = { length: 2.86, top: 1.35 } as const;
+export const CYCLE = { length: 2.9, top: 1.28 } as const;
 
 /**
  * The neon bike's two wheels, the front one at `+a`: its axle at `a`
  * (at height `r`), `r` the tyre's radius and `half` its half width. They
- * are the same size, and their treads are the cycle's two ends.
+ * are the same size and fat, and their treads are the cycle's two ends.
  */
 export const CYCLE_WHEELS = {
-  front: { a: 0.95, r: 0.48, half: 0.12 },
-  rear: { a: -0.95, r: 0.48, half: 0.12 },
+  front: { a: 1.09, r: 0.36, half: 0.14 },
+  rear: { a: -1.09, r: 0.36, half: 0.14 },
 } as const satisfies Record<string, BikeWheel>;
 
 /** The arch over each wheel: its radius round the axle. */
-const CYCLE_ARCH = 0.52;
+const CYCLE_ARCH = 0.4;
 
 /**
- * The neon bike's body, `[a, h]`: one closed shell from the nose over
- * the front wheel's arch (from in front of the axle round over the top to
- * behind it), along the belly to the rear wheel's arch and round it to
- * the tail, then over the top forward: rising from the tail to the long
- * flat back under the canopy and falling to the nose.
+ * Where the shell starts along `a` behind: its square back edge, which
+ * hides the rear wheel's front, as on the original.
  */
-const CYCLE_SHELL: readonly P2[] = [
-  ...arc(CYCLE_WHEELS.front.a, CYCLE_WHEELS.front.r, CYCLE_ARCH, 15, 200, 14),
-  ...arc(CYCLE_WHEELS.rear.a, CYCLE_WHEELS.rear.r, CYCLE_ARCH, -20, 165, 14),
-  [-1.44, 0.8],
-  [-1.32, 1.0],
-  [-1.05, 1.15],
-  [-0.55, 1.22],
-  [0.2, 1.22],
-  [0.7, 1.19],
-  [1.1, 1.07],
-  [1.36, 0.88],
+const CYCLE_BACK = -1.0;
+
+/** The height of the shell's flat belly between the wheels. */
+const CYCLE_BELLY = 0.19;
+
+/**
+ * The shell's back, `[a, h]`, from the tail forward to the nose: it
+ * rises from over the rear axle to its crown a little ahead of the
+ * middle and falls in a long curve to the nose over the front wheel.
+ * The crests grown on it (`CYCLE_SLICES`) stand `CYCLE_CREST` above it.
+ */
+const CYCLE_SPINE: readonly P2[] = [
+  [-1.42, 0.74],
+  [-1.41, 0.86],
+  [-1.29, 0.97],
+  [-1.0, 1.035],
+  [-0.72, 1.075],
+  [-0.55, 1.125],
+  [-0.38, 1.165],
+  [-0.13, 1.205],
+  [0.1, 1.225],
+  [0.38, 1.22],
+  [0.6, 1.19],
+  [0.74, 1.155],
+  [0.89, 1.105],
+  [1.1, 1.0],
+  [1.25, 0.92],
+  [1.39, 0.825],
+  [1.43, 0.74],
 ];
+
+/**
+ * The neon bike's body, `[a, h]`: one closed shell. Its front arch hoods
+ * the front wheel from its upper front round over the top to the belly;
+ * the flat belly runs back to the square back edge, which rises to the
+ * rear arch; that hoods the rear wheel over its top to behind the axle,
+ * and the back (`CYCLE_SPINE`) runs from the tail forward to the nose.
+ */
+const { front: FW, rear: RW } = CYCLE_WHEELS;
+const CYCLE_SHELL: readonly P2[] = [
+  ...arc(
+    FW.a,
+    FW.r,
+    CYCLE_ARCH,
+    35,
+    180 + (Math.asin((FW.r - CYCLE_BELLY) / CYCLE_ARCH) * 180) / Math.PI,
+    14,
+  ),
+  [CYCLE_BACK, CYCLE_BELLY],
+  ...arc(
+    RW.a,
+    RW.r,
+    CYCLE_ARCH,
+    archAngle(RW.a, CYCLE_ARCH, CYCLE_BACK),
+    125,
+    6,
+  ),
+  ...CYCLE_SPINE,
+];
+
+/** How far the highest crest stands above the back. */
+const CYCLE_CREST = 0.035;
 
 /**
  * The shell's slices, `[half width, growth]`: the wide one on the outline
@@ -976,33 +1030,83 @@ const CYCLE_SHELL: readonly P2[] = [
 const CYCLE_SLICES: readonly (readonly [number, number])[] = [
   [0.2, 0],
   [0.165, 0.02],
-  [0.11, 0.035],
+  [0.11, CYCLE_CREST],
 ];
 
 /**
- * The canopy's top: under the cycle's top by the glowing line along its
- * ridge, whose upper edge is the cycle's top.
+ * Where the canopy runs along `a`: from just behind the back's crown to
+ * where the nose falls to the front wheel, the original's dark top strip
+ * over the rider.
  */
-const CANOPY_TOP = CYCLE.top - 0.012;
+export const CANOPY_SPAN = { from: 0.1, to: 1.05 } as const;
 
 /**
- * The canopy over the rider, `[a, h]`: a long smoked bubble on the back,
- * its foot sunk into the crests, its top at `CANOPY_TOP`. `CANOPY_HALF`
- * is its half width.
+ * The canopy's half width: over both crests, inside the wide slice, so
+ * from the side it shows as a dark band over the back.
  */
-const CYCLE_CANOPY_PROFILE: readonly P2[] = [
-  [0.6, 1.15],
-  ...curve([0.6, 1.15], [0.3, 1.32], [-0.2, CANOPY_TOP], 4),
-  ...curve([-0.2, CANOPY_TOP], [-0.7, 1.33], [-0.9, 1.18], 3),
-  [-0.9, 1.15],
-];
-const CANOPY_HALF = 0.12;
+const CANOPY_HALF = 0.17;
 
-/** How far in from the shell's outline its glowing side line runs. */
-const CYCLE_LINE_IN = 0.045;
+/** How far the canopy's foot sinks into the shell under its ridge. */
+const CANOPY_DEPTH = 0.1;
+
+/** The back's height at `a`, along `CYCLE_SPINE`. */
+function spineAt(a: number): number {
+  for (let i = 0; i + 1 < CYCLE_SPINE.length; i++) {
+    const p = CYCLE_SPINE[i];
+    const q = CYCLE_SPINE[i + 1];
+    if (!p || !q || a < p[0] || a > q[0]) continue;
+    return p[1] + ((q[1] - p[1]) * (a - p[0])) / (q[0] - p[0]);
+  }
+  throw new Error(`spineAt: ${String(a)} is off the back`);
+}
 
 /** The glowing lines' width and how far they stand off their face. */
 const CYCLE_LINE = { width: 0.016, out: 0.004 } as const;
+
+/**
+ * How far the canopy's ridge stands over the back: the canopy starts at
+ * the back's crown, so the glowing line along its ridge tops out at the
+ * cycle's top, a millimetre under it for the line's slight slant. It
+ * clears the highest crest (`CYCLE_CREST`).
+ */
+const CANOPY_LIFT =
+  CYCLE.top - CYCLE_LINE.width / 2 - 0.001 - spineAt(CANOPY_SPAN.from);
+
+/** The canopy's ridge, `[a, h]`, from its back end to its front. */
+const CANOPY_RIDGE: readonly P2[] = [
+  CANOPY_SPAN.from,
+  ...CYCLE_SPINE.map(([a]) => a).filter(
+    (a) => a > CANOPY_SPAN.from && a < CANOPY_SPAN.to,
+  ),
+  CANOPY_SPAN.to,
+].map((a): P2 => [a, spineAt(a) + CANOPY_LIFT]);
+
+/**
+ * The canopy over the rider, `[a, h]`: a long smoked strip on the back,
+ * its ridge `CANOPY_RIDGE` and its foot sunk `CANOPY_DEPTH` into the
+ * crests.
+ */
+const CYCLE_CANOPY_PROFILE: readonly P2[] = [
+  ...CANOPY_RIDGE,
+  ...[...CANOPY_RIDGE].reverse().map(([a, h]): P2 => [a, h - CANOPY_DEPTH]),
+];
+
+/**
+ * The side window on each flank, `[a, h]`: a smoked sail under the
+ * canopy, its back edge upright, its top following the back down to
+ * its front tip over the front wheel, its foot level.
+ */
+const CYCLE_WINDOW: readonly P2[] = [
+  [0.24, 0.87],
+  [1.04, 0.87],
+  [0.95, 0.96],
+  [0.75, 1.055],
+  [0.5, 1.095],
+  [0.24, 1.09],
+];
+
+/** How far in from the shell's outline its glowing side line runs. */
+const CYCLE_LINE_IN = 0.045;
 
 /**
  * The neon bike's glowing side lines, `[a, h]`, as open polylines: the
@@ -1025,13 +1129,13 @@ function cycleWheel(k: Kit, s: Surfaces, w: BikeWheel, glow: Surface): void {
   const hub = s.tinted(CYCLE_HUB);
   for (const sg of [-1, 1]) {
     k.extrude(
-      discOutline(w.a, w.r, w.r - 0.06, 20, "top"),
+      discOutline(w.a, w.r, w.r - 0.05, 20, "top"),
       sg * w.half,
       sg * (w.half + 0.012),
       hub,
     );
     k.extrude(
-      discOutline(w.a, w.r, w.r - 0.2, 14, "top"),
+      discOutline(w.a, w.r, w.r - 0.15, 14, "top"),
       sg * (w.half + 0.012),
       sg * (w.half + 0.02),
       s.tinted(CYCLE_SHINE),
@@ -1042,11 +1146,12 @@ function cycleWheel(k: Kit, s: Surfaces, w: BikeWheel, glow: Surface): void {
 }
 
 /**
- * The neon bike: two wheels of one size at its ends, their rims
- * glowing; the dark glossy shell in slices over both wheels and between
- * them; the smoked canopy over the rider; and the glowing lines tracing
- * the shell's outline on both sides and the canopy's top edge. Every
- * light is in one group and breathes.
+ * The neon bike: two fat wheels of one size at its ends, their rims
+ * glowing; the dark glossy shell in slices hooding both wheels and
+ * low between them; the smoked canopy along the front of its back and a
+ * smoked window on each flank under it; and the glowing lines tracing
+ * the shell's outline on both sides and the canopy's ridge. Every light
+ * is in one group and breathes.
  */
 const neonBike: HeroRecipe = ({ k, s }) => {
   const glow = s.blink(CYCLE_GLOW, 0);
@@ -1057,22 +1162,18 @@ const neonBike: HeroRecipe = ({ k, s }) => {
   CYCLE_SLICES.forEach(([half, g], i) =>
     k.extrude(grown(CYCLE_SHELL, g), -half, half, i === 0 ? body : shine),
   );
-  k.extrude(
-    CYCLE_CANOPY_PROFILE,
-    -CANOPY_HALF,
-    CANOPY_HALF,
-    s.tinted(CYCLE_CANOPY),
-  );
+  const canopy = s.tinted(CYCLE_CANOPY);
+  k.extrude(CYCLE_CANOPY_PROFILE, -CANOPY_HALF, CANOPY_HALF, canopy);
 
   const outer = CYCLE_SLICES[0]?.[0] ?? 0;
   const { width, out } = CYCLE_LINE;
   const line = cycleLine();
-  const ridge = CYCLE_CANOPY_PROFILE.slice(1, -1);
   for (const d of [-1, 1]) {
+    k.extrude(CYCLE_WINDOW, d * outer, d * (outer + out), canopy);
     profileLine(k, line, width, d * outer, d * (outer + out), glow);
     profileLine(
       k,
-      ridge,
+      CANOPY_RIDGE,
       width,
       d * CANOPY_HALF,
       d * (CANOPY_HALF + out),
