@@ -85,6 +85,8 @@ export const MARKS = {
   recruitMarquee: "STARFIGHTER",
   /** The red bike's fairing stickers, four separate marks, one per sponsor. */
   bikeStickers: ["CANON", "CITIZEN", "ARAI", "SHOEI"],
+  /** The red bike's big two-line sticker on its right side: "BIG" over "1". */
+  bikeBigOne: ["BIG", "1"],
   /** The hoverboard's deck wordmark, one two-line block: "HOVER" over "BOARD". */
   boardLogo: ["HOVER", "BOARD"],
   /** The police box's left door notice, nine lines set as one block. */

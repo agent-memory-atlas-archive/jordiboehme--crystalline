@@ -110,6 +110,8 @@ const READABLE = new Set([
   "CITIZEN",
   "ARAI",
   "SHOEI",
+  // The red bike's big sticker ("1" is above), 0.25.1.
+  "BIG",
   // The hoverboard's deck wordmark.
   "HOVER",
   "BOARD",
@@ -203,6 +205,7 @@ const MARKS_ONLY = [
   "CITIZEN",
   "ARAI",
   "SHOEI",
+  "BIG",
   "HOVER",
   "BOARD",
   "POLICE TELEPHONE",

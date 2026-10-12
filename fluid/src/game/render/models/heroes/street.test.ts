@@ -1,6 +1,7 @@
 /**
  * The street heroes' shape tests: the bike's sourced size, its two
- * lights and its sponsor stickers on both sides; the police box's sign
+ * lights, its tyres as its ends under their domed covers, its silhouette,
+ * its triangle pin and its stickers each on its own side; the police box's sign
  * layout, its sign on all four sides, the lines of its door notice, and
  * its door leaves handed over as two swinging movers, and its hollow
  * inside lit white behind them.
@@ -31,8 +32,9 @@ import { heroHalf } from "./common";
 import {
   BIKE,
   BIKE_STICKERS,
+  BIKE_WHEELS,
   BOX_SIGN,
-  BRAKE_STEEL,
+  HUB_SILVER,
   NOTICE_INK,
   boxDoor,
   boxLeafMovers,
@@ -80,36 +82,113 @@ describe("street hero models", () => {
     );
   });
 
-  it("lights the bike with a steady headlight at the nose and a breathing tail light at the back", () => {
+  it("lights the bike with a steady headlight on the nose and a breathing tail light high on the rear cowl", () => {
     // Mutation caught: the tail light made steady (two steady lights),
-    // or the two lights swapped end for end.
+    // the two lights swapped end for end, or the tail light dropped below
+    // the cowl's slope onto the tyre.
     const parts = partsOf("red-bike");
     const head = parts.filter((p) => p.flag === FLAG.signal);
     const tail = parts.filter((p) => p.flag === blinkFlag(0));
     expect(head).toHaveLength(1);
     expect(tail).toHaveLength(1);
-    expect(
-      Math.min(...local(head[0] as Part).map((q) => q[0])),
-    ).toBeGreaterThan(1.3);
-    expect(Math.max(...local(tail[0] as Part).map((q) => q[0]))).toBeLessThan(
-      -1.3,
+    const hp = local(head[0] as Part);
+    expect(Math.min(...hp.map((q) => q[0]))).toBeGreaterThan(1.3);
+    // Wide: more than three times as wide as it is tall.
+    const hs = hp.map((q) => q[2]);
+    const hd = hp.map((q) => q[1]);
+    expect(Math.max(...hd) - Math.min(...hd)).toBeGreaterThan(
+      3 * (Math.max(...hs) - Math.min(...hs)),
     );
+    const rear = BIKE_WHEELS.rear;
+    for (const q of local(tail[0] as Part)) {
+      expect(q[0]).toBeLessThan(-1.0);
+      expect(q[0]).toBeGreaterThan(rear.a - rear.r);
+      expect(q[2]).toBeGreaterThan(2 * rear.r);
+    }
   });
 
-  it("fits one brake disc, on the front wheel, outboard of its hub", () => {
-    // Mutation caught: the disc on the rear wheel, on both wheels, or
-    // sunk inside the hub where it cannot be seen. The guard: exactly one
-    // part in the disc's steel, so the test cannot pass on none.
-    const discs = partsOf("red-bike").filter(
-      (p) => p.tint !== null && p.tint.every((c, i) => c === BRAKE_STEEL[i]),
+  it("makes the two tyres the bike's ends, the rear one larger, under red domed covers", () => {
+    // Mutation caught: the bodywork reaching past a tyre (the old
+    // capsule), the wheels swapped, a cover missing on one side, or the
+    // silver caps on the wrong wheel. The guard: the tread is found, so
+    // the test cannot pass on a bike with none.
+    const parts = partsOf("red-bike");
+    const all = parts.flatMap(local).map((q) => q[0]);
+    const tread = inked(parts, [0.025, 0.025, 0.03], "extrude");
+    expect(tread).toHaveLength(2);
+    const ends = tread.map((p) => local(p).map((q) => q[0]));
+    expect(Math.max(...ends.flat())).toBeCloseTo(Math.max(...all), 9);
+    expect(Math.min(...ends.flat())).toBeCloseTo(Math.min(...all), 9);
+    const { front, rear } = BIKE_WHEELS;
+    expect(rear.r).toBeGreaterThan(front.r);
+    expect(front.a - rear.a).toBeCloseTo(2.2, 2);
+    // Each wheel's covers: red discs round its axle on both sides, outboard
+    // of its tyre and smaller than it.
+    for (const w of [front, rear]) {
+      const covers = parts.filter((p) => {
+        const pts = local(p);
+        const as = pts.map((q) => q[0]);
+        const ds = pts.map((q) => Math.abs(q[1]));
+        return (
+          p.method === "extrude" &&
+          Math.abs((Math.max(...as) + Math.min(...as)) / 2 - w.a) < 1e-6 &&
+          Math.min(...ds) >= w.half - 1e-6 &&
+          Math.max(...as) - Math.min(...as) < 2 * w.r &&
+          (p.tint?.[0] ?? 0) > 0.85 &&
+          (p.tint?.[1] ?? 1) < 0.3
+        );
+      });
+      const sides = new Set(
+        covers.map((p) => Math.sign(local(p)[0]?.[1] ?? 0)),
+      );
+      expect([...sides].sort()).toEqual([-1, 1]);
+      expect(covers.length).toBeGreaterThanOrEqual(4);
+    }
+    // The silver caps: one on the rear cover's `+d` side, one on the
+    // swing arm's end on `-d`, both over the rear axle, and one on each
+    // engine cover.
+    const caps = inked(parts, HUB_SILVER, "extrude");
+    expect(caps).toHaveLength(4);
+    const onAxle = caps.filter((p) => {
+      const as = local(p).map((q) => q[0]);
+      return Math.abs((Math.max(...as) + Math.min(...as)) / 2 - rear.a) < 1e-6;
+    });
+    expect(onAxle.map((p) => Math.sign(local(p)[0]?.[1] ?? 0)).sort()).toEqual([
+      -1, 1,
+    ]);
+  });
+
+  it("builds the silhouette: a high fairing and windscreen in front, a low bucket seat, a tall rear cowl", () => {
+    // Mutation caught: the seat raised back to a saddle, the backrest or
+    // the rear cowl dropped, or the fairing's front sunk into the tyre.
+    const parts = partsOf("red-bike");
+    const seat = inked(parts, [0.3, 0.14, 0.1]).flatMap(local);
+    expect(seat.length).toBeGreaterThan(0);
+    // The cushion is low, the backrest stands tall behind it.
+    const cushion = inked(parts, [0.3, 0.14, 0.1], "bevelBox").flatMap(local);
+    expect(cushion.length).toBeGreaterThan(0);
+    expect(Math.max(...cushion.map((q) => q[2]))).toBeLessThanOrEqual(0.45);
+    expect(Math.max(...seat.map((q) => q[2]))).toBeGreaterThan(0.8);
+    // The highest red behind the seat stands over 1 m; the screen is the top.
+    const red = parts
+      .filter((p) => p.tint !== null && p.tint[0] > 0.85 && p.tint[1] < 0.3)
+      .flatMap(local);
+    const cowl = red.filter((q) => q[0] < -0.5).map((q) => q[2]);
+    expect(Math.max(...cowl)).toBeGreaterThan(1.0);
+    expect(Math.max(...cowl)).toBeLessThan(BIKE.screenTop);
+    // Over the front tyre the fairing leaves its arch clear.
+    const { front } = BIKE_WHEELS;
+    const overTyre = red.filter(
+      (q) =>
+        Math.abs(q[1]) < front.half &&
+        Math.hypot(q[0] - front.a, q[2] - front.r) < front.r + 0.02,
     );
-    expect(discs).toHaveLength(1);
-    const pts = local(discs[0] as Part);
-    const as = pts.map((q) => q[0]);
-    expect((Math.max(...as) + Math.min(...as)) / 2).toBeCloseTo(1.0, 2);
-    expect(Math.max(...as) - Math.min(...as)).toBeLessThan(0.4);
-    // Outboard of the hub's face at 0.17 on the `+d` side.
-    expect(Math.min(...pts.map((q) => q[1]))).toBeGreaterThan(0.17);
+    expect(overTyre).toEqual([]);
+  });
+
+  it("stays under its triangle pin", () => {
+    // Mutation caught: a slice or a tyre built with far more facets.
+    expect(buildHeroMesh("red-bike", 0, LOOK).count / 3).toBeLessThan(3200);
   });
 
   it("lays the sign out as on the original: POLICE, PUBLIC over CALL, BOX, inside the band", () => {
@@ -169,30 +248,47 @@ describe("street hero models", () => {
     expect(Math.max(...ds)).toBeGreaterThanOrEqual(FRONT - 1e-6);
     for (const d of ds) expect(d).toBeLessThanOrEqual(FRONT + 1e-6);
   });
-  it("puts each sponsor sticker on both sides of the bike's shell, from the approved list (2.6f C13)", () => {
-    // Mutation caught: a sticker on one side only, a sticker set from the
-    // wrong entry, or a sticker off the shell's side faces.
-    expect(BIKE_STICKERS.length).toBe(MARKS.bikeStickers.length);
+  it("puts each sticker on its own side of the bike, from the approved list (2.6f C13)", () => {
+    // Mutation caught: a sticker mirrored onto both sides or set on the
+    // wrong one, a sticker set from an unapproved string, or a sticker off
+    // the skirts and the front wheel cover. The guard: both sides carry
+    // stickers, so the test cannot pass on none.
+    const approved = [...MARKS.bikeStickers, MARKS.bikeBigOne];
+    expect(BIKE_STICKERS.map((s) => s.mark).sort()).toEqual(
+      [...approved].sort(),
+    );
+    expect(new Set(BIKE_STICKERS.map((s) => s.side))).toEqual(new Set([-1, 1]));
     const parts = partsOf("red-bike");
+    const { front } = BIKE_WHEELS;
     for (const s of BIKE_STICKERS) {
-      const text = MARKS.bikeStickers[s.text] ?? "";
-      expect(runsOfLines(text)).toBeGreaterThan(3);
+      const name = typeof s.mark === "string" ? s.mark : s.mark.join(" ");
+      expect(runsOfLines(s.mark)).toBeGreaterThan(3);
       const ink = inked(parts, s.ink, "panel");
-      expect(ink, text).toHaveLength(2 * runsOfLines(text));
-      const sides = new Set(
-        ink.map((p) => Math.sign(Math.max(...local(p).map((q) => q[1])))),
-      );
-      expect([...sides].sort(), text).toEqual([-1, 1]);
+      expect(ink, name).toHaveLength(runsOfLines(s.mark));
       for (const p of ink) {
         const [a0, a1] = s.a;
+        const [h0, h1] = s.h;
         for (const q of local(p)) {
+          expect(Math.sign(q[1]), name).toBe(s.side);
           expect(q[0]).toBeGreaterThanOrEqual(a0 - 1e-6);
           expect(q[0]).toBeLessThanOrEqual(a1 + 1e-6);
-          expect(Math.abs(q[1])).toBeGreaterThan(0.2);
+          expect(q[2]).toBeGreaterThanOrEqual(h0 - 1e-6);
+          expect(q[2]).toBeLessThanOrEqual(h1 + 1e-6);
+          expect(Math.abs(q[1])).toBeGreaterThan(s.face);
+          // A wheel sticker stays inside the cover's inner dome.
+          if (s.face < 0.2)
+            expect(Math.hypot(q[0] - front.a, q[2] - front.r)).toBeLessThan(
+              0.58 * front.r * Math.cos(Math.PI / 16),
+            );
         }
         expect(heightOf(p)).toBeGreaterThanOrEqual(0.003 - 1e-9);
       }
     }
+    // The left flank's three and the right flank's two, as on the original.
+    const sideOf = (m: string) => BIKE_STICKERS.find((s) => s.mark === m)?.side;
+    const [canon, citizen, arai, shoei] = MARKS.bikeStickers;
+    expect([canon, citizen, shoei].map((m) => sideOf(m))).toEqual([-1, -1, -1]);
+    expect(sideOf(arai)).toBe(1);
   });
 
   it("sets the notice's lines in black on the left door leaf's white notice (2.6f C13)", () => {
