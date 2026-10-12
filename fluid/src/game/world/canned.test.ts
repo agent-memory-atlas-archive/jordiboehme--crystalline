@@ -595,11 +595,14 @@ describe("heroHallRoom", () => {
     expect(JSON.stringify(heroHallRoom())).toBe(JSON.stringify(hall));
   });
 
-  it("stands every round table clear of the heroes, the lanes and the other tables (0.25.1)", () => {
-    // Mutation caught: a table moved into a hero's reserve or onto a lane
-    // (the entrance lane up column 11), or two tables overlapping.
-    const tables = hall.decor.filter((d) => d.kind === "round-table");
-    expect(tables).toHaveLength(3);
+  it("stands every round table and the lab island clear of the heroes, the lanes and each other (0.25.1)", () => {
+    // Mutation caught: a table or the island moved into a hero's reserve
+    // or onto a lane (the entrance lane up column 11), or two pieces
+    // overlapping.
+    expect(hall.decor.filter((d) => d.kind === "round-table")).toHaveLength(4);
+    expect(hall.decor.filter((d) => d.kind === "lab-island")).toHaveLength(1);
+    const tables = hall.decor;
+    expect(tables).toHaveLength(5);
     const reserve = heroReserve(hall.heroes).boxes;
     const heroBoxes = hall.heroes.flatMap((h) => {
       const blocker = heroBlocker(h);

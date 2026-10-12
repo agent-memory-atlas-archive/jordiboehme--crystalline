@@ -189,6 +189,11 @@ const READABLE = new Set([
   // (0.25.1).
   "HACK THE PLANET!",
   "PIZZA POWER",
+  // The report sheets' cover heading and date word, and the radio set's
+  // note (0.25.1).
+  "TPS REPORT",
+  "DATE",
+  "Melmac?",
   "15",
   "16",
   "23",
@@ -270,6 +275,9 @@ const MARKS_ONLY = [
   "MESS WITH THE BEST, DIE LIKE THE REST.",
   "HACK THE PLANET!",
   "PIZZA POWER",
+  "TPS REPORT",
+  "DATE",
+  "Melmac?",
   "15",
   "16",
   "23",
@@ -388,6 +396,7 @@ describe("readable text in the recipes", () => {
       "desktop",
       "critters",
       "office",
+      "figures",
       "marked",
       "rare",
       "walker",

@@ -1,6 +1,7 @@
 /**
  * The office curios' recipes (0.25.1): the floppy disk, the pizza box, the
- * lottery ticket and the 5.25 inch disk, the desk and snack slots' kinds. Colours and helpers
+ * lottery ticket, the 5.25 inch disk and the report sheets, the desk,
+ * snack and paper slots' kinds. Colours and helpers
  * stay in this file, which imports only `common.ts` of the curio batches.
  * Nothing lights and nothing blinks.
  *
@@ -44,6 +45,17 @@
  *   across the back edge, `MARKS.diskLabel` printed on it in red
  *   (`DISK_PRINT`) with a grey disc (`DISK_GLOBE`) beside it, as the
  *   printed original has (`DISK`).
+ * - The report sheets are US letter sheets (0.216 by 0.279 m) lying flat.
+ *   The cover sheet (`COVER_PAPER`) carries the original's layout within
+ *   what may be drawn (`COVER`, from the 0.25.1 small props research): the
+ *   heading `MARKS.reportTitle` across the upper quarter in a black print
+ *   (`COVER_PRINT`), under it at the right the date word `MARKS.reportDate`
+ *   with a rule after it, six blank field rules down the middle, and at
+ *   the lower right an empty stamp box outlined by four thin strips, all
+ *   rules in a grey print (`COVER_RULE`). v0 is the cover sheet alone, v1
+ *   a short stack of plain sheets (`STACK_PAPER`) under it, v2 a tall
+ *   stack in three blocks, each turned a little by `SHEET_TURNS`. Only the
+ *   top sheet is a cover sheet, so nothing under it is printed.
  */
 
 import type { CurioKind } from "../../../world/types";
@@ -496,16 +508,138 @@ const disk525: CurioRecipe = ({ k, s, kind, variant }) => {
   );
 };
 
+// --- Report sheets -----------------------------------------------------------
+
+/** The cover sheet: a white paper. */
+export const COVER_PAPER: Rgb = [0.94, 0.94, 0.91];
+
+/** The plain sheets under it: a paper a shade greyer, so the stack reads. */
+export const STACK_PAPER: Rgb = [0.84, 0.84, 0.81];
+
+/** The heading and the date word: a black print. */
+export const COVER_PRINT: Rgb = [0.06, 0.06, 0.07];
+
+/** The field rules and the stamp box: a grey print. */
+export const COVER_RULE: Rgb = [0.38, 0.38, 0.4];
+
+/**
+ * The cover sheet's layout, in metres, its centre at the origin and its
+ * top edge towards `-d`: the sheet's size, the print's thickness, the
+ * heading's box and the date word's box (each `[a0, a1, d0, d1]`), the
+ * rule after the date word (its ends along `a`), the field rules (their
+ * ends along `a` and their places along `d`), the rules' width, and the
+ * stamp box's outline (`[a0, a1, d0, d1]`).
+ */
+export const COVER = {
+  width: 0.216,
+  depth: 0.279,
+  print: 0.0008,
+  title: [-0.0715, 0.0715, -0.077, -0.055],
+  date: [0.022, 0.046, -0.035, -0.027],
+  dateRule: [0.048, 0.094],
+  fields: {
+    a0: -0.09,
+    a1: 0.094,
+    d: [-0.012, 0.004, 0.02, 0.036, 0.052, 0.068],
+  },
+  rule: 0.0008,
+  stamp: [0.03, 0.09, 0.085, 0.12],
+} as const;
+
+/**
+ * The stacks' blocks, from the bottom up, in each variant: a block's
+ * height and its turn in radians. v1 is one block of plain sheets, v2
+ * three, a little askew; the cover sheet lies on the top block at that
+ * block's turn. The turns are pinned against the catalogue's box.
+ */
+export const SHEET_TURNS: readonly (readonly (readonly [
+  h: number,
+  turn: number,
+])[])[] = [
+  [],
+  [[0.0285, 0.02]],
+  [
+    [0.026, -0.03],
+    [0.026, 0.015],
+    [0.0255, 0.05],
+  ],
+];
+
+/** One cover sheet with `k`, its underside at `h0`, its print up to `top`. */
+function coverSheet(k: Kit, s: Surfaces, h0: number, top: number): void {
+  const c = COVER;
+  const paper = top - c.print;
+  k.box(
+    -c.width / 2,
+    c.width / 2,
+    -c.depth / 2,
+    c.depth / 2,
+    h0,
+    paper,
+    s.tinted(COVER_PAPER),
+  );
+  const print = slab(k, paper, top, s.tinted(COVER_PRINT));
+  flatText(MARKS.reportTitle, c.title, print);
+  const datePx = flatText(MARKS.reportDate, c.date, print);
+  // The rule after the date word, along its foot, and the field rules.
+  const rule = slab(k, paper, top, s.tinted(COVER_RULE));
+  const foot = (c.date[2] + c.date[3]) / 2 + (5 * datePx) / 2;
+  rule(c.dateRule[0], c.dateRule[1], foot - c.rule, foot);
+  for (const d of c.fields.d) rule(c.fields.a0, c.fields.a1, d - c.rule, d);
+  // The stamp box: four thin strips round an empty field.
+  const [a0, a1, d0, d1] = c.stamp;
+  const t = c.rule;
+  rule(a0, a1, d0, d0 + t);
+  rule(a0, a1, d1 - t, d1);
+  rule(a0, a0 + t, d0 + t, d1 - t);
+  rule(a1 - t, a1, d0 + t, d1 - t);
+}
+
+/** The report sheets: a cover sheet alone (v0) or on a stack (v1, v2). */
+const reportSheets: CurioRecipe = ({ k, kitAt, s, kind, variant }) => {
+  const { top } = curioHalf(kind, variant);
+  const blocks = SHEET_TURNS[variant];
+  if (blocks === undefined)
+    throw new Error(`the report sheets have no variant ${String(variant)}`);
+  const c = COVER;
+  let h = 0;
+  let turn = 0;
+  for (const [height, t] of blocks) {
+    kitAt(yawed(ORIGIN, 0, 0, t)).box(
+      -c.width / 2,
+      c.width / 2,
+      -c.depth / 2,
+      c.depth / 2,
+      h,
+      h + height,
+      s.tinted(STACK_PAPER),
+    );
+    h += height;
+    turn = t;
+  }
+  coverSheet(
+    blocks.length === 0 ? k : kitAt(yawed(ORIGIN, 0, 0, turn)),
+    s,
+    h,
+    top,
+  );
+};
+
 /** The office curios' recipes. */
 export const OFFICE_RECIPES = {
   "floppy-disk": floppyDisk,
   "pizza-box": pizzaBox,
   "lottery-ticket": lotteryTicket,
   "disk-525": disk525,
+  "report-sheets": reportSheets,
 } satisfies Record<
   Extract<
     CurioKind,
-    "floppy-disk" | "pizza-box" | "lottery-ticket" | "disk-525"
+    | "floppy-disk"
+    | "pizza-box"
+    | "lottery-ticket"
+    | "disk-525"
+    | "report-sheets"
   >,
   CurioRecipe
 >;

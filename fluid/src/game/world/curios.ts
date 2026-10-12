@@ -38,8 +38,9 @@
  * - **C5. No blocker of their own.** Every surface lies inside its host's
  *   footprint, which already blocks the player, so a curio changes no
  *   reach.
- * - **C6. Nine slots.** A room draws each of the `retro`, `gear`, `ball`,
- *   `under`, `tech`, `radar`, `capsule`, `desk` and `snack` slots once,
+ * - **C6. Twelve slots.** A room draws each of the `retro`, `gear`, `ball`,
+ *   `under`, `tech`, `radar`, `capsule`, `desk`, `snack`, `figure`,
+ *   `paper` and `radio` slots once,
  *   rolling only over the kinds that fit it, so it holds at most one curio
  *   per slot. The two computers and the space bricks share the retro
  *   slot, so the two computers never stand in one generated room; the
@@ -47,11 +48,15 @@
  *   capsule case each have a slot of their own, so either can stand beside
  *   a ball. The floppy, the 5.25 inch disk and the lottery ticket share
  *   the desk slot, and the pizza box has the snack slot to itself
- *   (0.25.1).
+ *   (0.25.1). The penguin figurine, the report sheets and the radio set
+ *   each have a slot of their own too (`figure`, `paper`, `radio`), whose
+ *   pool is the archetype's own and may be empty (0.25.1).
  * - **C7. Rates.** Each slot's chance (`RETRO_SHARE`, `GEAR_SHARE`,
  *   `BALL_SHARE`, `UNDER_SHARE`, `TECH_SHARE`, `RADAR_SHARE`,
- *   `CAPSULE_SHARE`, `DESK_SHARE`, `SNACK_SHARE`) and its weighted pool
- *   (`RETRO_POOLS` and `GEAR_POOLS` and `TECH_POOLS` per archetype,
+ *   `CAPSULE_SHARE`, `DESK_SHARE`, `SNACK_SHARE`, `FIGURE_SHARE`,
+ *   `PAPER_SHARE`, `RADIO_SHARE`) and its weighted pool (`RETRO_POOLS`,
+ *   `GEAR_POOLS`, `TECH_POOLS`, `FIGURE_POOLS`, `PAPER_POOLS` and
+ *   `RADIO_POOLS` per archetype,
  *   `BALL_POOL`, `UNDER_POOL`, `RADAR_POOL`, `CAPSULE_POOL`, `DESK_POOL`,
  *   `SNACK_POOL`); a drawn ball tries the
  *   hall's corners at `BALL_FLOOR`. The radar takes at
@@ -87,7 +92,8 @@
  *    one uniform and a roll each for the radar and the capsule case, the
  *    uniform giving both the slot's own chance and its paired chance, then
  *    the desk slot's (`DESK_SHARE`) and the snack slot's (`SNACK_SHARE`)
- *    chance and roll (0.25.1). Everything is always drawn, and the later
+ *    chance and roll, then the figure, paper and radio slots' chance and
+ *    roll in that order (0.25.1). Everything is always drawn, and the later
  *    slots come after every earlier value, so no earlier draw moves. `curioDrawsOf` reads nothing
  *    of a room but its seed, so a neighbour's raw curios (`rawCurios`, 2.6f
  *    C6) are made from its seed alone: it steps through the same slots,
@@ -96,16 +102,17 @@
  *    (`ARCHETYPE_SLOTS`) when the archetype is unknown.
  * 2. **Surfaces.** `hostSurfaces(room)`, once.
  * 3. **Slots, in order: retro, gear, ball, under, tech, radar, capsule,
- *    desk, snack.** The two 0.25.1 slots come last, so they never take a
- *    place an older curio would have stood on.
+ *    desk, snack, figure, paper, radio.** The 0.25.1 slots come last, so
+ *    they never take a place an older curio would have stood on.
  *    A slot that takes (`slotTakes`: its own chance, or for the radar and
  *    the capsule case their paired chance when a curio placed before it
  *    in this pass is a partner, a star ball for the radar, a star ball or
  *    the radar for the capsule case) takes its pool
  *    (`RETRO_POOLS[room.archetype]`, `GEAR_POOLS[room.archetype]`,
  *    `BALL_POOL`, `UNDER_POOL`, `TECH_POOLS[room.archetype]`,
- *    `RADAR_POOL`, `CAPSULE_POOL`, `DESK_POOL`, `SNACK_POOL`, or only the
- *    kind its draw forces),
+ *    `RADAR_POOL`, `CAPSULE_POOL`, `DESK_POOL`, `SNACK_POOL`,
+ *    `FIGURE_POOLS[room.archetype]`, `PAPER_POOLS[room.archetype]`,
+ *    `RADIO_POOLS[room.archetype]`, or only the kind its draw forces),
  *    keeps the kinds with a candidate that fits right now, picks one by
  *    `pickByRoll` and places it, skipping its neighbours' kinds (2.6f C7,
  *    C8): when a neighbour draws the picked kind raw (`near.curios`), the
@@ -226,9 +233,12 @@ export const CURIO_KINDS: readonly CurioKind[] = [
   "pizza-box",
   "lottery-ticket",
   "disk-525",
+  "penguin-figure",
+  "report-sheets",
+  "radio-set",
 ];
 
-/** Which of a room's nine draws a kind comes from (C6, 2.6d C5, 0.25.1). */
+/** Which of a room's twelve draws a kind comes from (C6, 2.6d C5, 0.25.1). */
 export type CurioSlot =
   | "retro"
   | "gear"
@@ -238,7 +248,10 @@ export type CurioSlot =
   | "radar"
   | "capsule"
   | "desk"
-  | "snack";
+  | "snack"
+  | "figure"
+  | "paper"
+  | "radio";
 
 /** One variant's box in metres at turn 0: `width` along `a`, `depth` along `d`, `top` above its base. */
 export interface CurioSize {
@@ -282,7 +295,8 @@ export interface CurioEntry {
 /**
  * Every curio kind (C19, 2.6d C3): its slot (C6), its variant count and one
  * size per variant, the surface classes it stands on (C3), its facing
- * (C10), and for the soot puffs `floorOnly` and for the drone `prefers`. No
+ * (C10), and for the soot puffs `floorOnly` and for the drone and the
+ * penguin figurine `prefers`. No
  * size is wider or deeper than 0.65 m. The sword's three variants are the
  * blade lying in a small cradle, then the lit blade upright in its stand in
  * blue and in green (C13); the gadget's are one alone and a cluster; the
@@ -509,6 +523,40 @@ export const CURIO_CATALOGUE: Readonly<Record<CurioKind, CurioEntry>> = {
     classes: ["desk", "bench", "table"],
     sizes: [{ width: 0.133, depth: 0.133, top: 0.003 }],
   },
+  "penguin-figure": {
+    // 0.17 m wide at 0.2 m tall: the seated drawing's own 216 to 256
+    // (0.25.1 research); a terminal's desk end still holds it.
+    slot: "figure",
+    variants: 1,
+    facing: "front",
+    prefers: "terminal",
+    classes: ["desk", "bench", "table", "shelf"],
+    sizes: [{ width: 0.17, depth: 0.12, top: 0.2 }],
+  },
+  "report-sheets": {
+    // v0 a single cover sheet, v1 a short stack, v2 a tall stack slightly
+    // askew.
+    slot: "paper",
+    variants: 3,
+    facing: "front",
+    classes: ["desk", "table"],
+    sizes: [
+      { width: 0.216, depth: 0.279, top: 0.002 },
+      { width: 0.23, depth: 0.29, top: 0.03 },
+      { width: 0.24, depth: 0.3, top: 0.08 },
+    ],
+  },
+  "radio-set": {
+    // v0 the note stuck on the set, v1 a sheet beside it.
+    slot: "radio",
+    variants: 2,
+    facing: "fixed",
+    classes: ["desk", "bench", "table"],
+    sizes: [
+      { width: 0.36, depth: 0.3, top: 0.16 },
+      { width: 0.54, depth: 0.3, top: 0.16 },
+    ],
+  },
 };
 
 /**
@@ -652,6 +700,51 @@ export const SNACK_POOL = [
   ["pizza-box", 1],
 ] as const satisfies readonly (readonly [CurioKind, number])[];
 
+/**
+ * The figure slot's pool per archetype (0.25.1): the penguin figurine,
+ * twice as often in engineering rooms, never in a council or lab room. An
+ * empty pool means the slot never takes there. Order is part of the
+ * seeded result.
+ */
+export const FIGURE_POOLS = {
+  bridge: [["penguin-figure", 1]],
+  council: [],
+  engineering: [["penguin-figure", 2]],
+  archive: [["penguin-figure", 1]],
+  lab: [],
+} as const satisfies Record<
+  Archetype,
+  readonly (readonly [CurioKind, number])[]
+>;
+/**
+ * The paper slot's pool per archetype (0.25.1): the report sheets, more
+ * often in council and archive rooms, never in an engineering or lab room.
+ */
+export const PAPER_POOLS = {
+  bridge: [["report-sheets", 1]],
+  council: [["report-sheets", 2]],
+  engineering: [],
+  archive: [["report-sheets", 2]],
+  lab: [],
+} as const satisfies Record<
+  Archetype,
+  readonly (readonly [CurioKind, number])[]
+>;
+/**
+ * The radio slot's pool per archetype (0.25.1): the radio set in bridge
+ * and council rooms alone.
+ */
+export const RADIO_POOLS = {
+  bridge: [["radio-set", 2]],
+  council: [["radio-set", 1]],
+  engineering: [],
+  archive: [],
+  lab: [],
+} as const satisfies Record<
+  Archetype,
+  readonly (readonly [CurioKind, number])[]
+>;
+
 /** Chance a room draws a retro curio (C7, 2.6f C4): about 1 room in 4. */
 export const RETRO_SHARE = 1 / 4;
 /** Chance a room draws a gear curio (C7, 2.6f C4): about 3 in 16. */
@@ -679,6 +772,12 @@ export const CAPSULE_BESIDE = 1 / 3;
 export const DESK_SHARE = 1 / 4;
 /** Chance a room draws the snack slot: about 1 room in 8. */
 export const SNACK_SHARE = 1 / 8;
+/** Chance a room draws the figure slot (0.25.1): about 1 room in 8. */
+export const FIGURE_SHARE = 1 / 8;
+/** Chance a room draws the paper slot (0.25.1): about 1 room in 6. */
+export const PAPER_SHARE = 1 / 6;
+/** Chance a room draws the radio slot (0.25.1): about 1 room in 10. */
+export const RADIO_SHARE = 1 / 10;
 
 /**
  * The curio that hovers (2.6d C4): its underside's height over the surface
@@ -1358,6 +1457,21 @@ export interface CurioDraws {
    * `curioDraws` always sets it.
    */
   snack?: SlotDraw;
+  /**
+   * The figure slot (the penguin figurine; 0.25.1). Absent means not
+   * drawn; `curioDraws` always sets it.
+   */
+  figure?: SlotDraw;
+  /**
+   * The paper slot (the report sheets; 0.25.1). Absent means not drawn;
+   * `curioDraws` always sets it.
+   */
+  paper?: SlotDraw;
+  /**
+   * The radio slot (the radio set; 0.25.1). Absent means not drawn;
+   * `curioDraws` always sets it.
+   */
+  radio?: SlotDraw;
 }
 
 /** The slots in the order the pass fills them (C6, 2.6d C5, 0.25.1). */
@@ -1371,6 +1485,9 @@ const SLOTS: readonly CurioSlot[] = [
   "capsule",
   "desk",
   "snack",
+  "figure",
+  "paper",
+  "radio",
 ];
 
 /**
@@ -1412,7 +1529,9 @@ export function curioDraws(room: CurioBase): CurioDraws {
  * share (`RADAR_SHARE`, `CAPSULE_SHARE`) and its `paired` below its chance
  * beside a partner (`RADAR_BESIDE_BALL`, `CAPSULE_BESIDE`), then the desk
  * slot's chance of `DESK_SHARE` and its roll and the snack slot's chance
- * of `SNACK_SHARE` and its roll (0.25.1). Everything is
+ * of `SNACK_SHARE` and its roll, then the figure, paper and radio slots'
+ * chances of `FIGURE_SHARE`, `PAPER_SHARE` and `RADIO_SHARE` and their
+ * rolls (0.25.1). Everything is
  * drawn whether it is used or not, so no draw ever moves another. No draw
  * forces a kind. They read nothing of a room but its seed, so a
  * neighbour's draws (`rawCurios`) are made from its seed alone.
@@ -1442,6 +1561,10 @@ export function curioDrawsOf(seed: number): CurioDraws {
   // 0.25.1: appended after every older value, so none of them moves.
   const desk = slot(DESK_SHARE);
   const snack = slot(SNACK_SHARE);
+  // The three later 0.25.1 slots, after the desk and snack values.
+  const figure = slot(FIGURE_SHARE);
+  const paper = slot(PAPER_SHARE);
+  const radio = slot(RADIO_SHARE);
   return {
     retro,
     gear,
@@ -1452,6 +1575,9 @@ export function curioDrawsOf(seed: number): CurioDraws {
     capsule,
     desk,
     snack,
+    figure,
+    paper,
+    radio,
   };
 }
 
@@ -1460,6 +1586,9 @@ const ARCHETYPE_SLOTS: ReadonlySet<CurioSlot> = new Set([
   "retro",
   "gear",
   "tech",
+  "figure",
+  "paper",
+  "radio",
 ]);
 
 /**
@@ -1818,6 +1947,12 @@ function poolOf(
       return DESK_POOL;
     case "snack":
       return SNACK_POOL;
+    case "figure":
+      return FIGURE_POOLS[archetype];
+    case "paper":
+      return PAPER_POOLS[archetype];
+    case "radio":
+      return RADIO_POOLS[archetype];
   }
 }
 

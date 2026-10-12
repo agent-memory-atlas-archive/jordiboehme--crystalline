@@ -1259,15 +1259,24 @@ function heroHallLights(roomSeed: number, layout: Layout): LightZone[] {
 
 /**
  * The hero hall's round tables, `[x, y]` in cell units, each at turn 0:
- * the first carries the 2.6d curios, the second and the third the 0.25.1
- * ones (`heroHallCurios`). Each stands clear of every hero, of the
- * entrance lane up column 11 and of the other tables.
+ * the first carries the 2.6d curios, the second, the third and the fourth
+ * the 0.25.1 ones (`heroHallCurios`). Each stands clear of every hero, of
+ * the entrance lane up column 11 and of the other tables.
  */
 const HERO_HALL_TABLES: readonly (readonly [number, number])[] = [
   [20, 16.5],
   [8.5, 16.5],
   [14, 22],
+  [7, 22.5],
 ];
+
+/**
+ * The hero hall's lab island, `[x, y]` in cell units, at turn 0, in the
+ * free west strip: the one top in the hall wide enough for the radio set
+ * with its sheet beside it (0.54 m), which no round table place holds
+ * (0.25.1). It stands clear of every hero, the lanes and the tables.
+ */
+const HERO_HALL_ISLAND: readonly [number, number] = [2, 18.5];
 
 /**
  * The hero hall (H15): a room built by hand rather than generated, holding
@@ -1420,13 +1429,22 @@ export function heroHallRoom(): RoomSpec {
         ],
       },
     ],
-    decor: HERO_HALL_TABLES.map(([x, y], i) => ({
-      kind: "round-table" as const,
-      x,
-      y,
-      turn: 0,
-      seed: seedFor(seed, "decor", "round-table", i),
-    })),
+    decor: [
+      ...HERO_HALL_TABLES.map(([x, y], i) => ({
+        kind: "round-table" as const,
+        x,
+        y,
+        turn: 0,
+        seed: seedFor(seed, "decor", "round-table", i),
+      })),
+      {
+        kind: "lab-island" as const,
+        x: HERO_HALL_ISLAND[0],
+        y: HERO_HALL_ISLAND[1],
+        turn: 0,
+        seed: seedFor(seed, "decor", "lab-island", 0),
+      },
+    ],
     scaffold: [],
     heroes,
     props: [],
@@ -2241,19 +2259,27 @@ export function row(
  *   places 1, 2 and 3 the pizza box closed, stacked two and stacked
  *   three, one to a place, since a box fills a place's 0.41 m budget
  *   alone; and the third table's place 0 the open pizza box, place 1 the
- *   floppy's second label and place 2 the 5.25 inch disk. The third
- *   table's place 3 stays free.
+ *   floppy's second label, place 2 the 5.25 inch disk and place 3 the
+ *   penguin figurine;
+ * - the fourth round table's four places (0.25.1), turned out the same
+ *   way: places 0, 1 and 2 the report sheets' single cover sheet, short
+ *   stack and tall stack, and place 3 the radio set with its note, each
+ *   alone, since each fills most of a place's 0.41 m budget;
+ * - the lab island's top: the radio set with its sheet beside it, alone,
+ *   since its 0.54 m fit no round table's place.
  *
  * Every seed is `seedFor(seed, "curio", kind, variant)`, and the output is
  * sorted by `CURIO_ORDER`.
  */
 function heroHallCurios(seed: number, room: RoomSpec): Curio[] {
   const surfaces = hostSurfaces(room);
-  // Every round table gives the same tokens, so a table's surface is
-  // found by its host too: the hall's `table`-th round table, the first
-  // by default.
+  // Every round table gives the same tokens, so a decor surface is found
+  // by its host too: the hall's `table`-th piece of the kind its token
+  // names, the first by default.
   const at = (token: string, table = 0): HostSurface => {
-    const host = room.decor.filter((d) => d.kind === "round-table")[table];
+    const host = room.decor.filter((d) => token.startsWith(`decor-${d.kind}-`))[
+      table
+    ];
     const s = surfaces.find(
       (x) =>
         x.key[2] === token &&
@@ -2344,5 +2370,12 @@ function heroHallCurios(seed: number, room: RoomSpec): Curio[] {
     one("decor-round-table-0", "pizza-box", 3, 2, 2),
     one("decor-round-table-1", "floppy-disk", 1, 3, 2),
     one("decor-round-table-2", "disk-525", 0, 0, 2),
+    one("decor-round-table-3", "penguin-figure", 0, 1, 2),
+    // 0.25.1: the fourth table's four places and the lab island's top.
+    one("decor-round-table-0", "report-sheets", 0, 2, 3),
+    one("decor-round-table-1", "report-sheets", 1, 3, 3),
+    one("decor-round-table-2", "report-sheets", 2, 0, 3),
+    one("decor-round-table-3", "radio-set", 0, 1, 3),
+    one("decor-lab-island-0", "radio-set", 1),
   ].sort(CURIO_ORDER);
 }

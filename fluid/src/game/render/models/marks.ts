@@ -77,6 +77,12 @@ export const MARKS = {
   diskLabel: "GEOS",
   /** The pizza box's lid print (0.25.1 D-4). */
   pizzaLid: "PIZZA POWER",
+  /** The report sheets' cover heading (0.25.1 D-5). */
+  reportTitle: "TPS REPORT",
+  /** The cover sheet's date line word, a rule drawn after it (0.25.1 D-5). */
+  reportDate: "DATE",
+  /** The radio set's note, hand-written (0.25.1 D-5). */
+  radioNote: "Melmac?",
   /** The spray-painted tag on a rough room's wall (0.25.1 D-4). */
   sprayTag: "COWABUNGA!",
   /** The six numbers of the lottery ticket, and later of the scribble, the plate and the hatch variant, each set on its own (0.25.1 D-2). */

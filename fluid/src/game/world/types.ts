@@ -624,7 +624,11 @@ export type CurioKind =
   | "floppy-disk"
   | "pizza-box"
   | "lottery-ticket"
-  | "disk-525";
+  | "disk-525"
+  // 0.25.1: the figure, paper and radio slots
+  | "penguin-figure"
+  | "report-sheets"
+  | "radio-set";
 
 /**
  * One curio (C1): `x` and `y` in `Decor`'s continuous cell units, the

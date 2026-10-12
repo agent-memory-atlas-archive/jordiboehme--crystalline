@@ -22,7 +22,8 @@
  *
  * A mark on a face that looks up, where no quad can lie, is laid by
  * `flatText` as thin pieces of merged runs (`pixelRects`): the tape drive's
- * badge (`retro.ts`) and the office curios' prints (`office.ts`).
+ * badge (`retro.ts`), the office curios' prints (`office.ts`) and the
+ * radio set's sheet (`figures.ts`).
  *
  * Kept apart from `index.ts` so the batch files can import it without an
  * import cycle through the dispatcher. The batch files import only this
@@ -55,8 +56,9 @@ export type CurioRecipe = (r: {
  * Each curio kind's blink bank (C16): the sword's blade and the pistol's
  * chamber breathe, the console's screen swaps between two pictures, the
  * meter's wing lights chase, the trap's and the radar's lights strobe,
- * the reactor case's core and the drone's eye breathe (2.6d C18), and
- * every other kind is steady.
+ * the reactor case's core and the drone's eye breathe (2.6d C18), the
+ * radio set's frequency window and meter breathe (0.25.1), and every
+ * other kind is steady.
  */
 export const CURIO_BANK = {
   "light-sword": "breathe",
@@ -84,6 +86,9 @@ export const CURIO_BANK = {
   "pizza-box": "steady",
   "lottery-ticket": "steady",
   "disk-525": "steady",
+  "penguin-figure": "steady",
+  "report-sheets": "steady",
+  "radio-set": "breathe",
 } as const satisfies Record<CurioKind, BlinkBank>;
 
 /**

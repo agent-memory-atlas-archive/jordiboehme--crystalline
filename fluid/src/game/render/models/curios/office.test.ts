@@ -7,7 +7,9 @@
  * closed pizza box's lid its print (on the top box of a stack alone), the
  * open box one slice and its lid standing behind, and the ticket its six
  * numbers in order, and the 5.25 inch disk its hub, head window, index
- * hole, notch and printed label.
+ * hole, notch and printed label, and the report sheets their cover sheet
+ * on top alone, its heading, its date word with a rule after it and its
+ * outlined stamp box.
  */
 
 import { describe, expect, it } from "vitest";
@@ -30,6 +32,10 @@ import { MARKS } from "../marks";
 import { curioHalf } from "./common";
 import { buildCurio, buildCurioMesh } from "./index";
 import {
+  COVER,
+  COVER_PAPER,
+  COVER_PRINT,
+  COVER_RULE,
   DISK,
   DISK_GLOBE,
   DISK_HOLE,
@@ -49,6 +55,8 @@ import {
   PIZZA_LID,
   PIZZA_PRINT,
   PIZZA_SLICE,
+  SHEET_TURNS,
+  STACK_PAPER,
   STACK_TURNS,
   TICKET_INK,
   TICKET_SLOTS,
@@ -349,6 +357,121 @@ describe("the office models", () => {
       expect(mid(row).d).toBe(mid(row + 2).d);
     }
     expect(mid(0).d).toBeLessThan(mid(3).d);
+  });
+
+  /** The report sheets' parts of `variant`, in the cover sheet's own frame. */
+  const sheetsOf = (variant: number) => {
+    const blocks = SHEET_TURNS[variant] ?? [];
+    const turn = blocks.at(-1)?.[1] ?? 0;
+    return partsOf("report-sheets", variant, yawed(ORIGIN, 0, 0, turn));
+  };
+
+  it("prints the cover sheet's heading at the top and its date word with a rule after it, reading from the front", () => {
+    // Mutation caught: the heading mirrored, at the foot of the sheet or
+    // under the 1 mm floor, the date word moved off its line, or its rule
+    // dropped.
+    const parts = sheetsOf(0);
+    const print = tinted(parts, COVER_PRINT);
+    const title = within(print, COVER.title);
+    const date = within(print, COVER.date);
+    expect(title.length + date.length).toBe(print.length);
+    const t = cellsOf(title, (q) => [q[0], q[1]]);
+    expect(t.rows).toEqual(trimmed(textRows(MARKS.reportTitle)));
+    expect(t.px).toBeGreaterThanOrEqual(0.003);
+    // The heading in the sheet's upper third, its top towards `-d`.
+    const td = pointsOf(title).map((q) => q[1]);
+    expect(Math.max(...td)).toBeLessThan(-COVER.depth / 2 + COVER.depth / 3);
+    const d = cellsOf(date, (q) => [q[0], q[1]]);
+    expect(d.rows).toEqual(trimmed(textRows(MARKS.reportDate)));
+    expect(d.px).toBeGreaterThanOrEqual(0.001 - 1e-9);
+    // The date word on the right half, under the heading.
+    expect(Math.min(...pointsOf(date).map((q) => q[0]))).toBeGreaterThan(0);
+    expect(Math.min(...pointsOf(date).map((q) => q[1]))).toBeGreaterThan(
+      Math.max(...td),
+    );
+    // The rule after it: starting right of the word, along its foot.
+    const foot = Math.max(...pointsOf(date).map((q) => q[1]));
+    const right = Math.max(...pointsOf(date).map((q) => q[0]));
+    const rules = tinted(parts, COVER_RULE).filter((p) => {
+      const ds = p.points.map((q) => q[1]);
+      const as = p.points.map((q) => q[0]);
+      return Math.abs(Math.max(...ds) - foot) < 1e-9 && Math.min(...as) > right;
+    });
+    expect(rules).toHaveLength(1);
+    // Every print and rule lies on the top sheet, up to the catalogue's top.
+    const top = curioHalf("report-sheets", 0).top;
+    for (const q of pointsOf([...print, ...tinted(parts, COVER_RULE)])) {
+      expect(q[2]).toBeGreaterThanOrEqual(top - COVER.print - 1e-9);
+      expect(q[2]).toBeLessThanOrEqual(top + 1e-9);
+    }
+  });
+
+  it("outlines an empty stamp box at the cover sheet's lower right with four thin strips", () => {
+    // Mutation caught: the box filled, a side missing, or moved to the top.
+    const [a0, a1, d0, d1] = COVER.stamp;
+    expect(a0).toBeGreaterThan(0);
+    expect(d0).toBeGreaterThan(COVER.depth / 4);
+    const parts = sheetsOf(0);
+    const box = within(tinted(parts, COVER_RULE), COVER.stamp);
+    expect(box).toHaveLength(4);
+    for (const p of box) {
+      const as = p.points.map((q) => q[0]);
+      const ds = p.points.map((q) => q[1]);
+      const thin = Math.min(
+        Math.max(...as) - Math.min(...as),
+        Math.max(...ds) - Math.min(...ds),
+      );
+      expect(thin).toBeCloseTo(COVER.rule, 9);
+    }
+    const all = pointsOf(box);
+    expect(Math.min(...all.map((q) => q[0]))).toBeCloseTo(a0, 9);
+    expect(Math.max(...all.map((q) => q[0]))).toBeCloseTo(a1, 9);
+    expect(Math.min(...all.map((q) => q[1]))).toBeCloseTo(d0, 9);
+    expect(Math.max(...all.map((q) => q[1]))).toBeCloseTo(d1, 9);
+    // Nothing else is printed inside it.
+    expect(within(tinted(parts, COVER_PRINT), COVER.stamp)).toHaveLength(0);
+  });
+
+  it("puts the cover sheet on top of each stack alone, the stacks askew inside their box", () => {
+    // Mutation caught: the heading on a sheet under the cover, a second
+    // cover in a stack, or a block turned past the catalogue's box.
+    for (let v = 0; v < 3; v++) {
+      const { hw, hd, top } = curioHalf("report-sheets", v);
+      const parts = sheetsOf(v);
+      expect(tinted(parts, COVER_PAPER), `v${String(v)}`).toHaveLength(1);
+      expect(tinted(parts, STACK_PAPER), `v${String(v)}`).toHaveLength(
+        SHEET_TURNS[v]?.length ?? -1,
+      );
+      const print = tinted(parts, COVER_PRINT);
+      expect(print.length).toBeGreaterThan(0);
+      const { rows } = cellsOf(within(print, COVER.title), (q) => [q[0], q[1]]);
+      expect(rows, `v${String(v)}`).toEqual(
+        trimmed(textRows(MARKS.reportTitle)),
+      );
+      for (const q of pointsOf(print))
+        expect(q[2], `v${String(v)}`).toBeGreaterThanOrEqual(
+          top - COVER.print - 1e-9,
+        );
+      // Each block's corners, at its turn, inside the catalogue's box.
+      for (const [, turn] of SHEET_TURNS[v] ?? []) {
+        const c = Math.cos(turn);
+        const s = Math.sin(turn);
+        const w = COVER.width / 2;
+        const d = COVER.depth / 2;
+        expect(w * c + d * Math.abs(s), `v${String(v)}`).toBeLessThanOrEqual(
+          hw,
+        );
+        expect(w * Math.abs(s) + d * c, `v${String(v)}`).toBeLessThanOrEqual(
+          hd,
+        );
+      }
+    }
+  });
+
+  it("keeps every report sheet variant under 1000 triangles", () => {
+    // Mutation caught: a print laid run by run instead of merged.
+    for (let v = 0; v < 3; v++)
+      expect(triangles("report-sheets", v), `v${String(v)}`).toBeLessThan(1000);
   });
 
   it("keeps the floppy under 800 triangles (its second label under 1350), the ticket under 650, every pizza box under 900 and the 5.25 inch disk under 800", () => {

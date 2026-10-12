@@ -217,6 +217,24 @@ describe("no text on the fittings but the airlock's word (2.6e C20, M3 C24)", ()
   });
 });
 
+describe("no text on the penguin figurine (0.25.1)", () => {
+  it("sets no text and lays no mark while the penguin builds", () => {
+    // Mutation caught: a word, a number or a pixel picture on the
+    // figurine, which carries none. The radio set built right after lays
+    // its note through `markLines` and writes its sheet through
+    // `textRows`, so both records are live.
+    recorded.length = 0;
+    marked.length = 0;
+    buildCurio(fresh(), "penguin-figure", 0, LOOK);
+    expect(recorded).toEqual([]);
+    expect(marked).toEqual([]);
+    buildCurio(fresh(), "radio-set", 0, LOOK);
+    expect(marked).toContain("markLines");
+    buildCurio(fresh(), "radio-set", 1, LOOK);
+    expect(recorded).toContain(MARKS.radioNote);
+  });
+});
+
 describe("readable text set by the deck and bay stencils (2.7 C19)", () => {
   it("sets no string but the allowed ones for any deck, bay or letter, on a wall or the floor", () => {
     // Mutation caught: a stencil set from a template string ("DECK 23") or

@@ -112,12 +112,15 @@ describe("roomWithForcedCurio", () => {
   // here. Its `engineering` dressing does draw a service trolley, though,
   // whose deck top hosts both under-desk kinds now. The two computers are
   // as wide as the laptop, so they find no host either, and the soot puffs
-  // stand only at floor level, which the trolley's deck is not.
+  // stand only at floor level, which the trolley's deck is not. The report
+  // sheets and the radio set (0.25.1) are too wide for a desk end as well.
   const NO_HOST_IN_WORKSHOP: readonly string[] = [
     "beige-laptop",
     "breadbin-computer",
     "slim-computer",
     "soot-puffs",
+    "report-sheets",
+    "radio-set",
   ];
 
   it("forces every curio kind into the workshop where it has a host, and leaves heroes and props alone", () => {

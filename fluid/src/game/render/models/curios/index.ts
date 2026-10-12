@@ -11,9 +11,9 @@
  * recipe is a pure function of kind, variant and look. Its slot is its
  * kind's blink bank (`CURIO_BANK`), which its blinking lights pulse with.
  *
- * The recipes live in seven batch files on disjoint lists of kinds:
+ * The recipes live in eight batch files on disjoint lists of kinds:
  * `gear.ts`, `retro.ts`, `keepsakes.ts`, `finds.ts`, `desktop.ts`,
- * `critters.ts` and `office.ts`, all built on `common.ts`. The
+ * `critters.ts`, `office.ts` and `figures.ts`, all built on `common.ts`. The
  * curio test (`curioModels.test.ts`) builds every kind and variant, places
  * it at every turn on a surface the way the GPU does and checks the
  * envelope (its turned size and its top), that it reaches its top and
@@ -32,6 +32,7 @@ import { surfaces, type KitAt } from "../common";
 import type { CurioRecipe } from "./common";
 import { CRITTER_RECIPES } from "./critters";
 import { DESKTOP_RECIPES } from "./desktop";
+import { FIGURE_RECIPES } from "./figures";
 import { FIND_RECIPES } from "./finds";
 import { GEAR_RECIPES } from "./gear";
 import { KEEPSAKE_RECIPES } from "./keepsakes";
@@ -47,6 +48,7 @@ const RECIPES = {
   ...DESKTOP_RECIPES,
   ...CRITTER_RECIPES,
   ...OFFICE_RECIPES,
+  ...FIGURE_RECIPES,
 } satisfies Record<CurioKind, CurioRecipe>;
 
 /**

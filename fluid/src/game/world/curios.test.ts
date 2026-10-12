@@ -34,13 +34,19 @@ import {
   DECOR_SURFACES,
   DESK_POOL,
   DESK_SHARE,
+  FIGURE_POOLS,
+  FIGURE_SHARE,
   FIXTURE_SURFACES,
   GEAR_POOLS,
   GEAR_SHARE,
+  PAPER_POOLS,
+  PAPER_SHARE,
   PROP_SURFACES,
   RADAR_BESIDE_BALL,
   RADAR_POOL,
   RADAR_SHARE,
+  RADIO_POOLS,
+  RADIO_SHARE,
   RETRO_POOLS,
   RETRO_SHARE,
   SNACK_POOL,
@@ -93,6 +99,7 @@ import {
   edgeOf,
   NO_NEAR,
   overlaps,
+  pickByRoll,
   wallAnchor,
   type CurioBase,
   type Near,
@@ -114,12 +121,15 @@ import { CELL } from "./units";
 import { GAME_VERSION } from "../version";
 
 const SIDES: readonly Side[] = ["n", "e", "s", "w"];
-/** The 0.25.1 kinds, the desk and snack slots'. */
+/** The 0.25.1 kinds, the desk, snack, figure, paper and radio slots'. */
 const NEW_KINDS: ReadonlySet<CurioKind> = new Set([
   "floppy-disk",
   "pizza-box",
   "lottery-ticket",
   "disk-525",
+  "penguin-figure",
+  "report-sheets",
+  "radio-set",
 ]);
 const inside = (inner: Box, outer: Box, eps = 1e-6) =>
   inner.x0 >= outer.x0 - eps &&
@@ -493,6 +503,9 @@ const only = (kind: CurioKind): CurioDraws => {
     capsule: { ...draw("capsule"), paired: false },
     desk: draw("desk"),
     snack: draw("snack"),
+    figure: draw("figure"),
+    paper: draw("paper"),
+    radio: draw("radio"),
   };
 };
 /** An archetype's whole retro pool weight (`RETRO_POOLS`). */
@@ -1183,6 +1196,10 @@ describe("the curio pass (C6, C7, C9, C10, C12)", () => {
       // The two 0.25.1 slots, appended after every older value.
       desk: { take: false, roll: 0.4278619457036257 },
       snack: { take: false, roll: 0.4251894319895655 },
+      // The three later 0.25.1 slots, after the desk and snack values.
+      figure: { take: false, roll: 0.4540898371487856 },
+      paper: { take: false, roll: 0.9533099508844316 },
+      radio: { take: false, roll: 0.5590220028534532 },
     });
     expect(curioDraws(base(generateRoom(CANNED_BRIDGE)))).toEqual({
       retro: { take: false, roll: 0.9744114303030074 },
@@ -1196,6 +1213,10 @@ describe("the curio pass (C6, C7, C9, C10, C12)", () => {
       // The two 0.25.1 slots, appended after every older value.
       desk: { take: true, roll: 0.7377122265752405 },
       snack: { take: false, roll: 0.23980942158959806 },
+      // The three later 0.25.1 slots, after the desk and snack values.
+      figure: { take: false, roll: 0.5915179324802011 },
+      paper: { take: false, roll: 0.07060735067352653 },
+      radio: { take: false, roll: 0.1629167387727648 },
     });
   });
 
@@ -1285,12 +1306,15 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
     // paired slot taken without its partner, or an archetype-bound slot
     // kept for an unknown archetype.
     // The kinds only an archetype's own pool gives: no slot outside the
-    // retro, gear and tech slots holds one.
+    // retro, gear, tech, figure, paper and radio slots holds one.
     const bound = new Set<CurioKind>(
       [
         ...Object.values(RETRO_POOLS),
         ...Object.values(GEAR_POOLS),
         ...Object.values(TECH_POOLS),
+        ...Object.values(FIGURE_POOLS),
+        ...Object.values(PAPER_POOLS),
+        ...Object.values(RADIO_POOLS),
       ]
         .flat()
         .map(([k]) => k),
@@ -1337,6 +1361,9 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
         capsule: CAPSULE_POOL,
         desk: DESK_POOL,
         snack: SNACK_POOL,
+        figure: FIGURE_POOLS[a],
+        paper: PAPER_POOLS[a],
+        radio: RADIO_POOLS[a],
       })[CURIO_CATALOGUE[kind].slot];
     let untouched = 0;
     let moved = 0;
@@ -1704,11 +1731,23 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
     };
     for (const { name, room } of ROOMS)
       expectInvariants(base(room), placeCurios(base(room), ALL), name);
+    // The report sheets (0.25.1) stand on desk and table tops at least
+    // 0.256 m wide, which the hub, whose desks are its terminals' 0.22 m
+    // ends, does not have: they are held to land in the council workshop,
+    // whose round table has four such places, and to find none in the hub.
     for (const kind of CURIO_KINDS.slice(CURIO_KINDS.indexOf("treasure-radar")))
       expect(
         placeCurios(base(generateRoom(CANNED_HUB)), only(kind)).length,
         kind,
-      ).toBe(1);
+      ).toBe(kind === "report-sheets" ? 0 : 1);
+    expect(
+      placeCurios(
+        base(
+          generateRoom({ ...CANNED_WORKSHOP, type: ARCHETYPE_TYPES.council }),
+        ),
+        only("report-sheets"),
+      ).map((c) => c.kind),
+    ).toEqual(["report-sheets"]);
   });
 
   it("logs each new kind's realized rate over 1000 hubs and 1000 workshops", () => {
@@ -1884,6 +1923,9 @@ describe("the 0.25.1 curios: the floppy, the 5.25 inch disk, the ticket and the 
       const old: CurioDraws = { ...draws };
       delete old.desk;
       delete old.snack;
+      delete old.figure;
+      delete old.paper;
+      delete old.radio;
       const got = placeCurios(b, draws);
       if (got.some((c) => !OLD.has(c.kind))) withNew++;
       expect(got.filter((c) => OLD.has(c.kind))).toEqual(placeCurios(b, old));
@@ -1892,6 +1934,189 @@ describe("the 0.25.1 curios: the floppy, the 5.25 inch disk, the ticket and the 
     expect(compared).toBe(500);
     expect(withNew).toBeGreaterThan(50);
   }, 60_000);
+});
+
+describe("the 0.25.1 curios: the penguin figurine, the report sheets and the radio set", () => {
+  /** About 3000 rooms: every canned room in every archetype and condition, reseeded. */
+  const SWEEP = Array.from({ length: Math.ceil(3000 / ROOMS.length) }, (_, i) =>
+    ROOMS.map((made) => ({
+      archetype: made.archetype,
+      room: reseed(made.room, "figures", made.name, i),
+    })),
+  ).flat();
+  const THREE = ["penguin-figure", "report-sheets", "radio-set"] as const;
+
+  it("catalogues the three as the brief and the research give them", () => {
+    // Mutation caught: a size, a class, a facing or the terminal
+    // preference off the brief, or the penguin's width off the research.
+    expect(CURIO_CATALOGUE["penguin-figure"]).toEqual({
+      slot: "figure",
+      variants: 1,
+      facing: "front",
+      prefers: "terminal",
+      classes: ["desk", "bench", "table", "shelf"],
+      sizes: [{ width: 0.17, depth: 0.12, top: 0.2 }],
+    });
+    expect(CURIO_CATALOGUE["report-sheets"]).toEqual({
+      slot: "paper",
+      variants: 3,
+      facing: "front",
+      classes: ["desk", "table"],
+      sizes: [
+        { width: 0.216, depth: 0.279, top: 0.002 },
+        { width: 0.23, depth: 0.29, top: 0.03 },
+        { width: 0.24, depth: 0.3, top: 0.08 },
+      ],
+    });
+    expect(CURIO_CATALOGUE["radio-set"]).toEqual({
+      slot: "radio",
+      variants: 2,
+      facing: "fixed",
+      classes: ["desk", "bench", "table"],
+      sizes: [
+        { width: 0.36, depth: 0.3, top: 0.16 },
+        { width: 0.54, depth: 0.3, top: 0.16 },
+      ],
+    });
+  });
+
+  it("pins the three pools and shares as the brief states them", () => {
+    // Mutation caught: a weight, a share or an archetype's pool drifting.
+    expect(FIGURE_POOLS).toEqual({
+      bridge: [["penguin-figure", 1]],
+      council: [],
+      engineering: [["penguin-figure", 2]],
+      archive: [["penguin-figure", 1]],
+      lab: [],
+    });
+    expect(PAPER_POOLS).toEqual({
+      bridge: [["report-sheets", 1]],
+      council: [["report-sheets", 2]],
+      engineering: [],
+      archive: [["report-sheets", 2]],
+      lab: [],
+    });
+    expect(RADIO_POOLS).toEqual({
+      bridge: [["radio-set", 2]],
+      council: [["radio-set", 1]],
+      engineering: [],
+      archive: [],
+      lab: [],
+    });
+    expect([FIGURE_SHARE, PAPER_SHARE, RADIO_SHARE]).toEqual([
+      1 / 8,
+      1 / 6,
+      1 / 10,
+    ]);
+  });
+
+  it("keeps every earlier draw when the three slots are added", () => {
+    // Mutation caught: a new draw inserted before the desk's or the
+    // snack's, which moves every later roll, or the three read out of
+    // order.
+    const seeds = Array.from({ length: 200 }, (_, i) => seedFor("draws-3", i));
+    for (const s of seeds) {
+      const d = curioDrawsOf(s);
+      const rng = createRng(seedFor(s, "curio", "draw"));
+      // The pre-0.25.1 stream, then the desk and the snack values.
+      for (let i = 0; i < 15; i++) rng.next();
+      expect(d.desk).toEqual({
+        take: rng.next() < DESK_SHARE,
+        roll: rng.next(),
+      });
+      expect(d.snack).toEqual({
+        take: rng.next() < SNACK_SHARE,
+        roll: rng.next(),
+      });
+      expect(d.figure).toEqual({
+        take: rng.next() < FIGURE_SHARE,
+        roll: rng.next(),
+      });
+      expect(d.paper).toEqual({
+        take: rng.next() < PAPER_SHARE,
+        roll: rng.next(),
+      });
+      expect(d.radio).toEqual({
+        take: rng.next() < RADIO_SHARE,
+        roll: rng.next(),
+      });
+    }
+  });
+
+  it("leaves a slot with an empty pool untaken", () => {
+    // Mutation caught: an empty pool falling back to another archetype's,
+    // or a pick from nothing returning a kind.
+    expect(pickByRoll(0.5, [])).toBeNull();
+    expect(pickByRoll(0, FIGURE_POOLS.council)).toBeNull();
+    const council = ROOMS.find((m) => m.archetype === "council");
+    if (council === undefined) throw new Error("no council room");
+    const b = base(council.room);
+    const taken: CurioDraws = {
+      retro: OFF,
+      gear: OFF,
+      ball: { ...OFF, floor: false },
+      under: OFF,
+      figure: { take: true, roll: 0.5 },
+    };
+    expect(placeCurios(b, taken)).toEqual([]);
+    // The same draw in an engineering room places the penguin.
+    const engineering = ROOMS.find((m) => m.archetype === "engineering");
+    if (engineering === undefined) throw new Error("no engineering room");
+    expect(
+      placeCurios(base(engineering.room), taken).map((c) => c.kind),
+    ).toEqual(["penguin-figure"]);
+  });
+
+  it("places the three only in their archetypes", () => {
+    // Mutation caught: a slot reading another archetype's pool, so a
+    // penguin lands in a council room or a radio in an archive.
+    const never: Record<(typeof THREE)[number], readonly Archetype[]> = {
+      "penguin-figure": ["council", "lab"],
+      "report-sheets": ["engineering", "lab"],
+      "radio-set": ["engineering", "archive", "lab"],
+    };
+    const seen = new Map<CurioKind, number>();
+    for (const { archetype, room } of SWEEP)
+      for (const c of placeCurios(room)) {
+        if (!(THREE as readonly CurioKind[]).includes(c.kind)) continue;
+        seen.set(c.kind, (seen.get(c.kind) ?? 0) + 1);
+        const kind = c.kind as (typeof THREE)[number];
+        expect(never[kind], `${kind} in ${archetype}`).not.toContain(archetype);
+      }
+    for (const k of THREE) expect(seen.get(k) ?? 0, k).toBeGreaterThan(10);
+  }, 60_000);
+
+  it("prefers a terminal's desk end for the penguin", () => {
+    // Mutation caught: `prefers` dropped, so the penguin stands wherever
+    // its seed order puts it.
+    let rooms = 0;
+    let onTerminal = 0;
+    for (const { room } of SWEEP.slice(0, 600)) {
+      if (!room.fixtures.some((f) => f.kind === "terminal")) continue;
+      const [c] = placeCurios(room, only("penguin-figure"));
+      if (c === undefined) continue;
+      rooms++;
+      const hosts = hostsOf(hostSurfaces(room), c).filter((s) =>
+        curioFits(room, c, s),
+      );
+      if (hosts.some((s) => s.host === "terminal")) onTerminal++;
+    }
+    expect(rooms).toBeGreaterThan(300);
+    // The brief asks for 70 percent; every one of these rooms has a
+    // terminal end that holds it, so all 600 stand there (without the
+    // preference, about two in three).
+    expect(onTerminal / rooms).toBeGreaterThanOrEqual(0.95);
+  }, 60_000);
+
+  it("fits the penguin on a terminal's desk end either way round", () => {
+    // Mutation caught: the penguin widened past a terminal end's 0.18 m.
+    const [end] = FIXTURE_SURFACES.terminal;
+    const [size] = CURIO_CATALOGUE["penguin-figure"].sizes;
+    if (end === undefined || size === undefined) throw new Error("tables");
+    expect(end.a1 - end.a0 - 2 * CURIO_MARGIN).toBeGreaterThanOrEqual(
+      Math.max(size.width, size.depth) - 1e-9,
+    );
+  });
 });
 
 /**
