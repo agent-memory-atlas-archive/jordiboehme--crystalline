@@ -4,6 +4,7 @@ import {
   CARRIER_QUIET_MS,
   DTMF,
   HANDSHAKE_MS,
+  burstsAtMs,
   carrierGate,
   dialNumber,
   handshakePatch,
@@ -61,6 +62,22 @@ describe("handshakePatch", () => {
     // After the last digit comes the answer tone, not another digit.
     const next = patch.voices[2 * digits.length];
     expect(valueAt(next?.pitch ?? [], next?.at ?? 0)).toBe(2100);
+  });
+
+  // Mutation caught: the moment the border's raster bars follow counted
+  // apart from the patch (the bars before or after the high tones), or
+  // counting the `-` as a digit.
+  it("answers when the bursts start, the patch's own moment", () => {
+    for (const number of ["555-0142", "555-0100", "12", ""]) {
+      const patch = handshakePatch(number);
+      const bursts = patch.voices.find(
+        (voice) => voice.pitch[0]?.value === 1200,
+      );
+      if (bursts === undefined) throw new Error("no bursts");
+      expect(burstsAtMs(number), number).toBe(bursts.at * 1000);
+    }
+    // Seven digits of 160 ms, then the one second answer tone.
+    expect(burstsAtMs("555-0142")).toBeCloseTo(2120, 6);
   });
 
   it("names the keypad's twelve keys", () => {

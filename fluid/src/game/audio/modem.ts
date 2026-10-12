@@ -83,6 +83,31 @@ export function dialNumber(domain: string | null): string {
   return `555-01${String(seed % 100).padStart(2, "0")}`;
 }
 
+/** The dialled digits of a number: the keypad's keys, the `-` skipped. */
+function dialled(number: string): string[] {
+  return [...number].filter((c) => DTMF[c] !== undefined);
+}
+
+/** When the answer tone of `handshakePatch(number)` starts, in seconds. */
+function answerAtS(number: string): number {
+  return dialled(number).length * (KEY_ON_S + KEY_OFF_S);
+}
+
+/** When its alternating bursts start, in seconds. */
+function burstsAtS(number: string): number {
+  return answerAtS(number) + ANSWER_S;
+}
+
+/**
+ * When the alternating bursts of `handshakePatch(number)` start, in
+ * milliseconds from the patch start: the moment the high tones begin,
+ * which the connecting screen's border follows (`RasterBars`). The patch
+ * reads the same arithmetic, so the two cannot drift apart.
+ */
+export function burstsAtMs(number: string): number {
+  return burstsAtS(number) * 1000;
+}
+
 /** A steady tone from `at`, gated for `length` with a quick edge. */
 function tone(
   hz: number,
@@ -161,7 +186,7 @@ function screech(at: number, length: number): Voice[] {
  * first in `voices`, row then column, in the order they are dialled.
  */
 export function handshakePatch(number: string): Patch {
-  const digits = [...number].filter((c) => DTMF[c] !== undefined);
+  const digits = dialled(number);
   const keys = digits.flatMap((digit, i): Voice[] => {
     const [row, column] = DTMF[digit] as readonly [number, number];
     const at = i * (KEY_ON_S + KEY_OFF_S);
@@ -170,8 +195,8 @@ export function handshakePatch(number: string): Patch {
       tone(column, at, KEY_ON_S, KEY_GAIN),
     ];
   });
-  const answerAt = digits.length * (KEY_ON_S + KEY_OFF_S);
-  const burstsAt = answerAt + ANSWER_S;
+  const answerAt = answerAtS(number);
+  const burstsAt = burstsAtS(number);
   const burstsS = BURST_S * BURSTS.length * BURST_PAIRS;
   const screechAt = burstsAt + burstsS;
   const bursts: Voice = {

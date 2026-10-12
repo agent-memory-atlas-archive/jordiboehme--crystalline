@@ -9,6 +9,8 @@
  * the sound and hands the station its keys back. The frame, the
  * typing clock, the focus and the skip (a browser's shortcut is left
  * alone) are shared with the opening (`c64Clock.ts`, `c64Screen.tsx`).
+ * Once the modems' high tones start (`burstsAtMs`), the border shows
+ * raster bars (`RasterBars.tsx`); the panel and its text stay as they are.
  *
  * The host clears `busy` inside `onDone`, and the `preventDefault` on the
  * key taken is what keeps an Esc that skips this screen from also pausing
@@ -25,7 +27,7 @@
 
 import { useRef } from "react";
 
-import { HANDSHAKE_MS } from "../audio/modem";
+import { HANDSHAKE_MS, burstsAtMs } from "../audio/modem";
 import { TYPE_CPS, typedCount, useC64Screen } from "./c64Clock";
 import { C64Screen } from "./c64Screen";
 
@@ -68,6 +70,7 @@ export function Connecting({ number, name, onDone }: ConnectingProps) {
     <C64Screen
       label={CONNECTING_LABEL}
       dialog={dialog}
+      barsFrom={burstsAtMs(number)}
       announce={whole.map((line, i) => (
         <p key={i}>{line}</p>
       ))}
