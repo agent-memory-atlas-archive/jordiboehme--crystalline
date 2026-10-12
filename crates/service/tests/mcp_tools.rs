@@ -4778,8 +4778,9 @@ async fn set_frontmatter_sources_adds_and_drops_a_location_that_contains_sees() 
     );
     assert_eq!(text, std::fs::read_to_string(&path).unwrap());
 
-    // values as one bare string is a parameter error, never a write.
-    let err = call(
+    // values as one bare string is a parameter error, never a write. It
+    // comes back as a tool-level refusal, not a protocol error.
+    let refused = call_result(
         peer,
         "edit_engram",
         json!({
@@ -4788,8 +4789,8 @@ async fn set_frontmatter_sources_adds_and_drops_a_location_that_contains_sees() 
         }),
     )
     .await;
-    // The parameter error comes back as a tool-level refusal, not a protocol error.
-    let err = err.unwrap_or_else(Value::String).to_string();
+    assert_eq!(refused.is_error, Some(true));
+    let err = result_text(&refused);
     assert!(err.contains("expected a sequence"), "{err}");
     assert_eq!(text, std::fs::read_to_string(&path).unwrap());
 
