@@ -120,6 +120,9 @@ export const PIXEL_FONT: Readonly<Record<string, readonly string[]>> = {
   "=": ["...", "###", "...", "###", "..."],
   ">": ["#..", ".#.", "..#", ".#.", "#.."],
   "&": [".#.", "#.#", ".#.", "#.#", ".##"],
+  "!": [".#.", ".#.", ".#.", "...", ".#."],
+  "?": ["##.", "..#", ".#.", "...", ".#."],
+  ",": ["...", "...", "...", ".#.", "#.."],
 };
 
 /** One horizontal run of equal characters: its first column, its row (0 at the top) and its length. */

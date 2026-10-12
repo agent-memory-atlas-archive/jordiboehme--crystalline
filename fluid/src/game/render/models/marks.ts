@@ -142,7 +142,7 @@ export function stencilMarks(t: StencilText): readonly (readonly string[])[] {
     const out: string[] = [];
     for (let m = n; m > 0; m = Math.floor(m / 10)) {
       const mark = MARKS.numerals[m % 10];
-      if (mark === undefined) throw new Error("stencilMarks: no numeral");
+      if (mark === undefined) throw new Error("stencilMarks has no numeral");
       out.unshift(mark);
     }
     return out;

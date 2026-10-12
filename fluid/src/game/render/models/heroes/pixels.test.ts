@@ -27,7 +27,7 @@ const TITLES = ["TILEFALL", "ROCK RAIN", "MAZE HUNT", "VOID WING"];
 describe("block-pixel font", () => {
   it("draws every glyph as 5 rows of 3 lit or dark cells", () => {
     const keys = Object.keys(PIXEL_FONT);
-    for (const c of "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .<=>&")
+    for (const c of "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .<=>&!?,")
       expect(keys, c).toContain(c);
     for (const [c, rows] of Object.entries(PIXEL_FONT)) {
       expect(rows, c).toHaveLength(5);
@@ -93,9 +93,22 @@ describe("block-pixel font", () => {
     expect(PIXEL_FONT["."]).toEqual(["...", "...", "...", "...", ".#."]);
   });
 
+  it("draws the three new marks apart from every other glyph (0.25.1)", () => {
+    // Mutation caught: "?" drawn as a "7" or a "2", "!" as an "I" or a
+    // "1", "," as a "." or a glyph not 5 rows of 3.
+    for (const c of ["!", "?", ","]) {
+      const g = PIXEL_FONT[c];
+      expect(g, c).toHaveLength(5);
+      for (const row of g ?? []) expect(row, c).toMatch(/^[#.]{3}$/);
+      for (const [other, h] of Object.entries(PIXEL_FONT))
+        if (other !== c)
+          expect(h.join(), `${c} vs ${other}`).not.toBe(g?.join());
+    }
+  });
+
   it("refuses a character the font lacks", () => {
-    expect(() => textRows("A?")).toThrow(/\?/);
-    expect(() => textRows("a!")).toThrow(/!/);
+    expect(() => textRows("A#")).toThrow(/#/);
+    expect(() => textRows("a@")).toThrow(/@/);
   });
 
   it("draws the new glyph apart from every other glyph (2.6f C15)", () => {

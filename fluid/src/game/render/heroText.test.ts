@@ -4,7 +4,7 @@
  * rule allows only the station's own titles and the approved exceptions
  * (2.6a to 2.6c), and the 2.6d and 2.6f marks of `marks.ts`. Every
  * double-quoted literal of letters, digits, spaces, periods and the
- * marks `<`, `=`, `>`, `&` and `?` in a recipe file or in `marks.ts` that
+ * marks `<`, `=`, `>`, `&`, `?`, `!`, `,` and `:` in a recipe file or in `marks.ts` that
  * holds a digit or one of those marks, or capitals and no lower case,
  * must be on the list, and so must every backtick literal of the same
  * shape in code (comments, which name constants in backticks, are
@@ -41,6 +41,11 @@ const SOURCES = Object.fromEntries(
         "./models/marks.ts",
         "./models/decals.ts",
         "./models/interior/airlock.ts",
+        "./models/machines.ts",
+        "./models/escape.ts",
+        "./layers.ts",
+        "./handles.ts",
+        "./outside/*.ts",
       ],
       {
         query: "?raw",
@@ -241,7 +246,36 @@ function picturesFound(): Set<string> {
   return found;
 }
 
+/**
+ * Every double-quoted or backtick literal of the readable class in `code`
+ * that holds a digit or a mark, or capitals and no lower case. Each literal
+ * is cut out whole first and then tested against the class, so the code
+ * between two literals is never taken for one. The class covers letters,
+ * digits, spaces and the marks `.?<=>&!,:`.
+ */
+function scanLiterals(code: string): string[] {
+  return [...code.matchAll(/"([^"\n]*)"|`([^`\n]*)`/g)]
+    .map((m) => m[1] ?? m[2] ?? "")
+    .filter(
+      (t) =>
+        /^[A-Za-z0-9 .?<=>&!,:]+$/.test(t) &&
+        /[A-Za-z0-9]/.test(t) &&
+        (/[0-9?<=>&!,:]/.test(t) || (/[A-Z]/.test(t) && !/[a-z]/.test(t))),
+    );
+}
+
 describe("readable text in the recipes", () => {
+  it("catches a literal with ! or , in a recipe (0.25.1)", () => {
+    // Mutation caught: the scan class left at [A-Za-z0-9 .?<=>&], which
+    // skips "HACK THE PLANET!" and any line with a comma.
+    const found = scanLiterals('const a = "FOO BAR!"; const b = "A, B";');
+    expect(found).toEqual(["FOO BAR!", "A, B"]);
+  });
+
+  it("ignores a separator with no letter or digit", () => {
+    expect(scanLiterals('const a = ", "; const b = ":";')).toEqual([]);
+  });
+
   it("draws no string but the station's titles and the approved exceptions", () => {
     // The folders hold the files the 2.6c and 2.6d tasks fill, at the least.
     for (const name of [
@@ -259,6 +293,8 @@ describe("readable text in the recipes", () => {
       "marks",
       "decals",
       "airlock",
+      "machines",
+      "layers",
     ])
       expect(
         Object.keys(SOURCES).some((p) => p.endsWith(`/${name}.ts`)),
@@ -266,13 +302,7 @@ describe("readable text in the recipes", () => {
       ).toBe(true);
     for (const [name, src] of Object.entries(SOURCES)) {
       const code = codeOf(src);
-      const found = [
-        ...code.matchAll(/"([A-Za-z0-9 .?<=>&]+)"|`([A-Za-z0-9 .?<=>&]+)`/g),
-      ]
-        .map((m) => m[1] ?? m[2] ?? "")
-        .filter(
-          (t) => /[0-9?<=>&]/.test(t) || (/[A-Z]/.test(t) && !/[a-z]/.test(t)),
-        );
+      const found = scanLiterals(code);
       for (const t of found)
         expect(READABLE.has(t), `${name}: ${t}`).toBe(true);
     }
