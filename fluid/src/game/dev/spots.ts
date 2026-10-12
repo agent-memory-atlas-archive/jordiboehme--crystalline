@@ -133,7 +133,11 @@ function spotFor(fixture: Fixture): RoomSpec["spawn"] {
  */
 export type SpotView = "front" | "back" | "side" | "quarter" | "close";
 
-const PROP_SPOT = /^prop:([a-z-]+):(\d+)(?::(back|side|quarter|close))?$/;
+/**
+ * `prop:<kind>:<n>[:<view>]`. A kind name may hold digits (the 5.25 inch
+ * disk's, 0.25.1), never a colon, so the ordinal is the last number.
+ */
+const PROP_SPOT = /^prop:([a-z0-9-]+):(\d+)(?::(back|side|quarter|close))?$/;
 
 /** `decor:<kind>:<n>` (2.7 Task 1): the n-th decor piece of that kind. */
 const DECOR_SPOT = /^decor:([a-z-]+):(\d+)$/;

@@ -119,6 +119,7 @@ const NEW_KINDS: ReadonlySet<CurioKind> = new Set([
   "floppy-disk",
   "pizza-box",
   "lottery-ticket",
+  "disk-525",
 ]);
 const inside = (inner: Box, outer: Box, eps = 1e-6) =>
   inner.x0 >= outer.x0 - eps &&
@@ -1731,13 +1732,59 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
   });
 });
 
-describe("the 0.25.1 curios: the floppy, the ticket and the pizza box", () => {
+describe("the 0.25.1 curios: the floppy, the 5.25 inch disk, the ticket and the pizza box", () => {
   /** About 2000 rooms: every canned room in every archetype and condition, reseeded. */
   const SWEEP = Array.from({ length: Math.ceil(2000 / ROOMS.length) }, (_, i) =>
     ROOMS.map((made) => reseed(made.room, "office", made.name, i)),
   ).flat();
   /** The kinds of the catalogue before 0.25.1. */
   const OLD = new Set<CurioKind>(CURIO_KINDS.filter((k) => !NEW_KINDS.has(k)));
+  /** The desk slot's kinds. */
+  const DESK_KINDS = ["floppy-disk", "disk-525", "lottery-ticket"] as const;
+
+  it("draws the desk slot from the floppy, the 5.25 inch disk and the ticket, 3 to 2 to 2", () => {
+    // Mutation caught: the 5.25 inch disk left out of the pool, a weight
+    // changed, or the pool reordered (order is part of the seeded result).
+    expect(DESK_POOL).toEqual([
+      ["floppy-disk", 3],
+      ["disk-525", 2],
+      ["lottery-ticket", 2],
+    ]);
+    expect(
+      CURIO_KINDS.filter((k) => CURIO_CATALOGUE[k].slot === "desk"),
+    ).toEqual(["floppy-disk", "lottery-ticket", "disk-525"]);
+  });
+
+  it("catalogues the 5.25 inch disk flat on the desks and the floppy's two labels at one size", () => {
+    // Mutation caught: the disk's size or classes off the brief, the
+    // second label given a size of its own.
+    expect(CURIO_CATALOGUE["disk-525"]).toEqual({
+      slot: "desk",
+      variants: 1,
+      facing: "front",
+      classes: ["desk", "bench", "table"],
+      sizes: [{ width: 0.133, depth: 0.133, top: 0.003 }],
+    });
+    const floppy = CURIO_CATALOGUE["floppy-disk"];
+    expect(floppy.variants).toBe(2);
+    expect(floppy.sizes).toHaveLength(2);
+    expect(floppy.sizes[1]).toEqual(floppy.sizes[0]);
+  });
+
+  it("splits the floppy's draws evenly between its two labels", () => {
+    // Mutation caught: the second label never drawn, or the variant pick
+    // weighted.
+    const counts = [0, 0];
+    for (const b of SWEEP)
+      for (const c of placeCurios(b, only("floppy-disk")))
+        if (c.kind === "floppy-disk")
+          counts[c.variant] = (counts[c.variant] ?? 0) + 1;
+    const [v0 = 0, v1 = 0] = counts;
+    expect(v0 + v1).toBeGreaterThan(1000);
+    const share = v1 / (v0 + v1);
+    expect(share, `v1 ${String(share)}`).toBeGreaterThanOrEqual(0.45);
+    expect(share, `v1 ${String(share)}`).toBeLessThanOrEqual(0.55);
+  }, 60_000);
 
   it("bumps the generator version once and keeps the old draws in order (0.25.1)", () => {
     // Mutation caught: a new draw inserted before the capsule's, which
@@ -1785,13 +1832,12 @@ describe("the 0.25.1 curios: the floppy, the ticket and the pizza box", () => {
     let snackGot = 0;
     for (const b of SWEEP) {
       const kinds = placeCurios(b).map((c) => c.kind);
-      const deskFits = (["floppy-disk", "lottery-ticket"] as const).some(
+      const deskFits = DESK_KINDS.some(
         (k) => placeCurios(b, only(k)).length > 0,
       );
       if (deskFits) {
         deskRooms++;
-        if (kinds.includes("floppy-disk") || kinds.includes("lottery-ticket"))
-          deskGot++;
+        if (DESK_KINDS.some((k) => kinds.includes(k))) deskGot++;
       }
       if (placeCurios(b, only("pizza-box")).length > 0) {
         snackRooms++;

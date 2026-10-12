@@ -1,6 +1,6 @@
 /**
- * The office curios' recipes (0.25.1): the floppy disk, the pizza box and
- * the lottery ticket, the desk and snack slots' kinds. Colours and helpers
+ * The office curios' recipes (0.25.1): the floppy disk, the pizza box, the
+ * lottery ticket and the 5.25 inch disk, the desk and snack slots' kinds. Colours and helpers
  * stay in this file, which imports only `common.ts` of the curio batches.
  * Nothing lights and nothing blinks.
  *
@@ -14,6 +14,11 @@
  *   the slant, a light grey metal shutter (`FLOPPY_SHUTTER`) over its back
  *   quarter, and a white label (`FLOPPY_LABEL`) over the front of it,
  *   carrying `MARKS.floppyLabel` in a blue ballpoint ink (`FLOPPY_INK`).
+ *   v1 is the same disk with the second label, printed rather than
+ *   handwritten: a yellow band (`FLOPPY_BAND`) across the label's back
+ *   part carrying `MARKS.floppyPrinted`, and on the white part in front of
+ *   it the version line `MARKS.floppyVersion`, both in a black print
+ *   (`FLOPPY_PRINT`, `FLOPPY_PRINTED`).
  * - The pizza box is a flat square box of white-grey cardboard
  *   (`PIZZA_BASE`) 0.045 m tall under a slightly lighter lid
  *   (`PIZZA_LID`), `MARKS.pizzaLid` printed in red (`PIZZA_PRINT`) across
@@ -29,6 +34,16 @@
  *   its back edge, and the six `MARKS.numbers` in a dark ink
  *   (`TICKET_INK`) in two rows of three, each number set on its own in its
  *   slot (`TICKET_SLOTS`), and nothing else printed on it.
+ * - The 5.25 inch disk lies flat: a 133 mm square of black flexible
+ *   sleeve (`DISK_SLEEVE`) 2 mm thick, the write-protect notch cut out of
+ *   its right edge. In its middle the sleeve's round opening shows the
+ *   brown medium (`DISK_MEDIUM`), the medium's pale reinforcement ring
+ *   (`DISK_RING`) and the dark hub hole (`DISK_HOLE`) at its centre; the
+ *   oval head window in front of the hub and the small index hole beside
+ *   it show the medium too. A printed paper label (`DISK_LABEL`) runs
+ *   across the back edge, `MARKS.diskLabel` printed on it in red
+ *   (`DISK_PRINT`) with a grey disc (`DISK_GLOBE`) beside it, as the
+ *   printed original has (`DISK`).
  */
 
 import type { CurioKind } from "../../../world/types";
@@ -79,7 +94,26 @@ export const FLOPPY = {
   writing: [-0.035, 0.035, 0.002, 0.012],
 } as const;
 
-/** The floppy disk: shell, cut corner, shutter, label and its handwriting. */
+/** The second label's band: a yellow. */
+export const FLOPPY_BAND: Rgb = [0.95, 0.82, 0.1];
+
+/** The second label's print: a black. */
+export const FLOPPY_PRINT: Rgb = [0.07, 0.07, 0.08];
+
+/**
+ * The second label's layout, in metres: the band runs from the label's
+ * back edge to `band` along `d`, the name is fitted into `name` on the
+ * band and the version line into `version` on the white part in front of
+ * it, each `[a0, a1, d0, d1]`, the version line towards the left as on
+ * the printed original.
+ */
+export const FLOPPY_PRINTED = {
+  band: -0.002,
+  name: [-0.035, 0.035, -0.015, -0.004],
+  version: [-0.035, 0.012, 0.004, 0.01],
+} as const;
+
+/** The floppy disk: shell, cut corner, shutter, label and its writing or print. */
 const floppyDisk: CurioRecipe = ({ k, kitAt, s, kind, variant }) => {
   const { hw, hd, top } = curioHalf(kind, variant);
   const body = s.tinted(FLOPPY_BODY);
@@ -109,8 +143,31 @@ const floppyDisk: CurioRecipe = ({ k, kitAt, s, kind, variant }) => {
     t + 0.0003,
     s.tinted(FLOPPY_SHUTTER),
   );
-  // The label and the handwriting on it, up to the catalogue's top.
   const l = FLOPPY.label;
+  if (variant === 1) {
+    // The second label: the band and the white part side by side, each
+    // up to the label's top, and the print on them up to the catalogue's
+    // top.
+    const p = FLOPPY_PRINTED;
+    const h0 = t - 0.0003;
+    k.box(l.a0, l.a1, l.d0, p.band, h0, FLOPPY.labelTop, s.tinted(FLOPPY_BAND));
+    k.box(
+      l.a0,
+      l.a1,
+      p.band,
+      l.d1,
+      h0,
+      FLOPPY.labelTop,
+      s.tinted(FLOPPY_LABEL),
+    );
+    const print = slab(k, FLOPPY.labelTop, top, s.tinted(FLOPPY_PRINT));
+    flatText(MARKS.floppyPrinted, p.name, print);
+    flatText(MARKS.floppyVersion, p.version, print);
+    return;
+  }
+  if (variant !== 0)
+    throw new Error(`the floppy disk has no variant ${String(variant)}`);
+  // The label and the handwriting on it, up to the catalogue's top.
   k.box(
     l.a0,
     l.a1,
@@ -334,12 +391,121 @@ const lotteryTicket: CurioRecipe = ({ k, s, kind, variant }) => {
   });
 };
 
+// --- 5.25 inch disk ----------------------------------------------------------
+
+/** The sleeve: a black, a touch lighter than the hub hole. */
+export const DISK_SLEEVE: Rgb = [0.07, 0.07, 0.08];
+
+/** The medium seen through the sleeve's openings: an oxide brown. */
+export const DISK_MEDIUM: Rgb = [0.34, 0.22, 0.13];
+
+/** The reinforcement ring around the hub hole: a pale plastic. */
+export const DISK_RING: Rgb = [0.82, 0.8, 0.74];
+
+/** The hub hole: the dark of the surface seen through it. */
+export const DISK_HOLE: Rgb = [0.02, 0.02, 0.02];
+
+/** The label: a white paper. */
+export const DISK_LABEL: Rgb = [0.93, 0.93, 0.91];
+
+/** The label's print: a red. */
+export const DISK_PRINT: Rgb = [0.8, 0.12, 0.1];
+
+/** The grey disc beside the print. */
+export const DISK_GLOBE: Rgb = [0.6, 0.61, 0.63];
+
+/**
+ * The 5.25 inch disk's measures, in metres, the hub at the origin: the
+ * sleeve's thickness; the sleeve's round opening, the reinforcement
+ * ring's and the hub hole's radii; the oval head window in front of the
+ * hub (its half width and its ends along `d`); the index hole's centre
+ * and radius; the write-protect notch on the right edge (its ends along
+ * `d` and its reach in from the edge); the label across the back edge,
+ * its top, the box the print is fitted into, and the grey disc.
+ */
+export const DISK = {
+  sleeve: 0.002,
+  hub: { open: 0.019, ring: 0.0175, hole: 0.0143 },
+  window: { half: 0.0065, d0: 0.022, d1: 0.06 },
+  index: { a: 0.026, d: 0.003, r: 0.003 },
+  notch: { d0: -0.0365, d1: -0.0305, reach: 0.004 },
+  label: { a0: -0.05, a1: 0.05, d0: -0.0635, d1: -0.035 },
+  labelTop: 0.0025,
+  print: [-0.03, 0.02, -0.056, -0.042],
+  globe: { a: 0.038, d: -0.049, r: 0.007 },
+} as const;
+
+/** The 5.25 inch disk: sleeve and notch, hub, head window, index hole, label and print. */
+const disk525: CurioRecipe = ({ k, s, kind, variant }) => {
+  const { hw, hd, top } = curioHalf(kind, variant);
+  const t = DISK.sleeve;
+  const sleeve = s.tinted(DISK_SLEEVE);
+  // The sleeve, the notch left out of its right edge.
+  const n = DISK.notch;
+  k.box(-hw, hw - n.reach, -hd, hd, 0, t, sleeve);
+  k.box(hw - n.reach, hw, -hd, n.d0, 0, t, sleeve);
+  k.box(hw - n.reach, hw, n.d1, hd, 0, t, sleeve);
+  // The hub: the medium in the sleeve's opening, the ring on it and the
+  // hole in the ring, each a little prouder than the last.
+  const lift = 0.0001;
+  const h = DISK.hub;
+  const medium = s.tinted(DISK_MEDIUM);
+  k.cylinder(0, 0, t - lift, t + lift, h.open, 20, medium);
+  k.cylinder(0, 0, t + lift, t + 2 * lift, h.ring, 20, s.tinted(DISK_RING));
+  k.cylinder(0, 0, t + 2 * lift, t + 3 * lift, h.hole, 20, s.tinted(DISK_HOLE));
+  // The oval head window and the index hole, the medium showing in both.
+  const w = DISK.window;
+  k.box(
+    -w.half,
+    w.half,
+    w.d0 + w.half,
+    w.d1 - w.half,
+    t - lift,
+    t + lift,
+    medium,
+  );
+  for (const d of [w.d0 + w.half, w.d1 - w.half])
+    k.cylinder(0, d, t - lift, t + lift, w.half, 12, medium);
+  const ix = DISK.index;
+  k.cylinder(ix.a, ix.d, t - lift, t + lift, ix.r, 10, medium);
+  // The label across the back edge, the grey disc and the print on it.
+  const l = DISK.label;
+  k.box(
+    l.a0,
+    l.a1,
+    l.d0,
+    l.d1,
+    t - 0.0003,
+    DISK.labelTop,
+    s.tinted(DISK_LABEL),
+  );
+  const g = DISK.globe;
+  k.cylinder(
+    g.a,
+    g.d,
+    DISK.labelTop - lift,
+    DISK.labelTop + 3 * lift,
+    g.r,
+    16,
+    s.tinted(DISK_GLOBE),
+  );
+  flatText(
+    MARKS.diskLabel,
+    DISK.print,
+    slab(k, DISK.labelTop, top, s.tinted(DISK_PRINT)),
+  );
+};
+
 /** The office curios' recipes. */
 export const OFFICE_RECIPES = {
   "floppy-disk": floppyDisk,
   "pizza-box": pizzaBox,
   "lottery-ticket": lotteryTicket,
+  "disk-525": disk525,
 } satisfies Record<
-  Extract<CurioKind, "floppy-disk" | "pizza-box" | "lottery-ticket">,
+  Extract<
+    CurioKind,
+    "floppy-disk" | "pizza-box" | "lottery-ticket" | "disk-525"
+  >,
   CurioRecipe
 >;

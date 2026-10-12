@@ -67,6 +67,11 @@ export const MARKS = {
   reactorPlaque: "PROOF THAT TONY STARK HAS A HEART",
   /** The floppy's handwritten label (0.25.1 D-3). */
   floppyLabel: "HACK THE PLANET!",
+  /** The floppy's second label, printed on its coloured band, and the version line under it (0.25.1). */
+  floppyPrinted: "NORTON COMMANDER",
+  floppyVersion: "VERSION 4.0",
+  /** The 5.25 inch disk's printed label (0.25.1). */
+  diskLabel: "GEOS",
   /** The pizza box's lid print (0.25.1 D-4). */
   pizzaLid: "PIZZA POWER",
   /** The six numbers of the lottery ticket, and later of the scribble, the plate and the hatch variant, each set on its own (0.25.1 D-2). */

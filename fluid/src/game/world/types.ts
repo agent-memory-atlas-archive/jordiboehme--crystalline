@@ -620,7 +620,8 @@ export type CurioKind =
   // 0.25.1: the desk and snack slots
   | "floppy-disk"
   | "pizza-box"
-  | "lottery-ticket";
+  | "lottery-ticket"
+  | "disk-525";
 
 /**
  * One curio (C1): `x` and `y` in `Decor`'s continuous cell units, the

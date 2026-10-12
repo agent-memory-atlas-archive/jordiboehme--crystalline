@@ -173,6 +173,11 @@ const READABLE = new Set([
   "16",
   "23",
   "42",
+  // The floppy's second label, its version line, and the 5.25 inch
+  // disk's label (0.25.1).
+  "NORTON COMMANDER",
+  "VERSION 4.0",
+  "GEOS",
 ]);
 
 /**
@@ -238,6 +243,9 @@ const MARKS_ONLY = [
   "16",
   "23",
   "42",
+  "NORTON COMMANDER",
+  "VERSION 4.0",
+  "GEOS",
 ];
 
 /** A source with its comments stripped: comments name constants in backticks (`CLUSTER`); only code draws. */

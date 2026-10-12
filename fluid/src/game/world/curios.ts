@@ -45,8 +45,9 @@
  *   slot, so the two computers never stand in one generated room; the
  *   reactor case and the drone share the tech slot. The radar and the
  *   capsule case each have a slot of their own, so either can stand beside
- *   a ball. The floppy and the lottery ticket share the desk slot, and the
- *   pizza box has the snack slot to itself (0.25.1).
+ *   a ball. The floppy, the 5.25 inch disk and the lottery ticket share
+ *   the desk slot, and the pizza box has the snack slot to itself
+ *   (0.25.1).
  * - **C7. Rates.** Each slot's chance (`RETRO_SHARE`, `GEAR_SHARE`,
  *   `BALL_SHARE`, `UNDER_SHARE`, `TECH_SHARE`, `RADAR_SHARE`,
  *   `CAPSULE_SHARE`, `DESK_SHARE`, `SNACK_SHARE`) and its weighted pool
@@ -224,6 +225,7 @@ export const CURIO_KINDS: readonly CurioKind[] = [
   "floppy-disk",
   "pizza-box",
   "lottery-ticket",
+  "disk-525",
 ];
 
 /** Which of a room's nine draws a kind comes from (C6, 2.6d C5, 0.25.1). */
@@ -461,11 +463,15 @@ export const CURIO_CATALOGUE: Readonly<Record<CurioKind, CurioEntry>> = {
     ],
   },
   "floppy-disk": {
+    // v0 the handwritten label, v1 the printed label (0.25.1).
     slot: "desk",
-    variants: 1,
+    variants: 2,
     facing: "front",
     classes: ["desk", "bench", "table"],
-    sizes: [{ width: 0.09, depth: 0.094, top: 0.004 }],
+    sizes: [
+      { width: 0.09, depth: 0.094, top: 0.004 },
+      { width: 0.09, depth: 0.094, top: 0.004 },
+    ],
   },
   "pizza-box": {
     // v0 closed, v1 a stack of two, v2 a stack of three, v3 open with one
@@ -495,6 +501,13 @@ export const CURIO_CATALOGUE: Readonly<Record<CurioKind, CurioEntry>> = {
     facing: "front",
     classes: ["desk", "table"],
     sizes: [{ width: 0.1, depth: 0.06, top: 0.002 }],
+  },
+  "disk-525": {
+    slot: "desk",
+    variants: 1,
+    facing: "front",
+    classes: ["desk", "bench", "table"],
+    sizes: [{ width: 0.133, depth: 0.133, top: 0.003 }],
   },
 };
 
@@ -625,9 +638,13 @@ export const RADAR_POOL = [
 export const CAPSULE_POOL = [
   ["capsule-case", 1],
 ] as const satisfies readonly (readonly [CurioKind, number])[];
-/** The desk slot's pool (0.25.1 D-3, D-2): the floppy is the commoner. */
+/**
+ * The desk slot's pool (0.25.1 D-3, D-2): the floppy is the commoner, the
+ * 5.25 inch disk and the ticket a little rarer.
+ */
 export const DESK_POOL = [
   ["floppy-disk", 3],
+  ["disk-525", 2],
   ["lottery-ticket", 2],
 ] as const satisfies readonly (readonly [CurioKind, number])[];
 /** The snack slot's pool (0.25.1 D-4). */
@@ -1332,8 +1349,8 @@ export interface CurioDraws {
    */
   capsule?: PairedDraw;
   /**
-   * The desk slot (the floppy, the ticket; 0.25.1). Absent means not
-   * drawn; `curioDraws` always sets it.
+   * The desk slot (the floppy, the 5.25 inch disk, the ticket; 0.25.1).
+   * Absent means not drawn; `curioDraws` always sets it.
    */
   desk?: SlotDraw;
   /**

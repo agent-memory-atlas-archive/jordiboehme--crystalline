@@ -83,6 +83,7 @@ export const CURIO_BANK = {
   "floppy-disk": "steady",
   "pizza-box": "steady",
   "lottery-ticket": "steady",
+  "disk-525": "steady",
 } as const satisfies Record<CurioKind, BlinkBank>;
 
 /**

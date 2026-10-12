@@ -2188,8 +2188,9 @@ export function row(
  *   way: place 0 the floppy disk and the lottery ticket side by side,
  *   places 1, 2 and 3 the pizza box closed, stacked two and stacked
  *   three, one to a place, since a box fills a place's 0.41 m budget
- *   alone; and the third table's place 0 the open pizza box. The tables'
- *   other places stay free.
+ *   alone; and the third table's place 0 the open pizza box, place 1 the
+ *   floppy's second label and place 2 the 5.25 inch disk. The third
+ *   table's place 3 stays free.
  *
  * Every seed is `seedFor(seed, "curio", kind, variant)`, and the output is
  * sorted by `CURIO_ORDER`.
@@ -2289,5 +2290,7 @@ function heroHallCurios(seed: number, room: RoomSpec): Curio[] {
     one("decor-round-table-2", "pizza-box", 1, 0, 1),
     one("decor-round-table-3", "pizza-box", 2, 1, 1),
     one("decor-round-table-0", "pizza-box", 3, 2, 2),
+    one("decor-round-table-1", "floppy-disk", 1, 3, 2),
+    one("decor-round-table-2", "disk-525", 0, 0, 2),
   ].sort(CURIO_ORDER);
 }
