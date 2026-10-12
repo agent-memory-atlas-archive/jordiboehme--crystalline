@@ -901,8 +901,13 @@ test("the station launches from the C64 screen and returns to the same page", as
       : "no webgl2";
   });
   console.log(`renderer: ${renderer}`);
-  // The connecting screen shows, since the launch's click primed the
-  // sound, and skips on any key.
+  // The opening question shows first, since the launch's click primed the
+  // sound, and skips on any key; the connecting screen follows and skips
+  // the same way.
+  const opening = page.getByRole("dialog", { name: "Opening" });
+  await expect(opening).toBeVisible();
+  await page.keyboard.press("Shift");
+  await expect(opening).toHaveCount(0);
   const connecting = page.getByRole("dialog", { name: "Connecting" });
   await expect(connecting).toBeVisible();
   await page.keyboard.press("Shift");
