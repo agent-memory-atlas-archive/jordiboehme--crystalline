@@ -414,10 +414,13 @@ pub(crate) fn detect_local_changes_with(
     //   3. exactly one unmatched walked path folds to that value, so two disk
     //      files are never both claiming one base entry.
     //
-    // Fail any of them and nothing changes: the walked path is `Added` and the
-    // base key is `Deleted`, exactly as before. Those are genuinely ambiguous
-    // trees, and there guessing is worse than reporting - a repository holding
-    // both spellings is what verify rule `E009` exists to flag.
+    // Fail any of them and nothing is folded. Fail 2 or 3 and the walked path
+    // is `Added` beside the base key's own fate. Fail 1 (the base holds two or
+    // more spellings) with none of them on disk exactly, and the plan stops
+    // and names the spellings (see the deletion pass below). Those are
+    // genuinely ambiguous trees, and there guessing is worse than reporting -
+    // a repository holding both spellings is what verify rule `E009` exists
+    // to flag.
     //
     // Case-sensitive filesystems: this deliberately does NOT probe the
     // filesystem, and relies on the guard above alone. Four reasons.
@@ -582,7 +585,7 @@ pub(crate) fn detect_local_changes_with(
                     .collect::<Vec<_>>()
                     .join(" and ");
                 return Err(RemoteError::Refused(format!(
-                    "{named} in the team repository differ only in letter case. Windows and macOS can hold only one of them, so Crystalline cannot tell whether one was deleted. Rename one of them in the team repository, then share again."
+                    "{named} in the team repository differ only in letter case. Windows and macOS can hold only one of them, so Crystalline cannot tell whether one was deleted. Rename one of them in the team repository, then try again."
                 )));
             }
             match std::fs::symlink_metadata(domain_root.join(rel)) {
