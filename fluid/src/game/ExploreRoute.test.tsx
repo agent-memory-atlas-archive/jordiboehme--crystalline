@@ -1666,10 +1666,10 @@ describe("ExploreRoute", () => {
       third.unmount();
     });
 
-    // Mutation caught: the input taking a key the connecting screen
+    // Mutation caught: the input taking a key the opening screen
     // cancelled (the key that skips the screen also acts in the station:
     // F opening a Fluid tab, W walking).
-    it("skips the connecting screen on a key sent the moment it appears", async () => {
+    it("skips the opening screen on a key sent the moment it appears", async () => {
       // Mutation caught: the skip listener added in a passive effect, a
       // task after the commit that shows the screen: a key in between is
       // lost and the screen stays up (the gap the Esc test above falls
@@ -1917,14 +1917,24 @@ describe("ExploreRoute", () => {
       await skipOpening();
       expect(sound.dials).toHaveLength(1);
       expect(sound.dials[0]?.director).toBe(sound.directors.at(-1));
+      // Every DTMF digit of the number is one pair of tones.
+      const oneDial =
+        2 * [...sound.dials[0]!.number].filter((c) => c in DTMF).length;
+      expect(oneDial).toBeGreaterThan(0);
+      // Since the opening question stands first, the first mount never
+      // dials: only the second mount's dial exists, and it waits for the
+      // context to run. So nothing has played yet (before the opening this
+      // count was the first mount's dial, and the replay doubled it).
       const first = dialTones();
+      expect(first).toBe(0);
       expect(ctx.state).toBe("suspended");
       await act(async () => {
         ctx.settle();
         await Promise.resolve();
       });
       expect(ctx.state).toBe("running");
-      expect(dialTones()).toBeGreaterThan(first);
+      // The replay plays that one dial exactly once.
+      expect(dialTones()).toBe(oneDial);
       view.unmount();
     });
   });
