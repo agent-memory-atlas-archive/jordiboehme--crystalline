@@ -352,8 +352,8 @@ export type ReaderState = Reading;
 /**
  * Where the session writes what the player sees besides the room.
  *
- * - `prompt`: the line for what the player faces (`SPACE READ Scope`), null
- *   when nothing.
+ * - `prompt`: the line for what the player faces (`SPACE READ Scope`, or
+ *   `SPACE GRAVITY` at a gravity console), null when nothing.
  * - `status`: the room, its condition and the mouse hint.
  * - `frame`: the frame time and the render targets' colour format, with
  *   `BUILD <ms> MS` appended once a room has been built: the time the last
@@ -1899,6 +1899,8 @@ export function createSession(opts: SessionOptions): Session {
     if (was === null) return;
     closeLift();
     const spot = settleSpot(built.room, was.x, was.z);
+    // A reshape is the same visit: the weight stays while a console does.
+    const wasHeavy = heavy;
     if (
       !enter(
         built.place,
@@ -1911,6 +1913,7 @@ export function createSession(opts: SessionOptions): Session {
       )
     )
       return;
+    heavy = wasHeavy && gravityConsoles.length > 0;
     if (player !== null) {
       player = { ...player, pitch: was.pitch };
       previous = player;

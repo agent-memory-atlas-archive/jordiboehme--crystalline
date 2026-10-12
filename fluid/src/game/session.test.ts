@@ -5234,6 +5234,77 @@ describe("live changes (M4 C13 to C19)", () => {
     expect(notices.some((n) => n.text === RECONFIGURING)).toBe(false);
   });
 
+  describe("the gravity console across a reshape", () => {
+    /** The room with a console 1.2 m ahead of its spawn. */
+    const withConsole = (r: RoomSpec): RoomSpec => {
+      const x = (r.spawn.x + 0.5) * CELL - Math.sin(r.spawn.yaw) * 1.2;
+      const z = (r.spawn.y + 0.5) * CELL - Math.cos(r.spawn.yaw) * 1.2;
+      return {
+        ...r,
+        props: [
+          ...r.props,
+          {
+            kind: "gravity-console",
+            variant: 0,
+            anchor: "floor",
+            x: x / CELL,
+            y: z / CELL,
+            turn: 0,
+            seed: 1,
+          },
+        ],
+      };
+    };
+    const lampGain = () =>
+      renderer.draw.mock.calls.at(-1)?.[5][
+        bankSlot("status") * BLINK_GROUPS + 2
+      ];
+    /** How many distinct lamp gains the next 60 frames show. */
+    const lampLevels = () => {
+      const seen = new Set<number | undefined>();
+      for (let i = 0; i < 60; i++) {
+        frames(1);
+        seen.add(lampGain());
+      }
+      return seen;
+    };
+
+    /** Heavy on in a room with a console, then one reshape; `keepConsole` says if the new room has it. */
+    async function reshaped(keepConsole: boolean) {
+      let builds = 0;
+      facing.edit = (r) => (++builds === 1 || keepConsole ? withConsole(r) : r);
+      const session = await standIn();
+      frames(2);
+      key("keydown", "Space");
+      frames(1);
+      key("keyup", "Space");
+      expect(hud.notice).toHaveBeenLastCalledWith("GRAVITY 300G");
+      answers.set("hall", engramOf(redoored()));
+      session.changed(frameOf());
+      await run(2000);
+      expect(shown().props.some((p) => p.kind === "gravity-console")).toBe(
+        keepConsole,
+      );
+      return session;
+    }
+
+    it("makes the player light at once, with no notice, when the reshape drops the console", async () => {
+      // Mutation caught: heavy kept across a same-room reshape that removed
+      // the console, so nothing could ever switch it off.
+      await reshaped(false);
+      expect(notices.map((n) => n.text)).not.toContain("GRAVITY 1G");
+      expect(lampLevels().size).toBeGreaterThan(1);
+    });
+
+    it("keeps the player heavy through a reshape that keeps the console", async () => {
+      // Mutation caught: heavy cleared on every reshape.
+      await reshaped(true);
+      const seen = lampLevels();
+      expect([...seen]).toEqual([1]);
+      expect(notices.map((n) => n.text)).not.toContain("GRAVITY 1G");
+    });
+  });
+
   describe("fix round 1", () => {
     /** A promise that rejects once asked, as a load the server fails. */
     function failing(): { promise: Promise<LoadedStation>; fail(): void } {
@@ -6218,5 +6289,172 @@ describe("the gravity console (spec D-9)", () => {
     tapSpace();
     expect(cues.filter((c) => c.kind === "gravity")).toEqual([]);
     expect(hud.notice).not.toHaveBeenCalledWith("GRAVITY 300G");
+  });
+
+  /** The gravity cues a recording sink has heard. */
+  const gravityCues = (cues: Cue[]) => cues.filter((c) => c.kind === "gravity");
+
+  it("leaves no weight or held lamp behind a disposed session", () => {
+    // Mutation caught: the weight or the lit lamp outliving the session
+    // (a new session must start light, its lamp strobing).
+    const room = withProp("gravity-console");
+    const first = start({ client: null });
+    first.showRoom(room);
+    frames(4);
+    tapSpace();
+    first.dispose();
+    const light = walkedIn(room, 0);
+    const again = walkedIn(room, 1);
+    expect(again / light).toBeLessThan(0.7);
+    const fresh = start({ client: null });
+    fresh.showRoom(room);
+    frames(4);
+    const seen = new Set<number | undefined>();
+    for (let i = 0; i < 60; i++) {
+      frames(1);
+      seen.add(lamp());
+    }
+    expect(seen.size).toBeGreaterThan(1);
+    expect(strafed(12) / light).toBeGreaterThan(0.9);
+  });
+
+  it("does not switch while the reader is open, and a terminal in focus wins", async () => {
+    // Mutation caught: the use key read for the console while the reader
+    // is open; a fixture in focus losing to the console.
+    const { cues, sink } = recordSound();
+    facing.kind = "terminal";
+    facing.edit = (built) => {
+      const at = {
+        x: (built.spawn.x + 0.5) * CELL,
+        z: (built.spawn.y + 0.5) * CELL,
+      };
+      return {
+        ...built,
+        props: [
+          ...built.props,
+          {
+            kind: "gravity-console",
+            variant: 0,
+            anchor: "floor",
+            x: (at.x - Math.sin(built.spawn.yaw) * 1.2) / CELL,
+            y: (at.z - Math.cos(built.spawn.yaw) * 1.2) / CELL,
+            turn: 0,
+            seed: 1,
+          },
+        ],
+      };
+    };
+    const session = start({
+      sound: sink,
+      load: () =>
+        Promise.resolve({
+          kind: "engram",
+          place: CANNED_WORKSHOP,
+          folder: "",
+        }),
+    });
+    session.go({
+      kind: "engram",
+      domain: CANNED_WORKSHOP.domain,
+      permalink: CANNED_WORKSHOP.permalink,
+    });
+    await flush();
+    frames(1);
+    tapSpace();
+    expect(hud.reader).toHaveBeenLastCalledWith(
+      expect.objectContaining({ title: CANNED_WORKSHOP.title }),
+    );
+    tapSpace();
+    tapSpace();
+    expect(gravityCues(cues)).toEqual([]);
+    expect(hud.notice).not.toHaveBeenCalledWith("GRAVITY 300G");
+  });
+
+  it("lets a police box in focus win over the console", () => {
+    // Mutation caught: the console ranked above the box's doors.
+    const { cues, sink } = recordSound();
+    const session = start({ sound: sink });
+    const hall = heroHallRoom();
+    const i = standAtBox(session, hall);
+    const front = boxFront(hall.heroes[i]!);
+    const dist = REACH - 0.4;
+    const player = {
+      x: front.x + front.inward[0] * dist,
+      z: front.z + front.inward[1] * dist,
+    };
+    // A console between the player and the box, closer than the box.
+    const console_ = {
+      kind: "gravity-console",
+      variant: 0,
+      anchor: "floor",
+      x: (player.x + (front.x - player.x) * 0.3) / CELL,
+      y: (player.z + (front.z - player.z) * 0.3) / CELL,
+      turn: 0,
+      seed: 1,
+    } satisfies Prop;
+    session.showRoom(
+      {
+        ...hall,
+        props: [console_],
+        spawn: {
+          x: player.x / CELL - 0.5,
+          y: player.z / CELL - 0.5,
+          yaw: Math.atan2(front.inward[0], front.inward[1]),
+        },
+      },
+      { pitch: 0 },
+      HALL_ADDRESS,
+    );
+    frames(1);
+    expect(hud.prompt).toHaveBeenLastCalledWith("SPACE OPEN");
+    tapSpace();
+    frames(19);
+    expect(lastDoors().get(`box:${String(i)}`)).toBe(1);
+    expect(gravityCues(cues)).toEqual([]);
+  });
+
+  it("still opens the room reading at a computer that is not the console", async () => {
+    // Mutation caught: the gravity branch taking Space from every
+    // computer, not just the console.
+    const { cues, sink } = recordSound();
+    facing.edit = (built) => {
+      const x = (built.spawn.x + 0.5) * CELL - Math.sin(built.spawn.yaw) * 0.5;
+      const z = (built.spawn.y + 0.5) * CELL - Math.cos(built.spawn.yaw) * 0.5;
+      return {
+        ...built,
+        curios: [
+          ...built.curios,
+          {
+            kind: "beige-laptop",
+            variant: 0,
+            x: x / CELL,
+            y: z / CELL,
+            h: 0,
+            turn: 0,
+            seed: 1,
+          },
+        ],
+      };
+    };
+    start({
+      sound: sink,
+      load: () =>
+        Promise.resolve({
+          kind: "engram",
+          place: CANNED_WORKSHOP,
+          folder: "",
+        }),
+    }).go({
+      kind: "engram",
+      domain: CANNED_WORKSHOP.domain,
+      permalink: CANNED_WORKSHOP.permalink,
+    });
+    await flush();
+    frames(1);
+    tapSpace();
+    expect(hud.reader).toHaveBeenLastCalledWith(
+      expect.objectContaining({ title: CANNED_WORKSHOP.title }),
+    );
+    expect(gravityCues(cues)).toEqual([]);
   });
 });
