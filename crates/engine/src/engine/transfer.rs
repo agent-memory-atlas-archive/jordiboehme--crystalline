@@ -290,7 +290,8 @@ impl Engine {
             // archive replace the one file a domain cannot regenerate.
             if Path::new(path)
                 .file_name()
-                .is_some_and(|n| n.eq_ignore_ascii_case("MANIFEST.md"))
+                .and_then(|n| n.to_str())
+                .is_some_and(names_the_manifest)
             {
                 entries.push(json!({
                     "path": path,

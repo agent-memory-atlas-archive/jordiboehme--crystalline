@@ -226,6 +226,19 @@ pub enum RemoteError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A working-tree file or folder could not be read, written, removed or
+    /// listed. It names the path, so a failed share or pull says which file
+    /// stopped it. Raw `Io` stays for state and base-snapshot IO, which has
+    /// no file of the user's to name.
+    #[error("{}", working_tree_message(path, source))]
+    WorkingTree {
+        /// The file or folder, relative to the domain root where the caller
+        /// knows it, otherwise the path as the operating system gave it.
+        path: String,
+        /// The operating system's error.
+        source: std::io::Error,
+    },
+
     /// An on-disk origin state file could not be parsed: corrupt content or
     /// an unexpected shape. A plain read or write failure is `Io`, not this.
     #[error("the origin state is corrupt: {0}")]
@@ -260,6 +273,15 @@ pub enum RemoteError {
 }
 
 impl RemoteError {
+    /// A working-tree failure that names `path`. Use it wherever the share or
+    /// pull path touches a file of the user's, so the message says which one.
+    pub fn working_tree(path: impl Into<String>, source: std::io::Error) -> Self {
+        RemoteError::WorkingTree {
+            path: path.into(),
+            source,
+        }
+    }
+
     /// Whether a later try may succeed with nobody acting: the network, a
     /// rate limit, a server fault or a sign-in a reconnect restores. A branch
     /// cleanup retries a temporary failure quietly on the next sync and stops
@@ -287,10 +309,33 @@ impl RemoteError {
             | RemoteError::NotFastForward { .. }
             | RemoteError::BranchProtected { .. }
             | RemoteError::Io(_)
+            | RemoteError::WorkingTree { .. }
             | RemoteError::State(_)
             | RemoteError::Credential { .. }
             | RemoteError::ServerCredential { .. } => false,
         }
+    }
+}
+
+/// The Windows error `ERROR_REPARSE_POINT_ENCOUNTERED`: a link or a
+/// redirected folder that a file operation was told not to go through.
+const ERROR_REPARSE_POINT_ENCOUNTERED: i32 = 4395;
+
+/// Whether `err` is Windows error 4395. The number is checked on every
+/// platform so the mapping can be tested everywhere; no other system uses it
+/// as an errno.
+pub fn is_reparse_point_error(err: &std::io::Error) -> bool {
+    err.raw_os_error() == Some(ERROR_REPARSE_POINT_ENCOUNTERED)
+}
+
+/// The sentence for a failed working-tree operation on `path`.
+fn working_tree_message(path: &str, source: &std::io::Error) -> String {
+    if is_reparse_point_error(source) {
+        format!(
+            "'{path}' is a link or a redirected folder that Crystalline cannot go through. Replace the link with a real folder that holds the same files, then try again."
+        )
+    } else {
+        format!("'{path}' could not be read or changed: {source}.")
     }
 }
 
@@ -975,5 +1020,37 @@ mod tests {
         ] {
             assert!(!permanent.is_temporary(), "{permanent:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod working_tree_tests {
+    use super::*;
+
+    #[test]
+    fn error_4395_is_named_with_the_file_and_the_way_out() {
+        let err = RemoteError::working_tree(
+            "notes/a.md",
+            std::io::Error::from_raw_os_error(ERROR_REPARSE_POINT_ENCOUNTERED),
+        );
+        assert_eq!(
+            err.to_string(),
+            "'notes/a.md' is a link or a redirected folder that Crystalline cannot go through. Replace the link with a real folder that holds the same files, then try again."
+        );
+        assert!(!err.to_string().contains("OneDrive"));
+    }
+
+    #[test]
+    fn another_working_tree_error_names_the_file_and_the_os_text() {
+        let err = RemoteError::working_tree(
+            "notes/a.md",
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        );
+        let text = err.to_string();
+        assert!(
+            text.contains("'notes/a.md'") && text.contains("denied"),
+            "{text}"
+        );
+        assert!(!text.contains("link or a redirected folder"));
     }
 }

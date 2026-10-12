@@ -19,13 +19,17 @@
  *   cheek plates on both sides sweeping back and up, edged in lime; and a
  *   hooked crest at the skull's back. No number, no emblem.
  * - The tank is pale sky blue with white joints and darker grey
- *   underparts: a big rounded pod abdomen at its back (two overlapping
- *   ovoids), a white waist, a smaller cabin in front with three round
- *   lenses (`TANK_LENSES`: two side by side, the larger one below), a
- *   short gun pod on the cabin's roof, two small white manipulator arms
- *   under its front and four stout jointed legs, each rising from its hip
- *   to a high knee and down to a round wheel foot on the floor, the
- *   wheels turned to roll along `d`.
+ *   underparts: a tall rounded pod at its back, its panels split by three
+ *   darker seams, with a hatch outline on its front and its back, two
+ *   amber marker lights, white ball sensors on its flanks and a fourth,
+ *   unlit eye under it; a low round head in front with a seam at its
+ *   widest line, three white eye balls on its face (`TANK_LENSES`: two
+ *   side by side, the larger one below), each with a glowing lens and
+ *   three dark pinholes, and a periscope on its top; a short round gun in
+ *   the snout under the head; two arms under its front, each with a white
+ *   forearm and three grey fingers; and four stout tapering legs, each
+ *   rising from its hip to a high knee and down to a white cuff and a
+ *   round wheel foot on the floor, the wheels turned to roll along `d`.
  * - The garden robot is weathered rust with moss: a round body, broad at
  *   its shoulders and narrowing to its hips, in bands of rust that differ
  *   a little in shade; two stubby block legs with flat feet; a row of dark
@@ -38,7 +42,8 @@
  *   from a crack in its front.
  *
  * The numbers each kind is built to are named in a table above its
- * recipe: `HEAD`, `TANK` with `TANK_LENSES` and `TANK_LEGS`, and `ROBOT`.
+ * recipe: `HEAD`, `TANK` with `TANK_LENSES`, `TANK_ARMS` and `TANK_LEGS`,
+ * and `ROBOT`.
  * Round parts use few facets, as in every batch.
  */
 
@@ -504,71 +509,178 @@ const mechHead: HeroRecipe = ({ k, kitAt, s, variant, kind }) => {
 /** The tank's body: a pale sky blue. */
 const TANK_BLUE: Rgb = [0.55, 0.75, 0.95];
 
-/** The tank's joints and arms: white. */
+/** The seams between the tank's body panels: a deeper blue. */
+const TANK_SEAM: Rgb = [0.34, 0.5, 0.68];
+
+/** The tank's joints, eyes, sensors and arms: white. */
 const TANK_WHITE: Rgb = [0.92, 0.93, 0.95];
 
-/** The tank's underparts and wheels: a darker grey. */
+/** The tank's underparts, wheels, fingers and gun: a darker grey. */
 const TANK_GREY: Rgb = [0.3, 0.32, 0.35];
 
-/** The lenses' bezels: near black. */
+/** The eyes' pinholes and the gun's muzzle: near black. */
 const TANK_BEZEL: Rgb = [0.08, 0.08, 0.1];
+
+/** The small marker lights near the pod's top: amber, not lit. */
+const TANK_AMBER: Rgb = [0.95, 0.6, 0.2];
 
 /** The lenses' glow: a pale cyan that breathes. */
 const TANK_LENS: Rgb = [0.5, 0.9, 1.0];
 
 /**
- * The tank's three lenses on its cabin's front: `a` and `h` the centre,
- * `r` the bezel's radius. Two side by side on top and a larger one below
- * them (the lowest lens is the largest, which the shape test holds). The
- * recipe builds its lenses from this table, each glowing in its own blink
- * group in this order.
+ * The tank's three glowing eyes on its head's front: `a`, `d` and `h`
+ * the white eye ball's centre, `r` its radius. Two smaller ones side by
+ * side higher up and a larger one below them in the middle (the lowest
+ * eye is the largest, which the shape test holds). Each ball carries a
+ * glowing lens on its front, and the recipe builds the lenses from this
+ * table, each glowing in its own blink group in this order.
  */
-export const TANK_LENSES: readonly { a: number; h: number; r: number }[] = [
-  { a: -0.18, h: 1.62, r: 0.09 },
-  { a: 0.18, h: 1.62, r: 0.09 },
-  { a: 0, h: 1.35, r: 0.13 },
+export const TANK_LENSES: readonly {
+  a: number;
+  d: number;
+  h: number;
+  r: number;
+}[] = [
+  { a: -0.24, d: 0.98, h: 1.58, r: 0.1 },
+  { a: 0.24, d: 0.98, h: 1.58, r: 0.1 },
+  { a: 0, d: 1.1, h: 1.33, r: 0.15 },
 ];
 
 /**
  * The spider tank's body measures, in metres (the footprint is ±1.2 by
  * ±1.75; its top is the catalogue's, read through `heroHalf`):
- * - `pods`: the abdomen's two ovoids, `[d, scale]`: the full one at
- *   `d -0.7` and one at 0.85 of its size behind it, both on the `pod`
- *   profile of `[r, h]` closed at the hero's top (`heroHalf`'s `top`) on
- *   its axis (the smaller one scaled about the profile's foot) and the
- *   smaller a shade darker;
- * - `waist`, `cabin`, `under`: the white waist cylinder, the cabin's
- *   bevelled box and the grey underparts;
- * - `lens`: the bezels' depth range, from inside the cabin to in front
- *   of it, so where the cabin's bevel falls away a bezel stands out as a
- *   short barrel; the glowing discs' front in front of the bezels and
- *   their share of the radius;
- * - `arms`: the manipulator arms' centres along `a`, half width, `d` and
- *   `h` ranges (their tops inside the cabin), and `claws` each arm's two
- *   claw bars at its tip, `spread` either side of its middle;
- * - `gun`: the gun pod's box, sunk a centimetre into the cabin's roof,
- *   and its barrel.
+ * - `pod`: the tall rear pod at `d`, a profile of `[r, h]` closed at the
+ *   hero's top (`heroHalf`'s `top`), turned in `sides` facets with a
+ *   corner pointing straight ahead and straight back, and its `bands`
+ *   (`[first, last, colour]` index ranges that share their end rings,
+ *   `colour` a shade of the body blue or `"seam"`), so three narrow
+ *   darker bands read as the seams between its panels;
+ * - `hatches`: the two hatch outlines on the pod, each `[side, i0, i1]`
+ *   (`side` 1 on its front above the head, -1 on its back) between the
+ *   seams at profile points `i0` and `i1`: two upright seam strips at
+ *   `±hatchA`, `hatchHalf` wide, following the pod's facets from `sink`
+ *   inside the face to `proud` outside it;
+ * - `markers`: the two amber marker lights on the pod's front, at `±a`
+ *   and height `h`, half side `half`;
+ * - `sensors`: the white ball sensors on the pod's flanks, `[a, d, h,
+ *   r]` (`a` mirrored), and `belly` the fourth eye under the pod, white
+ *   and unlit;
+ * - `head`: the low round head at `d`, a profile of `[r, h]` in `sides`
+ *   facets and its `bands`, the seam at its widest line;
+ * - `under`: the grey underparts joining the pod and the head;
+ * - `lens`: each glowing lens's share of its eye's radius, how far in
+ *   front of the ball it stands (`proud`) and from how deep it starts
+ *   (`sink`, a share of the radius); `pins`: the three dark pinholes on
+ *   each lens, their share of the radius and of the distance out from the
+ *   centre, and their thickness;
+ * - `scope`: the periscope stalk on the head's top, `a`, `d`, radius and
+ *   heights, and its cap;
+ * - `gun`: the short round gun in the snout under the head, its `h`, `d`
+ *   range, radius, collar and muzzle slot.
  */
 const TANK = {
-  pods: [
-    [-0.7, 1],
-    [-1.05, 0.85],
+  pod: {
+    d: -0.65,
+    sides: 16,
+    profile: [
+      [0, 0.98],
+      [0.45, 1.02],
+      [0.62, 1.22],
+      [0.69, 1.48],
+      [0.7, 1.52],
+      [0.71, 1.8],
+      [0.7, 1.96],
+      [0.69, 2.0],
+      [0.6, 2.24],
+      [0.56, 2.29],
+      [0.34, 2.45],
+    ],
+    bands: [
+      [0, 3, 0.9],
+      [3, 4, "seam"],
+      [4, 6, 1],
+      [6, 7, "seam"],
+      [7, 8, 1],
+      [8, 9, "seam"],
+      [9, 11, 1.03],
+    ],
+  },
+  hatches: [
+    [1, 7, 8],
+    [-1, 4, 6],
   ],
-  pod: [
-    [0, 1.1],
-    [0.55, 1.2],
-    [0.8, 1.6],
-    [0.7, 2.2],
-    [0.35, 2.45],
-  ],
-  waist: { d: -0.05, r: 0.32, h: [1.15, 1.7] },
-  cabin: { a: 0.45, d0: 0.3, d1: 1.2, h0: 1.1, h1: 1.8, bevel: 0.16 },
-  under: { a: 0.5, d0: -1.0, d1: 0.6, h0: 0.9, h1: 1.12 },
-  lens: { d0: 1.1, d1: 1.24, glow: 1.25, share: 0.7 },
-  arms: { at: [-0.2, 0.2], half: 0.04, d0: 0.9, d1: 1.38, h0: 0.98, h1: 1.12 },
-  claws: { half: 0.015, d0: 1.3, d1: 1.42, h0: 0.9, h1: 1.0, spread: 0.025 },
-  gun: { a: 0.1, d0: 0.4, d1: 1.0, h0: 1.79, h1: 1.95 },
-  barrel: { a: 0.03, d0: 1.0, d1: 1.3, h0: 1.85, h1: 1.9 },
+  hatchA: 0.2,
+  hatchHalf: 0.012,
+  sink: 0.012,
+  proud: 0.006,
+  markers: { a: 0.3, h: 2.12, half: 0.025, sink: 0.03, proud: 0.012 },
+  sensors: { a: 0.7, d: -0.65, h: 1.75, r: 0.11 },
+  belly: { a: 0, d: -0.95, h: 0.99, r: 0.08 },
+  head: {
+    d: 0.6,
+    sides: 16,
+    profile: [
+      [0, 0.98],
+      [0.42, 1.0],
+      [0.53, 1.14],
+      [0.56, 1.3],
+      [0.56, 1.35],
+      [0.52, 1.52],
+      [0.42, 1.66],
+      [0.24, 1.77],
+      [0, 1.8],
+    ],
+    bands: [
+      [0, 3, 0.94],
+      [3, 4, "seam"],
+      [4, 8, 1],
+    ],
+  },
+  under: { a: 0.34, d0: -0.55, d1: 0.5, h0: 0.88, h1: 1.04, bevel: 0.05 },
+  lens: { share: 0.6, proud: 0.006, sink: 0.6 },
+  pins: { share: 0.16, out: 0.5, thick: 0.004 },
+  scope: {
+    a: 0.12,
+    d: 0.55,
+    r: 0.035,
+    h0: 1.7,
+    h1: 2.02,
+    cap: 0.055,
+    top: 2.08,
+  },
+  gun: {
+    h: 1.04,
+    d0: 0.85,
+    d1: 1.3,
+    r: 0.075,
+    collar: { d0: 1.16, d1: 1.2, r: 0.09 },
+    slot: { half: 0.045, h: 0.01, thick: 0.008 },
+  },
+} as const;
+
+/**
+ * The tank's arms, in the recipe's side plane (`[d, h]`), one at each of
+ * `at` along `a`: the upper arm from the `shoulder` under the head to
+ * the `elbow`, `upper` wide, and the forearm on to the `wrist`, `fore`
+ * wide, both `half` thick across `a`; the grey elbow pin's radius and
+ * half length; and three fingers from the wrist, the middle one to `tip`
+ * and the outer two to `side`, `spread` either side of the arm's middle,
+ * `finger` wide and `fingerHalf` thick.
+ */
+const TANK_ARMS = {
+  at: [-0.27, 0.27],
+  shoulder: [0.85, 0.98],
+  elbow: [1.15, 0.78],
+  wrist: [1.45, 0.82],
+  upper: 0.11,
+  fore: 0.09,
+  half: 0.055,
+  pin: { r: 0.06, half: 0.07 },
+  tip: [1.63, 0.7],
+  side: [1.59, 0.68],
+  spread: 0.04,
+  finger: 0.032,
+  fingerHalf: 0.014,
 } as const;
 
 /**
@@ -577,9 +689,11 @@ const TANK = {
  * - `hips`: `[d, turn]` for the four legs: the frame's origin on the
  *   centre line at `d` and its turn from `+a`, the front pair splayed
  *   forward and the back pair back, each wheel inside the footprint;
- * - `hip`, `knee`, `foot`: the joints' `[a, h]` along the leg; the upper
- *   leg runs from hip to knee, `upper` wide, the lower leg from knee to
- *   foot, `lower` wide, both `half` thick;
+ * - `hip`, `knee`, `foot`: the joints' `[a, h]` along the leg; the leg
+ *   tapers from `widths[0]` at the hip through `widths[1]` at the knee to
+ *   `widths[2]` at the foot, `half` thick; `cuff`: the white cuff over the
+ *   wheel, from `cuff.t0` to `cuff.t1` of the way down the lower leg,
+ *   `cuff.width` wide and `cuff.half` thick;
  * - `joint`: the white joint pins' radius and half length across the
  *   leg; `wheel`: the wheel's radius (its lowest corner on the floor, the
  *   outline starting at its top so a corner points straight down), half
@@ -596,13 +710,33 @@ const TANK_LEGS = {
   hip: [0.3, 1.3],
   knee: [0.95, 1.75],
   foot: [1.35, 0.24],
-  upper: 0.18,
-  lower: 0.14,
-  half: 0.09,
-  joint: { r: 0.11, half: 0.12 },
-  wheel: { r: 0.24, half: 0.08, sides: 10 },
+  widths: [0.28, 0.24, 0.15],
+  half: 0.11,
+  cuff: { t0: 0.72, t1: 0.84, width: 0.21, half: 0.125 },
+  joint: { r: 0.13, half: 0.14 },
+  wheel: { r: 0.24, half: 0.09, sides: 12 },
   hub: { r: 0.1, off: 0.015 },
 } as const;
+
+/**
+ * How far from the axis a lathe of `sides` facets with a corner straight
+ * ahead (as `k.lathe` turns one) has its face at `x` to the side of that
+ * corner, for a profile radius `r`: the flat facet's depth, not the
+ * circle's, so a part laid on it sits flush with the facets.
+ */
+function facetDepth(r: number, x: number, sides: number): number {
+  const step = (2 * Math.PI) / sides;
+  const ax = Math.abs(x);
+  for (let j = 0; j < sides / 4; j++) {
+    const [x0, y0] = [r * Math.sin(j * step), r * Math.cos(j * step)];
+    const [x1, y1] = [
+      r * Math.sin((j + 1) * step),
+      r * Math.cos((j + 1) * step),
+    ];
+    if (ax <= x1) return y0 + ((y1 - y0) * (ax - x0)) / (x1 - x0);
+  }
+  return 0;
+}
 
 /**
  * A frame at `a` along frame `f`, facing as the recipe's own frame does:
@@ -621,18 +755,29 @@ function footFrame(f: Frame, a: number): Frame {
 }
 
 /**
- * One of the tank's legs in frame `f`: the blue upper leg from the white
- * hip pin to the white knee pin, the blue lower leg down to the wheel,
- * and the grey wheel with a white hub on each face, turned to roll along
- * `d` and resting on the floor.
+ * One of the tank's legs in frame `f`: the blue leg tapering from the
+ * white hip pin over the white knee pin down to the wheel, a white cuff
+ * just above the wheel, and the grey wheel with a white hub on each
+ * face, turned to roll along `d` and resting on the floor.
  */
 function tankLeg(kitAt: KitAt, s: Surfaces, f: Frame): void {
   const L = TANK_LEGS;
   const k = kitAt(f);
   const blue = s.tinted(TANK_BLUE);
   const white = s.tinted(TANK_WHITE);
-  k.extrude(barBetween(L.hip, L.knee, L.upper), -L.half, L.half, blue);
-  k.extrude(barBetween(L.knee, L.foot, L.lower), -L.half, L.half, blue);
+  for (const seg of taperedSegments([L.hip, L.knee, L.foot], L.widths))
+    k.extrude(seg, -L.half, L.half, blue);
+  const C = L.cuff;
+  k.extrude(
+    barBetween(
+      lerp2(L.knee, L.foot, C.t0),
+      lerp2(L.knee, L.foot, C.t1),
+      C.width,
+    ),
+    -C.half,
+    C.half,
+    white,
+  );
   // A pin across the leg: in the leg's sideways frame `cylinderAlong`
   // runs along the leg's `d`, with the leg's `a` as its depth.
   const pins = kitAt(sideways(f));
@@ -657,56 +802,154 @@ function tankLeg(kitAt: KitAt, s: Surfaces, f: Frame): void {
 }
 
 /**
- * The spider tank: the abdomen's two ovoids, the waist, the cabin, the
- * underparts, the three lenses, the arms and claws, the gun pod and the
- * four legs.
+ * One of the tank's arms at `a`: the blue upper arm from under the head
+ * to the grey elbow pin, the white forearm on to the wrist, and three
+ * grey fingers reaching forward and down from it.
+ */
+function tankArm(k: Kit, kitAt: KitAt, s: Surfaces, a: number): void {
+  const A = TANK_ARMS;
+  const side = kitAt(sideways(ORIGIN));
+  const grey = s.tinted(TANK_GREY);
+  side.extrude(
+    across(barBetween(A.shoulder, A.elbow, A.upper)),
+    a - A.half,
+    a + A.half,
+    s.tinted(TANK_BLUE),
+  );
+  side.extrude(
+    across(barBetween(A.elbow, A.wrist, A.fore)),
+    a - A.half * 0.85,
+    a + A.half * 0.85,
+    s.tinted(TANK_WHITE),
+  );
+  const [ed, eh] = A.elbow;
+  k.cylinderAlong(a - A.pin.half, a + A.pin.half, ed, eh, A.pin.r, 8, grey);
+  for (const [off, tip] of [
+    [-A.spread, A.side],
+    [0, A.tip],
+    [A.spread, A.side],
+  ] as const)
+    side.extrude(
+      across(barBetween(A.wrist, tip, A.finger)),
+      a + off - A.fingerHalf,
+      a + off + A.fingerHalf,
+      grey,
+    );
+}
+
+/**
+ * The spider tank: the tall rear pod in bands split by darker seams,
+ * with a hatch outline on its front and its back, two amber marker
+ * lights, two white ball sensors on its flanks and a fourth, unlit eye
+ * under it; the grey underparts; the round head with its seam; the three
+ * white eye balls, each with a glowing lens and three dark pinholes; the
+ * periscope on the head; the short gun in the snout; the two arms; and
+ * the four legs.
  */
 const spiderTank: HeroRecipe = ({ k, kitAt, s, variant, kind }) => {
   const { top } = heroHalf(kind, variant);
-  const blue = s.tinted(TANK_BLUE);
   const white = s.tinted(TANK_WHITE);
   const grey = s.tinted(TANK_GREY);
-  const foot = TANK.pod[0][1];
-  for (const [d, x] of TANK.pods)
-    k.lathe(
-      0,
-      d,
-      [...TANK.pod, [0, top] as const].map(
-        ([r, h]) => [r * x, foot + (h - foot) * x] as const,
-      ),
-      12,
-      x === 1 ? blue : s.tinted(shade(TANK_BLUE, 0.94)),
+  const dark = s.tinted(TANK_BEZEL);
+  const seam = s.tinted(TANK_SEAM);
+  const P = TANK.pod;
+  const pod: readonly P2[] = [...P.profile, [0, top]];
+  const band = (x: number | "seam") =>
+    x === "seam" ? seam : s.tinted(shade(TANK_BLUE, x));
+  for (const [i0, i1, x] of P.bands)
+    k.lathe(0, P.d, pod.slice(i0, i1 + 1), P.sides, band(x));
+  const side = kitAt(sideways(ORIGIN));
+  for (const [dir, i0, i1] of TANK.hatches) {
+    const at = (inset: number) =>
+      pod
+        .slice(i0, i1 + 1)
+        .map(
+          ([r, h]) =>
+            [
+              P.d + dir * (facetDepth(r, TANK.hatchA, P.sides) + inset),
+              h,
+            ] as const,
+        );
+    const outline = [...at(TANK.proud), ...at(-TANK.sink).reverse()];
+    for (const sg of [-1, 1])
+      side.extrude(
+        across(outline),
+        sg * TANK.hatchA - TANK.hatchHalf,
+        sg * TANK.hatchA + TANK.hatchHalf,
+        seam,
+      );
+  }
+  const M = TANK.markers;
+  const [mr0, mh0] = pod[7] ?? [0, 0];
+  const [mr1, mh1] = pod[8] ?? [0, 0];
+  const mr = mr0 + ((mr1 - mr0) * (M.h - mh0)) / (mh1 - mh0);
+  const md = P.d + facetDepth(mr, M.a, P.sides);
+  for (const sg of [-1, 1])
+    k.box(
+      sg * M.a - M.half,
+      sg * M.a + M.half,
+      md - M.sink,
+      md + M.proud,
+      M.h - M.half,
+      M.h + M.half,
+      s.tinted(TANK_AMBER),
     );
-  const W = TANK.waist;
-  k.cylinder(0, W.d, W.h[0], W.h[1], W.r, 10, white);
-  const C = TANK.cabin;
-  k.bevelBox(-C.a, C.a, C.d0, C.d1, C.h0, C.h1, C.bevel, blue);
+  const Sn = TANK.sensors;
+  for (const sg of [-1, 1])
+    ovoid(k, [sg * Sn.a, Sn.d, Sn.h, Sn.r, Sn.r, Sn.r], 10, white);
+  const B = TANK.belly;
+  ovoid(k, [B.a, B.d, B.h, B.r, B.r, B.r], 10, white);
   const U = TANK.under;
-  k.box(-U.a, U.a, U.d0, U.d1, U.h0, U.h1, grey);
-  const bezel = s.tinted(TANK_BEZEL);
+  k.bevelBox(-U.a, U.a, U.d0, U.d1, U.h0, U.h1, U.bevel, grey);
+  const H = TANK.head;
+  for (const [i0, i1, x] of H.bands)
+    k.lathe(0, H.d, H.profile.slice(i0, i1 + 1), H.sides, band(x));
   const Ln = TANK.lens;
-  TANK_LENSES.forEach(({ a, h, r }, g) => {
-    k.extrude(discOutline(a, h, r, 10), Ln.d0, Ln.d1, bezel);
+  const Pn = TANK.pins;
+  TANK_LENSES.forEach(({ a, d, h, r }, g) => {
+    ovoid(k, [a, d, h, r, r, r], 10, white);
+    const front = d + r + Ln.proud;
     k.extrude(
-      discOutline(a, h, Ln.share * r, 10),
-      Ln.d1,
-      Ln.glow,
+      discOutline(a, h, Ln.share * r, 12),
+      d + Ln.sink * r,
+      front,
       s.blink(TANK_LENS, g),
     );
-  });
-  const A = TANK.arms;
-  const Cl = TANK.claws;
-  for (const a of A.at) {
-    k.box(a - A.half, a + A.half, A.d0, A.d1, A.h0, A.h1, white);
-    for (const sg of [-1, 1]) {
-      const c = a + sg * Cl.spread;
-      k.box(c - Cl.half, c + Cl.half, Cl.d0, Cl.d1, Cl.h0, Cl.h1, white);
+    // Three pinholes in a triangle, one up and two down.
+    for (let i = 0; i < 3; i++) {
+      const t = Math.PI / 2 + (i * 2 * Math.PI) / 3;
+      const out = Pn.out * Ln.share * r;
+      k.extrude(
+        discOutline(
+          a + out * Math.cos(t),
+          h + out * Math.sin(t),
+          Pn.share * r,
+          6,
+        ),
+        front,
+        front + Pn.thick,
+        dark,
+      );
     }
-  }
+  });
+  const Sc = TANK.scope;
+  k.cylinder(Sc.a, Sc.d, Sc.h0, Sc.h1, Sc.r, 8, white);
+  k.cylinder(Sc.a, Sc.d, Sc.h1, Sc.top, Sc.cap, 8, grey);
+  // The gun lies along `d`: in the sideways frame `cylinderAlong` runs
+  // along `-d`, with the recipe's `a` as its depth.
   const G = TANK.gun;
-  k.box(-G.a, G.a, G.d0, G.d1, G.h0, G.h1, grey);
-  const Br = TANK.barrel;
-  k.box(-Br.a, Br.a, Br.d0, Br.d1, Br.h0, Br.h1, grey);
+  side.cylinderAlong(-G.d1, -G.d0, 0, G.h, G.r, 10, grey);
+  side.cylinderAlong(-G.collar.d1, -G.collar.d0, 0, G.h, G.collar.r, 10, white);
+  k.box(
+    -G.slot.half,
+    G.slot.half,
+    G.d1 - G.slot.thick,
+    G.d1 + G.slot.thick,
+    G.h - G.slot.h,
+    G.h + G.slot.h,
+    dark,
+  );
+  for (const a of TANK_ARMS.at) tankArm(k, kitAt, s, a);
   for (const [d, turn] of TANK_LEGS.hips)
     tankLeg(kitAt, s, yawed(ORIGIN, 0, d, turn));
 };

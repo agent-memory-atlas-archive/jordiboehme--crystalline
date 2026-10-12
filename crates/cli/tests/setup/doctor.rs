@@ -3185,6 +3185,32 @@ fn skill_dirs(folder: &Path) -> usize {
         .count()
 }
 
+/// The line range of the function around `lines[call]`: back to the nearest
+/// line that starts a `fn` at a smaller indentation than the call, forward to
+/// the closing brace at that `fn`'s own indentation.
+fn enclosing_function(lines: &[&str], call: usize) -> (usize, usize) {
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let call_indent = indent(lines[call]);
+    let from = (0..call)
+        .rev()
+        .find(|&j| {
+            let t = lines[j].trim_start();
+            indent(lines[j]) < call_indent
+                && (t.starts_with("fn ")
+                    || t.starts_with("pub fn ")
+                    || t.starts_with("async fn ")
+                    || t.starts_with("pub async fn ")
+                    || t.starts_with("pub(crate) fn ")
+                    || t.starts_with("pub(crate) async fn "))
+        })
+        .expect("the call sits inside a function");
+    let fn_indent = indent(lines[from]);
+    let to = (call..lines.len())
+        .find(|&j| indent(lines[j]) == fn_indent && lines[j].trim() == "}")
+        .expect("the function ends");
+    (from, to)
+}
+
 /// Every caller of `Store::delete_engram` outside the index crate runs it in a
 /// transaction of its own: a delete is the row, its children and the
 /// unbinding of every reference that named it, and on turso those land
@@ -3213,21 +3239,21 @@ fn every_delete_engram_caller_holds_a_transaction() {
                 continue;
             }
             sites += 1;
-            let before = &lines[i.saturating_sub(12)..i];
-            let after = &lines[i + 1..(i + 16).min(lines.len())];
+            let (from, to) = enclosing_function(&lines, i);
+            let function = &lines[from..to];
             assert!(
-                before.iter().any(|l| l.contains(".begin().await")),
-                "{name}:{}: delete_engram runs with no begin() in the 12 lines above it",
+                function.iter().any(|l| l.contains(".begin().await")),
+                "{name}:{}: delete_engram runs with no begin() in its function",
                 i + 1
             );
             assert!(
-                after.iter().any(|l| l.contains(".commit().await")),
-                "{name}:{}: delete_engram has no commit() in the 15 lines below it",
+                function.iter().any(|l| l.contains(".commit().await")),
+                "{name}:{}: delete_engram has no commit() in its function",
                 i + 1
             );
             assert!(
-                after.iter().any(|l| l.contains(".rollback().await")),
-                "{name}:{}: delete_engram has no rollback() in the 15 lines below it",
+                function.iter().any(|l| l.contains(".rollback().await")),
+                "{name}:{}: delete_engram has no rollback() in its function",
                 i + 1
             );
         }

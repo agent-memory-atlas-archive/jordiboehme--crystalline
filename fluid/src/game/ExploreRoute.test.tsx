@@ -530,6 +530,14 @@ async function typeWord(word: string) {
 
 const LEVELS = { name: "Jump to a domain" } as const;
 const CONNECTING = { name: "Connecting" } as const;
+const OPENING = { name: "Opening" } as const;
+
+/** Skips the opening question with a click: the connecting screen follows. */
+async function skipOpening(): Promise<HTMLElement> {
+  const opening = await screen.findByRole("dialog", OPENING);
+  fireEvent.click(opening);
+  return screen.getByRole("dialog", CONNECTING);
+}
 const LIFT = { name: "Choose a stop" } as const;
 
 /** Two stops, the second the one the lift stands at: enough to pick from. */
@@ -1096,9 +1104,15 @@ describe("ExploreRoute", () => {
     // The reader, at the room's terminal.
     facing.kind = "terminal";
     const view = renderAt("/%CF%80/d/eng/e/alpha");
-    // The connecting screen, first: an Esc on it skips it and pauses
-    // nothing.
-    const connecting = await screen.findByRole("dialog", CONNECTING);
+    // The opening question, first: an Esc on it skips it and pauses
+    // nothing; the connecting screen follows.
+    const opening = await screen.findByRole("dialog", OPENING);
+    await esc(opening);
+    expect(screen.queryByRole("dialog", OPENING)).toBeNull();
+    expect(screen.queryByRole("dialog", PAUSED)).toBeNull();
+    expect(made.pauses).toEqual([]);
+    // Then the connecting screen: an Esc on it skips it and pauses nothing.
+    const connecting = screen.getByRole("dialog", CONNECTING);
     await esc(connecting);
     expect(screen.queryByRole("dialog", CONNECTING)).toBeNull();
     expect(screen.queryByRole("dialog", PAUSED)).toBeNull();
@@ -1611,6 +1625,7 @@ describe("ExploreRoute", () => {
         return view;
       };
       const first = await mountAt();
+      expect(screen.queryByRole("dialog", OPENING)).toBeNull();
       expect(screen.queryByRole("dialog", CONNECTING)).toBeNull();
       expect(window.sessionStorage.getItem(CONNECTED_KEY)).toBeNull();
       expect(sound.dials).toEqual([]);
@@ -1622,8 +1637,14 @@ describe("ExploreRoute", () => {
       ctx.deferred = false;
       ctx.state = "running";
       const second = await mountAt();
-      const dialog = screen.getByRole("dialog", CONNECTING);
+      // The opening question first: the session is held busy under it and
+      // nothing is dialled yet.
+      expect(screen.queryByRole("dialog", CONNECTING)).toBeNull();
       expect(window.sessionStorage.getItem(CONNECTED_KEY)).toBe("1");
+      expect(made.sessions.at(-1)?.busy.at(-1)).toBe(true);
+      expect(sound.dials).toEqual([]);
+      // Done: the connecting screen shows, still busy, and dials.
+      const dialog = await skipOpening();
       expect(made.sessions.at(-1)?.busy.at(-1)).toBe(true);
       expect(sound.dials.map((d) => d.number)).toEqual([dialNumber("eng")]);
       expect(sound.dials[0]?.director).toBe(sound.directors.at(-1));
@@ -1636,18 +1657,19 @@ describe("ExploreRoute", () => {
       expect(made.sessions.at(-1)?.busy.at(-1)).toBe(false);
       second.unmount();
 
-      // Again in the same tab session: nothing.
+      // Again in the same tab session: neither screen.
       ctx.state = "running";
       const third = await mountAt();
+      expect(screen.queryByRole("dialog", OPENING)).toBeNull();
       expect(screen.queryByRole("dialog", CONNECTING)).toBeNull();
       expect(sound.dials).toHaveLength(1);
       third.unmount();
     });
 
-    // Mutation caught: the input taking a key the connecting screen
+    // Mutation caught: the input taking a key the opening screen
     // cancelled (the key that skips the screen also acts in the station:
     // F opening a Fluid tab, W walking).
-    it("skips the connecting screen on a key sent the moment it appears", async () => {
+    it("skips the opening screen on a key sent the moment it appears", async () => {
       // Mutation caught: the skip listener added in a passive effect, a
       // task after the commit that shows the screen: a key in between is
       // lost and the screen stays up (the gap the Esc test above falls
@@ -1659,7 +1681,7 @@ describe("ExploreRoute", () => {
       let sent: KeyboardEvent | null = null;
       const probe = new MutationObserver(() => {
         if (sent !== null) return;
-        if (!document.querySelector('[role="dialog"][aria-label="Connecting"]'))
+        if (!document.querySelector('[role="dialog"][aria-label="Opening"]'))
           return;
         probe.disconnect();
         sent = new KeyboardEvent("keydown", {
@@ -1680,7 +1702,7 @@ describe("ExploreRoute", () => {
         });
         await settle(100);
         expect(sent!.defaultPrevented).toBe(true);
-        expect(screen.queryByRole("dialog", CONNECTING)).toBeNull();
+        expect(screen.queryByRole("dialog", OPENING)).toBeNull();
         view.unmount();
       } finally {
         probe.disconnect();
@@ -1694,7 +1716,7 @@ describe("ExploreRoute", () => {
       serve();
       const open = vi.spyOn(window, "open").mockImplementation(() => null);
       const view = renderAt("/%CF%80");
-      const dialog = await screen.findByRole("dialog", CONNECTING);
+      const dialog = await screen.findByRole("dialog", OPENING);
       await waitFor(() => {
         expect(lastRoomSpec()?.title).toBe("AIRLOCK");
       });
@@ -1721,6 +1743,10 @@ describe("ExploreRoute", () => {
         });
       };
       await pressF(dialog);
+      expect(screen.queryByRole("dialog", OPENING)).toBeNull();
+      const connecting = screen.getByRole("dialog", CONNECTING);
+      expect(open).not.toHaveBeenCalled();
+      await pressF(connecting);
       expect(screen.queryByRole("dialog", CONNECTING)).toBeNull();
       expect(open).not.toHaveBeenCalled();
       // The next F is the station's again.
@@ -1748,7 +1774,8 @@ describe("ExploreRoute", () => {
       });
       const dialledWith = async (changes: boolean[]) => {
         const view = renderAt("/%CF%80");
-        const dialog = await screen.findByRole("dialog", CONNECTING);
+        await screen.findByRole("dialog", OPENING);
+        const dialog = await skipOpening();
         const onCarrier = stream.subs.at(-1)?.options?.onCarrier;
         if (onCarrier === undefined) throw new Error("no carrier callback");
         const carrier = vi.spyOn(sound.directors.at(-1)!, "carrier");
@@ -1844,8 +1871,12 @@ describe("ExploreRoute", () => {
       // C26, F41); mutation caught: the screen's state not carried over the
       // remount (the second mount finds the key set and neither holds the
       // session nor dials).
-      expect(screen.getByRole("dialog", CONNECTING)).toBeInTheDocument();
+      // (The opening question stands first; the dial starts after it.)
+      expect(screen.getByRole("dialog", OPENING)).toBeInTheDocument();
       expect(made.sessions.at(-1)?.busy.at(-1)).toBe(true);
+      expect(sound.dials).toEqual([]);
+      await skipOpening();
+      expect(screen.getByRole("dialog", CONNECTING)).toBeInTheDocument();
       expect(sound.dials.at(-1)?.director).toBe(sound.directors.at(-1));
 
       view.unmount();
@@ -1879,18 +1910,31 @@ describe("ExploreRoute", () => {
           .filter((o) => tones.has(o.frequency.events[0]?.[1] ?? -1)).length;
       serve();
       const view = renderAt("/%CF%80/d/eng/e/alpha", true);
-      await waitFor(() => {
-        expect(sound.dials).toHaveLength(2);
-      });
+      // The opening is silent; the dial starts when it is done, on the
+      // second mount's director, while its context is still settling.
+      await screen.findByRole("dialog", OPENING);
+      expect(sound.dials).toEqual([]);
+      await skipOpening();
+      expect(sound.dials).toHaveLength(1);
+      expect(sound.dials[0]?.director).toBe(sound.directors.at(-1));
+      // Every DTMF digit of the number is one pair of tones.
+      const oneDial =
+        2 * [...sound.dials[0]!.number].filter((c) => c in DTMF).length;
+      expect(oneDial).toBeGreaterThan(0);
+      // Since the opening question stands first, the first mount never
+      // dials: only the second mount's dial exists, and it waits for the
+      // context to run. So nothing has played yet (before the opening this
+      // count was the first mount's dial, and the replay doubled it).
       const first = dialTones();
-      expect(first).toBeGreaterThan(0);
+      expect(first).toBe(0);
       expect(ctx.state).toBe("suspended");
       await act(async () => {
         ctx.settle();
         await Promise.resolve();
       });
       expect(ctx.state).toBe("running");
-      expect(dialTones()).toBe(2 * first);
+      // The replay plays that one dial exactly once.
+      expect(dialTones()).toBe(oneDial);
       view.unmount();
     });
   });

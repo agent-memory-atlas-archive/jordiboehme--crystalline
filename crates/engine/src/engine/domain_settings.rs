@@ -68,6 +68,17 @@ pub(crate) fn is_switch_off(edits: &[PolicyEdit]) -> bool {
     }
 }
 
+/// Whether `edits` is exactly the switch-on of `read_only`: one `set
+/// read_only: on`, nothing else.
+pub(crate) fn is_switch_on(edits: &[PolicyEdit]) -> bool {
+    matches!(
+        edits,
+        [PolicyEdit::Set { key, value }]
+            if key == crystalline_core::READ_ONLY_KEY
+                && value == crystalline_core::ReadOnly::On.as_str()
+    )
+}
+
 /// The registry row `edit` names, once the key and the value are ones it
 /// takes. The texts are the ones `set_manifest_policies` has always answered.
 fn checked_policy(domain: &str, edit: &PolicyEdit) -> Result<&'static crystalline_core::PolicyKey> {
@@ -277,7 +288,7 @@ impl Engine {
     /// [`Engine::edit_manifest_policies`] (a draft in a reviewing domain);
     /// the rule overrides through [`edit_domain_config`], refused on a
     /// virtual domain and in a reviewing one. Both pass
-    /// [`Engine::require_policy_writer`]. Answers the fresh view, with
+    /// `Engine::require_policy_writer`. Answers the fresh view, with
     /// `draft: true` when the policy edit became a draft and `note` when the
     /// file lost its comments. Nothing is shared: on a team domain both files
     /// become unshared local changes.
@@ -360,6 +371,16 @@ impl Engine {
         }
         for edit in &policy_edits {
             checked_policy(domain, edit)?;
+        }
+        // Switching the lock on where it is on already changes nothing: it
+        // writes nothing and says so, rather than answering a refusal.
+        if config_edits.is_empty()
+            && is_switch_on(&policy_edits)
+            && self.domain_is_read_only(domain).await
+        {
+            let mut view = self.domain_settings(domain, scope).await?;
+            view["note"] = json!(format!("'{domain}' is already read-only"));
+            return Ok(view);
         }
         // A read-only domain is decided for the whole call before anything is
         // compared, read or written (spec A-2): the owner's switch-off alone
@@ -504,11 +525,11 @@ impl Engine {
         edited: &crystalline_core::verify::EditedConfig,
     ) -> Result<()> {
         self.refuse_shadowed(domain)?;
+        let _writing = self.enter_write(domain).await?;
         // Its one caller decided the read-only question for the whole call;
-        // this is the floor under any later caller.
+        // this is the floor under any later caller, inside the ticket.
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;
-        let _writing = self.enter_write(domain).await?;
         match &edited.text {
             Some(text) => crystalline_core::config::save_bytes(path, text.as_bytes())
                 .map_err(|e| config_write_error(path, e)),

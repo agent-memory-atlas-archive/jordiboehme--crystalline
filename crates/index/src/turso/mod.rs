@@ -177,7 +177,7 @@ impl TursoStore {
     /// names it so a caller can say where it went. A rename that fails is
     /// returned as the error it is and never falls back to a delete.
     ///
-    /// Two failures must not be treated as damage (see [`must_not_be_set_aside`]).
+    /// Two failures must not be treated as damage (see `must_not_be_set_aside`).
     /// A file another process holds: `reindex --wipe` is daemonless by
     /// construction, so it meets a running daemon's index as an open that
     /// fails, and moving the files aside then would take a healthy index out
@@ -1082,6 +1082,8 @@ pub const OBSERVATION_IDS_SQL: &str = "SELECT id FROM observation WHERE engram_i
 pub const DELETE_OBSERVATION_TAGS_SQL: &str = "DELETE FROM observation_tag WHERE observation_id=?1";
 
 /// The other child rows of one engram, each through its `engram_id` index.
+/// One statement per observation for its tags, then one per child table:
+/// measured at 7.5 s for a 50k reindex (0.25.0), so not batched.
 #[doc(hidden)]
 pub const CHILD_ROWS_DELETE_SQL: [&str; 5] = [
     "DELETE FROM observation WHERE engram_id=?1",

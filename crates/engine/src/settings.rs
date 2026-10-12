@@ -773,7 +773,7 @@ fn unknown_key(key: &str) -> SettingsError {
 }
 
 /// The unknown-key error an agent gets: the same sentence as
-/// [`unknown_key`], listing only the keys an agent may change, so an
+/// `unknown_key`, listing only the keys an agent may change, so an
 /// operator key's name does not reach the agent through a typo.
 pub fn unknown_agent_key(key: &str) -> SettingsError {
     let known: Vec<&str> = registry()

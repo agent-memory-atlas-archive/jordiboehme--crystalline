@@ -20,6 +20,11 @@
  * is `steady` has no blink parts, and every other kind has at least one in
  * every variant (the curio test holds both).
  *
+ * A mark on a face that looks up, where no quad can lie, is laid by
+ * `flatText` as thin pieces of merged runs (`pixelRects`): the tape drive's
+ * badge (`retro.ts`), the office curios' prints (`office.ts`) and the
+ * radio set's sheet (`figures.ts`).
+ *
  * Kept apart from `index.ts` so the batch files can import it without an
  * import cycle through the dispatcher. The batch files import only this
  * module, never each other.
@@ -31,6 +36,7 @@ import type { BlinkBank } from "../../blink";
 import type { Kit } from "../../kit";
 import type { Look, Rgb } from "../../looks";
 import type { KitAt, Surfaces } from "../common";
+import { fit, pixelRuns, textRows } from "../heroes/pixels";
 
 /**
  * One curio kind's recipe: builds `variant` of `kind` with `k` in
@@ -50,8 +56,9 @@ export type CurioRecipe = (r: {
  * Each curio kind's blink bank (C16): the sword's blade and the pistol's
  * chamber breathe, the console's screen swaps between two pictures, the
  * meter's wing lights chase, the trap's and the radar's lights strobe,
- * the reactor case's core and the drone's eye breathe (2.6d C18), and
- * every other kind is steady.
+ * the reactor case's core and the drone's eye breathe (2.6d C18), the
+ * radio set's frequency window and meter breathe (0.25.1), and every
+ * other kind is steady.
  */
 export const CURIO_BANK = {
   "light-sword": "breathe",
@@ -75,6 +82,13 @@ export const CURIO_BANK = {
   "slim-computer": "steady",
   "space-bricks": "steady",
   "soot-puffs": "steady",
+  "floppy-disk": "steady",
+  "pizza-box": "steady",
+  "lottery-ticket": "steady",
+  "disk-525": "steady",
+  "penguin-figure": "steady",
+  "report-sheets": "steady",
+  "radio-set": "breathe",
 } as const satisfies Record<CurioKind, BlinkBank>;
 
 /**
@@ -132,3 +146,56 @@ export const curioBlockout: CurioRecipe = ({ k, s, variant, kind }) => {
   const c = CAP_SIDE / 2;
   k.box(-c, c, -c, c, h1, top, s.blink(CAP_TINT, 0));
 };
+
+/** A rectangle of a pixel picture's lit cells: its first column, its top row, its width and its height in cells. */
+export interface PixelRect {
+  col: number;
+  row: number;
+  len: number;
+  rows: number;
+}
+
+/**
+ * A pixel picture's lit cells (`#`) as rectangles: each horizontal run of
+ * `pixelRuns`, merged with the runs straight under it that start and end
+ * in the same columns, so an upright stroke is one piece however tall.
+ * Together they cover every lit cell exactly once. For a mark built from
+ * boxes or slabs, which cost a dozen triangles a piece.
+ */
+export function pixelRects(rows: readonly string[]): PixelRect[] {
+  const rects: PixelRect[] = [];
+  for (const r of pixelRuns(rows)) {
+    const above = rects.find(
+      (x) => x.col === r.col && x.len === r.len && x.row + x.rows === r.row,
+    );
+    if (above) above.rows++;
+    else rects.push({ ...r, rows: 1 });
+  }
+  return rects;
+}
+
+/**
+ * Lays `text` flat on a face that looks up, fitted into `a0..a1` along
+ * and `d0..d1` across with square pixels as large as both allow (`fit`),
+ * centred: `lay` draws one rectangle of lit cells (`pixelRects`) from
+ * `a0` to `a1` and `d0` to `d1`. The first row lies towards `-d`, so the
+ * text reads from the curio's front (`+d`), left to right along `+a`.
+ * Returns the pixel size, to hold to C13's 1 mm floor.
+ */
+export function flatText(
+  text: string,
+  box: readonly [a0: number, a1: number, d0: number, d1: number],
+  lay: (a0: number, a1: number, d0: number, d1: number) => void,
+): number {
+  const rows = textRows(text);
+  const { px, left } = fit(rows, ...box);
+  const far = (box[2] + box[3]) / 2 - (rows.length * px) / 2;
+  for (const r of pixelRects(rows))
+    lay(
+      left + r.col * px,
+      left + (r.col + r.len) * px,
+      far + r.row * px,
+      far + (r.row + r.rows) * px,
+    );
+  return px;
+}

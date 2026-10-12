@@ -7,7 +7,7 @@
 //! is included regardless of extension: assets, `.crystalline.yaml` and any
 //! other file that lives alongside the engrams travels with the domain, not
 //! just markdown. Which paths take part at all is one predicate,
-//! [`participates_in_change_detection`], asked of the walk and of the base
+//! `participates_in_change_detection`, asked of the walk and of the base
 //! snapshot alike. Detection has no side effects and reads nothing but the
 //! files it walks and, for the domain's own generated-index policy, its
 //! `MANIFEST.md`; a later task decides what to do with the result (open a
@@ -170,7 +170,7 @@ impl LocalChanges {
 ///   `index.md` is skipped too unless the domain declares
 ///   [`GeneratedIndexes::Shared`], and when it is skipped it is skipped on
 ///   BOTH sides, the walk and the base snapshot (see
-///   [`participates_in_change_detection`], which says why that is not
+///   `participates_in_change_detection`, which says why that is not
 ///   optional).
 /// - every non-hidden file is included regardless of extension.
 /// - a file larger than [`MAX_SHARED_FILE_BYTES`] is reported in
@@ -332,9 +332,19 @@ pub(crate) fn detect_local_changes_with(
         .into_iter()
         .filter_entry(|e| e.depth() == 0 || !is_hidden(e.file_name().to_string_lossy().as_ref()))
     {
+        // A walk error is never read as "the file is gone": the walk stops and
+        // names what it could not list, so nothing it did not see can reach a
+        // share as a deletion.
         let entry = match entry {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(err) => {
+                let at = err
+                    .path()
+                    .map(|p| rel_path(domain_root, p))
+                    .filter(|p| !p.is_empty())
+                    .unwrap_or_else(|| ".".to_string());
+                return Err(RemoteError::working_tree(at, walk_io_error(err)));
+            }
         };
         if !entry.file_type().is_file() {
             continue;
@@ -344,9 +354,9 @@ pub(crate) fn detect_local_changes_with(
             continue;
         }
 
-        let Ok(meta) = entry.metadata() else {
-            continue;
-        };
+        let meta = entry
+            .metadata()
+            .map_err(|e| RemoteError::working_tree(rel.clone(), walk_io_error(e)))?;
         let size = meta.len();
         seen.insert(rel.clone());
 
@@ -360,7 +370,8 @@ pub(crate) fn detect_local_changes_with(
 
         match base.get(rel.as_str()) {
             Some(stamp) => {
-                let bytes = std::fs::read(entry.path())?;
+                let bytes = std::fs::read(entry.path())
+                    .map_err(|e| RemoteError::working_tree(rel.clone(), e))?;
                 let sha256 = sha256_hex(&bytes);
                 let lf = lf_digests.and_then(|m| m.get(&rel)).map(String::as_str);
                 // A path the map covers is decided by its digest; only one it
@@ -373,7 +384,8 @@ pub(crate) fn detect_local_changes_with(
                 }
             }
             None => {
-                let bytes = std::fs::read(entry.path())?;
+                let bytes = std::fs::read(entry.path())
+                    .map_err(|e| RemoteError::working_tree(rel.clone(), e))?;
                 let sha256 = sha256_hex(&bytes);
                 unmatched.push((rel, size, Some(sha256)));
             }
@@ -402,10 +414,13 @@ pub(crate) fn detect_local_changes_with(
     //   3. exactly one unmatched walked path folds to that value, so two disk
     //      files are never both claiming one base entry.
     //
-    // Fail any of them and nothing changes: the walked path is `Added` and the
-    // base key is `Deleted`, exactly as before. Those are genuinely ambiguous
-    // trees, and there guessing is worse than reporting - a repository holding
-    // both spellings is what verify rule `E009` exists to flag.
+    // Fail any of them and nothing is folded. Fail 2 or 3 and the walked path
+    // is `Added` beside the base key's own fate. Fail 1 (the base holds two or
+    // more spellings) with none of them on disk exactly, and the plan stops
+    // and names the spellings (see the deletion pass below). Those are
+    // genuinely ambiguous trees, and there guessing is worse than reporting -
+    // a repository holding both spellings is what verify rule `E009` exists
+    // to flag.
     //
     // Case-sensitive filesystems: this deliberately does NOT probe the
     // filesystem, and relies on the guard above alone. Four reasons.
@@ -500,10 +515,14 @@ pub(crate) fn detect_local_changes_with(
                     });
                 }
             }
-            // Too large to hash or share, so no change either way; claiming
-            // the base entry above is the whole point, so it is not reported
-            // gone.
-            (Some(_), None) => {}
+            // Refused rather than guessed: the file is too large to read, so
+            // nothing can show that the base spelling and this one are the
+            // same file, and the share would carry the base spelling's fate.
+            (Some(key), None) => {
+                return Err(RemoteError::Refused(format!(
+                    "'{rel}' is too large to share and differs only in letter case from '{key}' in the last shared state. Rename it to match, then share again."
+                )));
+            }
             (None, Some(sha256)) => changes.push(LocalChange::Added {
                 path: rel.clone(),
                 sha256: sha256.clone(),
@@ -537,8 +556,47 @@ pub(crate) fn detect_local_changes_with(
         .flat_map(|keys| keys.iter().copied())
         .collect();
 
+    let seen_folded: BTreeSet<String> = seen.iter().map(|p| fold_case(p)).collect();
     for rel in base.keys() {
         if !seen.contains(*rel) && !adopted.contains(rel) && !removed_but_for_case.contains(rel) {
+            // The walk did not see it. That is a deletion only when the
+            // operating system says the path is not there. Any other answer
+            // (the file answers, or the question fails) means the walk could
+            // not see it for another reason, and the plan stops with the file
+            // named instead of proposing to delete it.
+            //
+            // The base holds two or more spellings of this path that differ
+            // only in letter case, none of them is on disk exactly, and the
+            // walk saw a file under yet another spelling. A case-insensitive
+            // filesystem answers "a file is there" for every spelling, so
+            // nothing here can tell which one the file stands for or whether
+            // the others were deleted. A deletion would ask the team
+            // repository to drop a teammate's file, so the plan stops and
+            // names the spellings instead. This is decided before the
+            // filesystem is asked, so every platform gives the same answer.
+            let folded = fold_case(rel);
+            if seen_folded.contains(&folded)
+                && let Some(keys) = folded_base.get(&folded)
+                && keys.len() > 1
+            {
+                let named = keys
+                    .iter()
+                    .map(|k| format!("'{k}'"))
+                    .collect::<Vec<_>>()
+                    .join(" and ");
+                return Err(RemoteError::Refused(format!(
+                    "{named} in the team repository differ only in letter case. Windows and macOS can hold only one of them, so Crystalline cannot tell whether one was deleted. In the team repository, give each of these files a new name that differs in more than letter case. Do this from a computer that can hold all of them, then try again."
+                )));
+            }
+            match std::fs::symlink_metadata(domain_root.join(rel)) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(RemoteError::working_tree(*rel, e)),
+                Ok(_) => {
+                    return Err(RemoteError::Refused(format!(
+                        "'{rel}' is in the last shared state and still on disk, but Crystalline could not see it as a file. It may be behind a link or a redirected folder. Replace the link with a real folder that holds the same files, then try again."
+                    )));
+                }
+            }
             changes.push(LocalChange::Deleted {
                 path: (*rel).to_string(),
             });
@@ -717,6 +775,17 @@ pub(crate) fn participates_in_change_detection(rel_path: &str, indexes: Generate
 /// [`detect_local_changes`], which then changes nothing at all.
 fn fold_case(path: &str) -> String {
     crystalline_core::fold_path_case(path)
+}
+
+/// The io error under a walk error, with its operating system code intact (a
+/// plain `From` drops it, and error 4395 is recognised by its code). A loop
+/// error has no io error beneath it and converts the usual way.
+fn walk_io_error(err: walkdir::Error) -> std::io::Error {
+    if err.io_error().is_none() {
+        return std::io::Error::from(err);
+    }
+    err.into_io_error()
+        .unwrap_or_else(|| std::io::Error::other("the folder walk failed"))
 }
 
 /// The forward-slash relative path of `path` under `root`.
@@ -1553,11 +1622,12 @@ mod tests {
     }
 
     #[test]
-    fn two_base_keys_folding_together_are_ambiguous_and_nothing_is_folded() {
-        // A repository genuinely holding both spellings. Guessing which one
-        // the disk file stands for would be worse than reporting, so this
-        // falls through to the byte-exact behaviour - and verify rule `E009`
-        // is what tells the member to rename one of them.
+    fn two_base_keys_folding_together_are_ambiguous_and_refuse_the_plan() {
+        // A repository genuinely holding both spellings, and a disk file
+        // under a third. A case-insensitive filesystem answers "a file is
+        // there" for both base spellings, so neither may be proposed for
+        // deletion; guessing which one the disk file stands for is worse
+        // than stopping, so the plan stops and names both.
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), DISK_SPELLING, b"header module");
         let mut base = BTreeMap::new();
@@ -1567,18 +1637,43 @@ mod tests {
             stamp_for(b"header module"),
         );
 
-        let result = detect_local_changes(dir.path(), &base).unwrap();
-        let mut rules: Vec<&str> = result
-            .changes
-            .iter()
-            .map(|c| match c {
-                LocalChange::Added { .. } => "added",
-                LocalChange::Modified { .. } => "modified",
-                LocalChange::Deleted { .. } => "deleted",
-            })
-            .collect();
-        rules.sort_unstable();
-        assert_eq!(rules, vec!["added", "deleted", "deleted"]);
+        let err = detect_local_changes(dir.path(), &base)
+            .expect_err("two spellings in the base must refuse the plan");
+        let text = err.to_string();
+        assert!(text.contains(BASE_SPELLING), "{text}");
+        assert!(
+            text.contains("classes/PLATFORM.COMPONENTS.COMMON/CustomHeaderModule.md"),
+            "{text}"
+        );
+        assert!(text.contains("differ only in letter case"), "{text}");
+        // Renaming one spelling upstream would let a pull here remove the
+        // one file both spellings share, so the advice keeps every name.
+        assert!(!text.contains("Rename one"), "{text}");
+        assert!(
+            text.contains("a new name that differs in more than letter case"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_case_collision_in_the_base_is_refused_not_deleted() {
+        // The team repository holds `notes/A.md` and `notes/a.md`; the
+        // working tree holds one file under the folder spelled `Notes`. No
+        // spelling matches exactly, so the old code proposed deleting both.
+        // The answer is the same on every filesystem: a refusal naming both.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Notes/a.md", b"alpha");
+        let mut base = BTreeMap::new();
+        base.insert("notes/A.md".to_string(), stamp_for(b"alpha"));
+        base.insert("notes/a.md".to_string(), stamp_for(b"other alpha"));
+
+        let err = detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None)
+            .expect_err("a case collision in the base must refuse the plan");
+        let text = err.to_string();
+        assert!(
+            text.contains("'notes/A.md' and 'notes/a.md'"),
+            "both spellings must be named: {text}"
+        );
     }
 
     #[test]
@@ -1616,5 +1711,150 @@ mod tests {
                 sha256: crate::state::sha256_hex(b"lowercase alpha"),
             }]
         );
+    }
+
+    // --- a walk never turns an error into a deletion ---
+
+    /// Takes every right away from the folder `path`; returns false when the
+    /// process is root (or the filesystem ignores modes) and it has no effect.
+    #[cfg(unix)]
+    fn deny(path: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::read_dir(path).is_err()
+    }
+
+    #[cfg(unix)]
+    fn restore(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_the_walk_cannot_list_refuses_the_plan_and_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes/a.md", b"alpha");
+        write(dir.path(), "decisions/b.md", b"beta");
+        let base = base_of(&[("notes/a.md", b"alpha"), ("decisions/b.md", b"beta")]);
+        let locked = dir.path().join("decisions");
+        if !deny(&locked) {
+            restore(&locked);
+            eprintln!("skipped: permissions are not enforced for this user");
+            return;
+        }
+        let result =
+            detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None);
+        restore(&locked);
+        let err = result.expect_err("an unreadable folder must refuse the plan");
+        assert!(err.to_string().contains("decisions"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_exists_but_cannot_be_read_is_not_a_deletion() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes/a.md", b"alpha");
+        write(dir.path(), "notes/b.md", b"beta");
+        let base = base_of(&[("notes/a.md", b"alpha"), ("notes/b.md", b"beta")]);
+        let file = dir.path().join("notes/b.md");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&file).is_ok() {
+            eprintln!("skipped: permissions are not enforced for this user");
+            return;
+        }
+        let result =
+            detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let err = result.expect_err("an unreadable file must refuse the plan");
+        assert!(err.to_string().contains("notes/b.md"), "{err}");
+    }
+
+    /// A base file the walk cannot reach through a link is on disk: it is
+    /// refused with its name, never proposed for deletion.
+    #[cfg(unix)]
+    #[test]
+    fn a_base_file_behind_a_link_is_refused_not_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        write(elsewhere.path(), "a.md", b"alpha");
+        std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("linked")).unwrap();
+        write(dir.path(), "plain.md", b"plain");
+        let base = base_of(&[("linked/a.md", b"alpha"), ("plain.md", b"plain")]);
+        let err = detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None)
+            .expect_err("a file behind a link must refuse the plan");
+        let text = err.to_string();
+        assert!(text.contains("linked/a.md"), "{text}");
+        // Moving the file out of the domain would make the next share
+        // propose deleting it, so the advice is to replace the link.
+        assert!(
+            text.contains("Replace the link with a real folder"),
+            "{text}"
+        );
+        assert!(!text.contains("Move it out"), "{text}");
+    }
+
+    #[test]
+    fn a_base_file_that_is_really_gone_is_still_a_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes/a.md", b"alpha");
+        let base = base_of(&[("notes/a.md", b"alpha"), ("notes/gone.md", b"gone")]);
+        let result = local(dir.path(), &base);
+        assert_eq!(
+            result.changes,
+            vec![LocalChange::Deleted {
+                path: "notes/gone.md".to_string()
+            }]
+        );
+    }
+
+    /// A junction in the domain folder is a link std does not follow: the
+    /// plan refuses cleanly and names what is behind it.
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_in_the_domain_refuses_the_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        write(elsewhere.path(), "a.md", b"alpha");
+        let link = dir.path().join("linked");
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(elsewhere.path())
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "mklink failed");
+        let base = base_of(&[("linked/a.md", b"alpha")]);
+        let err = detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None)
+            .expect_err("a junction must refuse the plan");
+        assert!(err.to_string().contains("linked"), "{err}");
+    }
+
+    #[test]
+    fn the_walk_keeps_the_os_code_the_4395_check_reads() {
+        // A real walk error (a root that is not there) carries the system's
+        // code; a plain `From` conversion would drop it, and with it the
+        // code that error 4395 is recognised by.
+        let err = WalkDir::new("/definitely/not/here/crystalline")
+            .into_iter()
+            .next()
+            .unwrap()
+            .unwrap_err();
+        let expected = err.io_error().and_then(|e| e.raw_os_error());
+        assert!(expected.is_some());
+        assert_eq!(walk_io_error(err).raw_os_error(), expected);
+    }
+
+    #[test]
+    fn a_too_large_case_alias_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = vec![b'x'; (MAX_SHARED_FILE_BYTES + 1) as usize];
+        write(dir.path(), "notes/Big.md", &big);
+        let mut base = BTreeMap::new();
+        base.insert("notes/big.md".to_string(), stamp_for(b"small"));
+        let err = detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None)
+            .expect_err("a large alias must be refused");
+        assert!(err.to_string().contains("notes/Big.md"), "{err}");
     }
 }

@@ -22,10 +22,39 @@ fn bin() -> PathBuf {
 /// An isolated, short-path environment for one test.
 struct Env {
     dir: PathBuf,
+    /// The model hub every child reaches (`HF_ENDPOINT`).
+    hub: &'static str,
+    /// The worker threads of every child's runtime (`TOKIO_WORKER_THREADS`),
+    /// or the default of one per core.
+    workers: Option<&'static str>,
 }
 
 impl Env {
+    /// No child here downloads a model: the hub is `crate::common::NO_HUB`.
     fn new(tag: &str) -> Env {
+        Env::with(tag, crate::common::NO_HUB, None)
+    }
+
+    /// A daemon that downloads the embedding model from the real hub for its
+    /// whole life, as on a first start, on a runtime of one worker thread.
+    ///
+    /// For the two bounded-life tests, the regression cover for c9eea9ce
+    /// (a model download on the daemon's own runtime starved its 5 s idle
+    /// exit). Only the real hub can give that cover: the starvation comes from
+    /// hf-xet's transfer, and a loopback stub can only serve a plain HTTP
+    /// file, which hf-hub fetches without hf-xet and which did not starve the
+    /// idle exit even with the fix reverted. One worker thread stands in for
+    /// the three-core runner that failed: with the fix reverted the idle test
+    /// hung in two runs on a 10-core Mac with one worker thread, and passed
+    /// there with the default of one per core. A regression shows as the
+    /// nextest timeout (about 1200 s), not as an assertion. Without network
+    /// the download fails at once and the tests still pass, without that
+    /// cover; [`Env::note_missed_download`] says so in the test's output.
+    fn downloading(tag: &str) -> Env {
+        Env::with(tag, "https://huggingface.co", Some("1"))
+    }
+
+    fn with(tag: &str, hub: &'static str, workers: Option<&'static str>) -> Env {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -35,7 +64,7 @@ impl Env {
         std::fs::create_dir_all(dir.join("config")).unwrap();
         std::fs::create_dir_all(dir.join("state")).unwrap();
         std::fs::create_dir_all(dir.join("cache")).unwrap();
-        Env { dir }
+        Env { dir, hub, workers }
     }
 
     /// Isolate a child (and, through inheritance, any daemon it spawns) into
@@ -68,7 +97,13 @@ impl Env {
             .env("CRYSTALLINE_TEST_NO_KEYCHAIN", "1")
             // The task seam answers "no task", so a refused breakaway on
             // Windows never asks the real Task Scheduler.
-            .env("CRYSTALLINE_TEST_DAEMON_TASK", "missing");
+            .env("CRYSTALLINE_TEST_DAEMON_TASK", "missing")
+            // No daemon here downloads a model unless the test asked for it
+            // (`Env::downloading`); see `crate::common::NO_HUB`.
+            .env(crate::common::HUB_ENDPOINT_VAR, self.hub);
+        if let Some(workers) = self.workers {
+            cmd.env("TOKIO_WORKER_THREADS", workers);
+        }
     }
 
     fn state_dir(&self) -> PathBuf {
@@ -246,6 +281,58 @@ impl Env {
                 all[all.len().saturating_sub(lines)..].join("\n")
             }
             Err(e) => format!("({} could not be read: {e})", path.display()),
+        }
+    }
+
+    /// The daemon's own account of its lifecycle: every daemon.log line about
+    /// a session, the idle exit, the shutdown steps and the watchdog, with the
+    /// time between the test's own marks. A plain tail does not show these
+    /// when a model download is running: its transfer lines fill the last
+    /// sixty lines, as on the 2026-10-06 macOS failure.
+    fn daemon_lifecycle_lines(&self) -> String {
+        const MARKS: [&str; 8] = [
+            "no client for",
+            "stopping (",
+            "shutdown: ",
+            "shutdown did not finish",
+            "input stream terminated",
+            "client initialized",
+            "downloading",
+            "embedding provider",
+        ];
+        let path = self.state_dir().join("daemon.log");
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                let lines: Vec<&str> = text
+                    .lines()
+                    .filter(|line| MARKS.iter().any(|mark| line.contains(mark)))
+                    .collect();
+                if lines.is_empty() {
+                    "(no lifecycle line in daemon.log)".to_string()
+                } else {
+                    lines.join("\n")
+                }
+            }
+            Err(e) => format!("({} could not be read: {e})", path.display()),
+        }
+    }
+
+    /// For a test on [`Env::downloading`]: print a note when the daemon.log
+    /// shows the run did not exercise the download, because the model was
+    /// never fetched or the fetch failed (no network, the hub down). The test
+    /// still passes: a hub outage must not fail it, but a lost cover is seen.
+    fn note_missed_download(&self, test: &str) {
+        let path = self.state_dir().join("daemon.log");
+        let log = std::fs::read_to_string(&path).unwrap_or_default();
+        let reason = if !log.contains("downloading embedding model") {
+            Some("daemon.log has no \"downloading embedding model\" line")
+        } else if log.contains("embedding provider unavailable") {
+            Some("the download failed (\"embedding provider unavailable\" in daemon.log)")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            eprintln!("note: {test}: this run did not exercise the download: {reason}");
         }
     }
 
@@ -610,7 +697,9 @@ fn single_daemon_two_clients_and_stale_recovery() {
 /// client is gone, taking its lock and record with it.
 #[test]
 fn an_extension_started_daemon_leaves_once_its_last_client_is_gone() {
-    let env = Env::new("idle");
+    // The 2026-10-06 failure was the first model download starving the idle
+    // exit, so this daemon downloads it for real (see `Env::downloading`).
+    let env = Env::downloading("idle");
     env.setup_domain("eng");
 
     let mut c1 = Mcp::spawn_in_extension_folder(&env);
@@ -658,10 +747,12 @@ fn an_extension_started_daemon_leaves_once_its_last_client_is_gone() {
     }
     assert!(
         !env.lock_path().exists() && !env.info_path().exists(),
-        "the daemon left on its own after {:?}\ndaemon.log tail:\n{}",
+        "the daemon left on its own after {:?}\ndaemon lifecycle:\n{}\ndaemon.log tail:\n{}",
         start.elapsed(),
+        env.daemon_lifecycle_lines(),
         env.daemon_log_tail(60)
     );
+    env.note_missed_download("an_extension_started_daemon_leaves_once_its_last_client_is_gone");
 }
 
 /// A stub counts as a client from the moment it attaches, not from its
@@ -669,7 +760,8 @@ fn an_extension_started_daemon_leaves_once_its_last_client_is_gone() {
 /// past the grace must not lose its daemon under it.
 #[test]
 fn a_silent_stub_holds_an_extension_started_daemon_past_the_grace() {
-    let env = Env::new("silent");
+    // The same window as the test above, with the same real download.
+    let env = Env::downloading("silent");
     env.setup_domain("eng");
 
     // Spawned, never spoken to: no initialize for longer than the grace.
@@ -681,7 +773,8 @@ fn a_silent_stub_holds_an_extension_started_daemon_past_the_grace() {
     assert_eq!(
         status["sessions"],
         json!(1),
-        "the silent stub is a counted session: {status}"
+        "the silent stub is a counted session: {status}\ndaemon lifecycle:\n{}",
+        env.daemon_lifecycle_lines()
     );
     let pid = status["pid"].as_u64().unwrap();
 
@@ -699,8 +792,12 @@ fn a_silent_stub_holds_an_extension_started_daemon_past_the_grace() {
     }
     assert!(
         !env.lock_path().exists() && !env.info_path().exists(),
-        "gone after its only client left"
+        "gone after its only client left, waited {:?}\ndaemon lifecycle:\n{}\ndaemon.log tail:\n{}",
+        start.elapsed(),
+        env.daemon_lifecycle_lines(),
+        env.daemon_log_tail(60)
     );
+    env.note_missed_download("a_silent_stub_holds_an_extension_started_daemon_past_the_grace");
 }
 
 /// The control: a daemon any other client started has no bounded life and is
@@ -3826,6 +3923,69 @@ fn domain_list_shows_a_virtual_domains_declared_name_with_a_daemon() {
     );
 }
 
+/// B-1 item 4: `prompt system` marks a virtual domain whose MANIFEST says
+/// `read_only: on` when the running daemon answers its routing bullets.
+#[test]
+fn prompt_system_marks_a_read_only_virtual_domain_with_a_daemon() {
+    let env = Env::new("prompt-virtual-lock");
+    std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();
+    config::save_yaml(&env.config_path(), &GlobalConfig::default()).unwrap();
+
+    let mut client = Mcp::spawn(&env);
+    client.initialize();
+    env.wait_ready();
+
+    let (ok, out) = env.run(&["domain", "add", "notes", "--virtual"]);
+    assert!(ok, "{out}");
+    let (ok, out) = env.run(&["prompt", "system"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("- notes: "), "not locked yet: {out}");
+    let (ok, out, err) = env.run_full(&[
+        "edit",
+        "manifest",
+        "notes",
+        "find_replace",
+        "--find-text",
+        "status: stable",
+        "--content",
+        "status: stable\nread_only: on",
+    ]);
+    assert!(ok, "{out} {err}");
+    let (ok, out) = env.run(&["prompt", "system"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("- notes (read-only): "), "{out}");
+    // The mark came from the daemon: its own ctl answer names the lock under
+    // `$read_only`, the key the CLI reads it from.
+    #[cfg(unix)]
+    {
+        let answer = ctl_over_the_socket(&env, &json!({ "v": 1, "cmd": "routing_bullets" }));
+        assert_eq!(answer["ok"], json!(true), "{answer}");
+        assert_eq!(answer["data"]["$read_only"], json!(["notes"]), "{answer}");
+        assert!(answer["data"]["notes"].is_array(), "{answer}");
+    }
+    let _ = env.run(&["ctl", "shutdown"]);
+}
+
+/// One ctl command sent straight to the running daemon's socket, the way the
+/// CLI's own client does: the `ctl` mode line, then the command, then one
+/// answer line.
+#[cfg(unix)]
+fn ctl_over_the_socket(env: &Env, cmd: &Value) -> Value {
+    use std::io::{BufRead, BufReader, Write};
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(env.state_dir().join("service.json")).unwrap(),
+    )
+    .unwrap();
+    let socket = record["socket_path"].as_str().unwrap();
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    stream.write_all(b"ctl\n").unwrap();
+    writeln!(stream, "{cmd}").unwrap();
+    stream.flush().unwrap();
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).unwrap();
+    serde_json::from_str(line.trim()).unwrap()
+}
+
 /// With the index unreachable, `domain list` still answers: the registrations
 /// come from configuration, and only the counts are missing. They say so in
 /// words, rather than reading as a domain nobody has synced.
@@ -4681,28 +4841,47 @@ fn status_still_answers_over_a_config_it_cannot_parse() {
     .unwrap();
 
     let (ok, stdout, stderr) = env.run_full(&["status"]);
-    assert!(ok, "status answers: {stdout}{stderr}");
-    assert!(stdout.starts_with("Daemon: running (pid "), "{stdout}");
+    assert!(
+        ok,
+        "status answers: {stdout}{stderr}\n--- daemon log ---\n{}",
+        env.daemon_log_tail(60)
+    );
+    assert!(
+        stdout.starts_with("Daemon: running (pid "),
+        "{stdout}\n--- daemon log ---\n{}",
+        env.daemon_log_tail(60)
+    );
     assert!(
         stderr.contains("configuration did not load"),
-        "the config problem is named, not swallowed: {stderr}"
+        "the config problem is named, not swallowed: {stderr}\n--- daemon log ---\n{}",
+        env.daemon_log_tail(60)
     );
 
-    let (ok, stdout, _) = env.run_full(&["status", "--json"]);
-    assert!(ok);
+    let (ok, stdout, stderr) = env.run_full(&["status", "--json"]);
+    assert!(
+        ok,
+        "status --json answers: {stdout}{stderr}\n--- daemon log ---\n{}",
+        env.daemon_log_tail(60)
+    );
     let value: Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert!(value["pid"].as_u64().is_some(), "{value}");
+    assert!(
+        value["pid"].as_u64().is_some(),
+        "{value}\n--- daemon log ---\n{}",
+        env.daemon_log_tail(60)
+    );
     assert!(
         value["config_error"]
             .as_str()
             .is_some_and(|e| !e.is_empty()),
-        "--json carries the same note as a field: {value}"
+        "--json carries the same note as a field: {value}\n--- daemon log ---\n{}",
+        env.daemon_log_tail(60)
     );
     // Nothing the daemon did since put a good file back.
     assert_eq!(
         std::fs::read_to_string(env.config_path()).unwrap(),
         "domains: [unclosed\n",
-        "the daemon left the broken file as it is"
+        "the daemon left the broken file as it is\n--- daemon log ---\n{}",
+        env.daemon_log_tail(60)
     );
 }
 

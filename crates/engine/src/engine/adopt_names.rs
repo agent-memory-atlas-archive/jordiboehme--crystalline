@@ -260,22 +260,14 @@ impl Engine {
         busy.contains(name) || self.overlay.env_domain(name).is_some()
     }
 
-    /// The configuration file an adoption edits: the file as it stands, like
-    /// [`Engine::fresh_file_config`], except that a file which is there and
-    /// does not parse is an error instead of a reason to fall back to the
-    /// snapshot. An adoption is bookkeeping nobody asked for, so it must not
-    /// write the snapshot over a file somebody is editing by hand, or over a
-    /// broken one `crystalline status` is about to report. The next sync
-    /// tries again.
+    /// The configuration file an adoption edits: the file as it stands,
+    /// through [`Engine::fresh_file_config`], so a file which is there and
+    /// does not parse is an error. An adoption is bookkeeping nobody asked
+    /// for, so it must not write the snapshot over a file somebody is editing
+    /// by hand, or over a broken one `crystalline status` is about to report.
+    /// The next sync tries again.
     fn adoption_file_config(&self, snapshot: &GlobalConfig) -> Result<GlobalConfig> {
-        match self.config_file_path() {
-            Some(path) if path.is_file() => overlay::load_file(&path).map_err(|e| {
-                EngineError::Invalid(format!(
-                    "{e}; the configuration file is left as it is until it parses again"
-                ))
-            }),
-            _ => Ok(snapshot.clone()),
-        }
+        self.fresh_file_config(snapshot)
     }
 
     /// The catch-up half: infer and persist the name origin of every entry

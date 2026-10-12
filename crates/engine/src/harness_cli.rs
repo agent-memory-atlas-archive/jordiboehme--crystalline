@@ -60,7 +60,7 @@ pub fn run_harness_cli(harness: HarnessKind, args: &[&str]) -> CliRun {
 /// whether it succeeded: `install`'s repair of an existing MCP registration
 /// needs the stored command back before it may touch it.
 ///
-/// Neither [`CliRun`] nor [`CliOutput`] can serve that: the first discards
+/// Neither [`CliRun`] nor `CliOutput` can serve that: the first discards
 /// stdout at the pipe (`Stdio::null()`), the second collects it and then drops
 /// it, keeping only stderr.
 pub enum CliCapture {

@@ -37,10 +37,12 @@ const SHAPING_NAMES: &[&str] = &[
 /// connected server from the environment.
 const SHAPING_PREFIXES: &[&str] = &[crate::overlay::DOMAIN_ENV_PREFIX, "CRYSTALLINE_REMOTE_"];
 
-/// Variables only a client reads for itself: the install channel marker and
-/// the Apple Silicon acceleration switch.
+/// Variables only a client reads for itself: the install channel marker, the
+/// Claude Desktop launcher's version and the Apple Silicon acceleration
+/// switch.
 const CLIENT_ONLY: &[&str] = &[
     crate::overlay::CHANNEL_ENV,
+    crate::overlay::LAUNCHER_VERSION_ENV,
     crystalline_index::ACCELERATION_ENV,
 ];
 
@@ -166,6 +168,9 @@ fn without_verbatim(path: &str) -> &str {
 fn same_path(a: &str, b: &str, fold_case: bool) -> bool {
     let (a, b) = (without_verbatim(a), without_verbatim(b));
     if fold_case {
+        // Unicode lowercase, not the NTFS upcase table: they differ for a few
+        // characters only, and a difference here shows one extra mismatch
+        // note, nothing more.
         a.chars()
             .flat_map(char::to_lowercase)
             .eq(b.chars().flat_map(char::to_lowercase))
@@ -282,6 +287,7 @@ mod tests {
             "CRYSTALLINE_TEST_DAEMON_TASK",
             "CRYSTALLINE_TEST_NO_KEYCHAIN",
             "CRYSTALLINE_CHANNEL",
+            "CRYSTALLINE_LAUNCHER_VERSION",
             "CRYSTALLINE_ACCELERATION",
             "CRYSTALLINE_NOT_A_SETTING",
             "PATH",

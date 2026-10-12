@@ -434,10 +434,10 @@ describe("spotView (C18)", () => {
     expect(aim).toBeCloseTo((lo + hi) / 2, 6);
   });
 
-  it("frames the laptop from behind with :back", () => {
+  it("frames the laptop from the front, where its screen mark is", () => {
     const laptop = hall.curios.find((c) => c.kind === "beige-laptop");
     if (laptop === undefined) throw new Error("no laptop in the hero hall");
-    const view = spotView(hall, "prop:beige-laptop:0:back");
+    const view = spotView(hall, "prop:beige-laptop:0");
     expect(view).not.toBeNull();
     if (view === null) return;
     const player = spawnPlayer({ ...hall, spawn: view.spawn });
@@ -445,11 +445,11 @@ describe("spotView (C18)", () => {
     const box = curioBox(laptop);
     const cx = (box.x0 + box.x1) / 2;
     const cz = (box.z0 + box.z1) / 2;
-    // The player stands on the curio's -front side: its offset from the
-    // curio's centre points opposite the curio's own front.
+    // The player stands on the curio's front side: its offset from the
+    // curio's centre points along the curio's own front.
     const dx = player.x - cx;
     const dz = player.z - cz;
-    expect(dx * -front[0] + dz * -front[1]).toBeGreaterThan(0);
+    expect(dx * front[0] + dz * front[1]).toBeGreaterThan(0);
   });
 
   it("keeps hero and prop spots as they were", () => {

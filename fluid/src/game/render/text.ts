@@ -26,7 +26,9 @@
  * kind's glyph size, its first line is the heading row and the rest fills the
  * body rows, each line reduced to its text (a link shows its words) and
  * wrapped at word boundaries to the columns that fit (`fitRows`); a row cut
- * for want of room ends with `CUT_MARK`. A lift's panel and a station screen
+ * for want of room ends with `CUT_MARK`. A terminal that shows a handle
+ * (`footer`) gives its last row to it, in reverse video, and the body wraps
+ * into one row fewer. A lift's panel and a station screen
  * keep one row per line.
  */
 
@@ -214,7 +216,11 @@ function drawRequest(
       );
       shown = [
         ...fitRows([lines[0] ?? ""], columns, 1),
-        ...fitRows(lines.slice(1), columns, rows - 1),
+        ...fitRows(
+          lines.slice(1),
+          columns,
+          request.footer === undefined ? rows - 1 : rows - 2,
+        ),
       ];
     } else {
       shown = lines.slice(0, rows);
@@ -247,6 +253,21 @@ function drawRequest(
         );
       }
     });
+    if (request.footer !== undefined && crt(request.kind)) {
+      // A handle line: the screen's last row, in reverse video.
+      const y = px * (0.5 + (rows - 1) * 1.05);
+      ctx.fillStyle = css(ink);
+      ctx.fillRect(px * 0.3, y - px * 0.1, size - px * 0.6, px);
+      drawLine(
+        ctx,
+        request.footer,
+        px * 0.5,
+        y,
+        glyph,
+        size - px,
+        css(background),
+      );
+    }
     if (crt(request.kind)) {
       // Scanlines.
       ctx.setTransform(1, 0, 0, 1, 0, 0);

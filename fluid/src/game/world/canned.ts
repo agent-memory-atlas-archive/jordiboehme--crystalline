@@ -47,10 +47,11 @@
  *
  * `heroHallRoom` (H15) is the gallery's second hand-built room, for the
  * `?hall=heroes` dev route: one of every hero kind and variant, hand-placed
- * in a 23 by 24 hall with no fixture but the placard, one round table that
- * carries the 2.6d curios, and no props, so nothing competes with a hero
- * for a screenshot. It holds one of every curio kind and variant,
- * hand-placed on the hero and round-table surfaces they fit
+ * in a 23 by 24 hall with no fixture but the placard, four round tables
+ * and a lab island that carry the curios, and no props, so nothing
+ * competes with a hero for a screenshot. It holds one of every curio kind
+ * and variant, hand-placed on the hero, round-table and island surfaces
+ * they fit
  * (`heroHallCurios`, `row`), for the `?at=prop:<kind>:<n>` shots that frame
  * them close and tilted (`spotView` in `dev/spots.ts`). `row` lays each row
  * along its host's local `a` axis, the wall-parallel one, whatever its own
@@ -111,7 +112,6 @@ import type {
   Curio,
   CurioKind,
   Decal,
-  DecalKind,
   Decor,
   DecorKind,
   Fixture,
@@ -127,6 +127,7 @@ import type {
   RoomSpec,
   Side,
   SurfaceClass,
+  TiledDecalKind,
   WallSlot,
 } from "./types";
 import { CELL } from "./units";
@@ -563,6 +564,8 @@ const GALLERY_LIGHT = 210;
  *   hall instead, at `GALLERY_HALL_PROPS` (2.6d C19): the canisters, the
  *   console and the marked crates east of the specimen tank, the designer
  *   tower north of the west wall's northern terminal.
+ * - **Decals.** The pixel wall decals alone, laid by hand on bay 3's and
+ *   bay 4's free walls (`galleryDecals`): a tag, a scribble and a plate.
  * - **Light.** One steady zone per block of four by four cells, so every
  *   floor cell is lit and nothing flickers while a model is looked at.
  *
@@ -773,12 +776,53 @@ export function galleryRoom(): RoomSpec {
     props,
     curios: [],
     finish: plainFinish(layout.bays.length),
-    decals: [],
+    decals: galleryDecals(seed, bay3, bay4),
     lights,
     dropped: 0,
     inboundMore: 0,
   };
   return { ...base, curios: galleryCurios(seed, base) };
+}
+
+/**
+ * The gallery's pixel wall decals (0.25.1 D-2, D-4), laid by hand for the
+ * look pass on bay walls no prop takes: the tag and the scribble on bay
+ * 3's west wall (its sixth and third rows), the plate on bay 4's south
+ * wall (its second column), each variant 0, at the sizes `placeDecals`
+ * gives them. `canned.test.ts` pins that the three edges are free and
+ * carry no wall prop.
+ */
+function galleryDecals(seed: number, bay3: Rect, bay4: Rect): Decal[] {
+  const lay = (
+    kind: "tag" | "scribble" | "plate",
+    edge: WallSlot,
+    size: { h: number; width: number; length: number },
+  ): Decal => ({
+    kind,
+    on: "wall",
+    ...wallAnchor(edge),
+    along: 0,
+    ...size,
+    variant: 0,
+    seed: seedFor(seed, "decal", kind),
+  });
+  return [
+    lay(
+      "tag",
+      { x: bay3.x0, y: bay3.y0 + 5, side: "w" },
+      { h: 0.6, width: 1.5, length: 0.45 },
+    ),
+    lay(
+      "scribble",
+      { x: bay3.x0, y: bay3.y0 + 2, side: "w" },
+      { h: 1.3, width: 0.7, length: 0.12 },
+    ),
+    lay(
+      "plate",
+      { x: bay4.x0 + 1, y: bay4.y1 - 1, side: "s" },
+      { h: 1.55, width: 0.32, length: 0.08 },
+    ),
+  ];
 }
 
 /**
@@ -789,7 +833,8 @@ export function galleryRoom(): RoomSpec {
  * island, the round table's first spot, the lower level of the second
  * storage shelf (v1, at `h` 1.08) and the top of the first (v0), and the
  * tops of both filing cabinets (v0 and v1, told apart by their different
- * `h`). Both under-desk curios (the trap and the fuel case) sit side by
+ * `h`), and the first crate's lid, which carries the closed pizza box
+ * (0.25.1). Both under-desk curios (the trap and the fuel case) sit side by
  * side in a row (`row`) on the workbench's lower shelf.
  *
  * The lab bench's top is `cls: "bench"`, and neither ball kind
@@ -879,6 +924,7 @@ function galleryCurios(seed: number, room: RoomSpec): Curio[] {
     place(atHeight("prop:filing-cabinet", 1.4), "pink-gadget", 0, 0),
     place(atHeight("prop:storage-shelf", 1.08), "tape-drive", 0, 1),
     place(atHeight("prop:storage-shelf", 1.6), "light-sword", 0, 0),
+    place(firstOf("prop:crate", "crate"), "pizza-box", 0, 0),
   ].sort(CURIO_ORDER);
 }
 
@@ -1213,6 +1259,27 @@ function heroHallLights(roomSeed: number, layout: Layout): LightZone[] {
 }
 
 /**
+ * The hero hall's round tables, `[x, y]` in cell units, each at turn 0:
+ * the first carries the 2.6d curios, the second, the third and the fourth
+ * the 0.25.1 ones (`heroHallCurios`). Each stands clear of every hero, of
+ * the entrance lane up column 11 and of the other tables.
+ */
+const HERO_HALL_TABLES: readonly (readonly [number, number])[] = [
+  [20, 16.5],
+  [8.5, 16.5],
+  [14, 22],
+  [7, 22.5],
+];
+
+/**
+ * The hero hall's lab island, `[x, y]` in cell units, at turn 0, in the
+ * free west strip: the one top in the hall wide enough for the radio set
+ * with its sheet beside it (0.54 m), which no round table place holds
+ * (0.25.1). It stands clear of every hero, the lanes and the tables.
+ */
+const HERO_HALL_ISLAND: readonly [number, number] = [2, 18.5];
+
+/**
  * The hero hall (H15): a room built by hand rather than generated, holding
  * one of every hero kind and variant, for judging them in the dev-only
  * route `/π/dev/gallery?hall=heroes` and for the `?at=prop:<kind>:<n>`
@@ -1239,7 +1306,10 @@ function heroHallLights(roomSeed: number, layout: Layout): LightZone[] {
  * interior at x 4, the first three turned east; and the police box standing
  * free by the east wall at (22, 13.5), a walkway all round it, turned to
  * face the hall's centre (2.6e). The 2.6d slab walker (C17) stands
- * at (21, 11), turn 2, a band hero clear of every other one. Each one frames
+ * at (21, 11), turn 2, a band hero clear of every other one. The 0.25.1
+ * turntable and camera stand at (8.5, 3) and (12.5, 3), turn 2, in the free
+ * north part of the hall, and the neon bike at (18, 22.5), turn 0, south
+ * of the mess table, its side to the north. Each one frames
  * from the front with a clear sight line, and none meets another hero, a
  * pinned hero or prop spot, or a curio host's framing side. Every hero's seed
  * is `seedFor(seed, "hero", kind, variant)`, keyed by its kind and variant
@@ -1248,9 +1318,12 @@ function heroHallLights(roomSeed: number, layout: Layout): LightZone[] {
  * heroes keep.
  *
  * No fixture but the placard, which tells the visitor how to frame one hero
- * at a time (`?AT=PROP:KIND:N`); one round table at (20, 16.5), turn 0,
- * that carries the 2.6d curios, and no props, so nothing but the heroes
- * and that table stands between the camera and what is being judged. One
+ * at a time (`?AT=PROP:KIND:N`); four round tables at turn 0
+ * (`HERO_HALL_TABLES`), the first at (20, 16.5) carrying the 2.6d curios
+ * and the other three the 0.25.1 ones, and the lab island
+ * (`HERO_HALL_ISLAND`) with the radio set; no props, so nothing but the
+ * heroes, those tables and the island stands between the camera and what
+ * is being judged. One
  * steady light zone per four by four block, as `galleryRoom`'s. The same
  * call gives the same room byte for byte.
  */
@@ -1321,6 +1394,12 @@ export function heroHallRoom(): RoomSpec {
     // 2.6d C17: its 1.0 m moat clears every hero, and it frames from the
     // south with a clear sight line.
     at("slab-walker", 0, 21, 11, 2),
+    // 0.25.1: the exhibit heroes in the free north part of the west
+    // half, facing the entrance.
+    at("turntable", 0, 8.5, 3, 2),
+    at("camera", 0, 12.5, 3, 2),
+    // 0.25.1: south of the mess table, facing north, framed from its side.
+    at("neon-bike", 0, 18, 22.5, 0),
   ].sort(HERO_ORDER);
 
   const base: RoomSpec = {
@@ -1353,12 +1432,19 @@ export function heroHallRoom(): RoomSpec {
       },
     ],
     decor: [
-      {
-        kind: "round-table",
-        x: 20,
-        y: 16.5,
+      ...HERO_HALL_TABLES.map(([x, y], i) => ({
+        kind: "round-table" as const,
+        x,
+        y,
         turn: 0,
-        seed: seedFor(seed, "decor", "round-table", 0),
+        seed: seedFor(seed, "decor", "round-table", i),
+      })),
+      {
+        kind: "lab-island" as const,
+        x: HERO_HALL_ISLAND[0],
+        y: HERO_HALL_ISLAND[1],
+        turn: 0,
+        seed: seedFor(seed, "decor", "lab-island", 0),
       },
     ],
     scaffold: [],
@@ -1730,7 +1816,7 @@ function variantsHallCouncil(hall: Rect, seed: number): Decor[] {
  * whose counts `canned.test.ts` checks this list against).
  */
 const VARIANTS_HALL_DECAL_KINDS: readonly {
-  kind: Exclude<DecalKind, "stencil" | "ring">;
+  kind: TiledDecalKind;
   variants: number;
 }[] = [
   { kind: "chevrons", variants: 2 },
@@ -1745,7 +1831,7 @@ const VARIANTS_HALL_DECAL_KINDS: readonly {
  * and `length` up the wall or along the floor decal's turn.
  */
 const VARIANTS_HALL_DECAL_SIZE: Record<
-  Exclude<DecalKind, "stencil" | "ring">,
+  TiledDecalKind,
   { width: number; length: number }
 > = {
   chevrons: { width: 1.2, length: 0.3 },
@@ -1836,7 +1922,7 @@ function variantsHallDecals(
     y: number;
     gap: number;
     items: {
-      kind: Exclude<DecalKind, "ring">;
+      kind: TiledDecalKind | "stencil";
       variant: number;
       turn: number;
     }[];
@@ -2169,15 +2255,38 @@ export function row(
  *   the capsule case side by side, place 1 (west, turn 3) the breadbin
  *   computer, place 2 (north, turn 0) the reactor case and the drone side
  *   by side, place 3 (east, turn 1) the slim computer, and the south under
- *   spot (turn 2) both soot puff variants in a row.
+ *   spot (turn 2) both soot puff variants in a row;
+ * - the second round table's four places (0.25.1), turned out the same
+ *   way: place 0 the floppy disk and the lottery ticket side by side,
+ *   places 1, 2 and 3 the pizza box closed, stacked two and stacked
+ *   three, one to a place, since a box fills a place's 0.41 m budget
+ *   alone; and the third table's place 0 the open pizza box, place 1 the
+ *   floppy's second label, place 2 the 5.25 inch disk and place 3 the
+ *   penguin figurine;
+ * - the fourth round table's four places (0.25.1), turned out the same
+ *   way: places 0, 1 and 2 the report sheets' single cover sheet, short
+ *   stack and tall stack, and place 3 the radio set with its note, each
+ *   alone, since each fills most of a place's 0.41 m budget;
+ * - the lab island's top: the radio set with its sheet beside it, alone,
+ *   since its 0.54 m fit no round table's place.
  *
  * Every seed is `seedFor(seed, "curio", kind, variant)`, and the output is
  * sorted by `CURIO_ORDER`.
  */
 function heroHallCurios(seed: number, room: RoomSpec): Curio[] {
   const surfaces = hostSurfaces(room);
-  const at = (token: string): HostSurface => {
-    const s = surfaces.find((x) => x.key[2] === token);
+  // Every round table gives the same tokens, so a decor surface is found
+  // by its host too: the hall's `table`-th piece of the kind its token
+  // names, the first by default.
+  const at = (token: string, table = 0): HostSurface => {
+    const host = room.decor.filter((d) => token.startsWith(`decor-${d.kind}-`))[
+      table
+    ];
+    const s = surfaces.find(
+      (x) =>
+        x.key[2] === token &&
+        (!token.startsWith("decor-") || x.anchorOf === host),
+    );
     if (s === undefined) throw new Error(`hero hall: no ${token} surface`);
     return s;
   };
@@ -2191,8 +2300,9 @@ function heroHallCurios(seed: number, room: RoomSpec): Curio[] {
     kind: CurioKind,
     variant: number,
     turn?: number,
+    table = 0,
   ): Curio => {
-    const s = at(token);
+    const s = at(token, table);
     return curioOn(
       s,
       kind,
@@ -2249,5 +2359,25 @@ function heroHallCurios(seed: number, room: RoomSpec): Curio[] {
       [item("soot-puffs", 0), item("soot-puffs", 1)],
       2,
     ),
+    // 0.25.1: the second and the third table's four places each, turned
+    // out from their centres.
+    ...row(
+      at("decor-round-table-0", 1),
+      [item("floppy-disk", 0), item("lottery-ticket", 0)],
+      2,
+    ),
+    one("decor-round-table-1", "pizza-box", 0, 3, 1),
+    one("decor-round-table-2", "pizza-box", 1, 0, 1),
+    one("decor-round-table-3", "pizza-box", 2, 1, 1),
+    one("decor-round-table-0", "pizza-box", 3, 2, 2),
+    one("decor-round-table-1", "floppy-disk", 1, 3, 2),
+    one("decor-round-table-2", "disk-525", 0, 0, 2),
+    one("decor-round-table-3", "penguin-figure", 0, 1, 2),
+    // 0.25.1: the fourth table's four places and the lab island's top.
+    one("decor-round-table-0", "report-sheets", 0, 2, 3),
+    one("decor-round-table-1", "report-sheets", 1, 3, 3),
+    one("decor-round-table-2", "report-sheets", 2, 0, 3),
+    one("decor-round-table-3", "radio-set", 0, 1, 3),
+    one("decor-lab-island-0", "radio-set", 1),
   ].sort(CURIO_ORDER);
 }

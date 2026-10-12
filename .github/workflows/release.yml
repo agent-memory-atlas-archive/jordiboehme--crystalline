@@ -214,7 +214,7 @@ jobs:
           stage="bundle/standard"
           packaging/mcpb/generate-manifest.sh standard "$version" "$stage"
           npx --yes @anthropic-ai/mcpb@2.1.2 validate "$stage"
-          npx --yes @anthropic-ai/mcpb@2.1.2 pack "$stage" "mcpb-out/crystalline-v${version}.mcpb"
+          npx --yes @anthropic-ai/mcpb@2.1.2 pack "$stage" "mcpb-out/crystalline-claude-desktop-v${version}.mcpb"
 
           # The Claude Desktop only extension: macOS, the universal binary
           # inside, for people who use only Claude Desktop.
@@ -224,7 +224,15 @@ jobs:
           chmod +x "$stage/server/crystalline"
           packaging/mcpb/generate-manifest.sh desktop-only "$version" "$stage"
           npx --yes @anthropic-ai/mcpb@2.1.2 validate "$stage"
-          npx --yes @anthropic-ai/mcpb@2.1.2 pack "$stage" "mcpb-out/crystalline-desktop-only-v${version}-macos.mcpb"
+          npx --yes @anthropic-ai/mcpb@2.1.2 pack "$stage" "mcpb-out/crystalline-claude-desktop-only-v${version}-macos.mcpb"
+
+          # Each bundle says the version it was packed for, so a manifest left
+          # at an old version never ships under a new name.
+          for f in "mcpb-out/crystalline-claude-desktop-v${version}.mcpb" \
+                   "mcpb-out/crystalline-claude-desktop-only-v${version}-macos.mcpb"; do
+            got=$(unzip -p "$f" manifest.json | jq -r .version)
+            [ "$got" = "$version" ] || { echo "::error::$f says version $got, expected $version"; exit 1; }
+          done
 
       - name: Upload mcpb artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -443,8 +451,8 @@ jobs:
           for f in \
             SHA256SUMS \
             "crystalline-fluid-${TAG}.cdx.json" \
-            "crystalline-${TAG}.mcpb" \
-            "crystalline-desktop-only-${TAG}-macos.mcpb"; do
+            "crystalline-claude-desktop-${TAG}.mcpb" \
+            "crystalline-claude-desktop-only-${TAG}-macos.mcpb"; do
             [ -f "release/$f" ] || { echo "::error::missing attestation subject release/$f"; missing=1; }
           done
           for p in macos-arm64 macos-intel linux-amd64 linux-arm64 windows-amd64 windows-arm64; do
@@ -488,7 +496,7 @@ jobs:
           sbom-path: release/crystalline-${{ github.ref_name }}-macos-arm64.cdx.json
           subject-path: |
             release/crystalline-${{ github.ref_name }}-macos-arm64.tar.gz
-            release/crystalline-desktop-only-${{ github.ref_name }}-macos.mcpb
+            release/crystalline-claude-desktop-only-${{ github.ref_name }}-macos.mcpb
 
       - name: Attest the macos-intel SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -496,7 +504,7 @@ jobs:
           sbom-path: release/crystalline-${{ github.ref_name }}-macos-intel.cdx.json
           subject-path: |
             release/crystalline-${{ github.ref_name }}-macos-intel.tar.gz
-            release/crystalline-desktop-only-${{ github.ref_name }}-macos.mcpb
+            release/crystalline-claude-desktop-only-${{ github.ref_name }}-macos.mcpb
 
       - name: Attest the linux-amd64 SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -542,7 +550,7 @@ jobs:
             release/crystalline-${{ github.ref_name }}-*.zip
             release/crystalline-${{ github.ref_name }}-*.msi
             release/crystalline_*.deb
-            release/crystalline-desktop-only-${{ github.ref_name }}-macos.mcpb
+            release/crystalline-claude-desktop-only-${{ github.ref_name }}-macos.mcpb
 
       - name: Create GitHub Release
         env:

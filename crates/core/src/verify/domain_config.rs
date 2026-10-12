@@ -488,17 +488,25 @@ mod order_tests {
 mod load_tests {
     use super::*;
 
+    /// The body of the function whose signature starts with `signature`, up to
+    /// the closing brace at the signature's own indentation, so a function
+    /// inside an `impl` block is cut where it ends, not at the end of the impl.
+    fn function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+        let start = source.find(signature).expect("the function is in the file");
+        let line_start = source[..start].rfind('\n').map_or(0, |i| i + 1);
+        let indent = &source[line_start..start];
+        let close = format!("\n{indent}}}\n");
+        let end = start + source[start..].find(&close).expect("the function ends");
+        &source[start..end]
+    }
+
     /// T2-b: the loader reads the file once, so the blank check and the
     /// parse always judge the same text. A source scan, because a second read
     /// leaves no other trace a test can see.
     #[test]
     fn load_domain_config_reads_the_file_once() {
         let source = include_str!("domain_config.rs");
-        let body = source
-            .split("pub fn load_domain_config(")
-            .nth(1)
-            .and_then(|rest| rest.split("\n}\n").next())
-            .expect("the loader is in this file");
+        let body = function_body(source, "pub fn load_domain_config(");
         let reads = body.matches("read_to_string(").count() + body.matches("load_yaml").count();
         assert_eq!(reads, 1, "the loader reads the file {reads} times:\n{body}");
     }

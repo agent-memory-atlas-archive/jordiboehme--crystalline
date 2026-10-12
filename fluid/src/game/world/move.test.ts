@@ -25,6 +25,7 @@ import {
   PLAYER_RADIUS,
   RUN_FACTOR,
   blockersFor,
+  HEAVY_FACTOR,
   headBob,
   lookDelta,
   spawnPlayer,
@@ -475,9 +476,26 @@ describe("walking on the grid", () => {
     if (pipe === undefined) throw new Error("engineering has pipe runs");
     expect(pipe.turn).toBe(0);
     expect(decorFootprint(pipe)).toBeNull();
-    // Beside the generator, south across the pipe run's line.
-    const px = pipe.x * CELL + 3;
+    // Beside the generator, south across the pipe run's line, on the first
+    // column near it whose way south is clear of every blocker (3 m east of
+    // the pipe run's centre until GAME_VERSION 4 moved a blocker there).
     const pz = pipe.y * CELL;
+    const blockers = blockersFor(engineering);
+    const px = [3, 4, 5, 6, -3, -4, -5, -6]
+      .map((o) => pipe.x * CELL + o)
+      .find((x) => {
+        const way = {
+          x0: x - PLAYER_RADIUS,
+          x1: x + PLAYER_RADIUS,
+          z0: pz - 2 - PLAYER_RADIUS,
+          z1: pz + 1.5 + PLAYER_RADIUS,
+        };
+        return !blockers.some(
+          (b) =>
+            b.x0 < way.x1 && way.x0 < b.x1 && b.z0 < way.z1 && way.z0 < b.z1,
+        );
+      });
+    if (px === undefined) throw new Error("no clear way across the pipe run");
     const under = runIn(
       engineering,
       at(px, pz - 2),
@@ -653,12 +671,15 @@ describe("sliding around corners", () => {
   it("walks diagonally into a corner of void cells and settles in it", () => {
     // The first bay's south-east corner: void on both sides (the next bay's
     // doorway column east, the rows below the bay south), no fixture near.
+    // Undressed: a floor prop may stand in that corner (it does since
+    // GAME_VERSION 4), and the walk is about the void, not the props.
+    const bare: RoomSpec = { ...hub, props: [] };
     const corner = { x: (hub.hall.x1 + 1 + BAY) * CELL, z: BAY * CELL };
     expect(isFloor(hub.grid, hub.hall.x1 + BAY, BAY - 1)).toBe(true);
     expect(isFloor(hub.grid, hub.hall.x1 + BAY + 1, BAY - 1)).toBe(false);
     expect(isFloor(hub.grid, hub.hall.x1 + BAY, BAY)).toBe(false);
     const p = diagonalInto(
-      hub,
+      bare,
       { x: corner.x - 3, z: corner.z - 3 },
       [1, 1],
       0.3,
@@ -902,5 +923,110 @@ describe("the airlock's fittings (M3 C24)", () => {
       p = stepPlayer(p, { ...idle, forward: 1, run: true }, r, bs);
     expect(p.x).toBeGreaterThanOrEqual(depth + PLAYER_RADIUS - 1e-6);
     expect(p.x).toBeLessThan(depth + PLAYER_RADIUS + 0.05);
+  });
+});
+
+describe("heavy gravity (the gravity console)", () => {
+  // Hold the key for 20 ticks from the spawn (both have settled by then), and read the speed.
+  const open = { ...room, props: [] };
+  const speedOf = (intent: Intent) => {
+    const q = runIn(open, spawnPlayer(open), intent, 20);
+    return Math.hypot(q.vx, q.vz);
+  };
+
+  // Mutation caught: the factor ignored, or applied to the walk only.
+  it("walks and runs at 55 percent of the plain top speed", () => {
+    for (const run of [false, true]) {
+      const plain = speedOf({ ...idle, forward: 1, run });
+      const heavy = speedOf({ ...idle, forward: 1, run, heavy: true });
+      expect(heavy / plain, String(run)).toBeGreaterThan(HEAVY_FACTOR * 0.98);
+      expect(heavy / plain, String(run)).toBeLessThan(HEAVY_FACTOR * 1.02);
+    }
+  });
+
+  // Mutation caught: heavy getting up to speed as fast as light.
+  it("gets going slower than the plain player does", () => {
+    const one = (heavy: boolean) => {
+      const q = runIn(
+        open,
+        spawnPlayer(open),
+        { ...idle, forward: 1, heavy },
+        3,
+      );
+      return Math.hypot(q.vx, q.vz);
+    };
+    expect(one(true) / (7 * HEAVY_FACTOR)).toBeLessThan(one(false) / 7);
+  });
+
+  // Mutation caught: turning or the mouse look scaled by the weight.
+  it("turns and looks exactly as the plain player does", () => {
+    const turn = { ...idle, turn: 1, lookDx: 12, lookDy: 5 };
+    const a = stepPlayer(spawnPlayer(open), turn, open, []);
+    const b = stepPlayer(spawnPlayer(open), { ...turn, heavy: true }, open, []);
+    expect(b.yaw).toBe(a.yaw);
+    expect(b.pitch).toBe(a.pitch);
+  });
+
+  // Mutation caught: a heavy player who keeps sliding, friction weakened.
+  it("still stops with no input, as fast as the plain player", () => {
+    const moving = runIn(
+      open,
+      at(3, 7),
+      { ...idle, forward: 1, heavy: true },
+      70,
+    );
+    const heavy = runIn(open, moving, { ...idle, heavy: true }, 6);
+    const plain = runIn(
+      open,
+      runIn(open, spawnPlayer(open), { ...idle, forward: 1 }, 20),
+      idle,
+      6,
+    );
+    expect(Math.hypot(heavy.vx, heavy.vz)).toBeLessThan(0.15);
+    expect(Math.hypot(heavy.vx, heavy.vz)).toBeLessThanOrEqual(
+      Math.hypot(plain.vx, plain.vz),
+    );
+  });
+
+  // Mutation caught: the bob left as it is while heavy.
+  it("bobs slower and deeper", () => {
+    // Period about 1.4 times: phase gained over the second second.
+    const gain = (heavy: boolean) => {
+      const first = runIn(
+        open,
+        spawnPlayer(open),
+        { ...idle, forward: 1, heavy },
+        15,
+      );
+      const second = runIn(open, first, { ...idle, forward: 1, heavy }, 15);
+      return second.bob - first.bob;
+    };
+    expect(gain(false) / gain(true)).toBeGreaterThan(1.3);
+    expect(gain(false) / gain(true)).toBeLessThan(1.5);
+    let deep = 0;
+    let shallow = 0;
+    const p = runIn(
+      open,
+      spawnPlayer(open),
+      { ...idle, forward: 1, heavy: true },
+      20,
+    );
+    for (let a = 0; a < Math.PI * 2; a += 0.05) {
+      deep = Math.max(deep, Math.abs(headBob({ ...p, bob: a }, true)));
+      shallow = Math.max(
+        shallow,
+        Math.abs(
+          headBob(
+            {
+              ...runIn(open, spawnPlayer(open), { ...idle, forward: 1 }, 20),
+              bob: a,
+            },
+            false,
+          ),
+        ),
+      );
+    }
+    expect(deep / shallow).toBeGreaterThan(1.2);
+    expect(deep / shallow).toBeLessThan(1.4);
   });
 });

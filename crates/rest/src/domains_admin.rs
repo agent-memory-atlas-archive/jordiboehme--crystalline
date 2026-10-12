@@ -1630,8 +1630,9 @@ pub struct ShareBody {
                            instead: `committed` with the commit's sha, url \
                            and branch beside the three file lists, \
                            `proposal_open` with the number, url and title of \
-                           the proposal that has to land or be withdrawn \
-                           first, `branch_protected` when the branch's own \
+                           another person's proposal that is still open; \
+                           share again once it is merged or closed, \
+                           `branch_protected` when the branch's own \
                            rules refuse a direct commit, and `branch_moved` \
                            when somebody else moved the branch while this \
                            share was prepared. Each of the three refusals \

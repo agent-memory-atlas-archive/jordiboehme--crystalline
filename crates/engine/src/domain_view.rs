@@ -42,7 +42,7 @@
 //! it is the only other place in the tree that answers "whose rows is this
 //! caller entitled to".
 //!
-//! [`crate::review::DraftView`] carries the word "view" for a different
+//! `crate::review::DraftView` carries the word "view" for a different
 //! meaning and is not one of these: it renders per-actor counts for a status
 //! payload and projects nothing.
 
@@ -2298,16 +2298,7 @@ impl<'a> DomainView<'a> {
         let staging = OverlayStaging::at(state_dir.join(OVERLAY_STAGING_DIR));
         // A tree a previous run left behind - a process killed between the share and
         // the guard's own cleanup - is not a tree this share may inherit.
-        match std::fs::remove_dir_all(staging.root()) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(source) => {
-                return Err(EngineError::Io {
-                    path: staging.root().display().to_string(),
-                    source,
-                });
-            }
-        }
+        crystalline_remote::tree::remove_tree(staging.root())?;
         std::fs::create_dir_all(staging.root()).map_err(|source| EngineError::Io {
             path: staging.root().display().to_string(),
             source,

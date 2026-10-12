@@ -259,6 +259,58 @@ export function hatchPatch(): Patch {
 }
 
 /**
+ * The gravity console (the `gravity` cue). On: a low thud, a sine falling
+ * 70 to 38 Hz over 0.25 s with a short dull noise knock on it. Off: a soft
+ * lift, a sine rising 90 to 240 Hz over 0.35 s with a little air above it.
+ */
+export function gravityPatch(on: boolean): Patch {
+  if (on) {
+    return {
+      name: "gravity on",
+      voices: [
+        voice(
+          "sine",
+          0.7,
+          0.25,
+          { a: 0.004, d: 0.12, s: 0.3, r: 0.12 },
+          { pitch: sweep(70, 38, 0, 0.25) },
+        ),
+        voice(
+          "noise",
+          0.2,
+          0.06,
+          { a: 0.002, d: 0.04, s: 0.2, r: 0.05 },
+          {
+            filter: { type: "lowpass", cutoff: sweep(500, 140, 0, 0.1), q: 1 },
+          },
+        ),
+      ],
+    };
+  }
+  return {
+    name: "gravity off",
+    voices: [
+      voice(
+        "sine",
+        0.3,
+        0.35,
+        { a: 0.06, d: 0.15, s: 0.4, r: 0.2 },
+        { pitch: sweep(90, 240, 0, 0.35) },
+      ),
+      voice(
+        "noise",
+        0.06,
+        0.3,
+        { a: 0.08, d: 0.1, s: 0.4, r: 0.15 },
+        {
+          filter: { type: "lowpass", cutoff: sweep(400, 1800, 0, 0.3), q: 1 },
+        },
+      ),
+    ],
+  };
+}
+
+/**
  * The portal's whoosh on travel: noise through a bandpass swept 300 to
  * 3000 Hz and back over 0.6 s, a pulse under it cycling midi 60, 67 and
  * 72 at 50 Hz, its width opening as it goes.

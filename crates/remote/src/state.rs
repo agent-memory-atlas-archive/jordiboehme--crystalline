@@ -653,7 +653,7 @@ impl OriginState {
 ///
 /// `rel` always uses forward slashes (the convention `OriginState` and every
 /// other function in this module follow); this is the one place that gets
-/// translated to the platform's own separator, via [`to_platform_path`],
+/// translated to the platform's own separator, via `to_platform_path`,
 /// which also validates it. A `rel` that is empty, absolute, normalizes to
 /// no components at all, or has a `.`, `..`, `:` or `\` component is
 /// rejected with [`RemoteError::State`] naming the offending path rather
@@ -758,16 +758,16 @@ pub fn remove_base_file(dir: &Path, rel: &str) -> Result<(), RemoteError> {
 /// Writes the new tree to a sibling `base.tmp/` directory first, then swaps
 /// it in for `base/`, so a reader never sees a half-replaced tree.
 ///
-/// Every key in `files` is validated by [`to_platform_path`] before
+/// Every key in `files` is validated by `to_platform_path` before
 /// anything is written: the first one shaped like a traversal, an absolute
 /// path or a Windows drive-prefix attempt fails the whole call with
 /// [`RemoteError::State`] naming the offending path, and the previous
 /// `base/` is left untouched.
 pub fn replace_base_tree(dir: &Path, files: &BTreeMap<String, Vec<u8>>) -> Result<(), RemoteError> {
     let tmp_root = dir.join(BASE_TMP_DIR_NAME);
-    if tmp_root.exists() {
-        std::fs::remove_dir_all(&tmp_root)?;
-    }
+    // Unconditional: `exists()` follows a link, so a dangling one would skip
+    // the removal and the create below would fail on it.
+    crate::tree::remove_tree(&tmp_root)?;
     std::fs::create_dir_all(&tmp_root)?;
     for (rel, bytes) in files {
         let path = tmp_root.join(to_platform_path(rel)?);
@@ -778,9 +778,7 @@ pub fn replace_base_tree(dir: &Path, files: &BTreeMap<String, Vec<u8>>) -> Resul
     }
 
     let base_root = dir.join(BASE_DIR_NAME);
-    if base_root.exists() {
-        std::fs::remove_dir_all(&base_root)?;
-    }
+    crate::tree::remove_tree(&base_root)?;
     std::fs::rename(&tmp_root, &base_root)?;
     Ok(())
 }
@@ -816,7 +814,7 @@ fn artifact_kind_dir(dir: &Path, kind_id: &str) -> PathBuf {
 /// empty `files` therefore leaves the kind directory absent, which the scan
 /// reads as nothing to provision.
 ///
-/// Every key in `files` is validated by [`to_platform_path`] before it is
+/// Every key in `files` is validated by `to_platform_path` before it is
 /// written: the first one shaped like a traversal, an absolute path or a
 /// Windows drive-prefix attempt fails the whole call with
 /// [`RemoteError::State`] naming the offending path, so upstream artifact
@@ -827,11 +825,7 @@ pub fn replace_artifact_kind(
     files: &BTreeMap<String, Vec<u8>>,
 ) -> Result<(), RemoteError> {
     let kind_dir = artifact_kind_dir(dir, kind_id);
-    match std::fs::remove_dir_all(&kind_dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
-    }
+    crate::tree::remove_tree(&kind_dir)?;
     for (rel, bytes) in files {
         let path = kind_dir.join(to_platform_path(rel)?);
         if let Some(parent) = path.parent() {
@@ -861,11 +855,7 @@ pub fn prune_artifact_kinds(dir: &Path, keep: &BTreeSet<&str>) -> Result<(), Rem
             continue;
         }
         let path = entry.path();
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            std::fs::remove_dir_all(&path)?;
-        } else {
-            std::fs::remove_file(&path)?;
-        }
+        crate::tree::remove_tree(&path)?;
     }
     let now_empty = std::fs::read_dir(&artifacts)
         .map(|mut e| e.next().is_none())
@@ -995,11 +985,7 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, RemoteError> {
 /// the offending id without touching the filesystem.
 pub fn clear_conflict(dir: &Path, id: &str) -> Result<(), RemoteError> {
     let conflict_dir = conflict_dir(dir, id)?;
-    match std::fs::remove_dir_all(conflict_dir) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.into()),
-    }
+    crate::tree::remove_tree(&conflict_dir)
 }
 
 /// A fresh conflict id: 8 lowercase hex characters drawn from a random UUID
@@ -1448,6 +1434,49 @@ mod tests {
             Some(b"new content".to_vec())
         );
         assert!(!dir.path().join("base.tmp").exists());
+    }
+
+    /// Replaces the base and checks it is a real folder with the new file.
+    fn replace_and_expect_a_real_base(dir: &Path) {
+        let mut files = BTreeMap::new();
+        files.insert("notes/new.md".to_string(), b"new content".to_vec());
+        replace_base_tree(dir, &files).unwrap();
+        let meta = std::fs::symlink_metadata(dir.join("base")).unwrap();
+        assert!(meta.is_dir() && !meta.file_type().is_symlink());
+        assert_eq!(
+            read_base_file(dir, "notes/new.md").unwrap(),
+            Some(b"new content".to_vec())
+        );
+        assert!(std::fs::symlink_metadata(dir.join("base.tmp")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_at_base_tmp_or_base_does_not_break_the_next_replacement() {
+        for name in ["base.tmp", "base"] {
+            let dir = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join(name)).unwrap();
+            replace_and_expect_a_real_base(dir.path());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_dangling_junction_at_base_tmp_or_base_does_not_break_the_next_replacement() {
+        for name in ["base.tmp", "base"] {
+            let dir = tempfile::tempdir().unwrap();
+            let gone = dir.path().join("gone");
+            std::fs::create_dir(&gone).unwrap();
+            let out = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(dir.path().join(name))
+                .arg(&gone)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "mklink failed");
+            std::fs::remove_dir(&gone).unwrap();
+            replace_and_expect_a_real_base(dir.path());
+        }
     }
 
     #[test]

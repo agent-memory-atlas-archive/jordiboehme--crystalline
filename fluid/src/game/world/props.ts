@@ -1092,36 +1092,38 @@ export type RarePropKind = (typeof RARE_PROP_KINDS)[number];
 
 /**
  * Each drawn rare kind's chance per room, by archetype (2.6d C9). The
- * first numbers; the discovery pass (2.6f) raises them.
+ * first numbers, raised about 1.5x in 0.25.1: the poster about 1 room in
+ * 10 (1 in 5 in an archive or lab), the canisters and the console about 1
+ * in 7 (the canisters 1 in 5 in an archive), the tower 1 in 8.
  */
 export const RARE_SHARES = {
   "saucer-poster": {
-    bridge: 1 / 16,
-    council: 1 / 16,
-    engineering: 1 / 16,
-    archive: 1 / 8,
-    lab: 1 / 8,
+    bridge: 1 / 10,
+    council: 1 / 10,
+    engineering: 1 / 10,
+    archive: 1 / 5,
+    lab: 1 / 5,
   },
   "ooze-canisters": {
     bridge: 0,
     council: 0,
-    engineering: 1 / 10,
-    archive: 1 / 8,
-    lab: 1 / 10,
+    engineering: 1 / 7,
+    archive: 1 / 5,
+    lab: 1 / 7,
   },
   "designer-tower": {
-    bridge: 1 / 12,
-    council: 1 / 12,
-    engineering: 1 / 12,
-    archive: 1 / 12,
-    lab: 1 / 12,
+    bridge: 1 / 8,
+    council: 1 / 8,
+    engineering: 1 / 8,
+    archive: 1 / 8,
+    lab: 1 / 8,
   },
   "gravity-console": {
     bridge: 0,
     council: 0,
-    engineering: 1 / 10,
+    engineering: 1 / 7,
     archive: 0,
-    lab: 1 / 10,
+    lab: 1 / 7,
   },
 } as const satisfies Record<
   Exclude<RarePropKind, "marked-crate">,

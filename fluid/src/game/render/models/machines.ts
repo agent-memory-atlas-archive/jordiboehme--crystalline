@@ -36,6 +36,7 @@ import {
   type ModelContext,
   type Surfaces,
 } from "./common";
+import { toolPlate } from "./toolMark";
 import { tagStrip } from "./wall";
 
 type Machine = Extract<Fixture, { kind: "machine" }>;
@@ -186,6 +187,9 @@ function workbench({ k, s, ctx, rng, half, out, accent2 }: Recipe) {
     0.01,
     s.tinted(shade(ctx.look.palette.metal, 0.7), LAYER.metal),
   );
+  // The tool maker's mark on the pegboard's header, over the hooks.
+  const mid = (a0 + 0.05 + 0.35) / 2;
+  toolPlate(k, s, [mid - 0.19, mid + 0.19, 1.725, 1.795], 0.041, DECAL_LIFT);
   for (let i = 0; i < W.tools; i++) {
     const a = a0 + 0.15 + i * 0.17;
     const len = rng.range(0.18, 0.4);
@@ -733,6 +737,8 @@ function fitterBench({ k, s, ctx, half, out, accent2 }: Recipe) {
   }
   for (const x of [mid - 0.04, mid + 0.02])
     k.box(x, x + 0.02, C.d + 0.012, C.d + 0.028, 1.5, 1.58, s.dark);
+  // The tool maker's mark across both doors, over the knobs.
+  toolPlate(k, s, [ca0 + 0.02, 0.89, 1.66, 1.74], C.d + 0.023, DECAL_LIFT);
   // The ring lamp: foot, post, the ring and its glowing lens.
   const L = FITTER.lamp;
   k.cylinder(L.a, L.post, top, top + 0.03, 0.06, 10, s.dark);
@@ -841,6 +847,8 @@ function weldingBench({ k, s, ctx, half, out, accent2 }: Recipe) {
     hose,
     "inward",
   );
+  // The tool maker's mark on a wall plate between the hose and the light.
+  toolPlate(k, s, [-0.06, 0.4, 1.4, 1.48], 0.011, DECAL_LIFT);
   // The hooded work light on its wall bracket.
   const L = B.light;
   const [s0, s1] = L.shade;

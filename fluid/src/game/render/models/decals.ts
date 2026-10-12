@@ -37,14 +37,35 @@
  * - The airlock's hazard **ring** (M3 C24) is a black band round its
  *   centre with the chevrons' yellow stripes over it (`ring`), and its
  *   `CYCLE` stencils read a word (`wordMarks`) instead of a bay.
+ * - The **pixel wall decals** (0.25.1 D-2, D-4) are pictures of font
+ *   cells, every run one quad on the solid tile like a stencil's, the
+ *   pixels square and as large as the decal's box allows, the picture
+ *   centred in it, cut out of the stripe's and the baseboard's bands like
+ *   any wall decal:
+ *   - the **tag** (`tagPicture`) sets `MARKS.sprayTag`, slanted by
+ *     shifting each row one cell left per three rows down, in its variant's
+ *     colour (`PIXEL_TINT.tag`), ringed by its outline: every cell next to
+ *     a lit one (up, down, left or right) that is not lit itself, in a dark
+ *     tint. The dark silhouette (fill and outline together) lies at
+ *     `DECAL_LIFT` in long runs and the fill over it at twice that, which
+ *     takes fewer quads than the outline's broken runs alone;
+ *   - the **scribble** (`scribblePicture`) sets `MARKS.numbers` mark by
+ *     mark, a space's advance between two, each glyph raised or lowered
+ *     a pixel or left in place from the decal's own seed, so it reads as
+ *     hand-written, in its variant's ink (`PIXEL_TINT.scribble`);
+ *   - the **plate** is one light grey quad over the whole box at
+ *     `DECAL_LIFT`, with the numbers (`platePicture`) stencilled black over
+ *     it at twice `DECAL_LIFT`.
  *
  * Colours (`DECAL_TINT`, C20): chevrons yellow, arrows the room's accent
  * (`accentTint`), grime, streaks and rust their own dark shades, the wall
  * stencil dark and the floor stencil light, a word stencil dark and the
- * ring's stripes yellow over black. A decal adds no text layer and no
- * text key: its only text is the stencil's pixels.
+ * ring's stripes yellow over black; the pixel wall decals take
+ * `PIXEL_TINT`. A decal adds no text layer and no text key: its only text
+ * is the stencils' and the pixel decals' pixels.
  */
 
+import { createRng } from "../../core/seed";
 import { HERO_FRONT } from "../../world/footprints";
 import { edgeOf } from "../../world/sites";
 import type { Decal, RoomSpec } from "../../world/types";
@@ -65,7 +86,7 @@ import { DECAL_TILES, tileRect, tileWindow } from "../textures";
 import type { KitAt } from "./common";
 import { floorTop } from "./hangar";
 import { runsOf, textRows } from "./heroes/pixels";
-import { stencilMarks, wordMarks } from "./marks";
+import { MARKS, stencilMarks, wordMarks } from "./marks";
 
 /**
  * The decals' colours (2.7 C20): hazard yellow chevrons, grime, streaks
@@ -83,6 +104,33 @@ export const DECAL_TINT = {
   ring: [0.95, 0.72, 0.1],
   ringBase: [0.06, 0.06, 0.06],
 } as const satisfies Record<string, Rgb>;
+
+/**
+ * The pixel wall decals' colours (0.25.1 D-2, D-4), by variant where a
+ * decal has several: the tag's fill green, orange or magenta and its dark
+ * outline, the scribble's black marker or red, the plate's light grey
+ * metal and its black numbers.
+ */
+export const PIXEL_TINT = {
+  tag: [
+    [0.2, 0.8, 0.25],
+    [1.0, 0.5, 0.08],
+    [0.92, 0.16, 0.66],
+  ],
+  tagOutline: [0.05, 0.05, 0.06],
+  scribble: [
+    [0.06, 0.06, 0.07],
+    [0.72, 0.08, 0.07],
+  ],
+  plate: [0.72, 0.73, 0.74],
+  plateInk: [0.06, 0.06, 0.06],
+} as const satisfies {
+  tag: readonly Rgb[];
+  tagOutline: Rgb;
+  scribble: readonly Rgb[];
+  plate: Rgb;
+  plateInk: Rgb;
+};
 
 /** The most triangles a room's decals may take (2.7 C21). */
 export const DECAL_BUDGET = 1500;
@@ -183,6 +231,7 @@ function upright(
   uv: UvRect,
   s: Surface,
   cuts: readonly (readonly [number, number])[],
+  lift = DECAL_LIFT,
 ): void {
   const k = kitAt(frame);
   const spans: [number, number][] = [];
@@ -197,18 +246,7 @@ function upright(
   for (const [lo, hi] of spans) {
     if (hi - lo <= 1e-6) continue;
     const v0 = vAt(lo);
-    k.panel(
-      a0,
-      a1,
-      DECAL_LIFT,
-      lo,
-      hi,
-      s,
-      uv.u1 - uv.u0,
-      vAt(hi) - v0,
-      uv.u0,
-      v0,
-    );
+    k.panel(a0, a1, lift, lo, hi, s, uv.u1 - uv.u0, vAt(hi) - v0, uv.u0, v0);
   }
 }
 
@@ -237,15 +275,21 @@ function frameOf(d: Decal): Frame {
 /** A decal's surface: the atlas layer, its tint and `FLAG.decal`. */
 function surfaceOf(d: Decal): Surface {
   const tint: Rgb =
-    d.kind === "arrow"
-      ? accentTint(1)
-      : d.kind === "stencil"
-        ? d.word !== undefined
-          ? DECAL_TINT.wordStencil
-          : d.on === "floor"
-            ? DECAL_TINT.floorStencil
-            : DECAL_TINT.wallStencil
-        : DECAL_TINT[d.kind];
+    d.kind === "tag"
+      ? (PIXEL_TINT.tag[d.variant] ?? PIXEL_TINT.tag[0])
+      : d.kind === "scribble"
+        ? (PIXEL_TINT.scribble[d.variant] ?? PIXEL_TINT.scribble[0])
+        : d.kind === "plate"
+          ? PIXEL_TINT.plate
+          : d.kind === "arrow"
+            ? accentTint(1)
+            : d.kind === "stencil"
+              ? d.word !== undefined
+                ? DECAL_TINT.wordStencil
+                : d.on === "floor"
+                  ? DECAL_TINT.floorStencil
+                  : DECAL_TINT.wallStencil
+              : DECAL_TINT[d.kind];
   return { layer: LAYER.decal, tint, flag: FLAG.decal };
 }
 
@@ -326,6 +370,184 @@ function stencil(kitAt: KitAt, b: Builder, d: Decal, base: number): void {
         );
     }
   });
+}
+
+/** The font's advance between two marks of one line: the space glyph and its column. */
+const MARK_GAP = ".....";
+
+/**
+ * The spray tag's picture (0.25.1 D-4): `MARKS.sprayTag` through
+ * `textRows`, each row shifted one cell left per three rows down (the top
+ * two rows one cell right, the bottom three not at all), then a ring of
+ * one dark cell round it. `#` the fill, `o` the outline: every cell next
+ * to a lit one up, down, left or right that is not lit itself, so the
+ * corners stay open and the letters keep their shape. Row 0 is the top.
+ */
+export function tagPicture(): string[] {
+  const text = textRows(MARKS.sprayTag);
+  const slant = Math.floor((GLYPH_ROWS - 1) / 3);
+  const sheared = text.map((row, r) => {
+    const shift = Math.floor((GLYPH_ROWS - 1 - r) / 3);
+    return ".".repeat(shift) + row + ".".repeat(slant - shift);
+  });
+  const width = (sheared[0]?.length ?? 0) + 2;
+  const blank = ".".repeat(width);
+  const padded = [blank, ...sheared.map((r) => `.${r}.`), blank];
+  const lit = (x: number, y: number) => padded[y]?.[x] === "#";
+  return padded.map((row, y) =>
+    [...row]
+      .map((c, x) => {
+        if (c === "#") return "#";
+        const near =
+          lit(x - 1, y) || lit(x + 1, y) || lit(x, y - 1) || lit(x, y + 1);
+        return near ? "o" : ".";
+      })
+      .join(""),
+  );
+}
+
+/**
+ * The numbers scribble's picture (0.25.1 D-2): `MARKS.numbers` set mark by
+ * mark through `textRows`, a space's advance between two marks, in seven
+ * rows: each glyph (three columns, one dark column after it inside a
+ * mark) stands one row up, in the middle or one row down, drawn in turn
+ * from `createRng(seed)`, so the line wobbles like a hand's. Row 0 is the
+ * top.
+ */
+export function scribblePicture(seed: number): string[] {
+  const rng = createRng(seed);
+  const rows = Array.from({ length: GLYPH_ROWS + 2 }, () => "");
+  MARKS.numbers.forEach((mark, i) => {
+    const glyphs = textRows(mark);
+    const count = ((glyphs[0]?.length ?? 0) + 1) / 4;
+    for (let g = 0; g < count; g++) {
+      const shift = 1 + rng.int(-1, 1);
+      const gap = g > 0 ? "." : i > 0 ? MARK_GAP : "";
+      for (let r = 0; r < rows.length; r++) {
+        const line = glyphs[r - shift];
+        rows[r] += gap + (line?.slice(g * 4, g * 4 + 3) ?? "...");
+      }
+    }
+  });
+  return rows;
+}
+
+/**
+ * The door plate's numbers (0.25.1 D-2): `MARKS.numbers` set mark by mark
+ * through `textRows`, a space's advance between two marks, with a dark
+ * cell's margin all round. Row 0 is the top.
+ */
+export function platePicture(): string[] {
+  const rows = Array.from({ length: GLYPH_ROWS }, () => "");
+  MARKS.numbers.forEach((mark, i) => {
+    textRows(mark).forEach((g, r) => {
+      rows[r] += (i === 0 ? "" : MARK_GAP) + g;
+    });
+  });
+  const blank = ".".repeat((rows[0]?.length ?? 0) + 2);
+  return [blank, ...rows.map((r) => `.${r}.`), blank];
+}
+
+/**
+ * Lays a picture on a wall decal: its square pixels as large as the
+ * decal's box allows, the picture centred in the box, every run of a
+ * character `inks` names one quad sampling one point of the solid tile,
+ * `lift` off the wall and cut out of the decal's bands (`cutsOf`).
+ */
+function wallPicture(
+  kitAt: KitAt,
+  d: Decal,
+  room: RoomSpec,
+  rows: readonly string[],
+  inks: Readonly<Record<string, Surface>>,
+  lift = DECAL_LIFT,
+): void {
+  const cols = rows[0]?.length ?? 0;
+  if (cols === 0) return;
+  const px = Math.min(d.width / cols, d.length / rows.length);
+  const left = d.along - (cols * px) / 2;
+  const top = d.h + (d.length + rows.length * px) / 2;
+  const frame = frameOf(d);
+  const cuts = cutsOf(d, room);
+  const point = solidPoint();
+  for (const r of runsOf(rows)) {
+    const s = inks[r.ch];
+    if (s === undefined) continue;
+    const a0 = left + r.col * px;
+    const hi = top - r.row * px;
+    upright(
+      kitAt,
+      frame,
+      a0,
+      a0 + r.len * px,
+      hi - px,
+      hi,
+      point,
+      s,
+      cuts,
+      lift,
+    );
+  }
+}
+
+/** One point in the middle of the solid tile, a uv of no extent. */
+function solidPoint(): UvRect {
+  const solid = tileRect(DECAL_TILES.solid[0] ?? 15);
+  const uc = (solid.u0 + solid.u1) / 2;
+  const vc = (solid.v0 + solid.v1) / 2;
+  return { u0: uc, v0: vc, u1: uc, v1: vc };
+}
+
+/** A decal surface in `tint`. */
+const inkOf = (tint: Rgb): Surface => ({
+  layer: LAYER.decal,
+  tint,
+  flag: FLAG.decal,
+});
+
+/**
+ * Lays a tag, a scribble or a plate (0.25.1 D-2, D-4). See the module doc
+ * for each.
+ */
+function pixelDecal(kitAt: KitAt, d: Decal, room: RoomSpec): void {
+  if (d.kind === "tag") {
+    // The dark silhouette (fill and outline) in long runs, the fill over
+    // it one lift higher: fewer quads than the outline's broken runs.
+    const pic = tagPicture();
+    wallPicture(
+      kitAt,
+      d,
+      room,
+      pic.map((r) => r.replaceAll("#", "o")),
+      { o: inkOf(PIXEL_TINT.tagOutline) },
+    );
+    wallPicture(kitAt, d, room, pic, { "#": surfaceOf(d) }, 2 * DECAL_LIFT);
+  } else if (d.kind === "scribble") {
+    wallPicture(kitAt, d, room, scribblePicture(d.seed), {
+      "#": surfaceOf(d),
+    });
+  } else {
+    const a = d.along - d.width / 2;
+    upright(
+      kitAt,
+      frameOf(d),
+      a,
+      a + d.width,
+      d.h,
+      d.h + d.length,
+      solidPoint(),
+      surfaceOf(d),
+      cutsOf(d, room),
+    );
+    wallPicture(
+      kitAt,
+      d,
+      room,
+      platePicture(),
+      { "#": inkOf(PIXEL_TINT.plateInk) },
+      2 * DECAL_LIFT,
+    );
+  }
 }
 
 /**
@@ -428,6 +650,10 @@ export function buildDecals(kitAt: KitAt, b: Builder, room: RoomSpec): void {
     }
     if (d.kind === "ring") {
       ring(b, d, base);
+      continue;
+    }
+    if (d.kind === "tag" || d.kind === "scribble" || d.kind === "plate") {
+      pixelDecal(kitAt, d, room);
       continue;
     }
     const tiles = DECAL_TILES[d.kind];

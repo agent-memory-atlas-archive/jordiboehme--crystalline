@@ -8,9 +8,11 @@
 //!    summarized by a MinHash signature. The signature is split into bands and
 //!    two bodies become a candidate pair only when a whole band matches. Work
 //!    is linear in corpus bytes rather than quadratic in engram count.
-//! 2. **Verification.** Every candidate pair is scored with the bigram Dice
-//!    coefficient, the same arithmetic verify's `Q004` uses, and a pair only
-//!    survives at or above [`super::DUP_THRESHOLD`].
+//! 2. **Verification.** Every candidate pair goes through
+//!    [`crystalline_core::similarity::near_duplicate`], the same decision
+//!    verify's `Q004` makes: the character bigram Dice score must reach
+//!    [`super::DUP_THRESHOLD`] and the word bigram score must agree, so two
+//!    bodies that only share vocabulary do not cluster.
 //!
 //! Surviving pairs are merged with union-find, so a chain of pairwise
 //! duplicates forms one cluster.
@@ -29,7 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crystalline_core::similarity::{dice_coefficient, normalize};
+use crystalline_core::similarity::{near_duplicate, normalize};
 
 use super::SweepOptions;
 
@@ -97,7 +99,7 @@ pub fn cluster_near_duplicates(bodies: &[&str], options: &SweepOptions) -> Dupli
         let (Some(ta), Some(tb)) = (&normalized[*a], &normalized[*b]) else {
             continue;
         };
-        if dice_coefficient(ta, tb) >= options.dup_threshold {
+        if near_duplicate(ta, tb, options.dup_threshold).is_some() {
             uf.union(*a, *b);
         }
     }
@@ -334,6 +336,24 @@ mod tests {
             .to_string();
         let out = cluster(&[original, edited, rewrite]);
         assert_eq!(out.clusters, vec![vec![0, 1]]);
+    }
+
+    #[test]
+    fn bodies_that_share_vocabulary_but_not_word_order_do_not_cluster() {
+        let original = long_body("deploy");
+        // The same words in a scrambled order: the character pairs still
+        // agree, the word pairs do not.
+        let words: Vec<&str> = original.split_whitespace().collect();
+        let half = words.len() / 2;
+        let mut interleaved = Vec::with_capacity(words.len());
+        for i in 0..half {
+            interleaved.push(words[i]);
+            interleaved.push(words[half + i]);
+        }
+        interleaved.extend(&words[half * 2..]);
+        let scrambled = interleaved.join(" ");
+        let out = cluster(&[original, scrambled]);
+        assert!(out.clusters.is_empty(), "{:?}", out.clusters);
     }
 
     #[test]

@@ -321,7 +321,7 @@ struct ApiDoc;
 
 /// This surface's OpenAPI document.
 ///
-/// One definition with two consumers: the [`openapi_json`] route serves it, and
+/// One definition with two consumers: the `openapi_json` route serves it, and
 /// `crates/service/tests/rest/openapi_snapshot.rs` compares it against the committed
 /// `openapi/fluid-v1.json` the UI generates its client types from. Neither can
 /// drift from the annotations without the other noticing.
@@ -351,13 +351,13 @@ pub struct RestState {
     /// The OAuth surface, when `auth.oauth` is on. `None` is every instance
     /// that has not turned it on, and the routes read this option rather than
     /// the setting, so a running daemon serves the tier it came up in. See
-    /// [`oauth`].
+    /// `oauth`.
     pub oauth: Option<Arc<OauthServer>>,
     /// The single sign-on relying party, when `auth.oidc` names a usable
     /// provider. `None` is an instance with local accounts only, which is
     /// every instance until someone configures one. Resolved at startup with
     /// the rest of `auth.*`, so a running daemon serves the provider it came
-    /// up with. See [`oidc`].
+    /// up with. See `oidc`.
     pub oidc: Option<Arc<OidcClient>>,
     /// The open co-editing sessions, one registry for this process: the
     /// collab upgrade route joins rooms in it, and every save it makes goes
@@ -590,7 +590,7 @@ pub const ARCHIVE_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// here are relative to that prefix and the fallback below only ever answers
 /// for unknown paths under it.
 ///
-/// [`auth::guard`] is layered over the whole thing, fallback included, so
+/// `auth::guard` is layered over the whole thing, fallback included, so
 /// identity resolution, the CSRF check and the closed-by-default rule apply to
 /// every path under the mount - including the ones later tasks add, which are
 /// guarded the moment they are registered. Every route therefore belongs
@@ -1164,10 +1164,12 @@ pub(crate) async fn refuse_off_write_list(
 /// 2. then the instance role, unchanged: a domain invitation widens what an
 ///    account may *reach*, never what its instance role lets it *do*, so a
 ///    domain editor who is an instance viewer is still refused here;
-///    2b. then the write list, which names itself (`refuse_off_write_list`);
-/// 3. then the membership level, which is what a private domain adds. The
-///    message names the level the caller holds, because "forbidden" on a
-///    domain they can see and read is otherwise indistinguishable from a bug.
+/// 3. then the capped right (`DomainAccess::write_right`), which carries the
+///    membership level, what a private domain adds, and the write list. A
+///    caller off the write list is refused with the sentence that names the
+///    list (`refuse_off_write_list`); otherwise the message names the level
+///    the caller holds, because "forbidden" on a domain they can see and read
+///    is otherwise indistinguishable from a bug.
 ///
 /// Step 3 can only fire on a private domain. On a shared one the right is the
 /// instance role's own (the policy in `crate::scope`), so a caller past step 2
@@ -1194,12 +1196,10 @@ pub(crate) async fn require_domain_write(
     let scope = identity.scope();
     state.engine.require_domain(domain, &scope).await?;
     let caller = identity.require_editor()?;
-    refuse_off_write_list(state, identity, domain, None).await?;
     // The capped right rather than the bare domain answer, so this gate and the
-    // MCP one are one rule with one spelling (`DomainAccess::write_right`).
-    // `require_editor` above already refuses every account the cap would catch,
-    // so nothing here changes what this route answers; what it buys is that the
-    // rule cannot drift apart from the other surface's copy of it again.
+    // MCP one are one rule with one spelling (`DomainAccess::write_right`). It
+    // carries the write list too, so the list is asked again only to word a
+    // refusal.
     let right = state
         .access
         .write_right(&scope, domain)
@@ -1210,6 +1210,7 @@ pub(crate) async fn require_domain_write(
             ApiError::internal(format!("this domain's membership is unreadable: {e:#}"))
         })?;
     if right < DomainRight::Write {
+        refuse_off_write_list(state, identity, domain, None).await?;
         return Err(ApiError::forbidden(format!(
             "your membership on this domain is {}, and editor access is required",
             member_level_word(right)

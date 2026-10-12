@@ -37,6 +37,7 @@ import type { FloorPropKind } from "../../../world/types";
 import { profileAlong, tiltedBar, yawed } from "../common";
 import { frameAt, type Kit } from "../../kit";
 import type { Rgb } from "../../looks";
+import { toolPlate } from "../toolMark";
 import type { PropRecipe } from "./common";
 
 /** A warm hazard red: the tool cart's body. */
@@ -964,6 +965,14 @@ function toolCart({ k, s, variant }: Parameters<PropRecipe>[0]): void {
       h0 + bh * 0.6,
       s.metal,
     );
+    // The tool maker's mark on the top drawer, above its pull.
+    if (i === drawers - 1)
+      toolPlate(
+        k,
+        s,
+        [-0.13, 0.13, h0 + bh * 0.66, h0 + bh * 0.94],
+        front + 0.007,
+      );
   }
   // A trim strip along the top's front edge, drawn only in a look with the
   // prop's own accent.

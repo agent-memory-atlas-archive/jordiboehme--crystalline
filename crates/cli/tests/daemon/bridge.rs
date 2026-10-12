@@ -432,3 +432,59 @@ fn doctor_names_the_variable_a_task_started_daemon_did_not_get() {
         "nothing set here, nothing said"
     );
 }
+
+/// The note a too old Claude Desktop extension launcher gets in the
+/// onboarding instructions (`LAUNCHER_NOTE` in the service crate's bridge).
+const LAUNCHER_NOTE: &str = "The Claude Desktop extension that starts Crystalline is older than this Crystalline supports. Ask the user to install the newest Claude Desktop extension from https://github.com/jordiboehme/crystalline/releases/latest.";
+
+/// Stop the daemon the `serve` task seam started under `home`.
+fn stop_daemon(home: &Path) {
+    let mut stop = Command::new(assert_cmd::cargo::cargo_bin("crystalline"));
+    for (name, value) in crate::common::isolation_env(home) {
+        stop.env(name, value);
+    }
+    let _ = stop.args(["ctl", "shutdown"]).output();
+}
+
+/// The `server/discover` opener of a 2026-07-28 client, with both keys rmcp
+/// requires in `_meta`.
+fn discover() -> Value {
+    json!({ "jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": { "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {} } } })
+}
+
+/// The instructions of the answer to `opener` from a bridge started by a
+/// launcher of `version` on the `desktop` channel.
+fn launcher_instructions(version: &str, opener: Value) -> String {
+    let home = short_home();
+    let mut bridge = Bridge::start_with(
+        home.path(),
+        "serve",
+        &[("CRYSTALLINE_LAUNCHER_VERSION", version)],
+    );
+    let answer = bridge.ask(opener);
+    let instructions = answer["result"]["instructions"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no instructions: {answer}"))
+        .to_string();
+    bridge.finish();
+    stop_daemon(home.path());
+    instructions
+}
+
+#[test]
+fn an_old_launcher_is_named_in_the_initialize_instructions() {
+    let old = launcher_instructions("0.23.0", initialize());
+    assert!(old.ends_with(&format!("\n\n{LAUNCHER_NOTE}")), "{old}");
+    let current = launcher_instructions("0.25.1", initialize());
+    assert!(!current.contains(LAUNCHER_NOTE), "{current}");
+}
+
+#[test]
+fn an_old_launcher_is_named_in_the_discover_instructions() {
+    let old = launcher_instructions("0.23.0", discover());
+    assert!(old.ends_with(&format!("\n\n{LAUNCHER_NOTE}")), "{old}");
+    let current = launcher_instructions("0.25.1", discover());
+    assert!(!current.contains(LAUNCHER_NOTE), "{current}");
+}

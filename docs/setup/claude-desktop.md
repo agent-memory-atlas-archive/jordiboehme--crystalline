@@ -5,20 +5,26 @@ The Claude Desktop extension connects Claude Desktop to the Crystalline on your 
 ## macOS
 
 1. Install Crystalline with [Homebrew](https://brew.sh): `brew install jordiboehme/tap/crystalline`.
-2. Download `crystalline-v<version>.mcpb` from the [latest release](https://github.com/jordiboehme/crystalline/releases/latest).
+2. Download `crystalline-claude-desktop-v<version>.mcpb` from the [latest release](https://github.com/jordiboehme/crystalline/releases/latest).
 3. In Claude Desktop, open Settings > Extensions > Advanced settings > Install Extension... and pick the file.
 
-Do you use only Claude Desktop, and neither Claude Code nor the `crystalline` command? Then take `crystalline-desktop-only-v<version>-macos.mcpb` instead. It carries Crystalline inside and needs nothing else. Its daemon runs while Claude Desktop is open and stops five seconds after it quits. To update it, install the newer bundle over the old one.
+Do you use only Claude Desktop, and neither Claude Code nor the `crystalline` command? Then take `crystalline-claude-desktop-only-v<version>-macos.mcpb` instead. It carries Crystalline inside and needs nothing else. Its daemon runs while Claude Desktop is open and stops five seconds after it quits. To update it, install the newer bundle over the old one.
 
 ## Windows
 
 1. Download `crystalline-<version>-windows-amd64.msi` (or `-windows-arm64.msi` on an Arm device) from the [latest release](https://github.com/jordiboehme/crystalline/releases/latest) and run it.
-2. Download `crystalline-v<version>.mcpb` from the same release.
+2. Download `crystalline-claude-desktop-v<version>.mcpb` from the same release.
 3. In Claude Desktop, open Settings > Extensions > Advanced settings > Install Extension... and pick the file.
 
 Claude Desktop runs its extensions inside its own app package. So the extension never runs the Crystalline knowledge stack itself: it connects to the daemon outside the package. The MSI registers a Windows task, `\Crystalline\Daemon`, for all users. It starts the daemon when you sign in. Inside Claude Desktop's package, `crystalline mcp` only connects to that daemon and never starts one itself. If the task is missing (it was deleted, or the MSI could not register it), run `crystalline doctor --fix` in a terminal. It registers a task for your user, but only for the crystalline the MSI installed in its default folder, `Program Files\Crystalline\bin`. For a copy anywhere else it reports the task and registers none. Install the MSI, or run it again, to get the task. When the machine-wide task is broken, `--fix` asks for an administrator instead of fixing it. For details, run `crystalline doctor`.
 
 When you sign out or shut down, the daemon stops cleanly.
+
+## Updating
+
+You do not need to update the extension. Update Crystalline (`brew upgrade crystalline` on macOS, the newest MSI on Windows), and the extension uses the new version. If the extension itself ever needs an update, your agent tells you.
+
+The Desktop-only bundle is different: it carries Crystalline, so to update it, install the newer bundle over the old one.
 
 ## How it starts
 

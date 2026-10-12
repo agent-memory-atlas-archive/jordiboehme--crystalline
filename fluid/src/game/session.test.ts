@@ -33,7 +33,12 @@ import {
   sameStation,
   stationOfPlace,
 } from "./paths";
-import { BLINK_CHANNELS, createBlink } from "./render/blink";
+import {
+  BLINK_CHANNELS,
+  BLINK_GROUPS,
+  bankSlot,
+  createBlink,
+} from "./render/blink";
 import type { Camera, Renderer } from "./render/renderer";
 import {
   INVERT_KEY,
@@ -95,6 +100,7 @@ import { withPadHeroes } from "./world/hangar";
 import { roomFor } from "./world/station";
 import type {
   Curio,
+  Prop,
   Fixture,
   Hero,
   PlaceInput,
@@ -5049,15 +5055,35 @@ describe("live changes (M4 C13 to C19)", () => {
       throw new Error("no free spot");
     }
 
-    /** A spot on free floor in `a` that a blocker of `b` covers. */
-    function blockedInB(a: RoomSpec, b: RoomSpec): { x: number; z: number } {
-      for (const box of blockersFor(b)) {
-        const x = (box.x0 + box.x1) / 2;
-        const z = (box.z0 + box.z1) / 2;
-        const s = settleSpot(a, x, z);
-        if (s.x === x && s.z === z) return { x, z };
-      }
-      throw new Error("no spot blocked in the new room only");
+    /**
+     * A spot on free floor in `a` that a blocker of `b` covers: a point of
+     * a grid over each of `b`'s blockers, its centre first, with the
+     * player's whole circle clear of `a`'s blockers, so the walk never
+     * pushes them off it before the swap.
+     */
+    function blockedInB(
+      a: RoomSpec,
+      b: RoomSpec,
+    ): { x: number; z: number } | null {
+      const lit = blockersFor(a);
+      const roomy = (x: number, z: number) =>
+        lit.every(
+          (o) =>
+            Math.hypot(
+              x - Math.max(o.x0, Math.min(x, o.x1)),
+              z - Math.max(o.z0, Math.min(z, o.z1)),
+            ) >= PLAYER_RADIUS,
+        );
+      const steps = [0.5, 0.1, 0.3, 0.7, 0.9];
+      for (const box of blockersFor(b))
+        for (const fx of steps)
+          for (const fz of steps) {
+            const x = box.x0 + (box.x1 - box.x0) * fx;
+            const z = box.z0 + (box.z1 - box.z0) * fz;
+            const s = settleSpot(a, x, z);
+            if (s.x === x && s.z === z && roomy(x, z)) return { x, z };
+          }
+      return null;
     }
 
     function standAt(spot: { x: number; z: number }): Session {
@@ -5112,10 +5138,19 @@ describe("live changes (M4 C13 to C19)", () => {
 
     it("moves the player to the nearest free cell when their spot is blocked", async () => {
       const a = built(placeOf());
-      const b = next();
+      // The fewest new doors whose re-dressing covers a spot of `a`'s free
+      // floor with a blocker.
+      const doors = [1, 2, 3, 4].find(
+        (n) => blockedInB(a, built(redoored(n))) !== null,
+      );
+      if (doors === undefined)
+        throw new Error("no spot blocked in the new room only");
+      const b = built(redoored(doors));
       const spot = blockedInB(a, b);
+      if (spot === null)
+        throw new Error("no spot blocked in the new room only");
       const session = standAt(spot);
-      answers.set("hall", engramOf(redoored()));
+      answers.set("hall", engramOf(redoored(doors)));
       session.changed(frameOf());
       await run(2000);
       expect(shown()).toEqual(b);
@@ -5228,6 +5263,77 @@ describe("live changes (M4 C13 to C19)", () => {
     expect(notices.some((n) => n.text === RECONFIGURING)).toBe(false);
   });
 
+  describe("the gravity console across a reshape", () => {
+    /** The room with a console 1.2 m ahead of its spawn. */
+    const withConsole = (r: RoomSpec): RoomSpec => {
+      const x = (r.spawn.x + 0.5) * CELL - Math.sin(r.spawn.yaw) * 1.2;
+      const z = (r.spawn.y + 0.5) * CELL - Math.cos(r.spawn.yaw) * 1.2;
+      return {
+        ...r,
+        props: [
+          ...r.props,
+          {
+            kind: "gravity-console",
+            variant: 0,
+            anchor: "floor",
+            x: x / CELL,
+            y: z / CELL,
+            turn: 0,
+            seed: 1,
+          },
+        ],
+      };
+    };
+    const lampGain = () =>
+      renderer.draw.mock.calls.at(-1)?.[5][
+        bankSlot("status") * BLINK_GROUPS + 2
+      ];
+    /** How many distinct lamp gains the next 60 frames show. */
+    const lampLevels = () => {
+      const seen = new Set<number | undefined>();
+      for (let i = 0; i < 60; i++) {
+        frames(1);
+        seen.add(lampGain());
+      }
+      return seen;
+    };
+
+    /** Heavy on in a room with a console, then one reshape; `keepConsole` says if the new room has it. */
+    async function reshaped(keepConsole: boolean) {
+      let builds = 0;
+      facing.edit = (r) => (++builds === 1 || keepConsole ? withConsole(r) : r);
+      const session = await standIn();
+      frames(2);
+      key("keydown", "Space");
+      frames(1);
+      key("keyup", "Space");
+      expect(hud.notice).toHaveBeenLastCalledWith("GRAVITY 300G");
+      answers.set("hall", engramOf(redoored()));
+      session.changed(frameOf());
+      await run(2000);
+      expect(shown().props.some((p) => p.kind === "gravity-console")).toBe(
+        keepConsole,
+      );
+      return session;
+    }
+
+    it("makes the player light at once, with no notice, when the reshape drops the console", async () => {
+      // Mutation caught: heavy kept across a same-room reshape that removed
+      // the console, so nothing could ever switch it off.
+      await reshaped(false);
+      expect(notices.map((n) => n.text)).not.toContain("GRAVITY 1G");
+      expect(lampLevels().size).toBeGreaterThan(1);
+    });
+
+    it("keeps the player heavy through a reshape that keeps the console", async () => {
+      // Mutation caught: heavy cleared on every reshape.
+      await reshaped(true);
+      const seen = lampLevels();
+      expect([...seen]).toEqual([1]);
+      expect(notices.map((n) => n.text)).not.toContain("GRAVITY 1G");
+    });
+  });
+
   describe("fix round 1", () => {
     /** A promise that rejects once asked, as a load the server fails. */
     function failing(): { promise: Promise<LoadedStation>; fail(): void } {
@@ -5263,10 +5369,21 @@ describe("live changes (M4 C13 to C19)", () => {
           const dark = darkened(room, "station");
           // A point a prop of the dark room covers is the only candidate:
           // cheap to find, then checked free before the dark with
-          // `settleSpot`.
+          // `settleSpot`, and with the player's whole circle clear of the
+          // lit room's blockers, so the walk never pushes them off it
+          // before the room goes dark.
           const props = blockersFor(dark);
           const covered = (x: number, z: number) =>
             props.some((p) => x >= p.x0 && x <= p.x1 && z >= p.z0 && z <= p.z1);
+          const lit = blockersFor(room);
+          const roomy = (x: number, z: number) =>
+            lit.every(
+              (b) =>
+                Math.hypot(
+                  x - Math.max(b.x0, Math.min(x, b.x1)),
+                  z - Math.max(b.z0, Math.min(z, b.z1)),
+                ) >= PLAYER_RADIUS,
+            );
           let found: { x: number; z: number } | null = null;
           for (
             let z = 0.125;
@@ -5278,7 +5395,7 @@ describe("live changes (M4 C13 to C19)", () => {
               x < (room.grid[0]?.length ?? 0) * CELL;
               x += 0.25
             ) {
-              if (!covered(x, z)) continue;
+              if (!covered(x, z) || !roomy(x, z)) continue;
               const kept = settleSpot(room, x, z);
               if (kept.x === x && kept.z === z) {
                 found = { x, z };
@@ -6066,5 +6183,318 @@ describe("sound cues (M4 Task 7)", () => {
     expect(kinds(cues)).toContain("room");
     expect(kinds(cues)).not.toContain("box");
     expect(kinds(cues)).not.toContain("answer");
+  });
+});
+
+describe("the gravity console (spec D-9)", () => {
+  const bridge = generateRoom(CANNED_BRIDGE);
+
+  /** The player at `room`'s spawn, as `arrivalSpawn` puts it. */
+  const standing = (room: RoomSpec) => ({
+    x: (room.spawn.x + 0.5) * CELL,
+    z: (room.spawn.y + 0.5) * CELL,
+    yaw: room.spawn.yaw,
+  });
+
+  /** A prop of `kind` standing `ahead` metres in front of the spawn. */
+  const propAhead = (room: RoomSpec, kind: Prop["kind"], ahead: number) => {
+    const at = standing(room);
+    return {
+      kind,
+      variant: 0,
+      anchor: "floor",
+      x: (at.x - Math.sin(at.yaw) * ahead) / CELL,
+      y: (at.z - Math.cos(at.yaw) * ahead) / CELL,
+      turn: 0,
+      seed: 1,
+    } satisfies Prop;
+  };
+
+  /** The bridge with a console (or another prop) ahead of the spawn. */
+  const withProp = (kind: Prop["kind"]): RoomSpec => ({
+    ...bridge,
+    props: [propAhead(bridge, kind, 1.2)],
+  });
+
+  /** Space pressed and released over one tick. */
+  function tapSpace() {
+    key("keydown", "Space");
+    frames(1);
+    key("keyup", "Space");
+  }
+
+  /** How far the eye strafes in `n` ticks from where the session stands. */
+  function strafed(n: number) {
+    const before = eyeAt();
+    key("keydown", "KeyD");
+    frames(n);
+    key("keyup", "KeyD");
+    const after = eyeAt();
+    return Math.hypot(after[0] - before[0], after[1] - before[1]);
+  }
+
+  /** The strafe of a fresh session in `room`, heavy first or not. */
+  function walkedIn(room: RoomSpec, uses: number) {
+    const session = start({ client: null });
+    session.showRoom(room);
+    frames(4);
+    for (let i = 0; i < uses; i++) tapSpace();
+    const walked = strafed(12);
+    session.dispose();
+    return walked;
+  }
+
+  /** The red lamp's gain (group 2 of the status bank) of the last frame. */
+  const lamp = () =>
+    renderer.draw.mock.calls.at(-1)?.[5][bankSlot("status") * BLINK_GROUPS + 2];
+
+  it("switches heavy gravity on and off with Space, with a notice, a cue and the lamp", () => {
+    // Mutation caught: Space at the console read as the room's reading,
+    // the notice or the cue missing, the lamp not held lit while heavy.
+    const { cues, sink } = recordSound();
+    const session = start({ client: null, sound: sink });
+    session.showRoom(withProp("gravity-console"));
+    frames(1);
+    tapSpace();
+    expect(hud.notice).toHaveBeenLastCalledWith("GRAVITY 300G");
+    expect(cues.filter((c) => c.kind === "gravity")).toEqual([
+      { kind: "gravity", on: true },
+    ]);
+    expect(hud.reader.mock.calls.filter(([r]) => r !== null)).toEqual([]);
+    for (let i = 0; i < 40; i++) {
+      frames(1);
+      expect(lamp()).toBe(1);
+    }
+    tapSpace();
+    expect(hud.notice).toHaveBeenLastCalledWith("GRAVITY 1G");
+    expect(cues.filter((c) => c.kind === "gravity").at(-1)).toEqual({
+      kind: "gravity",
+      on: false,
+    });
+    const unlit = new Set<number | undefined>();
+    for (let i = 0; i < 60; i++) {
+      frames(1);
+      unlit.add(lamp());
+    }
+    expect(unlit.size).toBeGreaterThan(1);
+  });
+
+  it("makes the walk slower while heavy and plain again after the second Space", () => {
+    // Mutation caught: the flag never reaching the movement step, or never
+    // cleared by the second use.
+    const room = withProp("gravity-console");
+    const light = walkedIn(room, 0);
+    expect(light).toBeGreaterThan(0.5);
+    const heavy = walkedIn(room, 1);
+    expect(heavy / light).toBeLessThan(0.7);
+    expect(heavy / light).toBeGreaterThan(0.3);
+    expect(walkedIn(room, 2) / light).toBeCloseTo(1, 6);
+  });
+
+  it("leaves the weight alone for Space at another prop", () => {
+    // Mutation caught: any prop, not just the console, switching gravity.
+    const { cues, sink } = recordSound();
+    const session = start({ client: null, sound: sink });
+    session.showRoom(withProp("crate"));
+    frames(1);
+    tapSpace();
+    expect(cues.filter((c) => c.kind === "gravity")).toEqual([]);
+    expect(hud.notice).not.toHaveBeenCalledWith("GRAVITY 300G");
+  });
+
+  it("ends heavy gravity on entering another room, with no notice", () => {
+    // Mutation caught: the weight carried into the next room.
+    const light = walkedIn(bridge, 0);
+    const session = start({ client: null });
+    session.showRoom(withProp("gravity-console"));
+    frames(4);
+    tapSpace();
+    hud.notice.mockClear();
+    session.showRoom(bridge);
+    frames(4);
+    // A heavy walk covers about half; a plain one (give or take a tick of
+    // the camera's lag) more than 0.9 of the baseline.
+    expect(strafed(12) / light).toBeGreaterThan(0.9);
+    expect(hud.notice).not.toHaveBeenCalled();
+  });
+
+  it("does not switch while a screen is open over the station", () => {
+    // Mutation caught: the use key read while the level select is modal.
+    const { cues, sink } = recordSound();
+    const session = start({ client: null, onLevels: () => {}, sound: sink });
+    session.showRoom(withProp("gravity-console"));
+    frames(1);
+    type("idclev");
+    frames(1);
+    tapSpace();
+    expect(cues.filter((c) => c.kind === "gravity")).toEqual([]);
+    expect(hud.notice).not.toHaveBeenCalledWith("GRAVITY 300G");
+  });
+
+  /** The gravity cues a recording sink has heard. */
+  const gravityCues = (cues: Cue[]) => cues.filter((c) => c.kind === "gravity");
+
+  it("leaves no weight or held lamp behind a disposed session", () => {
+    // Mutation caught: the weight or the lit lamp outliving the session
+    // (a new session must start light, its lamp strobing).
+    const room = withProp("gravity-console");
+    const first = start({ client: null });
+    first.showRoom(room);
+    frames(4);
+    tapSpace();
+    first.dispose();
+    const light = walkedIn(room, 0);
+    const again = walkedIn(room, 1);
+    expect(again / light).toBeLessThan(0.7);
+    const fresh = start({ client: null });
+    fresh.showRoom(room);
+    frames(4);
+    const seen = new Set<number | undefined>();
+    for (let i = 0; i < 60; i++) {
+      frames(1);
+      seen.add(lamp());
+    }
+    expect(seen.size).toBeGreaterThan(1);
+    expect(strafed(12) / light).toBeGreaterThan(0.9);
+  });
+
+  it("does not switch while the reader is open, and a terminal in focus wins", async () => {
+    // Mutation caught: the use key read for the console while the reader
+    // is open; a fixture in focus losing to the console.
+    const { cues, sink } = recordSound();
+    facing.kind = "terminal";
+    facing.edit = (built) => {
+      const at = {
+        x: (built.spawn.x + 0.5) * CELL,
+        z: (built.spawn.y + 0.5) * CELL,
+      };
+      return {
+        ...built,
+        props: [
+          ...built.props,
+          {
+            kind: "gravity-console",
+            variant: 0,
+            anchor: "floor",
+            x: (at.x - Math.sin(built.spawn.yaw) * 1.2) / CELL,
+            y: (at.z - Math.cos(built.spawn.yaw) * 1.2) / CELL,
+            turn: 0,
+            seed: 1,
+          },
+        ],
+      };
+    };
+    const session = start({
+      sound: sink,
+      load: () =>
+        Promise.resolve({
+          kind: "engram",
+          place: CANNED_WORKSHOP,
+          folder: "",
+        }),
+    });
+    session.go({
+      kind: "engram",
+      domain: CANNED_WORKSHOP.domain,
+      permalink: CANNED_WORKSHOP.permalink,
+    });
+    await flush();
+    frames(1);
+    tapSpace();
+    expect(hud.reader).toHaveBeenLastCalledWith(
+      expect.objectContaining({ title: CANNED_WORKSHOP.title }),
+    );
+    tapSpace();
+    tapSpace();
+    expect(gravityCues(cues)).toEqual([]);
+    expect(hud.notice).not.toHaveBeenCalledWith("GRAVITY 300G");
+  });
+
+  it("lets a police box in focus win over the console", () => {
+    // Mutation caught: the console ranked above the box's doors.
+    const { cues, sink } = recordSound();
+    const session = start({ sound: sink });
+    const hall = heroHallRoom();
+    const i = standAtBox(session, hall);
+    const front = boxFront(hall.heroes[i]!);
+    const dist = REACH - 0.4;
+    const player = {
+      x: front.x + front.inward[0] * dist,
+      z: front.z + front.inward[1] * dist,
+    };
+    // A console between the player and the box, closer than the box.
+    const console_ = {
+      kind: "gravity-console",
+      variant: 0,
+      anchor: "floor",
+      x: (player.x + (front.x - player.x) * 0.3) / CELL,
+      y: (player.z + (front.z - player.z) * 0.3) / CELL,
+      turn: 0,
+      seed: 1,
+    } satisfies Prop;
+    session.showRoom(
+      {
+        ...hall,
+        props: [console_],
+        spawn: {
+          x: player.x / CELL - 0.5,
+          y: player.z / CELL - 0.5,
+          yaw: Math.atan2(front.inward[0], front.inward[1]),
+        },
+      },
+      { pitch: 0 },
+      HALL_ADDRESS,
+    );
+    frames(1);
+    expect(hud.prompt).toHaveBeenLastCalledWith("SPACE OPEN");
+    tapSpace();
+    frames(19);
+    expect(lastDoors().get(`box:${String(i)}`)).toBe(1);
+    expect(gravityCues(cues)).toEqual([]);
+  });
+
+  it("still opens the room reading at a computer that is not the console", async () => {
+    // Mutation caught: the gravity branch taking Space from every
+    // computer, not just the console.
+    const { cues, sink } = recordSound();
+    facing.edit = (built) => {
+      const x = (built.spawn.x + 0.5) * CELL - Math.sin(built.spawn.yaw) * 0.5;
+      const z = (built.spawn.y + 0.5) * CELL - Math.cos(built.spawn.yaw) * 0.5;
+      return {
+        ...built,
+        curios: [
+          ...built.curios,
+          {
+            kind: "beige-laptop",
+            variant: 0,
+            x: x / CELL,
+            y: z / CELL,
+            h: 0,
+            turn: 0,
+            seed: 1,
+          },
+        ],
+      };
+    };
+    start({
+      sound: sink,
+      load: () =>
+        Promise.resolve({
+          kind: "engram",
+          place: CANNED_WORKSHOP,
+          folder: "",
+        }),
+    }).go({
+      kind: "engram",
+      domain: CANNED_WORKSHOP.domain,
+      permalink: CANNED_WORKSHOP.permalink,
+    });
+    await flush();
+    frames(1);
+    tapSpace();
+    expect(hud.reader).toHaveBeenLastCalledWith(
+      expect.objectContaining({ title: CANNED_WORKSHOP.title }),
+    );
+    expect(gravityCues(cues)).toEqual([]);
   });
 });

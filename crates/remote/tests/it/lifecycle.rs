@@ -2079,6 +2079,57 @@ async fn a_direct_share_with_conflicts_pending_refuses_as_today() {
     assert_eq!(plan.sharing, Sharing::Direct);
 }
 
+/// The preview answers the conflicts before the amend refusal, as the share
+/// does: a named proposal on a direct domain with a conflict recorded.
+#[tokio::test]
+async fn a_direct_preview_with_a_proposal_reports_conflicts_before_the_amend_refusal() {
+    let mock = MockProvider::new();
+    let spec = share_spec();
+    let c1 = mock.add_commit(
+        sub_commit_files(&[("MANIFEST.md", DIRECT_MANIFEST), ("notes/a.md", b"a v1\n")]),
+        None,
+    );
+    let sub = subscribe_named(&mock, &spec, &c1, "brand").await;
+    write(&sub.domain_root.join("notes/a.md"), b"a mine\n");
+    let c2 = mock.add_commit(
+        sub_commit_files(&[
+            ("MANIFEST.md", DIRECT_MANIFEST),
+            ("notes/a.md", b"a theirs\n"),
+        ]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+    let options = ShareOptions {
+        proposal: Some(4),
+        ..direct()
+    };
+    let err = propose(
+        &mock,
+        &spec,
+        &sub.domain_root,
+        "brand",
+        &sub.state_dir,
+        options,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, RemoteError::ConflictsPending { count: 1 }),
+        "{err}"
+    );
+    let plan = propose_preview(
+        &mock,
+        &spec,
+        &sub.domain_root,
+        "brand",
+        &sub.state_dir,
+        options,
+    )
+    .await
+    .unwrap();
+    assert_eq!(plan.action, PlannedAction::ConflictsPending { count: 1 });
+}
+
 #[tokio::test]
 async fn a_branch_that_moved_once_is_pulled_and_the_share_lands_on_the_new_head() {
     let mock = MockProvider::new();
@@ -11533,8 +11584,8 @@ async fn a_withdrawn_share_keeps_its_branch_while_a_pull_request_is_based_on_it(
 }
 
 /// M32: a layer the forge declined is queued by the repair as declined, with
-/// its pull requests belonging on the layer below it. A suggestion based on its branch keeps the branch, so the entry
-/// stays to be read.
+/// its pull requests belonging on the layer below it. A suggestion based on
+/// its branch keeps the branch, so the entry stays to be read.
 #[tokio::test]
 async fn a_repair_queues_a_declined_layer_as_declined() {
     let mock = MockProvider::new();
@@ -12423,4 +12474,426 @@ async fn a_withdrawn_share_s_own_pull_request_listed_as_open_does_not_keep_its_b
             .contains(&format!("delete_branch:{}", first.branch))
     );
     assert!(load_state(&sub.state_dir).retire_queue.is_empty());
+}
+
+// A pull that cannot open one of its targets stops before it changes anything:
+// no removal, no write, no base advance. Clearing the cause lets the same pull
+// finish.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pull_that_cannot_open_one_file_changes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mock = MockProvider::new();
+    let c1 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/d1.md", b"one\n"),
+            ("notes/d2.md", b"two\n"),
+            ("notes/x.md", b"locked\n"),
+        ]),
+        None,
+    );
+    let (sub, _) = subscribe_at(&mock, &c1).await;
+    let c2 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/x.md", b"locked, revised upstream\n"),
+        ]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+
+    let locked = sub.domain_root.join("notes/x.md");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&locked).is_ok() {
+        eprintln!("skipped: permissions are not enforced for this user");
+        return;
+    }
+    let state_before = std::fs::read(sub.state_dir.join("state.json")).ok();
+
+    let err = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect_err("the pull must stop");
+    assert!(err.to_string().contains("notes/x.md"), "{err}");
+    assert_eq!(read(&sub.domain_root.join("notes/d1.md")), b"one\n");
+    assert_eq!(read(&sub.domain_root.join("notes/d2.md")), b"two\n");
+    assert_eq!(load_state(&sub.state_dir).base_commit, c1);
+    assert_eq!(
+        std::fs::read(sub.state_dir.join("state.json")).ok(),
+        state_before
+    );
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let report = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .unwrap();
+    assert_eq!(report.applied.len(), 3, "{:?}", report.applied);
+    assert!(!sub.domain_root.join("notes/d1.md").exists());
+    assert_eq!(load_state(&sub.state_dir).base_commit, c2);
+}
+
+/// A target the pull could open for reading but not write is refused before
+/// anything changes: bytes, base commit, state file and the files the team
+/// deleted are all untouched.
+#[tokio::test]
+async fn a_pull_refuses_a_read_only_target_before_it_changes_anything() {
+    let mock = MockProvider::new();
+    let c1 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/d1.md", b"one\n"),
+            ("notes/x.md", b"locked\n"),
+        ]),
+        None,
+    );
+    let (sub, _) = subscribe_at(&mock, &c1).await;
+    let c2 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/x.md", b"locked, revised upstream\n"),
+        ]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+
+    let target = sub.domain_root.join("notes/x.md");
+    let mut perms = std::fs::metadata(&target).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&target, perms).unwrap();
+    let state_before = std::fs::read(sub.state_dir.join("state.json")).unwrap();
+
+    let err = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect_err("a read-only target must stop the pull");
+    assert!(err.to_string().contains("x.md"), "{err}");
+    assert_eq!(read(&target), b"locked\n");
+    assert_eq!(read(&sub.domain_root.join("notes/d1.md")), b"one\n");
+    assert_eq!(load_state(&sub.state_dir).base_commit, c1);
+    assert_eq!(
+        std::fs::read(sub.state_dir.join("state.json")).unwrap(),
+        state_before
+    );
+}
+
+/// A folder where the team has a file is named and refused up front.
+#[tokio::test]
+async fn a_pull_refuses_a_folder_where_the_team_has_a_file() {
+    let mock = MockProvider::new();
+    let c1 = mock.add_commit(
+        commit_files(&[("MANIFEST.md", b"# Manifest"), ("notes/d1.md", b"one\n")]),
+        None,
+    );
+    let (sub, _) = subscribe_at(&mock, &c1).await;
+    let c2 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/d1.md", b"one\n"),
+            ("notes/x.md", b"new upstream\n"),
+        ]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+    std::fs::create_dir_all(sub.domain_root.join("notes/x.md")).unwrap();
+
+    let err = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect_err("a folder in the way must stop the pull");
+    assert!(err.to_string().contains("x.md"), "{err}");
+    assert_eq!(load_state(&sub.state_dir).base_commit, c1);
+}
+
+/// Whether the filesystem under `dir` keeps `x.md` and `X.md` as one file.
+/// Asked at run time, not from the platform: the macOS and Windows defaults
+/// ignore letter case, a case-sensitive volume on either does not.
+fn ignores_case(dir: &Path) -> bool {
+    let probe = tempfile::tempdir_in(dir).unwrap();
+    write(&probe.path().join("x.md"), b"probe");
+    probe.path().join("X.md").exists()
+}
+
+/// Makes `b` the same file as `a`, as a filesystem that ignores letter case
+/// keeps two spellings of one path. Where it already is (that filesystem),
+/// nothing changes; elsewhere `b` becomes a hard link to `a`, so the check
+/// that asks the filesystem runs on every platform.
+fn one_file_for_both(root: &Path, a: &str, b: &str) {
+    if ignores_case(root) {
+        return;
+    }
+    std::fs::remove_file(root.join(b)).unwrap();
+    std::fs::hard_link(root.join(a), root.join(b)).unwrap();
+}
+
+/// A team repository that holds `notes/A.md` and `notes/a.md`, subscribed
+/// on this machine. On a filesystem that ignores case the two land in one
+/// file.
+async fn subscribe_two_spellings(mock: &MockProvider) -> (Subscribed, String) {
+    let c1 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/A.md", b"upper\n"),
+            ("notes/a.md", b"lower\n"),
+        ]),
+        None,
+    );
+    let (sub, _) = subscribe_at(mock, &c1).await;
+    (sub, c1)
+}
+
+/// Upstream deletes `notes/a.md` while `notes/A.md` stays. On a filesystem
+/// that keeps both as one file, removing it would remove the file that
+/// stands for `notes/A.md`, and the next share would propose deleting a
+/// teammate's file. The pull refuses before it changes anything.
+#[tokio::test]
+async fn a_pull_never_removes_a_file_another_spelling_still_needs() {
+    let mock = MockProvider::new();
+    let (sub, c1) = subscribe_two_spellings(&mock).await;
+    one_file_for_both(&sub.domain_root, "notes/a.md", "notes/A.md");
+    let c2 = mock.add_commit(
+        commit_files(&[("MANIFEST.md", b"# Manifest"), ("notes/A.md", b"upper\n")]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+    let file = sub.domain_root.join("notes/A.md");
+    let bytes_before = read(&file);
+    let state_before = std::fs::read(sub.state_dir.join("state.json")).unwrap();
+
+    let err = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect_err("removing the shared file must stop the pull");
+    let text = err.to_string();
+    assert!(text.contains("'notes/a.md'"), "{text}");
+    assert!(text.contains("'notes/A.md'"), "{text}");
+    assert!(text.contains("differ only in letter case"), "{text}");
+    assert!(
+        !text.contains('\u{2014}') && !text.contains('\u{2013}'),
+        "{text}"
+    );
+    assert_eq!(read(&file), bytes_before);
+    assert_eq!(load_state(&sub.state_dir).base_commit, c1);
+    assert_eq!(
+        std::fs::read(sub.state_dir.join("state.json")).unwrap(),
+        state_before
+    );
+}
+
+/// The same when upstream renames one spelling away: a rename removes its
+/// old path, and that path shares its file with the spelling that stays.
+#[tokio::test]
+async fn a_pull_never_renames_away_a_file_another_spelling_still_needs() {
+    let mock = MockProvider::new();
+    let (sub, c1) = subscribe_two_spellings(&mock).await;
+    one_file_for_both(&sub.domain_root, "notes/a.md", "notes/A.md");
+    let c2 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/A.md", b"upper\n"),
+            ("notes/b.md", b"lower\n"),
+        ]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+    let file = sub.domain_root.join("notes/A.md");
+    let bytes_before = read(&file);
+    let state_before = std::fs::read(sub.state_dir.join("state.json")).unwrap();
+
+    let err = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect_err("renaming away the shared file must stop the pull");
+    let text = err.to_string();
+    assert!(text.contains("'notes/a.md'"), "{text}");
+    assert!(text.contains("'notes/A.md'"), "{text}");
+    assert_eq!(read(&file), bytes_before);
+    assert!(!sub.domain_root.join("notes/b.md").exists());
+    assert_eq!(load_state(&sub.state_dir).base_commit, c1);
+    assert_eq!(
+        std::fs::read(sub.state_dir.join("state.json")).unwrap(),
+        state_before
+    );
+}
+
+/// The way out the refusal names works: once the team repository gives the
+/// two files names that differ in more than letter case, the next pull
+/// goes through and both files are on disk under their new names.
+#[tokio::test]
+async fn a_pull_goes_through_once_the_two_spellings_have_distinct_names() {
+    let mock = MockProvider::new();
+    let (sub, c1) = subscribe_two_spellings(&mock).await;
+    if !ignores_case(&sub.domain_root) {
+        eprintln!("skipped: this filesystem tells letter case apart");
+        return;
+    }
+    let c2 = mock.add_commit(
+        commit_files(&[("MANIFEST.md", b"# Manifest"), ("notes/A.md", b"upper\n")]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+    pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect_err("the first pull must stop");
+
+    let c3 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/upper.md", b"upper\n"),
+            ("notes/lower.md", b"lower\n"),
+        ]),
+        Some(&c2),
+    );
+    mock.set_branch("main", &c3);
+    pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect("the pull must go through once the names differ");
+    assert_eq!(read(&sub.domain_root.join("notes/upper.md")), b"upper\n");
+    assert_eq!(read(&sub.domain_root.join("notes/lower.md")), b"lower\n");
+    assert!(!sub.domain_root.join("notes/a.md").exists());
+    let st = load_state(&sub.state_dir);
+    assert_eq!(st.base_commit, c3);
+    let local = crystalline_remote::changes::detect_local_changes(&sub.domain_root, &st.files)
+        .expect("the next share must plan without a refusal");
+    assert!(
+        local.changes.is_empty(),
+        "nothing may be proposed: {:?}",
+        local.changes
+    );
+}
+
+/// Renaming only one spelling is not a way out: the other spelling stays,
+/// and the one file on disk still stands for it, so the pull still refuses
+/// and changes nothing.
+#[tokio::test]
+async fn a_pull_still_refuses_when_only_one_spelling_gets_a_new_name() {
+    let mock = MockProvider::new();
+    let (sub, c1) = subscribe_two_spellings(&mock).await;
+    one_file_for_both(&sub.domain_root, "notes/a.md", "notes/A.md");
+    let c2 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/A.md", b"upper\n"),
+            ("notes/lower.md", b"lower\n"),
+        ]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+    let file = sub.domain_root.join("notes/A.md");
+    let bytes_before = read(&file);
+    let state_before = std::fs::read(sub.state_dir.join("state.json")).unwrap();
+
+    let err = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect_err("one rename leaves the other spelling, so the pull stops");
+    let text = err.to_string();
+    assert!(text.contains("give both files new names"), "{text}");
+    assert_eq!(read(&file), bytes_before);
+    assert!(!sub.domain_root.join("notes/lower.md").exists());
+    assert_eq!(load_state(&sub.state_dir).base_commit, c1);
+    assert_eq!(
+        std::fs::read(sub.state_dir.join("state.json")).unwrap(),
+        state_before
+    );
+}
+
+/// After an upstream case-only rename with a local edit, the old spelling
+/// is an edit/delete conflict. Keeping theirs means "the old spelling is
+/// gone", but its file is the file of the new spelling, edit included, so
+/// the conflict is cleared and the file stays.
+#[tokio::test]
+async fn keeping_theirs_never_removes_a_file_another_spelling_still_needs() {
+    let mock = MockProvider::new();
+    let c1 = mock.add_commit(
+        commit_files(&[("MANIFEST.md", b"# Manifest"), ("notes/A.md", b"body\n")]),
+        None,
+    );
+    let (sub, _) = subscribe_at(&mock, &c1).await;
+    let c2 = mock.add_commit(
+        commit_files(&[("MANIFEST.md", b"# Manifest"), ("notes/a.md", b"body\n")]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+    write(&sub.domain_root.join("notes/A.md"), b"edited\n");
+
+    let report = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect("the pull records conflicts and goes through");
+    let old = report
+        .conflicts
+        .iter()
+        .find(|c| c.path == "notes/A.md")
+        .expect("the old spelling is a conflict");
+    assert_eq!(old.kind, ConflictKind::EditDelete);
+    one_file_for_both(&sub.domain_root, "notes/A.md", "notes/a.md");
+
+    resolve(
+        &sub.domain_root,
+        &sub.state_dir,
+        "notes/A.md",
+        Resolution::Theirs,
+    )
+    .expect("keeping theirs clears the conflict");
+    assert!(sub.domain_root.join("notes/A.md").exists());
+    assert_eq!(read(&sub.domain_root.join("notes/a.md")), b"edited\n");
+    assert!(
+        load_state(&sub.state_dir)
+            .conflicts
+            .iter()
+            .all(|c| c.path != "notes/A.md")
+    );
+}
+
+/// The control: where the filesystem tells letter case apart, the two
+/// spellings are two files, and removing one leaves the other in place.
+#[tokio::test]
+async fn a_pull_removes_one_spelling_where_the_filesystem_keeps_two_files() {
+    let mock = MockProvider::new();
+    let (sub, c1) = subscribe_two_spellings(&mock).await;
+    if ignores_case(&sub.domain_root) {
+        eprintln!("skipped: this filesystem keeps both spellings as one file");
+        return;
+    }
+    let c2 = mock.add_commit(
+        commit_files(&[("MANIFEST.md", b"# Manifest"), ("notes/A.md", b"upper\n")]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+
+    let report = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect("two distinct files: the removal goes through");
+    assert_eq!(report.applied, vec!["notes/a.md".to_string()]);
+    assert!(!sub.domain_root.join("notes/a.md").exists());
+    assert_eq!(read(&sub.domain_root.join("notes/A.md")), b"upper\n");
+    assert_eq!(load_state(&sub.state_dir).base_commit, c2);
+}
+
+/// An upstream rename that changes only letter case lands as the new
+/// spelling with its bytes. The removal of the old spelling runs before the
+/// write of the new one, so on a filesystem that ignores case it cannot
+/// remove the file just written.
+#[tokio::test]
+async fn a_case_only_rename_upstream_keeps_the_file() {
+    let mock = MockProvider::new();
+    let c1 = mock.add_commit(
+        commit_files(&[("MANIFEST.md", b"# Manifest"), ("notes/A.md", b"body\n")]),
+        None,
+    );
+    let (sub, _) = subscribe_at(&mock, &c1).await;
+    let c2 = mock.add_commit(
+        commit_files(&[("MANIFEST.md", b"# Manifest"), ("notes/a.md", b"body\n")]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+
+    pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect("a case-only rename must pull");
+    assert_eq!(read(&sub.domain_root.join("notes/a.md")), b"body\n");
+    let st = load_state(&sub.state_dir);
+    assert_eq!(st.base_commit, c2);
+    assert_eq!(
+        read_base_file(&sub.state_dir, "notes/a.md").unwrap(),
+        Some(b"body\n".to_vec())
+    );
+    let local =
+        crystalline_remote::changes::detect_local_changes(&sub.domain_root, &st.files).unwrap();
+    assert!(local.changes.is_empty(), "{:?}", local.changes);
 }

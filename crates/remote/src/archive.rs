@@ -39,7 +39,7 @@ pub type ExtractedFiles = (BTreeMap<String, Vec<u8>>, Vec<(String, u64)>);
 ///
 /// A hidden entry (a dot-file, or anything under a dot-directory, at any
 /// depth of the extracted tree) is skipped outright too, [`crate::state`]'s
-/// domain config file excepted: see [`crate::changes::is_excluded_path`] for
+/// domain config file excepted: see `crate::changes::is_excluded_path` for
 /// the exact rule, shared with [`crate::changes::detect_local_changes`] so
 /// this function never extracts a path the local change walk would not also
 /// see.

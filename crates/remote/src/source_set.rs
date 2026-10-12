@@ -68,6 +68,32 @@ fn assign_for_refresh(
         .collect()
 }
 
+/// What tells a set that this process's HTTP client is ready: the process's
+/// own first build ([`crate::server_client::warm_http_client_within`]), or a
+/// gate a test holds closed to keep the set in its cold start for as long
+/// as it likes ([`SourceSet::with_client_gate`]).
+#[derive(Clone)]
+enum ClientReady {
+    Process,
+    Gate(tokio::sync::watch::Receiver<bool>),
+}
+
+impl ClientReady {
+    /// Whether the client is ready within `limit`.
+    async fn within(&self, limit: Duration) -> bool {
+        match self {
+            ClientReady::Process => crate::server_client::warm_http_client_within(limit).await,
+            ClientReady::Gate(gate) => {
+                let mut gate = gate.clone();
+                matches!(
+                    tokio::time::timeout(limit, gate.wait_for(|open| *open)).await,
+                    Ok(Ok(_))
+                )
+            }
+        }
+    }
+}
+
 /// Open one source's connection on a blocking thread (one bounded keychain
 /// read), within `limit`.
 async fn open_connection(
@@ -75,12 +101,13 @@ async fn open_connection(
     dir: PathBuf,
     token: Option<String>,
     limit: Duration,
+    ready: ClientReady,
 ) -> Result<Arc<Connection>, RemoteFailure> {
     let name = record.name.clone();
     let started = std::time::Instant::now();
     // Inside the budget, and told apart: a cold process's first client
     // build is not a sign-in that did not finish in time.
-    if !crate::server_client::warm_http_client_within(limit).await {
+    if !ready.within(limit).await {
         return Err(RemoteFailure::Starting { source: name });
     }
     let limit = limit.saturating_sub(started.elapsed());
@@ -214,6 +241,8 @@ pub struct SourceSet {
     /// The routing refresh running in the background, if one is
     /// ([`SourceSet::refresh_in_background`]).
     background: std::sync::Mutex<Option<BackgroundRefresh>>,
+    /// What says this process's HTTP client is ready.
+    client_ready: ClientReady,
 }
 
 /// A routing refresh running in the background: when it began, and where its
@@ -272,6 +301,7 @@ impl SourceSet {
             connections: std::sync::Mutex::new(BTreeMap::new()),
             local_stamp: std::sync::Mutex::new(None),
             background: std::sync::Mutex::new(None),
+            client_ready: ClientReady::Process,
         };
         set.rebuild();
         set
@@ -297,7 +327,18 @@ impl SourceSet {
             connections: std::sync::Mutex::new(BTreeMap::new()),
             local_stamp: std::sync::Mutex::new(None),
             background: std::sync::Mutex::new(None),
+            client_ready: ClientReady::Process,
         }
+    }
+
+    /// The same set, treating this process's HTTP client as still being
+    /// built until `gate` reads `true`. Tests use one to hold the cold start
+    /// open, so what a call or a refresh does inside it does not depend on
+    /// how fast the machine builds its first client. A test seam only.
+    #[doc(hidden)]
+    pub fn with_client_gate(mut self, gate: tokio::sync::watch::Receiver<bool>) -> SourceSet {
+        self.client_ready = ClientReady::Gate(gate);
+        self
     }
 
     /// `<state_dir>/remote`, or what the test gave.
@@ -620,6 +661,7 @@ impl SourceSet {
             self.remote_dir.clone(),
             self.env_token.clone(),
             limit,
+            self.client_ready.clone(),
         )
         .await?;
         self.keep(&opened);
@@ -642,12 +684,13 @@ impl SourceSet {
             let dir = self.remote_dir.clone();
             let token = self.env_token.clone();
             let name = record.name.clone();
+            let ready = self.client_ready.clone();
             let handle = tasks.spawn(async move {
                 let started = std::time::Instant::now();
                 let (opened, fresh) = match open {
                     Some(open) => (Ok(open), false),
                     None => (
-                        open_connection(record.clone(), dir.clone(), token, deadline).await,
+                        open_connection(record.clone(), dir.clone(), token, deadline, ready).await,
                         true,
                     ),
                 };

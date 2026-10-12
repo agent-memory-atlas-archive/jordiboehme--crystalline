@@ -51,11 +51,11 @@ pub use crystalline_rest::collab;
 pub const EVOLVE_TOOL_NAME: &str = "evolve_engrams";
 
 pub use client::{
-    adopt_domain_names_direct, collect_orphaned_domains, configure, ctl_if_running,
-    ctl_if_running_passive, ctl_required, discard_rename_journal, domain_export,
-    domain_export_from_copy, domain_import, domain_remove, domain_rename, domain_review,
-    machine_rename_owner, name_report, origin_add, origin_changes, origin_discard, origin_resolve,
-    origin_share, origin_status, origin_update, origin_withdraw, run_mcp, run_tool,
+    ROUTING_READ_ONLY_KEY, VirtualRouting, adopt_domain_names_direct, collect_orphaned_domains,
+    configure, ctl_if_running, ctl_if_running_passive, ctl_required, discard_rename_journal,
+    domain_export, domain_export_from_copy, domain_import, domain_remove, domain_rename,
+    domain_review, machine_rename_owner, name_report, origin_add, origin_changes, origin_discard,
+    origin_resolve, origin_share, origin_status, origin_update, origin_withdraw, run_mcp, run_tool,
     scaffold_virtual_manifest, tags_retag, use_daemon, virtual_routing_bullets,
 };
 pub use crystalline_engine::engine::{
@@ -73,7 +73,8 @@ pub use crystalline_engine::review::{FoldChoice, ReviewModeConfirm};
 pub use crystalline_engine::similar::{SIMILAR_GUIDANCE, SimilarEngram, SimilarProbe};
 pub use crystalline_identity::join::{Holder, Join, Joins};
 pub use crystalline_identity::scope::{
-    DomainAccess, DomainRight, DomainVisibility, Scope, overlay_actor, write_list_matches,
+    DomainAccess, DomainRight, DomainVisibility, Scope, WriteRights, overlay_actor,
+    write_list_matches,
 };
 pub use crystalline_remote::ops::DiscardTarget;
 pub use daemon::run_serve;

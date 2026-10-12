@@ -22,8 +22,8 @@
 //! **Inside the journal's actor folder on purpose.** An actor's drafts and the
 //! files they wrote drafting them are one person's private work with one
 //! lifetime, so putting this tree under
-//! [`crate::overlay_journal::actor_dir`] makes the removals agree by
-//! construction: `journal_remove_domain`'s single `remove_dir_all` takes the
+//! `crate::overlay_journal::actor_dir` makes the removals agree by
+//! construction: `journal_remove_domain`'s single `remove_tree` takes the
 //! files with the drafts, and there is no second sweep for a later caller to
 //! forget. The two trees cannot collide, and the reason is worth stating on
 //! both sides. The journal's walk keeps only `.md` and `.md.tombstone`; an
@@ -34,20 +34,20 @@
 //!
 //! **The `testing`-feature refusal guards this root the same way.** Every
 //! function here takes the `state_dir` the engine resolved through
-//! [`crate::engine::Engine::journal_state_dir`] and never resolves one of its
+//! `crate::engine::Engine::journal_state_dir` and never resolves one of its
 //! own, so a fixture that forgot `Engine::with_state_dir` is refused before a
 //! byte is written rather than reaching a developer's real state directory.
 //!
 //! **A draft file and a deletion are mutually exclusive on disk**, exactly as
 //! they are in the journal, and for the same reason the order of each pair of
-//! steps is what it is: [`put`] writes the bytes and then removes the sidecar,
-//! [`tombstone`] removes the bytes and then writes the sidecar, so a crash
+//! steps is what it is: `put` writes the bytes and then removes the sidecar,
+//! `tombstone` removes the bytes and then writes the sidecar, so a crash
 //! between two steps leaves the older of the two intentions rather than an
-//! ambiguous state. [`held`] resolves a pair it still finds in favour of the
+//! ambiguous state. `held` resolves a pair it still finds in favour of the
 //! bytes, which is the journal's rule too.
 //!
 //! Containment is asserted here and not delegated: `domain` and `actor` are
-//! screened with [`crate::overlay_journal::one_segment`] and `path` with
+//! screened with `crate::overlay_journal::one_segment` and `path` with
 //! [`crystalline_core::validate_asset_path`], on the way in, at every entry
 //! point.
 
@@ -425,10 +425,10 @@ pub(crate) fn by_actor(state_dir: &Path, domain: &str) -> DomainFiles {
 pub(crate) fn remove_actor(state_dir: &Path, domain: &str, actor: &str) -> io::Result<u64> {
     let dir = files_dir(state_dir, domain, actor)?;
     let held = entries(state_dir, domain, actor).entries.len() as u64;
-    match std::fs::remove_dir_all(&dir) {
-        Ok(()) => Ok(held),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
-        Err(e) => Err(e),
+    match crystalline_core::tree::remove_tree(&dir) {
+        Ok(true) => Ok(held),
+        Ok(false) => Ok(0),
+        Err(e) => Err(e.into()),
     }
 }
 

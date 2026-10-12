@@ -53,7 +53,8 @@ import {
   LAPTOP_KEY,
   LAPTOP_LATCH,
   LAPTOP_LID,
-  LAPTOP_MARK,
+  LAPTOP_INK,
+  LAPTOP_SCREEN,
   LAPTOP_SLOT,
   MARK_PX,
   PLAYER_BADGE_INK,
@@ -471,25 +472,21 @@ describe("retro curio models", () => {
       );
     });
 
-    it("lays the mark on the lid's back plane as exactly the font's runs of <=>", () => {
+    it("lays the mark on the screen's face as exactly the font's runs of the laptop mark, readable from the front", () => {
+      // Mutation caught: the mark left on the lid's back, mirrored (read
+      // from behind), off the screen, or glowing like the screen.
       const L = LAPTOP_LID;
-      /** A local point in the lid's terms: `s` up it, `o` through it from its back face. */
       const lid = (q: V3) => {
         const d = q[1] - L.hingeD;
         const h = q[2] - L.hingeH;
-        return {
-          s: d * L.up[0] + h * L.up[1],
-          o: d * L.out[0] + h * L.out[1],
-        };
+        return { s: d * L.up[0] + h * L.up[1], o: d * L.out[0] + h * L.out[1] };
       };
-      const mark = parts.filter((p) => inTint(p, LAPTOP_MARK));
-      expect(mark.length).toBeGreaterThan(0);
-      const boxes = mark.map((p) => {
+      const ink = parts.filter((p) => inTint(p, LAPTOP_INK));
+      expect(ink.length).toBeGreaterThan(0);
+      const boxes = ink.map((p) => {
         const pts = p.points.map((q) => ({ a: q[0], ...lid(q) }));
-        const os = pts.map((q) => q.o);
-        // Sunk 1 mm into the lid, standing DECAL_LIFT proud of its back.
-        expect(Math.max(...os)).toBeCloseTo(0.001, 9);
-        expect(Math.min(...os)).toBeCloseTo(-DECAL_LIFT, 9);
+        for (const q of pts)
+          expect(q.o).toBeGreaterThan(LAPTOP_SCREEN.o - 1e-9);
         return {
           a0: Math.min(...pts.map((q) => q.a)),
           a1: Math.max(...pts.map((q) => q.a)),
@@ -497,29 +494,47 @@ describe("retro curio models", () => {
           s1: Math.max(...pts.map((q) => q.s)),
         };
       });
-      const rows = textRows("<=>");
-      const start = Math.max(...boxes.map((b) => b.a1));
+      for (const b of boxes) {
+        expect(b.a0).toBeGreaterThanOrEqual(-LAPTOP_SCREEN.a);
+        expect(b.a1).toBeLessThanOrEqual(LAPTOP_SCREEN.a);
+        expect(b.s0).toBeGreaterThanOrEqual(LAPTOP_SCREEN.s0);
+        expect(b.s1).toBeLessThanOrEqual(LAPTOP_SCREEN.s1);
+      }
+      const rows = textRows(MARKS.laptopMark);
+      const a0 = Math.min(...boxes.map((b) => b.a0));
       const sTop = Math.max(...boxes.map((b) => b.s1));
-      // Read from behind, column 0 is at +a: centred across the lid, and
-      // centred on the middle of its upper half.
-      expect(start).toBeCloseTo(((rows[0]?.length ?? 0) * MARK_PX) / 2, 9);
-      expect(Math.min(...boxes.map((b) => b.a0))).toBeCloseTo(-start, 9);
-      expect(sTop - (rows.length * MARK_PX) / 2).toBeCloseTo(
-        0.75 * L.length,
-        9,
-      );
+      // Read from the front, column 0 is at -a.
       const runs = boxes
         .map((b) => ({
-          col: Math.round((start - b.a1) / MARK_PX),
+          col: Math.round((b.a0 - a0) / MARK_PX),
           row: Math.round((sTop - b.s1) / MARK_PX),
           len: Math.round((b.a1 - b.a0) / MARK_PX),
-          height: (b.s1 - b.s0) / MARK_PX,
         }))
         .sort((x, y) => x.row - y.row || x.col - y.col);
-      for (const r of runs) expect(r.height).toBeCloseTo(1, 9);
-      expect(runs.map(({ col, row, len }) => ({ col, row, len }))).toEqual(
-        pixelRuns(rows),
-      );
+      expect(runs).toEqual(pixelRuns(rows));
+    });
+
+    it("draws nothing on the lid's back any more", () => {
+      // Mutation caught: the old back mark kept beside the new one (its
+      // slabs run from o = -DECAL_LIFT, behind the back face, high up the
+      // lid). The base and band sit below the hinge, so s > 0.01 leaves
+      // them out.
+      const L = LAPTOP_LID;
+      const behind = parts.filter((p) => {
+        const pts = p.points.map((q) => {
+          const d = q[1] - L.hingeD;
+          const h = q[2] - L.hingeH;
+          return {
+            s: d * L.up[0] + h * L.up[1],
+            o: d * L.out[0] + h * L.out[1],
+          };
+        });
+        return (
+          Math.min(...pts.map((q) => q.o)) < -1e-9 &&
+          Math.min(...pts.map((q) => q.s)) > 0.01
+        );
+      });
+      expect(behind).toEqual([]);
     });
 
     it("puts its two drive slots in the band's front face, either side of the latch", () => {

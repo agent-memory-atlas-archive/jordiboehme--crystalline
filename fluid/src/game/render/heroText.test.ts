@@ -4,7 +4,7 @@
  * rule allows only the station's own titles and the approved exceptions
  * (2.6a to 2.6c), and the 2.6d and 2.6f marks of `marks.ts`. Every
  * double-quoted literal of letters, digits, spaces, periods and the
- * marks `<`, `=`, `>`, `&` and `?` in a recipe file or in `marks.ts` that
+ * marks `<`, `=`, `>`, `&`, `?`, `!`, `,`, `:` and `-` in a recipe file or in `marks.ts` that
  * holds a digit or one of those marks, or capitals and no lower case,
  * must be on the list, and so must every backtick literal of the same
  * shape in code (comments, which name constants in backticks, are
@@ -24,11 +24,32 @@
 
 import { describe, expect, it } from "vitest";
 
+import { INTERIOR_CATALOGUE } from "../world/consoleRoom";
+import { CURIO_KINDS } from "../world/curios";
+import { MACHINE_KINDS } from "../world/generate";
+import { HERO_KINDS } from "../world/heroes";
+import { PROP_KINDS } from "../world/props";
+
+/**
+ * The registered kind names (hero, curio, prop, machine and interior
+ * kinds): the recipes key their tables by them, and since the hyphen is a
+ * mark a name like "red-bike" or "disk-525" would pass for readable text.
+ * The scan skips exactly these names, nothing else.
+ */
+const KIND_NAMES: ReadonlySet<string> = new Set<string>([
+  ...HERO_KINDS,
+  ...CURIO_KINDS,
+  ...PROP_KINDS,
+  ...MACHINE_KINDS,
+  ...Object.keys(INTERIOR_CATALOGUE),
+]);
+
 /**
  * Every hero, curio and prop recipe file, `marks.ts`, the decal recipe
  * (`decals.ts`, whose stencils set deck and bay numbers and the airlock's
- * `CYCLE`) and the airlock's fittings (`interior/airlock.ts`, whose outer
- * hatch sets its stencil, M3 C24), raw, by path:
+ * `CYCLE`), the tool mark (`toolMark.ts`) and the airlock's fittings
+ * (`interior/airlock.ts`, whose outer hatch sets its stencil, M3 C24), raw,
+ * by path:
  * gathered by glob, so a batch file a later task adds is scanned without
  * anyone listing it. `pixels.ts` is left out (its glyph keys are the font,
  * not text drawn), and so are the tests.
@@ -40,7 +61,13 @@ const SOURCES = Object.fromEntries(
         "./models/{heroes,curios,props}/*.ts",
         "./models/marks.ts",
         "./models/decals.ts",
+        "./models/toolMark.ts",
         "./models/interior/airlock.ts",
+        "./models/machines.ts",
+        "./models/escape.ts",
+        "./layers.ts",
+        "./handles.ts",
+        "./outside/*.ts",
       ],
       {
         query: "?raw",
@@ -105,6 +132,8 @@ const READABLE = new Set([
   "CITIZEN",
   "ARAI",
   "SHOEI",
+  // The red bike's big sticker ("1" is above), 0.25.1.
+  "BIG",
   // The hoverboard's deck wordmark.
   "HOVER",
   "BOARD",
@@ -148,6 +177,45 @@ const READABLE = new Set([
   // floor stencils inside its hazard ring.
   "AIRLOCK",
   "CYCLE",
+  // The tool maker's mark.
+  "BINFORD",
+  // The big gun's badge (0.25.1).
+  "BFG",
+  // The terminals' handle lines.
+  "LOGIN: ZERO COOL",
+  "LOGIN: CRASH OVERRIDE",
+  "LOGIN: ACID BURN",
+  "MESS WITH THE BEST, DIE LIKE THE REST.",
+  // The floppy's label, the pizza box's lid print and the lottery
+  // ticket's numbers ("4" and "8" are above), each number set on its own
+  // (0.25.1).
+  "HACK THE PLANET!",
+  "PIZZA POWER",
+  // The report sheets' cover heading and date word, and the radio set's
+  // note (0.25.1).
+  "TPS REPORT",
+  "DATE",
+  "Melmac?",
+  "15",
+  "16",
+  "23",
+  "42",
+  // The floppy's second label, its version line, and the 5.25 inch
+  // disk's label (0.25.1).
+  "NORTON COMMANDER",
+  "VERSION 4.0",
+  "GEOS",
+  // The turntable's and the camera's maker's names (0.25.1).
+  "Technics",
+  "FUJIFILM",
+  // The camera's model name (0.25.1).
+  "X-Pro2",
+  // The laser desk terminal's two screen lines and its mark (0.25.1).
+  "REQUEST",
+  "ACCESS CODE 6",
+  "ENCOM",
+  // The spray tag on a rough room's wall (0.25.1).
+  "COWABUNGA!",
 ]);
 
 /**
@@ -180,6 +248,7 @@ const MARKS_ONLY = [
   "CITIZEN",
   "ARAI",
   "SHOEI",
+  "BIG",
   "HOVER",
   "BOARD",
   "POLICE TELEPHONE",
@@ -200,6 +269,31 @@ const MARKS_ONLY = [
   "PLUTONIUM HANDLE WITH CARE",
   "AIRLOCK",
   "CYCLE",
+  "BINFORD",
+  "BFG",
+  "LOGIN: ZERO COOL",
+  "LOGIN: CRASH OVERRIDE",
+  "LOGIN: ACID BURN",
+  "MESS WITH THE BEST, DIE LIKE THE REST.",
+  "HACK THE PLANET!",
+  "PIZZA POWER",
+  "TPS REPORT",
+  "DATE",
+  "Melmac?",
+  "15",
+  "16",
+  "23",
+  "42",
+  "NORTON COMMANDER",
+  "VERSION 4.0",
+  "GEOS",
+  "Technics",
+  "FUJIFILM",
+  "X-Pro2",
+  "REQUEST",
+  "ACCESS CODE 6",
+  "ENCOM",
+  "COWABUNGA!",
 ];
 
 /** A source with its comments stripped: comments name constants in backticks (`CLUSTER`); only code draws. */
@@ -241,7 +335,57 @@ function picturesFound(): Set<string> {
   return found;
 }
 
+/**
+ * Every double-quoted or backtick literal of the readable class in `code`
+ * that holds a digit or a mark, or capitals and no lower case. Each literal
+ * is cut out whole first and then tested against the class, so the code
+ * between two literals is never taken for one. The class covers letters,
+ * digits, spaces and the marks `.?<=>&!,:-`; a registered kind name
+ * (`KIND_NAMES`) is skipped. A literal of separators only
+ * (spaces, commas, colons, periods) is skipped; a literal of marks alone
+ * ("?", "<=>") is scanned. A literal inside a `${}` of a template is not
+ * scanned on its own; `textCalls.test.ts` covers what is drawn.
+ */
+function scanLiterals(code: string): string[] {
+  return [...code.matchAll(/"([^"\n]*)"|`([^`\n]*)`/g)]
+    .map((m) => m[1] ?? m[2] ?? "")
+    .filter(
+      (t) =>
+        /^[A-Za-z0-9 .?<=>&!,:-]+$/.test(t) &&
+        !/^[ ,:.]+$/.test(t) &&
+        !KIND_NAMES.has(t) &&
+        (/[0-9?<=>&!,:-]/.test(t) || (/[A-Z]/.test(t) && !/[a-z]/.test(t))),
+    );
+}
+
 describe("readable text in the recipes", () => {
+  it("catches a literal with ! or , in a recipe (0.25.1)", () => {
+    // Mutation caught: the scan class left at [A-Za-z0-9 .?<=>&], which
+    // skips "HACK THE PLANET!" and any line with a comma.
+    const found = scanLiterals('const a = "FOO BAR!"; const b = "A, B";');
+    expect(found).toEqual(["FOO BAR!", "A, B"]);
+  });
+
+  it("catches a literal with a hyphen and skips the registered kind names (0.25.1)", () => {
+    // Mutation caught: the scan class left without `-`, which skips a
+    // model name like "X-Pro2", or a kind name such as "disk-525" or
+    // "red-bike" taken for text.
+    expect(
+      scanLiterals(
+        'const a = "X-Pro2"; const b = "lo-fi"; const c = "disk-525"; const d = "red-bike";',
+      ),
+    ).toEqual(["X-Pro2", "lo-fi"]);
+  });
+
+  it("catches a literal of marks alone and ignores separators", () => {
+    // Mutation caught: a letter-or-digit requirement that hides "?" or "<=>".
+    expect(scanLiterals('const a = "?"; const b = "<=>";')).toEqual([
+      "?",
+      "<=>",
+    ]);
+    expect(scanLiterals('const a = ", "; const b = ":";')).toEqual([]);
+  });
+
   it("draws no string but the station's titles and the approved exceptions", () => {
     // The folders hold the files the 2.6c and 2.6d tasks fill, at the least.
     for (const name of [
@@ -253,12 +397,16 @@ describe("readable text in the recipes", () => {
       "finds",
       "desktop",
       "critters",
+      "office",
+      "figures",
       "marked",
       "rare",
       "walker",
       "marks",
       "decals",
       "airlock",
+      "machines",
+      "layers",
     ])
       expect(
         Object.keys(SOURCES).some((p) => p.endsWith(`/${name}.ts`)),
@@ -266,13 +414,7 @@ describe("readable text in the recipes", () => {
       ).toBe(true);
     for (const [name, src] of Object.entries(SOURCES)) {
       const code = codeOf(src);
-      const found = [
-        ...code.matchAll(/"([A-Za-z0-9 .?<=>&]+)"|`([A-Za-z0-9 .?<=>&]+)`/g),
-      ]
-        .map((m) => m[1] ?? m[2] ?? "")
-        .filter(
-          (t) => /[0-9?<=>&]/.test(t) || (/[A-Z]/.test(t) && !/[a-z]/.test(t)),
-        );
+      const found = scanLiterals(code);
       for (const t of found)
         expect(READABLE.has(t), `${name}: ${t}`).toBe(true);
     }

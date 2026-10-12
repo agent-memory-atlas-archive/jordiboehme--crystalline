@@ -402,7 +402,7 @@ impl CollabSessions {
     ///
     /// A room removed here is gone from the registry before it is saved, so
     /// the two entry-moving paths leave it alone from that moment on:
-    /// [`CollabSessions::rekey`] and [`CollabSessions::dispose_if_empty`] both
+    /// `CollabSessions::rekey` and [`CollabSessions::dispose_if_empty`] both
     /// look the session up by key and find nothing of theirs, so a rename that
     /// lands during the sweep cannot re-file a swept room.
     ///
@@ -418,7 +418,7 @@ impl CollabSessions {
     /// the DATABASE rather than in the file that `files_kept` deliberately left
     /// on disk). Note that the fence is what closes the join window, not luck:
     /// [`CollabSessions::join`] holds the registry lock ACROSS
-    /// [`CollabSession::open`] (the engine read), so a join either inserts
+    /// `CollabSession::open` (the engine read), so a join either inserts
     /// before the sweep collects and is swept, or arrives after and is refused
     /// by the fence - no join is in flight across the sweep. If that lock is
     /// ever released around the open, this argument silently breaks.
@@ -442,7 +442,7 @@ impl CollabSessions {
     ///
     /// Why the exception is not optional. The sweep runs one step after the
     /// review key comes off, so a room over a draft has already fallen back to
-    /// the folder ([`room_view`]) and its final save is an ordinary file
+    /// the folder (`room_view`) and its final save is an ordinary file
     /// write. Discard is the one fold choice whose whole meaning is "this
     /// never reaches the tree" - the rows are dropped unwritten - so saving
     /// such a room would publish, into the reviewed folder, the one text the
@@ -626,7 +626,7 @@ impl CollabSessions {
     /// that only need to know whether the room is there: `live_text` renders
     /// the whole Yrs document under the session lock, which is a real cost on
     /// a large engram and is pure waste when the answer is a yes-or-no. The
-    /// three conditions are [`CollabSessions::live_room`]'s, so a swept,
+    /// three conditions are `CollabSessions::live_room`'s, so a swept,
     /// poisoned or closed room answers `false` here exactly as it answers
     /// `None` there.
     pub async fn has_live_room(
@@ -1797,11 +1797,11 @@ impl CollabSession {
     /// conflict) has to reach the room, or its alert keeps naming a reason
     /// that no longer applies.
     ///
-    /// `detail` is never composed here: every caller hands it `err.to_string()`
-    /// off whatever the engine's own save call refused with, so a move-blocked
-    /// author's room says the exact sentence [`crate::engine::joined_write_is_elsewhere`]
-    /// gives the request path for the same shape - one string, reached two
-    /// ways, never two dialects of one refusal.
+    /// `detail` comes from the caller: the engine's own refusal of the save
+    /// (`err.to_string()`), so a move-blocked author's room says the exact
+    /// sentence [`crate::engine::joined_write_is_elsewhere`] gives the request
+    /// path, or a room constant such as `ROOM_SWITCH_ON_REFUSAL` when the room
+    /// itself refuses. It is never composed here.
     fn fail_save(&self, state: &mut SessionState, detail: String) {
         let repeat = matches!(state.save_state, SaveStateTag::Failed)
             && state.failure_detail.as_deref() == Some(detail.as_str());
@@ -1817,6 +1817,17 @@ impl CollabSession {
         tracing::debug!(domain = %self.domain, permalink = %state.permalink, %detail, "a session save was refused");
         state.save_state = SaveStateTag::Failed;
         state.failure_detail = Some(detail);
+    }
+
+    /// A restore of the room's text that cannot run: the deletion stays the
+    /// open question, and the room is told why its "mine" did not land.
+    fn refuse_restore(&self, state: &mut SessionState, detail: String) {
+        state.pending = Some(PendingConflict::Deleted);
+        let _ = self.tx.send(Frame {
+            from: None,
+            to: None,
+            bytes: Bytes::from(control::encode(&Control::SaveFailed { detail })),
+        });
     }
 
     /// Suspend saving on an externally deleted engram and let the room decide
@@ -2029,14 +2040,7 @@ impl CollabSession {
                 // The path could not be read, so nothing is known about what
                 // is there: the conflict stands rather than risking a blind
                 // overwrite.
-                state.pending = Some(PendingConflict::Deleted);
-                let _ = self.tx.send(Frame {
-                    from: None,
-                    to: None,
-                    bytes: Bytes::from(control::encode(&Control::SaveFailed {
-                        detail: err.to_string(),
-                    })),
-                });
+                self.refuse_restore(state, err.to_string());
                 return None;
             }
         }
@@ -2063,14 +2067,7 @@ impl CollabSession {
                 normalized
             }
             Err(err) => {
-                state.pending = Some(PendingConflict::Deleted);
-                let _ = self.tx.send(Frame {
-                    from: None,
-                    to: None,
-                    bytes: Bytes::from(control::encode(&Control::SaveFailed {
-                        detail: err.to_string(),
-                    })),
-                });
+                self.refuse_restore(state, err.to_string());
                 return None;
             }
         };
@@ -2078,14 +2075,7 @@ impl CollabSession {
         // the room's view (draft arm), so the room is the only place that can
         // refuse a switch-on here.
         if self.room_switches_read_only_on(&state.path, &file).await {
-            state.pending = Some(PendingConflict::Deleted);
-            let _ = self.tx.send(Frame {
-                from: None,
-                to: None,
-                bytes: Bytes::from(control::encode(&Control::SaveFailed {
-                    detail: ROOM_SWITCH_ON_REFUSAL.to_string(),
-                })),
-            });
+            self.refuse_restore(state, ROOM_SWITCH_ON_REFUSAL.to_string());
             return None;
         }
         // Through the room's own view when the room is over a draft - it puts
@@ -2146,14 +2136,7 @@ impl CollabSession {
                 // The restore was refused (a document that is not an engram, a
                 // read-only daemon): the conflict stands so the room can try
                 // the other resolution.
-                state.pending = Some(PendingConflict::Deleted);
-                let _ = self.tx.send(Frame {
-                    from: None,
-                    to: None,
-                    bytes: Bytes::from(control::encode(&Control::SaveFailed {
-                        detail: err.to_string(),
-                    })),
-                });
+                self.refuse_restore(state, err.to_string());
                 None
             }
         }

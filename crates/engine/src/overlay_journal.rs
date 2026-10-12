@@ -42,7 +42,7 @@
 //! `path` all arrive from callers that have their own screens, and the actor
 //! key in particular will later be an account name chosen by whoever holds the
 //! account, so every one of the three is re-checked against
-//! [`crate::engine::is_within_domain`] before a path is built - and `domain`
+//! `crate::engine::is_within_domain` before a path is built - and `domain`
 //! and `actor` must additionally be a single segment, since neither names a
 //! tree.
 
@@ -76,7 +76,7 @@ pub(crate) const TOMBSTONE_SUFFIX: &str = ".tombstone";
 /// an account could in principle be named for this file, and what protects the
 /// record is the walk taking directories alone. Inside the domain folder rather
 /// than beside it, so
-/// [`journal_remove_domain`]'s one `remove_dir_all` sweeps the record with the
+/// [`journal_remove_domain`]'s one `remove_tree` sweeps the record with the
 /// drafts it describes - a record that outlived them would name conflicts in
 /// drafts nobody holds any more.
 const RECORD_FILE: &str = ".convergence.json";
@@ -181,7 +181,7 @@ pub(crate) fn domain_dir(state_dir: &Path, domain: &str) -> io::Result<PathBuf> 
 /// [`crate::overlay_files::FILES_DIR`], which is why it is shared rather than
 /// private: an actor's drafts and the files they wrote in review mode are one
 /// actor's private work, so [`journal_remove_domain`]'s single
-/// `remove_dir_all` takes both by construction rather than by a second sweep
+/// `remove_tree` takes both by construction rather than by a second sweep
 /// somebody has to remember to call.
 ///
 /// The two trees coexist because neither can hold the other's paths. The walk
@@ -621,9 +621,9 @@ fn record_path(state_dir: &Path, domain: &str) -> io::Result<PathBuf> {
 pub fn journal_remove_domain(state_dir: &Path, domain: &str) -> io::Result<u64> {
     let dir = domain_dir(state_dir, domain)?;
     let held = journal_counts(state_dir, domain).total;
-    match std::fs::remove_dir_all(&dir) {
-        Ok(()) => Ok(held),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
+    match crystalline_core::tree::remove_tree(&dir) {
+        Ok(true) => Ok(held),
+        Ok(false) => Ok(0),
         // A sweep can fail part of the way through, with some actors' folders
         // already gone. The error is the caller's to report, and so is the
         // number that did go: what is left is counted again so nothing claims a
@@ -631,7 +631,7 @@ pub fn journal_remove_domain(state_dir: &Path, domain: &str) -> io::Result<u64> 
         Err(e) => {
             let left = journal_counts(state_dir, domain).total;
             Err(io::Error::new(
-                e.kind(),
+                e.source.kind(),
                 format!(
                     "{e} ({} of {} went)",
                     held - left.min(held),
@@ -987,6 +987,21 @@ mod tests {
         let counts = journal_counts(state, "never");
         assert_eq!(counts.total, 0);
         assert!(!counts.unreadable);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removing_a_domain_removes_a_linked_actor_folder_as_a_link_and_keeps_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("keep.md"), "keep").unwrap();
+        let domain = domain_dir(state, "team").unwrap();
+        std::fs::create_dir_all(&domain).unwrap();
+        std::os::unix::fs::symlink(outside.path(), domain.join("alice")).unwrap();
+        journal_remove_domain(state, "team").unwrap();
+        assert!(!domain.exists());
+        assert!(outside.path().join("keep.md").exists());
     }
 
     /// **The two substrates share an actor folder and cannot read each other.**

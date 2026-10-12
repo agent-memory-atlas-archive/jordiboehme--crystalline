@@ -6,7 +6,7 @@
 //!
 //! Nothing here talks to GitHub, the filesystem or the engine.
 //! `Engine::origin_poll_tick` composes these functions with `origin_update`
-//! (never reimplementing the pull itself), and [`OriginPollerState`] is the
+//! (never reimplementing the pull itself), and `OriginPollerState` is the
 //! shared, network-free record `Engine::status_report`'s `origins` block
 //! reads from.
 

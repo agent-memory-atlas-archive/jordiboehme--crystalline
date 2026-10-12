@@ -146,8 +146,8 @@ function notice(outcome, platform, extensionVersion) {
     fix = `Update Crystalline with ${update}, then restart Claude Desktop.`;
   } else if (mac) {
     reason = "Crystalline is not installed on this Mac";
-    instructions = `Crystalline is not ready this session: ${reason}, and this extension only connects Claude Desktop to it. No knowledge tools are available. Ask the user to install it with \`brew install jordiboehme/tap/crystalline\` and restart Claude Desktop. Without Homebrew, they can install crystalline-desktop-only-v${extensionVersion}-macos.mcpb from ${RELEASES} instead of this extension. Call the status tool for the full details to relay.`;
-    fix = `Run \`brew install jordiboehme/tap/crystalline\` and restart Claude Desktop, or install crystalline-desktop-only-v${extensionVersion}-macos.mcpb from ${RELEASES} instead of this extension.`;
+    instructions = `Crystalline is not ready this session: ${reason}, and this extension only connects Claude Desktop to it. No knowledge tools are available. Ask the user to install it with \`brew install jordiboehme/tap/crystalline\` and restart Claude Desktop. Without Homebrew, they can install the Desktop-only extension for macOS from ${RELEASES}/latest instead of this extension. Call the status tool for the full details to relay.`;
+    fix = `Run \`brew install jordiboehme/tap/crystalline\` and restart Claude Desktop, or install the Desktop-only extension for macOS from ${RELEASES}/latest instead of this extension.`;
   } else {
     reason = "Crystalline is not installed on this computer";
     instructions = `Crystalline is not ready this session: ${reason}, and this extension only connects Claude Desktop to it. No knowledge tools are available. Ask the user to download the MSI from ${RELEASES}, run it, and restart Claude Desktop. Call the status tool for the full details to relay.`;
@@ -324,13 +324,21 @@ function extensionVersion() {
   }
 }
 
+/**
+ * The environment `crystalline mcp` runs with: this one, plus the channel and
+ * this launcher's version, so the binary can say when the launcher is too old.
+ */
+function childEnv(env, version) {
+  return Object.assign({}, env, { CRYSTALLINE_CHANNEL: "desktop", CRYSTALLINE_LAUNCHER_VERSION: version });
+}
+
 function main() {
   // A write after Claude Desktop closed the pipe fails with EPIPE: end
   // quietly instead of with a stack trace.
   process.stdout.on("error", () => {});
   const outcome = findBinary({ platform: process.platform, env: process.env, isFile, runVersion });
   if (outcome.kind === "ok") {
-    const child = start(outcome.path, ["mcp"], Object.assign({}, process.env, { CRYSTALLINE_CHANNEL: "desktop" }), {
+    const child = start(outcome.path, ["mcp"], childEnv(process.env, extensionVersion()), {
       input: process.stdin,
       output: process.stdout,
       errors: process.stderr,
@@ -376,6 +384,7 @@ module.exports = {
   forwardSignals,
   start,
   extensionVersion,
+  childEnv,
   main,
   isEntry,
 };

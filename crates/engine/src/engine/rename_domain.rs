@@ -307,6 +307,9 @@ impl Engine {
                 },
             ));
         }
+        // Before any step: the Config step at the end would refuse a file
+        // that does not parse, after the domain was moved and paused.
+        self.refuse_a_config_that_does_not_parse()?;
         let reviewing_draft = if local_only {
             false
         } else {
@@ -1283,6 +1286,12 @@ impl Engine {
         // spellings.
         self.names_frozen
             .store(false, std::sync::atomic::Ordering::SeqCst);
+        // A refresh skipped while the names were frozen (a virtual MANIFEST
+        // written meanwhile) is owed now: the next lookup reloads the virtual
+        // caches, their read_only flags among them, and rebuilds the table.
+        self.virtual_names_loaded
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.mark_names_stale();
         tracing::error!(
             "the rename of domain '{}' to '{}' stopped at its {} step: {e}",
             journal.old,
@@ -1389,7 +1398,7 @@ impl Engine {
         let (old, new) = (journal.old.as_str(), journal.new.as_str());
         let entry = {
             let mut file_guard = self.file_config.write().unwrap();
-            let mut file = self.fresh_file_config(&file_guard);
+            let mut file = self.fresh_file_config(&file_guard)?;
             let (index, mut entry) = match (
                 file.domains.get_index_of(old),
                 file.domains.get_index_of(new),

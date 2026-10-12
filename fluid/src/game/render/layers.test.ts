@@ -14,6 +14,7 @@ import {
   layerPlan,
   textRequests,
 } from "./layers";
+import { handleOf } from "./handles";
 
 const bridge = generateRoom(CANNED_BRIDGE);
 const hub = generateRoom(CANNED_HUB);
@@ -196,6 +197,37 @@ describe("textRequests for the station's fixtures (M3 C7, C24, C28)", () => {
       },
       { key: "exit:1", kind: "label", row: 0, lines: ["DECK 7 NOTES"] },
     ]);
+  });
+});
+
+describe("textRequests for a terminal's handle (0.25.1)", () => {
+  const slot = { x: 1, y: 0, side: "n" } as const;
+  const terminal = (seed: number): Fixture => ({
+    kind: "terminal",
+    slot,
+    heading: "H",
+    lines: ["a"],
+    section: 0,
+    seed,
+  });
+
+  it("gives a handle terminal's request a footer equal to its handle, and any other no footer key", () => {
+    // Mutation caught: the key set to undefined (fails exact optional
+    // readers and the request's own shape), the footer left off, a footer
+    // that is not the terminal's handle.
+    const seeds = Array.from({ length: 400 }, (_, i) => i);
+    const withHandle = seeds.find((n) => handleOf(terminal(n)) !== null);
+    const without = seeds.find((n) => handleOf(terminal(n)) === null);
+    if (withHandle === undefined || without === undefined)
+      throw new Error("no seed of either kind");
+    const room: RoomSpec = {
+      ...bridge,
+      fixtures: [terminal(withHandle), terminal(without)],
+    };
+    const [a, b] = textRequests(room);
+    expect(a?.footer).toBe(handleOf(terminal(withHandle)));
+    expect(b).toBeDefined();
+    expect(b && "footer" in b).toBe(false);
   });
 });
 

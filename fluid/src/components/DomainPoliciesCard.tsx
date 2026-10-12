@@ -22,8 +22,9 @@
  * value on Keep. While `read_only` is on, its row is the one row that can
  * change: every other select is disabled with the read-only sentence as its
  * description. Either press ends the question, so either press hands the
- * focus back to the select it came from. Every other change posts at once. After a write the answer's `policies` go straight into the
- * manifest query, so the card holds the new values without a second read.
+ * focus back to the select it came from. Every other change posts at once.
+ * After a write the answer's `policies` go straight into the manifest
+ * query, so the card holds the new values without a second read.
  *
  * `domain_name` is the one row with no select at all: a `PolicyKind::Text`
  * key changes through a rename, not a PATCH, so its row carries a "Change
@@ -134,8 +135,9 @@ export function DomainPoliciesCard({
   const locked = policiesLocked(policies);
   const [problem, setProblem] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<Record<string, string>>({});
-  // The pending direct-sharing switch: the row whose select shows `direct`
-  // while the confirmation is up, or null.
+  // The pending switch that needs a confirmation (direct sharing or
+  // read_only): the row whose select shows the asked value while the
+  // confirmation is up, or null.
   const [arming, setArming] = useState<string | null>(null);
   const selects = useRef<Record<string, HTMLSelectElement | null>>({});
 

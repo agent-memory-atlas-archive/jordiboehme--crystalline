@@ -1,27 +1,30 @@
 /**
  * The street pieces: the red bike and the blue police box, two machines
- * from the street that ended up aboard. Both are lit on the `breathe`
- * bank (C13). The police box's two door leaves are the one thing on
- * either that moves.
+ * from the street that ended up aboard, and the neon bike beside the
+ * bike. All three are lit on the `breathe` bank (C13). The police box's
+ * two door leaves are the one thing on any of them that moves.
  *
  * - The bike (`BIKE`) is a long racing motorcycle parked on its side
- *   stand, its length along `a` and its nose at `+a`: bright glossy red
- *   bodywork enclosing almost everything in one rounded capsule, narrow
- *   in plan, highest over its front third. A high rounded cowl slopes
- *   down and forward to the wide headlight, with a dark windscreen high
- *   on top of it leaning back and the handlebar's grips standing out
- *   each side just behind it; the saddle is sunk low behind the cowl,
- *   with a small backrest, and a rounded tail hump, lower than the cowl,
- *   rises over the rear wheel and ends in the round tail light, which
- *   breathes. A long wheelbase, fat black tyres with solid grey disc
- *   hubs, the front wheel showing under the nose and the rear one almost
- *   covered, and black under the chassis. It stands
- *   upright (C14): the kit has no roll, so the stand is a bar from the
- *   chassis down to the floor on its `-d` side. Four sponsor stickers
- *   (`BIKE_STICKERS`, 2.6f C13) sit on both sides of the shell: one large
- *   on the cowl's side under the windscreen, one small on the upper panel
- *   behind it, and two on the lower panels, over the chassis and over the
- *   rear wheel, each on a plate of its own or printed straight on the red.
+ *   stand, its length along `a` and its nose at `+a`, glossy red. Its two
+ *   fat round tyres are its two ends (`BIKE_WHEELS`), each under a red
+ *   domed cover that hides the hub. Over the front wheel stands the high
+ *   fairing with its side skirts, the wide headlight in a black panel on
+ *   its flat nose and the tall dark windscreen sweeping up and back from
+ *   it to the bike's top over the dash and the handlebar. The middle is
+ *   open and low: a floor pan over the black chassis and a bucket seat
+ *   with a tall backrest. Behind it the rear cowl rises as high as the
+ *   fairing, rounds over and slopes down over the rear wheel, ending
+ *   ahead of the tyre, the tail light breathing on its slope; a white
+ *   pinstripe runs under its top. The panels are built in slices, the
+ *   narrower ones grown proud of the wider (`grown`), so their edges read
+ *   rounded. Round engine covers sit low behind the seat, and on the left
+ *   the swing arm runs to the rear axle. It stands upright (C14): the kit
+ *   has no roll, so the stand is a bar from the floor pan down to the
+ *   floor on its `-d` side. Its stickers (`BIKE_STICKERS`, 2.6f C13) are
+ *   not mirrored, as on the original: the left side carries the watch and
+ *   camera makers' on its skirt and a helmet maker's on the front wheel
+ *   cover, with a star roundel; the right side the big two-line sticker
+ *   and a smiley on its skirt and the other helmet maker's on the cover.
  * - The police box stands free, centred on its anchor like any free hero
  *   (2.6e: never against a wall), its doors facing `+d` (C3, C10): deep blue
  *   painted wood on a low plinth, a corner post from the plinth to the roof at
@@ -51,17 +54,39 @@
  *   `boxKey(index)`, so they open and close together. That is the one
  *   door motion; the recipe builds them in place, closed, only when asked
  *   to (`movers`), which the model checks are.
+ * - The neon bike (`CYCLE`) is the enclosed racing cycle from inside the
+ *   computer, parked like the red bike: its length along `a`, its nose at
+ *   `+a`, built to the film model's proportions. Two fat wheels of one
+ *   size, a quarter of its length across, are its ends (`CYCLE_WHEELS`),
+ *   each a glowing tread under a dark cover on each side, so only the rim
+ *   glows. The shell (`CYCLE_SHELL`) is dark and glossy, its top 1.8
+ *   wheels high, and its flank splits as on the original: an arched band
+ *   (`CYCLE_BAND`) hoods both wheels over their tops and runs over the
+ *   top, and a lower panel (`CYCLE_PANEL`) set in from it, a lighter grey
+ *   (`CYCLE_LOWER`), runs low between the wheels to a square back edge
+ *   that hides the rear wheel's front, so the side reads in two tones.
+ *   Narrower crests are grown over both like the bike's panels (`grown`).
+ *   The back (`CYCLE_SPINE`) rises from a short tail over the rear wheel
+ *   to a crown a little ahead of the middle and falls in a long curve to
+ *   the nose. A short smoked canopy sits on the back over the hidden
+ *   rider, behind the crown and clear of the nose; the flanks carry no
+ *   window. Glowing lines trace the band's outline a little inside it on
+ *   both sides, so one runs along the split (`cycleLine`, laid by
+ *   `profileLine`, which the red bike's pinstripe shares), and the
+ *   canopy's ridge. Every light is in one group and breathes; the body
+ *   carries no text.
  *
  * The numbers each kind is built to are named above its recipe: `BIKE`,
- * `BIKE_BODY` and `BIKE_PROFILE` for the bike, `BOX` for the box. Round parts
- * use few facets, as in every batch.
+ * `BIKE_WHEELS` and the profiles (`CORE`, `SKIRT`, `COWL`) for the bike,
+ * `BOX` for the box, `CYCLE`, `CYCLE_WHEELS`, `CYCLE_SPINE` and `CYCLE_SHELL`
+ * for the neon bike. Round parts use few facets, as in every batch.
  */
 
 import { boxKey } from "../../../world/box";
 import { turnedPoint } from "../../../world/footprints";
 import type { Hero, HeroKind } from "../../../world/types";
 import { CELL } from "../../../world/units";
-import { createBuilder } from "../../geometry";
+import { createBuilder, type Surface } from "../../geometry";
 import {
   DECAL_LIFT,
   createKit,
@@ -76,6 +101,7 @@ import {
   shade,
   sideways,
   surfaces,
+  tiltedBar,
   yawed,
   type KitAt,
   type Mover,
@@ -92,24 +118,35 @@ const ORIGIN: Frame = frameAt([0, 0, 0], 0);
 const BIKE_RED: Rgb = [0.9, 0.08, 0.06];
 
 /**
- * The gloss on the top of the cowl: a lighter red where the light catches it.
+ * The gloss on the crests: a lighter red on the narrowest slice of each
+ * body panel and on the wheel covers' inner domes, where the light
+ * catches the curve.
  */
 const BIKE_SHINE: Rgb = [0.98, 0.22, 0.16];
 
 /** The bike's tyres: a near black rubber. */
 const TYRE: Rgb = [0.06, 0.06, 0.07];
 
-/** The bike's disc hubs: a mid grey. */
-const HUB_GREY: Rgb = [0.45, 0.45, 0.47];
+/** The tyres' tread: a darker rubber than their side walls. */
+const TREAD: Rgb = [0.025, 0.025, 0.03];
 
-/** The bike's chassis, handlebar and stand: black. */
+/** The bike's chassis, handlebar, swing arm's pivot and stand: black. */
 const BIKE_BLACK: Rgb = [0.05, 0.05, 0.05];
 
-/** The bike's saddle: a reddish brown. */
+/**
+ * The bezels round the lamps, the dash, the grips and the mirrors: a dark
+ * grey.
+ */
+const BIKE_DARK: Rgb = [0.14, 0.14, 0.16];
+
+/** The bucket seat: a dark reddish brown. */
 const SADDLE: Rgb = [0.3, 0.14, 0.1];
 
-/** The bike's tinted windscreen: nearly black with a cold cast. */
-const SCREEN: Rgb = [0.05, 0.05, 0.08];
+/** The seat's backrest and rolled edges: a darker brown than its top. */
+const SADDLE_EDGE: Rgb = [0.16, 0.08, 0.06];
+
+/** The bike's tinted windscreen: nearly black with a cold blue cast. */
+const SCREEN: Rgb = [0.06, 0.07, 0.11];
 
 /** The bike's headlight: a steady warm white. */
 const HEADLIGHT: Rgb = [1.0, 0.97, 0.85];
@@ -117,292 +154,498 @@ const HEADLIGHT: Rgb = [1.0, 0.97, 0.85];
 /** The bike's tail light: a red that breathes. */
 const TAIL_LIGHT: Rgb = [0.95, 0.1, 0.08];
 
+/** The indicator lenses beside the headlight: amber, off while parked. */
+const INDICATOR: Rgb = [0.95, 0.55, 0.1];
+
+/** The pinstripe along the rear cowl: an off white. */
+const ACCENT: Rgb = [0.88, 0.88, 0.84];
+
+/** The round caps on the wheel covers, the swing arm and the engine. */
+export const HUB_SILVER: Rgb = [0.72, 0.72, 0.75];
+
+/** The star roundel's blue disc, white star and red bars. */
+const ROUNDEL = {
+  blue: [0.1, 0.2, 0.55],
+  white: [0.96, 0.96, 0.96],
+  red: [0.75, 0.1, 0.12],
+} as const satisfies Record<string, Rgb>;
+
+/** The smiley sticker's yellow face and its black eyes and mouth. */
+const SMILEY = {
+  face: [1.0, 0.85, 0.15],
+  ink: [0.04, 0.04, 0.04],
+} as const satisfies Record<string, Rgb>;
+
 /**
- * The bike's overall size, in metres: `length` nose to tail along `a`,
- * `width` across its widest shell parts along `d`, and `screenTop`, the
- * top of its windscreen and so of the bike. These are the original's
- * sourced measures; the bike's headlight and tail light, standing a few
- * millimetres proud of its nose and tail, give the full length.
+ * The bike's overall size, in metres: `length` from the front tyre's nose
+ * to the rear tyre's back along `a`, `width` across its widest parts
+ * along `d`, and `screenTop`, the top of its windscreen and so of the
+ * bike. These are the original's sourced measures (2947 mm, 831 mm and
+ * 1171 mm with the shield).
  */
 export const BIKE = { length: 2.95, width: 0.83, screenTop: 1.17 } as const;
 
-/**
- * The bike's shell and wheels, in metres:
- * - `end`: how far the shell reaches from the middle along `a`, a few
- *   millimetres short of half the length, so each light stands proud of
- *   the end it is set in rather than sharing its plane;
- * - `half`: the half width of the shell's upper panels over the seat and
- *   the cowl, as narrow as a motorbike's; `tailHalf` the tail hump's and
- *   `lower` the lower panels', hugging the wheels;
- * - `axle`: the wheels' centres along `a` (at `±axle`), `r` their radius
- *   (the axles stand at `r`, the tyres on the floor), `tyre` a tyre's
- *   half width, `hub` a disc hub's radius and `hubT` its thickness on
- *   the tyre's side wall;
- * - `lamp`: the headlight's height and radius (its height; it is
- *   `LAMP_WIDE` times as wide), `tail` the round tail light's.
- */
-const BIKE_BODY = {
-  end: 1.47,
-  half: 0.26,
-  tailHalf: 0.22,
-  lower: 0.2,
-  axle: 1.0,
-  r: 0.33,
-  tyre: 0.15,
-  hub: 0.2,
-  hubT: 0.02,
-  lamp: [0.55, 0.07],
-  tail: [0.62, 0.08],
-} as const;
-
-/** How many times wider than tall the headlight is. */
-const LAMP_WIDE = 1.6;
+/** A point of a side profile: `[a, h]`. */
+type P2 = readonly [number, number];
 
 /**
- * The shell's side profile, `[a, h]`, a teardrop capsule from the tail
- * round to the nose and back along the underside: the tail's flat end,
- * where the round tail light sits, the rounded tail hump over the rear
- * wheel, the backrest's drop into the seat sunk low behind the cowl, the
- * rise to the high rounded cowl whose top (the bike's highest shell) is
- * over the front third, and its slope down and forward to the nose's
- * flat front, where the headlight sits. Underneath, the shell is cut away
- * high over the front wheel (0.5), so the wheel shows under the nose; it
- * comes down to 0.3 over the chassis, and to 0.22 round the rear wheel,
- * which it almost covers.
+ * One wheel: its axle at `a` (at height `r`, the tyre on the floor), `r`
+ * the tyre's radius and `half` the tyre's half width. The original's
+ * wheelbase is 2194 mm on an 18 inch front and a 19 inch rear rim; the
+ * two tyres are the bike's two ends, so their radii and axles give
+ * `BIKE.length` exactly.
  */
-const BIKE_PROFILE: readonly (readonly [number, number])[] = [
-  [-BIKE_BODY.end, 0.44],
-  [-BIKE_BODY.end, 0.74],
-  [-1.43, 0.81],
-  [-1.35, 0.87],
-  [-1.24, 0.9],
-  [-1.12, 0.9],
-  [-1.02, 0.87],
-  [-0.94, 0.8],
-  [-0.88, 0.66],
-  [-0.2, 0.64],
-  [-0.08, 0.7],
-  [0.05, 0.8],
-  [0.2, 0.9],
-  [0.38, 0.98],
-  [0.58, 1.03],
-  [0.78, 1.04],
-  [0.95, 1.0],
-  [1.1, 0.93],
-  [1.24, 0.84],
-  [1.36, 0.75],
-  [BIKE_BODY.end, 0.64],
-  [BIKE_BODY.end, 0.46],
-  [1.4, 0.44],
-  [1.3, 0.5],
-  [0.72, 0.5],
-  [0.62, 0.3],
-  [-0.62, 0.3],
-  [-0.7, 0.22],
-  [-1.3, 0.22],
-  [-1.42, 0.32],
+interface BikeWheel {
+  a: number;
+  r: number;
+  half: number;
+}
+
+/** The front wheel and the rear one. */
+export const BIKE_WHEELS = {
+  front: { a: 1.115, r: 0.36, half: 0.15 },
+  rear: { a: -1.085, r: 0.39, half: 0.17 },
+} as const satisfies Record<string, BikeWheel>;
+
+/**
+ * A tyre's three slices, `[radius in from the tread, half width in from
+ * the side wall]`: the full round tread in the middle, a shoulder and the
+ * side wall, so the fat tyre reads round from the front and the side.
+ */
+const TYRE_SLICES: readonly (readonly [number, number])[] = [
+  [0, 0.045],
+  [0.025, 0.015],
+  [0.07, 0],
 ];
 
 /**
- * The height the shell's lower panels end at: under it the shell is a
- * shade darker and narrower (`BIKE_BODY.lower`), close round the wheels,
- * so the bodywork reads as panels rather than one moulding.
+ * A wheel cover's two domes on each side, `[radius as a share of the
+ * tyre's, how far out from the side wall]`: the outer red one on the
+ * wall and the inner glossy one on it, the face the wheel stickers sit
+ * on. The rear wheel's cover carries a round silver cap (`CAP`) on the
+ * `+d` side; on the `-d` side the swing arm covers it.
  */
-const SEAM = 0.56;
+const DOMES: readonly (readonly [number, number])[] = [
+  [0.75, 0.02],
+  [0.58, 0.035],
+];
+
+/** The silver caps' radius and thickness. */
+const CAP = { r: 0.075, t: 0.012 } as const;
+
+/** Facets round a tyre, and round a wheel cover's dome. */
+const TYRE_SIDES = 20;
+const DOME_SIDES = 16;
+
+/** How much room each arch leaves round its tyre. */
+const ARCH = 0.05;
+
+/** The front wheel's arch radius and the rear one's. */
+const FRONT_ARCH = BIKE_WHEELS.front.r + ARCH;
+const REAR_ARCH = BIKE_WHEELS.rear.r + ARCH;
 
 /**
- * The height over which the cowl's top wears `BIKE_SHINE`: the gloss the
- * light catches on the highest curve.
+ * `n + 1` points on the circle of radius `r` round `(a, h)` from `from`
+ * to `to` degrees (counter-clockwise from `+a`), both ends included: a
+ * wheel arch.
  */
-const SHINE = 0.95;
-
-/**
- * Where the tail hump meets the seat along `a`: behind it the shell
- * narrows to `BIKE_BODY.tailHalf`.
- */
-const TAIL_CUT = -0.9;
-
-/**
- * The part of a plane outline on one side of a line: of the points whose
- * coordinate `axis` (0 for `a`, 1 for `h`) is at most `v` with `below`,
- * at least `v` without (one pass of polygon clipping against a line). The
- * bike's shell is cut with it into panels of different widths and shades.
- */
-function clipAt(
-  poly: readonly (readonly [number, number])[],
-  axis: 0 | 1,
-  v: number,
-  below: boolean,
+function arc(
+  a: number,
+  h: number,
+  r: number,
+  from: number,
+  to: number,
+  n: number,
 ): [number, number][] {
-  const inside = (p: readonly [number, number]) =>
-    below ? p[axis] <= v : p[axis] >= v;
-  const out: [number, number][] = [];
-  poly.forEach((p, i) => {
-    const q = poly[(i + 1) % poly.length] ?? p;
-    if (inside(p)) out.push([p[0], p[1]]);
-    if (inside(p) !== inside(q)) {
-      const t = (v - p[axis]) / (q[axis] - p[axis]);
-      out.push([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])]);
-    }
+  return Array.from({ length: n + 1 }, (_, i) => {
+    const t = ((from + ((to - from) * i) / n) * Math.PI) / 180;
+    return [a + r * Math.cos(t), h + r * Math.sin(t)];
   });
-  return out;
 }
 
 /**
- * The windscreen's side profile, `[a, h]`: a dark shell set high on the
- * cowl, its top edge leaning back towards the rider up to
- * `BIKE.screenTop` over the front third and its lower edge running down
- * the cowl's forward slope a little under the cowl's top. It is a hair
- * wider than the cowl (`SCREEN_HALF`), so it wraps over the cowl's sides
- * as a dark band and shows from the side without sharing their planes.
+ * `n` points on the quadratic curve from `p0` to `p1` pulled towards `c`,
+ * `p0` left out and `p1` included, so curves chain without a repeated
+ * point.
  */
-const SCREEN_PROFILE: readonly (readonly [number, number])[] = [
-  [1.2, 0.86],
-  [0.68, BIKE.screenTop],
-  [0.6, BIKE.screenTop],
-  [0.56, 1.0],
-  [0.9, 0.94],
+function curve(p0: P2, c: P2, p1: P2, n: number): [number, number][] {
+  return Array.from({ length: n }, (_, i) => {
+    const t = (i + 1) / n;
+    const u = 1 - t;
+    return [
+      u * u * p0[0] + 2 * u * t * c[0] + t * t * p1[0],
+      u * u * p0[1] + 2 * u * t * c[1] + t * t * p1[1],
+    ];
+  });
+}
+
+/**
+ * The angle, in degrees, of the point on the circle of radius `r` round
+ * `(a0, h0)` at `a`, on its upper half: where an arch meets a straight
+ * edge at `a`.
+ */
+function archAngle(a0: number, r: number, a: number): number {
+  return (Math.acos((a - a0) / r) * 180) / Math.PI;
+}
+
+/**
+ * The outline `poly` grown by `g` outward (or shrunk, for a negative
+ * `g`): each corner moved along the mitre of its two edges' normals, the
+ * mitre held to twice `g` at a sharp corner. The body panels are built in
+ * slices, the narrower slices grown so their outline stands proud of the
+ * wider ones all round: each edge steps down in two or three facets and
+ * reads rounded, as the robot head's jaw does.
+ */
+function grown(poly: readonly P2[], g: number): [number, number][] {
+  const n = poly.length;
+  let area = 0;
+  poly.forEach((p, i) => {
+    const q = poly[(i + 1) % n] ?? p;
+    area += p[0] * q[1] - q[0] * p[1];
+  });
+  const out = area > 0 ? 1 : -1;
+  const normal = (p: P2, q: P2): [number, number] => {
+    const len = Math.hypot(q[0] - p[0], q[1] - p[1]);
+    return [(out * (q[1] - p[1])) / len, (-out * (q[0] - p[0])) / len];
+  };
+  return poly.map((p, i) => {
+    const prev = poly[(i + n - 1) % n] ?? p;
+    const next = poly[(i + 1) % n] ?? p;
+    const [n0, n1] = [normal(prev, p), normal(p, next)];
+    const k = g / Math.max(1 + n0[0] * n1[0] + n0[1] * n1[1], 0.5);
+    return [p[0] + (n0[0] + n1[0]) * k, p[1] + (n0[1] + n1[1]) * k];
+  });
+}
+
+/**
+ * A line along the side profile `pts` (`[a, h]`, open), `width` wide, laid
+ * on the face between depths `d0` and `d1`: one flat bar per pair of
+ * points, each a little longer than its piece so the joints close. The
+ * red bike's pinstripe and the neon bike's glowing lines.
+ */
+function profileLine(
+  k: Kit,
+  pts: readonly P2[],
+  width: number,
+  d0: number,
+  d1: number,
+  surf: Surface,
+): void {
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const p = pts[i];
+    const q = pts[i + 1];
+    if (!p || !q) continue;
+    const bar = tiltedBar(
+      (p[0] + q[0]) / 2,
+      (p[1] + q[1]) / 2,
+      Math.atan2(q[1] - p[1], q[0] - p[0]),
+      Math.hypot(q[0] - p[0], q[1] - p[1]) + width,
+      width,
+    );
+    k.extrude(bar, d0, d1, surf);
+  }
+}
+
+/**
+ * The front fairing's middle, `[a, h]`: the arch over the front wheel
+ * from the nose back down to the floor pan, the floor pan back to the
+ * seat, the rear edge rising in a curve to the dash, and the top running
+ * forward, falling a little, to the nose, whose flat front carries the
+ * headlight. It is built in slices (`CORE_SLICES`).
+ */
+const CORE: readonly P2[] = [
+  ...arc(
+    BIKE_WHEELS.front.a,
+    BIKE_WHEELS.front.r,
+    FRONT_ARCH,
+    archAngle(BIKE_WHEELS.front.a, FRONT_ARCH, 1.31),
+    360 - archAngle(BIKE_WHEELS.front.a, FRONT_ARCH, 0.8),
+    12,
+  ),
+  [0.24, 0.1],
+  [0.24, 0.3],
+  ...curve([0.24, 0.3], [0.36, 0.6], [0.4, 0.88], 4),
+  [0.44, 0.935],
+  [0.52, 0.95],
+  ...curve([0.52, 0.95], [0.95, 0.925], [1.27, 0.855], 4),
+  [1.31, 0.83],
 ];
 
-/** The windscreen's half width: 5 mm wider than the cowl on each side. */
-const SCREEN_HALF = 0.265;
+/**
+ * The front fairing's middle slices, `[half width, growth]`: the wide one
+ * on the outline and a narrower glossy crest grown proud of it.
+ */
+const CORE_SLICES: readonly (readonly [number, number])[] = [
+  [0.2, 0],
+  [0.17, 0.015],
+];
+
+/**
+ * The fairing's side skirts, `[a, h]`: the flat side panels from the nose
+ * back to the dash, over the front wheel's upper rear quarter, as wide as
+ * the bike's shell gets. Their outer face carries the left side's
+ * stickers and the right side's.
+ */
+const SKIRT: readonly P2[] = [
+  [1.3, 0.5],
+  [1.315, 0.7],
+  [1.31, 0.825],
+  [1.27, 0.85],
+  ...curve([1.27, 0.85], [0.95, 0.918], [0.52, 0.945], 4),
+  [0.45, 0.93],
+  [0.42, 0.88],
+  ...curve([0.42, 0.88], [0.41, 0.6], [0.44, 0.47], 3),
+  [0.8, 0.43],
+  [1.1, 0.44],
+  [1.25, 0.47],
+];
+
+/**
+ * The skirts' depths: the panel from `in` to `mid` on the outline and its
+ * face plate from `mid` to `out`, shrunk by `inset` all round, so the
+ * panel's edge steps down to the face.
+ */
+const SKIRT_D = { in: 0.2, mid: 0.235, out: 0.25, inset: 0.015 } as const;
+
+/**
+ * The floor pan between the fairing and the rear cowl, `[a, h]`, the seat
+ * standing on its raised back: a shade darker than the panels, and
+ * narrower (`BELLY_HALF`).
+ */
+const BELLY: readonly P2[] = [
+  [0.3, 0.1],
+  [0.3, 0.24],
+  [-0.02, 0.24],
+  [-0.05, 0.3],
+  [-0.46, 0.3],
+  [-0.5, 0.1],
+];
+
+/** The floor pan's half width. */
+const BELLY_HALF = 0.16;
+
+/**
+ * The rear cowl, `[a, h]`: the front face rising from the floor and
+ * leaning back behind the seat, the rounded top as high as the fairing's
+ * dash, the tail sloping down to its tip over the rear tyre, which it
+ * ends ahead of, and the arch round the rear wheel's top and front.
+ */
+const COWL: readonly P2[] = [
+  [-0.42, 0.1],
+  [-0.36, 0.3],
+  ...curve([-0.36, 0.3], [-0.44, 0.75], [-0.53, 0.99], 5),
+  [-0.58, 1.035],
+  [-0.68, 1.05],
+  [-0.82, 1.04],
+  [-0.94, 1.0],
+  [-1.06, 0.93],
+  [-1.18, 0.86],
+  [-1.24, 0.83],
+  ...arc(
+    BIKE_WHEELS.rear.a,
+    BIKE_WHEELS.rear.r,
+    REAR_ARCH,
+    archAngle(BIKE_WHEELS.rear.a, REAR_ARCH, -1.25),
+    -40,
+    12,
+  ),
+];
+
+/**
+ * The rear cowl's slices, `[half width, growth]`: three, the narrowest the
+ * glossy crest, the tail light on its slope.
+ */
+const COWL_SLICES: readonly (readonly [number, number])[] = [
+  [0.22, 0],
+  [0.2, 0.015],
+  [0.17, 0.03],
+];
+
+/**
+ * The tail's slope the tail light lies on: the cowl's edge from `from` to
+ * `to`, the light `length` long on its middle and `half` wide.
+ */
+const TAIL = {
+  from: [-1.06, 0.93],
+  to: [-1.18, 0.86],
+  length: 0.1,
+  half: 0.12,
+} as const;
+
+/**
+ * The pinstripe along each side of the rear cowl, `[a, h]`: a line under
+ * the top from the front face round to the tail.
+ */
+const PINSTRIPE: readonly P2[] = [
+  [-0.49, 0.88],
+  [-0.56, 0.96],
+  [-0.68, 0.98],
+  [-0.82, 0.97],
+  [-0.94, 0.93],
+  [-1.08, 0.85],
+];
+
+/**
+ * The left side's swing arm, `[a, h]`: from its pivot under the seat's
+ * back to the rear axle, outboard of the cowl (`ARM_D`); the silver cap
+ * sits on its end over the axle.
+ */
+const ARM: readonly P2[] = [
+  [-0.36, 0.31],
+  [-0.36, 0.47],
+  [BIKE_WHEELS.rear.a, 0.465],
+  [BIKE_WHEELS.rear.a, 0.315],
+];
+
+/** The swing arm's depths on the `-d` side. */
+const ARM_D = [0.215, 0.255] as const;
+
+/**
+ * The windscreen's side profile, `[a, h]`: a tall swept shield from the
+ * nose's top up and back to `BIKE.screenTop` over the dash, its foot sunk
+ * a little into the fairing's top. It is a hair wider than the skirts
+ * (`SCREEN_HALF`), so it wraps over their top edge.
+ */
+const SCREEN_PROFILE: readonly P2[] = [
+  [1.28, 0.835],
+  ...curve([1.28, 0.835], [0.9, 0.97], [0.56, BIKE.screenTop], 5),
+  [0.52, BIKE.screenTop],
+  [0.49, 1.12],
+  [0.47, 1.04],
+  [0.5, 0.93],
+  [0.95, 0.9],
+];
+
+/** The windscreen's half width: 5 mm wider than the skirts on each side. */
+const SCREEN_HALF = 0.255;
+
+/**
+ * The engine's round covers low on each side of the rear cowl, behind the
+ * seat: centre `[a, h]`, radius, the depths it stands out between, and a
+ * silver cap on it.
+ */
+const ENGINE = { at: [-0.55, 0.2], r: 0.1, d: [0.2, 0.245] } as const;
 
 /**
  * The side stand's side profile, `[a', h]` in the `sideways` frame, where
- * `a'` is `-d`: a bar from inside the chassis's `-d` side down and out to
- * a flat foot on the floor.
+ * `a'` is `-d`: a bar from inside the floor pan's `-d` side down and out
+ * to a flat foot on the floor.
  */
-const STAND_PROFILE: readonly (readonly [number, number])[] = [
+const STAND_PROFILE: readonly P2[] = [
   [0.15, 0.27],
   [0.175, 0.27],
   [0.435, 0],
   [0.41, 0],
 ];
 
-/** The tyres' tread: a darker rubber than their side walls. */
-const TREAD: Rgb = [0.025, 0.025, 0.03];
-
-/** The front brake disc's bright steel. */
-export const BRAKE_STEEL: Rgb = [0.72, 0.72, 0.75];
-
 /**
- * The bezels round the lamps, the caliper and the instrument panel: a dark
- * grey.
+ * The headlight on the nose's flat front under the screen's foot: a wide
+ * rectangle `half` wide and from `h0` to `h1`, in a black front panel
+ * (`frame`, `[half, h0, h1]`), with an amber indicator at each of the
+ * nose's corners.
  */
-const BIKE_DARK: Rgb = [0.14, 0.14, 0.16];
-
-/** The accent line along each side: an off white. */
-const ACCENT: Rgb = [0.88, 0.88, 0.84];
-
-/** The indicator lenses beside the headlight: amber, off while parked. */
-const INDICATOR: Rgb = [0.95, 0.55, 0.1];
-
-/** The saddle's rolled edge: a darker brown than its top. */
-const SADDLE_EDGE: Rgb = [0.16, 0.08, 0.06];
-
-/**
- * The bike's small parts, in metres:
- * - `side`: a tyre's side wall starts this far in from the tread's half
- *   width and its radius is `wallIn` smaller, so the tread shows round
- *   the tyre as a darker band;
- * - `holes`: the radius the hubs' ring of six holes sits at, `hole` half
- *   a hole's side;
- * - `disc`: the brake disc's radius, `discT` its thickness, standing
- *   outboard of the front hub on the `+d` side;
- * - `fork`: the fork legs' width; each leg runs from the front axle up
- *   and back into the shell at `forkTop`;
- * - `bezel`: how much wider a lamp's bezel is than its lamp;
- * - `accent`: the accent line's heights; `seams` where the raised panel
- *   seams stand along `a`.
- */
-const BIKE_PARTS = {
-  side: 0.035,
-  wallIn: 0.01,
-  holes: 0.16,
-  hole: 0.018,
-  disc: 0.12,
-  discT: 0.008,
-  fork: 0.045,
-  forkTop: [0.86, 0.58],
-  bezel: 0.015,
-  accent: [0.6, 0.62],
-  seams: [-1.18, 0.3, 1.3],
+const HEADLAMP = {
+  half: 0.14,
+  h: [0.755, 0.815],
+  frame: [0.165, 0.735, 0.835],
+  indicator: { d: 0.185, h: 0.79, r: 0.012 },
 } as const;
 
 /**
- * The shell's top at `a`: the highest crossing of the vertical line at
- * `a` with `BIKE_PROFILE`, where a raised seam across the side ends.
- */
-function shellTopAt(a: number): number {
-  let top = -Infinity;
-  BIKE_PROFILE.forEach((p, i) => {
-    const q = BIKE_PROFILE[(i + 1) % BIKE_PROFILE.length] ?? p;
-    if ((p[0] - a) * (q[0] - a) > 0 || p[0] === q[0]) return;
-    top = Math.max(top, p[1] + ((a - p[0]) / (q[0] - p[0])) * (q[1] - p[1]));
-  });
-  return top;
-}
-
-/**
- * One sticker on the bike's fairing: which `MARKS.bikeStickers` entry, its
- * plate and ink, and where along the shell it sits: `a` along the bike and
- * `h` in height, on the `+d` side, mirrored on the `-d` side.
+ * One sticker on the bike: its mark, which side (`1` for `+d`, `-1` for
+ * `-d`), the depth of the face it is laid on, its plate and ink, and
+ * where it sits: `a` along the bike and `h` in height. The stickers are
+ * not mirrored, as on the original.
  */
 export interface BikeSticker {
-  text: number;
-  /** The plate's colour; `null`: the letters print straight on the red. */
+  mark: string | readonly string[];
+  side: 1 | -1;
+  face: number;
+  /** The plate's colour; `null`: the letters print straight on the paint. */
   plate: Rgb | null;
   ink: Rgb;
   a: readonly [number, number];
   h: readonly [number, number];
 }
 
+/** The front wheel cover's inner dome face, where its sticker sits. */
+const WHEEL_FACE = BIKE_WHEELS.front.half + (DOMES[1]?.[1] ?? 0);
+
 /**
- * The bike's four sponsor stickers (2.6f C13), placed as the sticker sets
- * copied from the original place them, on the flat sides of the shell:
- * - the camera maker's, the largest, red letters on a white plate on the
- *   cowl's side, between the seam at 0.3 and the nose, under the
- *   windscreen's lower edge and over the accent line;
- * - a helmet maker's in white letters straight on the red of the upper
- *   panel between the seat and the seam at 0.3, under the shell's top as
- *   it rises to the cowl;
- * - the watch maker's in black on a white plate on the lower panel over
- *   the chassis, between the footpeg and the front wheel;
- * - the other helmet maker's in white on a black plate on the lower panel
- *   over the rear wheel, behind the vents.
- * Every ink is its sticker's own, used by no other part of the bike, and
- * none is the bike's red, shine or black.
+ * The bike's five lettered stickers (2.6f C13), as on the original:
+ * - on the left (`-d`) skirt the watch maker's white on a black plate,
+ *   above the camera maker's red on a white plate, the largest; on the
+ *   front wheel cover, under its middle, the helmet maker's black on a
+ *   white plate;
+ * - on the right (`+d`) skirt the big two-line sticker, orange on black;
+ *   on the front wheel cover the other helmet maker's blue on white.
+ * Every ink is its sticker's own, used by no other part of the bike.
  */
 export const BIKE_STICKERS: readonly BikeSticker[] = [
   {
-    text: 0,
-    plate: [0.96, 0.96, 0.93],
-    ink: [0.8, 0.05, 0.05],
-    a: [0.36, 1.02],
-    h: [0.66, 0.84],
-  },
-  {
-    text: 1,
-    plate: [0.94, 0.94, 0.91],
-    ink: [0.02, 0.02, 0.03],
-    a: [-0.2, 0.56],
-    h: [0.34, 0.54],
-  },
-  {
-    text: 2,
-    plate: null,
-    ink: [1.0, 1.0, 1.0],
-    a: [0.0, 0.28],
-    h: [0.64, 0.74],
-  },
-  {
-    text: 3,
+    mark: MARKS.bikeStickers[1],
+    side: -1,
+    face: SKIRT_D.out,
     plate: [0.03, 0.03, 0.035],
     ink: [0.97, 0.97, 0.97],
-    a: [-1.28, -0.72],
-    h: [0.3, 0.52],
+    a: [0.56, 0.98],
+    h: [0.67, 0.77],
+  },
+  {
+    mark: MARKS.bikeStickers[0],
+    side: -1,
+    face: SKIRT_D.out,
+    plate: [0.96, 0.96, 0.93],
+    ink: [0.8, 0.05, 0.05],
+    a: [0.62, 1.1],
+    h: [0.52, 0.64],
+  },
+  {
+    mark: MARKS.bikeStickers[3],
+    side: -1,
+    face: WHEEL_FACE,
+    plate: [0.94, 0.94, 0.91],
+    ink: [0.02, 0.02, 0.03],
+    a: [BIKE_WHEELS.front.a - 0.13, BIKE_WHEELS.front.a + 0.13],
+    h: [BIKE_WHEELS.front.r - 0.15, BIKE_WHEELS.front.r - 0.06],
+  },
+  {
+    mark: MARKS.bikeBigOne,
+    side: 1,
+    face: SKIRT_D.out,
+    plate: [0.04, 0.04, 0.045],
+    ink: [1.0, 0.55, 0.1],
+    a: [0.64, 0.92],
+    h: [0.5, 0.82],
+  },
+  {
+    mark: MARKS.bikeStickers[2],
+    side: 1,
+    face: WHEEL_FACE,
+    plate: [0.98, 0.98, 0.97],
+    ink: [0.1, 0.3, 0.75],
+    a: [BIKE_WHEELS.front.a - 0.13, BIKE_WHEELS.front.a + 0.13],
+    h: [BIKE_WHEELS.front.r - 0.15, BIKE_WHEELS.front.r - 0.06],
   },
 ];
+
+/**
+ * The round stickers high on each skirt's nose end, at `at` with radius
+ * `r`: the star roundel on the left, the smiley on the right.
+ */
+const BADGE = { at: [1.13, 0.74], r: 0.045 } as const;
+
+/**
+ * A five-pointed star outline round `(a, h)`, its outer points at radius
+ * `r` and the inner corners at `inner`, one point straight up.
+ */
+function star(a: number, h: number, r: number, inner: number): P2[] {
+  return Array.from({ length: 10 }, (_, i): P2 => {
+    const t = Math.PI / 2 + (i * Math.PI) / 5;
+    const q = i % 2 === 0 ? r : inner;
+    return [a + q * Math.cos(t), h + q * Math.sin(t)];
+  });
+}
 
 /**
  * A mark's box inset by one pixel of the block fitted into it, so the
@@ -418,216 +661,598 @@ function insetBox(
 }
 
 /**
- * The red bike: the shell over two fat wheels with a dark tread band and
- * grey disc hubs with a ring of holes, the front one with a steel brake
- * disc, its caliper and the fork legs; the chassis, footpegs and the
- * side stand under it; the saddle with its rolled edge and the backrest;
- * the wrap-round windscreen with the instrument panel behind it and the
- * handlebar whose grips, each with a mirror, stand out each side of the
- * cowl; the headlight in its bezel between two indicators; the tail light
- * in its bezel over a small bracket; and on each side the raised panel
- * seams, the accent line and the vents ahead of the rear wheel.
+ * One wheel: the round tyre in three slices and on each side the red
+ * cover's two domes; the rear one's silver cap on the `+d` side.
+ */
+function bikeWheel(k: Kit, s: Surfaces, w: BikeWheel, cap: boolean): void {
+  const [tread, wall] = [s.tinted(TREAD), s.tinted(TYRE)];
+  TYRE_SLICES.forEach(([inR, inD], i) =>
+    k.extrude(
+      discOutline(w.a, w.r, w.r - inR, TYRE_SIDES, "top"),
+      -(w.half - inD),
+      w.half - inD,
+      i === 0 ? tread : wall,
+    ),
+  );
+  let d0 = w.half;
+  DOMES.forEach(([share, out], i) => {
+    const disc = discOutline(w.a, w.r, w.r * share, DOME_SIDES, "top");
+    const paint = s.tinted(i === 0 ? BIKE_RED : BIKE_SHINE);
+    k.extrude(disc, d0, w.half + out, paint);
+    k.extrude(disc, -(w.half + out), -d0, paint);
+    d0 = w.half + out;
+  });
+  if (cap)
+    k.extrude(
+      discOutline(w.a, w.r, CAP.r, 12),
+      d0,
+      d0 + CAP.t,
+      s.tinted(HUB_SILVER),
+    );
+}
+
+/**
+ * The red bike: two fat round tyres at the ends with red domed covers;
+ * the front fairing over the front wheel in slices, its side skirts, the
+ * tall swept windscreen, the wide headlight in its black front panel
+ * between two indicators, the dash, the handlebar and the mirrors; the
+ * low floor pan over the black chassis with the bucket seat and its tall
+ * backrest; the tall rear cowl in slices with its pinstripe and the tail
+ * light on its slope; the engine covers, the left swing arm and the side
+ * stand; and the stickers, each on its own side.
  */
 const redBike: HeroRecipe = ({ k, kitAt, s }) => {
-  const b = BIKE_BODY;
-  const P = BIKE_PARTS;
-  const hub = s.tinted(HUB_GREY);
+  const red = s.tinted(BIKE_RED);
+  const shine = s.tinted(BIKE_SHINE);
+  const lower = s.tinted(shade(BIKE_RED, 0.75));
   const black = s.tinted(BIKE_BLACK);
   const dark = s.tinted(BIKE_DARK);
-  // The back view, for the decals on the `-d` sides: a' is -a, d' is -d.
-  const back = kitAt(yawed(ORIGIN, 0, 0, Math.PI));
-  const wall = b.tyre - P.side;
-  for (const a of [-b.axle, b.axle]) {
-    k.extrude(
-      discOutline(a, b.r, b.r, 14, "top"),
-      -wall,
-      wall,
-      s.tinted(TREAD),
-    );
-    const walls = discOutline(a, b.r, b.r - P.wallIn, 14, "top");
-    k.extrude(walls, wall - 0.005, b.tyre, s.tinted(TYRE));
-    k.extrude(walls, -b.tyre, -wall + 0.005, s.tinted(TYRE));
-    const disc = discOutline(a, b.r, b.hub, 12, "top");
-    k.extrude(disc, b.tyre, b.tyre + b.hubT, hub);
-    k.extrude(disc, -b.tyre - b.hubT, -b.tyre, hub);
-    const face = b.tyre + b.hubT + DECAL_LIFT;
-    for (let i = 0; i < 6; i++) {
-      const t = ((2 * i + 1) * Math.PI) / 6;
-      const ha = a + P.holes * Math.cos(t);
-      const hh = b.r + P.holes * Math.sin(t);
-      const [h0, h1] = [hh - P.hole, hh + P.hole];
-      k.panel(ha - P.hole, ha + P.hole, face, h0, h1, black);
-      back.panel(-ha - P.hole, -ha + P.hole, face, h0, h1, black);
-    }
-  }
-  // The front brake disc outboard of the hub, its caliper and the fork.
-  const d0 = b.tyre + b.hubT + 0.005;
-  k.extrude(
-    discOutline(b.axle, b.r, P.disc, 12, "top"),
-    d0,
-    d0 + P.discT,
-    s.tinted(BRAKE_STEEL),
-  );
-  k.box(0.88, 0.95, d0 - 0.01, d0 + 0.02, 0.3, 0.36, dark);
-  const [fa, fh] = P.forkTop;
-  for (const d of [-1, 1])
-    k.extrude(
-      [
-        [b.axle + P.fork / 2, b.r],
-        [fa + P.fork / 2, fh],
-        [fa - P.fork / 2, fh],
-        [b.axle - P.fork / 2, b.r],
-      ],
-      d * 0.19,
-      d * 0.215,
-      black,
-    );
-
-  const upper = clipAt(BIKE_PROFILE, 1, SEAM, false);
-  const red = s.tinted(BIKE_RED);
-  const front = clipAt(upper, 0, TAIL_CUT, false);
-  k.extrude(clipAt(front, 1, SHINE, true), -b.half, b.half, red);
-  k.extrude(
-    clipAt(front, 1, SHINE, false),
-    -b.half,
-    b.half,
-    s.tinted(BIKE_SHINE),
-  );
-  k.extrude(clipAt(upper, 0, TAIL_CUT, true), -b.tailHalf, b.tailHalf, red);
-  k.extrude(
-    clipAt(BIKE_PROFILE, 1, SEAM, true),
-    -b.lower,
-    b.lower,
-    s.tinted(shade(BIKE_RED, 0.75)),
-  );
-  k.box(-0.6, 0.6, -0.16, 0.16, 0.22, 0.3, black);
-
-  // Each side: the accent line, the raised seams, the vents and a footpeg.
-  const accent = s.tinted(ACCENT);
-  const seam = s.tinted(shade(BIKE_RED, 0.85));
-  const [ah0, ah1] = P.accent;
-  for (const d of [-1, 1]) {
-    k.box(
-      TAIL_CUT + 0.02,
-      1.44,
-      d * (b.half - 0.005),
-      d * (b.half + 0.004),
-      ah0,
-      ah1,
-      accent,
-    );
-    k.box(
-      -1.45,
-      TAIL_CUT - 0.02,
-      d * (b.tailHalf - 0.005),
-      d * (b.tailHalf + 0.004),
-      ah0,
-      ah1,
-      accent,
-    );
-    for (const sa of P.seams) {
-      const half = sa < TAIL_CUT ? b.tailHalf : b.half;
-      k.box(
-        sa - 0.006,
-        sa + 0.006,
-        d * (half - 0.005),
-        d * (half + 0.008),
-        SEAM + 0.01,
-        shellTopAt(sa) - 0.015,
-        seam,
-      );
-    }
-    k.box(-0.33, -0.27, d * 0.19, d * 0.28, 0.33, 0.36, black);
-  }
-  for (let i = 0; i < 4; i++) {
-    const h = 0.35 + i * 0.04;
-    k.panel(-0.6, -0.36, b.lower + DECAL_LIFT, h, h + 0.02, black);
-    back.panel(0.36, 0.6, b.lower + DECAL_LIFT, h, h + 0.02, black);
-  }
-
-  const saddle = s.tinted(SADDLE);
-  k.bevelBox(
-    -0.86,
-    -0.24,
-    -0.19,
-    0.19,
-    0.635,
-    0.675,
-    0.015,
-    s.tinted(SADDLE_EDGE),
-  );
-  k.bevelBox(-0.85, -0.25, -0.18, 0.18, 0.64, 0.7, 0.02, saddle);
-  // The small backrest, against the tail hump behind the saddle.
-  k.bevelBox(-0.94, -0.87, -0.14, 0.14, 0.66, 0.85, 0.02, saddle);
-
-  k.extrude(SCREEN_PROFILE, -SCREEN_HALF, SCREEN_HALF, s.tinted(SCREEN));
-  // The instrument panel just behind the screen, then the handlebar with
-  // its grips out each side of the cowl and a mirror on each grip.
-  k.box(0.51, 0.555, -0.13, 0.13, 1.0, 1.1, dark);
-  k.box(0.45, 0.5, -0.34, 0.34, 1.0, 1.03, black);
-  for (const d of [-1, 1]) {
-    k.box(0.44, 0.51, d * 0.28, d * 0.37, 0.99, 1.04, black);
-    k.box(0.47, 0.48, d * 0.33, d * 0.34, 1.04, 1.1, black);
-    k.box(0.465, 0.485, d * 0.31, d * 0.39, 1.1, 1.15, dark);
-  }
-
+  const silver = s.tinted(HUB_SILVER);
   const side = kitAt(sideways(ORIGIN));
-  const nose = BIKE.length / 2;
-  const [lampH, lampR] = b.lamp;
-  const oval = (r: number) =>
-    discOutline(0, lampH, r, 10).map(([x, h]): [number, number] => [
-      x * LAMP_WIDE,
-      h,
-    ]);
-  side.extrude(oval(lampR), nose - 0.01, nose, s.signal(HEADLIGHT));
-  side.extrude(oval(lampR + P.bezel), nose - 0.01, nose - 0.004, dark);
+  // The back view, for the `-d` side's decals: a' is -a, d' is -d.
+  const back = kitAt(yawed(ORIGIN, 0, 0, Math.PI));
+  const L = DECAL_LIFT;
+
+  bikeWheel(k, s, BIKE_WHEELS.front, false);
+  bikeWheel(k, s, BIKE_WHEELS.rear, true);
+
+  // The front fairing: the middle in slices, the skirts and their faces.
+  CORE_SLICES.forEach(([half, g], i) =>
+    k.extrude(grown(CORE, g), -half, half, i === 0 ? red : shine),
+  );
+  const face = grown(SKIRT, -SKIRT_D.inset);
+  for (const d of [-1, 1]) {
+    k.extrude(SKIRT, d * SKIRT_D.in, d * SKIRT_D.mid, red);
+    k.extrude(face, d * SKIRT_D.mid, d * SKIRT_D.out, red);
+  }
+  k.extrude(SCREEN_PROFILE, -SCREEN_HALF, SCREEN_HALF, s.tinted(SCREEN));
+
+  // The dash behind the screen, the handlebar, its grips and the mirrors.
+  k.box(0.4, 0.47, -0.12, 0.12, 0.93, 1.03, dark);
+  k.box(0.37, 0.43, -0.3, 0.3, 0.98, 1.01, black);
+  for (const d of [-1, 1]) {
+    k.box(0.36, 0.42, d * 0.25, d * 0.33, 0.975, 1.015, dark);
+    k.box(0.38, 0.4, d * 0.3, d * 0.32, 1.0, 1.09, black);
+    k.box(0.375, 0.405, d * 0.27, d * 0.37, 1.075, 1.13, dark);
+  }
+
+  // The headlight in its black front panel, and the indicators.
+  const nose = 1.31 + (CORE_SLICES[1]?.[1] ?? 0);
+  const rect = (half: number, h0: number, h1: number): P2[] => [
+    [-half, h0],
+    [half, h0],
+    [half, h1],
+    [-half, h1],
+  ];
+  const [fHalf, fh0, fh1] = HEADLAMP.frame;
+  side.extrude(rect(fHalf, fh0, fh1), nose, nose + 0.005, black);
+  side.extrude(
+    rect(HEADLAMP.half, HEADLAMP.h[0], HEADLAMP.h[1]),
+    nose + 0.005,
+    nose + 0.009,
+    s.signal(HEADLIGHT),
+  );
+  const ind = HEADLAMP.indicator;
   for (const d of [-1, 1])
     side.extrude(
-      discOutline(-d * 0.19, 0.6, 0.025, 8),
-      nose - 0.01,
-      nose - 0.002,
+      discOutline(-d * ind.d, ind.h, ind.r, 8),
+      1.31,
+      1.316,
       s.tinted(INDICATOR),
     );
-  const [tailH, tailR] = b.tail;
-  side.extrude(
-    discOutline(0, tailH, tailR, 10),
-    -nose,
-    -nose + 0.01,
-    s.blink(TAIL_LIGHT, 0),
+
+  // The floor pan over the black chassis, the seat and its backrest.
+  k.extrude(BELLY, -BELLY_HALF, BELLY_HALF, lower);
+  k.box(-0.45, 0.75, -0.12, 0.12, 0.076, 0.1, black);
+  k.bevelBox(-0.39, -0.01, -0.18, 0.18, 0.3, 0.38, 0.02, s.tinted(SADDLE_EDGE));
+  k.bevelBox(-0.38, -0.02, -0.16, 0.16, 0.31, 0.42, 0.03, s.tinted(SADDLE));
+  k.extrude(
+    tiltedBar(-0.38, 0.65, Math.atan2(0.46, -0.1), 0.47, 0.07),
+    -0.16,
+    0.16,
+    s.tinted(SADDLE_EDGE),
   );
-  side.extrude(
-    discOutline(0, tailH, tailR + P.bezel, 10),
-    -nose + 0.004,
-    -nose + 0.01,
+  k.extrude(
+    tiltedBar(-0.365, 0.66, Math.atan2(0.46, -0.1), 0.42, 0.05),
+    -0.13,
+    0.13,
+    s.tinted(SADDLE),
+  );
+
+  // The rear cowl in slices, its pinstripe and the tail light.
+  COWL_SLICES.forEach(([half, g], i) =>
+    k.extrude(
+      grown(COWL, g),
+      -half,
+      half,
+      i === COWL_SLICES.length - 1 ? shine : red,
+    ),
+  );
+  const outer = COWL_SLICES[0]?.[0] ?? 0;
+  const accent = s.tinted(ACCENT);
+  for (const d of [-1, 1])
+    profileLine(k, PINSTRIPE, 0.012, d * outer, d * (outer + 0.004), accent);
+  // The tail light lies on the crest's slope: the slope's edge moved out
+  // along its normal (up and back) by the crest's growth, then the dark
+  // bezel and the light, each standing proud of the one under it.
+  const [, crestGrow] = COWL_SLICES[COWL_SLICES.length - 1] ?? [0, 0];
+  const [p, q] = [TAIL.from, TAIL.to];
+  const len = Math.hypot(q[0] - p[0], q[1] - p[1]);
+  const [nx, nh] = [(q[1] - p[1]) / len, -(q[0] - p[0]) / len];
+  const tilt = Math.atan2(q[1] - p[1], q[0] - p[0]);
+  const [ma, mh] = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+  const onSlope = (out: number, length: number, width: number) =>
+    tiltedBar(ma + nx * out, mh + nh * out, tilt, length, width);
+  k.extrude(
+    onSlope(crestGrow + 0.004, TAIL.length + 0.03, 0.008),
+    -TAIL.half - 0.015,
+    TAIL.half + 0.015,
     dark,
   );
-  k.box(-1.465, -1.455, -0.1, 0.1, 0.34, 0.45, black);
+  k.extrude(
+    onSlope(crestGrow + 0.011, TAIL.length, 0.008),
+    -TAIL.half,
+    TAIL.half,
+    s.blink(TAIL_LIGHT, 0),
+  );
+
+  // The engine covers and their caps, the left swing arm and its cap.
+  const [ea, eh] = ENGINE.at;
+  const [ed0, ed1] = ENGINE.d;
+  for (const d of [-1, 1]) {
+    k.extrude(discOutline(ea, eh, ENGINE.r, 12), d * ed0, d * ed1, red);
+    k.extrude(
+      discOutline(ea, eh, ENGINE.r * 0.55, 10),
+      d * ed1,
+      d * (ed1 + CAP.t),
+      silver,
+    );
+  }
+  k.extrude(ARM, -ARM_D[0], -ARM_D[1], lower);
+  const ra = BIKE_WHEELS.rear;
+  k.extrude(discOutline(ra.a, ra.r, 0.09, 12), -ARM_D[0], -ARM_D[1], lower);
+  k.extrude(
+    discOutline(ra.a, ra.r, CAP.r, 12),
+    -ARM_D[1],
+    -ARM_D[1] - CAP.t,
+    silver,
+  );
   side.extrude(STAND_PROFILE, -0.22, -0.18, black);
 
-  // The stickers, on each side's flat panel: the upper panels at `half`,
-  // the lower ones (under `SEAM`) at `lower`. The `-d` side mirrors `a`.
-  // A plate stands one lift proud and its letters one more; letters
-  // printed straight on the red stand one lift proud, as any decal does.
+  // The lettered stickers, each on its own side: a plate one lift proud
+  // of its face and its letters one more. The `-d` side is laid from the
+  // back view, so its letters read left to right from that side.
   for (const st of BIKE_STICKERS) {
-    const text = MARKS.bikeStickers[st.text] ?? "";
     const [a0, a1] = st.a;
     const [h0, h1] = st.h;
-    const face = h1 <= SEAM ? b.lower : b.half;
-    const ink = s.tinted(st.ink);
-    for (const [kk, s0, s1] of [
-      [k, a0, a1],
-      [back, -a1, -a0],
-    ] as const) {
-      if (st.plate !== null)
-        kk.panel(s0, s1, face + DECAL_LIFT, h0, h1, s.tinted(st.plate));
-      markLines(
-        kk,
-        text,
-        insetBox(text, [s0, s1, h0, h1]),
-        face + (st.plate === null ? 1 : 2) * DECAL_LIFT,
-        ink,
-      );
-    }
+    const kk = st.side === 1 ? k : back;
+    const [s0, s1] = st.side === 1 ? [a0, a1] : [-a1, -a0];
+    if (st.plate !== null)
+      kk.panel(s0, s1, st.face + L, h0, h1, s.tinted(st.plate));
+    markLines(
+      kk,
+      st.mark,
+      insetBox(st.mark, [s0, s1, h0, h1]),
+      st.face + (st.plate === null ? 1 : 2) * L,
+      s.tinted(st.ink),
+    );
+  }
+
+  // The round stickers on the skirts' nose ends: the star roundel with its
+  // two bars on the left, the smiley on the right.
+  const [ba, bh] = BADGE.at;
+  const r = BADGE.r;
+  const f = SKIRT_D.out;
+  back.extrude(discOutline(-ba, bh, r, 14), f, f + L, s.tinted(ROUNDEL.blue));
+  back.extrude(
+    star(-ba, bh, r * 0.78, r * 0.31),
+    f + L,
+    f + 2 * L,
+    s.tinted(ROUNDEL.white),
+  );
+  for (const sg of [-1, 1]) {
+    // Each bar from the disc's rim outward, its low end first.
+    const [x0, x1] = [-ba + sg * r, -ba + sg * 2.2 * r];
+    const [b0, b1] = [Math.min(x0, x1), Math.max(x0, x1)];
+    back.panel(
+      b0,
+      b1,
+      f + L,
+      bh - 0.35 * r,
+      bh + 0.35 * r,
+      s.tinted(ROUNDEL.white),
+    );
+    back.panel(
+      b0,
+      b1,
+      f + 2 * L,
+      bh - 0.12 * r,
+      bh + 0.12 * r,
+      s.tinted(ROUNDEL.red),
+    );
+  }
+  k.extrude(discOutline(ba, bh, r, 14), f, f + L, s.tinted(SMILEY.face));
+  const smile = s.tinted(SMILEY.ink);
+  for (const sg of [-1, 1]) {
+    k.panel(
+      ba + sg * 0.35 * r - 0.004,
+      ba + sg * 0.35 * r + 0.004,
+      f + 2 * L,
+      bh + 0.15 * r,
+      bh + 0.5 * r,
+      smile,
+    );
+    k.panel(
+      ba + sg * 0.55 * r - 0.004,
+      ba + sg * 0.55 * r + 0.004,
+      f + 2 * L,
+      bh - 0.4 * r,
+      bh - 0.2 * r,
+      smile,
+    );
+  }
+  k.panel(
+    ba - 0.45 * r,
+    ba + 0.45 * r,
+    f + 2 * L,
+    bh - 0.55 * r,
+    bh - 0.4 * r,
+    smile,
+  );
+};
+
+/** The neon bike's body: a glossy near black with a cold blue cast. */
+export const CYCLE_BODY: Rgb = [0.03, 0.035, 0.06];
+
+/** The gloss on the neon bike's crests: a lighter blue-black. */
+const CYCLE_SHINE: Rgb = [0.07, 0.08, 0.13];
+
+/**
+ * The neon bike's lower panel: a lighter grey than the band, so the
+ * flank reads in two tones.
+ */
+export const CYCLE_LOWER: Rgb = [0.22, 0.23, 0.26];
+
+/** The neon bike's canopy: a dark smoked blue. */
+export const CYCLE_CANOPY: Rgb = [0.05, 0.08, 0.16];
+
+/** The neon bike's hub covers: the body's black. */
+const CYCLE_HUB: Rgb = [0.02, 0.022, 0.035];
+
+/** The neon bike's glow: the bright cyan blue of its lines and rims. */
+export const CYCLE_GLOW: Rgb = [0.3, 0.8, 1.0];
+
+/**
+ * The neon bike's size, in metres: `length` from tyre to tyre along
+ * `a` and `top`, the canopy's top. No source gives the original's size,
+ * so it fills the hall footprint it already had (3.0 m); its proportions
+ * are the film model's, measured off a side view of a kit cut from the
+ * film's own files: the wheels a quarter of its length, the top 0.44 of
+ * it and so 1.8 times a wheel.
+ */
+export const CYCLE = { length: 2.9, top: 1.28 } as const;
+
+/**
+ * The neon bike's two wheels, the front one at `+a`: its axle at `a`
+ * (at height `r`), `r` the tyre's radius and `half` its half width. They
+ * are the same size and fat, and their treads are the cycle's two ends.
+ */
+export const CYCLE_WHEELS = {
+  front: { a: 1.09, r: 0.36, half: 0.14 },
+  rear: { a: -1.09, r: 0.36, half: 0.14 },
+} as const satisfies Record<string, BikeWheel>;
+
+/** The arch over each wheel: its radius round the axle. */
+const CYCLE_ARCH = 0.4;
+
+/**
+ * Where the shell starts along `a` behind: its square back edge, which
+ * hides the rear wheel's front, as on the original.
+ */
+const CYCLE_BACK = -1.0;
+
+/** The height of the shell's flat belly between the wheels. */
+const CYCLE_BELLY = 0.19;
+
+/**
+ * The shell's back, `[a, h]`, from the tail forward to the nose: it
+ * rises from over the rear axle to its crown a little ahead of the
+ * middle and falls in a long curve to the nose over the front wheel.
+ * The crests grown on it (`CYCLE_SLICES`) stand `CYCLE_CREST` above it.
+ */
+const CYCLE_SPINE: readonly P2[] = [
+  [-1.42, 0.74],
+  [-1.41, 0.86],
+  [-1.29, 0.97],
+  [-1.0, 1.035],
+  [-0.72, 1.075],
+  [-0.55, 1.125],
+  [-0.38, 1.165],
+  [-0.13, 1.205],
+  [0.1, 1.225],
+  [0.38, 1.22],
+  [0.6, 1.19],
+  [0.74, 1.155],
+  [0.89, 1.105],
+  [1.1, 1.0],
+  [1.25, 0.92],
+  [1.39, 0.825],
+  [1.43, 0.74],
+];
+
+const { front: FW, rear: RW } = CYCLE_WHEELS;
+
+/**
+ * Where the front arch is split between the band and the panel, in
+ * degrees round the front axle: behind and below its top.
+ */
+const FRONT_SPLIT = 150;
+
+/** The front arch's band part, from its upper front over the top. */
+const FRONT_HOOD = arc(FW.a, FW.r, CYCLE_ARCH, 35, FRONT_SPLIT, 10);
+
+/** The front arch's panel part, from the split down to the belly. */
+const FRONT_FOOT = arc(
+  FW.a,
+  FW.r,
+  CYCLE_ARCH,
+  FRONT_SPLIT,
+  180 + (Math.asin((FW.r - CYCLE_BELLY) / CYCLE_ARCH) * 180) / Math.PI,
+  4,
+);
+
+/** The rear arch, from the back edge over the rear wheel's top. */
+const REAR_HOOD = arc(
+  RW.a,
+  RW.r,
+  CYCLE_ARCH,
+  archAngle(RW.a, CYCLE_ARCH, CYCLE_BACK),
+  125,
+  6,
+);
+
+/**
+ * The split between the arched band and the lower panel, `[a, h]`, its
+ * inner points from the back edge forward: level along the flank a
+ * little under the middle of the body, then falling to the front arch.
+ * Its ends are the rear arch's first point and the front arch's split.
+ */
+const CYCLE_SPLIT: readonly P2[] = [
+  [-0.7, 0.79],
+  [-0.2, 0.8],
+  [0.3, 0.78],
+  [0.6, 0.72],
+];
+
+/**
+ * The neon bike's arched band, `[a, h]`, the body's upper part as on
+ * the original: it hoods the front wheel from its upper front round over
+ * the top, runs back along the split to the back edge, hoods the rear
+ * wheel over its top to behind the axle, and its back (`CYCLE_SPINE`)
+ * runs from the tail forward to the nose.
+ */
+const CYCLE_BAND: readonly P2[] = [
+  ...FRONT_HOOD,
+  ...[...CYCLE_SPLIT].reverse(),
+  ...REAR_HOOD,
+  ...CYCLE_SPINE,
+];
+
+/**
+ * The lower panel, `[a, h]`, under the band and recessed from it
+ * (`PANEL_HALF`): from the front arch's split down to the flat belly,
+ * back to the square back edge, which hides the rear wheel's front, up
+ * that edge to the band and forward along the split.
+ */
+const CYCLE_PANEL: readonly P2[] = [
+  ...FRONT_FOOT,
+  [CYCLE_BACK, CYCLE_BELLY],
+  ...REAR_HOOD.slice(0, 1),
+  ...CYCLE_SPLIT,
+];
+
+/**
+ * The neon bike's whole body, `[a, h]`: the band and the panel as one
+ * closed outline, which the glossy crests (`CYCLE_SLICES`) are grown
+ * from.
+ */
+const CYCLE_SHELL: readonly P2[] = [
+  ...FRONT_HOOD,
+  ...FRONT_FOOT.slice(1),
+  [CYCLE_BACK, CYCLE_BELLY],
+  ...REAR_HOOD,
+  ...CYCLE_SPINE,
+];
+
+/** The lower panel's half width: set in from the band's. */
+const PANEL_HALF = 0.17;
+
+/** How far the highest crest stands above the back. */
+const CYCLE_CREST = 0.035;
+
+/**
+ * The shell's slices, `[half width, growth]`: the wide one, which is
+ * the band (the panel stands `PANEL_HALF` in from it), and two narrower
+ * glossy crests grown proud of the whole shell, so its edges read
+ * rounded.
+ */
+const CYCLE_SLICES: readonly (readonly [number, number])[] = [
+  [0.2, 0],
+  [0.165, 0.02],
+  [0.11, CYCLE_CREST],
+];
+
+/**
+ * Where the canopy runs along `a`: a short dark top piece over the
+ * rider's place, from behind the back's crown forward to the crown, set
+ * back from the original's longer strip so the body does not read as a
+ * car's roof.
+ */
+export const CANOPY_SPAN = { from: -0.35, to: 0.1 } as const;
+
+/**
+ * The canopy's half width: over both crests, inside the wide slice, so
+ * from the side it shows as a dark piece standing on the back.
+ */
+const CANOPY_HALF = 0.17;
+
+/** How far the canopy's foot sinks into the shell under the back. */
+const CANOPY_SINK = 0.05;
+
+/** How far the canopy's back corner is rounded off, along `a` and down. */
+const CANOPY_ROUND = { a: 0.08, h: 0.025 } as const;
+
+/** The back's height at `a`, along `CYCLE_SPINE`. */
+function spineAt(a: number): number {
+  for (let i = 0; i + 1 < CYCLE_SPINE.length; i++) {
+    const p = CYCLE_SPINE[i];
+    const q = CYCLE_SPINE[i + 1];
+    if (!p || !q || a < p[0] || a > q[0]) continue;
+    return p[1] + ((q[1] - p[1]) * (a - p[0])) / (q[0] - p[0]);
+  }
+  throw new Error(`spineAt: ${String(a)} is off the back`);
+}
+
+/** The glowing lines' width and how far they stand off their face. */
+const CYCLE_LINE = { width: 0.016, out: 0.004 } as const;
+
+/**
+ * Where along `a` the canopy's foot has a point: its two ends and the
+ * back's points between them, so the foot follows the back.
+ */
+const CANOPY_AT: readonly number[] = [
+  CANOPY_SPAN.from,
+  ...CYCLE_SPINE.map(([a]) => a).filter(
+    (a) => a > CANOPY_SPAN.from && a < CANOPY_SPAN.to,
+  ),
+  CANOPY_SPAN.to,
+];
+
+/**
+ * The canopy's ridge height: level, so the glowing line along it tops
+ * out at the cycle's top, a few millimetres under it for the line's
+ * mitre at the rounded corner. The back falls away behind the crown, so
+ * the canopy stands clear of the crests (`CYCLE_CREST`) over the rider's
+ * place and meets the back at the crown.
+ */
+const CANOPY_TOP = CYCLE.top - CYCLE_LINE.width / 2 - 0.003;
+
+/**
+ * The canopy's ridge, `[a, h]`, from its back end to its front: a
+ * rounded back corner (`CANOPY_ROUND`), then level to the crown.
+ */
+const CANOPY_RIDGE: readonly P2[] = [
+  [CANOPY_SPAN.from, CANOPY_TOP - CANOPY_ROUND.h],
+  [CANOPY_SPAN.from + CANOPY_ROUND.a, CANOPY_TOP],
+  [CANOPY_SPAN.to, CANOPY_TOP],
+];
+
+/**
+ * The canopy over the rider, `[a, h]`: a short smoked piece on the back,
+ * its ridge `CANOPY_RIDGE` and its foot following the back
+ * `CANOPY_SINK` under it, inside the crests.
+ */
+const CYCLE_CANOPY_PROFILE: readonly P2[] = [
+  ...CANOPY_RIDGE,
+  ...[...CANOPY_AT].reverse().map((a): P2 => [a, spineAt(a) - CANOPY_SINK]),
+];
+
+/** How far in from the shell's outline its glowing side line runs. */
+const CYCLE_LINE_IN = 0.045;
+
+/**
+ * The neon bike's glowing side lines, `[a, h]`, as open polylines: the
+ * band's outline traced `CYCLE_LINE_IN` inside it, all the way round,
+ * closed on itself, so a line runs over the hoods, along the back and
+ * along the split over the panel.
+ */
+export function cycleLine(): P2[] {
+  const inner = grown(CYCLE_BAND, -CYCLE_LINE_IN);
+  const first = inner[0];
+  return first === undefined ? inner : [...inner, first];
+}
+
+/**
+ * One neon bike wheel: the tread a solid glowing disc, under a dark
+ * cover on each side that leaves only its rim lit, and the axle through
+ * the body from side to side.
+ */
+function cycleWheel(k: Kit, s: Surfaces, w: BikeWheel, glow: Surface): void {
+  k.extrude(discOutline(w.a, w.r, w.r, 24, "top"), -w.half, w.half, glow);
+  const hub = s.tinted(CYCLE_HUB);
+  for (const sg of [-1, 1]) {
+    k.extrude(
+      discOutline(w.a, w.r, w.r - 0.05, 20, "top"),
+      sg * w.half,
+      sg * (w.half + 0.012),
+      hub,
+    );
+    k.extrude(
+      discOutline(w.a, w.r, w.r - 0.15, 14, "top"),
+      sg * (w.half + 0.012),
+      sg * (w.half + 0.02),
+      s.tinted(CYCLE_SHINE),
+    );
+  }
+  const half = (CYCLE_SLICES[0]?.[0] ?? 0) - 0.01;
+  k.extrude(discOutline(w.a, w.r, 0.05, 10), -half, half, hub);
+}
+
+/**
+ * The neon bike: two fat wheels of one size at its ends, their rims
+ * glowing; the dark glossy shell, its arched band hooding both wheels
+ * and running over the top, the lighter grey lower panel recessed under
+ * it low between the wheels, and the crests over both; the short smoked
+ * canopy on its back over the rider, behind the crown; and the glowing
+ * lines tracing the band's outline on both sides and the canopy's
+ * ridge. Every light is in one group and breathes.
+ */
+const neonBike: HeroRecipe = ({ k, s }) => {
+  const glow = s.blink(CYCLE_GLOW, 0);
+  cycleWheel(k, s, CYCLE_WHEELS.front, glow);
+  cycleWheel(k, s, CYCLE_WHEELS.rear, glow);
+
+  const [body, shine] = [s.tinted(CYCLE_BODY), s.tinted(CYCLE_SHINE)];
+  const outer = CYCLE_SLICES[0]?.[0] ?? 0;
+  k.extrude(CYCLE_BAND, -outer, outer, body);
+  k.extrude(CYCLE_PANEL, -PANEL_HALF, PANEL_HALF, s.tinted(CYCLE_LOWER));
+  for (const [half, g] of CYCLE_SLICES.slice(1))
+    k.extrude(grown(CYCLE_SHELL, g), -half, half, shine);
+  const canopy = s.tinted(CYCLE_CANOPY);
+  k.extrude(CYCLE_CANOPY_PROFILE, -CANOPY_HALF, CANOPY_HALF, canopy);
+
+  const { width, out } = CYCLE_LINE;
+  const line = cycleLine();
+  for (const d of [-1, 1]) {
+    profileLine(k, line, width, d * outer, d * (outer + out), glow);
+    profileLine(
+      k,
+      CANOPY_RIDGE,
+      width,
+      d * CANOPY_HALF,
+      d * (CANOPY_HALF + out),
+      glow,
+    );
   }
 };
 
@@ -1158,4 +1783,8 @@ export function boxLeafMovers(hero: Hero, index: number, look: Look): Mover[] {
 export const STREET_RECIPES = {
   "red-bike": redBike,
   "police-box": policeBox,
-} satisfies Record<Extract<HeroKind, "red-bike" | "police-box">, HeroRecipe>;
+  "neon-bike": neonBike,
+} satisfies Record<
+  Extract<HeroKind, "red-bike" | "police-box" | "neon-bike">,
+  HeroRecipe
+>;

@@ -265,10 +265,18 @@ fn prepare_task_start() -> Option<std::fs::File> {
     crate::instance::daemon_log_file()
 }
 
+/// The daemon's log filter when `RUST_LOG` is unset: `info`, with the crates
+/// of the model download library (hf-xet: `xet`, `xet_client`, `xet_data`,
+/// `xet_runtime` and `xet_core_structures`, all matched by the `xet` prefix)
+/// at `warn`. They log every transfer step at info, dozens of lines a second
+/// during a download. The download's own notice and progress line are
+/// printed by Crystalline and are not filtered here.
+const DEFAULT_LOG_FILTER: &str = "info,xet=warn";
+
 /// Run the daemon: `crystalline serve [--daemon] [--http <addr>] [--read-only]
 /// [--take-over]`. The HTTP endpoint is on at [`DEFAULT_HTTP_ADDR`] unless it was
 /// turned off, so `--http` moves it or closes it rather than opening it; see
-/// [`resolve_http`]. The effective read-only mode is the explicit flag or
+/// `resolve_http`. The effective read-only mode is the explicit flag or
 /// `service.read_only`; `take_over` forces host-lock claims for a deliberate host
 /// migration in a shared database. `exit_when_idle` bounds the daemon's life to
 /// [`IDLE_EXIT_GRACE`] past its last socket session, the Claude Desktop
@@ -302,9 +310,9 @@ pub async fn run_serve(
         None
     };
     // RUST_LOG filters the daemon's log (the tracing `EnvFilter` syntax),
-    // `info` when it is unset or does not parse.
+    // `DEFAULT_LOG_FILTER` when it is unset or does not parse.
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER));
     let _ = match log_file {
         Some(file) => tracing_subscriber::fmt()
             .with_ansi(false)
@@ -926,10 +934,10 @@ fn settle_budget(deadline: Duration, elapsed: Duration) -> Duration {
 
 /// How long a stopping daemon has from the moment it decides to stop to the
 /// moment its process is gone. Each shutdown step normally takes milliseconds;
-/// a step still running at the deadline is abandoned by [`Departure`]'s
+/// a step still running at the deadline is abandoned by `Departure`'s
 /// watchdog, which names it in the log and exits anyway. The deadline is the
 /// longest a stuck daemon keeps its ownership: the record, the socket and the
-/// service lock stay until [`Departure`] removes them, so a successor arriving
+/// service lock stay until `Departure` removes them, so a successor arriving
 /// in the meantime meets a held service lock rather than a held index, and
 /// once ownership goes the exit follows at once.
 pub const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(10);
@@ -2791,7 +2799,7 @@ const EMBED_TICK: Duration = Duration::from_secs(300);
 /// falls back to an inline embed when no worker is wired (an inline pass on this
 /// timer would reintroduce the request-path stall the worker exists to
 /// prevent), so an unwired tick is a silent no-op. The cadence is a parameter so
-/// a test can drive it fast; production passes [`EMBED_TICK`].
+/// a test can drive it fast; production passes `EMBED_TICK`.
 ///
 /// "A backlog remains" is not on its own the condition to fire: it stays true
 /// for the whole life of a pass that is working through one, so a first index
@@ -2872,7 +2880,7 @@ const ORPHAN_SWEEP: Duration = Duration::from_secs(3600);
 const ORPHAN_GRACE_DAYS: i64 = 7;
 
 /// Collect the rows of every domain this instance has had no registration for
-/// longer than [`ORPHAN_GRACE_DAYS`], once per `cadence`, until shutdown.
+/// longer than `ORPHAN_GRACE_DAYS`, once per `cadence`, until shutdown.
 ///
 /// The grace period is always supplied, which is the whole difference between
 /// this and a person asking: an unattended sweep waits out the week, and
@@ -2893,7 +2901,7 @@ const ORPHAN_GRACE_DAYS: i64 = 7;
 /// process starts.
 ///
 /// The cadence is a parameter so a test can drive it fast; production passes
-/// [`ORPHAN_SWEEP`]. Silent on a pass that collects nothing - the engine logs
+/// `ORPHAN_SWEEP`. Silent on a pass that collects nothing - the engine logs
 /// one line per collection - and a failed pass is a warning, never fatal: the
 /// next tick tries again.
 ///
@@ -3551,6 +3559,54 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default filter quiets the model download library's crates, which
+    /// log every transfer step at info (dozens of lines a second during a
+    /// download), and keeps the daemon's own info lines and the library's
+    /// warnings. The targets are the ones a real download wrote to
+    /// daemon.log; `xet` matches each of them as a prefix.
+    #[test]
+    fn the_default_log_filter_keeps_xet_at_warn() {
+        #[derive(Clone, Default)]
+        struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Captured {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .with_env_filter(tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "crystalline_service::daemon", "own info line");
+            tracing::info!(target: "xet::xet_session::session", "xet session info");
+            tracing::info!(target: "xet_client::common::http_client", "xet client info");
+            tracing::info!(target: "xet_data::file_reconstruction::run_state", "xet data info");
+            tracing::info!(target: "xet_runtime::error_printer", "xet runtime info");
+            tracing::info!(target: "xet_core_structures::x", "xet structures info");
+            tracing::warn!(target: "xet_client::cas_client::retry_wrapper", "xet warning");
+        });
+        let text = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(text.contains("own info line"), "{text}");
+        assert!(text.contains("xet warning"), "{text}");
+        for quiet in [
+            "xet session info",
+            "xet client info",
+            "xet data info",
+            "xet runtime info",
+            "xet structures info",
+        ] {
+            assert!(!text.contains(quiet), "{quiet} passed the filter: {text}");
+        }
+    }
 
     /// The bare `/crystalline` prefix is stripped. MCP is the router's
     /// fallback, so a test that only checks that `/crystalline` reaches MCP

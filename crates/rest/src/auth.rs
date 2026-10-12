@@ -271,7 +271,7 @@ impl AuthCfg {
     }
 }
 
-/// Who the current request is. Resolved once by [`guard`] and handed to every
+/// Who the current request is. Resolved once by `guard` and handed to every
 /// handler through the request extensions, so a route never repeats the store
 /// lookups the guard already did.
 #[derive(Clone, Debug, Default)]
@@ -331,7 +331,7 @@ impl Identity {
     /// What this request may see, as the one value every read below this layer
     /// is threaded with.
     ///
-    /// Resolved here and nowhere else on this surface: [`guard`] already did
+    /// Resolved here and nowhere else on this surface: `guard` already did
     /// the store lookups, so a handler that re-derived who somebody is would be
     /// a second answer to a question that has one. An account maps to
     /// [`Scope::User`] carrying the store's own spelling of the login name -
@@ -371,7 +371,7 @@ impl Identity {
     ///
     /// The fallback is for a real identity with no session row anywhere to
     /// take a token from. In the header-auth modes that is rarer than it
-    /// sounds: [`header_mode_csrf`] prefers the cookie's token and otherwise
+    /// sounds: `header_mode_csrf` prefers the cookie's token and otherwise
     /// falls back to that account's newest live session, so those requests
     /// usually carry a minted token - and two windows of that account then
     /// share it, which is one browser holder per account in those modes and is
@@ -479,7 +479,7 @@ impl Identity {
 impl<S: Send + Sync> FromRequestParts<S> for Identity {
     type Rejection = ApiError;
 
-    /// Read what [`guard`] resolved. A missing identity is a wiring mistake
+    /// Read what `guard` resolved. A missing identity is a wiring mistake
     /// (a route mounted outside the guarded router), never a caller error, so
     /// it fails as a 500 rather than quietly serving the request unidentified.
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Identity, ApiError> {

@@ -234,7 +234,7 @@ export const FOOTPRINTS: Footprints = {
   hero: {
     turret: [{ width: 0.9, depth: 0.9 }],
     "black-slab": [{ width: 1.2, depth: 0.3 }],
-    "eye-panel": [{ width: 0.9, depth: 0.25 }],
+    "eye-panel": [{ width: 0.416, depth: 0.25 }],
     "photo-console": [{ width: 1.8, depth: 0.9 }],
     "laser-desk": [{ width: 2.4, depth: 3.0 }],
     "mess-table": [{ width: 5.0, depth: 2.6 }],
@@ -270,6 +270,9 @@ export const FOOTPRINTS: Footprints = {
     "thunder-hammer": [{ width: 0.8, depth: 0.8 }],
     "police-box": [{ width: 1.3, depth: 1.3 }],
     "slab-walker": [{ width: 0.9, depth: 1.5 }],
+    turntable: [{ width: 0.8, depth: 0.6 }],
+    camera: [{ width: 0.9, depth: 0.9 }],
+    "neon-bike": [{ width: 3.0, depth: 0.8 }],
   },
 };
 
@@ -421,6 +424,9 @@ export const HERO_FOOTING = {
   "thunder-hammer": "free",
   "police-box": "free",
   "slab-walker": "free",
+  turntable: "free",
+  camera: "free",
+  "neon-bike": "free",
 } as const satisfies Record<HeroKind, "flush" | "backed" | "free">;
 
 /**

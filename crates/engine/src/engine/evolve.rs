@@ -26,22 +26,21 @@ impl Engine {
         // The swept scope is read back out of the response rather than
         // re-derived from the parameters: an unscoped call defaults to every
         // registered domain, and only the response knows which those were.
-        let mut swept: Vec<String> = value["scope"]["domains"]
-            .as_array()
-            .map(|domains| {
-                domains
-                    .iter()
-                    .filter_map(|d| d.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        swept.extend(
-            value["scope"]["read_only_left_out"]
+        let names = |key: &str| -> Vec<String> {
+            value["scope"][key]
                 .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|d| d.as_str().map(str::to_string)),
-        );
+                .map(|domains| {
+                    domains
+                        .iter()
+                        .filter_map(|d| d.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let swept: Vec<String> = names("domains")
+            .into_iter()
+            .chain(names("read_only_left_out"))
+            .collect();
         // A sweep with no scope of its own looked at every registered domain,
         // so it settles the whole backlog rather than subtracting the names it
         // saw. That is what heals the state file: a domain a human wrote to and
@@ -87,13 +86,13 @@ impl Engine {
     ///   and the graph is taken at depth 1 so cross-domain targets carry a
     ///   status for `V101` to read;
     /// - the attachment facts (`analyzes`, `analyzed_hash`, `asset_refs`) are
-    ///   read off the **parsed engram** [`Engine::load_engram`] returns - the
+    ///   read off the **parsed engram** `Engine::load_engram` returns - the
     ///   file for a file domain, the stored source for a virtual one - and
     ///   never off the index's `content` column, which for a file domain holds
     ///   the body alone. A claim lives in the frontmatter, so counting it off
     ///   the index would make every file domain look as if it claimed nothing
     ///   and would report claimed attachments as orphans. This is the same
-    ///   split [`Engine::peer_engram_text`] makes for the move's referent
+    ///   split `Engine::peer_engram_text` makes for the move's referent
     ///   count, and the two agree on what a reference is: an `assets/` link in
     ///   the body or the `analyzes` key, compared as exact paths;
     /// - the lead vectors reach `V301` only when a provider is installed, so
@@ -134,35 +133,35 @@ impl Engine {
         // this caller may not see (see [`Engine::sweep_domain_names`]).
         let (known_domains, respell) = self.sweep_domain_names(&hidden).await;
 
-        let mut swept_scope: Vec<String> = Vec::new();
-        if p.domains.is_empty() {
-            swept_scope = local_domains.clone();
+        let named: Vec<String> = if p.domains.is_empty() {
+            local_domains.clone()
         } else {
+            let mut named = Vec::new();
             for name in &p.domains {
                 // The same resolution every other tool uses, so an unknown name
                 // errors identically and a domain registered after startup is
                 // still found - and a domain this caller may not see is one of
                 // the names that errors.
                 self.domain_entry_scoped(name, &hidden)?;
-                if !swept_scope.contains(name) {
-                    swept_scope.push(name.clone());
+                if !named.contains(name) {
+                    named.push(name.clone());
                 }
             }
-        }
+            named
+        };
 
         // A read-only domain's findings are findings nobody could act on, so
         // the sweep leaves it out, a named one included, and says which. They
         // come back the moment the flag is switched off.
         let mut read_only_left_out: Vec<String> = Vec::new();
-        let mut kept = Vec::with_capacity(swept_scope.len());
-        for name in swept_scope {
+        let mut swept_scope = Vec::with_capacity(named.len());
+        for name in named {
             if self.domain_is_read_only(&name).await {
                 read_only_left_out.push(name);
             } else {
-                kept.push(name);
+                swept_scope.push(name);
             }
         }
-        let swept_scope = kept;
 
         let mut findings: Vec<Finding> = Vec::new();
         let mut truncations: Vec<String> = Vec::new();
@@ -384,7 +383,7 @@ impl Engine {
     /// to be one the catalog knows, because an acknowledgment of a rule that
     /// does not exist can never suppress anything and silently storing it would
     /// read as work done. `remove V101` takes an entry back instead of
-    /// recording one (see [`parse_ack_value`]).
+    /// recording one (see `parse_ack_value`).
     pub fn ack_intent(p: &EditParams) -> Result<Option<AckIntent>> {
         if p.operation != "set_frontmatter"
             || p.key.as_deref().map(str::trim) != Some(EVOLVE_ACK_KEY)
@@ -619,7 +618,7 @@ impl Engine {
     /// `scope` names the pair the acknowledgment is for, which only a
     /// [pair-scoped](crystalline_index::is_pair_scoped) rule has more than one
     /// of; it is ignored for every other rule and checked rather than trusted
-    /// for that one (see [`Engine::named_scope`]). `None` leaves the choice to
+    /// for that one (see `Engine::named_scope`). `None` leaves the choice to
     /// the server, which is what an agent's `set_frontmatter` does.
     ///
     /// `acting` is who is asking, and it is a different thing entirely from
@@ -674,7 +673,7 @@ impl Engine {
     /// per engram and all pairs at once for `V301` and `V302`.
     ///
     /// Fluid's half of the take-back an agent asks for with the `remove
-    /// <rule-id>` value form; both filter through [`without_ack`]. They differ
+    /// <rule-id>` value form; both filter through `without_ack`. They differ
     /// in how an entry that is not there is reported, and in that the agent's
     /// form names a rule and never a pair.
     pub async fn unacknowledge_finding_as(

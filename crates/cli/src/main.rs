@@ -548,18 +548,20 @@ enum Command {
         /// --values) instead. Accepts a value that begins with `-`.
         #[arg(long, allow_hyphen_values = true)]
         content: Option<String>,
-        /// The frontmatter field to assign, for set_frontmatter: tags (with
-        /// --values), or status, valid_from, valid_to, stale_after,
-        /// source_date, resource, source_version, salience or verified (with
-        /// --value).
+        /// The frontmatter field to assign, for set_frontmatter: tags or
+        /// sources (with --values), or status, valid_from, valid_to,
+        /// stale_after, source_date, resource, source_version, salience or
+        /// verified (with --value).
         #[arg(long)]
         key: Option<String>,
         /// The value to assign, for set_frontmatter. Omit to remove the field;
         /// omit on verified to stamp a verification as yourself.
         #[arg(long, allow_hyphen_values = true)]
         value: Option<String>,
-        /// The whole new list, for set_frontmatter on tags, comma-separated
-        /// (--values api,retries). Pass --values alone to remove every tag.
+        /// The whole new list, for set_frontmatter on tags or sources,
+        /// comma-separated (--values api,retries). A location that holds a
+        /// comma cannot be passed here; set it through the edit_engram tool.
+        /// Pass --values alone to remove the key.
         #[arg(long, num_args = 0.., value_delimiter = ',')]
         values: Option<Vec<String>>,
         /// The heading path for the *_section operations.
@@ -5060,7 +5062,7 @@ fn run_prompt(
     // Virtual domains have no MANIFEST on disk; their routing bullets come from
     // the daemon (warm) or a direct store read. The all-file common case never
     // opens a runtime, so it stays as fast and deterministic as before.
-    let virtual_bullets = if global.domains.values().any(|e| e.is_virtual()) {
+    let virtual_routing = if global.domains.values().any(|e| e.is_virtual()) {
         // Owned copies: the future moves onto the runtime worker thread. The
         // raw --config override rides along so it bypasses the daemon just like
         // every other verb, even though `global` was already resolved from it.
@@ -5076,7 +5078,7 @@ fn run_prompt(
             .await
         })?
     } else {
-        std::collections::BTreeMap::new()
+        crystalline_service::VirtualRouting::default()
     };
 
     // Validated against the registry rather than against what survived the
@@ -5100,7 +5102,15 @@ fn run_prompt(
         );
     }
 
-    let mut output = crystalline_core::generate_prompt(&global, &workspace, &virtual_bullets);
+    let mut output =
+        crystalline_core::generate_prompt(&global, &workspace, &virtual_routing.bullets);
+    // A file domain's lock came off its MANIFEST in core; a virtual one's
+    // came with its bullets, the way the engine's own prompt marks it.
+    for domain in &mut output.domains {
+        if virtual_routing.read_only.contains(&domain.name) {
+            domain.read_only = true;
+        }
+    }
     // After the local rows, never sorted in among them (ruling F1): with
     // nothing mounted the block is byte-identical to one without sources.
     // `prompt.rules` names a lent domain by its local name like any other,
@@ -5231,6 +5241,34 @@ fn mounted_row(
     })
 }
 
+/// The strings of a JSON array, anything else skipped.
+fn json_strings(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s.as_str().map(str::to_string))
+        .collect()
+}
+
+/// The mounted rows a daemon's `mounted_routing` answer carries, each held to
+/// what [`mounted_row`] allows. A row marked `domain_read_only: true` stays
+/// marked; a row without the key is writable.
+fn mounted_rows_of(answer: &serde_json::Value) -> Vec<crystalline_core::PromptDomain> {
+    answer["domains"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|d| {
+            mounted_row(
+                d["name"].as_str()?,
+                &json_strings(&d["bullets"]),
+                d["domain_read_only"].as_bool().unwrap_or(false),
+            )
+        })
+        .collect()
+}
+
 /// What a running daemon said, if anything, when session start asked it.
 enum DaemonRouting {
     /// The daemon answered with its sources' mounted part.
@@ -5295,14 +5333,6 @@ fn mounted_part(
         }
     })
     .unwrap_or(DaemonRouting::Unavailable);
-    let strings = |value: &serde_json::Value| -> Vec<String> {
-        value
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|s| s.as_str().map(str::to_string))
-            .collect()
-    };
     let from_cache = |routing: crystalline_remote::MountedRouting| {
         let rows = routing
             .domains
@@ -5315,20 +5345,9 @@ fn mounted_part(
         // The daemon's view throughout, so what it hides and what it mounts
         // come from one table.
         DaemonRouting::Answered(answer) => (
-            strings(&answer["shadowed"]).into_iter().collect(),
-            answer["domains"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|d| {
-                    mounted_row(
-                        d["name"].as_str()?,
-                        &strings(&d["bullets"]),
-                        d["domain_read_only"].as_bool().unwrap_or(false),
-                    )
-                })
-                .collect(),
-            strings(&answer["stale"]),
+            json_strings(&answer["shadowed"]).into_iter().collect(),
+            mounted_rows_of(&answer),
+            json_strings(&answer["stale"]),
         ),
         DaemonRouting::TimedOut => from_cache(set.mounted_routing_unchecked()),
         DaemonRouting::Unavailable => from_cache(set.mounted_routing_from_cache()),
@@ -5543,6 +5562,25 @@ mod tests {
             std::time::Duration::from_millis(request["deadline_ms"].as_u64().unwrap())
                 < SESSION_ROUTING_WAIT
         );
+    }
+
+    /// A daemon's `mounted_routing` answer keeps a locked domain's mark and a
+    /// row without the key is writable.
+    #[test]
+    fn a_daemon_answer_keeps_the_read_only_mark_of_a_mounted_row() {
+        let answer = serde_json::json!({
+            "shadowed": [],
+            "domains": [
+                { "name": "locked", "bullets": ["Route here"], "domain_read_only": true },
+                { "name": "open", "bullets": ["Route there"] },
+            ],
+        });
+        let rows = mounted_rows_of(&answer);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "locked");
+        assert!(rows[0].read_only);
+        assert_eq!(rows[1].name, "open");
+        assert!(!rows[1].read_only);
     }
 
     /// Review I3: a server's bullet stays on its line and a name that could

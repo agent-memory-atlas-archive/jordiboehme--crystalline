@@ -261,9 +261,19 @@ async fn the_read_tools_mark_the_locked_domain() {
     let h = Harness::new().await;
     let (client, _server) = h.connect().await;
     let peer = client.peer();
-    // TOON-encoded: asked for the field name only.
     let listed = call(peer, "list_domains", json!({ "include_routing": true })).await;
-    assert!(text(&listed).contains("read_only"), "{listed}");
+    let listing: Value = serde_json::from_str(&text(&listed)).unwrap();
+    let row = |name: &str| -> Value {
+        listing["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["name"] == name)
+            .unwrap_or_else(|| panic!("{name} in {listing}"))
+            .clone()
+    };
+    assert_eq!(row("archive")["read_only"], true, "{listing}");
+    assert!(row("eng").get("read_only").is_none(), "{listing}");
     let read: Value = serde_json::from_str(&text(
         &call(
             peer,
@@ -289,4 +299,25 @@ async fn the_read_tools_mark_the_locked_domain() {
     ))
     .unwrap();
     assert_eq!(browsed["read_only"], true, "{browsed}");
+}
+
+/// B-1 item 2: switching the lock on where it is already on is a no-op that
+/// says so. Nothing is written, and the answer is not the switch-off refusal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn setting_read_only_on_where_it_is_on_is_a_no_op() {
+    let h = Harness::new().await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    let before = h.bytes("archive/MANIFEST.md");
+    let answer = call(
+        peer,
+        "configure",
+        json!({ "domain": "archive", "set": { "read_only": "on" } }),
+    )
+    .await;
+    let body = text(&answer);
+    assert_ne!(answer["isError"], true, "{answer}");
+    assert!(body.contains("'archive' is already read-only"), "{body}");
+    assert!(!body.contains("Only a person switches it off"), "{body}");
+    assert_eq!(h.bytes("archive/MANIFEST.md"), before);
 }

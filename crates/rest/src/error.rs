@@ -52,7 +52,7 @@ pub struct ApiError {
     ///
     /// Never zero by construction at the call sites: a `Retry-After: 0`
     /// invites an immediate retry into the same refusal, which is the rule
-    /// [`super::oauth`]'s registration limiter already states for its own 429.
+    /// `super::oauth`'s registration limiter already states for its own 429.
     pub retry_after: Option<u64>,
 }
 
@@ -391,8 +391,10 @@ impl IntoResponse for ApiError {
 /// before the checksum is returned: the content is what this guard protects,
 /// and a tag copied from a response written by another version of this binary
 /// is still a valid precondition when its checksum matches, whatever version
-/// wrote it. An attachment's `If-Match` (were one ever added) would carry no
-/// such suffix, since the plain content hash has no shape to version.
+/// wrote it. The `-ro` an engram read adds for a reader who may not write is
+/// stripped the same way. An attachment's `If-Match` (were one ever added)
+/// would carry no such suffix, since the plain content hash has no shape to
+/// version.
 pub fn if_match(headers: &axum::http::HeaderMap) -> Result<String, ApiError> {
     let raw = headers
         .get(axum::http::header::IF_MATCH)
@@ -629,6 +631,7 @@ fn remote_to_api_error(e: crystalline_remote::RemoteError, detail: String) -> Ap
         | RemoteError::AuthPending
         | RemoteError::Api { .. }
         | RemoteError::Io(_)
+        | RemoteError::WorkingTree { .. }
         | RemoteError::State(_)
         | RemoteError::Credential { .. }
         | RemoteError::ServerCredential { .. }

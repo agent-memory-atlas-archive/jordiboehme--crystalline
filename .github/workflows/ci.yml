@@ -4,6 +4,23 @@ on:
   pull_request:
   push:
     branches: [main]
+  # A dispatched run is the `stress` job alone (see there): `changes` answers
+  # code=false for it, so the gated jobs skip.
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Runner to stress on
+        type: choice
+        options: [windows-latest, ubuntu-latest, macos-latest, ubuntu-24.04-arm]
+        default: windows-latest
+      filter:
+        description: nextest filterset of the tests to stress
+        type: string
+        default: (package(crystalline-index) & !test(/^embed::/)) | package(crystalline-engine) | (package(crystalline-service) & (binary(domains) | binary(overlay) | binary(engine)))
+      count:
+        description: Stress iterations (each runs every selected test once)
+        type: string
+        default: '20'
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,8 +32,10 @@ permissions:
 
 # A newer push to a pull request cancels the run it supersedes. A push to main
 # keeps one group per commit and never cancels, so dev.yml sees every main run.
+# A dispatched stress run has a group of its own, so it never queues behind or
+# replaces a main push at the same commit.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-${{ github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -114,6 +133,13 @@ jobs:
               fi
               base="$PUSH_BEFORE_SHA"
               range="${base}..HEAD"
+              ;;
+            workflow_dispatch)
+              # A dispatched run exists for the stress job, which does not
+              # wait on this one. Skipping the gated jobs is the point.
+              echo "changes: a dispatched run is the stress job alone, so the gated jobs skip."
+              echo "code=false" >>"$GITHUB_OUTPUT"
+              exit 0
               ;;
             *)
               run_everything "the event $EVENT_NAME has no base to compare against"
@@ -286,6 +312,12 @@ jobs:
         if: ${{ matrix.os == 'ubuntu-latest' && needs.changes.outputs.tested != 'true' }}
         run: cargo fmt --all --check
 
+      - name: cargo doc (no private intra-doc links)
+        if: ${{ matrix.os == 'ubuntu-latest' && needs.changes.outputs.tested != 'true' }}
+        env:
+          RUSTDOCFLAGS: -D rustdoc::private_intra_doc_links
+        run: cargo doc --no-deps --workspace --locked
+
       - name: cargo clippy
         if: ${{ needs.changes.outputs.tested != 'true' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -332,11 +364,64 @@ jobs:
         # The `ci` profile is the default one plus a single retry, so an
         # environmental failure on a hosted runner reports FLAKY instead of
         # turning a green change red. A test that fails twice still fails.
-        run: cargo nextest run --workspace --profile ci --locked
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo nextest run --workspace --profile ci --locked 2>&1 | tee nextest.log
+
+      # A test that passed on its retry is FLAKY in the log. Show each as a
+      # warning on the run; the job stays green.
+      - name: flaky tests
+        if: ${{ success() && needs.changes.outputs.tested != 'true' }}
+        shell: bash
+        run: |
+          # CARGO_TERM_COLOR=always puts colour codes in the log; strip them.
+          sed $'s/\x1b\\[[0-9;]*m//g' nextest.log | grep -E '^ *FLAKY ' | while read -r line; do
+            echo "::warning::flaky test: ${line}"
+          done || true
 
       - name: cargo test --doc
         if: ${{ needs.changes.outputs.tested != 'true' }}
         run: cargo test --workspace --doc --locked
+
+  # Runs chosen tests many times on one runner, on a manual dispatch only:
+  # `gh workflow run ci.yml --ref <branch> -f os=windows-latest -f count=20
+  # -f filter='<filterset>'`. It is how a flake that only one runner shows is
+  # pinned, since a local stress run cannot reach that runner. The default
+  # profile has no retry, so every failure counts. The default filter covers
+  # the Windows temp directory family: every suite that opens many stores.
+  stress:
+    name: stress (${{ inputs.os }})
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    timeout-minutes: 180
+    runs-on: ${{ inputs.os }}
+    env:
+      RUSTFLAGS: ${{ inputs.os == 'ubuntu-24.04-arm' && '-C target-feature=+fp16' || '' }}
+      CRYSTALLINE_TEST_NO_KEYCHAIN: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: nextest@0.9.146
+
+      # Restores what the test legs saved on main and saves nothing.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: test
+          save-if: false
+
+      - name: cargo nextest run --stress-count
+        shell: bash
+        env:
+          FILTER: ${{ inputs.filter }}
+          COUNT: ${{ inputs.count }}
+        run: cargo nextest run --workspace --locked --no-tests=fail --no-fail-fast -E "$FILTER" --stress-count "$COUNT"
 
   # Fluid, the browser UI. Nothing under fluid/ is part of the cargo workspace,
   # so its gates are a job of their own: they neither wait on the Rust matrix
@@ -473,7 +558,7 @@ jobs:
           set -euo pipefail
           packaging/mcpb/generate-manifest.sh standard 0.0.0 bundle/standard
           npx --yes @anthropic-ai/mcpb@2.1.2 validate bundle/standard
-          npx --yes @anthropic-ai/mcpb@2.1.2 pack bundle/standard standard.mcpb
+          npx --yes @anthropic-ai/mcpb@2.1.2 pack bundle/standard crystalline-claude-desktop-v0.0.0.mcpb
           mkdir -p bundle/desktop-only/server
           printf 'placeholder\n' > bundle/desktop-only/server/crystalline
           packaging/mcpb/generate-manifest.sh desktop-only 0.0.0 bundle/desktop-only

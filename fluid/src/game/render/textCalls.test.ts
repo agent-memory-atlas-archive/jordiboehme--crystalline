@@ -35,7 +35,9 @@ import { INTERIOR_CATALOGUE, consoleRoom } from "../world/consoleRoom";
 import type { InteriorKind } from "../world/types";
 import { buildInterior, buildInteriorMovers } from "./models/interior";
 import * as pixels from "./models/heroes/pixels";
+import { buildMachine } from "./models/machines";
 import { buildProp } from "./models/props";
+import { VARIANT_COUNTS } from "../world/variants";
 import { buildDecals } from "./models/decals";
 import { MARKS } from "./models/marks";
 import { galleryRoom } from "../world/canned";
@@ -113,6 +115,29 @@ function buildEverything(): void {
   for (const kind of PROP_KINDS)
     for (let v = 0; v < PROP_CATALOGUE[kind].variants; v++)
       buildProp(fresh(), kind, v, { look });
+  // The workbench machine sets its maker's mark (0.25.1): every variant of
+  // it builds here, so the recorded strings stay on the list.
+  const slot = { x: 3, y: 4, side: "n" } as const;
+  for (let v = 0; v < VARIANT_COUNTS.machine.workbench; v++)
+    buildMachine(
+      fresh(),
+      {
+        kind: "machine",
+        slot,
+        machine: "workbench",
+        tag: "t",
+        hue: 140,
+        seed: 5,
+        variant: v,
+      },
+      0,
+      {
+        look,
+        ceiling: 3,
+        hall: { x0: 2, y0: 0, x1: 7, y1: 6 },
+        textLayer: () => ({ layer: 0, v0: 0, v1: 1 }),
+      },
+    );
 }
 
 describe("readable text set while the recipes build", () => {
@@ -189,6 +214,24 @@ describe("no text on the fittings but the airlock's word (2.6e C20, M3 C24)", ()
           kind === "outer-hatch" ? ["pixelPanel"] : [],
         );
       }
+  });
+});
+
+describe("no text on the penguin figurine (0.25.1)", () => {
+  it("sets no text and lays no mark while the penguin builds", () => {
+    // Mutation caught: a word, a number or a pixel picture on the
+    // figurine, which carries none. The radio set built right after lays
+    // its note through `markLines` and writes its sheet through
+    // `textRows`, so both records are live.
+    recorded.length = 0;
+    marked.length = 0;
+    buildCurio(fresh(), "penguin-figure", 0, LOOK);
+    expect(recorded).toEqual([]);
+    expect(marked).toEqual([]);
+    buildCurio(fresh(), "radio-set", 0, LOOK);
+    expect(marked).toContain("markLines");
+    buildCurio(fresh(), "radio-set", 1, LOOK);
+    expect(recorded).toContain(MARKS.radioNote);
   });
 });
 

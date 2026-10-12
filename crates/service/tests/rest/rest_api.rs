@@ -2679,9 +2679,14 @@ async fn engram_detail_carries_the_source_and_a_strong_etag() {
         on_disk.as_slice(),
         "the content is the markdown as written: {body}"
     );
+    // The anonymous viewer reads it as read-only, so its tag ends in `-ro`.
     assert_eq!(
         etag,
-        format!("\"{}-{}\"", sha256_hex(&on_disk), crystalline_core::VERSION),
+        format!(
+            "\"{}-{}-ro\"",
+            sha256_hex(&on_disk),
+            crystalline_core::VERSION
+        ),
         "the ETag is the quoted SHA-256 of that markdown, versioned"
     );
     assert!(
@@ -2806,10 +2811,11 @@ async fn engram_detail_resolves_a_permalink_with_folders() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["permalink"], "notes/deep/gamma");
     assert_eq!(body["path"], "notes/deep/gamma.md");
+    // Read as the anonymous viewer, so read-only: the tag ends in `-ro`.
     assert_eq!(
         etag,
         format!(
-            "\"{}-{}\"",
+            "\"{}-{}-ro\"",
             sha256_hex(&fixture.engram_bytes("notes/deep/gamma.md")),
             crystalline_core::VERSION
         )
@@ -4661,16 +4667,16 @@ async fn concurrent_account_creations_all_answer() {
     );
 }
 
-/// A domain path answers to the domain's canonical name and to its alias
-/// exactly as it answers to its local name, the query string included.
-#[tokio::test]
-async fn a_domain_path_answers_to_the_canonical_name_and_an_alias() {
+/// An instance with `auth.anonymous` on and `auth.mcp` left off, serving one
+/// domain registered as `local` whose MANIFEST names it `name`, under the
+/// `aliases` given, with one engram at `ops/runbook`.
+async fn anonymous_instance(local: &str, name: &str, aliases: &[&str]) -> Fixture {
     let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("eng-knowledge");
+    let dir = tmp.path().join(local);
     std::fs::create_dir_all(dir.join("ops")).unwrap();
     std::fs::write(
         dir.join("MANIFEST.md"),
-        crystalline_core::manifest_template("eng", "2026-01-01"),
+        crystalline_core::manifest_template(name, "2026-01-01"),
     )
     .unwrap();
     std::fs::write(
@@ -4680,7 +4686,7 @@ async fn a_domain_path_answers_to_the_canonical_name_and_an_alias() {
     )
     .unwrap();
     let mut entry = DomainEntry::file(dir);
-    entry.aliases = vec!["old-eng".to_string()];
+    entry.aliases = aliases.iter().map(|a| a.to_string()).collect();
     let mut cfg = GlobalConfig {
         auth: Some(AuthConfig {
             anonymous: Some(true),
@@ -4692,7 +4698,7 @@ async fn a_domain_path_answers_to_the_canonical_name_and_an_alias() {
         }),
         ..GlobalConfig::default()
     };
-    cfg.domains.insert("eng-knowledge".to_string(), entry);
+    cfg.domains.insert(local.to_string(), entry);
     let config_path = tmp.path().join("config.yaml");
     crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
     let engine = Arc::new(Engine::new(
@@ -4707,7 +4713,26 @@ async fn a_domain_path_answers_to_the_canonical_name_and_an_alias() {
             .await
             .unwrap(),
     );
-    let addr = serve_test_router(engine, auth);
+    let addr = serve_test_router(engine, auth.clone());
+    Fixture {
+        addr,
+        auth,
+        _tmp: tmp,
+    }
+}
+
+/// [`anonymous_instance`] over one domain named `name` everywhere, with no
+/// alias.
+async fn anonymous_instance_with_one_domain(name: &str) -> Fixture {
+    anonymous_instance(name, name, &[]).await
+}
+
+/// A domain path answers to the domain's canonical name and to its alias
+/// exactly as it answers to its local name, the query string included.
+#[tokio::test]
+async fn a_domain_path_answers_to_the_canonical_name_and_an_alias() {
+    let fixture = anonymous_instance("eng-knowledge", "eng", &["old-eng"]).await;
+    let addr = fixture.addr;
 
     let body = |path: String| async move {
         let resp = get(addr, &path).await;
@@ -4738,6 +4763,124 @@ async fn a_domain_path_answers_to_the_canonical_name_and_an_alias() {
             );
         }
     }
+}
+
+/// B-1 item 3: REST refuses every write of the anonymous viewer, so every
+/// domain it reads carries `read_only: true`, whatever the MCP open tier may
+/// write on an instance with auth.mcp off.
+#[tokio::test]
+async fn the_anonymous_viewer_reads_every_domain_as_read_only() {
+    let fixture = anonymous_instance_with_one_domain("eng").await;
+    let addr = fixture.addr;
+    let listed: serde_json::Value = get(addr, "/api/v1/domains").await.json().await.unwrap();
+    let row = listed["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "eng")
+        .unwrap();
+    assert_eq!(row["read_only"], true, "{row}");
+    let tree: serde_json::Value = get(addr, "/api/v1/domains/eng/tree?depth=1")
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(tree["read_only"], true, "{tree}");
+    let read: serde_json::Value = get(addr, "/api/v1/domains/eng/engrams/ops/runbook")
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(read["read_only"], true, "{read}");
+
+    // A signed-in editor on the same instance writes the domain, so nothing
+    // it reads carries the mark.
+    fixture
+        .auth
+        .add_user("bob", "Bob", None, Role::Editor, "pw")
+        .await
+        .unwrap();
+    let (token, csrf) = login(addr, "bob", "pw").await;
+    for path in [
+        "/api/v1/domains",
+        "/api/v1/domains/eng/tree?depth=1",
+        "/api/v1/domains/eng/engrams/ops/runbook",
+    ] {
+        let resp = as_session(addr, reqwest::Method::GET, path, &token, &csrf)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "GET {path}");
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let marked = if path == "/api/v1/domains" {
+            body["domains"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["name"] == "eng")
+                .unwrap()["read_only"]
+                .clone()
+        } else {
+            body["read_only"].clone()
+        };
+        assert!(marked.is_null(), "GET {path} as the editor: {body}");
+    }
+}
+
+/// The engram read's tag follows who reads it: the anonymous viewer's
+/// read-only answer is tagged apart, so its cached tag never answers 304 to a
+/// signed-in editor, while a write still takes that tag as its precondition.
+#[tokio::test]
+async fn the_engram_etag_and_vary_follow_who_reads_it() {
+    let fixture = anonymous_instance_with_one_domain("eng").await;
+    let addr = fixture.addr;
+    let path = "/api/v1/domains/eng/engrams/ops/runbook";
+    let anonymous = get(addr, path).await;
+    assert_eq!(anonymous.status(), 200);
+    assert_eq!(header(&anonymous, "vary"), "Cookie, Authorization");
+    let anonymous_tag = header(&anonymous, "etag");
+    assert!(anonymous_tag.ends_with("-ro\""), "{anonymous_tag}");
+
+    fixture
+        .auth
+        .add_user("bob", "Bob", None, Role::Editor, "pw")
+        .await
+        .unwrap();
+    let (token, csrf) = login(addr, "bob", "pw").await;
+    let session = |method: reqwest::Method| as_session(addr, method, path, &token, &csrf);
+
+    let fresh = session(reqwest::Method::GET)
+        .header("if-none-match", &anonymous_tag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fresh.status(), 200, "the anonymous tag is not the editor's");
+    assert_eq!(header(&fresh, "vary"), "Cookie, Authorization");
+    let editor_tag = header(&fresh, "etag");
+    assert!(!editor_tag.contains("-ro"), "{editor_tag}");
+    let body: serde_json::Value = fresh.json().await.unwrap();
+    assert!(body.get("read_only").is_none(), "{body}");
+
+    let cached = session(reqwest::Method::GET)
+        .header("if-none-match", &editor_tag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cached.status(), 304);
+    assert_eq!(header(&cached, "vary"), "Cookie, Authorization");
+
+    let content = body["content"]
+        .as_str()
+        .unwrap()
+        .replace("the rollback steps", "the rollback steps, checked");
+    let put = session(reqwest::Method::PUT)
+        .header("if-match", &anonymous_tag)
+        .json(&serde_json::json!({ "content": content }))
+        .send()
+        .await
+        .unwrap();
+    let status = put.status();
+    assert_eq!(status, 200, "{}", put.text().await.unwrap());
 }
 
 const LOCKED: &str = "'eng' is read-only; its owner switches read_only off in the domain policies";

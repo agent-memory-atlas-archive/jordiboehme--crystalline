@@ -60,7 +60,12 @@ pub fn fixtures_dir() -> PathBuf {
 /// asks the real Task Scheduler, and on a machine with the MSI installed it
 /// starts the real daemon for the real user. A test that wants another
 /// answer sets the variable after [`isolate`], which wins.
-pub fn isolation_env(home: &Path) -> [(&'static str, PathBuf); 9] {
+///
+/// `HF_ENDPOINT` points the model downloader at [`NO_HUB`], so a child that
+/// would fetch the embedding or contradiction model (about 220 MB and 550 MB,
+/// into this test's empty cache) fails the fetch at once and goes on
+/// text-only, as it does offline. See [`NO_HUB`].
+pub fn isolation_env(home: &Path) -> [(&'static str, PathBuf); 10] {
     [
         ("HOME", home.to_path_buf()),
         ("XDG_CONFIG_HOME", home.join("config")),
@@ -71,8 +76,20 @@ pub fn isolation_env(home: &Path) -> [(&'static str, PathBuf); 9] {
         ("LOCALAPPDATA", home.join("local")),
         ("CRYSTALLINE_TEST_NO_KEYCHAIN", PathBuf::from("1")),
         ("CRYSTALLINE_TEST_DAEMON_TASK", PathBuf::from("missing")),
+        (HUB_ENDPOINT_VAR, PathBuf::from(NO_HUB)),
     ]
 }
+
+/// The variable the model downloader (hf-hub) reads its hub address from.
+pub const HUB_ENDPOINT_VAR: &str = "HF_ENDPOINT";
+
+/// A hub address nothing listens on: port 1 on loopback refuses the connection
+/// at once. Every test daemon used to download the embedding model into its own
+/// fresh cache, which added network and CPU load to every daemon test. A refused
+/// fetch is what an offline machine sees: the daemon warns, keeps serving and
+/// searches text-only. A test that wants a download in flight names the real
+/// hub itself (`Env::downloading` in `daemon/service.rs`).
+pub const NO_HUB: &str = "http://127.0.0.1:1";
 
 /// Apply [`isolation_env`] to a child `Command`.
 pub fn isolate(cmd: &mut Command, home: &Path) {

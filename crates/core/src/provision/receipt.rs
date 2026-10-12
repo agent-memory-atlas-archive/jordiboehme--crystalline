@@ -29,7 +29,7 @@ const FORMAT: u32 = 1;
 /// installed state, as of the last reconcile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvisionReceipt {
-    /// Format marker, [`FORMAT`] today.
+    /// Format marker, `FORMAT` today.
     pub format: u32,
     /// Domain name to its source stamps.
     #[serde(default)]

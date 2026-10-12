@@ -130,6 +130,10 @@ const OPEN_ENOUGH = 0.9;
  * - `SPACE READ <category>` at a poster;
  * - `SPACE READ PLACARD` at the placard;
  * - `SPACE READ <first line>` at a screen.
+ *
+ * The session adds the prompts of what is not a fixture: `SPACE GRAVITY`
+ * at a gravity console (it switches heavy gravity), `SPACE READ <title>`
+ * at a computer and `SPACE OPEN` or `SPACE CLOSE` at a police box.
  */
 export type Interactable = {
   kind:

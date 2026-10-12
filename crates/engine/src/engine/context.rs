@@ -196,7 +196,7 @@ impl Engine {
     /// address.
     ///
     /// `depth` is clamped to one or two hops and `max_nodes` to at least one and
-    /// at most [`MAX_GRAPH_NODES`], so a hand-written URL can ask neither for
+    /// at most `MAX_GRAPH_NODES`, so a hand-written URL can ask neither for
     /// nothing nor for the whole index in one payload.
     ///
     /// Retired engrams come back like any other, with their status, because the

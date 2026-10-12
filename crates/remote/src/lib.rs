@@ -34,6 +34,7 @@ pub mod sources;
 pub mod state;
 pub mod text;
 pub mod token;
+pub mod tree;
 
 pub use error::RemoteError;
 pub use fanout::{

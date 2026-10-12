@@ -324,9 +324,14 @@ describe("the domain screen", () => {
     renderApp("/d/eng");
     const body = await screenBody();
     await within(body).findByRole("heading", { level: 1 });
-    expect(
-      within(body).queryByRole("button", { name: "New engram" }),
-    ).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(requested()).toContain("/domains");
+    });
+    await waitFor(() => {
+      expect(
+        within(body).queryByRole("button", { name: "New engram" }),
+      ).not.toBeInTheDocument();
+    });
     expect(within(body).queryByText("read-only")).not.toBeInTheDocument();
   });
 

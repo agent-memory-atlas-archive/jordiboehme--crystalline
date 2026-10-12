@@ -320,7 +320,7 @@ impl Engine {
     /// only actionable thing at that moment: `configure` stays visible with
     /// GitHub off precisely so it can be enabled.
     ///
-    /// The gate sits ABOVE [`Engine::configure_connection_block`], whose
+    /// The gate sits ABOVE `Engine::configure_connection_block`, whose
     /// first act is draining a landed device-flow outcome. That placement is
     /// deliberate: gating below the drain would leave only two options, both
     /// wrong - report the landed outcome (connection facts on a disabled
@@ -334,7 +334,7 @@ impl Engine {
     ///
     /// The connect paths are NOT gated: [`Engine::connect_with_token`] and
     /// [`Engine::start_device_connect`] build their own block and go through
-    /// [`Engine::configure_snapshot_with`], so connecting with
+    /// `Engine::configure_snapshot_with`, so connecting with
     /// `github.enabled` off still reports the connection and says so in its
     /// note. Connecting and enabling are independent and either order works.
     pub async fn configure_snapshot(&self) -> Result<Value> {
@@ -399,7 +399,7 @@ impl Engine {
     /// background task that runs the flow to completion, validates the
     /// token and saves it, stashing the outcome in the pending slot for a
     /// later `configure` call to report and clear (see
-    /// [`Engine::configure_connection_block`]). Returns immediately either
+    /// `Engine::configure_connection_block`). Returns immediately either
     /// way: the caller sees `pending_connect` in the same call that starts
     /// the flow, never blocking on the user confirming the code. Refuses up
     /// front, before starting anything, when `CRYSTALLINE_GITHUB_TOKEN` is
@@ -777,7 +777,7 @@ impl Engine {
     /// This exists for the credential store's OTHER writer. `crystalline
     /// connect github --disconnect` runs in the CLI process and deletes the
     /// token where it lives, which a running daemon cannot notice: its cache
-    /// is a process-lifetime map ([`Engine::github_tokens`]), so it would go
+    /// is a process-lifetime map (`Engine::github_tokens`), so it would go
     /// on sharing with a token this machine no longer has until it was
     /// restarted. A credential is forgotten because somebody wanted it to stop
     /// working, so "until the next restart" is the wrong answer; the CLI tells

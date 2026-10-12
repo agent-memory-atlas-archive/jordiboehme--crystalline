@@ -10,7 +10,8 @@
  * recipe since it is the original's image, not a logo or a text mark.
  *
  * The block-pixel font has capitals, lower-case letters, digits, the
- * space, the period, `&` and `<`, `=`, `>`, so a badge is set as the
+ * space, the period, `&`, `!`, `?`, the comma, the hyphen and `<`, `=`,
+ * `>`, so a badge is set as the
  * original sets it: in capitals, or in lower case where the original's
  * wordmark is lower case, and a number in numerals. A mark that is no
  * text (the round C, the signature, the planet badge, the computers'
@@ -19,6 +20,9 @@
  * `pixelBoxes`. A multi-line text mark (`boardLogo`, `boxNotice`) is a
  * `readonly string[]` of lines, set through `textBlock`/`markLines`
  * (`heroes/pixels.ts`), never a picture of its own.
+ *
+ * The wall decals' marks live here too (0.25.1): the spray tag, and the
+ * numbers the scribble and the door plate set.
  *
  * The deck and bay stencils' words, numerals and letters (2.7 C19) live
  * here too, and `stencilMarks` sets a stencil from them, mark by mark; so
@@ -46,12 +50,44 @@ export const MARKS = {
   towerBadge: "HIGHSCREEN",
   /** The designer tower's clock-speed display, red. */
   towerClock: "40",
+  /** The beige laptop's small mark, drawn on its screen. */
+  laptopMark: "<=>",
+  /** The big gun's badge, light letters on a small dark plate on its flank (0.25.1). */
+  gunBadge: "BFG",
+  /** The tool maker's mark, set on the tool props, the workbench machine and the gun bench's pegboard. */
+  toolMark: "BINFORD",
+  /** The terminals' handle lines, each the whole last row of a screen (0.25.1). */
+  handleLines: [
+    "LOGIN: ZERO COOL",
+    "LOGIN: CRASH OVERRIDE",
+    "LOGIN: ACID BURN",
+    "MESS WITH THE BEST, DIE LIKE THE REST.",
+  ],
   /** The gravity console's readout. */
   gravity: "300G",
   /** Both desk computers' badge, in the original's lower-case wordmark. */
   computerBadge: "commodore 64",
   /** The reactor case's plaque line, in capitals. */
   reactorPlaque: "PROOF THAT TONY STARK HAS A HEART",
+  /** The floppy's handwritten label (0.25.1 D-3). */
+  floppyLabel: "HACK THE PLANET!",
+  /** The floppy's second label, printed on its coloured band, and the version line under it (0.25.1). */
+  floppyPrinted: "NORTON COMMANDER",
+  floppyVersion: "VERSION 4.0",
+  /** The 5.25 inch disk's printed label (0.25.1). */
+  diskLabel: "GEOS",
+  /** The pizza box's lid print (0.25.1 D-4). */
+  pizzaLid: "PIZZA POWER",
+  /** The report sheets' cover heading (0.25.1 D-5). */
+  reportTitle: "TPS REPORT",
+  /** The cover sheet's date line word, a rule drawn after it (0.25.1 D-5). */
+  reportDate: "DATE",
+  /** The radio set's note, hand-written (0.25.1 D-5). */
+  radioNote: "Melmac?",
+  /** The spray-painted tag on a rough room's wall (0.25.1 D-4). */
+  sprayTag: "COWABUNGA!",
+  /** The six numbers of the lottery ticket (`curios/office.ts`) and of the wall scribble and the door plate (`decals.ts`), each set on its own (0.25.1 D-2). */
+  numbers: ["4", "8", "15", "16", "23", "42"],
 
   /** The eye panel's badge: two separate fields, not one block, "HAL" on the panel's own dark trim and "9000" on a blue field. */
   panelName: ["HAL", "9000"],
@@ -66,6 +102,21 @@ export const MARKS = {
   recruitMarquee: "STARFIGHTER",
   /** The red bike's fairing stickers, four separate marks, one per sponsor. */
   bikeStickers: ["CANON", "CITIZEN", "ARAI", "SHOEI"],
+  /** The red bike's big two-line sticker on its right side: "BIG" over "1". */
+  bikeBigOne: ["BIG", "1"],
+  /** The turntable's maker's name, black, flat on its silver top (0.25.1). */
+  deckMark: "Technics",
+  /** The camera's maker's name, light grey across its top plate's front (0.25.1). */
+  cameraMark: "FUJIFILM",
+  /** The camera's model name, light grey on the back of its top plate (0.25.1). */
+  cameraModel: "X-Pro2",
+  /**
+   * The laser desk terminal's two screen lines, blue on its black screen,
+   * the second set in under the end of the first (0.25.1).
+   */
+  terminalLines: ["REQUEST", "ACCESS CODE 6"],
+  /** The laser desk terminal's mark, light grey in a thin box in its screen's lower right corner (0.25.1). */
+  terminalMark: "ENCOM",
   /** The hoverboard's deck wordmark, one two-line block: "HOVER" over "BOARD". */
   boardLogo: ["HOVER", "BOARD"],
   /** The police box's left door notice, nine lines set as one block. */
@@ -140,7 +191,7 @@ export function stencilMarks(t: StencilText): readonly (readonly string[])[] {
     const out: string[] = [];
     for (let m = n; m > 0; m = Math.floor(m / 10)) {
       const mark = MARKS.numerals[m % 10];
-      if (mark === undefined) throw new Error("stencilMarks: no numeral");
+      if (mark === undefined) throw new Error("stencilMarks has no numeral");
       out.unshift(mark);
     }
     return out;
@@ -155,6 +206,17 @@ export function stencilMarks(t: StencilText): readonly (readonly string[])[] {
   ];
   return t.lines === 2 ? [[MARKS.deckWord, ...digits(t.deck)], bay] : [bay];
 }
+
+/**
+ * The tool maker's mark colours (0.25.1): red block capitals on a
+ * near-black field plate. Judged from the brief's starting values, since
+ * no source describes the original lettering; the mark is drawn in the
+ * station's own pixel font.
+ */
+export const TOOL_MARK: { ink: Rgb; field: Rgb } = {
+  ink: [0.9, 0.12, 0.1],
+  field: [0.08, 0.08, 0.08],
+};
 
 /** The capsule maker's round C: `o` the outer ring, `#` the C, open to the right. */
 export const CAPSULE_LOGO: readonly string[] = [

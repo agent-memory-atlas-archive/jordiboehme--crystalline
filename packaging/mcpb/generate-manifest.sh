@@ -141,6 +141,10 @@ cat >"$manifest_path" <<JSON
       "description": "Refine an existing engram in place as understanding evolves, by section or with find and replace."
     },
     {
+      "name": "split_engram",
+      "description": "Move part of an engram into a new engram of its own when one engram mixes facts that change at different times."
+    },
+    {
       "name": "move_engram",
       "description": "Re-home an engram to a new path or domain, rewriting inbound links so nothing dangles."
     },
@@ -195,6 +199,14 @@ cat >"$manifest_path" <<JSON
     {
       "name": "add_domain",
       "description": "Create or connect a domain to capture engrams in: a local folder of markdown files, a database-backed virtual domain or a GitHub team domain."
+    },
+    {
+      "name": "remove_domain",
+      "description": "Unregister a domain the agent should stop learning from; a local folder's markdown files stay where they are."
+    },
+    {
+      "name": "provision",
+      "description": "Install the skills, commands, agents and MCP servers a domain ships into the user's coding harnesses, after the user allows it."
     },
     {
       "name": "skills",

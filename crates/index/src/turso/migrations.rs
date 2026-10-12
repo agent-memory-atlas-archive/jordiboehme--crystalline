@@ -774,7 +774,54 @@ pub async fn apply(conn: &Connection) -> Result<i64> {
 }
 
 /// [`apply`] over a given list, so a test can hand it a migration that fails.
+///
+/// The migrations run with the connection's temp store in memory, and the
+/// setting it had before is put back on every way out. Several migrations
+/// read and rewrite the same table (v7's `DELETE ... WHERE tag_id NOT IN
+/// (SELECT ...)` is the plainest case), which the engine answers with an
+/// ephemeral table. With the default temp store it creates each of those as a
+/// fresh directory plus file under the process temp location, eagerly, even
+/// when the table stays empty, so one store open made a run of directories in
+/// the shared system temp folder. On Windows that create is refused now and
+/// then with "permission denied", and the open failed with
+/// `Migration("v7 ...: I/O error (tempdir): permission denied")`. What a
+/// migration keeps in such a table is ids and short keys, so memory is the
+/// right home for it. Queries after the open keep the default: a runtime
+/// sorter that outgrows its buffer must spill to disk, not to RAM (see
+/// `research/2026-07-28-turso-sorter-spill.md`).
 async fn apply_migrations(conn: &Connection, migrations: &[Migration]) -> Result<i64> {
+    let temp_store = temp_store(conn).await?;
+    conn.execute("PRAGMA temp_store = MEMORY", ())
+        .await
+        .map_err(|e| IndexError::Migration(e.to_string()))?;
+    let applied = apply_migrations_in_order(conn, migrations).await;
+    let restored = conn
+        .execute(&format!("PRAGMA temp_store = {temp_store}"), ())
+        .await
+        .map_err(|e| IndexError::Migration(e.to_string()));
+    let version = applied?;
+    restored?;
+    Ok(version)
+}
+
+/// The connection's `temp_store` setting: 0 default, 1 file, 2 memory.
+async fn temp_store(conn: &Connection) -> Result<i64> {
+    let mut rows = conn
+        .query("PRAGMA temp_store", ())
+        .await
+        .map_err(|e| IndexError::Migration(e.to_string()))?;
+    let row = rows
+        .next()
+        .await
+        .map_err(|e| IndexError::Migration(e.to_string()))?;
+    Ok(row
+        .and_then(|r| r.get_value(0).ok())
+        .and_then(|v| v.as_integer().copied())
+        .unwrap_or(0))
+}
+
+/// The body of [`apply_migrations`], run while the temp store is in memory.
+async fn apply_migrations_in_order(conn: &Connection, migrations: &[Migration]) -> Result<i64> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migration (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
         (),
@@ -2369,6 +2416,97 @@ mod tests {
             base_rows.iter().filter(|(k, _)| k == "sources").count(),
             3,
             "the duplicate element is one row"
+        );
+    }
+
+    /// The migrations borrow an in-memory temp store and give the setting back,
+    /// after a clean run and after one that fails, so the queries that follow
+    /// an open keep spilling to disk.
+    #[tokio::test]
+    async fn the_temp_store_is_given_back_after_the_migrations() {
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        apply_migrations(&conn, MIGRATIONS).await.unwrap();
+        assert_eq!(
+            scalar(&conn, "PRAGMA temp_store").await,
+            0,
+            "a clean run leaves the default"
+        );
+
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute("PRAGMA temp_store = FILE", ()).await.unwrap();
+        let failing = [Migration {
+            version: 1,
+            label: "broken",
+            sql: "CREATE TABLE ok_so_far (id INTEGER); THIS IS NOT SQL;",
+        }];
+        let err = apply_migrations(&conn, &failing)
+            .await
+            .expect_err("the broken migration fails");
+        assert!(err.to_string().contains("v1 (broken)"), "{err}");
+        assert_eq!(
+            scalar(&conn, "PRAGMA temp_store").await,
+            1,
+            "a failed run puts back the setting the connection had"
+        );
+    }
+
+    /// Set in the child run of
+    /// [`a_store_opens_and_migrates_with_no_usable_temp_directory`].
+    const NO_TEMP_DIR_CHILD: &str = "CRYSTALLINE_TEST_MIGRATE_WITHOUT_TEMP_DIR";
+
+    /// A store opens and migrates when the process temp directory cannot be
+    /// used at all.
+    ///
+    /// The embedded engine gives every ephemeral table a fresh directory under
+    /// the process temp location, eagerly, even when the table never holds a
+    /// row, and v7's `NOT IN (SELECT ...)` deletes need one each. On the
+    /// Windows CI legs that directory create is refused now and then with
+    /// "permission denied", so a store's first open failed with
+    /// `Migration("v7 ...: I/O error (tempdir): permission denied")`. Pointing
+    /// the temp location at a folder that does not exist makes every such
+    /// create fail, on every platform and every time, so this pins that the
+    /// migrations create none. The environment can only be changed for a
+    /// whole process, so the test runs itself again as a child with the
+    /// variables set and asserts in there.
+    #[tokio::test]
+    async fn a_store_opens_and_migrates_with_no_usable_temp_directory() {
+        if std::env::var_os(NO_TEMP_DIR_CHILD).is_some() {
+            let store = crate::turso::TursoStore::open_in_memory().await;
+            assert!(
+                store.is_ok(),
+                "the open must not need the temp directory: {:?}",
+                store.err()
+            );
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("no-such-dir");
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "turso::migrations::tests::a_store_opens_and_migrates_with_no_usable_temp_directory",
+                "--exact",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(NO_TEMP_DIR_CHILD, "1")
+            .env("TMPDIR", &missing)
+            .env("TMP", &missing)
+            .env("TEMP", &missing)
+            .env_remove("TURSO_TMPDIR")
+            .env_remove("SQLITE_TMPDIR")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "the child open failed:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            stdout.contains("1 passed"),
+            "the child ran the test rather than filtering it out:\n{stdout}"
         );
     }
 }

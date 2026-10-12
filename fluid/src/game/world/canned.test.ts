@@ -24,6 +24,7 @@ import {
   HERO_KINDS,
   faceCentre,
   heroEdges,
+  heroReserve,
   standsFree,
 } from "./heroes";
 import { blockersFor, PLAYER_RADIUS, spawnPlayer } from "./move";
@@ -432,6 +433,36 @@ describe("galleryRoom", () => {
   it("is the same room every time", () => {
     expect(JSON.stringify(galleryRoom())).toBe(JSON.stringify(room));
   });
+
+  it("lays a tag, a scribble and a plate on bay walls no prop or fixture takes (0.25.1)", () => {
+    // Mutation caught: a gallery decal on a prop's or a fixture's edge, on
+    // the hall's walls, two on one edge, or one of the three left out.
+    expect(room.decals.map((d) => d.kind)).toEqual([
+      "tag",
+      "scribble",
+      "plate",
+    ]);
+    const sites = dressingSites(room);
+    const wallProps = new Set(
+      room.props
+        .filter((p) => p.anchor === "wall")
+        .map((p) => edgeKey(anchorEdge(p))),
+    );
+    const edges = room.decals.map((d) => edgeKey(anchorEdge(d)));
+    expect(new Set(edges).size).toBe(3);
+    room.decals.forEach((d, i) => {
+      const e = anchorEdge(d);
+      const k = edges[i]!;
+      expect(d.on).toBe("wall");
+      expect(sites.free.has(k), k).toBe(true);
+      expect(wallProps.has(k), k).toBe(false);
+      expect(
+        room.bays.some(
+          (b) => e.x >= b.x0 && e.x < b.x1 && e.y >= b.y0 && e.y < b.y1,
+        ),
+      ).toBe(true);
+    });
+  });
 });
 
 /**
@@ -564,6 +595,41 @@ describe("heroHallRoom", () => {
     expect(JSON.stringify(heroHallRoom())).toBe(JSON.stringify(hall));
   });
 
+  it("stands every round table and the lab island clear of the heroes, the lanes and each other (0.25.1)", () => {
+    // Mutation caught: a table or the island moved into a hero's reserve
+    // or onto a lane (the entrance lane up column 11), or two pieces
+    // overlapping.
+    expect(hall.decor.filter((d) => d.kind === "round-table")).toHaveLength(4);
+    expect(hall.decor.filter((d) => d.kind === "lab-island")).toHaveLength(1);
+    const tables = hall.decor;
+    expect(tables).toHaveLength(5);
+    const reserve = heroReserve(hall.heroes).boxes;
+    const heroBoxes = hall.heroes.flatMap((h) => {
+      const blocker = heroBlocker(h);
+      return blocker === null
+        ? [heroFootprint(h)]
+        : [blocker, heroFootprint(h)];
+    });
+    const lanes = dressingSites(hall).lanes;
+    const feet = tables.map((d) => {
+      const f = decorFootprint(d);
+      if (f === null) throw new Error("a round table has a footprint");
+      return f;
+    });
+    feet.forEach((f, i) => {
+      const at = `table ${String(i)}`;
+      for (const b of reserve)
+        expect(overlaps(f, b), `${at} reserve`).toBe(false);
+      for (const b of heroBoxes)
+        expect(overlaps(f, b), `${at} hero`).toBe(false);
+      for (const b of lanes) expect(overlaps(f, b), `${at} lane`).toBe(false);
+      feet.forEach((g, j) => {
+        if (j !== i)
+          expect(overlaps(f, g), `${at} table ${String(j)}`).toBe(false);
+      });
+    });
+  });
+
   it("holds one of every curio kind and variant, each fitting its host's surface", () => {
     const counts = new Map<string, number>();
     for (const c of hall.curios) {
@@ -598,7 +664,8 @@ describe("heroHallRoom", () => {
     // axis (world x at an even
     // turn, world z at an odd one, `turnedPoint` in `footprints.ts`), never
     // along `d`, the axis running from the wall into the room. Grouped by
-    // the surface's own token (`key[2]`), since `hostOf` recomputes
+    // the surface's own key (its anchor ints and token, since the hall's
+    // round tables share their tokens), since `hostOf` recomputes
     // `hostSurfaces` per call and never returns the same object twice.
     const groups = new Map<
       string,
@@ -616,9 +683,10 @@ describe("heroHallRoom", () => {
         along: aIsX ? cx : cz,
         cross: aIsX ? cz : cx,
       };
-      const list = groups.get(s.key[2]) ?? [];
+      const key = s.key.join(",");
+      const list = groups.get(key) ?? [];
       list.push(point);
-      groups.set(s.key[2], list);
+      groups.set(key, list);
     }
     let rowsChecked = 0;
     for (const [host, points] of groups) {
@@ -629,11 +697,12 @@ describe("heroHallRoom", () => {
       const along = new Set(points.map((p) => Math.round(p.along * 1e6)));
       expect(along.size, `${host}: along-axis centres`).toBe(points.length);
     }
-    // The mess table, the tube bench, the laser desk, and the round
-    // table's place 0, place 2 and south under spot each carry more than
-    // one curio; a row of one (the gun bench, the round table's places 1
-    // and 3) has nothing to compare.
-    expect(rowsChecked).toBe(6);
+    // The mess table, the tube bench, the laser desk, the first round
+    // table's place 0, place 2 and south under spot, and the second round
+    // table's place 0 (0.25.1) each carry more than one curio; a row of
+    // one (the gun bench, the first round table's places 1 and 3, the
+    // pizza boxes) has nothing to compare.
+    expect(rowsChecked).toBe(7);
   });
 });
 
@@ -658,6 +727,7 @@ describe("galleryRoom curios", () => {
         "decor:round-table",
         "prop:storage-shelf",
         "prop:filing-cabinet",
+        "prop:crate",
       ].sort(),
     );
 

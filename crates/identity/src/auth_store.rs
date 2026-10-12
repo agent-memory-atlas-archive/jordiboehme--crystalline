@@ -22,7 +22,7 @@
 //! 1. *Across processes*, the CLI and the daemon each have their own
 //!    connection. The file is opened with turso's experimental multiprocess
 //!    WAL, without which the daemon's open holds an exclusive lock on the
-//!    whole file and the CLI cannot open it at all (see [`open_database`],
+//!    whole file and the CLI cannot open it at all (see `open_database`,
 //!    which is where the interesting part of this lives). On top of that,
 //!    `PRAGMA busy_timeout` is set on every connection so a writer waits
 //!    instead of failing, no transaction spans more than the two statements of
@@ -38,7 +38,7 @@
 //!    ordering within one process and nothing about the locking.
 //!
 //!    Where layer 1 cannot be had, the fallback open is what runs, and a
-//!    second process is then refused at open time: [`legacy_open_error`] turns
+//!    second process is then refused at open time: `legacy_open_error` turns
 //!    that refusal into a message that names the daemon holding the file and
 //!    the ways out, instead of turso's byte-range wording.
 //! 2. *Within one process*, every method serializes on `AuthStore::guard`,
@@ -776,7 +776,7 @@ fn last_credential_message(user: &str) -> String {
 /// somebody made private; an absent row is the default, shared visibility,
 /// which is why turning privacy off deletes the row rather than rewriting it.
 ///
-/// There is no `visibility` field: see [`VISIBILITY_PRIVATE`] for why the
+/// There is no `visibility` field: see `VISIBILITY_PRIVATE` for why the
 /// column exists anyway.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DomainAcl {
@@ -1338,7 +1338,7 @@ impl AuthStore {
     /// request and a CLI add both see an empty table and both go through, the
     /// second of them silently creating an admin nobody asked for. As part of
     /// the statement, the `WHERE NOT EXISTS` is decided by whichever writer
-    /// holds the write lock, exactly like [`NOT_LAST_ADMIN`].
+    /// holds the write lock, exactly like `NOT_LAST_ADMIN`.
     ///
     /// The name is folded by [`normalize_account_name`] like every other path, and a
     /// name that will not fold is refused before anything is written, so a typo
@@ -1463,7 +1463,7 @@ impl AuthStore {
     }
 
     /// Change an account's role. Demoting the last enabled admin is refused
-    /// (see [`NOT_LAST_ADMIN`]); promoting anyone never is, so the `?2 =
+    /// (see `NOT_LAST_ADMIN`); promoting anyone never is, so the `?2 =
     /// 'admin'` arm short-circuits the guard.
     pub async fn set_role(&self, name: &str, role: Role) -> Result<()> {
         self.update_guarded(
@@ -1540,7 +1540,7 @@ impl AuthStore {
     /// revocation, which is what an operator disabling a compromised account
     /// is asking for, and re-enabling starts from no sessions at all.
     ///
-    /// Disabling the last enabled admin is refused (see [`NOT_LAST_ADMIN`]);
+    /// Disabling the last enabled admin is refused (see `NOT_LAST_ADMIN`);
     /// re-enabling never is, so the `?2 = 0` arm short-circuits the guard. A
     /// refused disabling rolls back, sessions included.
     pub async fn set_disabled(&self, name: &str, disabled: bool) -> Result<()> {
@@ -1607,7 +1607,7 @@ impl AuthStore {
     /// takes `BEGIN IMMEDIATE` too and therefore cannot land an insert between
     /// these two statements.
     ///
-    /// Removing the last enabled admin is refused (see [`NOT_LAST_ADMIN`]).
+    /// Removing the last enabled admin is refused (see `NOT_LAST_ADMIN`).
     /// The guard rides on the `DELETE` itself, inside the same transaction, so
     /// two concurrent removals cannot both observe the other admin and both
     /// succeed. A refusal rolls the session delete back with everything else.
@@ -2525,7 +2525,7 @@ impl AuthStore {
 
     /// Issue a new MCP token for an existing account. The returned token is the
     /// only unhashed copy; only its sha256 is written, via the same
-    /// [`token_hash`] helper a session token uses.
+    /// `token_hash` helper a session token uses.
     ///
     /// Errors if the account does not exist, so a mistyped name is reported
     /// rather than silently minting an orphaned row.
@@ -2843,7 +2843,7 @@ impl AuthStore {
 
     /// Mint a share-link on one of `owner`'s drafts. The returned token is the
     /// only unhashed copy; only its sha256 is written, through the same
-    /// [`token_hash`] helper every other credential here goes through.
+    /// `token_hash` helper every other credential here goes through.
     ///
     /// The store keeps no opinion about whether `owner` actually holds a draft
     /// at `path`: that is a question about the overlay, which lives in the
@@ -3796,7 +3796,7 @@ impl AuthStore {
     ///
     /// A `LEFT JOIN` on purpose: a grant whose registration vanished still
     /// resolves its tokens, so it has to stay listed to stay revocable. It
-    /// shows [`GONE_OAUTH_CLIENT`] where the name would be rather than
+    /// shows `GONE_OAUTH_CLIENT` where the name would be rather than
     /// dropping out of the one screen that can stop it.
     ///
     /// A grant past its refresh window is left out, in the statement: it can
@@ -3929,7 +3929,7 @@ impl AuthStore {
     /// The visibility record of one domain: `Some` when it is private, `None`
     /// when it is shared, which is every domain nobody ever made private.
     ///
-    /// The lookup is exact on the trimmed name ([`normalize_domain`]), so it
+    /// The lookup is exact on the trimmed name (`normalize_domain`), so it
     /// answers for the same string the engine keys its domain map on.
     pub async fn domain_visibility(&self, domain: &str) -> Result<Option<DomainAcl>> {
         let domain = normalize_domain(domain)?;

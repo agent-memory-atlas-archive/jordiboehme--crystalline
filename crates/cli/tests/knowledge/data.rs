@@ -1177,6 +1177,38 @@ fn domain_add_without_a_name_or_manifest_declaration_uses_the_basename_and_write
     );
 }
 
+/// B-1 item 5: a read-only domain keeps its MANIFEST as written, and
+/// `domain add` says why the name was not written into it.
+#[test]
+fn domain_add_on_a_read_only_domain_says_why_the_name_is_not_written_back() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let dir = work.path().join("notes");
+    let manifest =
+        manifest_without_a_declared_name("Notes").replacen("\n---\n", "\nread_only: on\n---\n", 1);
+    write(&dir, "MANIFEST.md", &manifest);
+
+    let out = bin()
+        .args(["domain", "add", "--path"])
+        .arg(&dir)
+        .args(["--config"])
+        .arg(&config)
+        .arg("--no-sync")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr
+            .contains("note: 'notes' is read-only, so the name was not written into its MANIFEST."),
+        "{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("MANIFEST.md")).unwrap(),
+        manifest
+    );
+}
+
 /// A CRLF MANIFEST that `domain add` writes the name back into comes out LF
 /// as a whole, never with mixed line endings.
 #[test]

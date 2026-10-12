@@ -25,12 +25,15 @@
 
 import { HERO_CATALOGUE } from "../../../world/heroes";
 import type { HeroKind, SurfaceSpec } from "../../../world/types";
+import type { Surface } from "../../geometry";
 import { DECAL_LIFT, frameAt, type Frame, type Kit } from "../../kit";
 import type { Rgb } from "../../looks";
 import { MARKS } from "../marks";
+import { toolPlate } from "../toolMark";
 import {
   discOutline,
   profileAlong,
+  shade,
   SPARK_TINT,
   tiltedBar,
   yawed,
@@ -45,7 +48,7 @@ import {
   STATUS_GREEN,
   type HeroRecipe,
 } from "./common";
-import { markLines, pixelPanel, textRows } from "./pixels";
+import { MARK_PROUD, markLines, pixelPanel, textRows } from "./pixels";
 
 /** A status light that says trouble, and a tool's red handle. */
 const STATUS_RED: Rgb = [1.0, 0.15, 0.1];
@@ -67,54 +70,154 @@ const ORIGIN: Frame = frameAt([0, 0, 0], 0);
 
 // --- The big gun ---------------------------------------------------
 
-/** The big gun's shell: a dark gunmetal grey, darker than any look's metal. */
-const GUN_GREY: Rgb = [0.2, 0.2, 0.22];
+/** The big gun's shell: a neutral silver-grey, as the original's sprites. */
+const GUN_SILVER: Rgb = [0.6, 0.61, 0.63];
 
-/** The big gun's core window and muzzle glow: a vivid plasma green. */
+/** Its dark parts: the muzzle housing, the vent core, the grip, seams and bolts. */
+const GUN_DARK: Rgb = [0.16, 0.16, 0.17];
+
+/** The power cylinders along the body's top: a brighter silver. */
+const GUN_CELL: Rgb = [0.72, 0.73, 0.75];
+
+/** The light vent slats behind the muzzle housing and the badge's letters. */
+const GUN_SLAT: Rgb = [0.82, 0.82, 0.84];
+
+/** The copper accents on the frame and the body. */
+const GUN_COPPER: Rgb = [0.55, 0.33, 0.16];
+
+/** The black cable that loops from the rear frame. */
+const GUN_CABLE: Rgb = [0.06, 0.06, 0.06];
+
+/** The big gun's plasma glow, in its muzzle and its vents: a vivid green. */
 const CORE_GREEN: Rgb = [0.25, 0.95, 0.3];
 
 /** The rubber pads a gun rests on, on the rack and the bench: a worn brown-grey. */
 const PAD_RUBBER: Rgb = [0.35, 0.31, 0.27];
 
-/** The big gun's overall length, stock to muzzle, in metres. */
+/** The big gun's overall length, rear frame to muzzle, in metres. */
 const GUN_LENGTH = 1.3;
 /** The body's depth (back to front) and height, in metres. */
 const GUN_DEPTH = 0.22;
 const GUN_HEIGHT = 0.3;
-/** The stock's length at the rear, its height band above `h0` and its depth. */
+/** The rear frame's length and how far above `h0` its lower rail's belly sits. */
 const STOCK_LEN = 0.2;
 const STOCK_H0 = 0.05;
-const STOCK_H1 = 0.25;
-const STOCK_DEPTH = 0.14;
-/** The body's length after the stock; the square barrel takes the rest. */
+/** The body's length after the rear frame; the vents and the muzzle housing take the rest. */
 const BODY_LEN = 0.6;
-/** The square barrel's side and its vent collars' side, in metres. */
+/** The muzzle housing's ribs' diameter: the gun's full depth. */
 const BARREL_SIDE = 0.22;
-const COLLAR_SIDE = 0.25;
-/** The core window on the body's front: its span along the body and its margins. */
-const WINDOW_A0 = 0.1;
-const WINDOW_A1 = 0.52;
-const WINDOW_H0 = 0.06;
-const WINDOW_H1 = 0.24;
-/** How far the window's dark bezel stands proud of the body's front. */
-const BEZEL_T = 0.012;
 /** The grip's top point along the body (from the body's rear), and how far it hangs. */
 const GRIP_AT = 0.12;
 /** How far the grip hangs below the gun's belly: every support keeps this clear. */
 const GRIP_DROP = 0.14;
-/** Where the barrel's rest sits along it, between its first two vent collars. */
+/** Where the front rest sits along the vents and the housing, under a slat and a rib. */
 const BARREL_REST = 0.165;
-/** The vent collars' places along the barrel. */
-const COLLARS: readonly number[] = [0.08, 0.25, 0.42];
 /** A gun rest's half width along `a`. */
 const REST_HALF = 0.06;
 
 /**
+ * The big gun's measures past the constants above, in metres, along `a`
+ * from the part's start (`aStart`, `aBody` or `aBarrel`) and in height
+ * from `h0`; `d` is out from the gun's middle `dc`:
+ * - `frame`: the open rear frame: the lower `rail` (`d` half, height
+ *   band), the `butt` plate at the very rear, the rear `upright` from its
+ *   foot to its head, the `top` rail from the upright forward into the
+ *   body, and the diagonal `brace` across them, every bar `bar` wide and
+ *   `barHalf` thick; `copper` the two accent bands on the lower rail;
+ * - `cable`: the black cable looping back from the top rail, its points
+ *   and width, beside the frame at `d`;
+ * - `body`: the body's height and bevel; `cells`: the two power
+ *   cylinders along its top edges, `d` out, height, radius, their span
+ *   from before the body's rear to past its front, and their dark end
+ *   caps; `trough`: the dark strip between them;
+ * - `flank`: on the body's front face: the seam lines (`seamH`, `seamA`,
+ *   `seamHalf`), the bolt heads (`bolts`, `bolt` half side, `boltProud`),
+ *   the red light in its bezel (`light`) and the copper strip
+ *   (`copper`), and the badge plate (`badge`);
+ * - `vents`: the dark vent core's half side and length, the light slats
+ *   (`slats` of them, `slat` thick, spaced `pitch` from `first`) out to
+ *   the gun's full depth, and the green glow between them, `glowHalf`
+ *   tall;
+ * - `housing`: the round muzzle housing from `start`, its radius, the
+ *   three silver `ribs` (`rib` long, out to `BARREL_SIDE`), the thick
+ *   `lip` round the muzzle, the dark `aperture` inside it and the green
+ *   `glow` in its middle, each 8 mm proud of the one round it, so the
+ *   steps hold in the depth buffer across a hall.
+ */
+const GUN = {
+  frame: {
+    rail: { half: 0.045, h0: STOCK_H0, h1: 0.1 },
+    butt: { len: 0.04, half: 0.07, h0: STOCK_H0, h1: 0.2 },
+    upright: [
+      [0.03, 0.08],
+      [0.1, 0.27],
+    ],
+    top: { a0: 0.08, h0: 0.25, h1: 0.28 },
+    brace: [
+      [0.06, 0.1],
+      [0.19, 0.25],
+    ],
+    bar: 0.035,
+    barHalf: 0.025,
+    copper: [0.06, 0.13],
+  },
+  cable: {
+    points: [
+      [0.15, 0.265],
+      [0.07, 0.29],
+      [0.02, 0.255],
+      [0.025, 0.18],
+    ],
+    width: 0.018,
+    d0: 0.02,
+    d1: 0.038,
+  },
+  body: { h1: 0.23, bevel: 0.025 },
+  cells: { d: 0.057, h: 0.24, r: 0.05, a0: -0.02, a1: 0.04, cap: 0.015 },
+  trough: { in: 0.05, half: 0.02, h1: 0.25 },
+  flank: {
+    seamH: 0.08,
+    seamA: [0.2, 0.42],
+    seamHalf: 0.004,
+    bolts: [
+      [0.03, 0.03],
+      [0.03, 0.2],
+      [0.57, 0.03],
+      [0.57, 0.2],
+    ],
+    bolt: 0.008,
+    boltProud: 0.006,
+    light: { a: 0.3, h: 0.17, half: 0.016, bezel: 0.026, proud: 0.008 },
+    copper: { a0: 0.06, a1: 0.18, h0: 0.03, h1: 0.045, proud: 0.004 },
+    badge: { a0: 0.44, a1: 0.56, h0: 0.12, h1: 0.165, proud: 0.004 },
+  },
+  vents: {
+    half: 0.09,
+    len: 0.165,
+    slats: 5,
+    slat: 0.014,
+    first: 0.015,
+    pitch: 0.033,
+    glowHalf: 0.06,
+  },
+  housing: {
+    start: 0.16,
+    r: 0.1,
+    ribs: [0.175, 0.24, 0.305],
+    rib: 0.025,
+    lip: { len: 0.04, r: BARREL_SIDE / 2 },
+    aperture: { len: 0.05, r: 0.07 },
+    glow: { len: 0.05, r: 0.04 },
+  },
+} as const;
+
+/**
  * Where the big gun's three rests go for a gun placed with `bigGun(k, s,
- * a0, a1, ..., h0)`: under the stock, under the body's front end and under
- * the barrel, each with the height its top must reach to carry the gun
- * there. Every rest is `REST_HALF` either side of its `a` and stays clear
- * of the grip, which hangs between the stock rest and the body rest.
+ * a0, a1, ..., h0)`: under the rear frame's lower rail, under the body's
+ * front end and under the vents and the housing's first rib, each with
+ * the height its top must reach to carry the gun there. Every rest is
+ * `REST_HALF` either side of its `a` and stays clear of the grip, which
+ * hangs between the rear rest and the body rest.
  */
 export function gunRests(
   a0: number,
@@ -133,19 +236,25 @@ export function gunRests(
 }
 
 /**
- * The big green gun: an oversized energy weapon lying along `a`, the same
- * part sizes wherever it is called (only its placement moves). It is
- * `GUN_LENGTH` long, centred between `a0` and `a1`, and its body
+ * The big gun: an oversized silver-grey energy weapon lying along `a`,
+ * the same part sizes wherever it is called (only its placement moves).
+ * It is `GUN_LENGTH` long, centred between `a0` and `a1`, and
  * `GUN_DEPTH` deep, centred between `d0` and `d1` (the caller keeps both
  * spans at least that long; nothing is stretched to fill them), and
- * `GUN_HEIGHT` tall from `h0`. From
- * the rear: a narrower stock, a bulky bevelled body with a large glowing
- * green core window on its front face in a dark bezel and a dark spine rib
- * on top, and a long square barrel with three vent collars, dark vent
- * slots between them and a green glow in its muzzle. A raked dark grip
- * hangs `GRIP_DROP` under the body's rear; `gunRests` says where supports
- * go to miss it. The window and the muzzle are blink group 0 (the kind's
- * breathe bank).
+ * `GUN_HEIGHT` tall from `h0`. From the rear: an open frame instead of a
+ * stock (a lower rail with two copper bands, a dark butt plate, a rear
+ * upright, a top rail and a diagonal brace) with a black cable looping
+ * back from its top; a bevelled body with two power cylinders along its
+ * top edges and a dark trough between them, and on its front face seam
+ * lines, four bolt heads, a red light in a dark bezel, a copper strip and
+ * a small dark badge plate with the gun's letters (`MARKS.gunBadge`); a
+ * band of light vent slats round a dark core with green glowing slots
+ * between them; and a round dark muzzle housing with three silver ribs,
+ * a thick silver lip and a dark round aperture with the green glow in its
+ * middle. A raked dark grip hangs `GRIP_DROP` under the body's rear;
+ * `gunRests` says where supports go to miss it. The vents' slots and the
+ * muzzle glow are blink group 0 (the kind's breathe bank); the red light
+ * is steady.
  */
 export function bigGun(
   k: Kit,
@@ -160,74 +269,25 @@ export function bigGun(
   const aBody = aStart + STOCK_LEN;
   const aBarrel = aBody + BODY_LEN;
   const aEnd = aStart + GUN_LENGTH;
-  const dBack = (d0 + d1) / 2 - GUN_DEPTH / 2;
-  const dFront = dBack + GUN_DEPTH;
-  const dc = (dBack + dFront) / 2;
-  const hTop = h0 + GUN_HEIGHT;
+  const dc = (d0 + d1) / 2;
+  const dBack = dc - GUN_DEPTH / 2;
+  const dFront = dc + GUN_DEPTH / 2;
   const hc = h0 + GUN_HEIGHT / 2;
-  const shell = s.tinted(GUN_GREY);
-  const core = s.blink(CORE_GREEN, 0);
+  const silver = s.tinted(GUN_SILVER);
+  const dark = s.tinted(GUN_DARK);
+  const copper = s.tinted(GUN_COPPER);
+  const glow = s.blink(CORE_GREEN, 0);
+  /** A bar between two `[a, h]` points of the frame, `GUN.frame.bar` wide. */
+  const bar = (p: readonly number[], q: readonly number[], w: number) =>
+    tiltedBar(
+      aStart + ((p[0] ?? 0) + (q[0] ?? 0)) / 2,
+      h0 + ((p[1] ?? 0) + (q[1] ?? 0)) / 2,
+      Math.atan2((q[1] ?? 0) - (p[1] ?? 0), (q[0] ?? 0) - (p[0] ?? 0)),
+      Math.hypot((q[1] ?? 0) - (p[1] ?? 0), (q[0] ?? 0) - (p[0] ?? 0)),
+      w,
+    );
 
-  k.bevelBox(
-    aStart,
-    aBody + 0.02,
-    dc - STOCK_DEPTH / 2,
-    dc + STOCK_DEPTH / 2,
-    h0 + STOCK_H0,
-    h0 + STOCK_H1,
-    HOUSING_BEVEL,
-    shell,
-  );
-  k.bevelBox(aBody, aBarrel, dBack, dFront, h0, hTop, 0.025, shell);
-  k.box(
-    aBody + 0.1,
-    aBarrel - 0.08,
-    dc - 0.04,
-    dc + 0.04,
-    hTop,
-    hTop + 0.025,
-    s.dark,
-  );
-  k.box(
-    aBody + WINDOW_A0 - 0.025,
-    aBody + WINDOW_A1 + 0.025,
-    dFront,
-    dFront + BEZEL_T,
-    h0 + WINDOW_H0 - 0.025,
-    h0 + WINDOW_H1 + 0.025,
-    s.dark,
-  );
-  k.panel(
-    aBody + WINDOW_A0,
-    aBody + WINDOW_A1,
-    dFront + BEZEL_T + DECAL_LIFT,
-    h0 + WINDOW_H0,
-    h0 + WINDOW_H1,
-    core,
-  );
-
-  const b = BARREL_SIDE / 2;
-  const c = COLLAR_SIDE / 2;
-  k.box(aBarrel, aEnd - 0.005, dc - b, dc + b, hc - b, hc + b, shell);
-  const collars = COLLARS.map((t) => aBarrel + t);
-  for (const a of collars)
-    k.box(a - 0.02, a + 0.02, dc - c, dc + c, hc - c, hc + c, s.dark);
-  for (let i = 0; i + 1 < collars.length; i++) {
-    const [ca, cb] = [collars[i] ?? 0, collars[i + 1] ?? 0];
-    for (const t of [0.35, 0.65]) {
-      const a = ca + (cb - ca) * t;
-      k.panel(
-        a - 0.008,
-        a + 0.008,
-        dc + b + DECAL_LIFT,
-        hc - 0.07,
-        hc + 0.07,
-        s.dark,
-      );
-    }
-  }
-  k.box(aEnd - 0.03, aEnd, dc - 0.07, dc + 0.07, hc - 0.07, hc + 0.07, core);
-
+  // The grip first: the workshop test finds it as the gun's lowest part.
   const gripTopA = aBody + GRIP_AT;
   const gripFootA = gripTopA - 0.06;
   const gripFootH = h0 - GRIP_DROP + 0.015;
@@ -242,8 +302,232 @@ export function bigGun(
     ),
     dc - 0.03,
     dc + 0.03,
-    s.dark,
+    dark,
   );
+
+  const F = GUN.frame;
+  k.bevelBox(
+    aStart,
+    aBody + 0.02,
+    dc - F.rail.half,
+    dc + F.rail.half,
+    h0 + F.rail.h0,
+    h0 + F.rail.h1,
+    0.01,
+    silver,
+  );
+  k.bevelBox(
+    aStart,
+    aStart + F.butt.len,
+    dc - F.butt.half,
+    dc + F.butt.half,
+    h0 + F.butt.h0,
+    h0 + F.butt.h1,
+    0.01,
+    dark,
+  );
+  const [u0 = [0, 0], u1 = [0, 0]] = F.upright;
+  const [b0 = [0, 0], b1 = [0, 0]] = F.brace;
+  k.extrude(bar(u0, u1, F.bar), dc - F.barHalf, dc + F.barHalf, silver);
+  k.box(
+    aStart + F.top.a0,
+    aBody + 0.02,
+    dc - F.barHalf,
+    dc + F.barHalf,
+    h0 + F.top.h0,
+    h0 + F.top.h1,
+    silver,
+  );
+  k.extrude(bar(b0, b1, F.bar), dc - F.barHalf, dc + F.barHalf, silver);
+  for (const a of F.copper)
+    k.box(
+      aStart + a - 0.012,
+      aStart + a + 0.012,
+      dc - F.rail.half - 0.004,
+      dc + F.rail.half + 0.004,
+      h0 + F.rail.h0 + 0.004,
+      h0 + F.rail.h1 - 0.004,
+      copper,
+    );
+  const C = GUN.cable;
+  for (let i = 0; i + 1 < C.points.length; i++) {
+    const [p, q] = [C.points[i], C.points[i + 1]];
+    if (!p || !q) continue;
+    k.extrude(bar(p, q, C.width), dc + C.d0, dc + C.d1, s.tinted(GUN_CABLE));
+  }
+
+  const B = GUN.body;
+  k.bevelBox(aBody, aBarrel, dBack, dFront, h0, h0 + B.h1, B.bevel, silver);
+  const Ce = GUN.cells;
+  for (const sg of [-1, 1]) {
+    const d = dc + sg * Ce.d;
+    const h = h0 + Ce.h;
+    k.cylinderAlong(
+      aBody + Ce.a0,
+      aBarrel + Ce.a1,
+      d,
+      h,
+      Ce.r,
+      10,
+      s.tinted(GUN_CELL),
+    );
+    // The caps reach a few millimetres past the cylinder's ends, so no
+    // end face shares a plane with the cylinder's own.
+    for (const a of [aBody + Ce.a0 - 0.004, aBarrel + Ce.a1 + 0.004 - Ce.cap])
+      k.cylinderAlong(a, a + Ce.cap, d, h, Ce.r + 0.003, 10, dark);
+  }
+  const T = GUN.trough;
+  k.box(
+    aBody + T.in,
+    aBarrel - T.in,
+    dc - T.half,
+    dc + T.half,
+    h0 + B.h1 - 0.005,
+    h0 + T.h1,
+    dark,
+  );
+
+  const Fl = GUN.flank;
+  const face = dFront + DECAL_LIFT;
+  k.panel(
+    aBody + B.bevel,
+    aBarrel - B.bevel,
+    face,
+    h0 + Fl.seamH - Fl.seamHalf,
+    h0 + Fl.seamH + Fl.seamHalf,
+    dark,
+  );
+  for (const a of Fl.seamA)
+    k.panel(
+      aBody + a - Fl.seamHalf,
+      aBody + a + Fl.seamHalf,
+      face,
+      h0 + B.bevel,
+      h0 + B.h1 - B.bevel,
+      dark,
+    );
+  for (const [a, h] of Fl.bolts)
+    k.box(
+      aBody + a - Fl.bolt,
+      aBody + a + Fl.bolt,
+      dFront - 0.002,
+      dFront + Fl.boltProud,
+      h0 + h - Fl.bolt,
+      h0 + h + Fl.bolt,
+      dark,
+    );
+  const Li = Fl.light;
+  k.box(
+    aBody + Li.a - Li.bezel,
+    aBody + Li.a + Li.bezel,
+    dFront - 0.002,
+    dFront + Li.proud / 2,
+    h0 + Li.h - Li.bezel,
+    h0 + Li.h + Li.bezel,
+    dark,
+  );
+  k.box(
+    aBody + Li.a - Li.half,
+    aBody + Li.a + Li.half,
+    dFront,
+    dFront + Li.proud,
+    h0 + Li.h - Li.half,
+    h0 + Li.h + Li.half,
+    s.signal(STATUS_RED),
+  );
+  const Cu = Fl.copper;
+  k.box(
+    aBody + Cu.a0,
+    aBody + Cu.a1,
+    dFront - 0.002,
+    dFront + Cu.proud,
+    h0 + Cu.h0,
+    h0 + Cu.h1,
+    copper,
+  );
+  const Bd = Fl.badge;
+  k.box(
+    aBody + Bd.a0,
+    aBody + Bd.a1,
+    dFront - 0.002,
+    dFront + Bd.proud,
+    h0 + Bd.h0,
+    h0 + Bd.h1,
+    dark,
+  );
+  markLines(
+    k,
+    MARKS.gunBadge,
+    [
+      aBody + Bd.a0 + 0.008,
+      aBody + Bd.a1 - 0.008,
+      h0 + Bd.h0 + 0.006,
+      h0 + Bd.h1 - 0.006,
+    ],
+    dFront + Bd.proud + MARK_PROUD,
+    s.tinted(GUN_SLAT),
+  );
+
+  const V = GUN.vents;
+  k.box(
+    aBarrel - 0.005,
+    aBarrel + V.len,
+    dc - V.half,
+    dc + V.half,
+    hc - V.half,
+    hc + V.half,
+    dark,
+  );
+  const r = BARREL_SIDE / 2;
+  const slats = Array.from(
+    { length: V.slats },
+    (_, i) => aBarrel + V.first + i * V.pitch,
+  );
+  for (const a of slats)
+    k.box(a, a + V.slat, dc - r, dc + r, hc - r, hc + r, s.tinted(GUN_SLAT));
+  for (let i = 0; i + 1 < slats.length; i++) {
+    const [p = 0, q = 0] = [slats[i], slats[i + 1]];
+    k.panel(
+      p + V.slat + 0.004,
+      q - 0.004,
+      dc + V.half + DECAL_LIFT,
+      hc - V.glowHalf,
+      hc + V.glowHalf,
+      glow,
+    );
+  }
+
+  const Ho = GUN.housing;
+  k.cylinderAlong(
+    aBarrel + Ho.start,
+    aEnd - Ho.lip.len,
+    dc,
+    hc,
+    Ho.r,
+    16,
+    dark,
+  );
+  for (const a of Ho.ribs)
+    k.cylinderAlong(aBarrel + a, aBarrel + a + Ho.rib, dc, hc, r, 16, silver);
+  k.cylinderAlong(
+    aEnd - Ho.lip.len,
+    aEnd - 0.016,
+    dc,
+    hc,
+    Ho.lip.r,
+    16,
+    silver,
+  );
+  k.cylinderAlong(
+    aEnd - Ho.aperture.len,
+    aEnd - 0.008,
+    dc,
+    hc,
+    Ho.aperture.r,
+    16,
+    s.tinted(GUN_CABLE),
+  );
+  k.cylinderAlong(aEnd - Ho.glow.len, aEnd, dc, hc, Ho.glow.r, 12, glow);
 }
 
 // --- The workbench ---------------------------------------------------
@@ -524,8 +808,8 @@ const CRADLE_TALL = 0.12;
  * `RACK_BACK_H1`, the width less 0.05 m each side) carries three rubber
  * cradle brackets at `gunRests`, and `bigGun` lies across them along `a`
  * from `RACK_GUN_A0` to `RACK_GUN_A1`, its grip hanging free between two
- * of them in front of the board. The gun's core blinks group 0 of the
- * breathe bank.
+ * of them in front of the board. The gun's vent slots and muzzle glow
+ * blink group 0 of the breathe bank.
  */
 const gunRack: HeroRecipe = ({ k, s, variant, kind }) => {
   const { hw } = heroHalf(kind, variant);
@@ -580,13 +864,19 @@ const BENCH_TOOLS: readonly {
   { a: -0.56, h0: 1.02, h1: 1.3, head: 0.05 },
 ];
 
+/** The tool maker's mark plate on the pegboard: below the silhouettes, along the bench's left end. */
+const BENCH_MARK: readonly [number, number, number, number] = [
+  -0.87, -0.55, 0.915, 0.99,
+];
+
 /**
  * The gun bench: `workbench` at the catalogue surface's height, `bigGun`
  * lying over its right part (`BENCH_GUN_A0` to `BENCH_GUN_A1`) on three
  * rubber pads at `gunRests`, its belly `BENCH_GUN_LIFT` above the top so
  * the grip hangs clear, and a few tool silhouettes (a handle and a head
  * each) on the pegboard. The bench's left end, the catalogue's surface,
- * is left clear. The gun's core blinks group 0 of the breathe bank.
+ * is left clear. The gun's vent slots and muzzle glow blink group 0 of
+ * the breathe bank.
  */
 const gunBench: HeroRecipe = ({ k, s, variant, kind }) => {
   const { hw, d1 } = heroHalf(kind, variant);
@@ -606,6 +896,8 @@ const gunBench: HeroRecipe = ({ k, s, variant, kind }) => {
       s.tinted(PAD_RUBBER),
     );
   bigGun(k, s, BENCH_GUN_A0, BENCH_GUN_A1, BENCH_GUN_D0, BENCH_GUN_D1, h0);
+  // The tool maker's mark on the pegboard, under the silhouettes.
+  toolPlate(k, s, BENCH_MARK, 0.031);
   for (const t of BENCH_TOOLS) {
     k.box(t.a - 0.012, t.a + 0.012, 0.03, 0.045, t.h0, t.h1, s.dark);
     k.box(
@@ -977,7 +1269,7 @@ const PACK_BLACK: Rgb = [0.06, 0.06, 0.07];
 const FRAME_GREY: Rgb = ALUMINIUM;
 
 /** The wand's body: a mid grey. */
-const WAND_GREY: Rgb = [0.42, 0.43, 0.45];
+export const WAND_GREY: Rgb = [0.42, 0.43, 0.45];
 
 /** The cyclotron's four lights: a deep red behind red lenses. */
 const CYCLOTRON_RED: Rgb = [0.75, 0.08, 0.08];
@@ -986,11 +1278,11 @@ const CYCLOTRON_RED: Rgb = [0.75, 0.08, 0.08];
 const CELL_BLUE: Rgb = [0.15, 0.35, 0.85];
 
 /** The wand's tip: a small orange light. */
-const TIP_ORANGE: Rgb = [0.95, 0.6, 0.2];
+export const TIP_ORANGE: Rgb = [0.95, 0.6, 0.2];
 
 /** The pack body's size: width, depth (back to front) and height. */
-const PACK_W = 0.4;
-const PACK_D = 0.24;
+export const PACK_W = 0.4;
+export const PACK_D = 0.24;
 const PACK_H = 0.68;
 
 /** The frame's bar side and its bottom plate's thickness. */
@@ -1019,11 +1311,13 @@ const RACK_RAIL_H = 0.25;
 const EASEL_FOOT_A = 0.32;
 const EASEL_FOOT_D = -0.32;
 
-/** The wand's length, gunbox to tip, and where its axis stands off the body's left side. */
+/** The wand's length, gunbox to tip, and where its axis stands off the body's side. */
 const WAND_LEN = 0.5;
 const WAND_OFF = 0.065;
-/** How far above the body's bottom the stowed wand's gunbox starts. */
-const WAND_RISE = 0.1;
+/** How far under the body's top the hanging wand's top stands. */
+const WAND_DROP = 0.04;
+/** The wand's gunbox's height. */
+const WAND_BOX = 0.17;
 
 /** The ribbed hose's radius, its ribs' radius and their spacing along the hose. */
 const HOSE_RADIUS = 0.02;
@@ -1131,64 +1425,264 @@ function packBody(k: Kit, kitAt: KitAt, s: Surfaces, p: PackPose): void {
   strip(mid, mid + FRAME_T, -ua, ua);
 }
 
+/** The cyclotron's housing: a black a shade lighter than the shell. */
+const CYCLOTRON_BLACK: Rgb = [0.11, 0.11, 0.12];
+
+/** The pack's fittings (gearbox, N-filter, power cell housing): a dark grey. */
+const FITTING_GREY: Rgb = [0.17, 0.17, 0.18];
+
+/** The crank knob's copper coil. */
+export const COPPER: Rgb = [0.72, 0.45, 0.2];
+
+/** The gearbox's warning plate: a red orange, its letters too small to set. */
+export const WARNING_PLATE: Rgb = [0.85, 0.32, 0.18];
+
+/** The cyclotron's label on the bumper: a clear blue. */
+const LABEL_BLUE: Rgb = [0.2, 0.42, 0.8];
+
+/** The frame's straps: an olive green webbing. */
+export const STRAP_OLIVE: Rgb = [0.3, 0.33, 0.2];
+
+/** The thin wires and tubes: the red wire, the blue and the yellow tube. */
+export const WIRE = {
+  red: [0.8, 0.1, 0.1],
+  blue: [0.2, 0.4, 0.9],
+  yellow: [0.95, 0.8, 0.15],
+} as const satisfies Record<string, Rgb>;
+
+/** The ribbon cable's stripes, side by side. */
+export const RIBBON: readonly Rgb[] = [
+  [0.8, 0.2, 0.2],
+  [0.95, 0.6, 0.15],
+  [0.95, 0.85, 0.2],
+  [0.3, 0.7, 0.3],
+  [0.25, 0.45, 0.85],
+  [0.6, 0.35, 0.75],
+];
+
+/** The wand's clippard valves: a blue one and a silver one. */
+const VALVE_BLUE: Rgb = [0.2, 0.45, 0.85];
+
+/** The wand's bar graph, bottom to top: green, then yellow, then red. */
+const BAR_GRAPH: readonly Rgb[] = [
+  [0.2, 0.75, 0.3],
+  [0.2, 0.75, 0.3],
+  [0.2, 0.75, 0.3],
+  [0.9, 0.8, 0.2],
+  [0.9, 0.8, 0.2],
+  [0.85, 0.2, 0.15],
+];
+
 /**
- * The details on the body's front face (the side that faces the room):
- * the round cyclotron low on it (a grey disc, a black centre and four red
- * lenses at its quarters, chase groups 0, 2, 4 and 6 in order round the
- * ring),
- * the power-cell housing above it on the left with a column of eight blue
- * lights (chase groups 0 to 7, bottom to top), two ribbed booster
- * tubes lying across the face above the cyclotron, a black cable along
- * the top, and a bent carrying arm on the right side.
+ * The cyclotron, in metres: its centre `a` and its centre's height over
+ * the body's bottom; its housing's steps `[radius, how far its face stands
+ * out of the body's face]`, the outer ring, the inner ring the lenses sit
+ * on and the round lid; the lenses' ring radius, their bezels' radius and
+ * their own.
+ */
+export const CYCLOTRON = {
+  a: 0,
+  h: 0.175,
+  steps: [
+    [0.175, 0.04],
+    [0.155, 0.06],
+    [0.085, 0.075],
+  ],
+  ring: 0.12,
+  bezel: 0.03,
+  lens: 0.021,
+} as const;
+
+/**
+ * The bumper across the cyclotron's lower half: its half length along
+ * `a`, its heights under the cyclotron's centre and how far it stands
+ * out of the body's face.
+ */
+export const BUMPER = { half: 0.215, h: [-0.06, -0.015], out: 0.095 } as const;
+
+/**
+ * One cable on the pack's face, as `[a, h, out]` points: `out` how far its
+ * middle stands off the face it lies on at that point. `width` its width
+ * and its depth.
+ */
+interface PackCable {
+  pts: readonly (readonly [number, number, number])[];
+  width: number;
+}
+
+/**
+ * The details on the body's front face (the side that faces the room,
+ * the pack's back as worn), as the replicas place them, seen from the
+ * room with `-a` on the left:
+ * - the cyclotron low on it: a large round housing in three steps, its
+ *   four red lenses in dark bezels at its diagonals (chase groups 0, 2, 4
+ *   and 6 in order round the ring) round the round lid;
+ * - the bumper across its lower half with the copper crank knob and the
+ *   blue label;
+ * - the power cell at the upper left, its housing ribbed down its left
+ *   edge, a column of eight blue lights in it (chase groups 0 to 7,
+ *   bottom to top), and the ion arm under it down the left edge, ending
+ *   in the round shock mount;
+ * - the booster frame rising in the middle with the booster tube at its
+ *   top; the gearbox in the middle with its warning plate; the N-filter
+ *   at the top right with its vent slots and grey knob; the synchronous
+ *   generator over the cyclotron on the right; two filler tubes and the
+ *   red-banded gas cylinder on the left over the cyclotron;
+ * - the rainbow ribbon cable from the power cell down to the cyclotron,
+ *   the black corrugated hose from the N-filter down to the generator, a
+ *   red wire round the cyclotron's rim, a blue tube looping at the top and
+ *   a yellow one down the booster frame's side into a filler tube.
  */
 function packFace(k: Kit, kitAt: KitAt, s: Surfaces, p: PackPose): void {
   const grey = s.tinted(FRAME_GREY);
   const black = s.tinted(PACK_BLACK);
+  const fitting = s.tinted(FITTING_GREY);
+  const b = p.bottom;
+  /**
+   * A slab on the face from `a0` to `a1` and `h0` to `h1`, its back sunk
+   * a little into the body and its front `t` out of the face, following
+   * the face's lean.
+   */
+  const slab = (
+    a0: number,
+    a1: number,
+    h0: number,
+    h1: number,
+    t: number,
+    surf: Surface,
+  ) =>
+    profileAlong(
+      kitAt,
+      ORIGIN,
+      [
+        [p.front(h0) - 0.004, h0],
+        [p.front(h0) + t, h0],
+        [p.front(h1) + t, h1],
+        [p.front(h1) - 0.004, h1],
+      ],
+      a0,
+      a1,
+      surf,
+    );
+  /** A round puck facing the room at `(a, h)`, `t` out of the face. */
+  const puck = (
+    a: number,
+    h: number,
+    r: number,
+    t: number,
+    sides: number,
+    surf: Surface,
+  ) =>
+    k.extrude(
+      discOutline(a, h, r, sides),
+      p.front(h + r) - 0.004,
+      p.front(h) + t,
+      surf,
+    );
 
-  const cycA = 0.04;
-  const cycH = p.bottom + 0.15;
-  const cycR = 0.115;
-  const cycD0 = p.front(cycH + cycR) - 0.004;
-  const cycD1 = p.front(cycH) + 0.05;
-  k.extrude(discOutline(cycA, cycH, cycR, 12), cycD0, cycD1, grey);
-  k.extrude(discOutline(cycA, cycH, 0.075, 10), cycD1, cycD1 + 0.008, black);
+  // The cyclotron: its steps, the lenses in their bezels, the bumper.
+  const C = CYCLOTRON;
+  const cycH = b + C.h;
+  let face = 0;
+  C.steps.forEach(([r, out], i) => {
+    const d0 = i === 0 ? p.front(cycH + r) - 0.004 : face;
+    face = p.front(cycH) + out;
+    k.extrude(
+      discOutline(C.a, cycH, r, i === 2 ? 12 : 16),
+      d0,
+      face,
+      s.tinted(i === 1 ? shade(CYCLOTRON_BLACK, 0.75) : CYCLOTRON_BLACK),
+    );
+  });
+  const lensFace = p.front(cycH) + (C.steps[1]?.[1] ?? 0);
   [45, 315, 225, 135].forEach((deg, i) => {
     const t = (deg * Math.PI) / 180;
-    const la = cycA + 0.095 * Math.cos(t);
-    const lh = cycH + 0.095 * Math.sin(t);
+    const la = C.a + C.ring * Math.cos(t);
+    const lh = cycH + C.ring * Math.sin(t);
     k.extrude(
-      discOutline(la, lh, 0.02, 8),
-      cycD1,
-      cycD1 + 0.014,
+      discOutline(la, lh, C.bezel, 10),
+      lensFace,
+      lensFace + 0.006,
+      s.dark,
+    );
+    k.extrude(
+      discOutline(la, lh, C.lens, 8),
+      lensFace,
+      lensFace + 0.014,
       s.blink(CYCLOTRON_RED, 2 * i),
     );
   });
-
-  const cellA0 = -0.17;
-  const cellA1 = -0.1;
-  const cellH0 = p.bottom + 0.3;
-  const cellH1 = p.bottom + 0.62;
-  const cellT = 0.03;
-  profileAlong(
-    kitAt,
-    ORIGIN,
-    [
-      [p.front(cellH0) - 0.004, cellH0],
-      [p.front(cellH0) + cellT, cellH0],
-      [p.front(cellH1) + cellT, cellH1],
-      [p.front(cellH1) - 0.004, cellH1],
-    ],
-    cellA0,
-    cellA1,
-    s.dark,
+  const B = BUMPER;
+  const [bh0, bh1] = [cycH + B.h[0], cycH + B.h[1]];
+  const bumperFront = p.front(cycH) + B.out;
+  k.bevelBox(
+    -B.half,
+    B.half,
+    p.front(bh1) - 0.004,
+    bumperFront,
+    bh0,
+    bh1,
+    0.006,
+    black,
   );
+  const knobA = -0.07;
+  const knobH = (bh0 + bh1) / 2;
+  const knob = kitAt(yawed(ORIGIN, knobA, 0, Math.PI / 2));
+  knob.cylinderAlong(
+    bumperFront - 0.004,
+    bumperFront + 0.035,
+    0,
+    knobH,
+    0.018,
+    8,
+    s.tinted(COPPER),
+  );
+  for (const at of [0.008, 0.018, 0.028])
+    knob.cylinderAlong(
+      bumperFront + at - 0.003,
+      bumperFront + at + 0.003,
+      0,
+      knobH,
+      0.022,
+      8,
+      s.tinted(shade(COPPER, 0.8)),
+    );
+  knob.cylinderAlong(
+    bumperFront + 0.035,
+    bumperFront + 0.042,
+    0,
+    knobH,
+    0.012,
+    8,
+    grey,
+  );
+  k.panel(
+    0.05,
+    0.14,
+    bumperFront + DECAL_LIFT,
+    bh0 + 0.01,
+    bh1 - 0.01,
+    s.tinted(LABEL_BLUE),
+  );
+
+  // The power cell: its housing, its ribbed left edge and its lights.
+  const cellA0 = -0.19;
+  const cellA1 = -0.09;
+  const cellH0 = b + 0.37;
+  const cellH1 = b + 0.63;
+  const cellT = 0.035;
+  slab(cellA0, cellA1, cellH0, cellH1, cellT, fitting);
+  for (let i = 0; i < 6; i++) {
+    const h = cellH0 + 0.02 + i * 0.04;
+    slab(cellA0 - 0.006, cellA0 + 0.02, h, h + 0.018, cellT + 0.008, black);
+  }
   const cells = 8;
   const pitch = (cellH1 - cellH0 - 0.02) / cells;
   for (let i = 0; i < cells; i++) {
     const h = cellH0 + 0.01 + i * pitch;
     const d = p.front(h + pitch / 2) + cellT + DECAL_LIFT;
     k.panel(
-      cellA0 + 0.015,
+      cellA0 + 0.035,
       cellA1 - 0.015,
       d,
       h + 0.006,
@@ -1197,105 +1691,268 @@ function packFace(k: Kit, kitAt: KitAt, s: Surfaces, p: PackPose): void {
     );
   }
 
-  for (const [h, r, a0, a1] of [
-    [p.bottom + 0.34, 0.035, -0.06, 0.17],
-    [p.bottom + 0.43, 0.028, -0.03, 0.14],
-  ] as const) {
-    const d = p.front(h) + r - 0.012;
-    k.cylinderAlong(a0, a1, d, h, r, 8, grey);
-    for (const a of [a0 + 0.04, (a0 + a1) / 2, a1 - 0.04])
-      k.cylinderAlong(a - 0.008, a + 0.008, d, h, r + 0.009, 6, s.dark);
-  }
-  const cableH = p.bottom + 0.64;
-  k.cylinderAlong(
-    -0.14,
-    0.17,
-    p.front(cableH) + 0.004,
-    cableH,
-    0.012,
-    6,
-    black,
+  // The ion arm down the left edge under the cell, and its shock mount.
+  slab(-0.206, -0.178, b + 0.2, cellH0 + 0.02, 0.05, black);
+  const mountH = b + 0.215;
+  kitAt(yawed(ORIGIN, -0.192, 0, Math.PI / 2)).cylinderAlong(
+    p.front(mountH) + 0.04,
+    p.front(mountH) + 0.07,
+    0,
+    mountH,
+    0.022,
+    8,
+    grey,
   );
 
-  const armLow = p.bottom + 0.22;
-  const armHigh = p.bottom + 0.52;
-  const armOut = PACK_W / 2 + 0.07;
-  for (const h of [armLow, armHigh])
-    k.cylinderAlong(
-      PACK_W / 2 - 0.01,
-      armOut + 0.012,
-      -p.lean(h),
-      h,
-      0.012,
-      6,
-      grey,
-    );
+  // The booster frame, two rails and four rungs, and its tube on top.
+  const topH = p.top;
+  for (const a of [-0.075, -0.025])
+    slab(a, a + 0.01, b + 0.36, topH - 0.02, 0.03, grey);
+  for (let i = 0; i < 4; i++) {
+    const h = b + 0.4 + i * 0.06;
+    slab(-0.075, -0.015, h, h + 0.012, 0.022, grey);
+  }
   k.cylinder(
-    armOut,
-    -p.lean((armLow + armHigh) / 2),
-    armLow,
-    armHigh,
-    0.012,
-    6,
+    -0.045,
+    p.front(topH - 0.06) + 0.035,
+    topH - 0.13,
+    topH - 0.005,
+    0.03,
+    10,
+    fitting,
+  );
+
+  // The gearbox and its plate; the N-filter, its vents and its knob.
+  slab(-0.005, 0.13, b + 0.43, b + 0.56, 0.05, fitting);
+  slab(0.01, 0.115, b + 0.46, b + 0.53, 0.054, s.tinted(WARNING_PLATE));
+  slab(0.02, 0.17, topH - 0.12, topH - 0.01, 0.045, fitting);
+  for (let i = 0; i < 4; i++) {
+    const a = 0.05 + i * 0.028;
+    slab(a, a + 0.01, topH - 0.105, topH - 0.03, 0.047, black);
+  }
+  k.cylinder(
+    0.13,
+    p.front(topH) + 0.022,
+    topH - 0.012,
+    topH + 0.015,
+    0.02,
+    10,
     grey,
+  );
+
+  // The synchronous generator, the filler tubes and the gas cylinder.
+  puck(0.14, b + 0.395, 0.04, 0.03, 12, fitting);
+  puck(0.14, b + 0.395, 0.016, 0.045, 8, grey);
+  for (const a of [-0.07, -0.025]) puck(a, b + 0.39, 0.018, 0.05, 8, black);
+  const gasD = p.front(b + 0.39) + 0.012;
+  k.cylinder(0.04, gasD, b + 0.36, b + 0.425, 0.016, 8, black);
+  k.cylinder(0.04, gasD, b + 0.38, b + 0.405, 0.018, 8, s.tinted(WIRE.red));
+
+  // The cables.
+  const cable = (c: PackCable, surf: Surface, along = 0) => {
+    for (let i = 0; i + 1 < c.pts.length; i++) {
+      const [a0, h0, o0] = c.pts[i] ?? [0, 0, 0];
+      const [a1, h1, o1] = c.pts[i + 1] ?? [0, 0, 0];
+      const len = Math.hypot(a1 - a0, h1 - h0);
+      const [nx, nh] = [-(h1 - h0) / len, (a1 - a0) / len];
+      const out = (o0 + o1) / 2;
+      const d = p.front((h0 + h1) / 2) + out;
+      k.extrude(
+        tiltedBar(
+          (a0 + a1) / 2 + nx * along,
+          (h0 + h1) / 2 + nh * along,
+          Math.atan2(h1 - h0, a1 - a0),
+          len + c.width,
+          c.width,
+        ),
+        d - c.width / 2,
+        d + c.width / 2,
+        surf,
+      );
+    }
+  };
+  const ribbon: PackCable = {
+    pts: [
+      [-0.12, cellH0 + 0.01, cellT + 0.006],
+      [-0.165, b + 0.31, 0.03],
+      [-0.165, b + 0.24, 0.045],
+      [-0.12, b + 0.19, 0.064],
+    ],
+    width: 0.008,
+  };
+  RIBBON.forEach((c, i) =>
+    cable(ribbon, s.tinted(c), (i - (RIBBON.length - 1) / 2) * 0.008),
+  );
+  const hose: PackCable = {
+    pts: [
+      [0.16, topH - 0.12, 0.04],
+      [0.18, b + 0.5, 0.035],
+      [0.175, b + 0.45, 0.035],
+      [0.15, b + 0.42, 0.04],
+    ],
+    width: 0.024,
+  };
+  cable(hose, black);
+  const rim: PackCable = {
+    pts: [100, 70, 40, 15].map((deg): [number, number, number] => {
+      const t = (deg * Math.PI) / 180;
+      return [
+        C.a + 0.165 * Math.cos(t),
+        cycH + 0.165 * Math.sin(t),
+        (C.steps[0]?.[1] ?? 0) + 0.003,
+      ];
+    }),
+    width: 0.006,
+  };
+  cable(rim, s.tinted(WIRE.red));
+  cable(
+    {
+      pts: [
+        [-0.06, topH - 0.13, 0.04],
+        [-0.03, topH - 0.17, 0.05],
+        [0.0, topH - 0.15, 0.05],
+        [0.02, topH - 0.1, 0.045],
+      ],
+      width: 0.008,
+    },
+    s.tinted(WIRE.blue),
+  );
+  cable(
+    {
+      pts: [
+        [-0.084, topH - 0.14, 0.035],
+        [-0.084, b + 0.425, 0.035],
+        [-0.07, b + 0.405, 0.05],
+      ],
+      width: 0.007,
+    },
+    s.tinted(WIRE.yellow),
   );
 }
 
 /**
- * The wand, standing tip up with its bottom at `base` on the axis `(a,
- * d)`: a grey gunbox with a black grip jutting forward, a finned dark
- * heat-sink collar, a slim grey barrel and a small orange tip (chase
- * group 7), and a dark socket under the gunbox where the hose plugs in.
+ * The frame's two olive shoulder straps, down the back of its uprights
+ * from the top bar to the middle bar.
  */
-function wand(k: Kit, s: Surfaces, a: number, d: number, base: number): void {
+function packStraps(kitAt: KitAt, s: Surfaces, p: PackPose): void {
+  const olive = s.tinted(STRAP_OLIVE);
+  const h0 = p.bottom + PACK_H * 0.45;
+  const h1 = p.top + FRAME_OVER;
+  for (const a of [-FRAME_A + 0.04, FRAME_A - 0.04])
+    profileAlong(
+      kitAt,
+      ORIGIN,
+      [
+        [p.back(h0) - FRAME_T - 0.012, h0],
+        [p.back(h0) - FRAME_T + 0.002, h0],
+        [p.back(h1) - FRAME_T + 0.002, h1],
+        [p.back(h1) - FRAME_T - 0.012, h1],
+      ],
+      a - 0.025,
+      a + 0.025,
+      olive,
+    );
+}
+
+/**
+ * The wand, hanging tip down on its axis `(a, d)` from `top`, as it rests
+ * on the pack's gun mount: the grey gunbox on top with its black heat
+ * sink and its bar graph facing the room, a blue and a silver clippard
+ * valve on its outer side and the black top handle; the black front
+ * handle jutting towards the room under it, the finned collar, the slim
+ * barrel and the orange tip at the bottom (chase group 7); and a dark
+ * socket on the gunbox's top, where the hose plugs in. `side` is the
+ * outer side's sign along `a`.
+ */
+function wand(
+  k: Kit,
+  s: Surfaces,
+  a: number,
+  d: number,
+  top: number,
+  side: number,
+): void {
+  const box0 = top - WAND_BOX;
   k.box(
     a - 0.035,
     a + 0.035,
     d - 0.045,
     d + 0.045,
-    base,
-    base + 0.18,
+    box0,
+    top,
     s.tinted(WAND_GREY),
+  );
+  for (let i = 0; i < 4; i++) {
+    const h = box0 + 0.03 + i * 0.022;
+    k.box(
+      a - 0.03,
+      a + 0.03,
+      d + 0.045,
+      d + 0.058,
+      h,
+      h + 0.01,
+      s.tinted(PACK_BLACK),
+    );
+  }
+  BAR_GRAPH.forEach((c, i) => {
+    const h = box0 + 0.122 + i * 0.008;
+    k.panel(
+      a - 0.012,
+      a + 0.012,
+      d + 0.045 + DECAL_LIFT,
+      h,
+      h + 0.006,
+      s.tinted(c),
+    );
+  });
+  const out = a + side * 0.035;
+  for (const [h, c] of [
+    [box0 + 0.04, VALVE_BLUE],
+    [box0 + 0.1, FRAME_GREY],
+  ] as const)
+    k.cylinder(
+      out + side * 0.009,
+      d - 0.032,
+      h,
+      h + 0.035,
+      0.009,
+      8,
+      s.tinted(c),
+    );
+  k.box(
+    Math.min(out, out + side * 0.03),
+    Math.max(out, out + side * 0.03),
+    d - 0.012,
+    d + 0.012,
+    box0 + 0.05,
+    box0 + 0.15,
+    s.tinted(PACK_BLACK),
   );
   k.box(
     a - 0.018,
     a + 0.018,
     d + 0.045,
-    d + 0.1,
-    base + 0.02,
-    base + 0.09,
+    d + 0.11,
+    box0 - 0.11,
+    box0 - 0.03,
     s.tinted(PACK_BLACK),
   );
-  k.cylinder(a, d, base + 0.18, base + 0.23, 0.032, 8, s.dark);
-  for (const h of [base + 0.19, base + 0.212])
+  k.cylinder(a, d, box0 - 0.05, box0, 0.032, 8, s.dark);
+  for (const h of [box0 - 0.02, box0 - 0.042])
     k.cylinder(a, d, h, h + 0.008, 0.042, 6, s.dark);
-  k.cylinder(
-    a,
-    d,
-    base + 0.23,
-    base + WAND_LEN - 0.02,
-    0.017,
-    8,
-    s.tinted(FRAME_GREY),
-  );
-  k.cylinder(
-    a,
-    d,
-    base + WAND_LEN - 0.02,
-    base + WAND_LEN,
-    0.021,
-    8,
-    s.blink(TIP_ORANGE, 7),
-  );
-  k.cylinder(a, d, base - 0.04, base, 0.022, 6, s.dark);
+  const tip = top - WAND_LEN;
+  k.cylinder(a, d, tip + 0.02, box0 - 0.05, 0.017, 8, s.tinted(FRAME_GREY));
+  k.cylinder(a, d, tip, tip + 0.02, 0.021, 8, s.blink(TIP_ORANGE, 7));
+  k.cylinder(a, d, top, top + 0.03, 0.022, 6, s.dark);
 }
 
 /**
- * The ribbed hose from the body's left side to the wand's socket: a
- * straight run out of the body along `a` at `hSide`, an elbow, a ribbed
- * run up or down beside the wand at depth `dHose` to `hWand`, an elbow,
- * and a short run along `d` into the socket at `(aWand, dWand)`. Every
- * piece starts where the last ends, so the hose is one connected run.
+ * The beamline, the ribbed hose from the body's side (`side` the sign of
+ * its `a`) to the wand's socket: a straight run out of the body along
+ * `a` at `hSide`, an elbow, a ribbed run up or down beside the wand at
+ * depth `dHose` to `hWand`, an elbow, and a short run along `d` into the
+ * socket at `(aWand, dWand)`. Every piece starts where the last ends, so
+ * the hose is one connected run.
  */
 function ribbedHose(
   k: Kit,
@@ -1306,11 +1963,12 @@ function ribbedHose(
   dHose: number,
   hSide: number,
   hWand: number,
+  side: number,
 ): void {
   const hose = s.tinted(PACK_BLACK);
   k.cylinderAlong(
     aWand,
-    -PACK_W / 2 + 0.02,
+    side * (PACK_W / 2 - 0.02),
     dHose,
     hSide,
     HOSE_RADIUS,
@@ -1414,9 +2072,9 @@ function packV0Easel(k: Kit, kitAt: KitAt, s: Surfaces, p: PackPose): void {
 }
 
 /**
- * The wand's mount: a ribbed grey clip on the body's left side, centred
- * on depth `d`, that the stowed wand (its axis at `aWand`, its bottom at
- * `base`) hangs in.
+ * The gun mount: a ribbed grey clip on the body's side (`side` the sign of
+ * its `a`), centred on depth `d`, that the hanging wand's gunbox (its
+ * axis at `aWand`, its bottom at `base`) rests in.
  */
 function wandMount(
   k: Kit,
@@ -1424,9 +2082,10 @@ function wandMount(
   aWand: number,
   d: number,
   base: number,
+  side: number,
 ): void {
-  const mount0 = -PACK_W / 2;
-  const mount1 = aWand + 0.035;
+  const mount0 = (side * PACK_W) / 2;
+  const mount1 = aWand - side * 0.035;
   k.box(
     mount1,
     mount0,
@@ -1437,7 +2096,15 @@ function wandMount(
     s.tinted(FRAME_GREY),
   );
   for (const h of [base + 0.04, base + 0.085, base + 0.13])
-    k.box(mount1 - 0.006, mount0, d - 0.065, d + 0.065, h, h + 0.012, s.dark);
+    k.box(
+      mount1 + side * 0.006,
+      mount0,
+      d - 0.065,
+      d + 0.065,
+      h,
+      h + 0.012,
+      s.dark,
+    );
 }
 
 /**
@@ -1479,16 +2146,18 @@ function packV1Rack(k: Kit, s: Surfaces, p: PackPose): void {
 
 /**
  * The field pack: a matte black backpack unit on a grey metal frame of
- * its own (`packBody`), its front face carrying the cyclotron, the power
- * cell, the booster tubes, a cable and a carrying arm (`packFace`), and a
- * grey wand with a black grip and an orange tip (`wand`) joined to the
- * pack's left side by a ribbed black hose (`ribbedHose`).
+ * its own with olive straps (`packBody`, `packStraps`), its front face
+ * carrying the cyclotron with its bumper, the power cell, the ion arm,
+ * the booster frame, the gearbox, the N-filter, the generator and the
+ * cables (`packFace`), and the wand (`wand`) joined to the pack's right
+ * side by the ribbed beamline (`ribbedHose`).
  *
  * Both variants stand the frame's top at the catalogue top (`heroHalf`),
- * with the wand stowed tip up in a ribbed mount on the body's left side
- * (`wandMount`) and the hose dropping from high on that side to the
- * wand's socket. v0 leans back `PACK_LEAN` on an A-frame easel
- * (`packV0Easel`); v1 stands upright on a four-post rack (`packV1Rack`).
+ * with the wand hanging tip down on its gun mount on the body's right
+ * side (`wandMount`), as on the original, and the hose rising from low
+ * on that side to the socket on its gunbox. v0 leans back `PACK_LEAN` on
+ * an A-frame easel (`packV0Easel`); v1 stands upright on a four-post rack
+ * (`packV1Rack`).
  *
  * The kind's bank is chase, which lights one group of eight at a time in
  * order: one dot climbs the power cell's whole column each cycle (light i
@@ -1498,16 +2167,28 @@ function packV1Rack(k: Kit, s: Surfaces, p: PackPose): void {
  */
 const fieldPack: HeroRecipe = ({ k, kitAt, s, variant, kind }) => {
   const p = packPose(variant, heroHalf(kind, variant).top);
-  const aWand = -PACK_W / 2 - WAND_OFF - 0.035;
-  const base = p.bottom + WAND_RISE;
-  const dWand = -p.lean(base + WAND_LEN / 2);
+  const side = 1;
+  const aWand = side * (PACK_W / 2 + WAND_OFF + 0.035);
+  const top = p.top - WAND_DROP;
+  const dWand = -p.lean(top - WAND_LEN / 2);
   packBody(k, kitAt, s, p);
+  packStraps(kitAt, s, p);
   packFace(k, kitAt, s, p);
   if (variant === 0) packV0Easel(k, kitAt, s, p);
   else packV1Rack(k, s, p);
-  wandMount(k, s, aWand, dWand, base);
-  wand(k, s, aWand, dWand, base);
-  ribbedHose(k, kitAt, s, aWand, dWand, dWand - 0.1, p.top - 0.08, base - 0.04);
+  wandMount(k, s, aWand, dWand, top - WAND_BOX, side);
+  wand(k, s, aWand, dWand, top, side);
+  ribbedHose(
+    k,
+    kitAt,
+    s,
+    aWand,
+    dWand,
+    dWand - 0.07,
+    p.bottom + 0.12,
+    top + 0.015,
+    side,
+  );
 };
 
 /** The workshop kinds' recipes. */

@@ -18,7 +18,7 @@
  */
 
 import { createRng, type Rng } from "../core/seed";
-import type { DecalKind } from "../world/types";
+import type { TiledDecalKind } from "../world/types";
 import { LAYER } from "./layers";
 
 /** RGBA bytes of one square layer. */
@@ -236,7 +236,7 @@ const MARGIN = 4;
  * chevrons' tiles and the solid tile and has no entry of its own either.
  */
 export const DECAL_TILES: Readonly<
-  Record<Exclude<DecalKind, "stencil" | "ring"> | "solid", readonly number[]>
+  Record<TiledDecalKind | "solid", readonly number[]>
 > = {
   chevrons: [0, 1],
   arrow: [2],

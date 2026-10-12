@@ -12,7 +12,7 @@ impl Engine {
     /// chunk, embedding and bound reference, stays), a cross-domain move reads
     /// the source content and re-indexes it into the destination's source.
     ///
-    /// **The permalink** is decided by [`Engine::moved_permalink`]: by default
+    /// **The permalink** is decided by `Engine::moved_permalink`: by default
     /// it follows the move only when it was in step with the old path, so a
     /// deliberate custom permalink survives a re-filing; `MoveParams::permalink`
     /// asks for the path's own, the current one, or a named one. A destination
@@ -100,12 +100,6 @@ impl Engine {
             return Err(EngineError::Invalid(assets_reserved_error(&dest_rel)));
         }
         let cross = dest_domain != p.domain;
-        // The source was checked by its write view; a move into another
-        // domain writes there too, so the destination is asked the same way,
-        // before anything is written at either end.
-        if cross {
-            self.refuse_read_only_domain(&dest_domain, scope).await?;
-        }
         // A move into another domain writes there too, so it is counted there
         // for the whole move: a rename of the destination waits for it, and a
         // destination a rename has paused is waited for first.
@@ -114,6 +108,12 @@ impl Engine {
         } else {
             None
         };
+        // The source was checked by its write view; a move into another
+        // domain writes there too, so the destination is asked the same way,
+        // inside its ticket and before anything is written at either end.
+        if cross {
+            self.refuse_read_only_domain(&dest_domain, scope).await?;
+        }
         let new_permalink = Self::moved_permalink(&src, &dest_rel, p.permalink.as_deref())?;
         let in_place = !cross && dest_rel == src.path;
         if in_place && new_permalink == src.permalink {
@@ -136,8 +136,19 @@ impl Engine {
         // is compared in any letter case, as the write paths do: a
         // case-insensitive filesystem (the macOS and Windows defaults) opens
         // `manifest.md` as the very `MANIFEST.md` routing reads.
-        if dest_rel.eq_ignore_ascii_case("MANIFEST.md") {
-            let text = self.move_source_text(&src_source, &src, &p.domain).await?;
+        if names_the_manifest(&dest_rel) {
+            // In a reviewing domain the move writes the mover's draft, so the
+            // text that lands is what they see: their own draft when they hold
+            // one, the base text otherwise.
+            let text = match overlay {
+                Some(_) => view.text_at(&src_source, &src).await?.ok_or_else(|| {
+                    EngineError::NotFound(format!(
+                        "no engram '{}' in domain '{}'",
+                        p.identifier, p.domain
+                    ))
+                })?,
+                None => self.move_source_text(&src_source, &src, &p.domain).await?,
+            };
             self.refuse_read_only_switch_on(&dest_domain, &text, scope)
                 .await?;
         }

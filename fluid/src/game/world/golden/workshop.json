@@ -1,6 +1,6 @@
 {
-  "version": 3,
-  "seed": 268006732612452,
+  "version": 4,
+  "seed": 839572648063771,
   "domain": "station",
   "permalink": "pipe-shop",
   "title": "Pump Workshop",
@@ -70,7 +70,7 @@
         "permalink": "valve-a"
       },
       "sealedLabel": null,
-      "seed": 8314076415114772
+      "seed": 396245050810267
     },
     {
       "kind": "door",
@@ -87,7 +87,7 @@
         "permalink": "valve-b"
       },
       "sealedLabel": null,
-      "seed": 7915446640021719
+      "seed": 6907941899572335
     },
     {
       "kind": "door",
@@ -104,7 +104,7 @@
         "permalink": "valve-c"
       },
       "sealedLabel": null,
-      "seed": 9001405306565756
+      "seed": 3571639269283608
     },
     {
       "kind": "door",
@@ -121,7 +121,7 @@
         "permalink": "valve-d"
       },
       "sealedLabel": null,
-      "seed": 2538715044208476
+      "seed": 5594530229983099
     },
     {
       "kind": "door",
@@ -138,7 +138,7 @@
         "permalink": "valve-e"
       },
       "sealedLabel": null,
-      "seed": 4981696784716512
+      "seed": 8343154639515931
     },
     {
       "kind": "door",
@@ -155,7 +155,7 @@
         "permalink": "valve-f"
       },
       "sealedLabel": null,
-      "seed": 4692261124821343
+      "seed": 2053656332497446
     },
     {
       "kind": "terminal",
@@ -169,8 +169,8 @@
         "Close the valve upstream and bleed the line."
       ],
       "section": 0,
-      "seed": 783733759090979,
-      "variant": 0
+      "seed": 6472075034946011,
+      "variant": 1
     },
     {
       "kind": "terminal",
@@ -184,8 +184,8 @@
         "Swap the seat, torque the bonnet to spec."
       ],
       "section": 0,
-      "seed": 472843725335067,
-      "variant": 2
+      "seed": 6087090582892024,
+      "variant": 1
     },
     {
       "kind": "terminal",
@@ -199,8 +199,8 @@
         "Open slowly and watch the gauge for a minute."
       ],
       "section": 0,
-      "seed": 3769261221743828,
-      "variant": 1
+      "seed": 3854044167215325,
+      "variant": 0
     },
     {
       "kind": "machine",
@@ -212,7 +212,7 @@
       "machine": "fabricator",
       "tag": "gauges",
       "hue": 10,
-      "seed": 420821534596461,
+      "seed": 2829157023071456,
       "variant": 2
     },
     {
@@ -225,7 +225,7 @@
       "machine": "lab-bench",
       "tag": "pressure",
       "hue": 293,
-      "seed": 1423880274236610,
+      "seed": 4350344066168084,
       "variant": 0
     },
     {
@@ -238,7 +238,7 @@
       "machine": "lab-bench",
       "tag": "safety",
       "hue": 17,
-      "seed": 8778174873098034,
+      "seed": 5991687810420990,
       "variant": 0
     },
     {
@@ -251,7 +251,7 @@
       "machine": "nav-table",
       "tag": "tools",
       "hue": 320,
-      "seed": 6102725083153601,
+      "seed": 999660079604307,
       "variant": 0
     },
     {
@@ -264,7 +264,7 @@
       "machine": "containment",
       "tag": "valves",
       "hue": 132,
-      "seed": 7956794569900630,
+      "seed": 6702328524668265,
       "variant": 2
     },
     {
@@ -279,7 +279,7 @@
         "domain": "station",
         "permalink": "boiler-room"
       },
-      "seed": 3735207814268591
+      "seed": 6821838658794194
     },
     {
       "kind": "hatch",
@@ -293,7 +293,7 @@
         "domain": "station",
         "permalink": "crew-handbook"
       },
-      "seed": 6841839253947602
+      "seed": 4926377402886642
     },
     {
       "kind": "hatch",
@@ -307,7 +307,7 @@
         "domain": "station",
         "permalink": "pump-deck"
       },
-      "seed": 5123092894204044
+      "seed": 1979723578513099
     },
     {
       "kind": "poster",
@@ -320,7 +320,7 @@
       "lines": [
         "Valve C sticks when it is cold."
       ],
-      "seed": 2696252751822244
+      "seed": 4294249271788824
     },
     {
       "kind": "poster",
@@ -333,7 +333,7 @@
       "lines": [
         "Spare seats live in the east locker."
       ],
-      "seed": 2064995036129621
+      "seed": 2471881895466916
     }
   ],
   "decor": [
@@ -342,15 +342,15 @@
       "x": 6.5,
       "y": 6,
       "turn": 0,
-      "seed": 896310677415786,
-      "variant": 1
+      "seed": 1557073333630399,
+      "variant": 2
     },
     {
       "kind": "pipe-run",
       "x": 6.5,
       "y": 4.75,
       "turn": 0,
-      "seed": 3215931741977255,
+      "seed": 3509029632940314,
       "variant": 1
     },
     {
@@ -358,43 +358,43 @@
       "x": 6.5,
       "y": 7.25,
       "turn": 0,
-      "seed": 4546906418204469,
+      "seed": 7776312748818299,
       "variant": 1
     }
   ],
   "scaffold": [
     {
-      "x0": 17.08308169511147,
-      "x1": 18.48308169511147,
-      "z0": 14.998090362874795,
-      "z1": 16.398090362874793
+      "x0": 14.816762927081438,
+      "x1": 16.216762927081437,
+      "z0": 8.859169455757366,
+      "z1": 10.259169455757364
     },
     {
-      "x0": 15.643492304859684,
-      "x1": 17.043492304859683,
-      "z0": 8.032479894207793,
-      "z1": 9.432479894207791
+      "x0": 19.65558346374892,
+      "x1": 21.055583463748917,
+      "z0": 8.47918187021278,
+      "z1": 9.87918187021278
     }
   ],
   "heroes": [
     {
-      "kind": "flying-cloud",
+      "kind": "mech-head",
       "variant": 0,
-      "x": 5,
-      "y": 9.5,
-      "turn": 0,
-      "seed": 13372841297063
+      "x": 4.5,
+      "y": 8,
+      "turn": 2,
+      "seed": 91789315355248
     }
   ],
   "props": [
     {
       "kind": "sign-plate",
-      "variant": 5,
+      "variant": 0,
       "anchor": "wall",
       "x": 0.5,
       "y": 0,
       "turn": 2,
-      "seed": 7952386291430097
+      "seed": 3461929030207197
     },
     {
       "kind": "keycard-reader",
@@ -403,196 +403,187 @@
       "x": 2.5,
       "y": 0,
       "turn": 2,
-      "seed": 2402205730657966
+      "seed": 1344679640920251
     },
     {
       "kind": "keycard-reader",
-      "variant": 1,
+      "variant": 0,
       "anchor": "wall",
       "x": 4.5,
       "y": 0,
       "turn": 2,
-      "seed": 7049207398806914
+      "seed": 1361970865385528
     },
     {
       "kind": "keycard-reader",
-      "variant": 0,
+      "variant": 1,
       "anchor": "wall",
       "x": 6.5,
       "y": 0,
       "turn": 2,
-      "seed": 640789052746848
+      "seed": 2280465495433838
     },
     {
       "kind": "keycard-reader",
-      "variant": 0,
+      "variant": 1,
       "anchor": "wall",
       "x": 8.5,
       "y": 0,
       "turn": 2,
-      "seed": 6953368276674501
+      "seed": 4143417953261817
     },
     {
       "kind": "keycard-reader",
-      "variant": 1,
+      "variant": 0,
       "anchor": "wall",
       "x": 10.5,
       "y": 0,
       "turn": 2,
-      "seed": 8927541334831359
+      "seed": 4383280892780944
     },
     {
       "kind": "keycard-reader",
-      "variant": 0,
+      "variant": 1,
       "anchor": "wall",
       "x": 12.5,
       "y": 0,
       "turn": 2,
-      "seed": 6052727787676650
+      "seed": 401587965226454
     },
     {
-      "kind": "locker-bank",
-      "variant": 0,
+      "kind": "pipe-riser",
+      "variant": 1,
       "anchor": "wall",
       "x": 0,
       "y": 0.5,
       "turn": 1,
-      "seed": 192249190686988
-    },
-    {
-      "kind": "extinguisher",
-      "variant": 0,
-      "anchor": "wall",
-      "x": 0,
-      "y": 2.5,
-      "turn": 1,
-      "seed": 8542307350587858
-    },
-    {
-      "kind": "tool-board",
-      "variant": 1,
-      "anchor": "wall",
-      "x": 13,
-      "y": 2.5,
-      "turn": 3,
-      "seed": 8530964114697692
-    },
-    {
-      "kind": "pipe-riser",
-      "variant": 0,
-      "anchor": "wall",
-      "x": 0,
-      "y": 3.5,
-      "turn": 1,
-      "seed": 1635485532375045
-    },
-    {
-      "kind": "tool-board",
-      "variant": 0,
-      "anchor": "wall",
-      "x": 0,
-      "y": 4.5,
-      "turn": 1,
-      "seed": 6744432581304918
-    },
-    {
-      "kind": "extinguisher",
-      "variant": 1,
-      "anchor": "wall",
-      "x": 13,
-      "y": 4.5,
-      "turn": 3,
-      "seed": 2985215836443292
-    },
-    {
-      "kind": "pipe-riser",
-      "variant": 1,
-      "anchor": "wall",
-      "x": 0,
-      "y": 5.5,
-      "turn": 1,
-      "seed": 5017503126492995
-    },
-    {
-      "kind": "vent-grille",
-      "variant": 1,
-      "anchor": "wall",
-      "x": 13,
-      "y": 6.5,
-      "turn": 3,
-      "seed": 2691786582516552
-    },
-    {
-      "kind": "extinguisher",
-      "variant": 1,
-      "anchor": "wall",
-      "x": 0,
-      "y": 7.5,
-      "turn": 1,
-      "seed": 2510323618833230
-    },
-    {
-      "kind": "locker-bank",
-      "variant": 0,
-      "anchor": "wall",
-      "x": 0,
-      "y": 9.5,
-      "turn": 1,
-      "seed": 4440029356240842
-    },
-    {
-      "kind": "extinguisher",
-      "variant": 1,
-      "anchor": "wall",
-      "x": 13,
-      "y": 10.5,
-      "turn": 3,
-      "seed": 5850112382430123
-    },
-    {
-      "kind": "light-strip",
-      "variant": 0,
-      "anchor": "wall",
-      "x": 0,
-      "y": 11.5,
-      "turn": 1,
-      "seed": 6750364238990698
+      "seed": 4349007363414128
     },
     {
       "kind": "breaker-box",
       "variant": 1,
       "anchor": "wall",
-      "x": 0.5,
-      "y": 12,
-      "turn": 0,
-      "seed": 854897269243592
+      "x": 13,
+      "y": 0.5,
+      "turn": 3,
+      "seed": 7685394835726870
     },
     {
-      "kind": "pipe-bundle",
-      "variant": 0,
+      "kind": "extinguisher",
+      "variant": 1,
       "anchor": "wall",
-      "x": 0.5,
-      "y": 12,
-      "turn": 0,
-      "seed": 8711541059060520
-    },
-    {
-      "kind": "pipe-bundle",
-      "variant": 0,
-      "anchor": "wall",
-      "x": 1.5,
-      "y": 12,
-      "turn": 0,
-      "seed": 2344675433611819
+      "x": 0,
+      "y": 2.5,
+      "turn": 1,
+      "seed": 4184013956544533
     },
     {
       "kind": "vent-grille",
       "variant": 0,
       "anchor": "wall",
+      "x": 13,
+      "y": 2.5,
+      "turn": 3,
+      "seed": 7870944622560988
+    },
+    {
+      "kind": "tool-board",
+      "variant": 1,
+      "anchor": "wall",
+      "x": 0,
+      "y": 3.5,
+      "turn": 1,
+      "seed": 1345379912392412
+    },
+    {
+      "kind": "extinguisher",
+      "variant": 1,
+      "anchor": "wall",
+      "x": 13,
+      "y": 4.5,
+      "turn": 3,
+      "seed": 7289632354972463
+    },
+    {
+      "kind": "breaker-box",
+      "variant": 1,
+      "anchor": "wall",
+      "x": 13,
+      "y": 6.5,
+      "turn": 3,
+      "seed": 1367544511319260
+    },
+    {
+      "kind": "extinguisher",
+      "variant": 0,
+      "anchor": "wall",
+      "x": 0,
+      "y": 7.5,
+      "turn": 1,
+      "seed": 7074499119950957
+    },
+    {
+      "kind": "locker-bank",
+      "variant": 1,
+      "anchor": "wall",
+      "x": 13,
+      "y": 8.5,
+      "turn": 3,
+      "seed": 1722015185436068
+    },
+    {
+      "kind": "tool-board",
+      "variant": 0,
+      "anchor": "wall",
+      "x": 0,
+      "y": 9.5,
+      "turn": 1,
+      "seed": 6524313417370013
+    },
+    {
+      "kind": "extinguisher",
+      "variant": 0,
+      "anchor": "wall",
+      "x": 13,
+      "y": 10.5,
+      "turn": 3,
+      "seed": 5629931089919112
+    },
+    {
+      "kind": "locker-bank",
+      "variant": 1,
+      "anchor": "wall",
+      "x": 0,
+      "y": 11.5,
+      "turn": 1,
+      "seed": 7831445719139109
+    },
+    {
+      "kind": "pipe-bundle",
+      "variant": 1,
+      "anchor": "wall",
+      "x": 0.5,
+      "y": 12,
+      "turn": 0,
+      "seed": 56607126066817
+    },
+    {
+      "kind": "pipe-bundle",
+      "variant": 1,
+      "anchor": "wall",
       "x": 1.5,
       "y": 12,
       "turn": 0,
-      "seed": 7653319305470147
+      "seed": 4931538085013533
+    },
+    {
+      "kind": "pipe-riser",
+      "variant": 1,
+      "anchor": "wall",
+      "x": 1.5,
+      "y": 12,
+      "turn": 0,
+      "seed": 2391680632931863
     },
     {
       "kind": "extinguisher",
@@ -601,322 +592,286 @@
       "x": 2.5,
       "y": 12,
       "turn": 0,
-      "seed": 344323951367091
+      "seed": 8033818737786714
     },
     {
       "kind": "pipe-bundle",
-      "variant": 0,
+      "variant": 1,
       "anchor": "wall",
       "x": 2.5,
       "y": 12,
       "turn": 0,
-      "seed": 2697228572885988
+      "seed": 6563536402049850
     },
     {
       "kind": "locker-bank",
-      "variant": 0,
+      "variant": 1,
       "anchor": "wall",
       "x": 4.5,
       "y": 12,
       "turn": 0,
-      "seed": 2613734196047659
+      "seed": 6195456357685755
     },
     {
       "kind": "pipe-bundle",
-      "variant": 0,
+      "variant": 1,
       "anchor": "wall",
       "x": 4.5,
       "y": 12,
       "turn": 0,
-      "seed": 6189992973906996
+      "seed": 2170747616069075
     },
     {
       "kind": "pipe-bundle",
-      "variant": 0,
+      "variant": 1,
       "anchor": "wall",
       "x": 8.5,
       "y": 12,
       "turn": 0,
-      "seed": 6785031126661590
-    },
-    {
-      "kind": "sign-plate",
-      "variant": 2,
-      "anchor": "wall",
-      "x": 8.5,
-      "y": 12,
-      "turn": 0,
-      "seed": 3179888012708156
-    },
-    {
-      "kind": "pipe-bundle",
-      "variant": 0,
-      "anchor": "wall",
-      "x": 10.5,
-      "y": 12,
-      "turn": 0,
-      "seed": 5518026380668242
+      "seed": 3086871091240357
     },
     {
       "kind": "sign-plate",
       "variant": 5,
       "anchor": "wall",
-      "x": 10.5,
+      "x": 8.5,
       "y": 12,
       "turn": 0,
-      "seed": 7577811201972522
+      "seed": 8552886952233111
     },
     {
       "kind": "pipe-bundle",
-      "variant": 0,
+      "variant": 1,
+      "anchor": "wall",
+      "x": 10.5,
+      "y": 12,
+      "turn": 0,
+      "seed": 7910877655216308
+    },
+    {
+      "kind": "sign-plate",
+      "variant": 1,
+      "anchor": "wall",
+      "x": 10.5,
+      "y": 12,
+      "turn": 0,
+      "seed": 5867865685369650
+    },
+    {
+      "kind": "pipe-bundle",
+      "variant": 1,
       "anchor": "wall",
       "x": 12.5,
       "y": 12,
       "turn": 0,
-      "seed": 4432484617397661
+      "seed": 5752999581240921
     },
     {
-      "kind": "trolley",
+      "kind": "tool-board",
       "variant": 1,
-      "anchor": "floor",
+      "anchor": "wall",
       "x": 12.5,
-      "y": 0.5,
-      "turn": 1,
-      "seed": 3554273952603853
+      "y": 12,
+      "turn": 0,
+      "seed": 4971893340339831
     },
     {
-      "kind": "barrel",
-      "variant": 0,
+      "kind": "drum-rack",
+      "variant": 1,
       "anchor": "floor",
       "x": 0.5,
-      "y": 1.5,
-      "turn": 0,
-      "seed": 4559343998359680
-    },
-    {
-      "kind": "trolley",
-      "variant": 0,
-      "anchor": "floor",
-      "x": 0.325,
-      "y": 3.5,
+      "y": 0.5,
       "turn": 1,
-      "seed": 3706877606749112
-    },
-    {
-      "kind": "trolley",
-      "variant": 0,
-      "anchor": "floor",
-      "x": 4.5,
-      "y": 3.5,
-      "turn": 1,
-      "seed": 2666659318902538
-    },
-    {
-      "kind": "trolley",
-      "variant": 1,
-      "anchor": "floor",
-      "x": 5.5,
-      "y": 3.5,
-      "turn": 0,
-      "seed": 2781833970118906
+      "seed": 2121700939364333
     },
     {
       "kind": "crate",
-      "variant": 2,
-      "anchor": "floor",
-      "x": 9.5,
-      "y": 3.5,
-      "turn": 1,
-      "seed": 1983939423968796
-    },
-    {
-      "kind": "barrel",
       "variant": 0,
       "anchor": "floor",
-      "x": 0.338,
-      "y": 4.5,
-      "turn": 1,
-      "seed": 1792029144717594
-    },
-    {
-      "kind": "barrel",
-      "variant": 1,
-      "anchor": "floor",
-      "x": 3.5,
-      "y": 4.5,
-      "turn": 0,
-      "seed": 2916180305326663
-    },
-    {
-      "kind": "crate-stack",
-      "variant": 1,
-      "anchor": "floor",
-      "x": 5.5,
-      "y": 4.5,
-      "turn": 3,
-      "seed": 5779406324665304
-    },
-    {
-      "kind": "trolley",
-      "variant": 0,
-      "anchor": "floor",
-      "x": 9.5,
-      "y": 4.5,
-      "turn": 1,
-      "seed": 4830142154457217
+      "x": 12.5,
+      "y": 0.5,
+      "turn": 2,
+      "seed": 3859923993177963
     },
     {
       "kind": "traffic-cone",
-      "variant": 0,
+      "variant": 1,
       "anchor": "floor",
-      "x": 0.275,
-      "y": 5.5,
+      "x": 0.5,
+      "y": 1.5,
       "turn": 1,
-      "seed": 150616531967614
-    },
-    {
-      "kind": "crate-stack",
-      "variant": 0,
-      "anchor": "floor",
-      "x": 3.5,
-      "y": 5.5,
-      "turn": 0,
-      "seed": 2684470689422599
-    },
-    {
-      "kind": "trolley",
-      "variant": 0,
-      "anchor": "floor",
-      "x": 9.5,
-      "y": 5.5,
-      "turn": 2,
-      "seed": 2331508782570572
+      "seed": 145678452425238
     },
     {
       "kind": "trolley",
       "variant": 0,
       "anchor": "floor",
       "x": 12.675,
-      "y": 6.5,
+      "y": 2.5,
       "turn": 3,
-      "seed": 4562012999496578
+      "seed": 3650771523239932
     },
     {
-      "kind": "crate",
+      "kind": "crate-stack",
       "variant": 1,
       "anchor": "floor",
-      "x": 3.5,
-      "y": 7.5,
+      "x": 0.45,
+      "y": 3.5,
       "turn": 1,
-      "seed": 1495948920266066
+      "seed": 2536795909938357
     },
     {
       "kind": "crate",
-      "variant": 1,
+      "variant": 2,
       "anchor": "floor",
       "x": 4.5,
-      "y": 7.5,
-      "turn": 1,
-      "seed": 7554166841878963
-    },
-    {
-      "kind": "crate",
-      "variant": 1,
-      "anchor": "floor",
-      "x": 5.5,
-      "y": 7.5,
-      "turn": 0,
-      "seed": 254746912752376
+      "y": 3.5,
+      "turn": 2,
+      "seed": 20361747632661
     },
     {
       "kind": "trolley",
       "variant": 0,
       "anchor": "floor",
       "x": 7.5,
-      "y": 7.5,
-      "turn": 2,
-      "seed": 1758542748150682
+      "y": 3.5,
+      "turn": 3,
+      "seed": 6611601445928553
+    },
+    {
+      "kind": "crate",
+      "variant": 2,
+      "anchor": "floor",
+      "x": 8.5,
+      "y": 3.5,
+      "turn": 3,
+      "seed": 8602024614796701
+    },
+    {
+      "kind": "barrel",
+      "variant": 0,
+      "anchor": "floor",
+      "x": 9.5,
+      "y": 3.5,
+      "turn": 0,
+      "seed": 1804285493884286
+    },
+    {
+      "kind": "traffic-cone",
+      "variant": 0,
+      "anchor": "floor",
+      "x": 0.125,
+      "y": 4.5,
+      "turn": 1,
+      "seed": 628713801548024
+    },
+    {
+      "kind": "crate",
+      "variant": 0,
+      "anchor": "floor",
+      "x": 4.5,
+      "y": 4.5,
+      "turn": 3,
+      "seed": 645461277170246
     },
     {
       "kind": "ladder",
       "variant": 0,
       "anchor": "floor",
-      "x": 12.775,
-      "y": 8.5,
-      "turn": 3,
-      "seed": 5710947368697365
-    },
-    {
-      "kind": "barrel",
-      "variant": 1,
-      "anchor": "floor",
-      "x": 0.488,
-      "y": 9.5,
+      "x": 0.225,
+      "y": 5.5,
       "turn": 1,
-      "seed": 3802026275378677
+      "seed": 6627471578587766
     },
     {
-      "kind": "drum-rack",
-      "variant": 1,
+      "kind": "crate",
+      "variant": 2,
       "anchor": "floor",
-      "x": 7.5,
-      "y": 9.5,
-      "turn": 2,
-      "seed": 2180463798953798
+      "x": 4.5,
+      "y": 5.5,
+      "turn": 0,
+      "seed": 639266737463208
     },
     {
-      "kind": "trolley",
+      "kind": "tool-cart",
       "variant": 0,
       "anchor": "floor",
+      "x": 12.688,
+      "y": 6.5,
+      "turn": 3,
+      "seed": 1328588503872453
+    },
+    {
+      "kind": "crate-stack",
+      "variant": 1,
+      "anchor": "floor",
       "x": 8.5,
-      "y": 9.5,
-      "turn": 0,
-      "seed": 518360766134460
+      "y": 7.5,
+      "turn": 2,
+      "seed": 2080228993322090
     },
     {
       "kind": "crate",
       "variant": 2,
       "anchor": "floor",
       "x": 9.5,
-      "y": 9.5,
+      "y": 7.5,
       "turn": 1,
-      "seed": 2081132349747553
+      "seed": 4291080290717434
+    },
+    {
+      "kind": "barrel",
+      "variant": 1,
+      "anchor": "floor",
+      "x": 8.5,
+      "y": 8.5,
+      "turn": 2,
+      "seed": 4075725073774393
     },
     {
       "kind": "traffic-cone",
-      "variant": 0,
+      "variant": 1,
+      "anchor": "floor",
+      "x": 1.5,
+      "y": 10.5,
+      "turn": 3,
+      "seed": 1104415733559800
+    },
+    {
+      "kind": "trolley",
+      "variant": 1,
       "anchor": "floor",
       "x": 12.5,
       "y": 10.5,
-      "turn": 3,
-      "seed": 959697784444512
+      "turn": 2,
+      "seed": 6149240367166786
     },
     {
-      "kind": "crate-stack",
+      "kind": "barrel",
       "variant": 0,
       "anchor": "floor",
       "x": 0.5,
       "y": 11.5,
-      "turn": 2,
-      "seed": 3541602037142905
+      "turn": 3,
+      "seed": 3912396592797179
     },
     {
-      "kind": "tool-cart",
+      "kind": "barrel",
       "variant": 0,
       "anchor": "floor",
       "x": 1.5,
       "y": 11.5,
-      "turn": 1,
-      "seed": 1048966660423609
+      "turn": 0,
+      "seed": 3243145671201349
     },
     {
       "kind": "crate-stack",
-      "variant": 0,
+      "variant": 1,
       "anchor": "floor",
       "x": 4.5,
-      "y": 11.525,
+      "y": 11.55,
       "turn": 0,
-      "seed": 6948190445808822
+      "seed": 7400070923376499
     },
     {
       "kind": "duct",
@@ -925,7 +880,7 @@
       "x": 0.5,
       "y": 0,
       "turn": 2,
-      "seed": 3173128213251811
+      "seed": 7629950486884332
     },
     {
       "kind": "duct",
@@ -934,7 +889,7 @@
       "x": 2.5,
       "y": 0,
       "turn": 2,
-      "seed": 8960087151886719
+      "seed": 1209926204244947
     },
     {
       "kind": "duct",
@@ -943,7 +898,7 @@
       "x": 4.5,
       "y": 0,
       "turn": 2,
-      "seed": 406841509277751
+      "seed": 1573468619283407
     },
     {
       "kind": "duct",
@@ -952,7 +907,7 @@
       "x": 6.5,
       "y": 0,
       "turn": 2,
-      "seed": 4693131763780886
+      "seed": 4335734188398899
     },
     {
       "kind": "duct",
@@ -961,7 +916,7 @@
       "x": 8.5,
       "y": 0,
       "turn": 2,
-      "seed": 1929211110728606
+      "seed": 3251540051501070
     },
     {
       "kind": "duct",
@@ -970,7 +925,7 @@
       "x": 10.5,
       "y": 0,
       "turn": 2,
-      "seed": 3503031707505914
+      "seed": 5765999354893646
     },
     {
       "kind": "duct",
@@ -979,94 +934,193 @@
       "x": 12.5,
       "y": 0,
       "turn": 2,
-      "seed": 6818970778898598
+      "seed": 7486947567519346
     },
     {
       "kind": "span-duct",
       "variant": 0,
       "anchor": "ceiling",
-      "x": 3.5,
+      "x": 8.5,
       "y": 2,
       "turn": 1,
-      "seed": 7105585485263335
+      "seed": 1107637589649391
     },
     {
       "kind": "span-duct",
       "variant": 0,
       "anchor": "ceiling",
-      "x": 3.5,
+      "x": 8.5,
       "y": 4,
       "turn": 1,
-      "seed": 1664678581587625
+      "seed": 123689460370861
     },
     {
       "kind": "span-duct",
       "variant": 0,
       "anchor": "ceiling",
-      "x": 3.5,
+      "x": 8.5,
       "y": 6,
       "turn": 1,
-      "seed": 6453403949624661
+      "seed": 1657339898511638
     },
     {
       "kind": "span-duct",
       "variant": 0,
       "anchor": "ceiling",
-      "x": 3.5,
+      "x": 8.5,
       "y": 8,
       "turn": 1,
-      "seed": 8791752769579637
+      "seed": 4283123359506169
     },
     {
       "kind": "span-duct",
       "variant": 0,
       "anchor": "ceiling",
-      "x": 3.5,
+      "x": 8.5,
       "y": 10,
       "turn": 1,
-      "seed": 5816163790119162
+      "seed": 2526077581056905
+    },
+    {
+      "kind": "duct",
+      "variant": 1,
+      "anchor": "ceiling",
+      "x": 0.5,
+      "y": 12,
+      "turn": 0,
+      "seed": 4619081107825378
+    },
+    {
+      "kind": "duct",
+      "variant": 1,
+      "anchor": "ceiling",
+      "x": 1.5,
+      "y": 12,
+      "turn": 0,
+      "seed": 403490404717220
+    },
+    {
+      "kind": "duct",
+      "variant": 1,
+      "anchor": "ceiling",
+      "x": 2.5,
+      "y": 12,
+      "turn": 0,
+      "seed": 3797053329643228
+    },
+    {
+      "kind": "duct",
+      "variant": 1,
+      "anchor": "ceiling",
+      "x": 4.5,
+      "y": 12,
+      "turn": 0,
+      "seed": 2221553790427328
     },
     {
       "kind": "beacon",
-      "variant": 1,
+      "variant": 0,
       "anchor": "ceiling",
       "x": 6.5,
       "y": 12,
       "turn": 0,
-      "seed": 1272817839753993
+      "seed": 2984881632333897
+    },
+    {
+      "kind": "duct",
+      "variant": 1,
+      "anchor": "ceiling",
+      "x": 8.5,
+      "y": 12,
+      "turn": 0,
+      "seed": 5152428669665990
+    },
+    {
+      "kind": "duct",
+      "variant": 1,
+      "anchor": "ceiling",
+      "x": 10.5,
+      "y": 12,
+      "turn": 0,
+      "seed": 7213522334755731
+    },
+    {
+      "kind": "duct",
+      "variant": 1,
+      "anchor": "ceiling",
+      "x": 12.5,
+      "y": 12,
+      "turn": 0,
+      "seed": 35728959905159
     }
   ],
   "curios": [
     {
+      "kind": "pink-gadget",
+      "variant": 0,
+      "x": 12.796,
+      "y": 3.131,
+      "h": 0.94,
+      "turn": 2,
+      "seed": 2652901757802410
+    },
+    {
+      "kind": "pizza-box",
+      "variant": 2,
+      "x": 4.512,
+      "y": 4.487,
+      "h": 0.55,
+      "turn": 2,
+      "seed": 2316425734801193
+    },
+    {
+      "kind": "floppy-disk",
+      "variant": 1,
+      "x": 12.693,
+      "y": 5.123,
+      "h": 0.94,
+      "turn": 2,
+      "seed": 4170676698252371
+    },
+    {
+      "kind": "capsule-case",
+      "variant": 0,
+      "x": 0.092,
+      "y": 8.216,
+      "h": 0.78,
+      "turn": 0,
+      "seed": 3750427309966729
+    },
+    {
+      "kind": "hover-drone",
+      "variant": 0,
+      "x": 0.13,
+      "y": 8.775,
+      "h": 0.78,
+      "turn": 1,
+      "seed": 2823452868232270
+    },
+    {
+      "kind": "star-ball",
+      "variant": 0,
+      "x": 0.249,
+      "y": 10.241,
+      "h": 0.78,
+      "turn": 1,
+      "seed": 1428111962763486
+    },
+    {
       "kind": "treasure-radar",
       "variant": 0,
-      "x": 12.723,
-      "y": 5.109,
-      "h": 0.94,
-      "turn": 3,
-      "seed": 3711943900920747
-    },
-    {
-      "kind": "reactor-case",
-      "variant": 0,
-      "x": 0.193,
-      "y": 8.222,
+      "x": 0.175,
+      "y": 10.772,
       "h": 0.78,
-      "turn": 0,
-      "seed": 2478011078854370
-    },
-    {
-      "kind": "tape-drive",
-      "variant": 0,
-      "x": 0.187,
-      "y": 8.779,
-      "h": 0.78,
-      "turn": 0,
-      "seed": 2159271467005853
+      "turn": 1,
+      "seed": 3606275497854907
     }
   ],
   "finish": {
-    "accent": 2,
+    "accent": 4,
     "hallWalls": 0,
     "bayWalls": [],
     "corridorWalls": 2
@@ -1083,91 +1137,13 @@
       "width": 1,
       "length": 0.3,
       "variant": 0,
-      "seed": 8268145990706583,
+      "seed": 3108272108517405,
       "stencil": {
         "deck": 1,
         "bay": 30,
         "letter": 0,
         "lines": 1
       }
-    },
-    {
-      "kind": "chevrons",
-      "on": "floor",
-      "x": 9.5,
-      "y": 0.235,
-      "turn": 2,
-      "along": 0,
-      "h": 0,
-      "width": 1.6,
-      "length": 0.3,
-      "variant": 1,
-      "seed": 1572450043356963
-    },
-    {
-      "kind": "chevrons",
-      "on": "floor",
-      "x": 1.5,
-      "y": 0.235,
-      "turn": 2,
-      "along": 0,
-      "h": 0,
-      "width": 1.6,
-      "length": 0.3,
-      "variant": 0,
-      "seed": 1929317144856193
-    },
-    {
-      "kind": "chevrons",
-      "on": "floor",
-      "x": 3.5,
-      "y": 0.235,
-      "turn": 2,
-      "along": 0,
-      "h": 0,
-      "width": 1.6,
-      "length": 0.3,
-      "variant": 0,
-      "seed": 2021589159447420
-    },
-    {
-      "kind": "chevrons",
-      "on": "floor",
-      "x": 11.5,
-      "y": 0.235,
-      "turn": 2,
-      "along": 0,
-      "h": 0,
-      "width": 1.6,
-      "length": 0.3,
-      "variant": 0,
-      "seed": 2022896853298475
-    },
-    {
-      "kind": "chevrons",
-      "on": "floor",
-      "x": 12.375,
-      "y": 9.5,
-      "turn": 3,
-      "along": 0,
-      "h": 0,
-      "width": 1.8,
-      "length": 0.3,
-      "variant": 0,
-      "seed": 4122686861891282
-    },
-    {
-      "kind": "chevrons",
-      "on": "floor",
-      "x": 12.375,
-      "y": 1.5,
-      "turn": 3,
-      "along": 0,
-      "h": 0,
-      "width": 1.8,
-      "length": 0.3,
-      "variant": 1,
-      "seed": 4674655707360885
     },
     {
       "kind": "chevrons",
@@ -1180,7 +1156,33 @@
       "width": 1.6,
       "length": 0.3,
       "variant": 1,
-      "seed": 5307641613812969
+      "seed": 1468753742295819
+    },
+    {
+      "kind": "chevrons",
+      "on": "floor",
+      "x": 11.5,
+      "y": 0.235,
+      "turn": 2,
+      "along": 0,
+      "h": 0,
+      "width": 1.6,
+      "length": 0.3,
+      "variant": 1,
+      "seed": 1510318623108436
+    },
+    {
+      "kind": "chevrons",
+      "on": "floor",
+      "x": 1.5,
+      "y": 0.235,
+      "turn": 2,
+      "along": 0,
+      "h": 0,
+      "width": 1.6,
+      "length": 0.3,
+      "variant": 0,
+      "seed": 3713199344529747
     },
     {
       "kind": "chevrons",
@@ -1192,8 +1194,60 @@
       "h": 0,
       "width": 1.6,
       "length": 0.3,
+      "variant": 1,
+      "seed": 4354833885627166
+    },
+    {
+      "kind": "chevrons",
+      "on": "floor",
+      "x": 12.375,
+      "y": 9.5,
+      "turn": 3,
+      "along": 0,
+      "h": 0,
+      "width": 1.8,
+      "length": 0.3,
       "variant": 0,
-      "seed": 6904868214215178
+      "seed": 6626794444353285
+    },
+    {
+      "kind": "chevrons",
+      "on": "floor",
+      "x": 9.5,
+      "y": 0.235,
+      "turn": 2,
+      "along": 0,
+      "h": 0,
+      "width": 1.6,
+      "length": 0.3,
+      "variant": 0,
+      "seed": 6742036457574148
+    },
+    {
+      "kind": "chevrons",
+      "on": "floor",
+      "x": 12.375,
+      "y": 1.5,
+      "turn": 3,
+      "along": 0,
+      "h": 0,
+      "width": 1.8,
+      "length": 0.3,
+      "variant": 1,
+      "seed": 8028885038502841
+    },
+    {
+      "kind": "chevrons",
+      "on": "floor",
+      "x": 3.5,
+      "y": 0.235,
+      "turn": 2,
+      "along": 0,
+      "h": 0,
+      "width": 1.6,
+      "length": 0.3,
+      "variant": 1,
+      "seed": 8166535860908333
     },
     {
       "kind": "arrow",
@@ -1206,137 +1260,111 @@
       "width": 0.6,
       "length": 0.9,
       "variant": 0,
-      "seed": 4872833275459786
+      "seed": 3288796063880433
     },
     {
       "kind": "streak",
       "on": "wall",
-      "x": 13,
-      "y": 6.5,
-      "turn": 3,
+      "x": 0,
+      "y": 0.5,
+      "turn": 1,
       "along": 0,
-      "h": 0.18,
-      "width": 0.456,
-      "length": 0.9,
-      "variant": 1,
-      "seed": 967211840626165
+      "h": 0,
+      "width": 0.4,
+      "length": 0.35,
+      "variant": 0,
+      "seed": 681351882250093
     },
     {
-      "kind": "streak",
-      "on": "wall",
+      "kind": "grime",
+      "on": "floor",
       "x": 1.5,
-      "y": 12,
-      "turn": 0,
-      "along": 0,
-      "h": 0.18,
-      "width": 0.442,
-      "length": 0.9,
-      "variant": 1,
-      "seed": 1920426709629051
-    },
-    {
-      "kind": "streak",
-      "on": "wall",
-      "x": 0,
-      "y": 3.5,
-      "turn": 1,
-      "along": 0,
-      "h": 0,
-      "width": 0.4,
-      "length": 0.35,
-      "variant": 0,
-      "seed": 3775052024988510
-    },
-    {
-      "kind": "streak",
-      "on": "wall",
-      "x": 0,
-      "y": 5.5,
-      "turn": 1,
-      "along": 0,
-      "h": 0,
-      "width": 0.4,
-      "length": 0.35,
-      "variant": 0,
-      "seed": 6620629125533890
-    },
-    {
-      "kind": "grime",
-      "on": "face",
-      "x": 9.8,
-      "y": 3.5,
-      "turn": 1,
-      "along": 0,
-      "h": 0.03,
-      "width": 1.1,
-      "length": 0.261,
-      "variant": 2,
-      "seed": 967496742071970
-    },
-    {
-      "kind": "grime",
-      "on": "floor",
-      "x": 4.5,
-      "y": 5.5,
-      "turn": 0,
-      "along": 0,
-      "h": 0,
-      "width": 1.055,
-      "length": 1.055,
-      "variant": 0,
-      "seed": 1864781106083510
-    },
-    {
-      "kind": "grime",
-      "on": "face",
-      "x": 4.5,
-      "y": 11.235,
-      "turn": 0,
-      "along": 0,
-      "h": 0.03,
-      "width": 1.06,
-      "length": 0.285,
-      "variant": 1,
-      "seed": 2154715664354659
-    },
-    {
-      "kind": "grime",
-      "on": "floor",
-      "x": 9.5,
       "y": 8.5,
       "turn": 3,
       "along": 0,
       "h": 0,
-      "width": 0.816,
-      "length": 0.816,
-      "variant": 1,
-      "seed": 7172740429734101
+      "width": 0.71,
+      "length": 0.71,
+      "variant": 0,
+      "seed": 247836281868087
+    },
+    {
+      "kind": "grime",
+      "on": "wall",
+      "x": 0,
+      "y": 1.5,
+      "turn": 1,
+      "along": -0.121,
+      "h": 0,
+      "width": 0.979,
+      "length": 0.658,
+      "variant": 0,
+      "seed": 1783059261606951
     },
     {
       "kind": "grime",
       "on": "floor",
-      "x": 5.5,
-      "y": 2.5,
+      "x": 1.5,
+      "y": 9.5,
       "turn": 0,
       "along": 0,
       "h": 0,
-      "width": 0.698,
-      "length": 0.698,
-      "variant": 1,
-      "seed": 7696867862687097
+      "width": 0.675,
+      "length": 0.675,
+      "variant": 2,
+      "seed": 1985624771267195
     },
     {
       "kind": "grime",
       "on": "floor",
-      "x": 3.5,
-      "y": 10.5,
-      "turn": 3,
+      "x": 12.5,
+      "y": 11.5,
+      "turn": 0,
       "along": 0,
       "h": 0,
-      "width": 0.674,
-      "length": 0.674,
+      "width": 0.6,
+      "length": 0.6,
+      "variant": 2,
+      "seed": 4727877247274218
+    },
+    {
+      "kind": "grime",
+      "on": "wall",
+      "x": 0,
+      "y": 4.5,
+      "turn": 1,
+      "along": 0.237,
+      "h": 0,
+      "width": 1.037,
+      "length": 0.535,
+      "variant": 1,
+      "seed": 4971359752331690
+    },
+    {
+      "kind": "grime",
+      "on": "floor",
+      "x": 11.5,
+      "y": 4.5,
+      "turn": 2,
+      "along": 0,
+      "h": 0,
+      "width": 0.833,
+      "length": 0.833,
+      "variant": 1,
+      "seed": 5213274458232964
+    },
+    {
+      "kind": "grime",
+      "on": "floor",
+      "x": 10.5,
+      "y": 1.5,
+      "turn": 1,
+      "along": 0,
+      "h": 0,
+      "width": 1.174,
+      "length": 1.174,
       "variant": 0,
-      "seed": 8299450181452972
+      "seed": 6827961469813886
     }
   ],
   "lights": [
@@ -1347,7 +1375,7 @@
       "y1": 4,
       "level": 170,
       "special": "steady",
-      "seed": 6745408175065679
+      "seed": 1801626446139667
     },
     {
       "x0": 4,
@@ -1355,8 +1383,8 @@
       "x1": 8,
       "y1": 4,
       "level": 170,
-      "special": "steady",
-      "seed": 2271853899642650
+      "special": "flicker",
+      "seed": 5123462606478468
     },
     {
       "x0": 8,
@@ -1365,7 +1393,7 @@
       "y1": 4,
       "level": 170,
       "special": "steady",
-      "seed": 3306376371846643
+      "seed": 120339147461427
     },
     {
       "x0": 12,
@@ -1373,8 +1401,8 @@
       "x1": 13,
       "y1": 4,
       "level": 170,
-      "special": "flicker",
-      "seed": 4604229638840686
+      "special": "steady",
+      "seed": 6996767807542928
     },
     {
       "x0": 0,
@@ -1383,7 +1411,7 @@
       "y1": 8,
       "level": 170,
       "special": "steady",
-      "seed": 7116975904584102
+      "seed": 1097015605363354
     },
     {
       "x0": 4,
@@ -1392,7 +1420,7 @@
       "y1": 8,
       "level": 170,
       "special": "steady",
-      "seed": 195478905742752
+      "seed": 5213850912950903
     },
     {
       "x0": 8,
@@ -1401,7 +1429,7 @@
       "y1": 8,
       "level": 170,
       "special": "steady",
-      "seed": 2212652565076052
+      "seed": 3240416776572972
     },
     {
       "x0": 12,
@@ -1409,8 +1437,8 @@
       "x1": 13,
       "y1": 8,
       "level": 170,
-      "special": "flicker",
-      "seed": 5446058093843176
+      "special": "steady",
+      "seed": 7503912916826925
     },
     {
       "x0": 0,
@@ -1419,7 +1447,7 @@
       "y1": 12,
       "level": 170,
       "special": "flicker",
-      "seed": 174693161669038
+      "seed": 6039848989425620
     },
     {
       "x0": 4,
@@ -1428,7 +1456,7 @@
       "y1": 12,
       "level": 170,
       "special": "steady",
-      "seed": 8179232119979680
+      "seed": 3471181164605782
     },
     {
       "x0": 8,
@@ -1436,8 +1464,8 @@
       "x1": 12,
       "y1": 12,
       "level": 170,
-      "special": "flicker",
-      "seed": 7294286107461303
+      "special": "steady",
+      "seed": 4172884421878272
     },
     {
       "x0": 12,
@@ -1446,7 +1474,7 @@
       "y1": 12,
       "level": 170,
       "special": "steady",
-      "seed": 8973841060821207
+      "seed": 5041213506467121
     }
   ],
   "dropped": 0,

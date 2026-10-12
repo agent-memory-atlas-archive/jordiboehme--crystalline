@@ -376,11 +376,11 @@ describe("the hangar deck (M3 C13 to C18)", () => {
   it("stands heroes on the pads through the seam (C18)", () => {
     // Mutation caught: the pad stencils appended outside `placeDecals`
     // (they vanish on the re-run), the heroes re-sorted away.
-    const room = hangarRoom();
-    const hangar = room.hangar;
+    const golden = hangarRoom();
+    const hangar = golden.hangar;
     if (hangar === undefined) throw new Error("no hangar");
-    expect(hangarHeroes(room)).toEqual([]);
-    expect(withPadHeroes(room, room.heroes)).toEqual(room);
+    expect(hangarHeroes(golden)).toEqual([]);
+    expect(withPadHeroes(golden, golden.heroes)).toEqual(golden);
 
     expect(isTallHero("black-slab")).toBe(true);
     const onPads: Hero[] = hangar.pads.map((p) => ({
@@ -392,6 +392,20 @@ describe("the hangar deck (M3 C13 to C18)", () => {
       seed: p.seed,
     }));
     expect(onPads.length).toBe(2);
+    // The golden hangar's own seed, or the first reseed whose fitted room
+    // holds a curio, so the curios' check below has one to check: the
+    // golden's draws place none since GAME_VERSION 4. A reseeded room is
+    // laid afresh through the seam with its own heroes, as the golden is.
+    const room = [
+      golden,
+      ...Array.from({ length: 20 }, (_, i) =>
+        withPadHeroes(
+          { ...golden, seed: seedFor("pad-heroes", i) },
+          golden.heroes,
+        ),
+      ),
+    ].find((r) => withPadHeroes(r, [...r.heroes, ...onPads]).curios.length > 0);
+    if (room === undefined) throw new Error("no hangar seed places a curio");
     const fitted = withPadHeroes(room, [...room.heroes, ...onPads]);
     expect(fitted.heroes.length).toBe(room.heroes.length + 2);
     for (const h of onPads) expect(fitted.heroes).toContainEqual(h);

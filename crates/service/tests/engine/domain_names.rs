@@ -825,6 +825,42 @@ async fn nameless_add_writes_the_basename_default_back_into_a_bare_manifest() {
     );
 }
 
+/// The same nameless add over a MANIFEST that says `read_only: on` keeps the
+/// file as the team wrote it: the basename default is the registration's name
+/// and is not written back.
+#[tokio::test]
+async fn nameless_add_leaves_a_read_only_manifest_without_a_written_back_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = bare_manifest_folder(tmp.path(), "My Notes", "My Notes");
+    let path = folder.join("MANIFEST.md");
+    let locked =
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .replacen("\n---\n", "\nread_only: on\n---\n", 1);
+    assert!(locked.contains("read_only: on"), "{locked}");
+    std::fs::write(&path, &locked).unwrap();
+    let engine = engine(memory_store().await, tmp.path(), vec![]);
+    let (logs, _guard) = crate::support::capture_logs();
+
+    let report = engine
+        .domain_add_local(None, Some(folder.to_str().unwrap()))
+        .await
+        .unwrap();
+
+    assert_eq!(report["domain"], "my-notes");
+    assert_eq!(report["name_origin"], "derived");
+    // The write view would refuse a locked domain anyway and the add would
+    // swallow it as a warning; the write-back must not even try.
+    assert!(
+        !logs.any_contains("writing the domain name back"),
+        "no write-back was attempted: {:?}",
+        logs.lines()
+    );
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(after, locked, "the MANIFEST bytes are unchanged");
+    assert!(!after.contains("domain_name:"), "{after}");
+}
+
 /// A brand-new folder with no MANIFEST at all gets one scaffolded that
 /// already carries the derived basename as its `domain_name`; the
 /// write-back path itself has nothing left to do.
@@ -1128,6 +1164,42 @@ async fn an_adoption_leaves_a_configuration_that_does_not_parse_alone() {
         saved(tmp.path()).domains["eng"].canonical_seen.as_deref(),
         Some("eng")
     );
+}
+
+/// A settings write over a configuration file that does not parse refuses and
+/// leaves the file alone, like the adoption above: every configuration write
+/// loads the file the same way, so none of them saves the engine's snapshot
+/// over a broken file `crystalline status` is about to report. Once the file
+/// parses again, the same write lands.
+#[tokio::test]
+async fn a_settings_write_leaves_a_configuration_that_does_not_parse_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = bare_manifest_folder(tmp.path(), "eng", "Eng");
+    let engine = adopting_engine(
+        memory_store().await,
+        tmp.path(),
+        vec![(
+            "eng",
+            DomainEntry::file(root).with_name_origin(NameOrigin::Explicit),
+        )],
+    );
+    engine.sync(None).await.unwrap();
+    let path = tmp.path().join("config.yaml");
+    let good = std::fs::read_to_string(&path).unwrap();
+    let broken = "domains: [unclosed\n";
+    std::fs::write(&path, broken).unwrap();
+
+    let set = crystalline_service::engine::ConfigureAction::Set {
+        key: "github.enabled".into(),
+        value: "true".into(),
+    };
+    let err = engine.configure(&set).await.unwrap_err();
+    assert!(err.to_string().contains("left as it is"), "{err}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+
+    std::fs::write(&path, good).unwrap();
+    engine.configure(&set).await.unwrap();
+    assert_eq!(saved(tmp.path()).github.and_then(|g| g.enabled), Some(true));
 }
 
 /// An engine that does not hold this machine's state directory (a one-shot

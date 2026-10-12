@@ -3,15 +3,17 @@
 //! `Q004`'s similarity ratio is a bigram Dice coefficient
 //! (`2 * |intersection| / (|bigrams(a)| + |bigrams(b)|)`, multiset
 //! intersection), chosen over a longest-common-subsequence ratio for its
-//! O(n) simplicity and stability under paragraph reordering. The fold and the
-//! coefficient live in [`crate::similarity`] so the index crate's
-//! near-duplicate sweep scores text with the exact same arithmetic.
+//! O(n) simplicity and stability under paragraph reordering. A section pair
+//! only counts when its word bigram score agrees too, so sections that merely
+//! share vocabulary are not flagged. The fold and the coefficients live in
+//! [`crate::similarity`] so the index crate's near-duplicate sweep decides
+//! with the exact same arithmetic.
 
 use std::collections::HashMap;
 
 use crate::engram::{Engram, Heading};
 use crate::parse::BodyLine;
-use crate::similarity::{dice_coefficient, normalize};
+use crate::similarity::{near_duplicate, normalize};
 
 use super::scanner::{Domain, ScannedFile};
 use super::{Severity, Sink};
@@ -142,8 +144,7 @@ fn check_similar_sections(
             {
                 continue;
             }
-            let sim = dice_coefficient(a_norm, b_norm);
-            if sim >= SIMILARITY_THRESHOLD {
+            if let Some(sim) = near_duplicate(a_norm, b_norm, SIMILARITY_THRESHOLD) {
                 sink.emit(
                     &file.path,
                     Some(*b_line),
@@ -315,5 +316,87 @@ mod tests {
         assert!(near_miss("- [label](https://x) - text").is_none());
         assert!(near_miss("- [label][ref] text").is_none());
         assert!(near_miss("- [label text").is_some());
+    }
+
+    /// A section with a short intro and a ten-row table. Every row is built
+    /// from the same small vocabulary, shifted by `seed`, so two sections
+    /// share their words and their column headers but not their sentences.
+    fn table_section(title: &str, seed: usize) -> String {
+        let words = [
+            "cache", "queue", "index", "merge", "stale", "retry", "limit", "batch", "token",
+            "store", "write", "flush", "scan", "drop",
+        ];
+        let mut out = format!(
+            "## {title}\n\nThe table below lists the settings and what each one does in practice.\n\n| Name | Default | Effect | Notes |\n| --- | --- | --- | --- |\n"
+        );
+        // A small linear congruential generator keeps the rows reproducible.
+        let mut state = seed as u64 * 2_654_435_761 + 12_345;
+        let mut pick = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            words[(state >> 33) as usize % words.len()]
+        };
+        for _ in 0..10 {
+            out.push_str(&format!(
+                "| {} {} | {} | {} {} {} | {} {} |\n",
+                pick(),
+                pick(),
+                pick(),
+                pick(),
+                pick(),
+                pick(),
+                pick(),
+                pick()
+            ));
+        }
+        out
+    }
+
+    fn q004_count(body: &str) -> usize {
+        issues_for_type("engram", body)
+            .iter()
+            .filter(|i| i.rule == "Q004")
+            .count()
+    }
+
+    #[test]
+    fn q004_ignores_sections_that_only_share_vocabulary() {
+        // The fixture only proves the fix if the old character measure alone
+        // would have flagged it: it clears the 0.85 threshold, while the word
+        // bigram score stays under the floor.
+        let first = normalize(&table_section("First settings", 1));
+        let second = normalize(&table_section("Second settings", 24));
+        assert!(
+            crate::similarity::dice_coefficient(&first, &second) >= SIMILARITY_THRESHOLD,
+            "fixture must look like a copy to the character measure"
+        );
+        assert!(
+            crate::similarity::word_bigram_dice(&first, &second)
+                < crate::similarity::WORD_BIGRAM_FLOOR
+        );
+        let body = format!(
+            "{}\n{}",
+            table_section("First settings", 1),
+            table_section("Second settings", 24)
+        );
+        assert_eq!(q004_count(&body), 0);
+    }
+
+    #[test]
+    fn q004_flags_a_copy_pasted_section() {
+        let first = table_section("First settings", 1);
+        let second = first.replace("First settings", "Second settings");
+        assert_eq!(q004_count(&format!("{first}\n{second}")), 1);
+    }
+
+    #[test]
+    fn q004_still_flags_a_copy_with_two_words_changed() {
+        let first = table_section("First settings", 1);
+        let second = first
+            .replace("First settings", "Second settings")
+            .replace("in practice", "day to day")
+            .replacen("cache", "buffer", 1);
+        assert_eq!(q004_count(&format!("{first}\n{second}")), 1);
     }
 }

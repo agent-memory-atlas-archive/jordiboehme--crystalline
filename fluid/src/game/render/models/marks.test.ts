@@ -17,10 +17,11 @@ import {
   stencilMarks,
 } from "./marks";
 
+/** The marks the block-pixel font sets: all but the terminals' handle lines, which a screen draws as text. */
 const strings = (): string[] =>
-  Object.values(MARKS).flatMap((v): string[] =>
-    typeof v === "string" ? [v] : [...v],
-  );
+  Object.entries(MARKS)
+    .filter(([name]) => name !== "handleLines")
+    .flatMap(([, v]): string[] => (typeof v === "string" ? [v] : [...v]));
 
 describe("the approved marks", () => {
   it("sets every string in the block-pixel font", () => {

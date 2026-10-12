@@ -1175,7 +1175,8 @@ function meshHash(m: MeshData): string {
  */
 const VARIANT_ZERO_HASHES: Record<string, string> = {
   terminal: "5ef012b8",
-  "machine:workbench": "73a071c7",
+  // 0.25.1: the tool maker's plate on the pegboard header changed this one.
+  "machine:workbench": "19766faa",
   "machine:lab-bench": "4cb12d3a",
   "machine:server-rack": "85fcdac0",
   "machine:cryo-pod": "c5dbba3b",

@@ -125,7 +125,7 @@ function heroAt(kind: HeroKind, variant: number, side: Side = "s"): Hero {
 describe("the hero catalogue", () => {
   it("lists every kind once, with a size per variant and a footing that matches its placement", () => {
     expect(new Set(HERO_KINDS).size).toBe(HERO_KINDS.length);
-    expect(HERO_KINDS).toHaveLength(28);
+    expect(HERO_KINDS).toHaveLength(31);
     const footing = {
       wall: "flush",
       backed: "backed",
@@ -258,17 +258,22 @@ describe("the hero catalogue", () => {
       "police-box",
     ]);
     // 2.6d C9, C17: the slab walker appended at the end of the engineering
-    // pool, after the spider tank.
-    expect(HERO_POOLS.engineering.slice(-4)).toEqual([
+    // pool, after the spider tank; the neon bike after it (0.25.1).
+    expect(HERO_POOLS.engineering.slice(-5)).toEqual([
       ["mech-head", 2],
       ["red-bike", 2],
       ["spider-tank", 2],
       ["slab-walker", 2],
+      ["neon-bike", 2],
     ]);
-    expect(HERO_POOLS.archive.at(-1)).toEqual(["stone-hand", 2]);
-    expect(HERO_POOLS.lab.slice(-2)).toEqual([
+    expect(HERO_POOLS.archive.slice(-2)).toEqual([
+      ["stone-hand", 2],
+      ["camera", 2],
+    ]);
+    expect(HERO_POOLS.lab.slice(-3)).toEqual([
       ["stone-hand", 2],
       ["garden-robot", 2],
+      ["camera", 2],
     ]);
   });
 
@@ -284,6 +289,69 @@ describe("the hero catalogue", () => {
       top: 1.8,
     });
     expect(isTallHero("slab-walker")).toBe(false);
+  });
+
+  it("draws the turntable from the council pool alone, at weight 2, last (0.25.1)", () => {
+    // Mutation caught: the turntable missing from the council pool, put in
+    // another archetype's, given another weight or placed before an older
+    // kind (order is part of the seeded result).
+    for (const [a, pool] of Object.entries(HERO_POOLS)) {
+      const w = pool.find(([k]) => k === "turntable")?.[1] ?? 0;
+      expect(w, a).toBe(a === "council" ? 2 : 0);
+    }
+    expect(HERO_POOLS.council.at(-1)).toEqual(["turntable", 2]);
+    expect(HERO_CATALOGUE.turntable).toMatchObject({
+      placement: "band",
+      variants: 1,
+      top: 1.02,
+      surfaces: [],
+      under: [],
+      use: null,
+    });
+    expect(isTallHero("turntable")).toBe(false);
+  });
+
+  it("draws the camera from the archive and lab pools, at weight 2, last (0.25.1)", () => {
+    // Mutation caught: the camera missing from a pool, put in another
+    // archetype's, given another weight or placed before an older kind.
+    for (const [a, pool] of Object.entries(HERO_POOLS)) {
+      const w = pool.find(([k]) => k === "camera")?.[1] ?? 0;
+      expect(w, a).toBe(a === "archive" || a === "lab" ? 2 : 0);
+    }
+    expect(HERO_POOLS.archive.at(-1)).toEqual(["camera", 2]);
+    expect(HERO_POOLS.lab.at(-1)).toEqual(["camera", 2]);
+    expect(HERO_CATALOGUE.camera).toMatchObject({
+      placement: "band",
+      variants: 1,
+      top: 1.53,
+      surfaces: [],
+      under: [],
+      use: null,
+    });
+    expect(isTallHero("camera")).toBe(false);
+  });
+
+  it("draws the neon bike from the bridge and engineering pools, at weight 2, last, standing like the red bike (0.25.1)", () => {
+    // Mutation caught: the neon bike missing from a pool, put in another
+    // archetype's, given another weight, placed before an older kind, or
+    // standing other than the red bike does.
+    for (const [a, pool] of Object.entries(HERO_POOLS)) {
+      const w = pool.find(([k]) => k === "neon-bike")?.[1] ?? 0;
+      expect(w, a).toBe(a === "bridge" || a === "engineering" ? 2 : 0);
+    }
+    expect(HERO_POOLS.bridge.at(-1)).toEqual(["neon-bike", 2]);
+    expect(HERO_POOLS.engineering.at(-1)).toEqual(["neon-bike", 2]);
+    expect(HERO_CATALOGUE["neon-bike"]).toMatchObject({
+      placement: HERO_CATALOGUE["red-bike"].placement,
+      variants: 1,
+      top: 1.28,
+      surfaces: [],
+      under: [],
+      use: null,
+    });
+    expect(HERO_FOOTING["neon-bike"]).toBe(HERO_FOOTING["red-bike"]);
+    expect(FOOTPRINTS.hero["neon-bike"]).toEqual([{ width: 3.0, depth: 0.8 }]);
+    expect(isTallHero("neon-bike")).toBe(false);
   });
 
   it("keeps a use point only where a later spec needs one, inside the reserve", () => {
@@ -973,14 +1041,15 @@ describe("the hero pass", () => {
     expect([...seen].some((k) => ANY_POOL.some(([a]) => a === k))).toBe(true);
   });
 
-  it("holds a hero in about nine halls in ten (2.6f C2)", () => {
-    // Measured by the planner: 1821 of 2000 (0.910) at 3/5 and 3/4; 1577
-    // (0.788) at the old 1/2 and 1/2. Mutation caught: ANY_SHARE back to
-    // 1/2 (about 0.85), both shares back (0.788), or the any draw not
-    // filling empty slots. The shares are pinned too, since HERO_SHARE
-    // alone back at 1/2 stays inside the band (about 0.905).
-    expect(HERO_SHARE).toBe(3 / 5);
-    expect(ANY_SHARE).toBe(3 / 4);
+  it("holds a hero in about 97 halls in 100 (2.6f C2, 0.25.1)", () => {
+    // Measured: 1940 of 2000 (0.970) at 4/5 and 7/8; 1821 (0.910) at the
+    // 2.6f 3/5 and 3/4; 1577 (0.788) at the first 1/2 and 1/2. Mutation
+    // caught: ANY_SHARE back to 3/4 (1885) or 1/2 (1779), HERO_SHARE back
+    // to 3/5 (1908) or 1/2 (1890), or the any draw not filling empty
+    // slots. The shares are pinned too, since the band sits only a few
+    // halls above the 3/5 count.
+    expect(HERO_SHARE).toBe(4 / 5);
+    expect(ANY_SHARE).toBe(7 / 8);
     const bases = [...WORKSHOP_BASES, ...BRIDGE_BASES];
     expect(bases).toHaveLength(10);
     let halls = 0;
@@ -991,8 +1060,8 @@ describe("the hero pass", () => {
         if (place(base, r).length > 0) held++;
       }
     expect(halls).toBe(2000);
-    expect(held).toBeGreaterThanOrEqual(1760);
-    expect(held).toBeLessThanOrEqual(1880);
+    expect(held).toBeGreaterThanOrEqual(1910);
+    expect(held).toBeLessThanOrEqual(1970);
   }, 30_000);
 
   it("doubles the archetype-only heroes' weights and leaves every other weight (2.6f C3)", () => {
@@ -1007,11 +1076,13 @@ describe("the hero pass", () => {
         ["arcade-cabinet", 1],
         ["recruit-cabinet", 1],
         ["slab-walker", 2],
+        ["neon-bike", 2],
       ],
       council: [
         ["mess-table", 6],
         ["arcade-cabinet", 1],
         ["recruit-cabinet", 1],
+        ["turntable", 2],
       ],
       engineering: [
         ["helper-robot", 3],
@@ -1026,12 +1097,14 @@ describe("the hero pass", () => {
         ["red-bike", 2],
         ["spider-tank", 2],
         ["slab-walker", 2],
+        ["neon-bike", 2],
       ],
       archive: [
         ["core-wall", 6],
         ["arcade-cabinet", 1],
         ["recruit-cabinet", 1],
         ["stone-hand", 2],
+        ["camera", 2],
       ],
       lab: [
         ["photo-console", 3],
@@ -1043,6 +1116,7 @@ describe("the hero pass", () => {
         ["recruit-cabinet", 1],
         ["stone-hand", 2],
         ["garden-robot", 2],
+        ["camera", 2],
       ],
     });
   });
@@ -1222,13 +1296,14 @@ describe("the hero pass", () => {
     expect(added).toBeGreaterThan(0);
   }, 60_000);
 
-  it("lands each any-archetype kind in about 1 hall in 20 in the workshop", () => {
-    // The planner measured 39 to 64 per 1000 (thunder hammer 64, cloud 56,
-    // rocket 50, hoverboard 41, police box 39). Mutation caught: a kind
-    // that never fits, or the draw taking twice as often or never.
-    // Doubling is impossible above 1, so the constant pin carries the
-    // share.
-    expect(ANY_SHARE).toBe(3 / 4);
+  it("lands each any-archetype kind in about 1 hall in 35 in the workshop", () => {
+    // Measured 20 to 39 per 1000 at the 0.25.1 shares (cloud 39, thunder
+    // hammer 33, hoverboard 23, police box 21, rocket 20); 39 to 64 at the
+    // 2.6f ones. The pool slots now take 4 in 5, so the any draw, which
+    // only fills a slot they left empty, lands less often. Mutation
+    // caught: a kind that never fits, or the draw taking never. Doubling
+    // is impossible above 1, so the constant pin carries the share.
+    expect(ANY_SHARE).toBe(7 / 8);
     const counts = new Map<HeroKind, number>();
     for (const { base } of WORKSHOP_BASES)
       for (const r of reseeded(base, 200))
@@ -1236,8 +1311,8 @@ describe("the hero pass", () => {
           counts.set(h.kind, (counts.get(h.kind) ?? 0) + 1);
     for (const [kind] of ANY_POOL) {
       const n = counts.get(kind) ?? 0;
-      expect(n, kind).toBeGreaterThanOrEqual(25);
-      expect(n, kind).toBeLessThanOrEqual(85);
+      expect(n, kind).toBeGreaterThanOrEqual(13);
+      expect(n, kind).toBeLessThanOrEqual(52);
     }
     console.info(
       `2.6c kinds per 1000 workshop rooms: ${JSON.stringify([...counts])}`,
@@ -1604,22 +1679,27 @@ describe("the hero pass", () => {
   });
 
   it("pins the empty place's own hero exactly, so a change to the candidate order shows", () => {
-    // A 5 by 6 lab hall at its own seed draws the turret. It stands in the
-    // south-west corner cell (0, 5), turned north towards the hall's
-    // centre (2.5, 3), on the seed of that corner candidate.
+    // A 5 by 6 lab hall at its own seed (GAME_VERSION 4): since the camera
+    // joined the lab pool (0.25.1) its pool slot's roll picks the garden
+    // robot, whose 3.7 m ceiling the hall's 3.6 m does not reach, so the
+    // slot stays empty and the any-archetype draw places the flying cloud.
+    // It stands in the band at (2.5, 2.5), on the half-cell point (5, 5)
+    // of the band's candidates, turned 2 by its own roll, on the seed of
+    // that band candidate.
     const room = generateRoom(DEGENERATE_PLACES.empty);
     expect(room.hall).toEqual({ x0: 0, y0: 0, x1: 5, y1: 6 });
+    expect(room.ceiling).toBe(3.6);
     expect(room.heroes).toEqual([
       {
-        kind: "turret",
+        kind: "flying-cloud",
         variant: 0,
-        x: 0.5,
-        y: 5.5,
-        turn: 0,
-        seed: seedFor(room.seed, "hero", 0, 5, "corner"),
+        x: 2.5,
+        y: 2.5,
+        turn: 2,
+        seed: seedFor(room.seed, "hero", 5, 5, "band"),
       },
     ]);
-    expect(room.heroes[0]?.seed).toBe(184992945357087);
+    expect(room.heroes[0]?.seed).toBe(4648090260794684);
   });
 
   it("places heroes in degenerate rooms without breaking an invariant (Review Focus 1)", () => {

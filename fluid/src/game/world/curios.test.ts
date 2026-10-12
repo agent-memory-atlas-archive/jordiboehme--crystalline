@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { seedFor } from "../core/seed";
+import { createRng, seedFor } from "../core/seed";
 import { roomWithForcedHero } from "../dev/demo";
 import { frameAt, frameForSlot } from "../render/kit";
 import {
@@ -32,15 +32,25 @@ import {
   CURIO_MARGIN,
   CURIO_ORDER,
   DECOR_SURFACES,
+  DESK_POOL,
+  DESK_SHARE,
+  FIGURE_POOLS,
+  FIGURE_SHARE,
   FIXTURE_SURFACES,
   GEAR_POOLS,
   GEAR_SHARE,
+  PAPER_POOLS,
+  PAPER_SHARE,
   PROP_SURFACES,
   RADAR_BESIDE_BALL,
   RADAR_POOL,
   RADAR_SHARE,
+  RADIO_POOLS,
+  RADIO_SHARE,
   RETRO_POOLS,
   RETRO_SHARE,
+  SNACK_POOL,
+  SNACK_SHARE,
   TECH_POOLS,
   TECH_SHARE,
   UNDER_POOL,
@@ -81,7 +91,7 @@ import {
   type HeroDraws,
 } from "./heroes";
 import { blockersFor } from "./move";
-import { PROP_KINDS } from "./props";
+import { PROP_CATALOGUE, PROP_KINDS } from "./props";
 import { DEGENERATE_PLACES } from "./reachChecks";
 import {
   dressingSites,
@@ -89,6 +99,7 @@ import {
   edgeOf,
   NO_NEAR,
   overlaps,
+  pickByRoll,
   wallAnchor,
   type CurioBase,
   type Near,
@@ -107,8 +118,19 @@ import type {
   WallSlot,
 } from "./types";
 import { CELL } from "./units";
+import { GAME_VERSION } from "../version";
 
 const SIDES: readonly Side[] = ["n", "e", "s", "w"];
+/** The 0.25.1 kinds, the desk, snack, figure, paper and radio slots'. */
+const NEW_KINDS: ReadonlySet<CurioKind> = new Set([
+  "floppy-disk",
+  "pizza-box",
+  "lottery-ticket",
+  "disk-525",
+  "penguin-figure",
+  "report-sheets",
+  "radio-set",
+]);
 const inside = (inner: Box, outer: Box, eps = 1e-6) =>
   inner.x0 >= outer.x0 - eps &&
   inner.x1 <= outer.x1 + eps &&
@@ -248,6 +270,7 @@ describe("host surfaces", () => {
       "decor:round-table",
       "prop:storage-shelf",
       "prop:filing-cabinet",
+      "prop:crate",
     ])
       expect(hosts.has(h), h).toBe(true);
   });
@@ -453,6 +476,11 @@ const ALL_FORCED: CurioDraws = {
   gear: { take: true, roll: 0.5 },
   ball: { take: true, roll: 0.5, floor: false },
   under: { take: true, roll: 0.5 },
+  desk: { take: true, roll: 0.5 },
+  snack: { take: true, roll: 0.5 },
+  figure: { take: true, roll: 0.5 },
+  paper: { take: true, roll: 0.5 },
+  radio: { take: true, roll: 0.5 },
 };
 const WORKSHOPS = matrix(CANNED_WORKSHOP);
 const ROOMS = [...WORKSHOPS, ...matrix(CANNED_BRIDGE), ...matrix(CANNED_HUB)];
@@ -478,6 +506,11 @@ const only = (kind: CurioKind): CurioDraws => {
     tech: draw("tech"),
     radar: { ...draw("radar"), paired: false },
     capsule: { ...draw("capsule"), paired: false },
+    desk: draw("desk"),
+    snack: draw("snack"),
+    figure: draw("figure"),
+    paper: draw("paper"),
+    radio: draw("radio"),
   };
 };
 /** An archetype's whole retro pool weight (`RETRO_POOLS`). */
@@ -1103,12 +1136,12 @@ describe("the curio pass (C6, C7, C9, C10, C12)", () => {
   });
 
   it("keeps a corner spot off a floor prop and off a wall prop (cornerSpots)", () => {
-    // The one room of the varied workshops whose south-west corner is
-    // usable as generated.
+    // A room of the varied workshops whose south-west corner alone is
+    // usable as generated (GAME_VERSION 4).
     const b = base(
       generateRoom({
         ...CANNED_WORKSHOP,
-        permalink: "pipe-shop-12",
+        permalink: "pipe-shop-0",
         type: ARCHETYPE_TYPES.council,
       }),
     );
@@ -1157,24 +1190,38 @@ describe("the curio pass (C6, C7, C9, C10, C12)", () => {
 
   it("draws the slots in their fixed order (a pin of curioDraws)", () => {
     expect(curioDraws(base(generateRoom(CANNED_WORKSHOP)))).toEqual({
-      retro: { take: true, roll: 0.3097186426166445 },
-      gear: { take: false, roll: 0.7412930731661618 },
-      ball: { take: false, roll: 0.29439340252429247, floor: true },
-      under: { take: false, roll: 0.9774609189480543 },
+      retro: { take: false, roll: 0.3430099105462432 },
+      gear: { take: true, roll: 0.5475928385276347 },
+      ball: { take: true, roll: 0.015863109845668077, floor: true },
+      under: { take: false, roll: 0.04107839614152908 },
       // The three 2.6d slots, appended after every old value (2.6d C5).
-      tech: { take: true, roll: 0.32370482943952084 },
-      radar: { take: true, paired: true, roll: 0.41816116753034294 },
-      capsule: { take: false, paired: false, roll: 0.9839846724644303 },
+      tech: { take: true, roll: 0.8745579037349671 },
+      radar: { take: false, paired: true, roll: 0.5469286541920155 },
+      capsule: { take: false, paired: true, roll: 0.04026875551789999 },
+      // The two 0.25.1 slots, appended after every older value.
+      desk: { take: true, roll: 0.4278619457036257 },
+      snack: { take: true, roll: 0.4251894319895655 },
+      // The three later 0.25.1 slots, after the desk and snack values.
+      figure: { take: false, roll: 0.4540898371487856 },
+      paper: { take: false, roll: 0.9533099508844316 },
+      radio: { take: false, roll: 0.5590220028534532 },
     });
     expect(curioDraws(base(generateRoom(CANNED_BRIDGE)))).toEqual({
-      retro: { take: false, roll: 0.9995579079259187 },
-      gear: { take: false, roll: 0.5458925957791507 },
-      ball: { take: false, roll: 0.42699357331730425, floor: false },
-      under: { take: false, roll: 0.7664119158871472 },
+      retro: { take: false, roll: 0.9744114303030074 },
+      gear: { take: false, roll: 0.009836761513724923 },
+      ball: { take: false, roll: 0.6540312590077519, floor: false },
+      under: { take: false, roll: 0.2569371045101434 },
       // The three 2.6d slots, appended after every old value (2.6d C5).
-      tech: { take: false, roll: 0.264657162129879 },
-      radar: { take: false, paired: true, roll: 0.9681926046032459 },
-      capsule: { take: false, paired: false, roll: 0.3696695831604302 },
+      tech: { take: true, roll: 0.3062186751049012 },
+      radar: { take: false, paired: false, roll: 0.9046418715734035 },
+      capsule: { take: false, paired: true, roll: 0.8916664731223136 },
+      // The two 0.25.1 slots, appended after every older value.
+      desk: { take: true, roll: 0.7377122265752405 },
+      snack: { take: false, roll: 0.23980942158959806 },
+      // The three later 0.25.1 slots, after the desk and snack values.
+      figure: { take: false, roll: 0.5915179324802011 },
+      paper: { take: false, roll: 0.07060735067352653 },
+      radio: { take: false, roll: 0.1629167387727648 },
     });
   });
 
@@ -1264,12 +1311,15 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
     // paired slot taken without its partner, or an archetype-bound slot
     // kept for an unknown archetype.
     // The kinds only an archetype's own pool gives: no slot outside the
-    // retro, gear and tech slots holds one.
+    // retro, gear, tech, figure, paper and radio slots holds one.
     const bound = new Set<CurioKind>(
       [
         ...Object.values(RETRO_POOLS),
         ...Object.values(GEAR_POOLS),
         ...Object.values(TECH_POOLS),
+        ...Object.values(FIGURE_POOLS),
+        ...Object.values(PAPER_POOLS),
+        ...Object.values(RADIO_POOLS),
       ]
         .flat()
         .map(([k]) => k),
@@ -1314,6 +1364,11 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
         tech: TECH_POOLS[a],
         radar: RADAR_POOL,
         capsule: CAPSULE_POOL,
+        desk: DESK_POOL,
+        snack: SNACK_POOL,
+        figure: FIGURE_POOLS[a],
+        paper: PAPER_POOLS[a],
+        radio: RADIO_POOLS[a],
       })[CURIO_CATALOGUE[kind].slot];
     let untouched = 0;
     let moved = 0;
@@ -1539,16 +1594,17 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
       ["fuel-case", 1],
       ["soot-puffs", 1],
     ]);
-    expect(TECH_SHARE).toBe(3 / 20);
-    expect(RADAR_SHARE).toBe(1 / 16);
+    expect(TECH_SHARE).toBe(1 / 4);
+    expect(RADAR_SHARE).toBe(1 / 10);
     expect(RADAR_BESIDE_BALL).toBe(1 / 2);
-    expect(CAPSULE_SHARE).toBe(1 / 16);
+    expect(CAPSULE_SHARE).toBe(1 / 10);
     expect(CAPSULE_BESIDE).toBe(1 / 3);
   });
 
   it("takes the curios half as often again (2.6f C4)", () => {
     // Measured by the planner: 3516 curios in 4000 rooms (0.879) at the
-    // 2.6f shares, 2321 (0.580) at the old ones. Mutation caught: any
+    // 2.6f shares, 2321 (0.580) at the old ones. Measured again in 0.25.1:
+    // 5656 (1.414) at the 0.25.1 shares, about 1.6x the 2.6f ones. Mutation caught: any
     // share left at its old value moves the count by 120 or more, and
     // the pins below catch each alone.
     expect([
@@ -1559,7 +1615,7 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
       TECH_SHARE,
       RADAR_SHARE,
       CAPSULE_SHARE,
-    ]).toEqual([1 / 4, 3 / 16, 1 / 20, 3 / 20, 3 / 20, 1 / 16, 1 / 16]);
+    ]).toEqual([2 / 5, 3 / 10, 1 / 12, 1 / 4, 1 / 4, 1 / 10, 1 / 10]);
     expect([RADAR_BESIDE_BALL, CAPSULE_BESIDE, BALL_FLOOR]).toEqual([
       1 / 2,
       1 / 3,
@@ -1572,14 +1628,18 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
     for (const made of rooms)
       for (let i = 0; i < 100; i++) {
         n++;
-        curios += placeCurios(reseed(made.room, "rate-f", made.name, i)).length;
+        // The 2.6f kinds alone: the 0.25.1 slots come after them and
+        // have rates of their own.
+        curios += placeCurios(reseed(made.room, "rate-f", made.name, i)).filter(
+          (c) => !NEW_KINDS.has(c.kind),
+        ).length;
       }
     const perRoom = curios / n;
     console.info(
       `2.6f curios per room: ${perRoom.toFixed(3)} over ${String(n)}`,
     );
-    expect(perRoom).toBeGreaterThanOrEqual(0.83);
-    expect(perRoom).toBeLessThanOrEqual(0.93);
+    expect(perRoom).toBeGreaterThanOrEqual(1.36);
+    expect(perRoom).toBeLessThanOrEqual(1.46);
   }, 30_000);
 
   it("hovers the drone over a terminal's desk end first, where the room has one (2.6d C8, Review Focus 2)", () => {
@@ -1665,7 +1725,7 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
     ).toBe(true);
   });
 
-  it("places every new kind with a host in the hub and keeps every invariant with all seven slots forced", () => {
+  it("places every new kind with a host in the hub and keeps every invariant with every slot forced", () => {
     // Mutation caught: a new kind that finds no candidate in the hub (its
     // classes emptied), or a new slot placing a curio that clashes with
     // or stands off its surface.
@@ -1675,13 +1735,48 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
       radar: { take: true, paired: true, roll: 0.5 },
       capsule: { take: true, paired: true, roll: 0.5 },
     };
-    for (const { name, room } of ROOMS)
-      expectInvariants(base(room), placeCurios(base(room), ALL), name);
+    const landed = new Set<CurioSlot>();
+    for (const { name, room } of ROOMS) {
+      const got = placeCurios(base(room), ALL);
+      for (const c of got) landed.add(CURIO_CATALOGUE[c.kind].slot);
+      expectInvariants(base(room), got, name);
+    }
+    // Every slot lands somewhere, so each one is clash-checked against the
+    // others at least once.
+    expect([...landed].sort()).toEqual(
+      [
+        "retro",
+        "gear",
+        "ball",
+        "under",
+        "tech",
+        "radar",
+        "capsule",
+        "desk",
+        "snack",
+        "figure",
+        "paper",
+        "radio",
+      ].sort(),
+    );
+    // The report sheets (0.25.1) stand on desk, bench and table tops at
+    // least 0.256 m wide. The hub's desks are its terminals' 0.22 m ends,
+    // too narrow, so there they land on a bench; they are also held to
+    // land in the council workshop, whose round table has four such
+    // places.
     for (const kind of CURIO_KINDS.slice(CURIO_KINDS.indexOf("treasure-radar")))
       expect(
         placeCurios(base(generateRoom(CANNED_HUB)), only(kind)).length,
         kind,
       ).toBe(1);
+    expect(
+      placeCurios(
+        base(
+          generateRoom({ ...CANNED_WORKSHOP, type: ARCHETYPE_TYPES.council }),
+        ),
+        only("report-sheets"),
+      ).map((c) => c.kind),
+    ).toEqual(["report-sheets"]);
   });
 
   it("logs each new kind's realized rate over 1000 hubs and 1000 workshops", () => {
@@ -1705,101 +1800,451 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
   });
 });
 
+describe("the 0.25.1 curios: the floppy, the 5.25 inch disk, the ticket and the pizza box", () => {
+  /** About 2000 rooms: every canned room in every archetype and condition, reseeded. */
+  const SWEEP = Array.from({ length: Math.ceil(2000 / ROOMS.length) }, (_, i) =>
+    ROOMS.map((made) => reseed(made.room, "office", made.name, i)),
+  ).flat();
+  /** The kinds of the catalogue before 0.25.1. */
+  const OLD = new Set<CurioKind>(CURIO_KINDS.filter((k) => !NEW_KINDS.has(k)));
+  /** The desk slot's kinds. */
+  const DESK_KINDS = ["floppy-disk", "disk-525", "lottery-ticket"] as const;
+
+  it("draws the desk slot from the floppy, the 5.25 inch disk and the ticket, 3 to 2 to 2", () => {
+    // Mutation caught: the 5.25 inch disk left out of the pool, a weight
+    // changed, or the pool reordered (order is part of the seeded result).
+    expect(DESK_POOL).toEqual([
+      ["floppy-disk", 3],
+      ["disk-525", 2],
+      ["lottery-ticket", 2],
+    ]);
+    expect(
+      CURIO_KINDS.filter((k) => CURIO_CATALOGUE[k].slot === "desk"),
+    ).toEqual(["floppy-disk", "lottery-ticket", "disk-525"]);
+  });
+
+  it("catalogues the 5.25 inch disk flat on the desks and the floppy's two labels at one size", () => {
+    // Mutation caught: the disk's size or classes off the brief, the
+    // second label given a size of its own.
+    expect(CURIO_CATALOGUE["disk-525"]).toEqual({
+      slot: "desk",
+      variants: 1,
+      facing: "front",
+      classes: ["desk", "bench", "table"],
+      sizes: [{ width: 0.133, depth: 0.133, top: 0.003 }],
+    });
+    const floppy = CURIO_CATALOGUE["floppy-disk"];
+    expect(floppy.variants).toBe(2);
+    expect(floppy.sizes).toHaveLength(2);
+    expect(floppy.sizes[1]).toEqual(floppy.sizes[0]);
+  });
+
+  it("splits the floppy's draws evenly between its two labels", () => {
+    // Mutation caught: the second label never drawn, or the variant pick
+    // weighted.
+    const counts = [0, 0];
+    for (const b of SWEEP)
+      for (const c of placeCurios(b, only("floppy-disk")))
+        if (c.kind === "floppy-disk")
+          counts[c.variant] = (counts[c.variant] ?? 0) + 1;
+    const [v0 = 0, v1 = 0] = counts;
+    expect(v0 + v1).toBeGreaterThan(1000);
+    const share = v1 / (v0 + v1);
+    expect(share, `v1 ${String(share)}`).toBeGreaterThanOrEqual(0.45);
+    expect(share, `v1 ${String(share)}`).toBeLessThanOrEqual(0.55);
+  }, 60_000);
+
+  it("bumps the generator version once and keeps the old draws in order (0.25.1)", () => {
+    // Mutation caught: a new draw inserted before the capsule's, which
+    // moves every older slot's roll; the version left at 3 while the
+    // goldens move.
+    expect(GAME_VERSION).toBe(4);
+    const seeds = Array.from({ length: 200 }, (_, i) => seedFor("draws", i));
+    expect(seeds.length).toBeGreaterThan(0);
+    for (const s of seeds) {
+      const d = curioDrawsOf(s);
+      const rng = createRng(seedFor(s, "curio", "draw"));
+      // Replay the pre-0.25.1 stream: 2 + 2 + 3 + 2 + 2 + 2 + 2 values.
+      for (let i = 0; i < 15; i++) rng.next();
+      expect(d.desk).toEqual({
+        take: rng.next() < DESK_SHARE,
+        roll: rng.next(),
+      });
+      expect(d.snack).toEqual({
+        take: rng.next() < SNACK_SHARE,
+        roll: rng.next(),
+      });
+    }
+  });
+
+  it("gives the crates' lids to the pizza box alone, one lid per crate variant", () => {
+    // Mutation caught: a crate variant without its lid, a second surface
+    // on one, or an older kind standing on a crate (which would move its
+    // candidates).
+    expect(PROP_SURFACES.crate).toHaveLength(PROP_CATALOGUE.crate.variants);
+    for (const specs of PROP_SURFACES.crate) {
+      expect(specs).toHaveLength(1);
+      for (const spec of specs) expect(spec.cls).toBe("crate");
+    }
+    const onCrate = CURIO_KINDS.filter((k) =>
+      CURIO_CATALOGUE[k].classes.includes("crate"),
+    );
+    expect(onCrate).toEqual(["pizza-box"]);
+  });
+
+  it("places the new curios at their rates over 2000 rooms", () => {
+    // Mutation caught: a share off by a factor.
+    let deskRooms = 0;
+    let deskGot = 0;
+    let snackRooms = 0;
+    let snackGot = 0;
+    for (const b of SWEEP) {
+      const kinds = placeCurios(b).map((c) => c.kind);
+      const deskFits = DESK_KINDS.some(
+        (k) => placeCurios(b, only(k)).length > 0,
+      );
+      if (deskFits) {
+        deskRooms++;
+        if (DESK_KINDS.some((k) => kinds.includes(k))) deskGot++;
+      }
+      if (placeCurios(b, only("pizza-box")).length > 0) {
+        snackRooms++;
+        if (kinds.includes("pizza-box")) snackGot++;
+      }
+    }
+    expect(deskRooms).toBeGreaterThan(1000);
+    expect(snackRooms).toBeGreaterThan(1000);
+    const desk = deskGot / deskRooms;
+    const snack = snackGot / snackRooms;
+    expect(desk, `desk ${String(desk)}`).toBeGreaterThanOrEqual(0.37);
+    expect(desk, `desk ${String(desk)}`).toBeLessThanOrEqual(0.43);
+    expect(snack, `snack ${String(snack)}`).toBeGreaterThanOrEqual(0.175);
+    expect(snack, `snack ${String(snack)}`).toBeLessThanOrEqual(0.225);
+  }, 60_000);
+
+  it("stands the pizza box on a crate only closed or stacked", () => {
+    // Mutation caught: `variantClasses` ignored, so the open box with its
+    // lid up stands on a crate.
+    let onCrates = 0;
+    let open = 0;
+    for (const b of SWEEP) {
+      const surfaces = hostSurfaces(b);
+      for (const draws of [curioDraws(b), only("pizza-box")])
+        for (const c of placeCurios(b, draws)) {
+          if (c.kind !== "pizza-box") continue;
+          if (c.variant === 3) open++;
+          const hosts = hostsOf(surfaces, c).filter((s) => curioFits(b, c, s));
+          if (!hosts.some((s) => s.cls === "crate")) continue;
+          onCrates++;
+          expect(c.variant).toBeLessThanOrEqual(2);
+        }
+    }
+    expect(onCrates).toBeGreaterThan(0);
+    expect(open).toBeGreaterThan(0);
+  }, 60_000);
+
+  it("never moves an old curio for a new one", () => {
+    // Mutation caught: the new slots placed before the old ones.
+    let compared = 0;
+    let withNew = 0;
+    for (const b of SWEEP.slice(0, 500)) {
+      const draws = curioDraws(b);
+      const old: CurioDraws = { ...draws };
+      delete old.desk;
+      delete old.snack;
+      delete old.figure;
+      delete old.paper;
+      delete old.radio;
+      const got = placeCurios(b, draws);
+      if (got.some((c) => !OLD.has(c.kind))) withNew++;
+      expect(got.filter((c) => OLD.has(c.kind))).toEqual(placeCurios(b, old));
+      compared++;
+    }
+    expect(compared).toBe(500);
+    expect(withNew).toBeGreaterThan(50);
+  }, 60_000);
+});
+
+describe("the 0.25.1 curios: the penguin figurine, the report sheets and the radio set", () => {
+  /** About 3000 rooms: every canned room in every archetype and condition, reseeded. */
+  const SWEEP = Array.from({ length: Math.ceil(3000 / ROOMS.length) }, (_, i) =>
+    ROOMS.map((made) => ({
+      archetype: made.archetype,
+      room: reseed(made.room, "figures", made.name, i),
+    })),
+  ).flat();
+  const THREE = ["penguin-figure", "report-sheets", "radio-set"] as const;
+
+  it("catalogues the three as the brief and the research give them", () => {
+    // Mutation caught: a size, a class, a facing or the terminal
+    // preference off the brief, or the penguin's width off the research.
+    expect(CURIO_CATALOGUE["penguin-figure"]).toEqual({
+      slot: "figure",
+      variants: 1,
+      facing: "front",
+      prefers: "terminal",
+      classes: ["desk", "bench", "table", "shelf"],
+      sizes: [{ width: 0.17, depth: 0.12, top: 0.2 }],
+    });
+    expect(CURIO_CATALOGUE["report-sheets"]).toEqual({
+      slot: "paper",
+      variants: 3,
+      facing: "front",
+      classes: ["desk", "bench", "table"],
+      sizes: [
+        { width: 0.216, depth: 0.279, top: 0.002 },
+        { width: 0.23, depth: 0.29, top: 0.03 },
+        { width: 0.24, depth: 0.3, top: 0.08 },
+      ],
+    });
+    expect(CURIO_CATALOGUE["radio-set"]).toEqual({
+      slot: "radio",
+      variants: 2,
+      facing: "fixed",
+      classes: ["desk", "bench", "table"],
+      sizes: [
+        { width: 0.36, depth: 0.3, top: 0.16 },
+        { width: 0.54, depth: 0.3, top: 0.16 },
+      ],
+    });
+  });
+
+  it("pins the three pools and shares as the brief states them", () => {
+    // Mutation caught: a weight, a share or an archetype's pool drifting.
+    expect(FIGURE_POOLS).toEqual({
+      bridge: [["penguin-figure", 1]],
+      council: [],
+      engineering: [["penguin-figure", 2]],
+      archive: [["penguin-figure", 1]],
+      lab: [],
+    });
+    expect(PAPER_POOLS).toEqual({
+      bridge: [["report-sheets", 1]],
+      council: [["report-sheets", 2]],
+      engineering: [],
+      archive: [["report-sheets", 2]],
+      lab: [],
+    });
+    expect(RADIO_POOLS).toEqual({
+      bridge: [["radio-set", 2]],
+      council: [["radio-set", 1]],
+      engineering: [],
+      archive: [],
+      lab: [],
+    });
+    expect([FIGURE_SHARE, PAPER_SHARE, RADIO_SHARE]).toEqual([
+      1 / 5,
+      4 / 15,
+      1 / 6,
+    ]);
+  });
+
+  it("keeps every earlier draw when the three slots are added", () => {
+    // Mutation caught: a new draw inserted before the desk's or the
+    // snack's, which moves every later roll, or the three read out of
+    // order.
+    const seeds = Array.from({ length: 200 }, (_, i) => seedFor("draws-3", i));
+    for (const s of seeds) {
+      const d = curioDrawsOf(s);
+      const rng = createRng(seedFor(s, "curio", "draw"));
+      // The pre-0.25.1 stream, then the desk and the snack values.
+      for (let i = 0; i < 15; i++) rng.next();
+      expect(d.desk).toEqual({
+        take: rng.next() < DESK_SHARE,
+        roll: rng.next(),
+      });
+      expect(d.snack).toEqual({
+        take: rng.next() < SNACK_SHARE,
+        roll: rng.next(),
+      });
+      expect(d.figure).toEqual({
+        take: rng.next() < FIGURE_SHARE,
+        roll: rng.next(),
+      });
+      expect(d.paper).toEqual({
+        take: rng.next() < PAPER_SHARE,
+        roll: rng.next(),
+      });
+      expect(d.radio).toEqual({
+        take: rng.next() < RADIO_SHARE,
+        roll: rng.next(),
+      });
+    }
+  });
+
+  it("leaves a slot with an empty pool untaken", () => {
+    // Mutation caught: an empty pool falling back to another archetype's,
+    // or a pick from nothing returning a kind.
+    expect(pickByRoll(0.5, [])).toBeNull();
+    expect(pickByRoll(0, FIGURE_POOLS.council)).toBeNull();
+    const council = ROOMS.find((m) => m.archetype === "council");
+    if (council === undefined) throw new Error("no council room");
+    const b = base(council.room);
+    const taken: CurioDraws = {
+      retro: OFF,
+      gear: OFF,
+      ball: { ...OFF, floor: false },
+      under: OFF,
+      figure: { take: true, roll: 0.5 },
+    };
+    expect(placeCurios(b, taken)).toEqual([]);
+    // The same draw in an engineering room places the penguin.
+    const engineering = ROOMS.find((m) => m.archetype === "engineering");
+    if (engineering === undefined) throw new Error("no engineering room");
+    expect(
+      placeCurios(base(engineering.room), taken).map((c) => c.kind),
+    ).toEqual(["penguin-figure"]);
+  });
+
+  it("places the three only in their archetypes", () => {
+    // Mutation caught: a slot reading another archetype's pool, so a
+    // penguin lands in a council room or a radio in an archive.
+    const never: Record<(typeof THREE)[number], readonly Archetype[]> = {
+      "penguin-figure": ["council", "lab"],
+      "report-sheets": ["engineering", "lab"],
+      "radio-set": ["engineering", "archive", "lab"],
+    };
+    const seen = new Map<CurioKind, number>();
+    for (const { archetype, room } of SWEEP)
+      for (const c of placeCurios(room)) {
+        if (!(THREE as readonly CurioKind[]).includes(c.kind)) continue;
+        seen.set(c.kind, (seen.get(c.kind) ?? 0) + 1);
+        const kind = c.kind as (typeof THREE)[number];
+        expect(never[kind], `${kind} in ${archetype}`).not.toContain(archetype);
+      }
+    for (const k of THREE) expect(seen.get(k) ?? 0, k).toBeGreaterThan(10);
+  }, 60_000);
+
+  it("prefers a terminal's desk end for the penguin", () => {
+    // Mutation caught: `prefers` dropped, so the penguin stands wherever
+    // its seed order puts it.
+    let rooms = 0;
+    let onTerminal = 0;
+    for (const { room } of SWEEP.slice(0, 600)) {
+      if (!room.fixtures.some((f) => f.kind === "terminal")) continue;
+      const [c] = placeCurios(room, only("penguin-figure"));
+      if (c === undefined) continue;
+      rooms++;
+      const hosts = hostsOf(hostSurfaces(room), c).filter((s) =>
+        curioFits(room, c, s),
+      );
+      if (hosts.some((s) => s.host === "terminal")) onTerminal++;
+    }
+    expect(rooms).toBeGreaterThan(300);
+    // The brief asks for 70 percent; every one of these rooms has a
+    // terminal end that holds it, so all 600 stand there (without the
+    // preference, about two in three).
+    expect(onTerminal / rooms).toBeGreaterThanOrEqual(0.95);
+  }, 60_000);
+
+  it("fits the penguin on a terminal's desk end either way round", () => {
+    // Mutation caught: the penguin widened past a terminal end's 0.18 m.
+    const [end] = FIXTURE_SURFACES.terminal;
+    const [size] = CURIO_CATALOGUE["penguin-figure"].sizes;
+    if (end === undefined || size === undefined) throw new Error("tables");
+    expect(end.a1 - end.a0 - 2 * CURIO_MARGIN).toBeGreaterThanOrEqual(
+      Math.max(size.width, size.depth) - 1e-9,
+    );
+  });
+});
+
 /**
  * The forced council workshop's curios (C11), written from the pass's
- * output after a look at each host: the upright green sword and the
- * laptop on two places of the round table (its places 2 and 1, the laptop
- * an exact fit, facing the table's front), the trap under the seat of the
- * bench (v0) against the east wall at (12.5, 6.5), turned 3, and the star
- * ball on the desk end of the west terminal at row 8. The mess table
- * stands at (3.5, 7.5) turned 3; no curio's first fitting candidate is on
- * it, by the seed order of C9, and it has no under spot of its own.
+ * output after a look at each host (GAME_VERSION 4): the trap under the
+ * seat of the bench (v0) against the east wall at (12.7, 2.5), turned 3,
+ * the laptop on the round table's place 2, an exact fit, facing the
+ * table's front, the star ball on the desk end of the west terminal at
+ * row 8, and the upright green sword on a desk end of the west terminal
+ * at row 10. The mess table stands at (4.5, 8) turned 2; no curio's first
+ * fitting candidate is on it, by the seed order of C9, and it has no
+ * under spot of its own.
  */
 const PINNED: Curio[] = [
   {
-    kind: "light-sword",
-    variant: 2,
-    x: 6.486,
-    y: 5.624,
-    h: 0.78,
-    turn: 3,
-    seed: 1859750762012304,
+    kind: "trap-box",
+    variant: 0,
+    x: 12.696,
+    y: 2.545,
+    h: 0,
+    turn: 1,
+    seed: 3509087118848768,
   },
   {
     kind: "beige-laptop",
     variant: 0,
-    x: 6.113,
-    y: 5.998,
+    x: 6.5,
+    y: 5.614,
     h: 0.78,
     turn: 0,
-    seed: 574460450533092,
-  },
-  {
-    kind: "trap-box",
-    variant: 0,
-    x: 12.687,
-    y: 6.419,
-    h: 0,
-    turn: 3,
-    seed: 63837989656857,
+    seed: 356101901917724,
   },
   {
     kind: "star-ball",
     variant: 0,
-    x: 0.203,
-    y: 8.787,
+    x: 0.124,
+    y: 8.778,
     h: 0.78,
-    turn: 0,
-    seed: 2159271467005853,
+    turn: 3,
+    seed: 2823452868232270,
+  },
+  {
+    kind: "light-sword",
+    variant: 2,
+    x: 0.234,
+    y: 10.231,
+    h: 0.78,
+    turn: 1,
+    seed: 1428111962763486,
   },
 ];
 
 /**
- * The forced engineering workshop's curios with the mess table at (3.5,
- * 7.5) turned 3: the laptop on the table's top (h 0.76), turned to face
- * the table's back (a free host's `fixed` curio faces front or back), the
- * star ball and the lying sword on the two desk ends of the west terminal
- * at row 8, and the trap on the service trolley's deck (v0, h 0.27) its
- * `runbook` dressing draws at (8.472, 9.48). This engineering room has no
- * workbench, no hydroponics trough, no round table and no bench, and the
- * mess table has no under spot of its own, but the trolley is now a host
- * for the under slot too.
+ * The forced engineering workshop's curios with the mess table at (4.5, 8)
+ * turned 2 (GAME_VERSION 4): the trap on the service trolley's deck (v0,
+ * h 0.27) its `runbook` dressing draws at (12.675, 2.5), the laptop on the
+ * table's top (h 0.76), turned to face the table's back (a free host's
+ * `fixed` curio faces front or back), the star ball on a desk end of the
+ * west terminal at row 8 and the upright green sword on one of the west
+ * terminal at row 10. This engineering room has no workbench, no
+ * hydroponics trough, no round table and no bench, and the mess table has
+ * no under spot of its own, but the trolley is a host for the under slot
+ * too.
  */
 const PINNED_ON_HERO: Curio[] = [
   {
+    kind: "trap-box",
+    variant: 0,
+    x: 12.652,
+    y: 2.491,
+    h: 0.27,
+    turn: 3,
+    seed: 1210304572549022,
+  },
+  {
     kind: "beige-laptop",
     variant: 0,
-    x: 3.556,
-    y: 6.698,
+    x: 4.393,
+    y: 7.913,
     h: 0.76,
-    turn: 1,
-    seed: 6857075118340509,
+    turn: 0,
+    seed: 5270867400495347,
   },
   {
     kind: "star-ball",
     variant: 0,
-    x: 0.204,
-    y: 8.211,
+    x: 0.124,
+    y: 8.778,
     h: 0.78,
-    turn: 0,
-    seed: 2478011078854370,
+    turn: 3,
+    seed: 2823452868232270,
   },
   {
     kind: "light-sword",
-    variant: 0,
-    x: 0.174,
-    y: 8.785,
+    variant: 2,
+    x: 0.234,
+    y: 10.231,
     h: 0.78,
-    turn: 0,
-    seed: 2159271467005853,
-  },
-  {
-    kind: "trap-box",
-    variant: 0,
-    x: 8.472,
-    y: 9.48,
-    h: 0.27,
-    turn: 0,
-    seed: 752718812128755,
+    turn: 1,
+    seed: 1428111962763486,
   },
 ];

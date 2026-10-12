@@ -1333,7 +1333,7 @@ pub enum HolderState {
     /// A holder answered the bounded `ctl` probe. Attach to it.
     Responsive,
     /// The lock is held, the socket answered nothing within
-    /// [`HOLDER_PROBE_TIMEOUT`] and the record names a live process that is
+    /// `HOLDER_PROBE_TIMEOUT` and the record names a live process that is
     /// identifiably a crystalline binary. This is the wedge.
     Unresponsive {
         /// The recorded pid of the wedged daemon.
@@ -1395,7 +1395,7 @@ fn lock_is_free(lock_path: &Path) -> io::Result<bool> {
     }
 }
 
-/// [`lock_is_free`] for the service lock, over whatever path this process
+/// `lock_is_free` for the service lock, over whatever path this process
 /// resolves it to. `doctor`'s stale-lock check needs exactly this probe:
 /// a lock file with no readable record (`read_lock_info` returns `None`) is
 /// not on its own evidence that nobody holds it - the holder may simply have
@@ -1431,7 +1431,7 @@ impl ServiceLockHold {
     ///
     /// Removing a held lock file is safe: [`acquire_ownership`] opens the path
     /// afresh on every attempt and checks that the file it locked is still the
-    /// one at the path ([`locked_file_is_current`]).
+    /// one at the path (`locked_file_is_current`).
     pub fn release_removing_file(self) -> bool {
         let ServiceLockHold {
             file,
@@ -1894,8 +1894,8 @@ fn clean_after_dislodge(pid: u32, _lock_path: &Path) {
 /// Diagnoses first and acts only on [`HolderState::Unresponsive`]: a free lock
 /// and a holder that answered its socket are both left alone, and an
 /// unidentified holder is an error, never a signal. The wedged holder gets the
-/// graceful signal, [`DISLODGE_TERM_WAIT`] to leave, then the hard signal and
-/// [`DISLODGE_KILL_WAIT`], after which its stale record and socket file go.
+/// graceful signal, `DISLODGE_TERM_WAIT` to leave, then the hard signal and
+/// `DISLODGE_KILL_WAIT`, after which its stale record and socket file go.
 pub async fn dislodge_unresponsive() -> anyhow::Result<DislodgeOutcome> {
     let lock_path = config::service_lock_path()
         .map_err(|e| anyhow::anyhow!("could not resolve the service lock path: {e}"))?;
@@ -1942,12 +1942,12 @@ pub async fn dislodge_unresponsive() -> anyhow::Result<DislodgeOutcome> {
 /// client's respawn when one publishes inside the wait, else one this
 /// call spawns. Bounded by the same 15 s readiness budget `ensure_daemon`
 /// uses (a shorter one when the record says nothing, see
-/// [`successor_plan`]); `None` only when no daemon became ready, and the
+/// `successor_plan`); `None` only when no daemon became ready, and the
 /// caller then falls back as before.
 ///
 /// `displaced` is what the displaced daemon's record said about how it was
 /// started, and the successor is started with exactly that (see
-/// [`successor_plan`]): its `--db`, its config file, its read-only mode, its
+/// `successor_plan`): its `--db`, its config file, its read-only mode, its
 /// HTTP flags and its environment variable names. Nothing of the displacing
 /// command itself reaches the successor: an explicit `--db` or `--config`
 /// never reaches this path (`use_daemon` sends such a command to the index
@@ -1957,7 +1957,7 @@ pub async fn dislodge_unresponsive() -> anyhow::Result<DislodgeOutcome> {
 /// successor from this call; the wait still attaches to one another client
 /// starts.
 ///
-/// The spawn-and-poll part is [`ensure_daemon_with`] itself, so a successor
+/// The spawn-and-poll part is `ensure_daemon_with` itself, so a successor
 /// another client already spawned wins the ownership race and this call's
 /// own spawn exits at once (the 2026-07-28 wedge logic there covers that).
 pub async fn attach_after_displacement(displaced: Option<StartOptions>) -> Option<Connection> {

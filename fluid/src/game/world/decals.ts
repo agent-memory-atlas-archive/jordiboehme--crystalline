@@ -68,11 +68,38 @@
  *    the band's height (from 0.35 m) or, with no band, from the face's
  *    bottom, 0.25 to 0.5 m tall and never past the face's top, so the two
  *    never share a spot of the face. Both are the face's width less 0.1 m.
- * 8. **The cap** (C17): past `DECAL_CAP`, floor stains are dropped first
+ * 8. **Pixel wall decals** (0.25.1 D-2, D-4): the spray tag, the numbers
+ *    scribble and the numbers plate, in that order, each from its own
+ *    draw `createRng(seedFor(room.seed, "decal", kind))`: a take, a roll,
+ *    the variant, then the `along`, `h` and `width` fractions, all always
+ *    drawn. Their candidate edges are the free edges (`sites.free`) in
+ *    `wallRuns` order that no hero reserves and no wall prop takes (a run
+ *    segment included, unlike the smears' rule), carry no wall decal laid before
+ *    (stencil, streak, bleed or smear) and no pixel decal laid before in
+ *    this step, and lie in the hall or a bay (never the corridor).
+ *    - The **tag** (rough rooms only, `ROUGH`, at `TAG_SHARE`, or
+ *      `TAG_BESIDE_CANISTERS` when the room stands the ooze canisters): on
+ *      the candidate the take picks, 1.2 to 1.6 m wide and 0.45 m tall,
+ *      its bottom 0.45 to 0.7 m up, so its whole box stays under the
+ *      accent stripe (1.2 m), variant 0 to 2 (its fill colour).
+ *    - The **scribble** (rough rooms only, at `SCRIBBLE_SHARE`): on the
+ *      candidate the take picks, 0.7 by 0.12 m, its bottom 1.3 to 1.5 m
+ *      up, so its whole box stays over the accent stripe (1.28 m),
+ *      variant 0 or 1 (its ink).
+ *    - The **plate** (any condition, at `PLATE_SHARE`): beside the first
+ *      door (fixture order) with a candidate hall edge on its own wall
+ *      run, on the candidate nearest the door's edge along the run (the
+ *      first in run order on a tie), 0.32 by 0.08 m at 1.55 m. The edges
+ *      next to a door take its keycard reader or sign plate and the ones
+ *      two along are the next slots' fixtures, so "one cell beside" would
+ *      almost never find an edge. If no door has one, there is none.
+ *    Each lies anywhere along its edge (`along` within the edge).
+ * 9. **The cap** (C17): past `DECAL_CAP`, floor stains are dropped first
  *    (the last placed first), then face decals (bands too), then smears,
- *    then streaks; stencils, chevron strips and arrows never. The list is
- *    then sorted by kind (stencil, chevrons, arrow, streak, rust, grime)
- *    and within a kind by `seed`, `y`, `x`.
+ *    then streaks; stencils, chevron strips, arrows and the pixel wall
+ *    decals never. The list is then sorted by kind (stencil, chevrons,
+ *    arrow, streak, rust, grime, then tag, scribble, plate) and within a
+ *    kind by `seed`, `y`, `x`.
  *
  * "Clear" (C16's floor rule): the box stands on the floor (`fitsFloor`),
  * overlaps no taken box of the sites (fixtures, decor, scaffold), no
@@ -191,6 +218,16 @@ export const DECAL_RATES: Record<
   },
 };
 
+/** Chance a rough room carries the spray tag (about 1 in 8), and its chance beside the ooze canisters (0.25.1 D-4, D-R7). */
+export const TAG_SHARE = 1 / 8;
+export const TAG_BESIDE_CANISTERS = 1 / 3;
+/** Chance a rough room carries the numbers scribble (0.25.1 D-2): about 1 in 13. */
+export const SCRIBBLE_SHARE = 3 / 40;
+/** Chance any room carries the numbers plate beside a door (0.25.1 D-2): about 1 in 27. */
+export const PLATE_SHARE = 3 / 80;
+/** The rough conditions (D-R7): the only ones a tag or a scribble goes in. */
+export const ROUGH: ReadonlySet<Condition> = new Set(["dim", "derelict"]);
+
 /** The machines a chevron strip runs in front of (2.7 C14). */
 export const HAZARD_MACHINES: readonly MachineKind[] = [
   "reactor-coupling",
@@ -269,9 +306,12 @@ const TILES = {
   rust: 2,
   stencil: 1,
   ring: 2,
+  tag: 3,
+  scribble: 2,
+  plate: 1,
 } satisfies Record<DecalKind, number>;
 
-/** The sort order of the kinds (step 8). */
+/** The sort order of the kinds (step 9). */
 const KIND_ORDER = {
   stencil: 0,
   chevrons: 1,
@@ -280,6 +320,9 @@ const KIND_ORDER = {
   rust: 4,
   grime: 5,
   ring: 6,
+  tag: 7,
+  scribble: 8,
+  plate: 9,
 } satisfies Record<DecalKind, number>;
 
 /** A condition's rank, 0 clean to 3 derelict: a streak's length grows with it. */
@@ -736,16 +779,125 @@ export function placeDecals(room: DecalBase, cap = DECAL_CAP): Decal[] {
     }
   });
 
-  // 8. The cap, then the order.
+  // 8. The pixel wall decals.
+  const pixels: Decal[] = [];
+  const used = new Set(
+    [...fixed, ...streaks, ...smears]
+      .filter((d) => d.on === "wall")
+      .map((d) => edgeKey(edgeOf(d))),
+  );
+  // Every wall prop's edge, runs (conduits, pipe and cable runs) too.
+  const anyWallProp = new Set(
+    room.props
+      .filter((p) => p.anchor === "wall")
+      .map((p) => edgeKey(edgeOf(p))),
+  );
+  const inRoom = (e: WallSlot) =>
+    [room.hall, ...room.bays].some((r) => inside(r, e.x, e.y));
+  const candidates = () =>
+    sites.runs.flat().filter((e) => {
+      const k = edgeKey(e);
+      return (
+        sites.free.has(k) &&
+        !reserved.has(k) &&
+        !anyWallProp.has(k) &&
+        !used.has(k) &&
+        inRoom(e)
+      );
+    });
+  const rough = ROUGH.has(room.condition);
+  const canisters = room.props.some((p) => p.kind === "ooze-canisters");
+  /** Lays one pixel decal: `pick` chooses its edge from the candidates. */
+  const pixel = (
+    kind: "tag" | "scribble" | "plate",
+    share: number,
+    size: { w0: number; w1: number; length: number; h0: number; h1: number },
+    pick: (list: WallSlot[], take: number) => WallSlot | undefined,
+  ) => {
+    const seed = seedOf(kind);
+    const rng = createRng(seed);
+    const take = rng.next();
+    const roll = rng.next();
+    const variant = rng.int(0, TILES[kind] - 1);
+    const alongAt = rng.next();
+    const hAt = rng.next();
+    const widthAt = rng.next();
+    if (roll >= share) return;
+    const e = pick(candidates(), take);
+    if (e === undefined) return;
+    const width = size.w0 + (size.w1 - size.w0) * widthAt;
+    const reach = CELL / 2 - width / 2;
+    used.add(edgeKey(e));
+    pixels.push(
+      rounded({
+        kind,
+        ...onWall(e),
+        along: -reach + 2 * reach * alongAt,
+        h: size.h0 + (size.h1 - size.h0) * hAt,
+        width,
+        length: size.length,
+        variant,
+        seed,
+      }),
+    );
+  };
+  const anyEdge = (list: WallSlot[], take: number) =>
+    list[Math.floor(take * list.length)];
+  if (rough) {
+    pixel(
+      "tag",
+      canisters ? TAG_BESIDE_CANISTERS : TAG_SHARE,
+      { w0: 1.2, w1: 1.6, length: 0.45, h0: 0.45, h1: 0.7 },
+      anyEdge,
+    );
+    pixel(
+      "scribble",
+      SCRIBBLE_SHARE,
+      { w0: 0.7, w1: 0.7, length: 0.12, h0: 1.3, h1: 1.5 },
+      anyEdge,
+    );
+  }
+  pixel(
+    "plate",
+    PLATE_SHARE,
+    { w0: 0.32, w1: 0.32, length: 0.08, h0: 1.55, h1: 1.55 },
+    (list) => {
+      const free = new Set(list.map(edgeKey));
+      for (const f of room.fixtures) {
+        if (f.kind !== "door") continue;
+        const door = edgeKey(f.slot);
+        const run = sites.runs.find((r) => r.some((e) => edgeKey(e) === door));
+        if (run === undefined) continue;
+        const at = run.findIndex((e) => edgeKey(e) === door);
+        let best: WallSlot | undefined;
+        let gap = Infinity;
+        run.forEach((e, i) => {
+          if (!free.has(edgeKey(e)) || !inside(room.hall, e.x, e.y)) return;
+          if (Math.abs(i - at) < gap) {
+            gap = Math.abs(i - at);
+            best = e;
+          }
+        });
+        if (best !== undefined) return best;
+      }
+      return undefined;
+    },
+  );
+
+  // 9. The cap, then the order.
   const drops = [stains, faces, smears, streaks];
-  let over = fixed.length + drops.reduce((n, list) => n + list.length, 0) - cap;
+  let over =
+    fixed.length +
+    pixels.length +
+    drops.reduce((n, list) => n + list.length, 0) -
+    cap;
   for (const list of drops) {
     if (over <= 0) break;
     const cut = Math.min(over, list.length);
     list.length -= cut;
     over -= cut;
   }
-  return [...fixed, ...streaks, ...smears, ...stains, ...faces].sort(
+  return [...fixed, ...streaks, ...smears, ...stains, ...faces, ...pixels].sort(
     (a, b) =>
       KIND_ORDER[a.kind] - KIND_ORDER[b.kind] ||
       a.seed - b.seed ||

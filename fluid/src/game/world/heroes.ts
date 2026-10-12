@@ -197,6 +197,9 @@ export const HERO_KINDS: readonly HeroKind[] = [
   "thunder-hammer",
   "police-box",
   "slab-walker",
+  "turntable",
+  "camera",
+  "neon-bike",
 ];
 
 /**
@@ -273,7 +276,7 @@ export const HERO_CATALOGUE = {
   "eye-panel": {
     placement: "wall",
     variants: 1,
-    top: 2.2,
+    top: 1.8,
     edges: 1,
     surfaces: [],
     under: [],
@@ -575,6 +578,33 @@ export const HERO_CATALOGUE = {
     under: [],
     use: null,
   },
+  turntable: {
+    placement: "band",
+    variants: 1,
+    top: 1.02,
+    edges: 1,
+    surfaces: [],
+    under: [],
+    use: null,
+  },
+  camera: {
+    placement: "band",
+    variants: 1,
+    top: 1.53,
+    edges: 1,
+    surfaces: [],
+    under: [],
+    use: null,
+  },
+  "neon-bike": {
+    placement: "band",
+    variants: 1,
+    top: 1.28,
+    edges: 1,
+    surfaces: [],
+    under: [],
+    use: null,
+  },
 } satisfies Record<HeroKind, HeroEntry>;
 
 /**
@@ -583,7 +613,9 @@ export const HERO_CATALOGUE = {
  * are listed in catalogue order, and that order is part of the seeded result,
  * so do not reorder them. The archetype-only heroes stand at weight 2 (2.6f
  * C3): stone-hand (archive, lab), mech-head, red-bike, spider-tank
- * (engineering), garden-robot (lab) and slab-walker (bridge, engineering).
+ * (engineering), garden-robot (lab), slab-walker (bridge, engineering),
+ * turntable (council, 0.25.1), camera (archive, lab, 0.25.1) and
+ * neon-bike (bridge, engineering, 0.25.1).
  */
 export const HERO_POOLS = {
   bridge: [
@@ -593,11 +625,13 @@ export const HERO_POOLS = {
     ["arcade-cabinet", 1],
     ["recruit-cabinet", 1],
     ["slab-walker", 2],
+    ["neon-bike", 2],
   ],
   council: [
     ["mess-table", 6],
     ["arcade-cabinet", 1],
     ["recruit-cabinet", 1],
+    ["turntable", 2],
   ],
   engineering: [
     ["helper-robot", 3],
@@ -612,12 +646,14 @@ export const HERO_POOLS = {
     ["red-bike", 2],
     ["spider-tank", 2],
     ["slab-walker", 2],
+    ["neon-bike", 2],
   ],
   archive: [
     ["core-wall", 6],
     ["arcade-cabinet", 1],
     ["recruit-cabinet", 1],
     ["stone-hand", 2],
+    ["camera", 2],
   ],
   lab: [
     ["photo-console", 3],
@@ -629,13 +665,14 @@ export const HERO_POOLS = {
     ["recruit-cabinet", 1],
     ["stone-hand", 2],
     ["garden-robot", 2],
+    ["camera", 2],
   ],
 } satisfies Record<Archetype, readonly (readonly [HeroKind, number])[]>;
 
 /** Both hall sides at least this many cells: a second hero (H6). */
 export const HERO_BIG_HALL = 16;
-/** Chance a pool slot draws a hero (H7, 2.6f C2). */
-export const HERO_SHARE = 3 / 5;
+/** Chance a pool slot draws a hero (H7, 2.6f C2, 0.25.1): about 4 in 5. */
+export const HERO_SHARE = 4 / 5;
 /** Chance a room draws the turret (spec: about 1 room in 6). */
 export const TURRET_SHARE = 1 / 6;
 /**
@@ -663,8 +700,8 @@ export const ANY_POOL = [
   ["police-box", 1],
 ] as const satisfies readonly (readonly [HeroKind, number])[];
 
-/** Chance the any-archetype draw takes (C9, 2.6f C2). */
-export const ANY_SHARE = 3 / 4;
+/** Chance the any-archetype draw takes (C9, 2.6f C2, 0.25.1): about 7 in 8. */
+export const ANY_SHARE = 7 / 8;
 /**
  * The moat around a free or backed hero, in metres (H19, H20): wider than
  * the player (0.7 m).

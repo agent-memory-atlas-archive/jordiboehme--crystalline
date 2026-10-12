@@ -403,6 +403,67 @@ both_backends!(
     a_local_rename_moves_everything_and_keeps_the_id_body
 );
 
+/// A rename over a configuration file that does not parse is refused before
+/// any step: its last step would refuse to save over the broken file, after
+/// the domain was moved and paused. Nothing moves, no journal is left, the
+/// domain is not paused and the file stays byte for byte. Once the file
+/// parses again, the same rename lands.
+async fn a_rename_over_a_config_that_does_not_parse_moves_nothing_body(
+    store: Arc<Mutex<dyn Store>>,
+) {
+    let m = machine(store).await;
+    let engine = m.engine(true).await;
+    let eng_id = domain_id(&m.store, "eng").await.expect("eng indexed");
+    let good = std::fs::read_to_string(m.config_path()).unwrap();
+    let broken = "domains: [unclosed\n";
+    std::fs::write(m.config_path(), broken).unwrap();
+
+    let err = engine
+        .rename_domain_local(
+            "eng",
+            "platform",
+            NameOrigin::Explicit,
+            &Scope::Unrestricted,
+        )
+        .await
+        .expect_err("a config that does not parse refuses the rename");
+    assert!(format!("{err}").contains("left as it is"), "{err}");
+    assert_eq!(std::fs::read_to_string(m.config_path()).unwrap(), broken);
+    assert!(!m.journal().exists(), "no journal");
+    assert!(
+        !engine.is_renaming("eng") && !engine.is_renaming("platform"),
+        "nothing is paused"
+    );
+    assert_eq!(domain_id(&m.store, "eng").await, Some(eng_id));
+    assert_eq!(domain_id(&m.store, "platform").await, None);
+    let state = m.state();
+    assert!(state.join("origins/eng/state.json").is_file());
+    assert!(!state.join("origins/platform").exists());
+    assert!(state.join("overlays/eng/ada/note.md").is_file());
+    assert!(!state.join("overlays/platform").exists());
+    let alpha = engine
+        .read_engram(&read_params("alpha", "eng"), &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(alpha["domain"], "eng", "{alpha}");
+
+    std::fs::write(m.config_path(), good).unwrap();
+    engine
+        .rename_domain_local(
+            "eng",
+            "platform",
+            NameOrigin::Explicit,
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_renamed(&m, &engine, eng_id).await;
+}
+both_backends!(
+    a_rename_over_a_config_that_does_not_parse_moves_nothing,
+    a_rename_over_a_config_that_does_not_parse_moves_nothing_body
+);
+
 /// A crash after each step, simulated by the failpoint: the rename errors,
 /// the journal stays, and a new engine over the same config, state directory
 /// and store finishes it before its first sync. The new engine has no

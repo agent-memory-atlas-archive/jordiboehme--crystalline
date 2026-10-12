@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use crystalline_core::config::{DomainEntry, GlobalConfig};
+use crystalline_core::config::{DomainEntry, GlobalConfig, ReviewMode};
 use crystalline_index::TursoStore;
 use crystalline_service::params::{
     BrowseParams, ContextParams, EvolveParams, InferParams, ListDomainsParams, MoveParams,
@@ -40,6 +40,11 @@ const LAB_DRAFT: &str = "---\ntype: dossier\ntitle: Lab Draft\npermalink: lab-dr
 /// plus an accounts store where `lab` is private to `owner` with `mem` invited.
 /// `out` is a signed-in stranger.
 async fn fixture() -> (tempfile::TempDir, Arc<Engine>) {
+    fixture_with(&[]).await
+}
+
+/// [`fixture`], with the named domains reviewing changes (review mode on).
+async fn fixture_with(reviewing: &[&str]) -> (tempfile::TempDir, Arc<Engine>) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_path_buf();
     let mut cfg = GlobalConfig {
@@ -59,15 +64,17 @@ async fn fixture() -> (tempfile::TempDir, Arc<Engine>) {
         }
         cfg.domains.insert(name.to_string(), DomainEntry::file(dir));
     }
+    for name in reviewing {
+        cfg.domains.get_mut(*name).unwrap().review = Some(ReviewMode::Overlay);
+    }
     let config_path = root.join("config.yaml");
     crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
     let store = TursoStore::open_in_memory().await.unwrap();
-    let engine = Arc::new(Engine::new(
-        Arc::new(Mutex::new(store)),
-        cfg,
-        None,
-        Some(config_path),
-    ));
+    // A state directory, so a reviewing domain reaches its overlay journal.
+    let engine = Arc::new(
+        Engine::new(Arc::new(Mutex::new(store)), cfg, None, Some(config_path))
+            .with_state_dir(root.join("state")),
+    );
     engine.sync(None).await.unwrap();
 
     let auth = Arc::new(AuthStore::open(&root.join("web-auth.db")).await.unwrap());
@@ -1226,4 +1233,147 @@ async fn a_capture_over_a_virtual_manifest_cannot_switch_read_only_on() {
         "only the owner of 'scratch' or an instance admin may change `read_only`"
     );
     assert!(!engine.domain_is_read_only("scratch").await);
+}
+
+/// The switch-on rule refuses only a change of the flag: an editor who does
+/// not own the domain still rewrites a virtual MANIFEST that leaves it off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_capture_over_a_virtual_manifest_that_leaves_the_flag_alone_lands() {
+    let (_tmp, engine) = fixture().await;
+    engine.domain_add_virtual("scratch").await.unwrap();
+    let p = crystalline_service::params::WriteParams {
+        domain: "scratch".into(),
+        title: "MANIFEST".into(),
+        content: "## Scope\n\n- x\n\n## When to Use\n\n- y\n".into(),
+        folder: None,
+        engram_type: Some("manifest".into()),
+        tags: vec!["manifest".into()],
+        status: None,
+        metadata: None,
+        overwrite: true,
+        model: None,
+        share_link: None,
+    };
+    engine
+        .write_engram_as(&p, None, &user("out"))
+        .await
+        .expect("a MANIFEST that leaves read_only alone lands");
+    assert!(!engine.domain_is_read_only("scratch").await);
+}
+
+/// A member who does not own a domain that is already locked is still refused
+/// when they set `read_only: on` again: the key is the owner's whatever its
+/// current value, so a non-owner cannot even re-state it. The MANIFEST is
+/// byte-identical afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_non_owner_setting_read_only_on_a_locked_domain_gets_the_owner_sentence() {
+    let (tmp, engine) = fixture().await;
+    std::fs::write(
+        tmp.path().join("lab/MANIFEST.md"),
+        switch_on(&lab_manifest(&tmp)),
+    )
+    .unwrap();
+    let before = lab_manifest(&tmp);
+    assert!(engine.domain_is_read_only("lab").await);
+    let on = [("read_only".to_string(), "on".to_string())];
+    for member in ["mem", "ed"] {
+        let refused = engine
+            .set_manifest_policies("lab", &on, &user(member))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(refused, crystalline_service::EngineError::Forbidden(_)),
+            "{member}: {refused:?}"
+        );
+        assert_eq!(refused.to_string(), OWNER_RULE);
+    }
+    assert_eq!(lab_manifest(&tmp), before, "the MANIFEST is byte-identical");
+    assert!(engine.domain_is_read_only("lab").await);
+}
+
+/// B-1 item 1: in a reviewing domain a move onto the MANIFEST writes the
+/// mover's draft, so the draft's text is what meets the switch-on rule. A
+/// draft-only engram is found (no "unreadable" error), a non-owner whose draft
+/// carries `read_only: on` is refused, and a draft that drops the base file's
+/// flag is not refused for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reviewing_draft_move_onto_the_manifest_is_judged_by_the_draft() {
+    let (tmp, engine) = fixture_with(&["open"]).await;
+    let open = tmp.path().join("open");
+    std::fs::remove_file(open.join("MANIFEST.md")).unwrap();
+    // A base file that carries the flag, for the third leg.
+    std::fs::write(
+        open.join("flagged.md"),
+        switch_on(
+            &OPEN_NOTE
+                .replacen("permalink: open-note", "permalink: flagged", 1)
+                .replace("Open Note", "Flagged Note"),
+        ),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+
+    // A draft-only engram of `out`'s that switches the lock on.
+    let draft = crystalline_service::params::WriteParams {
+        domain: "open".into(),
+        title: "Locker".into(),
+        content: "## Scope\n\n- x\n\n## When to Use\n\n- y\n".into(),
+        folder: None,
+        engram_type: Some("manifest".into()),
+        tags: vec!["manifest".into()],
+        status: None,
+        metadata: Some(serde_json::json!({ "read_only": "on" })),
+        overwrite: false,
+        model: None,
+        share_link: None,
+    };
+    let written = engine
+        .write_engram_as(&draft, None, &user("out"))
+        .await
+        .unwrap();
+    assert_eq!(written["draft"], true, "{written}");
+
+    let onto_manifest = |identifier: &str| MoveParams {
+        identifier: identifier.into(),
+        domain: "open".into(),
+        destination: "MANIFEST.md".into(),
+        destination_domain: None,
+        permalink: None,
+        update_links: None,
+    };
+    let err = engine
+        .move_engram(&onto_manifest("locker"), &user("out"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, crystalline_service::EngineError::Forbidden(_)),
+        "the draft is found and judged: {err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "only the owner of 'open' or an instance admin may change `read_only`"
+    );
+    assert!(!engine.domain_is_read_only("open").await);
+
+    // Third leg: `out`'s draft of `flagged` drops the flag, so the move is
+    // judged by that draft and the lock rule has nothing to refuse.
+    let unflag = crystalline_service::params::EditParams {
+        identifier: "flagged".into(),
+        domain: "open".into(),
+        operation: "find_replace".into(),
+        find_text: Some("recorded_at: 2026-01-02\nread_only: on\n".into()),
+        content: Some("recorded_at: 2026-01-02\n".into()),
+        ..Default::default()
+    };
+    let edited = engine
+        .edit_engram_as(&unflag, None, &user("out"))
+        .await
+        .unwrap();
+    assert_eq!(edited["draft"], true, "{edited}");
+    let moved = engine
+        .move_engram(&onto_manifest("flagged"), &user("out"))
+        .await
+        .expect("a draft without the lock moves onto the MANIFEST");
+    assert_eq!(moved["draft"], true, "{moved}");
+    assert!(!engine.domain_is_read_only("open").await);
 }

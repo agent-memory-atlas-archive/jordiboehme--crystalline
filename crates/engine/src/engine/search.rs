@@ -23,7 +23,7 @@ impl Engine {
     /// folder pushed into SQL beside the other filters, so `total` stays exact
     /// and paging is unchanged.
     ///
-    /// The folder is segment-safe - see [`folder_prefix`] - and `None` or an
+    /// The folder is segment-safe - see `folder_prefix` - and `None` or an
     /// empty value searches the whole scope, which is what every caller that
     /// never names a folder keeps getting.
     ///

@@ -151,7 +151,13 @@ impl Engine {
         let mut hidden = hidden;
         hidden.extend(self.shadowed_domains());
         let store = self.store.lock().await;
-        let stats = store.domain_stats().await.unwrap_or_default();
+        let stats: HashMap<String, _> = store
+            .domain_stats()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| (d.name.clone(), d))
+            .collect();
         drop(store);
         // The name table as it stands, read once for every row: each domain's
         // canonical name, its effective aliases and whether its canonical name
@@ -179,16 +185,27 @@ impl Engine {
             .filter(|(name, _)| !hidden.contains(*name))
             .collect();
         listed.sort_by_cached_key(|(name, _)| (name.to_lowercase(), (*name).clone()));
+        // The caller's rights, read once for the whole listing (B-3).
+        let mut marks = self.write_marks(scope).await;
         for (name, entry) in listed {
             let source = self.source_of(entry);
-            let s = stats.iter().find(|d| &d.name == name);
+            let s = stats.get(name.as_str());
+            // With routing, a file domain's MANIFEST is read once for both
+            // its bullets and its lock.
+            let file_bullets = match &source {
+                ContentSource::File { root } if p.include_routing => {
+                    let (locked, bullets) = manifest_lock_and_bullets(root);
+                    marks.seed_lock(name, locked);
+                    Some(bullets)
+                }
+                _ => None,
+            };
             // Whether THIS caller can write here (spec A-5): the domain lock, a
             // viewer's role or a domain off the caller's write list all say
-            // no. Asked through the write gate's own answer, so the MCP open
-            // tier, which writes through its carve-out, is marked only where
-            // the domain is locked or reviews changes. One rights question
-            // per row.
-            let blocked = self.write_block(scope, name).await?.is_some();
+            // no. The write gate's own answer, so the MCP open tier, which
+            // writes through its carve-out, is marked only where the domain
+            // is locked or reviews changes.
+            let blocked = self.mark(&mut marks, name).await;
             let mut obj = json!({
                 "name": name,
                 "kind": if entry.is_virtual() { "virtual" } else { "file" },
@@ -269,9 +286,9 @@ impl Engine {
                 });
             }
             if p.include_routing {
-                let bullets = match &source {
-                    ContentSource::File { root } => routing_bullets(root),
-                    ContentSource::Virtual => self.virtual_routing_bullets_for(name).await,
+                let bullets = match file_bullets {
+                    Some(bullets) => bullets,
+                    None => self.virtual_routing_bullets_for(name).await,
                 };
                 obj["when_to_use"] = json!(bullets);
             }
@@ -649,6 +666,27 @@ impl Engine {
         out
     }
 
+    /// The routing facts of every virtual domain for `prompt system`: each
+    /// one's bullets, and the names whose MANIFEST says `read_only: on`. One
+    /// read of each MANIFEST engram answers both, over the same registrations
+    /// as [`Engine::virtual_routing_bullets`], so a domain the CLI registered
+    /// after this engine started is marked as well as routed.
+    pub async fn virtual_routing(&self) -> (BTreeMap<String, Vec<String>>, BTreeSet<String>) {
+        let mut bullets = BTreeMap::new();
+        let mut read_only = BTreeSet::new();
+        for (name, entry) in &self.registered_domain_entries() {
+            if !entry.is_virtual() {
+                continue;
+            }
+            let (routing, _, locked) = self.virtual_manifest_facts(name).await;
+            bullets.insert(name.clone(), routing);
+            if locked {
+                read_only.insert(name.clone());
+            }
+        }
+        (bullets, read_only)
+    }
+
     // --- generated index files -----------------------------------------------
 
     /// Regenerate a file domain's OKF `index.md` files, so the knowledge on
@@ -715,7 +753,7 @@ impl Engine {
     /// the "CRYSTALLINE KNOWLEDGE ROUTING" block over every registered domain.
     /// Synchronous, because rmcp's `get_info` is sync and runs once per
     /// connection; it never blocks on async work, so the virtual bullets come
-    /// from the [`Engine::routing_virtual`] cache alone (refreshed off the async
+    /// from the `Engine::routing_virtual` cache alone (refreshed off the async
     /// path by [`Engine::refresh_routing_cache`]) and the file bullets are read
     /// straight from each domain's `MANIFEST.md` on disk.
     ///
@@ -724,7 +762,7 @@ impl Engine {
     /// `preferred_domains` never apply here (both need a workspace path). The
     /// effective config is composed live: with a `--config` override this
     /// re-reads that file and re-applies the environment overlay (mirroring
-    /// [`Engine::refresh_domain`]) so a domain registered after startup shows up
+    /// `Engine::refresh_domain`) so a domain registered after startup shows up
     /// on the next connection; without one (tests and standalone) it takes the
     /// in-memory config plus any domain discovered since, and never touches the
     /// default global config path. Staleness is bounded to one connection: the
@@ -751,7 +789,7 @@ impl Engine {
     /// already-accepted bounded staleness this comment describes for the
     /// `None` branch below. So the re-read stays for as long as `domain add`
     /// is a mutation path that does not refresh `self.config`, and
-    /// [`Engine::registered_domain_entries`] is the same rule for the listing.
+    /// `Engine::registered_domain_entries` is the same rule for the listing.
     ///
     /// On a machine with connected servers the block also lists every
     /// mounted domain, after every local one and in mount-table order, and
@@ -877,17 +915,19 @@ impl Engine {
 
     /// Mark every local routing row `scope` cannot write in as read-only:
     /// the lock, a viewer's role, a domain off the caller's write list (spec
-    /// A-5, B-6), from the same `write_block` the listing asks. Mounted rows
-    /// are appended after this and keep what their server said (Task 19).
+    /// A-5, B-6), from the same batched marks the listing asks, so the rights
+    /// are read once per block (B-3) and an unreadable store leaves a row to
+    /// `read_only_mark`. Mounted rows are appended after this and keep what
+    /// their server said (Task 19).
     async fn mark_unwritable_rows(
         &self,
         output: &mut crystalline_core::PromptOutput,
         scope: &crate::scope::Scope,
-    ) -> Result<()> {
+    ) {
+        let mut marks = self.write_marks(scope).await;
         for domain in &mut output.domains {
-            domain.read_only = self.write_block(scope, &domain.name).await?.is_some();
+            domain.read_only = self.mark(&mut marks, &domain.name).await;
         }
-        Ok(())
     }
 
     /// [`Engine::routing_text`] for a caller who may not see every domain: the
@@ -913,7 +953,7 @@ impl Engine {
     pub async fn routing_text_scoped(&self, scope: &crate::scope::Scope) -> Result<String> {
         let hidden = self.hidden_for(scope).await?;
         let mut output = self.routing_output(&hidden);
-        self.mark_unwritable_rows(&mut output, scope).await?;
+        self.mark_unwritable_rows(&mut output, scope).await;
         Ok(crystalline_core::render_instructions(&output))
     }
 
@@ -929,7 +969,7 @@ impl Engine {
     ) -> Result<String> {
         let hidden = self.hidden_for(scope).await?;
         let mut output = self.routing_output(&hidden);
-        self.mark_unwritable_rows(&mut output, scope).await?;
+        self.mark_unwritable_rows(&mut output, scope).await;
         self.append_mounts(&mut output);
         Ok(crystalline_core::render_instructions(&output))
     }
@@ -944,7 +984,7 @@ impl Engine {
     ) -> Result<crystalline_core::PromptOutput> {
         let hidden = self.hidden_for(scope).await?;
         let mut output = self.routing_output(&hidden);
-        self.mark_unwritable_rows(&mut output, scope).await?;
+        self.mark_unwritable_rows(&mut output, scope).await;
         Ok(output)
     }
 
@@ -1055,7 +1095,7 @@ impl Engine {
         });
         // `read_only: true` when this caller cannot write in the domain (spec
         // A-5), the same answer the listing's row gives; left out otherwise.
-        if self.write_block(scope, &p.domain).await?.is_some() {
+        if self.read_only_mark(scope, &p.domain).await {
             out["read_only"] = json!(true);
         }
         Ok(out)

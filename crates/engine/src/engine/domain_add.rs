@@ -43,6 +43,9 @@ impl Engine {
                 "provide a domain name, a folder, or both".to_string(),
             ));
         }
+        // Before the folder is created or a MANIFEST scaffolded: the
+        // registration at the end would refuse a file that does not parse.
+        self.refuse_a_config_that_does_not_parse()?;
 
         // Against every registration this instance has, not the startup
         // snapshot alone: a domain the CLI registered after this engine
@@ -162,7 +165,7 @@ impl Engine {
         // adopted registration is already in the config.
         if !adopted {
             let mut file_guard = self.file_config.write().unwrap();
-            let mut file = self.fresh_file_config(&file_guard);
+            let mut file = self.fresh_file_config(&file_guard)?;
             file.domains.insert(
                 domain_name.clone(),
                 DomainEntry::file(canonical.clone()).with_name_origin(origin),
@@ -281,7 +284,7 @@ impl Engine {
         // repository or folder to derive a default from.
         if is_new {
             let mut file_guard = self.file_config.write().unwrap();
-            let mut file = self.fresh_file_config(&file_guard);
+            let mut file = self.fresh_file_config(&file_guard)?;
             // Asked again of the file as it is now, under the guard: another
             // process may have registered this name since the snapshot above
             // was read. A file domain there is refused, not overwritten; a
@@ -866,7 +869,7 @@ impl Engine {
     /// is holding something and roughly how much, which is exactly this.
     ///
     /// A deletion counts as an entry, for the reason
-    /// [`Engine::overlay_counts_by_actor`] gives. A domain that takes changes
+    /// `Engine::overlay_counts_by_actor` gives. A domain that takes changes
     /// directly answers with an empty list rather than a refusal: nobody can
     /// draft there, so nobody is, and a client asking the same question of
     /// every domain gets one shape back.
@@ -972,7 +975,7 @@ impl Engine {
     ///    ([`Engine::require_domain_owner`]), the environment conflict, the
     ///    unconfirmed purge of a virtual domain's engrams, and the private
     ///    drafts of every OTHER actor, which have to be named before they are
-    ///    ended ([`crate::review::removal_choices`]). That ordering is the
+    ///    ended (`crate::review::removal_choices`). That ordering is the
     ///    point of holding the lock at all - a gate decided outside it is a
     ///    check somebody's ownership transfer can land behind - and it is what
     ///    makes the preview above advisory rather than authoritative.
@@ -1033,7 +1036,7 @@ impl Engine {
         // Counted here and not after the sweep, and here rather than below the
         // registry step: the files overlay is only walked for a domain that
         // reviews changes, and one line further down this domain is not
-        // registered at all. The journal's own `remove_dir_all` takes these
+        // registered at all. The journal's own `remove_tree` takes these
         // files with the drafts by construction, so what is missing without
         // this line is the NUMBER - a removal that swept files it never
         // mentioned in front of the person who confirmed it.

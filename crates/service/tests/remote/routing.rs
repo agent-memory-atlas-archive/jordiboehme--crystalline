@@ -34,8 +34,8 @@ async fn call(machine: &LocalMachine, tool: &str, args: Value) -> anyhow::Result
 /// A server that takes ten seconds over every ctl request, connected to
 /// `machine` as `slow` with the domain `drafts` in its cached routing model.
 ///
-/// The process's first HTTP client takes most of a second to build (the
-/// platform's certificate roots load once); built here, so the budgets the
+/// The process's first HTTP client is the slow one to build (it reads the
+/// system proxy settings once per process); built here, so the budgets the
 /// tests set measure the call and not that.
 async fn connect_slow(machine: &LocalMachine) {
     let _ = crystalline_remote::http_client().unwrap();
@@ -51,7 +51,8 @@ async fn connect_slow(machine: &LocalMachine) {
 
 /// `app` served on a loopback port and connected to `machine` as `name`,
 /// with `domain` in its cached routing model and a pasted token on file.
-/// Builds no HTTP client. Answers the server's address.
+/// Builds this process's first HTTP client before it returns. Answers the
+/// server's address.
 async fn connect_fake(
     machine: &LocalMachine,
     name: &str,
@@ -59,9 +60,10 @@ async fn connect_fake(
     app: axum::Router,
 ) -> String {
     // This process's first HTTP client, built before any budget a test sets
-    // starts: under a loaded machine its certificate roots can take seconds
-    // to load, and a call inside that wait answers that it did not get to
-    // ask the source at all.
+    // starts: under a loaded machine its system proxy lookup can take
+    // seconds (a crowded directory is the cause, see `warm_http_client` in
+    // crates/remote/src/server_client.rs), and a call inside that wait
+    // answers that it did not get to ask the source at all.
     crystalline_remote::warm_http_client().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -899,15 +901,17 @@ fn quick_app() -> axum::Router {
     )
 }
 
-/// Re-review R1: a cold process's first HTTP client takes most of a second.
+/// Re-review R1: a cold process's first HTTP client takes a while to build.
 /// A call on a shorter budget still ends within it, says the source was not
-/// asked yet (never that the sign-in could not be used), and the build goes
-/// on, so the next call is answered. Nothing builds a client before.
+/// asked yet (never that the sign-in could not be used), and once the client
+/// is ready the next call is answered. The set is held in its cold start
+/// ([`LocalMachine::mount_cold`]), so the first call meets it however fast
+/// this machine builds its first client.
 #[tokio::test]
 async fn a_cold_process_keeps_the_callers_budget_and_answers_the_next_call() {
     let machine = LocalMachine::start(false).await;
     connect_fake(&machine, "quick", "quick", quick_app()).await;
-    machine.mount();
+    let (_set, gate) = machine.mount_cold();
     let started = Instant::now();
     let first = run_tool_routed(
         &machine.engine,
@@ -917,23 +921,22 @@ async fn a_cold_process_keeps_the_callers_budget_and_answers_the_next_call() {
         Some(Duration::from_millis(100)),
     )
     .await;
+    let elapsed = started.elapsed();
     assert!(
-        started.elapsed() < Duration::from_millis(400),
-        "the budget holds: {:?}",
-        started.elapsed()
+        elapsed < Duration::from_millis(400),
+        "the budget holds: {elapsed:?}"
     );
-    if let Err(e) = first {
-        let text = e.to_string();
-        assert!(
-            text.starts_with(
-                "quick was not asked yet: this process was still setting up its network connection"
-            ),
-            "{text}"
-        );
-        assert!(!text.contains("sign-in"), "{text}");
-        assert!(!text.contains("not available until"), "{text}");
-    }
-    // On a loaded machine the first build can take a few seconds.
+    let text = first.unwrap_err().to_string();
+    assert!(
+        text.starts_with(
+            "quick was not asked yet: this process was still setting up its network connection"
+        ),
+        "{text} (after {elapsed:?})"
+    );
+    assert!(!text.contains("sign-in"), "{text}");
+    assert!(!text.contains("not available until"), "{text}");
+    gate.send(true).unwrap();
+    // On a loaded machine the first call after the build can take longer.
     let until = Instant::now() + Duration::from_secs(30);
     let answer = loop {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -956,40 +959,53 @@ async fn a_cold_process_keeps_the_callers_budget_and_answers_the_next_call() {
 
 /// Re-review R1 for the routing refresh a session start asks for: within its
 /// deadline in a cold process, the cache is served as it is and nothing is
-/// recorded against the source; the build goes on for the next refresh.
+/// recorded against the source; once the client is ready, the next refresh
+/// asks the source. The set is held in its cold start, as above.
 #[tokio::test]
 async fn a_cold_refresh_keeps_its_deadline_and_records_no_failure() {
     let machine = LocalMachine::start(false).await;
     connect_fake(&machine, "quick", "quick", quick_app()).await;
-    let set = machine.mount();
+    let (set, gate) = machine.mount_cold();
     let started = Instant::now();
     let fetched = set.refresh(Duration::from_millis(100)).await;
-    assert!(
-        started.elapsed() < Duration::from_millis(400),
-        "{:?}",
-        started.elapsed()
-    );
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_millis(400), "{elapsed:?}");
     assert_eq!(fetched.len(), 1);
-    assert!(set.failures().is_empty(), "{:?}", set.failures());
+    assert!(
+        matches!(
+            fetched[0].1,
+            crystalline_remote::Fetched::Stale {
+                failure: crystalline_remote::RemoteFailure::Starting { .. },
+                ..
+            }
+        ),
+        "{:?} (after {elapsed:?})",
+        fetched[0].1
+    );
+    assert!(
+        set.failures().is_empty(),
+        "{:?}: {:?} (after {elapsed:?})",
+        set.failures(),
+        fetched[0].1
+    );
     assert!(
         set.mounted_routing_from_cache().stale.is_empty(),
         "the cache is not marked: {:?}",
         set.mounted_routing_from_cache().stale
     );
     assert_eq!(set.table().mount("quick").unwrap().source, "quick");
+    gate.send(true).unwrap();
+    // On a loaded machine the first refresh after the build can take longer.
     let until = Instant::now() + Duration::from_secs(30);
-    while !crystalline_remote::warm_http_client_within(Duration::from_millis(100)).await {
-        assert!(
-            Instant::now() < until,
-            "the build went on in the background"
-        );
+    loop {
+        let again = set.refresh(Duration::from_millis(400)).await;
+        if matches!(again[0].1, crystalline_remote::Fetched::Fresh(_)) {
+            break;
+        }
+        assert!(Instant::now() < until, "never asked: {:?}", again[0].1);
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let again = set.refresh(Duration::from_millis(400)).await;
-    assert!(
-        matches!(again[0].1, crystalline_remote::Fetched::Fresh(_)),
-        "{:?}",
-        again[0].1
-    );
+    assert!(set.failures().is_empty(), "{:?}", set.failures());
 }
 
 /// Ruling (2): a status that is not the protocol reaches an agent as a

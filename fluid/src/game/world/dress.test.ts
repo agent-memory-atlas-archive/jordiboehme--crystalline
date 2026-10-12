@@ -840,15 +840,25 @@ describe("density", () => {
 
   it("gives a corner zone with two accepted spots one or two floor props, one on a bridge", () => {
     let zones = 0;
-    for (const { name, archetype, room } of CLEAN_WORKSHOPS) {
+    // The clean workshops and one reseed of them, enough zones with two
+    // accepted spots to count (GAME_VERSION 4).
+    const rooms = [
+      ...CLEAN_WORKSHOPS,
+      ...matrix({ ...CANNED_WORKSHOP, permalink: "pipe-shop-zones" }).filter(
+        (w) => w.condition === "clean",
+      ),
+    ];
+    for (const { name, archetype, room } of rooms) {
       const sites = dressingSites(room);
       const palette = PALETTES[archetype];
       const kinds = palette.floor
         .map(([k]) => k)
         .filter((k) => !PROP_CATALOGUE[k].wallBacked);
       // A zone spot ignores wall props, keep-clear ones included (D2 as
-      // amended), so only the lanes and taken boxes decide.
+      // amended), so only the lanes, the taken boxes and the heroes'
+      // reserve (H3) decide.
       // A spot is accepted when every box a zone prop could take there is.
+      const reserve = heroReserve(room.heroes).boxes;
       const accepted = (cx: number, cy: number) =>
         kinds.every((kind) =>
           FOOTPRINTS.prop[kind].every((_, variant) =>
@@ -865,7 +875,8 @@ describe("density", () => {
               return (
                 fitsFloor(room, box) &&
                 !sites.lanes.some((l) => overlaps(box, l)) &&
-                !sites.taken.some((t) => overlaps(box, t))
+                !sites.taken.some((t) => overlaps(box, t)) &&
+                !reserve.some((r) => overlaps(box, r))
               );
             }),
           ),
@@ -956,7 +967,8 @@ describe("density measure", () => {
   it("raises large workshops to at least 13 floor props per 100 floor cells", () => {
     // Baseline 4.70 before iteration 1, 7.39 after it, 8.81 with the 13x12
     // workshop; 15.97 with a cluster in every block (E9), 15.58 with the
-    // heroes the seeds draw (190 of 300 rooms carry one, 2.6a).
+    // heroes the seeds draw (190 of 300 rooms carry one, 2.6a); 15.81 at
+    // the 0.25.1 shares (290 of 300 carry a hero).
     const per100 =
       (sum(SEEDS, (d) => d.floorProps) * 100) / sum(SEEDS, (d) => d.floorCells);
     expect(per100).toBeGreaterThanOrEqual(13);
@@ -966,7 +978,7 @@ describe("density measure", () => {
     // Baseline 2.1 to 2.4, 7.7 to 8.9 before the clusters grew; 15.77 to
     // 17.19 (E9), 15.63 to 17.05 with the hoverboard the hub's own seed
     // draws (2.6c); reseeded with the heroes they draw, the clean hub's
-    // lowest is 14.77 (2.6a).
+    // lowest is 14.77 (2.6a); 16.34 to 17.90 at the 0.25.1 shares.
     for (const { name, condition, room } of HUBS)
       if (condition === "clean")
         expect(measureDensity(room).floorPer100, name).toBeGreaterThanOrEqual(
@@ -1601,9 +1613,37 @@ describe("locality", () => {
     // order that accepts it (ruling 12), so this case is clean.
     const RADIUS = 1;
     let members = 0;
+    // A case's room keeps its own seed when it draws a cluster in both
+    // rooms and a span line, else takes the first reseed that does
+    // (GAME_VERSION 4): the test compares cluster members and the span
+    // line, so it needs both.
+    const clustered = (r: RoomSpec) => {
+      const blocks = dressingSites(r).clusterBlocks;
+      return r.props.some(
+        (p) =>
+          p.anchor === "floor" &&
+          blocks.some((bl) =>
+            bl.cells.some(
+              (c) => c.cx === Math.floor(p.x) && c.cy === Math.floor(p.y),
+            ),
+          ),
+      );
+    };
+    const reseeded = (c: LocalityCase): [RoomSpec, RoomSpec] => {
+      for (const seed of [
+        c.before.seed,
+        ...Array.from({ length: 20 }, (_, i) => seedFor("large-locality", i)),
+      ]) {
+        const a = withoutHeroes({ ...c.before, seed });
+        const b = withoutHeroes({ ...c.after, seed });
+        const spanned = (r: RoomSpec) =>
+          r.props.some((p) => PROP_CATALOGUE[p.kind].span);
+        if (clustered(a) && clustered(b) && spanned(a)) return [a, b];
+      }
+      throw new Error(`${c.name}: no seed draws a cluster and a span line`);
+    };
     for (const c of LARGE_LOCALITY) {
-      const a = withoutHeroes(c.before);
-      const b = withoutHeroes(c.after);
+      const [a, b] = reseeded(c);
       const name = `${c.name} (${a.archetype})`;
       expect(a.hall, name).toEqual(b.hall);
       expect(a.hall, name).toEqual({ x0: 0, y0: 0, x1: 13, y1: 10 });
@@ -2110,8 +2150,9 @@ describe("rare props (2.6d C9 to C13)", () => {
     expect(towers).toBeGreaterThan(0);
     expect(canisters).toBeGreaterThan(0);
     expect(consoles).toBeGreaterThan(0);
-    // The canned bridge's desk cells are all taken: the tower falls back.
-    const bridge = generateRoom(CANNED_BRIDGE);
+    // The canned bridge as a council room (type decision) has no free cell
+    // beside a desk (GAME_VERSION 4): the tower falls back.
+    const bridge = generateRoom({ ...CANNED_BRIDGE, type: "decision" });
     expect(
       dressRoom(bridge, NO_RESERVE, forced).some(
         (p) => p.kind === "designer-tower",

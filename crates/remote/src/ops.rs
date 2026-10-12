@@ -34,7 +34,7 @@
 //! filesystem is validated through [`crate::state`]'s chokepoint
 //! ([`crate::state::base_path`] and the conflict helpers), which rejects
 //! traversal-shaped, absolute and Windows-drive-prefixed paths. Working-tree
-//! writes funnel through the same validation via [`checked_working_path`]
+//! writes funnel through the same validation via `checked_working_path`
 //! before a byte is written, so a crafted path can never escape the domain
 //! root.
 
@@ -313,7 +313,7 @@ pub struct CommitReport {
     /// Working-tree files skipped for exceeding [`MAX_SHARED_FILE_BYTES`],
     /// each with its size in bytes.
     pub skipped_large: Vec<(String, u64)>,
-    /// The one-line summary, as [`generate_summary_line`] writes it.
+    /// The one-line summary, as `generate_summary_line` writes it.
     pub summary: String,
     /// Whether this commit cleared the refusal recorded for the acting login:
     /// direct commits work for that login again.
@@ -451,7 +451,11 @@ pub async fn subscribe(
         .and_then(|bytes| std::str::from_utf8(bytes).ok());
     write_artifact_mirror(state_dir, spec.subpath.as_deref(), manifest_source, &bytes)?;
 
-    let adopted = domain_root.exists() && std::fs::read_dir(domain_root)?.next().is_some();
+    let adopted = domain_root.exists()
+        && std::fs::read_dir(domain_root)
+            .map_err(|e| working_tree_error(domain_root, e))?
+            .next()
+            .is_some();
 
     // One pass writes the base snapshot and stamps the manifest from the same
     // bytes, so the base is never read back. The working tree only receives
@@ -583,13 +587,13 @@ fn manifest_candidates(
 ///
 /// Consuming a merged layer is also what puts a stacked chain back together
 /// after the forge moved it: merging one layer rebases every layer above it,
-/// so once the merge is in history [`adopt_rebased_layers`] takes each
+/// so once the merge is in history `adopt_rebased_layers` takes each
 /// survivor's new head where the move carried none of that layer's own work.
 /// Without that a plain merge would leave the whole chain looking amended.
 ///
 /// A consumed merge's branch is queued in the same save, and deleted once
 /// every open pull request based on it was moved to the branch the share
-/// merged into ([`retire_branches`]). This is [`pull_with`] running
+/// merged into (`retire_branches`). This is [`pull_with`] running
 /// that cleanup.
 pub async fn pull(
     provider: &dyn Provider,
@@ -600,7 +604,7 @@ pub async fn pull(
     pull_with(provider, spec, domain_root, state_dir, BranchCleanup::Run).await
 }
 
-/// Whether a pull runs the branch cleanup ([`retire_branches`])
+/// Whether a pull runs the branch cleanup (`retire_branches`)
 /// or leaves the queue for a later pull.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchCleanup {
@@ -665,6 +669,13 @@ pub async fn pull_with(
             let refresh_needed = mirror_refresh_needed(&cmp, state_dir, spec.subpath.as_deref())?;
             let (edits, skipped_large, fallback_tarball) =
                 upstream_edits(provider, spec, &state, &head, cmp).await?;
+            // Before anything is written, under the state directory or in the
+            // working tree: every file this pull may write, overwrite or
+            // delete must be usable. A pull that stopped in the middle of the
+            // merge loop would leave removals on disk with the base still
+            // listing them, and every later share would offer those removals
+            // as the user's own deletions.
+            preflight_working_tree(state_dir, domain_root, &state.files, &edits)?;
             // The mirror rebuild runs before the merge loop and the base
             // advance below, so a later commit that turned a decl hostile
             // fails the whole pull with the previous mirror and base left
@@ -704,6 +715,13 @@ pub async fn pull_with(
     let mut merged = Vec::new();
     let mut new_conflicts = Vec::new();
 
+    // Removals run before writes. On a filesystem that ignores letter case,
+    // an upstream rename from `notes/A.md` to `notes/a.md` names one file
+    // twice; writing the new spelling first and then removing the old one
+    // would remove the file just written. The same order holds for the base
+    // copies below, which live on the same kind of filesystem.
+    let edits = removals_first(&edits);
+
     for edit in &edits {
         let rel = &edit.path;
         // Whether a generated directory index rides along with a share is the
@@ -720,7 +738,15 @@ pub async fn pull_with(
         if crystalline_core::is_index_path(rel) {
             continue;
         }
-        let base = state::read_base_file(state_dir, rel)?;
+        // Only a path the base lists has a base copy. On a filesystem that
+        // ignores letter case, the copy of `notes/A.md` also answers for
+        // `notes/a.md`, and a case-only rename would then read as a file
+        // deleted here and left alone upstream.
+        let base = if state.files.contains_key(rel.as_str()) {
+            state::read_base_file(state_dir, rel)?
+        } else {
+            None
+        };
         let wt_path = checked_working_path(state_dir, domain_root, rel)?;
         let local = read_optional_file(&wt_path)?;
         let upstream = edit.content.as_deref();
@@ -1353,7 +1379,7 @@ async fn rebased_head(
 /// flags), never failing the status.
 ///
 /// The four stack fields are read off local state, with one exception: an
-/// owed stack link may be settled before they are read ([`retry_stack_link`]),
+/// owed stack link may be settled before they are read (`retry_stack_link`),
 /// so a status that could pay the debt reports the healed truth rather than the
 /// debt. That needs a provider and `settle_owed_link`, and it costs nothing
 /// when nothing is owed - the flag is tested before the capability is.
@@ -1594,7 +1620,7 @@ pub struct ShareOptions<'a> {
     ///
     /// Opaque here in the same sense `author_login` is: the caller decides
     /// which files a person or an agent picked, and this crate only filters
-    /// the delta it detected down to them (see [`select_share_files`]). An
+    /// the delta it detected down to them (see `select_share_files`). An
     /// empty slice is a selection of nothing, which is
     /// [`ProposeOutcome::NothingToShare`] rather than an error.
     pub files: Option<&'a [String]>,
@@ -2144,7 +2170,7 @@ pub(crate) fn share_route(options: &ShareOptions<'_>, state: &OriginState) -> Sh
 ///
 /// `domain_name` is the domain's registered name, the contract's sole
 /// authority over what a share calls the domain: it seeds the branch slug
-/// (see [`share_branch_name`]) and the generated title and body, regardless
+/// (see `share_branch_name`) and the generated title and body, regardless
 /// of what `domain_root`'s own directory happens to be named.
 ///
 /// The algorithm, in order: pull first, so every proposal is opened
@@ -2154,7 +2180,7 @@ pub(crate) fn share_route(options: &ShareOptions<'_>, state: &OriginState) -> Sh
 /// provider write call is made; detect local changes against the
 /// now-current base, reporting [`ProposeOutcome::NothingToShare`] when there
 /// are none; supersede any declined proposal (moved to history keeping
-/// `Declined`, its branch queued for [`retire_branches`], which deletes it
+/// `Declined`, its branch queued for `retire_branches`, which deletes it
 /// unless an open pull request is based on it or comes from it); then either
 /// update the one open proposal in place or create a new one.
 ///
@@ -2164,7 +2190,7 @@ pub(crate) fn share_route(options: &ShareOptions<'_>, state: &OriginState) -> Sh
 /// on that layer's head, its commit carrying exactly one parent, its pull
 /// request targeting that layer's branch) and links it into the forge's
 /// stack, so every share stays reviewable on its own. A layer is detected
-/// against the chain TIP rather than the trunk (see [`effective_tip_files`]),
+/// against the chain TIP rather than the trunk (see `effective_tip_files`),
 /// so it records its own delta and nothing the layers below it already carry:
 /// a share with nothing new is [`ProposeOutcome::NothingToShare`] even with a
 /// chain open, and retiring a file only a lower layer holds is a change like
@@ -2173,7 +2199,7 @@ pub(crate) fn share_route(options: &ShareOptions<'_>, state: &OriginState) -> Sh
 ///
 /// `options.proposal` names a layer to amend instead, the verb a reviewer's
 /// feedback is answered with: the share lands on that layer's own branch and
-/// [`amend_layer`] replays every layer above it onto the amended head, so the
+/// `amend_layer` replays every layer above it onto the amended head, so the
 /// chain heals itself rather than needing a manual re-base. A number that is
 /// not an open layer is refused with the open layers listed. Off the stacked
 /// path the number can only name the one living proposal, and amending it is
@@ -2194,14 +2220,14 @@ pub(crate) fn share_route(options: &ShareOptions<'_>, state: &OriginState) -> Sh
 /// opening a second pull request ([`ProposeOutcome::Updated`]), and refuses
 /// with [`ProposeOutcome::ProposalDiverged`] - before any provider write -
 /// when a reviewer has moved the branch away from every head this machine
-/// recorded (see [`head_is_ours`]: the settled head, a half-finished push this
+/// recorded (see `head_is_ours`: the settled head, a half-finished push this
 /// machine announced before making it, or no recorded head at all). An open
 /// record whose branch ref is gone is settled from the proposal's own state
 /// (an open pull request with no branch counts as declined) and the share
 /// falls through to a fresh creation.
 ///
 /// `options.files` narrows what the share carries to a chosen subset of the
-/// detected delta ([`select_share_files`]): the paths named, plus the
+/// detected delta (`select_share_files`): the paths named, plus the
 /// generated listings of the folders they live in. It applies to every path
 /// through this function, a new layer and an amend alike, and what it leaves
 /// out simply stays an unshared local change for a later share. A path that
@@ -2211,8 +2237,8 @@ pub(crate) fn share_route(options: &ShareOptions<'_>, state: &OriginState) -> Sh
 ///
 /// Creating uploads each added or modified file's content as a blob, builds a
 /// tree from the base commit with every domain-relative path re-prefixed to
-/// its repo-relative form (see [`to_repo_relative`]), commits it, opens a
-/// share branch named per [`share_branch_name`] and opens the pull request;
+/// its repo-relative form (see `to_repo_relative`), commits it, opens a
+/// share branch named per `share_branch_name` and opens the pull request;
 /// finally the proposal is recorded in state (status `Open`) and saved. Local
 /// files are never touched: a share only ever reads them.
 pub async fn propose(
@@ -3090,9 +3116,6 @@ fn preview_direct(
     state: &OriginState,
     options: ShareOptions<'_>,
 ) -> Result<SharePlan, RemoteError> {
-    if options.proposal.is_some() {
-        return Err(RemoteError::Refused(DIRECT_NO_AMEND.to_string()));
-    }
     // Against the chain tip, as the commit does (see [`commit_direct`]).
     let local = select_share_files(
         detect_local_changes_against(domain_root, &effective_tip_files(state), state_dir)?,
@@ -3112,6 +3135,9 @@ fn preview_direct(
             },
             String::new(),
         ));
+    }
+    if options.proposal.is_some() {
+        return Err(RemoteError::Refused(DIRECT_NO_AMEND.to_string()));
     }
     if let Some(open) = own_open_proposal(state, options.author_login) {
         return Ok(plan(
@@ -3479,7 +3505,7 @@ fn advance_base_after_commit(
 
 /// Writes the folder at `paths` from the base copies: the write a pull would
 /// have made for a commit that just landed. A path with no base copy is
-/// removed from the folder. Every path goes through [`checked_working_path`],
+/// removed from the folder. Every path goes through `checked_working_path`,
 /// so a crafted path is refused rather than joined.
 pub fn materialise_base_paths(
     domain_root: &Path,
@@ -3575,7 +3601,7 @@ async fn collect_changes(
         match change {
             LocalChange::Added { path, sha256 } => {
                 let wt_path = checked_working_path(state_dir, domain_root, local.disk_path(path))?;
-                let bytes = std::fs::read(&wt_path)?;
+                let bytes = read_working_file(&wt_path)?;
                 let size = bytes.len() as u64;
                 let blob_sha = provider.create_blob(spec, &bytes).await?;
                 out.writes.push(TreeWrite {
@@ -3594,7 +3620,7 @@ async fn collect_changes(
             }
             LocalChange::Modified { path, sha256 } => {
                 let wt_path = checked_working_path(state_dir, domain_root, local.disk_path(path))?;
-                let bytes = std::fs::read(&wt_path)?;
+                let bytes = read_working_file(&wt_path)?;
                 let size = bytes.len() as u64;
                 let blob_sha = provider.create_blob(spec, &bytes).await?;
                 out.writes.push(TreeWrite {
@@ -4463,7 +4489,7 @@ async fn collect_amend_changes(
                     continue;
                 }
                 let wt_path = checked_working_path(state_dir, domain_root, fresh.disk_path(path))?;
-                let bytes = std::fs::read(&wt_path)?;
+                let bytes = read_working_file(&wt_path)?;
                 let blob_sha = provider.create_blob(spec, &bytes).await?;
                 merged.insert(
                     path.clone(),
@@ -5084,7 +5110,7 @@ async fn finish_pending_repair(
 }
 
 /// Withdraws a share proposal: closes its pull request on the forge (an Open
-/// one), queues its branch for [`retire_branches`], which deletes it unless an
+/// one), queues its branch for `retire_branches`, which deletes it unless an
 /// open pull request is based on it or comes from it (then it is kept and
 /// named in `kept_branches`), optionally restores the shared files to their
 /// pre-share content, and moves the record to history as
@@ -5109,7 +5135,7 @@ async fn finish_pending_repair(
 /// Taking a layer out of a stacked chain is more than a close: the layers
 /// above it sit on a commit that is about to be nothing, and the forge refuses
 /// to retarget a proposal while it is stacked. So the chain is repaired around
-/// the hole, in [`repair_chain`]'s order - dissolve, replay the survivors onto
+/// the hole, in `repair_chain`'s order - dissolve, replay the survivors onto
 /// the layer below the hole, retarget the first of them, recreate the stack
 /// when two or more layers survive - with
 /// [`crate::state::OriginState::repair_pending`] set from before the dissolve
@@ -5378,9 +5404,9 @@ pub struct DiscardReport {
 /// Per target, in order: resolve it against `local` (both spellings; a path
 /// that is a base file but no longer differs is [`DiscardRefusal::NotAChange`],
 /// anything else unresolved is [`DiscardRefusal::UnknownPath`]); join it
-/// through [`checked_working_path`] at its on-disk spelling; read the current
+/// through `checked_working_path` at its on-disk spelling; read the current
 /// file and compare its digest with what the caller looked at, the guard
-/// [`revert_layer_files`] keeps, so newer work is never destroyed
+/// `revert_layer_files` keeps, so newer work is never destroyed
 /// ([`DiscardRefusal::ChangedSince`]); then act. An addition is removed, a
 /// modification or a deletion is written back from the base copy, and a
 /// path the trunk has no copy of is [`DiscardRefusal::NoBaseCopy`] with
@@ -5660,6 +5686,18 @@ pub fn resolve(
             let wt_path = checked_working_path(state_dir, domain_root, local.disk_path(path))?;
             match upstream {
                 Some(bytes) => write_pulled_file(&wt_path, &bytes)?,
+                // Upstream removed this path, but on a filesystem that
+                // ignores letter case its file can be the file of a spelling
+                // that stays (an upstream case-only rename). Removing it
+                // would remove that file too, so the conflict is cleared and
+                // the file stays.
+                None if needed_by_another_spelling(
+                    state_dir,
+                    domain_root,
+                    &state.files,
+                    path,
+                    &wt_path,
+                )? => {}
                 None => remove_working_file(&wt_path)?,
             }
         }
@@ -6292,21 +6330,227 @@ fn path_under_root(path: &str, root: &str) -> bool {
     root.is_empty() || path == root || path.starts_with(&format!("{root}/"))
 }
 
+/// `edits` with every removal ahead of every write, each group in its own
+/// order.
+fn removals_first(edits: &[UpstreamEdit]) -> Vec<&UpstreamEdit> {
+    let (removals, writes): (Vec<_>, Vec<_>) = edits.iter().partition(|e| e.content.is_none());
+    removals.into_iter().chain(writes).collect()
+}
+
+/// Checks, without changing anything, that the pull can touch every file in
+/// `edits`: an existing file (to overwrite or delete) opens for reading, and
+/// a new file has a folder to land in that exists, lists and is not
+/// read-only. The first failure stops the pull with the file named.
+///
+/// It also refuses to remove a file that another spelling in `base` still
+/// needs: see [`check_no_shared_spelling`].
+fn preflight_working_tree(
+    state_dir: &Path,
+    domain_root: &Path,
+    base: &BTreeMap<String, BaseStamp>,
+    edits: &[UpstreamEdit],
+) -> Result<(), RemoteError> {
+    check_no_shared_spelling(state_dir, domain_root, base, edits)?;
+    for edit in edits {
+        if crystalline_core::is_index_path(&edit.path) {
+            continue;
+        }
+        let wt_path = checked_working_path(state_dir, domain_root, &edit.path)?;
+        match std::fs::symlink_metadata(&wt_path) {
+            Ok(meta) => {
+                if !meta.is_file() {
+                    let source = std::io::Error::other(
+                        "a folder or a link is where the team has a file".to_string(),
+                    );
+                    return Err(working_tree_error(&wt_path, source));
+                }
+                // Write access without truncating or creating: a read-only
+                // file would fail the overwrite or the removal later.
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&wt_path)
+                    .map_err(|e| working_tree_error(&wt_path, e))?;
+                if edit.content.is_none() {
+                    // Removing a file needs its folder to be writable.
+                    check_landing_folder(&wt_path)?;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if edit.content.is_some() {
+                    check_landing_folder(&wt_path)?;
+                }
+            }
+            Err(e) => return Err(working_tree_error(&wt_path, e)),
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a pull that would remove a working file another spelling still
+/// needs.
+///
+/// The team repository can hold `notes/A.md` and `notes/a.md` at once. A
+/// filesystem that ignores letter case (the macOS and Windows default) keeps
+/// them as one file. When upstream removes one spelling (or renames it away)
+/// and the other stays, removing the working file would remove the only copy,
+/// and the next share would propose deleting the spelling that stayed.
+///
+/// The filesystem decides, not the platform: the pull refuses only when both
+/// spellings open the same file. On a filesystem that tells letter case
+/// apart they are two files, and the removal goes ahead. A spelling that is
+/// not on disk shares nothing, so it never stops the pull. A spelling this
+/// pull adds does not count: it is a case-only rename, and the removal runs
+/// before the write (see [`removals_first`]).
+fn check_no_shared_spelling(
+    state_dir: &Path,
+    domain_root: &Path,
+    base: &BTreeMap<String, BaseStamp>,
+    edits: &[UpstreamEdit],
+) -> Result<(), RemoteError> {
+    let removed: BTreeSet<&str> = edits
+        .iter()
+        .filter(|e| e.content.is_none())
+        .map(|e| e.path.as_str())
+        .collect();
+    if removed.is_empty() {
+        return Ok(());
+    }
+    let mut staying: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for key in base.keys() {
+        if !removed.contains(key.as_str()) {
+            staying
+                .entry(crystalline_core::fold_path_case(key))
+                .or_default()
+                .push(key);
+        }
+    }
+    for rel in &removed {
+        if crystalline_core::is_index_path(rel) {
+            continue;
+        }
+        let Some(others) = staying.get(&crystalline_core::fold_path_case(rel)) else {
+            continue;
+        };
+        let wt_path = checked_working_path(state_dir, domain_root, rel)?;
+        for other in others {
+            let other_path = checked_working_path(state_dir, domain_root, other)?;
+            if same_physical_file(&wt_path, &other_path)? {
+                return Err(RemoteError::Refused(format!(
+                    "'{rel}' and '{other}' differ only in letter case, and this computer keeps them as one file. Crystalline will not remove it. In the team repository, give both files new names that differ in more than letter case. Do this from a computer that can hold both, then try again."
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether `a` and `b` open one and the same file, as a filesystem that
+/// ignores letter case answers for two spellings of one path. A path that is
+/// not there (or has a file where a folder should be) shares nothing. Any
+/// other failure names the path it came from.
+fn same_physical_file(a: &Path, b: &Path) -> Result<bool, RemoteError> {
+    fn handle(path: &Path) -> Result<Option<same_file::Handle>, RemoteError> {
+        match same_file::Handle::from_path(path) {
+            Ok(handle) => Ok(Some(handle)),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(working_tree_error(path, e)),
+        }
+    }
+    let Some(first) = handle(a)? else {
+        return Ok(false);
+    };
+    let Some(second) = handle(b)? else {
+        return Ok(false);
+    };
+    Ok(first == second)
+}
+
+/// Whether the working file at `wt_path` is also the file of another base
+/// path that differs from `rel` only in letter case.
+fn needed_by_another_spelling(
+    state_dir: &Path,
+    domain_root: &Path,
+    base: &BTreeMap<String, BaseStamp>,
+    rel: &str,
+    wt_path: &Path,
+) -> Result<bool, RemoteError> {
+    let folded = crystalline_core::fold_path_case(rel);
+    for other in base.keys() {
+        if other == rel || crystalline_core::fold_path_case(other) != folded {
+            continue;
+        }
+        let other_path = checked_working_path(state_dir, domain_root, other)?;
+        if same_physical_file(wt_path, &other_path)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The nearest existing folder above the not yet existing `path` must be a
+/// folder the pull can list and write into.
+fn check_landing_folder(path: &Path) -> Result<(), RemoteError> {
+    for ancestor in path.ancestors().skip(1) {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(_) => {
+                // Through the link, as the write itself would go.
+                let meta = std::fs::metadata(ancestor).map_err(|e| working_tree_error(path, e))?;
+                if !meta.is_dir() {
+                    let source =
+                        std::io::Error::other(format!("'{}' is not a folder", ancestor.display()));
+                    return Err(working_tree_error(path, source));
+                }
+                std::fs::read_dir(ancestor).map_err(|e| working_tree_error(path, e))?;
+                // On Windows the read-only attribute of a folder is not a
+                // write lock (system folders carry it), so only unix asks.
+                if cfg!(unix) && meta.permissions().readonly() {
+                    let source = std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("the folder '{}' is read-only", ancestor.display()),
+                    );
+                    return Err(working_tree_error(path, source));
+                }
+                return Ok(());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(working_tree_error(path, e)),
+        }
+    }
+    Ok(())
+}
+
 /// Reads a working-tree file, returning `None` when it does not exist.
 fn read_optional_file(path: &Path) -> Result<Option<Vec<u8>>, RemoteError> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
+        Err(e) => Err(working_tree_error(path, e)),
     }
+}
+
+/// A working-tree failure that names `path`.
+fn working_tree_error(path: &Path, source: std::io::Error) -> RemoteError {
+    RemoteError::working_tree(path.display().to_string(), source)
+}
+
+/// Reads a working-tree file that must exist; a failure names the file.
+fn read_working_file(path: &Path) -> Result<Vec<u8>, RemoteError> {
+    std::fs::read(path).map_err(|e| working_tree_error(path, e))
 }
 
 /// Writes `content` to a working-tree file, creating parent directories.
 fn write_working_file(path: &Path, content: &[u8]) -> Result<(), RemoteError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|e| working_tree_error(parent, e))?;
     }
-    std::fs::write(path, content)?;
+    std::fs::write(path, content).map_err(|e| working_tree_error(path, e))?;
     Ok(())
 }
 
@@ -6340,7 +6584,7 @@ fn remove_working_file(path: &Path) -> Result<(), RemoteError> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.into()),
+        Err(e) => Err(working_tree_error(path, e)),
     }
 }
 

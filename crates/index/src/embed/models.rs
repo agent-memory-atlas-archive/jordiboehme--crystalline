@@ -242,7 +242,7 @@ const CONTENT_FILES: [&str; 2] = ["model.safetensors", "tokenizer.json"];
 ///
 /// When the pinned commit is complete and an older complete snapshot is
 /// also cached, the two are compared by the content of
-/// [`CONTENT_FILES`]: equal content switches to the pinned one, different
+/// `CONTENT_FILES`: equal content switches to the pinned one, different
 /// content stays on the older one, because the index keys its vectors by
 /// model id and could not tell the weights apart.
 pub fn choose_snapshot(models_dir: &Path, model: &LocalModel) -> SnapshotChoice {
@@ -519,9 +519,7 @@ pub fn remove_failed_snapshot(models_dir: &Path, model: &PinnedRepo<'_>, user_di
         .iter()
         .any(|c| c != model.revision && snapshot_complete(&snapshots.join(c), model.files));
     if !other_complete {
-        if let Err(e) = std::fs::remove_dir_all(&repo_dir)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
+        if let Err(e) = crystalline_core::tree::remove_tree(&repo_dir) {
             tracing::warn!(
                 model = model.id,
                 path = %repo_dir.display(),
@@ -575,12 +573,12 @@ fn remove_snapshots(
     for commit in commits {
         let blobs = blobs_of(commit);
         let dir = snapshots.join(commit);
-        match std::fs::remove_dir_all(&dir) {
-            Ok(()) => {
+        match crystalline_core::tree::remove_tree(&dir) {
+            Ok(true) => {
                 freed_blobs.extend(blobs);
                 removed.push(commit.clone());
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(false) => {}
             Err(e) => tracing::warn!(
                 model = model.id,
                 commit = %commit,
@@ -696,8 +694,10 @@ pub fn prune_model_cache(models_dir: &Path, keep: &[&str]) -> Result<Vec<(String
             continue;
         }
         let bytes = dir_size(&path);
-        match std::fs::remove_dir_all(&path) {
-            Ok(()) => {
+        match crystalline_core::tree::remove_tree(&path) {
+            // Gone between the listing and here: nothing to report.
+            Ok(false) => {}
+            Ok(true) => {
                 // hf-hub's lock folder for the model goes with it, or it stays
                 // behind as a folder of empty lock files nothing uses.
                 // A lock held right now is a download in flight: its folder stays.
@@ -811,9 +811,8 @@ fn lock_held(dir: &Path) -> bool {
 /// is not there is not an error.
 fn remove_lock_dir(models_dir: &Path, repo: &str) -> bool {
     let dir = models_dir.join(LOCKS_DIR).join(hub_dir_name(repo));
-    match std::fs::remove_dir_all(&dir) {
-        Ok(()) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+    match crystalline_core::tree::remove_tree(&dir) {
+        Ok(removed) => removed,
         Err(e) => {
             tracing::warn!(path = %dir.display(), "leaving a model lock folder in place: {e}");
             false

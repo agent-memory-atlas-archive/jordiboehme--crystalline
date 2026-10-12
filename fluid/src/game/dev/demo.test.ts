@@ -61,7 +61,7 @@ describe("roomWithForcedHero", () => {
     expect(room.heroes.some((h) => h.kind === "mess-table")).toBe(false);
   });
 
-  it("forces every 2.6c and 2.6d hero into the canned workshop", () => {
+  it("forces every 2.6c, 2.6d and 0.25.1 hero into the canned workshop", () => {
     // Review Focus 5. Mutation caught: a forced any-archetype kind not
     // reaching the free-slot draw, or the block not forced.
     for (const kind of [
@@ -77,6 +77,9 @@ describe("roomWithForcedHero", () => {
       "thunder-hammer",
       "police-box",
       "slab-walker",
+      "turntable",
+      "camera",
+      "neon-bike",
     ] as const) {
       const { room, placed } = roomWithForcedHero(CANNED_WORKSHOP, kind);
       expect(placed, kind).toBe(kind);
@@ -109,12 +112,15 @@ describe("roomWithForcedCurio", () => {
   // here. Its `engineering` dressing does draw a service trolley, though,
   // whose deck top hosts both under-desk kinds now. The two computers are
   // as wide as the laptop, so they find no host either, and the soot puffs
-  // stand only at floor level, which the trolley's deck is not.
+  // stand only at floor level, which the trolley's deck is not. The report
+  // sheets and the radio set (0.25.1) are too wide for a desk end as well.
   const NO_HOST_IN_WORKSHOP: readonly string[] = [
     "beige-laptop",
     "breadbin-computer",
     "slim-computer",
     "soot-puffs",
+    "report-sheets",
+    "radio-set",
   ];
 
   it("forces every curio kind into the workshop where it has a host, and leaves heroes and props alone", () => {
@@ -157,27 +163,25 @@ describe("roomWithForcedProp", () => {
   });
 
   it("falls back to the room without it, never throwing, where the kind has no place", () => {
-    // The canned bridge's cells beside its two terminals are taken (Baselines).
-    expect(() =>
-      roomWithForcedProp(CANNED_BRIDGE, "designer-tower"),
-    ).not.toThrow();
-    expect(
-      roomWithForcedProp(CANNED_BRIDGE, "designer-tower").placed,
-    ).toBeNull();
+    // The canned bridge as a council room (type decision) has no place for
+    // the tower beside a desk on its wall (GAME_VERSION 4).
+    const council = { ...CANNED_BRIDGE, type: "decision" };
+    expect(() => roomWithForcedProp(council, "designer-tower")).not.toThrow();
+    expect(roomWithForcedProp(council, "designer-tower").placed).toBeNull();
   });
 });
 
 describe("the neighbours in the seams (2.6f C9)", () => {
   it("lands a forced kind that a neighbour draws, and keeps the room's own skip in the seams (Review Focus 5)", () => {
-    // boiler-room draws the hoverboard raw (2.6f baselines), so the
-    // workshop's own pick skips it; the forced seam must not. Mutation
-    // caught: a forced draw reading near, or a seam placing the curios
-    // again without the room's near.
-    expect(nearFor(CANNED_WORKSHOP).heroes.has("hoverboard")).toBe(true);
-    const hover = roomWithForcedHero(CANNED_WORKSHOP, "hoverboard");
-    expect(hover.placed).toBe("hoverboard");
+    // A neighbour of the workshop draws the flying cloud raw (GAME_VERSION
+    // 4), so the workshop's own pick skips it; the forced seam must not.
+    // Mutation caught: a forced draw reading near, or a seam placing the
+    // curios again without the room's near.
+    expect(nearFor(CANNED_WORKSHOP).heroes.has("flying-cloud")).toBe(true);
+    const cloud = roomWithForcedHero(CANNED_WORKSHOP, "flying-cloud");
+    expect(cloud.placed).toBe("flying-cloud");
     // `placed` reads only that a hero landed, so the kind is checked too.
-    expect(hover.room.heroes.map((h) => h.kind)).toEqual(["hoverboard"]);
+    expect(cloud.room.heroes.map((h) => h.kind)).toEqual(["flying-cloud"]);
     // A lower-seeded hatch whose room draws the radar raw.
     const mine = roomSeed("station", "pipe-shop");
     let below: string | null = null;

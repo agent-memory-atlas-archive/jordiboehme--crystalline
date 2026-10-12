@@ -489,6 +489,26 @@ describe("createDirector", () => {
     expect(levelsInto(ctx, bus(mixer, "ambience"))).toHaveLength(1);
   });
 
+  // Mutation caught: the gravity cues sent to another bus, silent, or
+  // dropped by mute (mute is the master's, so they play into it).
+  it("plays the gravity cues on the effects bus, under mute too", () => {
+    for (const on of [true, false]) {
+      const { ctx, mixer, director } = setup();
+      disposers.push(() => director.dispose());
+      director.cue({ kind: "gravity", on });
+      expect(levelsInto(ctx, bus(mixer, "effects")), String(on)).toHaveLength(
+        1,
+      );
+      expect(levelsInto(ctx, bus(mixer, "signature"))).toHaveLength(0);
+      expect(director.toggleMute()).toBe(true);
+      director.cue({ kind: "gravity", on });
+      expect(mixer.muted).toBe(true);
+      expect(levelsInto(ctx, bus(mixer, "effects"))).toHaveLength(2);
+      // Mute is remembered between directors: leave it as it was found.
+      expect(director.toggleMute()).toBe(false);
+    }
+  });
+
   // Mutation caught: mute silencing the cues rather than the master (the
   // drone missing when sound comes back mid-room).
   it("mutes the master only, the cues play on into it", () => {

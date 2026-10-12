@@ -866,15 +866,16 @@ describe("the hangar in the room mesh (M3 C15)", () => {
 
   it("builds nothing of the hangar into a plain deck", () => {
     // Mutation caught: the hangar's structure (or its stripe skip) built
-    // for every deck. The count is the plain deck's static triangles at
-    // c0799a87, the commit before the hangar was drawn.
+    // for every deck. The count is the plain deck's static triangles,
+    // first taken at c0799a87, the commit before the hangar was drawn, and
+    // taken again at GAME_VERSION 4, which moved the deck's seeds.
     const room = generateDeck(CANNED_DECK, 1);
     expect(room.hangar).toBeUndefined();
     const mesh = buildRoomMesh(room, LOOK).static;
     for (const v of all(mesh))
       expect(v.pos[1]).toBeLessThanOrEqual(room.ceiling + EPS);
     expect(room.ceiling).toBe(4);
-    expect(mesh.count / 3).toBe(2056);
+    expect(mesh.count / 3).toBe(2052);
   });
 });
 

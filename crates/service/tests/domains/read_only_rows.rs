@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crystalline_core::config::{DomainEntry, GlobalConfig, ResponseFormat, ServiceConfig};
 use crystalline_index::TursoStore;
 use crystalline_service::params::{BrowseParams, ListDomainsParams, ReadParams};
-use crystalline_service::rest::{AuthStore, Role};
+use crystalline_service::rest::{AuthStore, MemberLevel, Role};
 use crystalline_service::{DomainAccess, DomainRight, Engine, Scope};
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -30,6 +30,37 @@ async fn instance(
     domains: &[&str],
     locked: &[&str],
     accounts: &[(&str, Role, Option<&[&str]>)],
+) -> (tempfile::TempDir, Arc<Engine>) {
+    instance_with(domains, locked, accounts, &[], false).await
+}
+
+/// A private domain for [`instance_with`]: its name, its owner and its
+/// members with their levels.
+type Private<'a> = (&'a str, &'a str, &'a [(&'a str, MemberLevel)]);
+
+/// [`instance`], with the domains `private` names made private (owner and
+/// members as given), and with `break_write_list` the accounts store's
+/// write-list table is broken after the accounts are created and before the
+/// resolver is installed, so every write-list read fails.
+async fn instance_with(
+    domains: &[&str],
+    locked: &[&str],
+    accounts: &[(&str, Role, Option<&[&str]>)],
+    private: &[Private<'_>],
+    break_write_list: bool,
+) -> (tempfile::TempDir, Arc<Engine>) {
+    instance_full(domains, locked, accounts, private, break_write_list, &[]).await
+}
+
+/// [`instance_with`], with the accounts `disabled` names switched off after
+/// they are created.
+async fn instance_full(
+    domains: &[&str],
+    locked: &[&str],
+    accounts: &[(&str, Role, Option<&[&str]>)],
+    private: &[Private<'_>],
+    break_write_list: bool,
+    disabled: &[&str],
 ) -> (tempfile::TempDir, Arc<Engine>) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_path_buf();
@@ -69,6 +100,27 @@ async fn instance(
             auth.set_write_list(name, &patterns).await.unwrap();
         }
     }
+    for name in disabled {
+        auth.set_disabled(name, true).await.unwrap();
+    }
+    for (domain, owner, members) in private {
+        auth.set_domain_visibility(domain, true, owner)
+            .await
+            .unwrap();
+        for (member, level) in *members {
+            auth.upsert_domain_member(domain, member, *level, owner)
+                .await
+                .unwrap();
+        }
+    }
+    let auth = if break_write_list {
+        // No store holds the file while the table is replaced.
+        drop(auth);
+        break_the_write_list_table(&root.join("web-auth.db")).await;
+        Arc::new(AuthStore::open(&root.join("web-auth.db")).await.unwrap())
+    } else {
+        auth
+    };
     engine.set_domain_access(Arc::new(DomainAccess::new(auth)));
     (tmp, engine)
 }
@@ -272,4 +324,240 @@ async fn browse_read_and_the_routing_block_mark_the_callers_unwritable_domains()
             ("eng".to_string(), true)
         ]
     );
+}
+
+/// Replace the write-list table with one whose columns are wrong, so every
+/// write-list read fails and nothing else does. Sequential, like
+/// `mcp_auth.rs`'s `break_the_visibility_table`: no store holds the file
+/// while this runs.
+async fn break_the_write_list_table(path: &std::path::Path) {
+    let name = path.to_string_lossy().to_string();
+    let db = match turso::Builder::new_local(&name)
+        .experimental_multiprocess_wal(true)
+        .build()
+        .await
+    {
+        Ok(db) => db,
+        Err(_) => turso::Builder::new_local(&name).build().await.unwrap(),
+    };
+    let conn = db.connect().unwrap();
+    conn.execute_batch(
+        "DROP TABLE account_write_domain; CREATE TABLE account_write_domain (junk TEXT);",
+    )
+    .await
+    .unwrap();
+}
+
+/// B-1 item 7: a read whose read_only mark cannot be decided is served
+/// without the mark; it does not fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mark_that_cannot_be_decided_leaves_the_read_standing() {
+    let (_tmp, engine) = instance_with(
+        &["eng"],
+        &[],
+        &[("ed", Role::Editor, None)],
+        &[],
+        true, // break the write-list table before the resolver is installed
+    )
+    .await;
+    let (logs, _guard) = crate::support::capture_logs();
+    let scope = user("ed");
+    let listed = engine
+        .list_domains(&ListDomainsParams::default(), &scope)
+        .await
+        .expect("the listing still answers");
+    let row = &listed["domains"][0];
+    assert_eq!(row["name"], "eng");
+    assert!(row.get("read_only").is_none(), "{row}");
+    let browsed = engine
+        .browse_domain(
+            &BrowseParams {
+                domain: "eng".into(),
+                path: None,
+                depth: None,
+                glob: None,
+            },
+            &scope,
+        )
+        .await
+        .expect("browse still answers");
+    assert!(browsed.get("read_only").is_none(), "{browsed}");
+    let read = engine
+        .read_engram(
+            &ReadParams {
+                identifier: "note".into(),
+                domain: Some("eng".into()),
+                share_link: None,
+            },
+            &scope,
+        )
+        .await
+        .expect("the read still answers");
+    assert!(read.get("read_only").is_none(), "{read}");
+    assert!(
+        logs.any_contains("the read_only mark could not be decided"),
+        "the undecided mark is logged as a warning: {:?}",
+        logs.lines()
+    );
+}
+
+/// A Viewer's mark does not depend on the write list (a role below Write is
+/// read-only before the list is read), so a broken write-list table must not
+/// unmark it. Task 11's batched marks must give the same answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_viewer_stays_marked_when_the_write_list_table_is_broken() {
+    let (_tmp, engine) =
+        instance_with(&["eng"], &[], &[("vw", Role::Viewer, None)], &[], true).await;
+    let listed = engine
+        .list_domains(&ListDomainsParams::default(), &user("vw"))
+        .await
+        .expect("the listing still answers");
+    assert_eq!(listed["domains"][0]["read_only"], true, "{listed}");
+}
+
+/// An instance Viewer who is an Editor member of a private domain is capped to
+/// read by the role, so the write list is not read and the row stays marked
+/// over a broken table.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_viewer_with_editor_membership_stays_marked_over_a_broken_write_list_table() {
+    let (_tmp, engine) = instance_with(
+        &["lab"],
+        &[],
+        &[("ed", Role::Editor, None), ("vw", Role::Viewer, None)],
+        &[("lab", "ed", &[("vw", MemberLevel::Editor)][..])],
+        true,
+    )
+    .await;
+    let listed = engine
+        .list_domains(&ListDomainsParams::default(), &user("vw"))
+        .await
+        .expect("the listing still answers");
+    assert_eq!(listed["domains"][0]["read_only"], true, "{listed}");
+    assert!(engine.read_only_mark(&user("vw"), "lab").await);
+}
+
+/// B-3: the batched marks are exactly the per-row write answer, for every
+/// kind of caller and every domain, a private one with members included.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn batched_marks_equal_the_per_row_answer() {
+    let (_tmp, engine) = instance_full(
+        &["agents-bot", "eng", "lab", "locked"],
+        &["locked"],
+        &[
+            ("ed", Role::Editor, None),
+            ("bot", Role::Editor, Some(&["agents-*"][..])),
+            ("viewer", Role::Viewer, None),
+            ("boss", Role::Admin, None),
+            ("member", Role::Editor, None),
+            ("gone", Role::Editor, None),
+        ],
+        &[("lab", "ed", &[("member", MemberLevel::Viewer)][..])],
+        false,
+        &["gone"],
+    )
+    .await;
+    // The anonymous scope below is the open tier: `auth.mcp` is off here.
+    assert!(!engine.auth_mcp());
+    let admin = Scope::User {
+        account: "boss".into(),
+        admin: true,
+    };
+    for scope in [
+        user("ed"),
+        user("bot"),
+        user("viewer"),
+        user("member"),
+        user("nobody"),
+        user("gone"),
+        admin,
+        Scope::Anonymous,
+        Scope::Unrestricted,
+    ] {
+        let listed = engine
+            .list_domains(
+                &ListDomainsParams {
+                    include_routing: true,
+                },
+                &scope,
+            )
+            .await
+            .unwrap();
+        if scope == user("gone") {
+            // A disabled account still lists the domains, every one marked.
+            let rows = listed["domains"].as_array().unwrap();
+            assert!(
+                !rows.is_empty(),
+                "the disabled account lists rows: {listed}"
+            );
+            assert!(
+                rows.iter().all(|row| row["read_only"] == true),
+                "every row of a disabled account is read-only: {listed}"
+            );
+        }
+        for row in listed["domains"].as_array().unwrap() {
+            let name = row["name"].as_str().unwrap();
+            let per_row = engine.write_block(&scope, name).await.unwrap().is_some();
+            assert_eq!(
+                row.get("read_only") == Some(&serde_json::Value::Bool(true)),
+                per_row,
+                "{scope:?} on {name}: {row}"
+            );
+        }
+    }
+}
+
+/// B-3: over a broken write-list table the batched listing gives exactly
+/// the per-row read answer (`read_only_mark`, which never fails), the
+/// Viewer's mark included.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn batched_marks_equal_the_per_row_answer_over_a_broken_write_list_table() {
+    let (_tmp, engine) = instance_with(
+        &["eng", "lab", "locked"],
+        &["locked"],
+        &[
+            ("ed", Role::Editor, None),
+            ("viewer", Role::Viewer, None),
+            ("vedit", Role::Viewer, None),
+            ("boss", Role::Admin, None),
+        ],
+        &[(
+            "lab",
+            "ed",
+            &[
+                ("viewer", MemberLevel::Viewer),
+                ("vedit", MemberLevel::Editor),
+            ][..],
+        )],
+        true,
+    )
+    .await;
+    let admin = Scope::User {
+        account: "boss".into(),
+        admin: true,
+    };
+    for scope in [user("ed"), user("viewer"), user("vedit"), admin] {
+        let listed = engine
+            .list_domains(
+                &ListDomainsParams {
+                    include_routing: true,
+                },
+                &scope,
+            )
+            .await
+            .unwrap();
+        let rows = listed["domains"].as_array().unwrap();
+        assert!(!rows.is_empty(), "{scope:?}: {listed}");
+        for row in rows {
+            let name = row["name"].as_str().unwrap();
+            let per_row = engine.read_only_mark(&scope, name).await;
+            assert_eq!(
+                row.get("read_only") == Some(&serde_json::Value::Bool(true)),
+                per_row,
+                "{scope:?} on {name}: {row}"
+            );
+            if scope == user("vedit") {
+                assert!(per_row, "{scope:?} on {name} stays marked: {row}");
+            }
+        }
+    }
 }

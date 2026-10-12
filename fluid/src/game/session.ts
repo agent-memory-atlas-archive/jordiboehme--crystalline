@@ -261,7 +261,7 @@ import {
   sameStation,
   stationOfPlace,
 } from "./paths";
-import { createBlink } from "./render/blink";
+import { BLINK_GROUPS, bankSlot, createBlink } from "./render/blink";
 import { createLights, type LightState } from "./render/lights";
 import { createRenderer, type Renderer } from "./render/renderer";
 import {
@@ -322,6 +322,7 @@ import { LIFT_WORDS, deckLabel } from "./world/lifts";
 import { readerBody } from "./ui/crt";
 import {
   computerFocus,
+  gravityConsolesOf,
   computersOf,
   fixtureReading,
   roomReading,
@@ -351,8 +352,8 @@ export type ReaderState = Reading;
 /**
  * Where the session writes what the player sees besides the room.
  *
- * - `prompt`: the line for what the player faces (`SPACE READ Scope`), null
- *   when nothing.
+ * - `prompt`: the line for what the player faces (`SPACE READ Scope`, or
+ *   `SPACE GRAVITY` at a gravity console), null when nothing.
  * - `status`: the room, its condition and the mouse hint.
  * - `frame`: the frame time and the render targets' colour format, with
  *   `BUILD <ms> MS` appended once a room has been built: the time the last
@@ -763,6 +764,10 @@ export function createSession(opts: SessionOptions): Session {
    * entry of a room.
    */
   let computers: ComputerPoint[] = [];
+  /** The room's gravity consoles' use points, worked out on every entry. */
+  let gravityConsoles: ComputerPoint[] = [];
+  /** Whether heavy gravity is on: set by a Space at a gravity console, per visit. */
+  let heavy = false;
   let latched: number | null = null;
   let readerOpen = false;
   /** Whether the level select is open (only with `onLevels`). */
@@ -1146,6 +1151,10 @@ export function createSession(opts: SessionOptions): Session {
     previous = player;
     prefetched = new Set();
     computers = computersOf(room, place);
+    gravityConsoles = gravityConsolesOf(room);
+    // Heavy gravity ends with the visit; a reshape of the same room keeps
+    // it only while the console is still there.
+    if (!keep || gravityConsoles.length === 0) heavy = false;
     latched = null;
     boxLatched = null;
     exitLatched = false;
@@ -1890,6 +1899,8 @@ export function createSession(opts: SessionOptions): Session {
     if (was === null) return;
     closeLift();
     const spot = settleSpot(built.room, was.x, was.z);
+    // A reshape is the same visit: the weight stays while a console does.
+    const wasHeavy = heavy;
     if (
       !enter(
         built.place,
@@ -1902,6 +1913,7 @@ export function createSession(opts: SessionOptions): Session {
       )
     )
       return;
+    heavy = wasHeavy && gravityConsoles.length > 0;
     if (player !== null) {
       player = { ...player, pitch: was.pitch };
       previous = player;
@@ -2147,6 +2159,7 @@ export function createSession(opts: SessionOptions): Session {
         lookDx: look.dx,
         lookDy: lookDelta(look.dy, inverted),
         run,
+        heavy,
       },
       room,
       blockers,
@@ -2170,8 +2183,14 @@ export function createSession(opts: SessionOptions): Session {
     const focus = reads && boxAt !== null ? null : offered;
     // A computer comes last (spec 3a): only with no fixture and no box in
     // focus.
-    const computerAt =
+    // A gravity console comes first of the two: its Space is the switch,
+    // not the room's reading.
+    const gravityAt =
       modal() || focus !== null || boxAt !== null
+        ? null
+        : computerFocus(gravityConsoles, player, room.title);
+    const computerAt =
+      modal() || focus !== null || boxAt !== null || gravityAt !== null
         ? null
         : computerFocus(computers, player, room.title);
     let pressedDoor: number | null = null;
@@ -2193,6 +2212,10 @@ export function createSession(opts: SessionOptions): Session {
       }
     } else if (used && boxAt !== null) {
       pressedBox = boxAt.index;
+    } else if (used && gravityAt !== null) {
+      heavy = !heavy;
+      cue({ kind: "gravity", on: heavy });
+      flash(heavy ? "GRAVITY 300G" : "GRAVITY 1G", LOOK_NOTICE_MS);
     } else if (used && computerAt !== null) {
       openReading(roomReading(room, place));
     }
@@ -2256,7 +2279,11 @@ export function createSession(opts: SessionOptions): Session {
     setPrompt(
       modal() || loading
         ? null
-        : (focus?.prompt ?? boxAt?.prompt ?? computerAt?.prompt ?? null),
+        : (focus?.prompt ??
+            boxAt?.prompt ??
+            (gravityAt === null ? null : "SPACE GRAVITY") ??
+            computerAt?.prompt ??
+            null),
     );
     listenForAnswer(loading ? null : focus);
 
@@ -2288,6 +2315,9 @@ export function createSession(opts: SessionOptions): Session {
     }
     lights?.tick();
     blink.tick();
+    // The console's red lamp (blink group 2 of the status bank) stays lit
+    // while the player is heavy.
+    if (heavy) blink.gains[bankSlot("status") * BLINK_GROUPS + 2] = 1;
   };
 
   /**
@@ -2331,7 +2361,7 @@ export function createSession(opts: SessionOptions): Session {
           {
             eye: [
               lerp(previous.x, player.x),
-              EYE_HEIGHT + headBob(player),
+              EYE_HEIGHT + headBob(player, heavy),
               lerp(previous.z, player.z),
             ],
             yaw: lerp(previous.yaw, player.yaw),
@@ -2419,6 +2449,7 @@ export function createSession(opts: SessionOptions): Session {
       opts.onPause?.(false);
       hud.connector(false, loadingLabel);
       disposed = true;
+      heavy = false;
       generation++;
       controller?.abort();
       controller = null;

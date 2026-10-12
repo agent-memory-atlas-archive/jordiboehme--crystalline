@@ -2,12 +2,17 @@
  * The workshop heroes' shape tests: what `heroModels.test.ts` does not
  * check for every kind. The core wall's lamps cover all eight twinkle
  * groups and never overlap; the big gun, taken from the built rack and
- * bench, is the same parts only moved, and nothing else meets its grip;
+ * bench, is the same parts only moved, nothing else meets its grip, and
+ * it ends in a round dark aperture with the green glow in its middle, in
+ * a silver-grey shell;
  * the tube bench's three tubes meet at one round hub, two arms up and the
  * stem down, and its box carries its two warning labels on red tape, one
  * on the bottom rail and one over the status lights; and the field pack's
  * chase climbs its cell one light per group and runs round its cyclotron
- * in ring order. Whether a workshop
+ * in ring order, its cyclotron is a stepped round housing with the bumper
+ * across its lower half, its wand hangs tip down on its right side, its
+ * cables and straps keep their colours, and both variants stay in their
+ * footprints, on their stands and under their triangle pin. Whether a workshop
  * hero's parts float, and whether the gun bench's and the tube bench's
  * catalogue tops lie on a real, clear upward face, are
  * `heroModels.test.ts`'s checks now, for every kind, not only these.
@@ -29,7 +34,24 @@ import {
   type Part,
 } from "../../modelChecks";
 import { MARKS } from "../marks";
-import { LABEL_INK, LABEL_TAPE } from "./workshop";
+import { buildHeroMesh } from ".";
+import { LOOK } from "../../looks";
+import { heroHalf } from "./common";
+import {
+  BUMPER,
+  COPPER,
+  CYCLOTRON,
+  LABEL_INK,
+  LABEL_TAPE,
+  PACK_D,
+  PACK_W,
+  RIBBON,
+  STRAP_OLIVE,
+  TIP_ORANGE,
+  WAND_GREY,
+  WARNING_PLATE,
+  WIRE,
+} from "./workshop";
 
 /** A part's points in the recipe's local `[a, d, h]`. */
 const local = (p: Part): V3[] =>
@@ -148,9 +170,14 @@ describe("workshop hero models", () => {
 
   it("the big gun is the same on the rack and the bench", () => {
     const { rack, bench, i, j, n } = gunRun();
-    // Stock, body, spine, bezel, window, barrel, three collars, four vent
-    // slots, the muzzle and the grip.
-    expect(n).toBe(15);
+    // The grip; the rear frame's rail, butt plate, upright, top rail,
+    // brace, two copper bands and three cable links; the body, two power
+    // cylinders with two caps each and the trough; three seam lines, four
+    // bolts, the light's bezel and the light, the copper strip and the
+    // badge plate; the badge's 19 letter runs; the vent core, five slats
+    // and four glowing slots; and the housing, three ribs, the lip, the
+    // aperture and the muzzle glow.
+    expect(n).toBe(47 + 19);
     // Every light of either model is the gun's core, all inside the run.
     const lights = rack.filter(blinks);
     expect(lights.length).toBeGreaterThan(0);
@@ -165,7 +192,10 @@ describe("workshop hero models", () => {
       ["bench", bench, j],
     ] as const) {
       const gun = parts.slice(at, at + n);
-      const grip = gun.find((p) => p.method === "extrude");
+      // The grip is the gun's lowest part: it hangs under the belly.
+      const grip = [...gun].sort(
+        (x, y) => shape(x.points).lo[1] - shape(y.points).lo[1],
+      )[0];
       if (!grip) throw new Error(`${name}: no grip in the gun`);
       const g = shape(grip.points);
       const others = parts.filter((p) => !gun.includes(p));
@@ -178,6 +208,60 @@ describe("workshop hero models", () => {
         expect(overlaps, `${name} ${other.method}`).toBe(false);
       }
     }
+  });
+
+  it("ends the big gun in a round dark aperture with the green glow in its middle, in a silver-grey shell", () => {
+    // Mutation caught: the square barrel back, the glow off the muzzle's
+    // axis or out of its aperture, a dark shell, or the shell tinted green.
+    const { rack, i, n } = gunRun();
+    const gun = rack.slice(i, i + n);
+    const box = (p: Part) => {
+      const l = local(p);
+      const lo = [0, 1, 2].map((k) => Math.min(...l.map((q) => q[k] ?? 0)));
+      const hi = [0, 1, 2].map((k) => Math.max(...l.map((q) => q[k] ?? 0)));
+      return { lo, hi, mid: lo.map((x, k) => (x + (hi[k] ?? 0)) / 2) };
+    };
+    const end = Math.max(...gun.map((p) => box(p).hi[0] ?? 0));
+    const muzzle = gun.filter(
+      (p) => p.method === "cylinderAlong" && (box(p).hi[0] ?? 0) > end - 0.03,
+    );
+    // The lip, the aperture and the glow, each smaller and further out.
+    expect(muzzle).toHaveLength(3);
+    const ranked = [...muzzle].sort(
+      (x, y) => (box(y).hi[1] ?? 0) - (box(x).hi[1] ?? 0),
+    );
+    const [lip, aperture, glow] = ranked;
+    if (!lip || !aperture || !glow) throw new Error("no muzzle");
+    expect(blinks(glow)).toBe(true);
+    expect(blinks(aperture) || blinks(lip)).toBe(false);
+    const sum = (p: Part) => (p.tint ?? [1, 1, 1]).reduce((a, c) => a + c, 0);
+    expect(sum(aperture)).toBeLessThan(0.5);
+    expect(box(glow).hi[0]).toBeGreaterThan(box(aperture).hi[0] ?? 0);
+    expect(box(aperture).hi[0]).toBeGreaterThan(box(lip).hi[0] ?? 0);
+    for (const p of [aperture, glow]) {
+      const b = box(p);
+      // Round: as deep as it is tall, and on the lip's axis.
+      expect((b.hi[1] ?? 0) - (b.lo[1] ?? 0)).toBeCloseTo(
+        (b.hi[2] ?? 0) - (b.lo[2] ?? 0),
+        6,
+      );
+      expect(b.mid[1]).toBeCloseTo(box(lip).mid[1] ?? 0, 6);
+      expect(b.mid[2]).toBeCloseTo(box(lip).mid[2] ?? 0, 6);
+    }
+    // The body, the gun's largest part: a light grey with no colour cast.
+    const body = gun.find(
+      (p) =>
+        p.method === "bevelBox" &&
+        (box(p).hi[0] ?? 0) - (box(p).lo[0] ?? 0) > 0.5,
+    );
+    if (!body?.tint) throw new Error("no body");
+    const [r, g, b] = body.tint;
+    expect(Math.max(r, g, b) - Math.min(r, g, b)).toBeLessThan(0.05);
+    expect(r).toBeGreaterThan(0.45);
+    // Its one steady light, the red indicator, and every other light green.
+    expect(gun.filter((p) => p.flag === FLAG.signal)).toHaveLength(1);
+    for (const p of gun.filter(blinks))
+      expect(p.tint?.[1]).toBeGreaterThan(0.8);
   });
 
   it("the tube bench's three tubes meet at one round hub, two arms up and the stem down", () => {
@@ -241,6 +325,121 @@ describe("workshop hero models", () => {
       const first = steps[0] ?? 0;
       expect(Math.abs(Math.abs(first) - Math.PI / 2)).toBeLessThan(1e-6);
       for (const step of steps) expect(step).toBeCloseTo(first, 6);
+    }
+  });
+
+  it("builds the field pack's cyclotron as a stepped round housing with the bumper across its lower half", () => {
+    // Mutation caught: a step dropped or not standing out of the one
+    // under it, the lenses off the housing, or the bumper above the
+    // cyclotron's centre or narrower than the body.
+    for (let v = 0; v < HERO_CATALOGUE["field-pack"].variants; v++) {
+      const parts = partsOf("field-pack", v);
+      const lenses = parts.filter((p) => blinks(p) && p.method === "extrude");
+      expect(lenses).toHaveLength(4);
+      const ls = lenses.map((p) => shape(p.points));
+      const mid = ([0, 1] as const).map(
+        (k) => ls.reduce((n, b) => n + (b.lo[k] + b.hi[k]) / 2, 0) / 4,
+      );
+      const [ca = 0, ch = 0] = mid;
+      // The steps: round extrudes centred on the lenses' centre, each
+      // smaller and standing further out than the last.
+      const steps = parts
+        .filter((p) => {
+          if (p.method !== "extrude" || blinks(p)) return false;
+          const b = shape(p.points);
+          return (
+            Math.abs((b.lo[0] + b.hi[0]) / 2 - ca) < 1e-6 &&
+            Math.abs((b.lo[1] + b.hi[1]) / 2 - ch) < 1e-6 &&
+            b.hi[0] - b.lo[0] > 0.15
+          );
+        })
+        .map((p) => shape(p.points))
+        .sort((p, q) => q.hi[0] - q.lo[0] - (p.hi[0] - p.lo[0]));
+      expect(steps.length, `v${String(v)}`).toBe(CYCLOTRON.steps.length);
+      for (let i = 1; i < steps.length; i++) {
+        const [outer, inner] = [steps[i - 1], steps[i]];
+        if (!outer || !inner) throw new Error("steps");
+        expect(inner.hi[0] - inner.lo[0]).toBeLessThan(
+          outer.hi[0] - outer.lo[0],
+        );
+      }
+      const big = steps[0];
+      if (!big) throw new Error("no housing");
+      expect(big.hi[0] - big.lo[0]).toBeGreaterThan(0.8 * PACK_W);
+      for (const b of ls)
+        expect(
+          Math.hypot(
+            (b.lo[0] + b.hi[0]) / 2 - ca,
+            (b.lo[1] + b.hi[1]) / 2 - ch,
+          ),
+        ).toBeCloseTo(CYCLOTRON.ring, 6);
+      // The bumper: one black bevelled bar wider than the body, below the
+      // centre and above the lower lenses, in front of the housing.
+      const bumpers = parts
+        .filter((p) => p.method === "bevelBox")
+        .map((p) => shape(p.points))
+        .filter((b) => b.hi[0] - b.lo[0] > PACK_W);
+      expect(bumpers).toHaveLength(1);
+      const bump = bumpers[0];
+      if (!bump) throw new Error("no bumper");
+      expect(bump.hi[0] - bump.lo[0]).toBeCloseTo(2 * BUMPER.half, 6);
+      expect(bump.hi[1]).toBeLessThan(ch);
+      // The crank knob in copper on the bumper.
+      expect(inked(parts, COPPER).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("hangs the wand tip down on the field pack's right side and runs its cables in their colours", () => {
+    // Mutation caught: the wand back on the left or tip up, a cable colour
+    // dropped, the ribbon cable's stripes merged, or the straps lost.
+    for (let v = 0; v < HERO_CATALOGUE["field-pack"].variants; v++) {
+      const parts = partsOf("field-pack", v);
+      const tip = inked(parts, TIP_ORANGE);
+      expect(tip).toHaveLength(1);
+      const t = shape((tip[0] as Part).points);
+      // Local `a` of the tip: right of the body (the room sees `+a` on
+      // its right), and the wand's lowest part.
+      const ta = local(tip[0] as Part).map((q) => q[0]);
+      expect(Math.min(...ta)).toBeGreaterThan(PACK_W / 2);
+      // The grey gunbox hangs over it, the tip the barrel's low end.
+      const box = inked(parts, WAND_GREY);
+      expect(box).toHaveLength(1);
+      const g = shape((box[0] as Part).points);
+      expect(g.lo[1]).toBeGreaterThan(t.hi[1] + 0.3);
+      for (const q of local(box[0] as Part))
+        expect(q[0]).toBeGreaterThan(PACK_W / 2);
+      // The power cell's lights on the left half.
+      for (const p of parts.filter((q) => blinks(q) && q.method === "panel"))
+        for (const q of local(p)) expect(q[0]).toBeLessThan(0);
+      // The cables and the plates in their colours.
+      for (const c of [
+        ...RIBBON,
+        WIRE.red,
+        WIRE.blue,
+        WIRE.yellow,
+        WARNING_PLATE,
+      ])
+        expect(inked(parts, c).length, c.join()).toBeGreaterThan(0);
+      // The olive straps on the frame's back, behind the body.
+      const straps = inked(parts, STRAP_OLIVE).flatMap(local);
+      expect(straps.length).toBeGreaterThan(0);
+      for (const q of straps) expect(q[1]).toBeLessThan(-PACK_D / 2);
+    }
+  });
+
+  it("keeps the field pack in its footprint, on its stand and under its triangle pin", () => {
+    // Mutation caught: a part reaching past the footprint or the top, or
+    // the detail growing far past the pin.
+    for (let v = 0; v < HERO_CATALOGUE["field-pack"].variants; v++) {
+      const { hw, d0, d1, top } = heroHalf("field-pack", v);
+      for (const q of partsOf("field-pack", v).flatMap(local)) {
+        expect(Math.abs(q[0])).toBeLessThanOrEqual(hw + 1e-9);
+        expect(q[1]).toBeGreaterThanOrEqual(d0 - 1e-9);
+        expect(q[1]).toBeLessThanOrEqual(d1 + 1e-9);
+        expect(q[2]).toBeGreaterThanOrEqual(-1e-9);
+        expect(q[2]).toBeLessThanOrEqual(top + 1e-9);
+      }
+      expect(buildHeroMesh("field-pack", v, LOOK).count / 3).toBeLessThan(2800);
     }
   });
 

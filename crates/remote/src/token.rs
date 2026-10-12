@@ -222,7 +222,7 @@ impl TokenStore {
     /// works but is empty, so `(Keyring, None)` (an absent item never prompts
     /// on macOS, so a machine that has not connected yet is re-read freely);
     /// anything else - including failing to even build the entry, and the read
-    /// outrunning [`KEYRING_TIMEOUT`] - means the backend itself is unusable
+    /// outrunning `KEYRING_TIMEOUT` - means the backend itself is unusable
     /// (headless Linux with no session bus, most CI runners, a wedged keychain
     /// daemon), so the file fallback plus whatever that file holds. Callers
     /// that need both a token and the backend choice - every origin operation
@@ -296,7 +296,7 @@ impl TokenStore {
     /// hand and learns the same thing from the write itself.
     ///
     /// The keychain is tried first with a direct `set_password` under
-    /// [`KEYRING_TIMEOUT`]; any failure (or failing to build the entry, or
+    /// `KEYRING_TIMEOUT`; any failure (or failing to build the entry, or
     /// serialize the token, or the write outrunning that bound) lands the
     /// token in the file store instead. The trade-off is deliberate: a
     /// keychain that

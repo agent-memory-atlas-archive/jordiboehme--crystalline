@@ -576,7 +576,7 @@ const SCOPE_SEPARATOR: &str = ", ";
 /// acknowledgment answers for rather than about how often a rule fires. Every
 /// other rule's acknowledgment is the engram's answer about that rule:
 /// re-acknowledging replaces the entry, and an entry whose scope no longer
-/// matches is that answer gone stale, which is what [`apply_acknowledgments`]
+/// matches is that answer gone stale, which is what `apply_acknowledgments`
 /// reports. That holds even where such a rule fires more than once on one
 /// engram, as `V103` does over the three [`RECIPROCAL_PAIRS`]: those findings
 /// share the one answer, so acknowledging the second replaces the first and
@@ -652,7 +652,7 @@ fn scope_for(rule: &str, mut parts: Vec<String>) -> String {
 pub struct AckEntry {
     /// The rule id the acknowledgment silences, for example `V101`.
     pub rule: String,
-    /// The evidence it was given for, as [`scope_for`] renders it. `None` is
+    /// The evidence it was given for, as `scope_for` renders it. `None` is
     /// the generous fallback a hand-written entry gets: it matches whatever the
     /// finding's scope turns out to be.
     pub scope: Option<String>,
@@ -1214,7 +1214,7 @@ pub struct Finding {
     /// says a row's own fix names which one applies.
     pub fix: String,
     /// The evidence discriminator an acknowledgment is matched against, per
-    /// [`scope_for`]. It exists so an acknowledgment can hold while the
+    /// `scope_for`. It exists so an acknowledgment can hold while the
     /// evidence holds.
     ///
     /// Skipped by the derived serialization, and rendered as a column by one

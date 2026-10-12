@@ -50,7 +50,7 @@ use std::path::{Path, PathBuf};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Serialize;
 
-use crate::config::{GlobalConfig, RepoConfig, expand_tilde};
+use crate::config::{DomainEntry, GlobalConfig, RepoConfig, expand_tilde};
 use crate::manifest::Manifest;
 use crate::parse::parse_engram;
 
@@ -130,18 +130,7 @@ pub fn generate_prompt(
     for name in ordered {
         let entry = &global.domains[name];
         let is_preferred = preferred.iter().any(|p| p == name);
-        let virtual_row = |name: &str| {
-            let (bullets, warning) = virtual_routing_bullets(name, virtual_bullets.get(name));
-            (bullets, warning, false)
-        };
-        let (bullets, warning, read_only) = if entry.is_virtual() {
-            virtual_row(name)
-        } else {
-            match &entry.path {
-                Some(path) => load_routing_facts(name, path),
-                None => virtual_row(name),
-            }
-        };
+        let (bullets, warning, read_only) = row_facts(name, entry, virtual_bullets);
         if let Some(w) = warning {
             warnings.push(w);
         }
@@ -209,18 +198,7 @@ pub fn generate_prompt_unscoped(
     let mut registered: Vec<_> = global.domains.iter().collect();
     registered.sort_by_cached_key(|(name, _)| (name.to_lowercase(), (*name).clone()));
     for (name, entry) in registered {
-        let virtual_row = |name: &str| {
-            let (bullets, warning) = virtual_routing_bullets(name, virtual_bullets.get(name));
-            (bullets, warning, false)
-        };
-        let (bullets, warning, read_only) = if entry.is_virtual() {
-            virtual_row(name)
-        } else {
-            match &entry.path {
-                Some(path) => load_routing_facts(name, path),
-                None => virtual_row(name),
-            }
-        };
+        let (bullets, warning, read_only) = row_facts(name, entry, virtual_bullets);
         if let Some(w) = warning {
             warnings.push(w);
         }
@@ -237,6 +215,27 @@ pub fn generate_prompt_unscoped(
         domains,
         warnings,
         read_only: global.read_only(),
+    }
+}
+
+/// The routing bullets, the warning and the read-only flag of one registered
+/// domain: a virtual one takes the bullets it was supplied, a folder one reads
+/// its MANIFEST.
+fn row_facts(
+    name: &str,
+    entry: &DomainEntry,
+    virtual_bullets: &BTreeMap<String, Vec<String>>,
+) -> (Vec<String>, Option<String>, bool) {
+    let virtual_row = || {
+        let (bullets, warning) = virtual_routing_bullets(name, virtual_bullets.get(name));
+        (bullets, warning, false)
+    };
+    if entry.is_virtual() {
+        return virtual_row();
+    }
+    match &entry.path {
+        Some(path) => load_routing_facts(name, path),
+        None => virtual_row(),
     }
 }
 
@@ -490,7 +489,7 @@ fn render_behavior_block(output: &PromptOutput, out: &mut String) {
 /// never trimmed; the rules below them absorbed the budget instead, which is
 /// why the narrow and broad routing rule is one line rather than two.
 ///
-/// This is the single source of the rule set: [`render_routing_body`] renders
+/// This is the single source of the rule set: `render_routing_body` renders
 /// it as the Behavior block of both onboarding renderers, and the MCP
 /// `list_domains` response returns it verbatim for remote clients that never
 /// see the initialize instructions. Both paths therefore teach exactly the
@@ -741,9 +740,9 @@ struct JsonPrompt<'a> {
     domains: Vec<JsonPromptDomain<'a>>,
 }
 
-/// Render the prompt as JSON: `{version: 1, kind: "system", read_only,
-/// workspace, domains: [{name, bullets, preferred, read_only?}]}`. `read_only` is always
-/// present; `kind` is additive and `version` stays 1.
+/// Render the prompt as JSON: `{version: 1, kind: "system", read_only, workspace,
+/// domains: [{name, bullets, preferred, read_only?}]}`. `read_only` is always present;
+/// `kind` is additive and `version` stays 1.
 pub fn render_json(output: &PromptOutput) -> String {
     let wrapped = JsonPrompt {
         version: 1,

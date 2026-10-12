@@ -959,7 +959,6 @@ fn map_authorities(text: &str, map: &BTreeMap<String, String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use crate::server_token::CredentialKind;
     use crate::sources::{MountRecord, SourceRecord, SourcesFile};
     use serde_json::json;

@@ -68,6 +68,7 @@ import type { Ambience, Cue, SoundSink } from "./cues";
 import {
   doorPatch,
   faultPatch,
+  gravityPatch,
   hatchPatch,
   portalPatch,
   ridePatch,
@@ -311,6 +312,9 @@ export function createDirector(mixer: Mixer): Director {
         return;
       case "terminal":
         shot(terminalPatch());
+        return;
+      case "gravity":
+        shot(gravityPatch(c.on));
         return;
       case "ride":
         ride(c.phase);

@@ -34,11 +34,7 @@ fn sourced_engram(i: usize) -> String {
 
 /// Write the generated domain under `root`, a hundred engrams per folder.
 fn generate_sourced_domain(root: &Path) {
-    for i in 0..SOURCED_ENGRAMS {
-        let dir = root.join(format!("dir{}", i % 500));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(format!("note-{i}.md")), sourced_engram(i)).unwrap();
-    }
+    generate_sourced_domain_of(root, SOURCED_ENGRAMS);
 }
 
 /// How many engrams the reindex timings generate: `CRYSTALLINE_TEST_PERF_ENGRAMS`
@@ -210,21 +206,26 @@ async fn full_reindex_cost_at_50k_postgres() {
             .await
             .unwrap(),
     );
-    {
+    let (first, first_line, full, full_line) = {
         let locked: &Mutex<dyn Store> = &store;
         let (first, first_line) = timed_pass(locked, "notes", corpus.path(), None).await;
-        assert_eq!(first.added, count, "every engram is indexed");
         let (full, full_line) =
             timed_pass(locked, "notes", corpus.path(), Some(RebuildKind::Full)).await;
-        assert_eq!(full.updated, count, "every engram is rewritten");
-        eprintln!("PERF reindex postgres {count} ({schema}): first index: {first_line}");
-        eprintln!("PERF reindex postgres {count} ({schema}): full reindex: {full_line}");
-    }
+        (first, first_line, full, full_line)
+    };
+    // Read everything the asserts need, then drop the schema, so a failed
+    // assert below never leaves it behind.
+    eprintln!("PERF reindex postgres {count} ({schema}): first index: {first_line}");
+    eprintln!("PERF reindex postgres {count} ({schema}): full reindex: {full_line}");
     if std::env::var("CRYSTALLINE_TEST_PERF_KEEP").is_ok() {
         eprintln!("PERF kept schema {schema}");
     } else {
         store.into_inner().drop_schema().await.unwrap();
     }
+    assert!(first.failed.is_empty(), "no failures: {:?}", first.failed);
+    assert_eq!(first.added, count, "every engram is indexed");
+    assert!(full.failed.is_empty(), "no failures: {:?}", full.failed);
+    assert_eq!(full.updated, count, "every engram is rewritten");
 }
 
 /// The scoped lexical candidate statement on Postgres at 20,000 engrams, in the

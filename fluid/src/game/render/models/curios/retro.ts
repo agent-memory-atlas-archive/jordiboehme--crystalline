@@ -41,7 +41,7 @@
  *   dark key well with 52 chunky light keys in five rows (the front row
  *   with a long bar), a plain palm rest in front of it, and a beige lid tilted back 15 degrees from vertical
  *   carrying the grey-green screen in a wide bezel in front and a block
- *   pixel "<=>" on its back (C17).
+ *   pixel "<=>" on the screen's face, in dark green-grey ink (C17).
  *
  * The badges (C17): the console's two words side by side on the grey
  * under its bezel, off the blinking screen, as `pixelPanel` quads
@@ -90,7 +90,7 @@ import {
   textRows,
 } from "../heroes/pixels";
 import { MARKS } from "../marks";
-import { curioHalf, type CurioRecipe } from "./common";
+import { curioHalf, flatText, type CurioRecipe } from "./common";
 
 /** A point of a side profile: depth `d`, height `h`. */
 type DH = readonly [d: number, h: number];
@@ -156,59 +156,6 @@ function planBar(
     h1,
     s,
   );
-}
-
-/** A rectangle of a pixel picture's lit cells: its first column, its top row, its width and its height in cells. */
-interface PixelRect {
-  col: number;
-  row: number;
-  len: number;
-  rows: number;
-}
-
-/**
- * A pixel picture's lit cells (`#`) as rectangles: each horizontal run of
- * `pixelRuns`, merged with the runs straight under it that start and end
- * in the same columns, so an upright stroke is one piece however tall.
- * Together they cover every lit cell exactly once. For a mark built from
- * boxes or slabs, which cost a dozen triangles a piece.
- */
-function pixelRects(rows: readonly string[]): PixelRect[] {
-  const rects: PixelRect[] = [];
-  for (const r of pixelRuns(rows)) {
-    const above = rects.find(
-      (x) => x.col === r.col && x.len === r.len && x.row + x.rows === r.row,
-    );
-    if (above) above.rows++;
-    else rects.push({ ...r, rows: 1 });
-  }
-  return rects;
-}
-
-/**
- * Lays `text` flat on a face that looks up, fitted into `a0..a1` along
- * and `d0..d1` across with square pixels as large as both allow (`fit`),
- * centred: `lay` draws one rectangle of lit cells (`pixelRects`) from
- * `a0` to `a1` and `d0` to `d1`. The first row lies towards `-d`, so the
- * text reads from the curio's front (`+d`), left to right along `+a`.
- * Returns the pixel size, to hold to C13's 1 mm floor.
- */
-function flatText(
-  text: string,
-  box: readonly [a0: number, a1: number, d0: number, d1: number],
-  lay: (a0: number, a1: number, d0: number, d1: number) => void,
-): number {
-  const rows = textRows(text);
-  const { px, left } = fit(rows, ...box);
-  const far = (box[2] + box[3]) / 2 - (rows.length * px) / 2;
-  for (const r of pixelRects(rows))
-    lay(
-      left + r.col * px,
-      left + (r.col + r.len) * px,
-      far + r.row * px,
-      far + (r.row + r.rows) * px,
-    );
-  return px;
 }
 
 // --- Pocket console --------------------------------------------------------
@@ -1018,8 +965,8 @@ export const LAPTOP_LATCH: Rgb = [0.68, 0.63, 0.52];
 /** The monochrome screen: a grey-green, glowing faintly. */
 const LAPTOP_LCD: Rgb = [0.6, 0.63, 0.55];
 
-/** The "<=>" mark on the lid's back: a mid grey. */
-export const LAPTOP_MARK: Rgb = [0.3, 0.3, 0.3];
+/** The "<=>" mark on the screen's face: a dark green-grey, tinted, not glowing. */
+export const LAPTOP_INK: Rgb = [0.16, 0.2, 0.14];
 
 /**
  * The laptop's base in metres: `width` along `a`, `depth` along `d` (its
@@ -1070,11 +1017,19 @@ export const LAPTOP_LID = (() => {
   };
 })();
 
-/** The mark's pixel size on the lid's back, in metres. */
-export const MARK_PX = 0.012;
+/**
+ * The screen's extent in lid terms: `s0..s1` up the lid, `a` half-width
+ * along it, and `o` the height of its face through the lid from the back.
+ */
+export const LAPTOP_SCREEN = {
+  s0: 0.05,
+  s1: LAPTOP_LID.length - 0.04,
+  a: 0.155,
+  o: LAPTOP_LID.thickness + 0.001,
+} as const;
 
-/** The mark's text, in the block-pixel font (C17). */
-const MARK_TEXT = "<=>";
+/** The mark's pixel size on the screen, in metres. */
+export const MARK_PX = 0.012;
 
 /** The keyboard's rows from the back: how many keys each holds; the front row holds the bar. */
 const KEY_ROWS = [12, 12, 11, 10] as const;
@@ -1116,13 +1071,11 @@ function lidSlab(
  * The beige laptop, keyboard to the front, lid tilted up at the back (it
  * stands only where its front is free, `fixed` in the catalogue).
  *
- * The mark on the lid's back is read from behind, where `+a` is on the
- * viewer's left, so column `c` of the text runs from `+a` towards `-a`:
- * column 0 starts at `MARK_PX * cols / 2` and each run takes `a` from
- * `start - (col + len) * MARK_PX` to `start - col * MARK_PX`. Row 0 is the
- * highest up the lid. Each run is its own slab, sunk 1 mm into the lid and
- * standing `DECAL_LIFT` proud of its back face, centred across the lid and
- * on the middle of its upper half.
+ * The mark is read from the front, where `-a` is on the viewer's left, so
+ * column 0 starts at `-MARK_PX * cols / 2` and each run takes `a` from
+ * `start + col * MARK_PX` to `start + (col + len) * MARK_PX`. Row 0 is the
+ * highest up the lid. Each run is its own slab standing `DECAL_LIFT` proud
+ * of the screen's face (`LAPTOP_SCREEN.o`), centred on the screen.
  */
 const beigeLaptop: CurioRecipe = ({ k, kitAt, s, variant, kind }) => {
   const { hd } = curioHalf(kind, variant);
@@ -1205,33 +1158,34 @@ const beigeLaptop: CurioRecipe = ({ k, kitAt, s, variant, kind }) => {
     );
   }
 
-  // The lid, the screen in its wide bezel, and the mark on its back.
+  // The lid, the screen in its wide bezel, and the mark on the screen's face.
   lidSlab(kitAt, 0, L.length, 0, L.thickness, -L.width / 2, L.width / 2, beige);
   lidSlab(
     kitAt,
-    0.05,
-    L.length - 0.04,
+    LAPTOP_SCREEN.s0,
+    LAPTOP_SCREEN.s1,
     L.thickness - 0.0005,
-    L.thickness + 0.001,
-    -0.155,
-    0.155,
+    LAPTOP_SCREEN.o,
+    -LAPTOP_SCREEN.a,
+    LAPTOP_SCREEN.a,
     s.glow(LAPTOP_LCD),
   );
-  const rows = textRows(MARK_TEXT);
+  const rows = textRows(MARKS.laptopMark);
   const cols = rows[0]?.length ?? 0;
-  const start = (cols * MARK_PX) / 2;
-  const sTop = 0.75 * L.length + (rows.length * MARK_PX) / 2;
-  const mark = s.tinted(LAPTOP_MARK);
+  const start = -(cols * MARK_PX) / 2;
+  const sMid = (LAPTOP_SCREEN.s0 + LAPTOP_SCREEN.s1) / 2;
+  const sTop = sMid + (rows.length * MARK_PX) / 2;
+  const ink = s.tinted(LAPTOP_INK);
   for (const run of pixelRuns(rows))
     lidSlab(
       kitAt,
       sTop - (run.row + 1) * MARK_PX,
       sTop - run.row * MARK_PX,
-      0.001,
-      -DECAL_LIFT,
-      start - (run.col + run.len) * MARK_PX,
-      start - run.col * MARK_PX,
-      mark,
+      LAPTOP_SCREEN.o,
+      LAPTOP_SCREEN.o + DECAL_LIFT,
+      start + run.col * MARK_PX,
+      start + (run.col + run.len) * MARK_PX,
+      ink,
     );
 };
 

@@ -1087,6 +1087,64 @@ fn read_only_reads_on_exactly_and_everything_else_as_off() {
     assert_eq!(ReadOnly::default(), ReadOnly::Off);
 }
 
+/// B-3: `read_only_of_source` skips the YAML parse when the text cannot name
+/// the key, and the answer is the full parse's answer either way: a key
+/// spelled through an escape still locks, and a source that only mentions
+/// the word in its body or fails to parse stays open.
+#[test]
+fn read_only_of_source_answers_the_full_parse_whichever_path_it_takes() {
+    let head = "---\ntype: manifest\ntitle: M\npermalink: manifest\nstatus: current\n";
+    let body = "---\n\n## Scope\n\n- Charts\n";
+    let cases = [
+        (format!("{head}read_only: on\n{body}"), ReadOnly::On),
+        (format!("{head}\"read_only\": \"on\"\n{body}"), ReadOnly::On),
+        (format!("{head}'read_only': on\n{body}"), ReadOnly::On),
+        (format!("{head}\"read\\x5fonly\": on\n{body}"), ReadOnly::On),
+        (
+            format!("{head}\"read\\u005Fonly\": on\n{body}"),
+            ReadOnly::On,
+        ),
+        (format!("{head}read_only: off\n{body}"), ReadOnly::Off),
+        (format!("{head}{body}"), ReadOnly::Off),
+        (
+            format!("{head}{body}\nThe read_only: on line belongs in the frontmatter.\n"),
+            ReadOnly::Off,
+        ),
+        (format!("{head}read_only: [on\n{body}"), ReadOnly::Off),
+        // Windows line endings still lock. A leading byte-order mark and a
+        // double-quoted key folded across lines with a backslash-newline
+        // (a multi-line implicit key, which YAML refuses) do not: the
+        // shortcut answers what the full parse answers for each.
+        (
+            format!("{head}read_only: on\n{body}").replace('\n', "\r\n"),
+            ReadOnly::On,
+        ),
+        (
+            format!("\u{feff}{head}read_only: on\n{body}"),
+            ReadOnly::Off,
+        ),
+        (
+            format!("{head}\"read\\\n  _only\": on\n{body}"),
+            ReadOnly::Off,
+        ),
+        (
+            format!("{head}\"read\\\n  _only\": on\n{body}").replace('\n', "\r\n"),
+            ReadOnly::Off,
+        ),
+        ("no frontmatter at all".to_string(), ReadOnly::Off),
+        ("---\nread_only: on\n".to_string(), ReadOnly::Off),
+        (String::new(), ReadOnly::Off),
+    ];
+    for (source, expected) in &cases {
+        assert_eq!(read_only_of_source(source), *expected, "{source:?}");
+        let full = match crystalline_core::parse_engram(source) {
+            Ok(engram) => Manifest::from_engram(&engram, source).read_only(),
+            Err(_) => ReadOnly::Off,
+        };
+        assert_eq!(full, *expected, "the full parse agrees on {source:?}");
+    }
+}
+
 #[test]
 fn read_only_at_reads_the_folder_manifest_and_defaults_to_off() {
     let dir = tempfile::tempdir().unwrap();

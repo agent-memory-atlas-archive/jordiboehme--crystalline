@@ -331,13 +331,26 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
         }
         // Virtual-domain routing bullets for `prompt system`, served from the
         // daemon's warm state so the prompt stays inside its latency budget.
-        "routing_bullets" => (
-            envelope_ok(
-                serde_json::to_value(shared.engine.virtual_routing_bullets().await)
-                    .unwrap_or(Value::Null),
-            ),
-            false,
-        ),
+        // The locked virtual domains ride along under `$read_only`: no domain
+        // name passes the validator; a hand-registered $ name is left out of
+        // the answer, so an older client still parses it as bullets.
+        "routing_bullets" => {
+            let (bullets, read_only) = shared.engine.virtual_routing().await;
+            let mut answer: serde_json::Map<String, Value> = bullets
+                .into_iter()
+                .filter(|(name, _)| !name.starts_with('$'))
+                .map(|(name, lines)| (name, json!(lines)))
+                .collect();
+            let read_only: Vec<String> = read_only
+                .into_iter()
+                .filter(|name| !name.starts_with('$'))
+                .collect();
+            answer.insert(
+                crate::client::ROUTING_READ_ONLY_KEY.to_string(),
+                json!(read_only),
+            );
+            (envelope_ok(Value::Object(answer)), false)
+        }
         // Scaffold a virtual domain's MANIFEST from markdown the CLI built.
         "scaffold_manifest" => {
             let domain = req.get("domain").and_then(Value::as_str).unwrap_or("");
@@ -1604,5 +1617,74 @@ mod tests {
         embed_onto_response(&engine, false, &mut data).await;
         assert!(data.get("embedded_chunks").is_none(), "{data}");
         assert!(data.get("embed_scheduled").is_none(), "{data}");
+    }
+
+    /// The daemon's `mounted_routing` answer carries each mounted row's
+    /// `domain_read_only` from the source's cached routing model, so the
+    /// session-start block can mark a locked mounted domain.
+    #[tokio::test]
+    async fn mounted_routing_carries_each_rows_read_only_mark() {
+        use crystalline_remote::{
+            Cached, CredentialKind, ROUTING_FILE, SourceRecord, SourceSet, update_sources,
+            write_cached,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let remote_dir = tmp.path().join("remote");
+        let record = SourceRecord {
+            url: "http://127.0.0.1:9".to_string(),
+            name: "acme".to_string(),
+            account: "keeper".to_string(),
+            kind: CredentialKind::Token,
+            token_endpoint: None,
+            revocation_endpoint: None,
+            connected_at: chrono::Utc::now(),
+            mounts: Vec::new(),
+            domains: None,
+            from_env: false,
+        };
+        let host = record.host_dir(&remote_dir);
+        update_sources(&remote_dir, |file| {
+            file.upsert(record.clone());
+            Ok(())
+        })
+        .unwrap();
+        write_cached(
+            &host,
+            ROUTING_FILE,
+            &Cached {
+                account: "keeper".to_string(),
+                etag: "e".to_string(),
+                fetched_at: chrono::Utc::now(),
+                data: json!({ "domains": [
+                    { "name": "locked", "bullets": ["Route here"], "domain_read_only": true },
+                    { "name": "open", "bullets": ["Route there"] },
+                ] }),
+                last_failure: None,
+            },
+        )
+        .unwrap();
+
+        let store = crystalline_index::TursoStore::open_in_memory()
+            .await
+            .unwrap();
+        let engine = Arc::new(Engine::new(
+            Arc::new(tokio::sync::Mutex::new(store)),
+            crystalline_core::config::GlobalConfig::default(),
+            None,
+            None,
+        ));
+        engine.set_sources(Arc::new(SourceSet::load(remote_dir, Vec::new(), |_| None)));
+        let shared = Arc::new(Shared::for_test(engine));
+
+        let (reply, _) = handle(
+            &json!({ "v": 1, "cmd": "mounted_routing", "deadline_ms": 1 }),
+            &shared,
+        )
+        .await;
+        assert_eq!(reply["ok"], true, "{reply}");
+        let rows = reply["data"]["domains"].as_array().unwrap();
+        let row = |name: &str| rows.iter().find(|d| d["name"] == name).unwrap();
+        assert_eq!(row("locked")["domain_read_only"], true, "{reply}");
+        assert_eq!(row("open")["domain_read_only"], false, "{reply}");
     }
 }

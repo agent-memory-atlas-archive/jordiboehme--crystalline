@@ -29,9 +29,9 @@ impl Engine {
     /// `rest::draft_links`'s `mint` and `list`, which name the CALLER's own
     /// account and so read nobody else's rows at all; `rest::draft_links`'s
     /// `open_link`, which names the grant row's `owner`; and, on the engine
-    /// side, [`Engine::granted_read`], [`Engine::teach_granted_miss`],
-    /// [`Engine::screen_granted_path`] and
-    /// [`Engine::screen_joined_attachment`], each of which names an owner that
+    /// side, `Engine::granted_read`, `Engine::teach_granted_miss`,
+    /// `Engine::screen_granted_path` and
+    /// `Engine::screen_joined_attachment`, each of which names an owner that
     /// came out of a grant row this instance minted. **No caller takes an
     /// actor from a request**, and one that did would be answering one reader
     /// with another reader's unshared work.
@@ -877,7 +877,7 @@ impl Engine {
         review: Option<crystalline_core::config::ReviewMode>,
     ) -> Result<()> {
         let mut file_guard = self.file_config.write().unwrap();
-        let mut file = self.fresh_file_config(&file_guard);
+        let mut file = self.fresh_file_config(&file_guard)?;
         let Some(entry) = file.domains.get_mut(domain) else {
             return Err(EngineError::UnknownDomain {
                 domain: domain.to_string(),
@@ -986,7 +986,7 @@ impl Engine {
         // guard is released well before the awaits that follow.
         let removed = {
             let mut file_guard = self.file_config.write().unwrap();
-            let mut file = self.fresh_file_config(&file_guard);
+            let mut file = self.fresh_file_config(&file_guard)?;
             let removed = match file.domains.shift_remove(name) {
                 Some(entry) => entry,
                 None => {
@@ -1111,7 +1111,7 @@ impl Engine {
     /// another instance's current work, and its registration is a registration
     /// (`kept: "hosted_elsewhere"`). And the domain is
     /// **absent from the configuration**, resolved through
-    /// [`Engine::registered_domain_names_checked`] - the three tiers a *named*
+    /// `Engine::registered_domain_names_checked` - the three tiers a *named*
     /// lookup resolves through, so a domain the file gained after startup is
     /// registered here as it is everywhere else. A configuration that could not
     /// be read (unparseable, or not there) is not evidence of absence: the

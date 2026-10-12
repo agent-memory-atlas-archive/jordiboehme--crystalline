@@ -2183,6 +2183,18 @@ fn the_postgres_upsert_probe_is_planned_per_call() {
     );
 }
 
+/// The body of the function whose signature starts with `signature`, up to
+/// the closing brace at the signature's own indentation, so a function
+/// inside an `impl` block is cut where it ends, not at the end of the impl.
+fn function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+    let start = source.find(signature).expect("the function is in the file");
+    let line_start = source[..start].rfind('\n').map_or(0, |i| i + 1);
+    let indent = &source[line_start..start];
+    let close = format!("\n{indent}}}\n");
+    let end = start + source[start..].find(&close).expect("the function ends");
+    &source[start..end]
+}
+
 /// The child rows of a postgres upsert are deleted in one round trip. Each
 /// statement is a round trip to the server, and a full reindex runs the child
 /// delete once per engram, so six statements here made the full reindex six
@@ -2190,11 +2202,7 @@ fn the_postgres_upsert_probe_is_planned_per_call() {
 #[test]
 fn the_postgres_child_delete_is_one_statement() {
     let src = include_str!("../../src/postgres/mod.rs");
-    let start = src
-        .find("async fn delete_children(")
-        .expect("delete_children exists");
-    let end = start + src[start..].find("\n}\n").expect("delete_children ends");
-    let body = &src[start..end];
+    let body = function_body(src, "async fn delete_children(");
     assert_eq!(
         body.matches("sqlx::query(").count(),
         1,

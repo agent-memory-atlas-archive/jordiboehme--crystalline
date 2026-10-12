@@ -111,8 +111,10 @@
  * dials the domain's number (`dialNumber`). The mixer is made first in the
  * effect and read before anything resumes the context. When the screen is
  * done or skipped the sound fades out and the session gets its keys back.
- * The screen's state is kept in a ref across StrictMode's remount, so the
- * second mount (whose context the first one's cleanup suspended, and which
+ * An opening question (`Opening`) stands before the connecting screen and
+ * holds the session busy the same way; it is silent, and the dial starts
+ * when the connecting screen mounts. The screen's state is kept in a ref
+ * across StrictMode's remount, so the second mount (whose context the first one's cleanup suspended, and which
  * finds the key already set) holds its own session busy and dials on its
  * own director. The same one subscription hears the carrier (C27): a drop
  * hangs up (`director.carrier`) and flashes `NO CARRIER`, the return after
@@ -150,6 +152,7 @@ import {
 } from "./paths";
 import { createSession, type Session } from "./session";
 import { Connecting } from "./ui/Connecting";
+import { Opening } from "./ui/Opening";
 import { DeviceRefusal } from "./ui/DeviceRefusal";
 import { GAME_LEGEND } from "./ui/keys";
 import { LevelSelect } from "./ui/LevelSelect";
@@ -247,6 +250,12 @@ export default function ExploreRoute() {
   const [dialIn, setDialIn] = useState<DialIn | null>(null);
   const dialInRef = useRef<DialIn | null>(null);
   const hangUpRef = useRef<(() => void) | null>(null);
+  // The opening question comes first: it stands over the first room until
+  // it is done, and the dial-in starts only then (`startDialRef`, made by
+  // the mount's director). Kept in a ref too across StrictMode's remount.
+  const [opening, setOpening] = useState(false);
+  const openingRef = useRef(false);
+  const startDialRef = useRef<(() => void) | null>(null);
   // A carrier change heard while the connecting screen shows, held until it
   // is done (the latest one), and what says a change once it is.
   const heldCarrierRef = useRef<boolean | null>(null);
@@ -323,11 +332,20 @@ export default function ExploreRoute() {
     });
     sessionRef.current = session;
     if (dialling !== null) {
-      // The connecting screen holds the station until it is done.
+      // The opening and then the connecting screen hold the station until
+      // they are done. A remount keeps the phase it was in.
+      if (dialInRef.current === null) {
+        openingRef.current = true;
+        setOpening(true);
+      }
       dialInRef.current = dialling;
       markDialledIn();
       session.setBusy(true);
-      hangUpRef.current = director.dial(dialling.number);
+      const dial = () => {
+        hangUpRef.current = director.dial(dialling.number);
+      };
+      if (openingRef.current) startDialRef.current = dial;
+      else dial();
       setDialIn(dialling);
     } else {
       session.setBusy(false);
@@ -377,6 +395,7 @@ export default function ExploreRoute() {
     return () => {
       unsubscribe();
       hangUpRef.current = null;
+      startDialRef.current = null;
       sayCarrierRef.current = null;
       sessionRef.current = null;
       requestedRef.current = null;
@@ -394,6 +413,16 @@ export default function ExploreRoute() {
     requestedRef.current = next;
     session.go(next);
   }, [pathname, search]);
+
+  // The opening is done or skipped: the connecting screen shows and the
+  // director dials in. The session stays held, inside the key or click.
+  const opened = useCallback(() => {
+    openingRef.current = false;
+    setOpening(false);
+    const dial = startDialRef.current;
+    startDialRef.current = null;
+    dial?.();
+  }, []);
 
   // The connecting screen is done or skipped: the sound fades, the
   // station gets its keys back, inside the key or click that skipped it.
@@ -470,7 +499,8 @@ export default function ExploreRoute() {
           onClose={closeLift}
         />
       )}
-      {dialIn !== null && (
+      {dialIn !== null && opening && <Opening onDone={opened} />}
+      {dialIn !== null && !opening && (
         <Connecting
           number={dialIn.number}
           name={dialIn.name}

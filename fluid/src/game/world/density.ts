@@ -34,7 +34,9 @@
  * numbers: measured with the hero pass (2.6a), the seeds give 15.58 floor
  * props per 100 floor cells (15.97 with every hero taken out; 190 of the
  * 300 carry one), and the canned hub, whose own seed draws the hoverboard
- * (2.6c), 15.63 to 17.05 clean.
+ * (2.6c), 15.63 to 17.05 clean. At the 0.25.1 shares (more heroes and
+ * more rare props) the seeds give 15.81 (290 of the 300 carry a hero) and
+ * the clean canned hub 16.34 to 17.90.
  *
  * This is the generator side: it imports only `props.ts`, `sites.ts`,
  * `layout.ts` and `types.ts`, and never `move.ts` or `render/`.

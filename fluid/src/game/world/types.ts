@@ -498,7 +498,10 @@ export type HeroKind =
   | "moon-rocket"
   | "thunder-hammer"
   | "police-box"
-  | "slab-walker";
+  | "slab-walker"
+  | "turntable"
+  | "camera"
+  | "neon-bike";
 
 /**
  * Where a hero kind stands (H8): flush on one or two hall wall edges
@@ -568,12 +571,14 @@ export interface InteriorPiece {
 
 /**
  * What a surface is for (C3): a desk top, a bench top, a table, a shelf
- * level or cabinet top, or an `under` spot for the trap and the case -
+ * level or cabinet top, an `under` spot for the trap and the case -
  * ordinarily below a host's top (the floor in its knee space, or a lower
  * shelf), but the service trolley's own deck top counts too: `under`
- * names the curio slot, not the geometry.
+ * names the curio slot, not the geometry - or a crate's lid (0.25.1),
+ * which only the closed and stacked pizza boxes stand on.
  */
-export type SurfaceClass = "desk" | "bench" | "table" | "shelf" | "under";
+export type SurfaceClass =
+  "desk" | "bench" | "table" | "shelf" | "under" | "crate";
 
 /**
  * A rectangle a curio may stand on (C3), in its host's local terms at turn
@@ -614,7 +619,16 @@ export type CurioKind =
   | "breadbin-computer"
   | "slim-computer"
   | "space-bricks"
-  | "soot-puffs";
+  | "soot-puffs"
+  // 0.25.1: the desk and snack slots
+  | "floppy-disk"
+  | "pizza-box"
+  | "lottery-ticket"
+  | "disk-525"
+  // 0.25.1: the figure, paper and radio slots
+  | "penguin-figure"
+  | "report-sheets"
+  | "radio-set";
 
 /**
  * One curio (C1): `x` and `y` in `Decor`'s continuous cell units, the
@@ -694,11 +708,32 @@ export interface Finish {
 }
 
 /**
- * The decal kinds (2.7 C14), and the airlock's hazard `ring` round its
- * floor's centre (M3 C24), which no generated room lays.
+ * The decal kinds (2.7 C14), the airlock's hazard `ring` round its
+ * floor's centre (M3 C24), which no generated room lays, and the three
+ * pixel-set wall decals of 0.25.1 (`PixelDecalKind`).
  */
 export type DecalKind =
-  "chevrons" | "arrow" | "grime" | "streak" | "rust" | "stencil" | "ring";
+  | "chevrons"
+  | "arrow"
+  | "grime"
+  | "streak"
+  | "rust"
+  | "stencil"
+  | "ring"
+  | PixelDecalKind;
+
+/**
+ * The wall decals set in pixels rather than from an atlas tile (0.25.1
+ * D-2, D-4): the spray-painted `tag`, the hand-written numbers `scribble`
+ * and the numbers `plate` beside a door. `variant` picks the colour.
+ */
+export type PixelDecalKind = "tag" | "scribble" | "plate";
+
+/** The decal kinds drawn from a tile of the decal atlas. */
+export type TiledDecalKind = Exclude<
+  DecalKind,
+  "stencil" | "ring" | PixelDecalKind
+>;
 
 /**
  * The words a floor stencil may read instead of a bay (M3 C24): `cycle`,

@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.25.0"
+version = "0.25.1"
 authors = ["Jordi Böhme <jordi@boehme-lopez.de>"]
 edition = "2024"
 license = "MPL-2.0"
@@ -245,8 +245,17 @@ tiktoken-rs = "0.12.0"
 # target directory stays a fraction of full-DWARF size. Interactive debugger
 # variable inspection is the one thing this costs; release builds are
 # untouched.
+#
+# Packed: on macOS the default (unpacked) leaves every incremental build's
+# object files in target/debug/deps, where they pile up at about 300,000 a
+# working day. macOS lists that directory once per process (the first HTTP
+# client reads the system proxy settings, which asks for the main bundle), so
+# a test process paid 13 s at 1.4 million entries and up to 87 s under load.
+# Packed writes one .dSYM per binary instead (about 0.6 s per test-binary link
+# on macOS, no measurable cost on Linux) and backtraces keep file:line.
 [profile.dev]
 debug = "line-tables-only"
+split-debuginfo = "packed"
 
 # Dependencies carry no debug info: our own code keeps line tables for
 # backtraces, and the dependency graph (turso, candle, axum, rmcp) stops

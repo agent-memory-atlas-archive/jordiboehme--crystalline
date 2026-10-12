@@ -8,7 +8,7 @@
 //! is the resolver that turns one of those, plus the membership records in the
 //! auth database, into a [`DomainRight`].
 //!
-//! The policy itself is one small synchronous function, [`decide`]. Both public
+//! The policy itself is one small synchronous function, `decide`. Both public
 //! answers - [`DomainAccess::right`] for a single domain and
 //! [`DomainAccess::hidden_domains`] for the whole set - are folds over it, so
 //! the per-domain answer and the bulk filter cannot drift apart. They read the
@@ -243,6 +243,75 @@ fn instance_cap(principal: &Principal) -> DomainRight {
     }
 }
 
+/// `right` under the instance cap of `principal`: an invitation widens what
+/// an account may reach, never what its role lets it do.
+fn capped(principal: &Principal, right: DomainRight) -> DomainRight {
+    let cap = instance_cap(principal);
+    if right < cap { right } else { cap }
+}
+
+/// What one caller may write, read from the store once: the principal, the
+/// private domains with this account's levels on them, and its write list.
+/// Answers [`DomainAccess::write_right`] and
+/// [`DomainAccess::write_list_excludes`] for any domain with no further store
+/// read, so a listing asks the store a fixed number of times, not per row.
+/// Built by [`DomainAccess::write_rights`]; a snapshot, so it is asked
+/// within one request and never kept.
+pub struct WriteRights {
+    principal: Principal,
+    /// Every private domain's acl row, keyed by its stored (trimmed) name.
+    acls: HashMap<String, DomainAcl>,
+    /// This account's membership levels, keyed the same way. Empty for any
+    /// principal that is not an account.
+    levels: HashMap<String, MemberLevel>,
+    /// This account's write list, `None` when it has none or is no account.
+    write_list: Option<Vec<String>>,
+}
+
+impl WriteRights {
+    /// [`DomainAccess::write_right`] for `domain`.
+    pub fn write_right(&self, domain: &str) -> DomainRight {
+        let right = self.decided(domain);
+        let right = if right > DomainRight::Read && self.off_list(domain) {
+            DomainRight::Read
+        } else {
+            right
+        };
+        capped(&self.principal, right)
+    }
+
+    /// [`DomainAccess::write_list_excludes`] for `domain`.
+    pub fn write_list_excludes(&self, domain: &str) -> Option<String> {
+        if capped(&self.principal, self.decided(domain)) < DomainRight::Write {
+            return None;
+        }
+        match &self.principal {
+            Principal::Account { name, .. } if self.off_list(domain) => Some(name.clone()),
+            _ => None,
+        }
+    }
+
+    /// [`DomainAccess::decided_right`] from the rows already read. The name
+    /// is trimmed as the store trims it before an acl or membership lookup.
+    fn decided(&self, domain: &str) -> DomainRight {
+        if matches!(self.principal, Principal::Unrestricted) {
+            return DomainRight::Own;
+        }
+        let domain = domain.trim();
+        let acl = self.acls.get(domain);
+        let level = match (acl, &self.principal) {
+            (Some(_), Principal::Account { .. }) => self.levels.get(domain).copied(),
+            _ => None,
+        };
+        decide(&self.principal, acl, level)
+    }
+
+    /// Whether this account has a write list that does not name `domain`.
+    fn off_list(&self, domain: &str) -> bool {
+        matches!(&self.write_list, Some(patterns) if !write_list_matches(patterns, domain))
+    }
+}
+
 /// Whether a write list names `domain`: an entry equal to it, or an entry
 /// ending in `*` whose stem it starts with.
 ///
@@ -410,11 +479,44 @@ impl DomainAccess {
     /// owner is [`DomainRight::Own`] before any of it, an anonymous caller caps
     /// at [`DomainRight::Read`] (the MCP open tier is carved out by its own
     /// surface, on the setting that creates it, before this is ever called),
-    /// and an admin caps at `Own`, which is what [`decide`] already gave them.
+    /// and an admin caps at `Own`, which is what `decide` already gave them.
     pub async fn write_right(&self, scope: &Scope, domain: &str) -> Result<DomainRight> {
-        let (principal, right) = self.resolved_right(scope, domain).await?;
-        let cap = instance_cap(&principal);
-        Ok(if right < cap { right } else { cap })
+        let (principal, right) = self.decided_right(scope, domain).await?;
+        // The write list can only lower a right, so a role that already reads
+        // at most has its answer without it, and a broken list table cannot
+        // change it.
+        let right = capped(&principal, right);
+        if right > DomainRight::Read && self.off_list_account(&principal, domain).await?.is_some() {
+            return Ok(DomainRight::Read);
+        }
+        Ok(right)
+    }
+
+    /// [`WriteRights`] for `scope`, read from the store once: the principal,
+    /// every private domain, this account's memberships and its write list.
+    /// A listing asks this once and every row from the answer.
+    pub async fn write_rights(&self, scope: &Scope) -> Result<WriteRights> {
+        let principal = self.principal(scope).await?;
+        let acls = self
+            .auth
+            .private_domains()
+            .await?
+            .into_iter()
+            .map(|acl| (acl.domain.clone(), acl))
+            .collect();
+        let (levels, write_list) = match &principal {
+            Principal::Account { name, .. } => (
+                self.auth.memberships_of(name).await?.into_iter().collect(),
+                self.auth.write_list(name).await?,
+            ),
+            _ => (HashMap::new(), None),
+        };
+        Ok(WriteRights {
+            principal,
+            acls,
+            levels,
+            write_list,
+        })
     }
 
     /// The account whose write list keeps `scope` from writing `domain`, or
@@ -430,9 +532,7 @@ impl DomainAccess {
     /// `crystalline users writes` takes.
     pub async fn write_list_excludes(&self, scope: &Scope, domain: &str) -> Result<Option<String>> {
         let (principal, right) = self.decided_right(scope, domain).await?;
-        let cap = instance_cap(&principal);
-        let unlisted = if right < cap { right } else { cap };
-        if unlisted < DomainRight::Write {
+        if capped(&principal, right) < DomainRight::Write {
             return Ok(None);
         }
         self.off_list_account(&principal, domain).await
@@ -442,7 +542,7 @@ impl DomainAccess {
     /// `needed` on `domain` (an owner or manager step), or `None` when the
     /// list is not the reason.
     ///
-    /// Compared with the domain answer alone ([`decide`], no instance cap),
+    /// Compared with the domain answer alone (`decide`, no instance cap),
     /// because owning or managing a domain is what the domain grants: a
     /// private domain's owner who is an instance editor owns it. An instance
     /// editor asking for an owner step on a shared domain gets `None`, since
@@ -496,13 +596,7 @@ impl DomainAccess {
         domain: &str,
     ) -> Result<(Principal, DomainRight)> {
         let (principal, right) = self.decided_right(scope, domain).await?;
-        if right <= DomainRight::Read {
-            return Ok((principal, right));
-        }
-        if let Principal::Account { name, .. } = &principal
-            && let Some(patterns) = self.auth.write_list(name).await?
-            && !write_list_matches(&patterns, domain)
-        {
+        if right > DomainRight::Read && self.off_list_account(&principal, domain).await?.is_some() {
             return Ok((principal, DomainRight::Read));
         }
         Ok((principal, right))
@@ -563,10 +657,10 @@ impl DomainAccess {
     /// domain's name out of these records (a removal, the old name of a
     /// rename), so the change can carry who could read the domain a moment
     /// before it, rather than leaving a listener to ask a registry the change
-    /// is emptying. Each account is decided by [`decide`], the rule every
+    /// is emptying. Each account is decided by `decide`, the rule every
     /// other answer here uses: the owner, every member at any level and every
     /// instance admin; a disabled account reads nothing, as
-    /// [`DomainAccess::principal`] rules. Names are the store's own folded
+    /// `DomainAccess::principal` rules. Names are the store's own folded
     /// spelling. The machine owner is never named: it reads every domain.
     pub async fn readers_of(&self, domain: &str) -> Result<Option<HashSet<String>>> {
         let Some(acl) = self.auth.domain_visibility(domain).await? else {
@@ -1584,5 +1678,82 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    /// B-3: [`WriteRights`], read once, answers exactly what the per-domain
+    /// [`DomainAccess::write_right`] and [`DomainAccess::write_list_excludes`]
+    /// answer, for every caller and every domain: the write-list fixture
+    /// above, plus a private domain with an editor and a manager member, an
+    /// account the store does not have, a padded name and a name that
+    /// differs only in case.
+    #[tokio::test]
+    async fn write_rights_answer_what_the_per_domain_questions_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = store(&dir).await;
+        cast(&auth).await;
+        for name in ["watcher", "crew", "lead"] {
+            auth.add_user(name, name, None, Role::Editor, "pw12345678")
+                .await
+                .unwrap();
+        }
+        auth.set_domain_visibility("lab", true, "keeper")
+            .await
+            .unwrap();
+        auth.upsert_domain_member("lab", "watcher", MemberLevel::Viewer, "keeper")
+            .await
+            .unwrap();
+        auth.upsert_domain_member("lab", "crew", MemberLevel::Editor, "keeper")
+            .await
+            .unwrap();
+        auth.upsert_domain_member("lab", "lead", MemberLevel::Manager, "keeper")
+            .await
+            .unwrap();
+        auth.upsert_domain_member("lab", "mem", MemberLevel::Editor, "keeper")
+            .await
+            .unwrap();
+        auth.set_write_list("out", &list(&["second"]))
+            .await
+            .unwrap();
+        auth.set_write_list("mem", &list(&["second"]))
+            .await
+            .unwrap();
+        auth.set_write_list("watcher", &list(&["lab"]))
+            .await
+            .unwrap();
+        auth.set_write_list("boss", &list(&["second"]))
+            .await
+            .unwrap();
+        auth.set_write_list("crew", &list(&["la*"])).await.unwrap();
+        let access = DomainAccess::new(auth);
+        let scopes = [
+            Scope::Unrestricted,
+            Scope::Anonymous,
+            user("keeper", false),
+            user("boss", true),
+            user("boss", false),
+            user("mem", false),
+            user("OUT", false),
+            user("out", false),
+            user("watcher", false),
+            user("crew", false),
+            user("lead", false),
+            user("nobody", false),
+        ];
+        let domains = ["open", "second", "lab", " lab ", "Lab", "agents-x"];
+        for scope in &scopes {
+            let rights = access.write_rights(scope).await.unwrap();
+            for domain in domains {
+                assert_eq!(
+                    rights.write_right(domain),
+                    access.write_right(scope, domain).await.unwrap(),
+                    "write_right for {scope:?} on {domain:?}"
+                );
+                assert_eq!(
+                    rights.write_list_excludes(domain),
+                    access.write_list_excludes(scope, domain).await.unwrap(),
+                    "write_list_excludes for {scope:?} on {domain:?}"
+                );
+            }
+        }
     }
 }

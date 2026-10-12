@@ -92,6 +92,9 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        // Before anything is downloaded or origin state written: the
+        // registration at the end would refuse a file that does not parse.
+        self.refuse_a_config_that_does_not_parse()?;
 
         // The name, in order: the caller's own; else the `domain_name` the
         // repository's MANIFEST declares, read through the forge before
@@ -287,7 +290,7 @@ impl Engine {
         // a half-applied config and no env value bakes into the saved file.
         {
             let mut file_guard = self.file_config.write().unwrap();
-            let mut file = self.fresh_file_config(&file_guard);
+            let mut file = self.fresh_file_config(&file_guard)?;
             // Adopting a registered domain keeps everything already decided
             // about it - whether its artifacts are provisioned, whether it
             // reviews changes, the aliases it answers to and the canonical
@@ -814,7 +817,7 @@ impl Engine {
 
     /// Bootstraps every env-defined team domain that carries an origin but
     /// has no local origin state yet, bringing each up through
-    /// [`Engine::origin_update_one`] so bootstrapping and a plain background
+    /// `Engine::origin_update_one` so bootstrapping and a plain background
     /// pull stay exactly one code path. Called once from the daemon's startup
     /// task. A missing GitHub connection is not a failure - the background
     /// poller retries the moment a connection lands - so `NotConnected` only
@@ -883,7 +886,7 @@ impl Engine {
     ///
     /// `detail` names the unshared work instead of only counting it: each
     /// domain entry then carries a `detail` block grouping the changed paths
-    /// by kind (see [`origin::local_change_detail`]). It is opt-in because it
+    /// by kind (see `origin::local_change_detail`). It is opt-in because it
     /// costs a second walk of every domain's working tree, so `local_changes`
     /// stays the bare count for every caller that only wants to know whether
     /// there is anything to share.
@@ -1170,7 +1173,7 @@ impl Engine {
     /// Runs one scheduling pass of the background origin poller: checks
     /// whether collaboration is enabled, connected and not paused for a
     /// shared rate limit, then brings every due origin-connected domain up
-    /// to date via [`Engine::origin_update_one`], the same per-domain pull
+    /// to date via `Engine::origin_update_one`, the same per-domain pull
     /// an on-demand `origin_update` runs, under the same per-domain lock, so
     /// a poll tick and a concurrent on-demand update on the same domain
     /// never interleave. This method never talks to GitHub itself; it only
@@ -1551,7 +1554,7 @@ impl Engine {
     /// `crystalline_remote::ops::ShareOptions::files`).
     ///
     /// `actor` is who the share runs as, which decides the credential the
-    /// forge writes go out on (see [`Engine::resolve_share_provider`]); it is
+    /// forge writes go out on (see `Engine::resolve_share_provider`); it is
     /// inert while `github.share_identity` is `instance`, the default.
     ///
     /// The login that credential was connected as is recorded on the proposal
@@ -2420,7 +2423,7 @@ impl Engine {
     /// never interleaves with a share's pull; refuses on a read-only instance.
     /// A team domain restores from the base copy and re-indexes exactly the
     /// touched paths; a reviewing domain clears the acting actor's own drafts
-    /// through [`DomainView::drop`] and `overlay_files::clear` and moves
+    /// through `DomainView::drop` and `overlay_files::clear` and moves
     /// nothing in the folder. One refused path never stops the others.
     pub async fn discard_local_changes(
         &self,
@@ -2700,7 +2703,7 @@ impl Engine {
     /// working tree.
     ///
     /// `keep` is `"mine"` or `"theirs"`; exactly one of `keep` or `content`
-    /// must be supplied (see [`origin::resolution_from`]). Refuses with
+    /// must be supplied (see `origin::resolution_from`). Refuses with
     /// `github.enabled`'s message when collaboration is off, and with
     /// `EngineError::ReadOnly` on a read-only instance.
     ///
@@ -3162,7 +3165,7 @@ impl Engine {
             // it is the one resolver in this file that does. Every other one
             // reaching a real machine path costs a test a read; this one is
             // reached by `journal_remove_domain`, which is
-            // `std::fs::remove_dir_all` under `<state_dir>/overlays/<domain>`.
+            // `crystalline_core::tree::remove_tree` under `<state_dir>/overlays/<domain>`.
             // A fixture that forgot [`Engine::with_state_dir`] would delete a
             // developer's own drafts by domain name, silently (the sweep is
             // best effort) and unrecoverably (the journal is the only copy of a
@@ -3394,8 +3397,8 @@ impl Engine {
     /// Last-writer provenance, never authorship: it says which actor wrote the
     /// revision on disk, not who the knowledge belongs to.
     ///
-    /// Under the domain's [`Engine::origin_lock`], for the reason
-    /// [`Engine::share_facts`] gives: a status read that races a share would
+    /// Under the domain's `Engine::origin_lock`, for the reason
+    /// `Engine::share_facts` gives: a status read that races a share would
     /// otherwise compare a half-written pair and attribute a delta nobody made.
     pub async fn owned_local_changes(&self, domain: &str, account: &str) -> Option<u64> {
         let lock = self.origin_lock(domain);

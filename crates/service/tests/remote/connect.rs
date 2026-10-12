@@ -151,8 +151,8 @@ fn no_paste(_note: String) -> Option<String> {
 }
 
 /// Build an HTTP client once before a clock starts: the first one in a
-/// process loads the platform's certificate roots, which takes a moment of
-/// its own and is no network wait.
+/// process reads the system proxy settings, which takes a moment of its own
+/// and is no network wait.
 fn warm_up() {
     let _ = crystalline_remote::http_client();
 }

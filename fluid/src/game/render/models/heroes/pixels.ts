@@ -2,7 +2,7 @@
  * The block-pixel font and the pixel pictures built from it: titles and
  * demos on the arcade cabinets' attract screens and marquees (H14), the
  * pocket console's two screen pictures (C16), the small "<=>" mark on
- * the back of the beige laptop's lid (C17), and the 2.6d and 2.6f props'
+ * the beige laptop's screen (C17), and the 2.6d and 2.6f props'
  * marks (`marks.ts`, 2.6d C16, 2.6f C13-C17).
  *
  * A picture is a list of rows of characters, row 0 at the top, one
@@ -31,8 +31,10 @@ import type { Surfaces } from "../common";
 
 /**
  * The block-pixel font: `A` to `Z`, `a` to `z`, `0` to `9`, the space, a
- * one-pixel period, `&` (2.6f C15, the police box's door notice) and the
- * three marks `<`, `=` and `>` (the laptop's
+ * one-pixel period, `&` (2.6f C15, the police box's door notice), the
+ * hyphen (0.25.1, the camera's model name, its middle row lit), `!`, `?`
+ * and the comma (0.25.1, for the marks that carry their own punctuation),
+ * and the three marks `<`, `=` and `>` (the laptop's
  * "<=>", C17), each glyph 5 rows of 3 cells from the top, `#` lit and `.`
  * dark (the period glyph's own single lit cell sits at its bottom
  * middle). It is the smallest grid a capital letter still reads in, the
@@ -120,6 +122,10 @@ export const PIXEL_FONT: Readonly<Record<string, readonly string[]>> = {
   "=": ["...", "###", "...", "###", "..."],
   ">": ["#..", ".#.", "..#", ".#.", "#.."],
   "&": [".#.", "#.#", ".#.", "#.#", ".##"],
+  "!": [".#.", ".#.", ".#.", "...", ".#."],
+  "?": ["##.", "..#", ".#.", "...", ".#."],
+  ",": ["...", "...", "...", ".#.", "#.."],
+  "-": ["...", "...", "###", "...", "..."],
 };
 
 /** One horizontal run of equal characters: its first column, its row (0 at the top) and its length. */
@@ -260,8 +266,10 @@ export function pixelPanel(
  * about six times the triangles a panel does, inside the curio budget.
  * The one exception is a curio mark on a face that looks up, where no
  * quad can lie (the tape drive's lid and the tape player's top,
- * `retro.ts`): it is built from thin slabs or boxes this thick, runs
- * merged with the runs under them to stay in budget. The designer tower's
+ * `retro.ts`, and the office curios' prints, `office.ts`): it is built
+ * from thin slabs or boxes this thick, runs merged with the runs under
+ * them to stay in budget. The floppy disk's handwriting is thinner, 0.5
+ * mm, since the whole disk stands only 4 mm tall. The designer tower's
  * badge, clock and signature and the ooze canisters' letters
  * (`props/rare.ts`) are `pixelBoxes` at this same lift, inside the
  * roomier prop budget.
