@@ -158,16 +158,52 @@ pub const WORD_GATE_MIN_WORDS: usize = 5;
 /// existed.
 pub const WORD_GATE_MAX_MEAN_LEN: usize = 10;
 
+/// The largest share of a normalized text's non-space characters that may be
+/// Han, Hiragana, Katakana or Hangul before the word check in
+/// [`near_duplicate`] is skipped.
+///
+/// Chinese and Japanese do not separate words with spaces, so what the fold
+/// leaves as "words" are clauses and a word pair means nothing there. A text
+/// of five or more short comma-split clauses passes the count and length
+/// limits above, yet two edits in different clauses can still fail the word
+/// check. Korean does use spaces, but its words are long syllable blocks that
+/// carry a lot of meaning each, so one changed block costs the same pairs
+/// and Hangul stays in the set. Above this share the character score decides
+/// alone; a mostly English text with a few CJK names stays below it and
+/// keeps the word check.
+pub const WORD_GATE_MAX_CJK_SHARE: f64 = 0.3;
+
+/// Whether a character is Han, Hiragana, Katakana, Hangul syllable or jamo.
+fn is_cjk(c: char) -> bool {
+    matches!(c,
+        '\u{4E00}'..='\u{9FFF}'
+        | '\u{3400}'..='\u{4DBF}'
+        | '\u{F900}'..='\u{FAFF}'
+        | '\u{3040}'..='\u{309F}'
+        | '\u{30A0}'..='\u{30FF}'
+        | '\u{31F0}'..='\u{31FF}'
+        | '\u{AC00}'..='\u{D7AF}'
+        | '\u{1100}'..='\u{11FF}'
+        | '\u{3130}'..='\u{318F}')
+}
+
 /// Whether a normalized text is split into enough short words for the word
 /// bigram score to say something about it: at least [`WORD_GATE_MIN_WORDS`]
-/// words with a mean length of at most [`WORD_GATE_MAX_MEAN_LEN`] characters.
+/// words with a mean length of at most [`WORD_GATE_MAX_MEAN_LEN`] characters,
+/// and no more than [`WORD_GATE_MAX_CJK_SHARE`] of its characters in a script
+/// without word spaces.
 fn word_gate_applies(text: &str) -> bool {
-    let (words, chars) = text
-        .split_whitespace()
-        .fold((0usize, 0usize), |(w, c), word| {
-            (w + 1, c + word.chars().count())
-        });
-    words >= WORD_GATE_MIN_WORDS && chars <= WORD_GATE_MAX_MEAN_LEN * words
+    let (mut words, mut chars, mut cjk) = (0usize, 0usize, 0usize);
+    for word in text.split_whitespace() {
+        words += 1;
+        for c in word.chars() {
+            chars += 1;
+            cjk += usize::from(is_cjk(c));
+        }
+    }
+    words >= WORD_GATE_MIN_WORDS
+        && chars <= WORD_GATE_MAX_MEAN_LEN * words
+        && cjk as f64 <= WORD_GATE_MAX_CJK_SHARE * chars as f64
 }
 
 /// Decide whether two normalized texts are near-duplicates: the character
@@ -175,7 +211,8 @@ fn word_gate_applies(text: &str) -> bool {
 /// reaches [`WORD_BIGRAM_FLOOR`].
 ///
 /// The word check only applies when both texts are split into words well
-/// enough for it (see [`WORD_GATE_MIN_WORDS`] and [`WORD_GATE_MAX_MEAN_LEN`]).
+/// enough for it (see [`WORD_GATE_MIN_WORDS`], [`WORD_GATE_MAX_MEAN_LEN`] and
+/// [`WORD_GATE_MAX_CJK_SHARE`]).
 /// A short text or one in a language written without spaces is decided by the
 /// character score alone.
 ///
@@ -400,6 +437,38 @@ mod tests {
         assert!(word_bigram_dice(&a, &b) < WORD_BIGRAM_FLOOR);
         let score = near_duplicate(&a, &b, 0.85);
         assert!(score.is_some_and(|s| s > 0.95), "{score:?}");
+    }
+
+    #[test]
+    fn near_duplicate_accepts_short_chinese_clauses_with_two_edits() {
+        let text = "系统启动之后，会自动检查配置，然后加载全部插件，接着连接本地数据库，\
+                    随后开始监听端口，同时记录运行日志，最后向管理员发通知";
+        let a = normalize(text);
+        let b = normalize(&text.replace("自动", "手动").replace("监听端口", "监听接口"));
+        assert_ne!(a, b);
+        // Short clauses pass the count and length limits, so only the script
+        // share keeps the word check away, and it alone would reject the pair.
+        let words = a.split_whitespace().count();
+        assert!(words >= WORD_GATE_MIN_WORDS);
+        assert!(
+            a.split_whitespace()
+                .map(|w| w.chars().count())
+                .sum::<usize>()
+                <= WORD_GATE_MAX_MEAN_LEN * words
+        );
+        assert!(word_bigram_dice(&a, &b) < WORD_BIGRAM_FLOOR);
+        assert!(!word_gate_applies(&a));
+        let score = near_duplicate(&a, &b, 0.85);
+        assert!(score.is_some(), "{score:?}");
+    }
+
+    #[test]
+    fn a_few_cjk_names_in_english_text_keep_the_word_gate() {
+        let text = normalize(
+            "The build runs on every push to the main branch and the reviewers \
+             Tanaka 田中 and Wang 王 check the result before the release goes out",
+        );
+        assert!(word_gate_applies(&text));
     }
 
     #[test]
