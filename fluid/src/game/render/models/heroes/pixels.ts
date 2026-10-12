@@ -33,8 +33,8 @@ import type { Surfaces } from "../common";
  * The block-pixel font: `A` to `Z`, `a` to `z`, `0` to `9`, the space, a
  * one-pixel period, `&` (2.6f C15, the police box's door notice), the
  * hyphen (0.25.1, the camera's model name, its middle row lit), `!`, `?`
- * and the comma (0.25.1, for the desk marks' own punctuation) and the
- * three marks `<`, `=` and `>` (the laptop's
+ * and the comma (0.25.1, for the marks that carry their own punctuation),
+ * and the three marks `<`, `=` and `>` (the laptop's
  * "<=>", C17), each glyph 5 rows of 3 cells from the top, `#` lit and `.`
  * dark (the period glyph's own single lit cell sits at its bottom
  * middle). It is the smallest grid a capital letter still reads in, the

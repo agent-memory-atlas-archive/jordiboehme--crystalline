@@ -55,7 +55,7 @@
  *   door motion; the recipe builds them in place, closed, only when asked
  *   to (`movers`), which the model checks are.
  * - The neon bike (`CYCLE`) is the enclosed racing cycle from inside
- *   the computer, parked like the bike: its length along `a`, its nose at
+ *   the computer, parked like the red bike: its length along `a`, its nose at
  *   `+a`. Two wheels of one size are its ends (`CYCLE_WHEELS`), each a
  *   glowing tread under a dark cover on each side, so only the rim
  *   glows, set into the narrow shell between the shell's arches. The
@@ -64,7 +64,7 @@
  *   along the belly and over the rear wheel to the tail, its long back
  *   under a smoked canopy. Glowing lines trace the shell's outline a
  *   little inside it on both sides (`cycleLine`, laid by `profileLine`,
- *   which the bike's pinstripe shares) and the canopy's ridge. Every
+ *   which the red bike's pinstripe shares) and the canopy's ridge. Every
  *   light is in one group and breathes; the body carries no text.
  *
  * The numbers each kind is built to are named above its recipe: `BIKE`,
@@ -312,7 +312,7 @@ function grown(poly: readonly P2[], g: number): [number, number][] {
  * A line along the side profile `pts` (`[a, h]`, open), `width` wide, laid
  * on the face between depths `d0` and `d1`: one flat bar per pair of
  * points, each a little longer than its piece so the joints close. The
- * bike's pinstripe and the neon bike's glowing lines.
+ * red bike's pinstripe and the neon bike's glowing lines.
  */
 function profileLine(
   k: Kit,
