@@ -1819,6 +1819,17 @@ impl CollabSession {
         state.failure_detail = Some(detail);
     }
 
+    /// A restore of the room's text that cannot run: the deletion stays the
+    /// open question, and the room is told why its "mine" did not land.
+    fn refuse_restore(&self, state: &mut SessionState, detail: String) {
+        state.pending = Some(PendingConflict::Deleted);
+        let _ = self.tx.send(Frame {
+            from: None,
+            to: None,
+            bytes: Bytes::from(control::encode(&Control::SaveFailed { detail })),
+        });
+    }
+
     /// Suspend saving on an externally deleted engram and let the room decide
     /// between restoring its text and accepting the deletion.
     fn raise_deleted(&self, state: &mut SessionState, detail: String) {
@@ -2029,14 +2040,7 @@ impl CollabSession {
                 // The path could not be read, so nothing is known about what
                 // is there: the conflict stands rather than risking a blind
                 // overwrite.
-                state.pending = Some(PendingConflict::Deleted);
-                let _ = self.tx.send(Frame {
-                    from: None,
-                    to: None,
-                    bytes: Bytes::from(control::encode(&Control::SaveFailed {
-                        detail: err.to_string(),
-                    })),
-                });
+                self.refuse_restore(state, err.to_string());
                 return None;
             }
         }
@@ -2063,14 +2067,7 @@ impl CollabSession {
                 normalized
             }
             Err(err) => {
-                state.pending = Some(PendingConflict::Deleted);
-                let _ = self.tx.send(Frame {
-                    from: None,
-                    to: None,
-                    bytes: Bytes::from(control::encode(&Control::SaveFailed {
-                        detail: err.to_string(),
-                    })),
-                });
+                self.refuse_restore(state, err.to_string());
                 return None;
             }
         };
@@ -2078,14 +2075,7 @@ impl CollabSession {
         // the room's view (draft arm), so the room is the only place that can
         // refuse a switch-on here.
         if self.room_switches_read_only_on(&state.path, &file).await {
-            state.pending = Some(PendingConflict::Deleted);
-            let _ = self.tx.send(Frame {
-                from: None,
-                to: None,
-                bytes: Bytes::from(control::encode(&Control::SaveFailed {
-                    detail: ROOM_SWITCH_ON_REFUSAL.to_string(),
-                })),
-            });
+            self.refuse_restore(state, ROOM_SWITCH_ON_REFUSAL.to_string());
             return None;
         }
         // Through the room's own view when the room is over a draft - it puts
@@ -2146,14 +2136,7 @@ impl CollabSession {
                 // The restore was refused (a document that is not an engram, a
                 // read-only daemon): the conflict stands so the room can try
                 // the other resolution.
-                state.pending = Some(PendingConflict::Deleted);
-                let _ = self.tx.send(Frame {
-                    from: None,
-                    to: None,
-                    bytes: Bytes::from(control::encode(&Control::SaveFailed {
-                        detail: err.to_string(),
-                    })),
-                });
+                self.refuse_restore(state, err.to_string());
                 None
             }
         }

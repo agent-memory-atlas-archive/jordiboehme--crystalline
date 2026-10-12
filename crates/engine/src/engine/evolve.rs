@@ -26,22 +26,21 @@ impl Engine {
         // The swept scope is read back out of the response rather than
         // re-derived from the parameters: an unscoped call defaults to every
         // registered domain, and only the response knows which those were.
-        let mut swept: Vec<String> = value["scope"]["domains"]
-            .as_array()
-            .map(|domains| {
-                domains
-                    .iter()
-                    .filter_map(|d| d.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        swept.extend(
-            value["scope"]["read_only_left_out"]
+        let names = |key: &str| -> Vec<String> {
+            value["scope"][key]
                 .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|d| d.as_str().map(str::to_string)),
-        );
+                .map(|domains| {
+                    domains
+                        .iter()
+                        .filter_map(|d| d.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let swept: Vec<String> = names("domains")
+            .into_iter()
+            .chain(names("read_only_left_out"))
+            .collect();
         // A sweep with no scope of its own looked at every registered domain,
         // so it settles the whole backlog rather than subtracting the names it
         // saw. That is what heals the state file: a domain a human wrote to and
@@ -134,35 +133,35 @@ impl Engine {
         // this caller may not see (see [`Engine::sweep_domain_names`]).
         let (known_domains, respell) = self.sweep_domain_names(&hidden).await;
 
-        let mut swept_scope: Vec<String> = Vec::new();
-        if p.domains.is_empty() {
-            swept_scope = local_domains.clone();
+        let named: Vec<String> = if p.domains.is_empty() {
+            local_domains.clone()
         } else {
+            let mut named = Vec::new();
             for name in &p.domains {
                 // The same resolution every other tool uses, so an unknown name
                 // errors identically and a domain registered after startup is
                 // still found - and a domain this caller may not see is one of
                 // the names that errors.
                 self.domain_entry_scoped(name, &hidden)?;
-                if !swept_scope.contains(name) {
-                    swept_scope.push(name.clone());
+                if !named.contains(name) {
+                    named.push(name.clone());
                 }
             }
-        }
+            named
+        };
 
         // A read-only domain's findings are findings nobody could act on, so
         // the sweep leaves it out, a named one included, and says which. They
         // come back the moment the flag is switched off.
         let mut read_only_left_out: Vec<String> = Vec::new();
-        let mut kept = Vec::with_capacity(swept_scope.len());
-        for name in swept_scope {
+        let mut swept_scope = Vec::with_capacity(named.len());
+        for name in named {
             if self.domain_is_read_only(&name).await {
                 read_only_left_out.push(name);
             } else {
-                kept.push(name);
+                swept_scope.push(name);
             }
         }
-        let swept_scope = kept;
 
         let mut findings: Vec<Finding> = Vec::new();
         let mut truncations: Vec<String> = Vec::new();

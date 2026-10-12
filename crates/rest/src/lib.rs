@@ -1194,12 +1194,10 @@ pub(crate) async fn require_domain_write(
     let scope = identity.scope();
     state.engine.require_domain(domain, &scope).await?;
     let caller = identity.require_editor()?;
-    refuse_off_write_list(state, identity, domain, None).await?;
     // The capped right rather than the bare domain answer, so this gate and the
-    // MCP one are one rule with one spelling (`DomainAccess::write_right`).
-    // `require_editor` above already refuses every account the cap would catch,
-    // so nothing here changes what this route answers; what it buys is that the
-    // rule cannot drift apart from the other surface's copy of it again.
+    // MCP one are one rule with one spelling (`DomainAccess::write_right`). It
+    // carries the write list too, so the list is asked again only to word a
+    // refusal.
     let right = state
         .access
         .write_right(&scope, domain)
@@ -1210,6 +1208,7 @@ pub(crate) async fn require_domain_write(
             ApiError::internal(format!("this domain's membership is unreadable: {e:#}"))
         })?;
     if right < DomainRight::Write {
+        refuse_off_write_list(state, identity, domain, None).await?;
         return Err(ApiError::forbidden(format!(
             "your membership on this domain is {}, and editor access is required",
             member_level_word(right)

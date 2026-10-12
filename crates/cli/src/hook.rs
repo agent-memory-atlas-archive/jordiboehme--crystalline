@@ -722,7 +722,7 @@ pub fn run_stop(harness: Option<&str>) {
                     .effective
                     .domains
                     .iter()
-                    .filter(|(name, _)| !shadowed.contains(*name))
+                    // `writable` already leaves out every domain a server shadows.
                     .filter(|(name, _)| writable.contains(*name)),
                 &origins_dir,
             );
