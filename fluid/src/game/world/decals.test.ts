@@ -817,8 +817,10 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
           expect([0, 1, 2]).toContain(d.variant);
         } else if (d.kind === "scribble") {
           expect([d.width, d.length]).toEqual([0.7, 0.12]);
-          expect(d.h).toBeGreaterThanOrEqual(1.1);
+          expect(d.h).toBeGreaterThanOrEqual(1.3);
           expect(d.h).toBeLessThanOrEqual(1.5);
+          // The whole box over the accent stripe.
+          expect(d.h).toBeGreaterThanOrEqual(1.28);
           expect([0, 1]).toContain(d.variant);
         } else {
           expect([d.width, d.length, d.h, d.variant]).toEqual([

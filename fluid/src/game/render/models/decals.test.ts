@@ -899,9 +899,9 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
 
   it(`keeps the capped hub under ${String(DECAL_BUDGET)} triangles with a tag, a scribble and a plate on top (2.7 C21)`, () => {
     // Mutation caught: a tag's pixels drawn one quad per cell instead of
-    // one per run, which takes the full room past the budget. The tag sits
-    // at its highest and the scribble crosses the stripe, so its cuts count
-    // too.
+    // one per run, which takes the full room past the budget. The tag and
+    // the scribble sit at their highest and lowest, each clear of the
+    // stripe, as the generator lays them.
     const count = (room: RoomSpec) => {
       const mesh = buildRoomMesh(room, LOOK).static;
       let n = 0;
@@ -912,12 +912,18 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
     const hub = cappedHub();
     const extra = [
       onSouth("tag", { h: 0.7, width: 1.6, length: 0.45 }),
-      onSouth("scribble", { h: 1.15, width: 0.7, length: 0.12 }),
+      onSouth("scribble", { h: 1.3, width: 0.7, length: 0.12 }),
       onSouth("plate", { h: 1.55, width: 0.32, length: 0.08 }),
     ];
     const pixels = count({ ...galleryRoom(), decals: extra });
     expect(pixels).toBeGreaterThan(100);
     expect(count(hub) + pixels).toBeLessThan(DECAL_BUDGET);
+    // The scribble at its lowest (1.3 m) never crosses the stripe.
+    const low = { ...galleryRoom(), decals: [extra[1]!] };
+    const scribble = decalQuads(buildRoomMesh(low, LOOK).static, low);
+    expect(scribble.length).toBeGreaterThan(0);
+    for (const q of scribble)
+      expect(q.y0).toBeGreaterThanOrEqual(ACCENT_STRIPE.h1 - 1e-4);
   }, 30_000);
 
   it("draws the gallery's tag, scribble and plate, lifted off their walls and off the stripe", () => {

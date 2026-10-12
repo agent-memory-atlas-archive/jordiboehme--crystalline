@@ -83,8 +83,9 @@
  *      its bottom 0.45 to 0.7 m up, so its whole box stays under the
  *      accent stripe (1.2 m), variant 0 to 2 (its fill colour).
  *    - The **scribble** (rough rooms only, at `SCRIBBLE_SHARE`): on the
- *      candidate the take picks, 0.7 by 0.12 m, its bottom 1.1 to 1.5 m
- *      up, variant 0 or 1 (its ink).
+ *      candidate the take picks, 0.7 by 0.12 m, its bottom 1.3 to 1.5 m
+ *      up, so its whole box stays over the accent stripe (1.28 m),
+ *      variant 0 or 1 (its ink).
  *    - The **plate** (any condition, at `PLATE_SHARE`): beside the first
  *      door (fixture order) with a candidate hall edge on its own wall
  *      run, on the candidate nearest the door's edge along the run (the
@@ -852,7 +853,7 @@ export function placeDecals(room: DecalBase, cap = DECAL_CAP): Decal[] {
     pixel(
       "scribble",
       SCRIBBLE_SHARE,
-      { w0: 0.7, w1: 0.7, length: 0.12, h0: 1.1, h1: 1.5 },
+      { w0: 0.7, w1: 0.7, length: 0.12, h0: 1.3, h1: 1.5 },
       anyEdge,
     );
   }
