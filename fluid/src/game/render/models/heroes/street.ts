@@ -54,23 +54,25 @@
  *   `boxKey(index)`, so they open and close together. That is the one
  *   door motion; the recipe builds them in place, closed, only when asked
  *   to (`movers`), which the model checks are.
- * - The neon bike (`CYCLE`) is the enclosed racing cycle from inside
- *   the computer, parked like the red bike: its length along `a`, its nose at
+ * - The neon bike (`CYCLE`) is the enclosed racing cycle from inside the
+ *   computer, parked like the red bike: its length along `a`, its nose at
  *   `+a`, built to the film model's proportions. Two fat wheels of one
  *   size, a quarter of its length across, are its ends (`CYCLE_WHEELS`),
- *   each a glowing tread under a dark cover on each side, so only the
- *   rim glows. The shell (`CYCLE_SHELL`) is one dark glossy piece in
- *   slices like the bike's panels (`grown`), its top 1.8 wheels high: its
- *   arches hood both wheels over their tops, the belly runs low between
- *   them to a square back edge that hides the rear wheel's front, and its
- *   back (`CYCLE_SPINE`) rises from a short tail over the rear wheel to a
- *   crown a little ahead of the middle and falls in a long curve to the
- *   nose. A smoked canopy runs along the front of the back, over the
+ *   each a glowing tread under a dark cover on each side, so only the rim
+ *   glows. The shell (`CYCLE_SHELL`) is dark and glossy, its top 1.8
+ *   wheels high, and its flank splits as on the original: an arched band
+ *   (`CYCLE_BAND`) hoods both wheels over their tops and runs over the
+ *   top, and a lower panel (`CYCLE_PANEL`) set in from it runs low between
+ *   the wheels to a square back edge that hides the rear wheel's front.
+ *   Narrower crests are grown over both like the bike's panels (`grown`).
+ *   The back (`CYCLE_SPINE`) rises from a short tail over the rear wheel
+ *   to a crown a little ahead of the middle and falls in a long curve to
+ *   the nose. A smoked canopy runs along the front of the back, over the
  *   hidden rider, with a smoked window on each flank under it. Glowing
- *   lines trace the shell's outline a little inside it on both sides
- *   (`cycleLine`, laid by `profileLine`, which the red bike's pinstripe
- *   shares) and the canopy's ridge. Every light is in one group and
- *   breathes; the body carries no text.
+ *   lines trace the band's outline a little inside it on both sides, so
+ *   one runs along the split (`cycleLine`, laid by `profileLine`, which
+ *   the red bike's pinstripe shares) and the canopy's ridge. Every light
+ *   is in one group and breathes; the body carries no text.
  *
  * The numbers each kind is built to are named above its recipe: `BIKE`,
  * `BIKE_WHEELS` and the profiles (`CORE`, `SKIRT`, `COWL`) for the bike,
@@ -990,41 +992,100 @@ const CYCLE_SPINE: readonly P2[] = [
   [1.43, 0.74],
 ];
 
-/**
- * The neon bike's body, `[a, h]`: one closed shell. Its front arch hoods
- * the front wheel from its upper front round over the top to the belly;
- * the flat belly runs back to the square back edge, which rises to the
- * rear arch; that hoods the rear wheel over its top to behind the axle,
- * and the back (`CYCLE_SPINE`) runs from the tail forward to the nose.
- */
 const { front: FW, rear: RW } = CYCLE_WHEELS;
-const CYCLE_SHELL: readonly P2[] = [
-  ...arc(
-    FW.a,
-    FW.r,
-    CYCLE_ARCH,
-    35,
-    180 + (Math.asin((FW.r - CYCLE_BELLY) / CYCLE_ARCH) * 180) / Math.PI,
-    14,
-  ),
-  [CYCLE_BACK, CYCLE_BELLY],
-  ...arc(
-    RW.a,
-    RW.r,
-    CYCLE_ARCH,
-    archAngle(RW.a, CYCLE_ARCH, CYCLE_BACK),
-    125,
-    6,
-  ),
+
+/**
+ * Where the front arch is split between the band and the panel, in
+ * degrees round the front axle: behind and below its top.
+ */
+const FRONT_SPLIT = 150;
+
+/** The front arch's band part, from its upper front over the top. */
+const FRONT_HOOD = arc(FW.a, FW.r, CYCLE_ARCH, 35, FRONT_SPLIT, 10);
+
+/** The front arch's panel part, from the split down to the belly. */
+const FRONT_FOOT = arc(
+  FW.a,
+  FW.r,
+  CYCLE_ARCH,
+  FRONT_SPLIT,
+  180 + (Math.asin((FW.r - CYCLE_BELLY) / CYCLE_ARCH) * 180) / Math.PI,
+  4,
+);
+
+/** The rear arch, from the back edge over the rear wheel's top. */
+const REAR_HOOD = arc(
+  RW.a,
+  RW.r,
+  CYCLE_ARCH,
+  archAngle(RW.a, CYCLE_ARCH, CYCLE_BACK),
+  125,
+  6,
+);
+
+/**
+ * The split between the arched band and the lower panel, `[a, h]`, its
+ * inner points from the back edge forward: level along the flank a
+ * little under the middle of the body, then falling to the front arch.
+ * Its ends are the rear arch's first point and the front arch's split.
+ */
+const CYCLE_SPLIT: readonly P2[] = [
+  [-0.7, 0.79],
+  [-0.2, 0.8],
+  [0.3, 0.78],
+  [0.6, 0.72],
+];
+
+/**
+ * The neon bike's arched band, `[a, h]`, the body's upper part as on
+ * the original: it hoods the front wheel from its upper front round over
+ * the top, runs back along the split to the back edge, hoods the rear
+ * wheel over its top to behind the axle, and its back (`CYCLE_SPINE`)
+ * runs from the tail forward to the nose.
+ */
+const CYCLE_BAND: readonly P2[] = [
+  ...FRONT_HOOD,
+  ...[...CYCLE_SPLIT].reverse(),
+  ...REAR_HOOD,
   ...CYCLE_SPINE,
 ];
+
+/**
+ * The lower panel, `[a, h]`, under the band and recessed from it
+ * (`PANEL_HALF`): from the front arch's split down to the flat belly,
+ * back to the square back edge, which hides the rear wheel's front, up
+ * that edge to the band and forward along the split.
+ */
+const CYCLE_PANEL: readonly P2[] = [
+  ...FRONT_FOOT,
+  [CYCLE_BACK, CYCLE_BELLY],
+  ...REAR_HOOD.slice(0, 1),
+  ...CYCLE_SPLIT,
+];
+
+/**
+ * The neon bike's whole body, `[a, h]`: the band and the panel as one
+ * closed outline, which the glossy crests (`CYCLE_SLICES`) are grown
+ * from.
+ */
+const CYCLE_SHELL: readonly P2[] = [
+  ...FRONT_HOOD,
+  ...FRONT_FOOT.slice(1),
+  [CYCLE_BACK, CYCLE_BELLY],
+  ...REAR_HOOD,
+  ...CYCLE_SPINE,
+];
+
+/** The lower panel's half width: set in from the band's. */
+const PANEL_HALF = 0.17;
 
 /** How far the highest crest stands above the back. */
 const CYCLE_CREST = 0.035;
 
 /**
- * The shell's slices, `[half width, growth]`: the wide one on the outline
- * and two narrower glossy crests grown proud of it, so its edges read
+ * The shell's slices, `[half width, growth]`: the wide one, which is
+ * the band (the panel stands `PANEL_HALF` in from it), and two narrower
+ * glossy crests grown proud of the whole shell, so its edges read
  * rounded.
  */
 const CYCLE_SLICES: readonly (readonly [number, number])[] = [
@@ -1110,11 +1171,12 @@ const CYCLE_LINE_IN = 0.045;
 
 /**
  * The neon bike's glowing side lines, `[a, h]`, as open polylines: the
- * shell's outline traced `CYCLE_LINE_IN` inside it, all the way round,
- * closed on itself.
+ * band's outline traced `CYCLE_LINE_IN` inside it, all the way round,
+ * closed on itself, so a line runs over the hoods, along the back and
+ * along the split over the panel.
  */
 export function cycleLine(): P2[] {
-  const inner = grown(CYCLE_SHELL, -CYCLE_LINE_IN);
+  const inner = grown(CYCLE_BAND, -CYCLE_LINE_IN);
   const first = inner[0];
   return first === undefined ? inner : [...inner, first];
 }
@@ -1147,8 +1209,9 @@ function cycleWheel(k: Kit, s: Surfaces, w: BikeWheel, glow: Surface): void {
 
 /**
  * The neon bike: two fat wheels of one size at its ends, their rims
- * glowing; the dark glossy shell in slices hooding both wheels and
- * low between them; the smoked canopy along the front of its back and a
+ * glowing; the dark glossy shell, its arched band hooding both wheels
+ * and running over the top, the lower panel recessed under it low
+ * between the wheels, and the crests over both; the smoked canopy along the front of its back and a
  * smoked window on each flank under it; and the glowing lines tracing
  * the shell's outline on both sides and the canopy's ridge. Every light
  * is in one group and breathes.
@@ -1159,13 +1222,14 @@ const neonBike: HeroRecipe = ({ k, s }) => {
   cycleWheel(k, s, CYCLE_WHEELS.rear, glow);
 
   const [body, shine] = [s.tinted(CYCLE_BODY), s.tinted(CYCLE_SHINE)];
-  CYCLE_SLICES.forEach(([half, g], i) =>
-    k.extrude(grown(CYCLE_SHELL, g), -half, half, i === 0 ? body : shine),
-  );
+  const outer = CYCLE_SLICES[0]?.[0] ?? 0;
+  k.extrude(CYCLE_BAND, -outer, outer, body);
+  k.extrude(CYCLE_PANEL, -PANEL_HALF, PANEL_HALF, body);
+  for (const [half, g] of CYCLE_SLICES.slice(1))
+    k.extrude(grown(CYCLE_SHELL, g), -half, half, shine);
   const canopy = s.tinted(CYCLE_CANOPY);
   k.extrude(CYCLE_CANOPY_PROFILE, -CANOPY_HALF, CANOPY_HALF, canopy);
 
-  const outer = CYCLE_SLICES[0]?.[0] ?? 0;
   const { width, out } = CYCLE_LINE;
   const line = cycleLine();
   for (const d of [-1, 1]) {

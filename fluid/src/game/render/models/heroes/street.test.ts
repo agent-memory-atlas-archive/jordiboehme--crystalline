@@ -8,7 +8,8 @@
  * footprint, its proportions (wheels against length and top, wheelbase,
  * canopy span, belly), its two wheels of one size as its ends on the
  * floor, its glowing rims and lines in one group, its dark body, canopy
- * and windows, and its triangle pin.
+ * and windows, its flank split into the arched band and the recessed
+ * lower panel with a line along the split, and its triangle pin.
  */
 
 import { describe, expect, it } from "vitest";
@@ -575,10 +576,10 @@ describe("the neon bike (0.25.1)", () => {
       expect(Math.max(...c)).toBeLessThan(0.2);
     const body = inked(parts, CYCLE_BODY);
     const smoked = inked(parts, CYCLE_CANOPY);
-    expect(body).toHaveLength(1);
+    expect(body).toHaveLength(2);
     expect(smoked).toHaveLength(3);
-    const [b] = body;
-    if (b === undefined) throw new Error("no body");
+    const b = body.find((p) => span(local(p), 2).hi > 1);
+    if (b === undefined) throw new Error("no band");
     const canopy = smoked.filter(
       (p) => span(local(p), 1).lo < 0 && span(local(p), 1).hi > 0,
     );
@@ -601,6 +602,59 @@ describe("the neon bike (0.25.1)", () => {
       expect(Math.abs(span(pts, 1).mid)).toBeGreaterThan(
         span(local(b), 1).hi - 0.001,
       );
+    }
+  });
+
+  it("splits its flank into the arched band over the top and the lower panel set in under it, a glowing line along the split", () => {
+    // Mutation caught: the panel flush with the band or standing proud,
+    // the band not hooding both wheels, the split up into the windows,
+    // or no line along the split.
+    const body = inked(parts, CYCLE_BODY);
+    const band = body.find((p) => span(local(p), 2).hi > 1);
+    const panel = body.find((p) => p !== band);
+    if (band === undefined || panel === undefined)
+      throw new Error("no band or panel");
+    const [bp, pp] = [local(band), local(panel)];
+    // The panel is set in from the band on both sides.
+    expect(span(pp, 1).hi).toBeLessThan(span(bp, 1).hi - 0.02);
+    expect(span(pp, 1).lo).toBeGreaterThan(span(bp, 1).lo + 0.02);
+    // The band runs over both wheels' tops, from end to end.
+    expect(span(bp, 0).lo).toBeLessThan(rear.a);
+    expect(span(bp, 0).hi).toBeGreaterThan(front.a);
+    for (const w of [front, rear]) {
+      const over = bp.filter((q) => Math.abs(q[0] - w.a) < 0.05);
+      expect(Math.min(...over.map((q) => q[2]))).toBeGreaterThan(2 * w.r);
+    }
+    // The panel is the lower part: from the belly up to the split, which
+    // stays under the windows' foot and runs between the wheels.
+    const windows = inked(parts, CYCLE_CANOPY).filter(
+      (p) => span(local(p), 1).lo > 0,
+    );
+    const foot = Math.min(...windows.flatMap(local).map((q) => q[2]));
+    expect(span(pp, 2).lo).toBeLessThan(D / 2);
+    expect(span(pp, 2).hi).toBeLessThan(foot - 0.05);
+    expect(span(pp, 2).hi).toBeGreaterThan(D);
+    expect(span(pp, 0).lo).toBeGreaterThan(rear.a);
+    expect(span(pp, 0).hi).toBeLessThan(front.a);
+    // A glowing line runs along the split on each side, over the panel's
+    // top between the wheels, on the band's face.
+    const lit = parts.filter((p) => p.flag !== FLAG.lit);
+    for (const sg of [-1, 1]) {
+      const split = lit.filter((p) => {
+        const q = local(p);
+        const z = span(q, 2);
+        return (
+          Math.abs(span(q, 0).mid) < 0.5 &&
+          Math.sign(span(q, 1).mid) === sg &&
+          z.lo > span(pp, 2).hi - 0.01 &&
+          z.hi < foot
+        );
+      });
+      expect(split.length).toBeGreaterThan(0);
+      for (const p of split)
+        expect(Math.abs(span(local(p), 1).mid)).toBeGreaterThan(
+          span(bp, 1).hi - 0.001,
+        );
     }
   });
 
