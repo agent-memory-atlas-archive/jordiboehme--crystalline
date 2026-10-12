@@ -463,9 +463,9 @@ pub fn merge_evolve(parts: Vec<Part>, page: usize, limit: usize, missing: &[Miss
         .collect();
     if let Some(obj) = scope.as_object_mut() {
         obj.insert("domains".to_string(), Value::Array(domains));
-        if read_only_left_out.is_empty() {
-            obj.remove("read_only_left_out");
-        } else {
+        // The first part's own list is in the union, so an empty union means
+        // the key was never there.
+        if !read_only_left_out.is_empty() {
             obj.insert(
                 "read_only_left_out".to_string(),
                 Value::Array(read_only_left_out),
@@ -490,11 +490,9 @@ pub fn merge_evolve(parts: Vec<Part>, page: usize, limit: usize, missing: &[Miss
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
-
     use serde_json::json;
+    use std::time::Duration;
 
     #[test]
     fn evolve_parts_keep_every_left_out_domain() {
