@@ -12481,3 +12481,73 @@ async fn a_pull_that_cannot_open_one_file_changes_nothing() {
     assert!(!sub.domain_root.join("notes/d1.md").exists());
     assert_eq!(load_state(&sub.state_dir).base_commit, c2);
 }
+
+/// A target the pull could open for reading but not write is refused before
+/// anything changes: bytes, base commit, state file and the files the team
+/// deleted are all untouched.
+#[tokio::test]
+async fn a_pull_refuses_a_read_only_target_before_it_changes_anything() {
+    let mock = MockProvider::new();
+    let c1 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/d1.md", b"one\n"),
+            ("notes/x.md", b"locked\n"),
+        ]),
+        None,
+    );
+    let (sub, _) = subscribe_at(&mock, &c1).await;
+    let c2 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/x.md", b"locked, revised upstream\n"),
+        ]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+
+    let target = sub.domain_root.join("notes/x.md");
+    let mut perms = std::fs::metadata(&target).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&target, perms).unwrap();
+    let state_before = std::fs::read(sub.state_dir.join("state.json")).unwrap();
+
+    let err = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect_err("a read-only target must stop the pull");
+    assert!(err.to_string().contains("x.md"), "{err}");
+    assert_eq!(read(&target), b"locked\n");
+    assert_eq!(read(&sub.domain_root.join("notes/d1.md")), b"one\n");
+    assert_eq!(load_state(&sub.state_dir).base_commit, c1);
+    assert_eq!(
+        std::fs::read(sub.state_dir.join("state.json")).unwrap(),
+        state_before
+    );
+}
+
+/// A folder where the team has a file is named and refused up front.
+#[tokio::test]
+async fn a_pull_refuses_a_folder_where_the_team_has_a_file() {
+    let mock = MockProvider::new();
+    let c1 = mock.add_commit(
+        commit_files(&[("MANIFEST.md", b"# Manifest"), ("notes/d1.md", b"one\n")]),
+        None,
+    );
+    let (sub, _) = subscribe_at(&mock, &c1).await;
+    let c2 = mock.add_commit(
+        commit_files(&[
+            ("MANIFEST.md", b"# Manifest"),
+            ("notes/d1.md", b"one\n"),
+            ("notes/x.md", b"new upstream\n"),
+        ]),
+        Some(&c1),
+    );
+    mock.set_branch("main", &c2);
+    std::fs::create_dir_all(sub.domain_root.join("notes/x.md")).unwrap();
+
+    let err = pull(&mock, &spec(), &sub.domain_root, &sub.state_dir)
+        .await
+        .expect_err("a folder in the way must stop the pull");
+    assert!(err.to_string().contains("x.md"), "{err}");
+    assert_eq!(load_state(&sub.state_dir).base_commit, c1);
+}

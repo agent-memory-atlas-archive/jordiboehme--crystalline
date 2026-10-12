@@ -51,44 +51,34 @@ fn remove_ignoring_missing(result: std::io::Result<()>, path: &Path) -> Result<(
     }
 }
 
-/// Whether the entry is a link of any kind: a symlink everywhere, and on
-/// Windows also a junction or any other reparse point that std reports as a
-/// folder.
+/// Whether the entry is a link: a symlink, and on Windows also a junction.
+/// std reports a junction (a name-surrogate reparse point) as a symlink, so
+/// one check covers both. A reparse point that is not a name surrogate, such
+/// as a cloud placeholder folder, is an ordinary folder and is walked.
 fn is_link(meta: &std::fs::Metadata) -> bool {
-    if meta.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        if meta.is_dir() && meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return true;
-        }
-    }
+    meta.file_type().is_symlink()
+}
+
+/// Whether the link is a folder link (a junction or a folder symlink), which
+/// Windows removes with `remove_dir`; a file link goes with `remove_file`.
+#[cfg(windows)]
+fn is_folder_link(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    meta.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0
+}
+
+#[cfg(not(windows))]
+fn is_folder_link(_meta: &std::fs::Metadata) -> bool {
     false
 }
 
-/// Deletes the link itself. On Windows a folder link goes with `remove_dir`
-/// and a file link with `remove_file`; on unix `remove_file` unlinks any
-/// symlink. A reparse-point folder that is really a populated folder (a cloud
-/// placeholder) refuses `remove_dir`, and then it is walked like any folder.
+/// Deletes the link itself and never looks inside it. If the removal fails the
+/// error names the link: walking into it would delete the files of whatever
+/// it points at, which Crystalline does not own.
 fn remove_link(path: &Path, meta: &std::fs::Metadata) -> Result<(), RemoteError> {
-    if cfg!(windows) && meta.is_dir() {
-        return match std::fs::remove_dir(path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(first) => {
-                let Ok(entries) = std::fs::read_dir(path) else {
-                    return Err(named(path, first));
-                };
-                for entry in entries {
-                    let entry = entry.map_err(|e| named(path, e))?;
-                    remove_tree(&entry.path())?;
-                }
-                remove_ignoring_missing(std::fs::remove_dir(path), path)
-            }
-        };
+    if is_folder_link(meta) {
+        return remove_ignoring_missing(std::fs::remove_dir(path), path);
     }
     remove_ignoring_missing(std::fs::remove_file(path), path)
 }

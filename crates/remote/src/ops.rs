@@ -669,6 +669,13 @@ pub async fn pull_with(
             let refresh_needed = mirror_refresh_needed(&cmp, state_dir, spec.subpath.as_deref())?;
             let (edits, skipped_large, fallback_tarball) =
                 upstream_edits(provider, spec, &state, &head, cmp).await?;
+            // Before anything is written, under the state directory or in the
+            // working tree: every file this pull may write, overwrite or
+            // delete must be usable. A pull that stopped in the middle of the
+            // merge loop would leave removals on disk with the base still
+            // listing them, and every later share would offer those removals
+            // as the user's own deletions.
+            preflight_working_tree(state_dir, domain_root, &edits)?;
             // The mirror rebuild runs before the merge loop and the base
             // advance below, so a later commit that turned a decl hostile
             // fails the whole pull with the previous mirror and base left
@@ -703,13 +710,6 @@ pub async fn pull_with(
         }
         Err(e) => return Err(e),
     };
-
-    // Before the first byte of the working tree changes: every file this pull
-    // may write, overwrite or delete must be openable. A pull that stopped in
-    // the middle of the loop below would leave removals on disk with the base
-    // still listing them, and every later share would offer those removals as
-    // the user's own deletions.
-    preflight_working_tree(state_dir, domain_root, &edits)?;
 
     let mut applied = Vec::new();
     let mut merged = Vec::new();
@@ -6319,8 +6319,21 @@ fn preflight_working_tree(
         let wt_path = checked_working_path(state_dir, domain_root, &edit.path)?;
         match std::fs::symlink_metadata(&wt_path) {
             Ok(meta) => {
-                if meta.is_file() {
-                    std::fs::File::open(&wt_path).map_err(|e| working_tree_error(&wt_path, e))?;
+                if !meta.is_file() {
+                    let source = std::io::Error::other(
+                        "a folder or a link is where the team has a file".to_string(),
+                    );
+                    return Err(working_tree_error(&wt_path, source));
+                }
+                // Write access without truncating or creating: a read-only
+                // file would fail the overwrite or the removal later.
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&wt_path)
+                    .map_err(|e| working_tree_error(&wt_path, e))?;
+                if edit.content.is_none() {
+                    // Removing a file needs its folder to be writable.
+                    check_landing_folder(&wt_path)?;
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

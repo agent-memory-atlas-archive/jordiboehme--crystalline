@@ -343,7 +343,7 @@ pub(crate) fn detect_local_changes_with(
                     .map(|p| rel_path(domain_root, p))
                     .filter(|p| !p.is_empty())
                     .unwrap_or_else(|| ".".to_string());
-                return Err(RemoteError::working_tree(at, std::io::Error::from(err)));
+                return Err(RemoteError::working_tree(at, walk_io_error(err)));
             }
         };
         if !entry.file_type().is_file() {
@@ -356,7 +356,7 @@ pub(crate) fn detect_local_changes_with(
 
         let meta = entry
             .metadata()
-            .map_err(|e| RemoteError::working_tree(rel.clone(), std::io::Error::from(e)))?;
+            .map_err(|e| RemoteError::working_tree(rel.clone(), walk_io_error(e)))?;
         let size = meta.len();
         seen.insert(rel.clone());
 
@@ -515,7 +515,14 @@ pub(crate) fn detect_local_changes_with(
             // Too large to hash or share, so no change either way; claiming
             // the base entry above is the whole point, so it is not reported
             // gone.
-            (Some(_), None) => {}
+            // Refused rather than guessed: the file is too large to read, so
+            // nothing can show that the base spelling and this one are the
+            // same file, and the share would carry the base spelling's fate.
+            (Some(key), None) => {
+                return Err(RemoteError::Refused(format!(
+                    "'{rel}' is too large to share and differs only in letter case from '{key}' in the last shared state. Rename it to match, then share again."
+                )));
+            }
             (None, Some(sha256)) => changes.push(LocalChange::Added {
                 path: rel.clone(),
                 sha256: sha256.clone(),
@@ -567,7 +574,7 @@ pub(crate) fn detect_local_changes_with(
                 Ok(meta) if meta.is_file() && seen_folded.contains(&fold_case(rel)) => {}
                 Ok(_) => {
                     return Err(RemoteError::Refused(format!(
-                        "'{rel}' is in the last shared state and still on disk, but Crystalline could not see it as a file. It may be a link or a redirected folder. Move it out of the way, then share again."
+                        "'{rel}' is in the last shared state and still on disk, but Crystalline could not see it as a file. It may be a link or a redirected folder. Move it out of the domain folder, then share again."
                     )));
                 }
             }
@@ -749,6 +756,17 @@ pub(crate) fn participates_in_change_detection(rel_path: &str, indexes: Generate
 /// [`detect_local_changes`], which then changes nothing at all.
 fn fold_case(path: &str) -> String {
     crystalline_core::fold_path_case(path)
+}
+
+/// The io error under a walk error, with its operating system code intact (a
+/// plain `From` drops it, and error 4395 is recognised by its code). A loop
+/// error has no io error beneath it and converts the usual way.
+fn walk_io_error(err: walkdir::Error) -> std::io::Error {
+    if err.io_error().is_none() {
+        return std::io::Error::from(err);
+    }
+    err.into_io_error()
+        .unwrap_or_else(|| std::io::Error::other("the folder walk failed"))
 }
 
 /// The forward-slash relative path of `path` under `root`.
@@ -1758,5 +1776,39 @@ mod tests {
         let err = detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None)
             .expect_err("a junction must refuse the plan");
         assert!(err.to_string().contains("linked"), "{err}");
+    }
+
+    #[test]
+    fn the_walk_keeps_the_os_code_the_4395_check_reads() {
+        // A real walk error (a root that is not there) carries the system's
+        // code; a plain `From` conversion would drop it, and with it the
+        // code that error 4395 is recognised by.
+        let err = WalkDir::new("/definitely/not/here/crystalline")
+            .into_iter()
+            .next()
+            .unwrap()
+            .unwrap_err();
+        let expected = err.io_error().and_then(|e| e.raw_os_error());
+        assert!(expected.is_some());
+        assert_eq!(walk_io_error(err).raw_os_error(), expected);
+    }
+
+    #[test]
+    fn a_too_large_case_alias_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = vec![b'x'; (MAX_SHARED_FILE_BYTES + 1) as usize];
+        write(dir.path(), "notes/Big.md", &big);
+        let mut base = BTreeMap::new();
+        base.insert("notes/big.md".to_string(), stamp_for(b"small"));
+        let sensitive = !dir.path().join("notes/big.md").exists();
+        if !sensitive {
+            eprintln!("skipped: this filesystem is case-insensitive");
+        }
+        let result =
+            detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None);
+        if sensitive {
+            let err = result.expect_err("a large alias must be refused");
+            assert!(err.to_string().contains("notes/Big.md"), "{err}");
+        }
     }
 }
