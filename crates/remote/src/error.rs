@@ -332,7 +332,7 @@ pub fn is_reparse_point_error(err: &std::io::Error) -> bool {
 fn working_tree_message(path: &str, source: &std::io::Error) -> String {
     if is_reparse_point_error(source) {
         format!(
-            "'{path}' is a link or a redirected folder that Crystalline cannot go through. Replace it with a real folder, then try again."
+            "'{path}' is a link or a redirected folder that Crystalline cannot go through. Replace the link with a real folder that holds the same files, then try again."
         )
     } else {
         format!("'{path}' could not be read or changed: {source}.")
@@ -1035,7 +1035,7 @@ mod working_tree_tests {
         );
         assert_eq!(
             err.to_string(),
-            "'notes/a.md' is a link or a redirected folder that Crystalline cannot go through. Replace it with a real folder, then try again."
+            "'notes/a.md' is a link or a redirected folder that Crystalline cannot go through. Replace the link with a real folder that holds the same files, then try again."
         );
         assert!(!err.to_string().contains("OneDrive"));
     }

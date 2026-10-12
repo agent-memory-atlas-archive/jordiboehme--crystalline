@@ -1524,6 +1524,7 @@ dependencies = [
  "keyring",
  "percent-encoding",
  "reqwest",
+ "same-file",
  "serde",
  "serde_json",
  "sha2 0.11.0",

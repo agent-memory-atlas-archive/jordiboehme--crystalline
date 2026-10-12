@@ -585,7 +585,7 @@ pub(crate) fn detect_local_changes_with(
                     .collect::<Vec<_>>()
                     .join(" and ");
                 return Err(RemoteError::Refused(format!(
-                    "{named} in the team repository differ only in letter case. Windows and macOS can hold only one of them, so Crystalline cannot tell whether one was deleted. Rename one of them in the team repository, then try again."
+                    "{named} in the team repository differ only in letter case. Windows and macOS can hold only one of them, so Crystalline cannot tell whether one was deleted. In the team repository, give the files names that differ in more than letter case. Do this from a computer that can hold all of them, then try again."
                 )));
             }
             match std::fs::symlink_metadata(domain_root.join(rel)) {
@@ -593,7 +593,7 @@ pub(crate) fn detect_local_changes_with(
                 Err(e) => return Err(RemoteError::working_tree(*rel, e)),
                 Ok(_) => {
                     return Err(RemoteError::Refused(format!(
-                        "'{rel}' is in the last shared state and still on disk, but Crystalline could not see it as a file. It may be behind a link or a redirected folder. Replace the link with a real folder (or a real file) at the same place, then try again."
+                        "'{rel}' is in the last shared state and still on disk, but Crystalline could not see it as a file. It may be behind a link or a redirected folder. Replace the link with a real folder that holds the same files, then try again."
                     )));
                 }
             }
@@ -1646,6 +1646,13 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("differ only in letter case"), "{text}");
+        // Renaming one spelling upstream would let a pull here remove the
+        // one file both spellings share, so the advice keeps every name.
+        assert!(!text.contains("Rename one"), "{text}");
+        assert!(
+            text.contains("names that differ in more than letter case"),
+            "{text}"
+        );
     }
 
     #[test]

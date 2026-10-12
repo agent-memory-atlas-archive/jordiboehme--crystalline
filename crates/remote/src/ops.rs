@@ -675,7 +675,7 @@ pub async fn pull_with(
             // merge loop would leave removals on disk with the base still
             // listing them, and every later share would offer those removals
             // as the user's own deletions.
-            preflight_working_tree(state_dir, domain_root, &edits)?;
+            preflight_working_tree(state_dir, domain_root, &state.files, &edits)?;
             // The mirror rebuild runs before the merge loop and the base
             // advance below, so a later commit that turned a decl hostile
             // fails the whole pull with the previous mirror and base left
@@ -715,6 +715,13 @@ pub async fn pull_with(
     let mut merged = Vec::new();
     let mut new_conflicts = Vec::new();
 
+    // Removals run before writes. On a filesystem that ignores letter case,
+    // an upstream rename from `notes/A.md` to `notes/a.md` names one file
+    // twice; writing the new spelling first and then removing the old one
+    // would remove the file just written. The same order holds for the base
+    // copies below, which live on the same kind of filesystem.
+    let edits = removals_first(&edits);
+
     for edit in &edits {
         let rel = &edit.path;
         // Whether a generated directory index rides along with a share is the
@@ -731,7 +738,15 @@ pub async fn pull_with(
         if crystalline_core::is_index_path(rel) {
             continue;
         }
-        let base = state::read_base_file(state_dir, rel)?;
+        // Only a path the base lists has a base copy. On a filesystem that
+        // ignores letter case, the copy of `notes/A.md` also answers for
+        // `notes/a.md`, and a case-only rename would then read as a file
+        // deleted here and left alone upstream.
+        let base = if state.files.contains_key(rel.as_str()) {
+            state::read_base_file(state_dir, rel)?
+        } else {
+            None
+        };
         let wt_path = checked_working_path(state_dir, domain_root, rel)?;
         let local = read_optional_file(&wt_path)?;
         let upstream = edit.content.as_deref();
@@ -6303,15 +6318,27 @@ fn path_under_root(path: &str, root: &str) -> bool {
     root.is_empty() || path == root || path.starts_with(&format!("{root}/"))
 }
 
+/// `edits` with every removal ahead of every write, each group in its own
+/// order.
+fn removals_first(edits: &[UpstreamEdit]) -> Vec<&UpstreamEdit> {
+    let (removals, writes): (Vec<_>, Vec<_>) = edits.iter().partition(|e| e.content.is_none());
+    removals.into_iter().chain(writes).collect()
+}
+
 /// Checks, without changing anything, that the pull can touch every file in
 /// `edits`: an existing file (to overwrite or delete) opens for reading, and
 /// a new file has a folder to land in that exists, lists and is not
 /// read-only. The first failure stops the pull with the file named.
+///
+/// It also refuses to remove a file that another spelling in `base` still
+/// needs: see [`check_no_shared_spelling`].
 fn preflight_working_tree(
     state_dir: &Path,
     domain_root: &Path,
+    base: &BTreeMap<String, BaseStamp>,
     edits: &[UpstreamEdit],
 ) -> Result<(), RemoteError> {
+    check_no_shared_spelling(state_dir, domain_root, base, edits)?;
     for edit in edits {
         if crystalline_core::is_index_path(&edit.path) {
             continue;
@@ -6342,6 +6369,69 @@ fn preflight_working_tree(
                 }
             }
             Err(e) => return Err(working_tree_error(&wt_path, e)),
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a pull that would remove a working file another spelling still
+/// needs.
+///
+/// The team repository can hold `notes/A.md` and `notes/a.md` at once. A
+/// filesystem that ignores letter case (the macOS and Windows default) keeps
+/// them as one file. When upstream removes one spelling (or renames it away)
+/// and the other stays, removing the working file would remove the only copy,
+/// and the next share would propose deleting the spelling that stayed.
+///
+/// The filesystem decides, not the platform: the pull refuses only when both
+/// spellings open the same file. On a filesystem that tells letter case
+/// apart they are two files, and the removal goes ahead. A spelling that is
+/// not on disk shares nothing, so it never stops the pull. A spelling this
+/// pull adds does not count: it is a case-only rename, and the removal runs
+/// before the write (see [`removals_first`]).
+fn check_no_shared_spelling(
+    state_dir: &Path,
+    domain_root: &Path,
+    base: &BTreeMap<String, BaseStamp>,
+    edits: &[UpstreamEdit],
+) -> Result<(), RemoteError> {
+    let removed: BTreeSet<&str> = edits
+        .iter()
+        .filter(|e| e.content.is_none())
+        .map(|e| e.path.as_str())
+        .collect();
+    if removed.is_empty() {
+        return Ok(());
+    }
+    let mut staying: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for key in base.keys() {
+        if !removed.contains(key.as_str()) {
+            staying
+                .entry(crystalline_core::fold_path_case(key))
+                .or_default()
+                .push(key);
+        }
+    }
+    for rel in &removed {
+        if crystalline_core::is_index_path(rel) {
+            continue;
+        }
+        let Some(others) = staying.get(&crystalline_core::fold_path_case(rel)) else {
+            continue;
+        };
+        let wt_path = checked_working_path(state_dir, domain_root, rel)?;
+        for other in others {
+            let other_path = checked_working_path(state_dir, domain_root, other)?;
+            let shared = match same_file::is_same_file(&wt_path, &other_path) {
+                Ok(same) => same,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                Err(e) => return Err(working_tree_error(&wt_path, e)),
+            };
+            if shared {
+                return Err(RemoteError::Refused(format!(
+                    "'{rel}' and '{other}' differ only in letter case, and this computer keeps them as one file. Crystalline will not remove it. In the team repository, give the two files names that differ in more than letter case. Do this from a computer that can hold both, then try again."
+                )));
+            }
         }
     }
     Ok(())
