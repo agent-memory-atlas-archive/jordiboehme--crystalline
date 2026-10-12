@@ -539,7 +539,7 @@ export const CURIO_CATALOGUE: Readonly<Record<CurioKind, CurioEntry>> = {
     slot: "paper",
     variants: 3,
     facing: "front",
-    classes: ["desk", "table"],
+    classes: ["desk", "bench", "table"],
     sizes: [
       { width: 0.216, depth: 0.279, top: 0.002 },
       { width: 0.23, depth: 0.29, top: 0.03 },
@@ -745,39 +745,39 @@ export const RADIO_POOLS = {
   readonly (readonly [CurioKind, number])[]
 >;
 
-/** Chance a room draws a retro curio (C7, 2.6f C4): about 1 room in 4. */
-export const RETRO_SHARE = 1 / 4;
-/** Chance a room draws a gear curio (C7, 2.6f C4): about 3 in 16. */
-export const GEAR_SHARE = 3 / 16;
-/** Chance a room draws a ball (2.6f C4): about 1 room in 20. */
-export const BALL_SHARE = 1 / 20;
+/** Chance a room draws a retro curio (C7, 2.6f C4, 0.25.1): about 2 rooms in 5. */
+export const RETRO_SHARE = 2 / 5;
+/** Chance a room draws a gear curio (C7, 2.6f C4, 0.25.1): about 3 rooms in 10. */
+export const GEAR_SHARE = 3 / 10;
+/** Chance a room draws a ball (2.6f C4, 0.25.1): about 1 room in 12. */
+export const BALL_SHARE = 1 / 12;
 /** Chance a drawn ball tries the hall's corners instead of the surfaces (C7). */
 export const BALL_FLOOR = 1 / 4;
-/** Chance a room draws an under-desk curio (C7, 2.6f C4): about 3 in 20. */
-export const UNDER_SHARE = 3 / 20;
-/** Chance a room draws the tech slot (2.6d C9, 2.6f C4): about 3 in 20. */
-export const TECH_SHARE = 3 / 20;
-/** Chance a room draws the radar (2.6d C9, 2.6f C4: about 1 room in 16)... */
-export const RADAR_SHARE = 1 / 16;
+/** Chance a room draws an under-desk curio (C7, 2.6f C4, 0.25.1): about 1 room in 4. */
+export const UNDER_SHARE = 1 / 4;
+/** Chance a room draws the tech slot (2.6d C9, 2.6f C4, 0.25.1): about 1 room in 4. */
+export const TECH_SHARE = 1 / 4;
+/** Chance a room draws the radar (2.6d C9, 2.6f C4, 0.25.1: about 1 room in 10)... */
+export const RADAR_SHARE = 1 / 10;
 /** ...and its chance in a room that holds a star ball (2.6d C5). */
 export const RADAR_BESIDE_BALL = 1 / 2;
-/** Chance a room draws the capsule case (2.6d C9, 2.6f C4: about 1 room in 16)... */
-export const CAPSULE_SHARE = 1 / 16;
+/** Chance a room draws the capsule case (2.6d C9, 2.6f C4, 0.25.1: about 1 room in 10)... */
+export const CAPSULE_SHARE = 1 / 10;
 /**
  * ...and its chance in a room that holds a star ball or the radar (2.6d
  * C5).
  */
 export const CAPSULE_BESIDE = 1 / 3;
-/** Chance a room draws the desk slot: about 1 room in 4, "common enough to be found". */
-export const DESK_SHARE = 1 / 4;
-/** Chance a room draws the snack slot: about 1 room in 8. */
-export const SNACK_SHARE = 1 / 8;
-/** Chance a room draws the figure slot (0.25.1): about 1 room in 8. */
-export const FIGURE_SHARE = 1 / 8;
-/** Chance a room draws the paper slot (0.25.1): about 1 room in 6. */
-export const PAPER_SHARE = 1 / 6;
-/** Chance a room draws the radio slot (0.25.1): about 1 room in 10. */
-export const RADIO_SHARE = 1 / 10;
+/** Chance a room draws the desk slot (0.25.1): about 2 rooms in 5, "common enough to be found". */
+export const DESK_SHARE = 2 / 5;
+/** Chance a room draws the snack slot (0.25.1): about 1 room in 5. */
+export const SNACK_SHARE = 1 / 5;
+/** Chance a room draws the figure slot (0.25.1): about 1 room in 5. */
+export const FIGURE_SHARE = 1 / 5;
+/** Chance a room draws the paper slot (0.25.1): about 4 rooms in 15. */
+export const PAPER_SHARE = 4 / 15;
+/** Chance a room draws the radio slot (0.25.1): about 1 room in 6. */
+export const RADIO_SHARE = 1 / 6;
 
 /**
  * The curio that hovers (2.6d C4): its underside's height over the surface

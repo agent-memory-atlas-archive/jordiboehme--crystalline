@@ -671,8 +671,8 @@ export const HERO_POOLS = {
 
 /** Both hall sides at least this many cells: a second hero (H6). */
 export const HERO_BIG_HALL = 16;
-/** Chance a pool slot draws a hero (H7, 2.6f C2). */
-export const HERO_SHARE = 3 / 5;
+/** Chance a pool slot draws a hero (H7, 2.6f C2, 0.25.1): about 4 in 5. */
+export const HERO_SHARE = 4 / 5;
 /** Chance a room draws the turret (spec: about 1 room in 6). */
 export const TURRET_SHARE = 1 / 6;
 /**
@@ -700,8 +700,8 @@ export const ANY_POOL = [
   ["police-box", 1],
 ] as const satisfies readonly (readonly [HeroKind, number])[];
 
-/** Chance the any-archetype draw takes (C9, 2.6f C2). */
-export const ANY_SHARE = 3 / 4;
+/** Chance the any-archetype draw takes (C9, 2.6f C2, 0.25.1): about 7 in 8. */
+export const ANY_SHARE = 7 / 8;
 /**
  * The moat around a free or backed hero, in metres (H19, H20): wider than
  * the player (0.7 m).

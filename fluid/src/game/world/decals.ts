@@ -217,13 +217,13 @@ export const DECAL_RATES: Record<
   },
 };
 
-/** Chance a rough room carries the spray tag, and its chance beside the ooze canisters (0.25.1 D-4, D-R7). */
-export const TAG_SHARE = 1 / 12;
+/** Chance a rough room carries the spray tag (about 1 in 8), and its chance beside the ooze canisters (0.25.1 D-4, D-R7). */
+export const TAG_SHARE = 1 / 8;
 export const TAG_BESIDE_CANISTERS = 1 / 3;
-/** Chance a rough room carries the numbers scribble (0.25.1 D-2). */
-export const SCRIBBLE_SHARE = 1 / 20;
-/** Chance any room carries the numbers plate beside a door (0.25.1 D-2). */
-export const PLATE_SHARE = 1 / 40;
+/** Chance a rough room carries the numbers scribble (0.25.1 D-2): about 1 in 13. */
+export const SCRIBBLE_SHARE = 3 / 40;
+/** Chance any room carries the numbers plate beside a door (0.25.1 D-2): about 1 in 27. */
+export const PLATE_SHARE = 3 / 80;
 /** The rough conditions (D-R7): the only ones a tag or a scribble goes in. */
 export const ROUGH: ReadonlySet<Condition> = new Set(["dim", "derelict"]);
 

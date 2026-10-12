@@ -1071,9 +1071,9 @@ describe("withHeroes (2.6e C15)", () => {
     // starts from a room already dressed as the generator dresses it, so
     // it cannot see a skipped pass; this one starts from a bare room. The
     // reseeded workshop is one whose neighbours skip a curio it would
-    // otherwise draw (manifest-2 since GAME_VERSION 4; the canned places'
-    // curios read no neighbour).
-    const skips = { ...CANNED_WORKSHOP, permalink: "manifest-2" };
+    // otherwise draw (manifest-3 since the 0.25.1 shares; the canned
+    // places' curios read no neighbour).
+    const skips = { ...CANNED_WORKSHOP, permalink: "manifest-3" };
     const own = generateRoom(skips);
     expect(placeCurios(own, curioDrawsOf(own.seed))).not.toEqual(own.curios);
     const places = [CANNED_BRIDGE, CANNED_WORKSHOP, CANNED_HUB, skips];

@@ -507,7 +507,17 @@
       "seed": 5495146230285326
     }
   ],
-  "curios": [],
+  "curios": [
+    {
+      "kind": "reactor-case",
+      "variant": 0,
+      "x": 1.154,
+      "y": 0.348,
+      "h": 0.9,
+      "turn": 1,
+      "seed": 7530724344448641
+    }
+  ],
   "finish": {
     "accent": 2,
     "hallWalls": 1,

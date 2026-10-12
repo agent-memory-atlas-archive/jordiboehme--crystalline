@@ -1043,14 +1043,15 @@ describe("the hero pass", () => {
     expect([...seen].some((k) => ANY_POOL.some(([a]) => a === k))).toBe(true);
   });
 
-  it("holds a hero in about nine halls in ten (2.6f C2)", () => {
-    // Measured by the planner: 1821 of 2000 (0.910) at 3/5 and 3/4; 1577
-    // (0.788) at the old 1/2 and 1/2. Mutation caught: ANY_SHARE back to
-    // 1/2 (about 0.85), both shares back (0.788), or the any draw not
-    // filling empty slots. The shares are pinned too, since HERO_SHARE
-    // alone back at 1/2 stays inside the band (about 0.905).
-    expect(HERO_SHARE).toBe(3 / 5);
-    expect(ANY_SHARE).toBe(3 / 4);
+  it("holds a hero in about 97 halls in 100 (2.6f C2, 0.25.1)", () => {
+    // Measured: 1940 of 2000 (0.970) at 4/5 and 7/8; 1821 (0.910) at the
+    // 2.6f 3/5 and 3/4; 1577 (0.788) at the first 1/2 and 1/2. Mutation
+    // caught: ANY_SHARE back to 3/4 (1885) or 1/2 (1779), HERO_SHARE back
+    // to 3/5 (1908) or 1/2 (1890), or the any draw not filling empty
+    // slots. The shares are pinned too, since the band sits only a few
+    // halls above the 3/5 count.
+    expect(HERO_SHARE).toBe(4 / 5);
+    expect(ANY_SHARE).toBe(7 / 8);
     const bases = [...WORKSHOP_BASES, ...BRIDGE_BASES];
     expect(bases).toHaveLength(10);
     let halls = 0;
@@ -1061,8 +1062,8 @@ describe("the hero pass", () => {
         if (place(base, r).length > 0) held++;
       }
     expect(halls).toBe(2000);
-    expect(held).toBeGreaterThanOrEqual(1760);
-    expect(held).toBeLessThanOrEqual(1880);
+    expect(held).toBeGreaterThanOrEqual(1910);
+    expect(held).toBeLessThanOrEqual(1970);
   }, 30_000);
 
   it("doubles the archetype-only heroes' weights and leaves every other weight (2.6f C3)", () => {
@@ -1297,13 +1298,14 @@ describe("the hero pass", () => {
     expect(added).toBeGreaterThan(0);
   }, 60_000);
 
-  it("lands each any-archetype kind in about 1 hall in 20 in the workshop", () => {
-    // The planner measured 39 to 64 per 1000 (thunder hammer 64, cloud 56,
-    // rocket 50, hoverboard 41, police box 39). Mutation caught: a kind
-    // that never fits, or the draw taking twice as often or never.
-    // Doubling is impossible above 1, so the constant pin carries the
-    // share.
-    expect(ANY_SHARE).toBe(3 / 4);
+  it("lands each any-archetype kind in about 1 hall in 35 in the workshop", () => {
+    // Measured 20 to 39 per 1000 at the 0.25.1 shares (cloud 39, thunder
+    // hammer 33, hoverboard 23, police box 21, rocket 20); 39 to 64 at the
+    // 2.6f ones. The pool slots now take 4 in 5, so the any draw, which
+    // only fills a slot they left empty, lands less often. Mutation
+    // caught: a kind that never fits, or the draw taking never. Doubling
+    // is impossible above 1, so the constant pin carries the share.
+    expect(ANY_SHARE).toBe(7 / 8);
     const counts = new Map<HeroKind, number>();
     for (const { base } of WORKSHOP_BASES)
       for (const r of reseeded(base, 200))
@@ -1311,8 +1313,8 @@ describe("the hero pass", () => {
           counts.set(h.kind, (counts.get(h.kind) ?? 0) + 1);
     for (const [kind] of ANY_POOL) {
       const n = counts.get(kind) ?? 0;
-      expect(n, kind).toBeGreaterThanOrEqual(25);
-      expect(n, kind).toBeLessThanOrEqual(85);
+      expect(n, kind).toBeGreaterThanOrEqual(13);
+      expect(n, kind).toBeLessThanOrEqual(52);
     }
     console.info(
       `2.6c kinds per 1000 workshop rooms: ${JSON.stringify([...counts])}`,

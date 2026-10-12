@@ -744,10 +744,10 @@ describe("the pixel wall decals (0.25.1 D-2, D-4)", () => {
 
   it("keeps the shares the brief gives", () => {
     // Mutation caught: a share or the rough set edited by accident.
-    expect(TAG_SHARE).toBe(1 / 12);
+    expect(TAG_SHARE).toBe(1 / 8);
     expect(TAG_BESIDE_CANISTERS).toBe(1 / 3);
-    expect(SCRIBBLE_SHARE).toBe(1 / 20);
-    expect(PLATE_SHARE).toBe(1 / 40);
+    expect(SCRIBBLE_SHARE).toBe(3 / 40);
+    expect(PLATE_SHARE).toBe(3 / 80);
     expect([...ROUGH].sort()).toEqual(["derelict", "dim"]);
   });
 

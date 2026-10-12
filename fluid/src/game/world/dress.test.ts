@@ -967,7 +967,8 @@ describe("density measure", () => {
   it("raises large workshops to at least 13 floor props per 100 floor cells", () => {
     // Baseline 4.70 before iteration 1, 7.39 after it, 8.81 with the 13x12
     // workshop; 15.97 with a cluster in every block (E9), 15.58 with the
-    // heroes the seeds draw (190 of 300 rooms carry one, 2.6a).
+    // heroes the seeds draw (190 of 300 rooms carry one, 2.6a); 15.81 at
+    // the 0.25.1 shares (290 of 300 carry a hero).
     const per100 =
       (sum(SEEDS, (d) => d.floorProps) * 100) / sum(SEEDS, (d) => d.floorCells);
     expect(per100).toBeGreaterThanOrEqual(13);
@@ -977,7 +978,7 @@ describe("density measure", () => {
     // Baseline 2.1 to 2.4, 7.7 to 8.9 before the clusters grew; 15.77 to
     // 17.19 (E9), 15.63 to 17.05 with the hoverboard the hub's own seed
     // draws (2.6c); reseeded with the heroes they draw, the clean hub's
-    // lowest is 14.77 (2.6a).
+    // lowest is 14.77 (2.6a); 16.34 to 17.90 at the 0.25.1 shares.
     for (const { name, condition, room } of HUBS)
       if (condition === "clean")
         expect(measureDensity(room).floorPer100, name).toBeGreaterThanOrEqual(

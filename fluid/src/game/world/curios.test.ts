@@ -1190,12 +1190,12 @@ describe("the curio pass (C6, C7, C9, C10, C12)", () => {
       ball: { take: true, roll: 0.015863109845668077, floor: true },
       under: { take: false, roll: 0.04107839614152908 },
       // The three 2.6d slots, appended after every old value (2.6d C5).
-      tech: { take: false, roll: 0.8745579037349671 },
+      tech: { take: true, roll: 0.8745579037349671 },
       radar: { take: false, paired: true, roll: 0.5469286541920155 },
       capsule: { take: false, paired: true, roll: 0.04026875551789999 },
       // The two 0.25.1 slots, appended after every older value.
-      desk: { take: false, roll: 0.4278619457036257 },
-      snack: { take: false, roll: 0.4251894319895655 },
+      desk: { take: true, roll: 0.4278619457036257 },
+      snack: { take: true, roll: 0.4251894319895655 },
       // The three later 0.25.1 slots, after the desk and snack values.
       figure: { take: false, roll: 0.4540898371487856 },
       paper: { take: false, roll: 0.9533099508844316 },
@@ -1589,16 +1589,17 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
       ["fuel-case", 1],
       ["soot-puffs", 1],
     ]);
-    expect(TECH_SHARE).toBe(3 / 20);
-    expect(RADAR_SHARE).toBe(1 / 16);
+    expect(TECH_SHARE).toBe(1 / 4);
+    expect(RADAR_SHARE).toBe(1 / 10);
     expect(RADAR_BESIDE_BALL).toBe(1 / 2);
-    expect(CAPSULE_SHARE).toBe(1 / 16);
+    expect(CAPSULE_SHARE).toBe(1 / 10);
     expect(CAPSULE_BESIDE).toBe(1 / 3);
   });
 
   it("takes the curios half as often again (2.6f C4)", () => {
     // Measured by the planner: 3516 curios in 4000 rooms (0.879) at the
-    // 2.6f shares, 2321 (0.580) at the old ones. Mutation caught: any
+    // 2.6f shares, 2321 (0.580) at the old ones. Measured again in 0.25.1:
+    // 5656 (1.414) at the 0.25.1 shares, about 1.6x the 2.6f ones. Mutation caught: any
     // share left at its old value moves the count by 120 or more, and
     // the pins below catch each alone.
     expect([
@@ -1609,7 +1610,7 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
       TECH_SHARE,
       RADAR_SHARE,
       CAPSULE_SHARE,
-    ]).toEqual([1 / 4, 3 / 16, 1 / 20, 3 / 20, 3 / 20, 1 / 16, 1 / 16]);
+    ]).toEqual([2 / 5, 3 / 10, 1 / 12, 1 / 4, 1 / 4, 1 / 10, 1 / 10]);
     expect([RADAR_BESIDE_BALL, CAPSULE_BESIDE, BALL_FLOOR]).toEqual([
       1 / 2,
       1 / 3,
@@ -1632,8 +1633,8 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
     console.info(
       `2.6f curios per room: ${perRoom.toFixed(3)} over ${String(n)}`,
     );
-    expect(perRoom).toBeGreaterThanOrEqual(0.83);
-    expect(perRoom).toBeLessThanOrEqual(0.93);
+    expect(perRoom).toBeGreaterThanOrEqual(1.36);
+    expect(perRoom).toBeLessThanOrEqual(1.46);
   }, 30_000);
 
   it("hovers the drone over a terminal's desk end first, where the room has one (2.6d C8, Review Focus 2)", () => {
@@ -1731,15 +1732,16 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
     };
     for (const { name, room } of ROOMS)
       expectInvariants(base(room), placeCurios(base(room), ALL), name);
-    // The report sheets (0.25.1) stand on desk and table tops at least
-    // 0.256 m wide, which the hub, whose desks are its terminals' 0.22 m
-    // ends, does not have: they are held to land in the council workshop,
-    // whose round table has four such places, and to find none in the hub.
+    // The report sheets (0.25.1) stand on desk, bench and table tops at
+    // least 0.256 m wide. The hub's desks are its terminals' 0.22 m ends,
+    // too narrow, so there they land on a bench; they are also held to
+    // land in the council workshop, whose round table has four such
+    // places.
     for (const kind of CURIO_KINDS.slice(CURIO_KINDS.indexOf("treasure-radar")))
       expect(
         placeCurios(base(generateRoom(CANNED_HUB)), only(kind)).length,
         kind,
-      ).toBe(kind === "report-sheets" ? 0 : 1);
+      ).toBe(1);
     expect(
       placeCurios(
         base(
@@ -1887,10 +1889,10 @@ describe("the 0.25.1 curios: the floppy, the 5.25 inch disk, the ticket and the 
     expect(snackRooms).toBeGreaterThan(1000);
     const desk = deskGot / deskRooms;
     const snack = snackGot / snackRooms;
-    expect(desk, `desk ${String(desk)}`).toBeGreaterThanOrEqual(0.22);
-    expect(desk, `desk ${String(desk)}`).toBeLessThanOrEqual(0.28);
-    expect(snack, `snack ${String(snack)}`).toBeGreaterThanOrEqual(0.1);
-    expect(snack, `snack ${String(snack)}`).toBeLessThanOrEqual(0.15);
+    expect(desk, `desk ${String(desk)}`).toBeGreaterThanOrEqual(0.37);
+    expect(desk, `desk ${String(desk)}`).toBeLessThanOrEqual(0.43);
+    expect(snack, `snack ${String(snack)}`).toBeGreaterThanOrEqual(0.175);
+    expect(snack, `snack ${String(snack)}`).toBeLessThanOrEqual(0.225);
   }, 60_000);
 
   it("stands the pizza box on a crate only closed or stacked", () => {
@@ -1961,7 +1963,7 @@ describe("the 0.25.1 curios: the penguin figurine, the report sheets and the rad
       slot: "paper",
       variants: 3,
       facing: "front",
-      classes: ["desk", "table"],
+      classes: ["desk", "bench", "table"],
       sizes: [
         { width: 0.216, depth: 0.279, top: 0.002 },
         { width: 0.23, depth: 0.29, top: 0.03 },
@@ -2004,9 +2006,9 @@ describe("the 0.25.1 curios: the penguin figurine, the report sheets and the rad
       lab: [],
     });
     expect([FIGURE_SHARE, PAPER_SHARE, RADIO_SHARE]).toEqual([
-      1 / 8,
+      1 / 5,
+      4 / 15,
       1 / 6,
-      1 / 10,
     ]);
   });
 
