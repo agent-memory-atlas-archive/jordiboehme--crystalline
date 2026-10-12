@@ -11,4 +11,4 @@
  * version, so a before-and-after comparison sees the same rooms; from the
  * first release on, every golden move needs a bump.
  */
-export const GAME_VERSION = 3;
+export const GAME_VERSION = 4;

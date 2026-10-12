@@ -199,9 +199,9 @@ function coplanarOverlap(p: Flat, q: Flat, tolerance: number): boolean {
   );
 }
 
-/** The derelict hub the cap cuts (Task 10's `hub-1`), at 160 decals. */
+/** The derelict hub the cap cuts (`hub-3` since GAME_VERSION 4, Task 10's `hub-1` before), at 160 decals. */
 const cappedHub = () =>
-  generateRoom({ ...CANNED_HUB, status: "archived", permalink: "hub-1" });
+  generateRoom({ ...CANNED_HUB, status: "archived", permalink: "hub-3" });
 
 describe("the decal recipe", () => {
   it("lifts every decal off its surface and maps it to its kind's tile (2.7 C21)", () => {

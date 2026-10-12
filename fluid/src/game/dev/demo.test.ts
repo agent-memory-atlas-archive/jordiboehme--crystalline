@@ -157,27 +157,25 @@ describe("roomWithForcedProp", () => {
   });
 
   it("falls back to the room without it, never throwing, where the kind has no place", () => {
-    // The canned bridge's cells beside its two terminals are taken (Baselines).
-    expect(() =>
-      roomWithForcedProp(CANNED_BRIDGE, "designer-tower"),
-    ).not.toThrow();
-    expect(
-      roomWithForcedProp(CANNED_BRIDGE, "designer-tower").placed,
-    ).toBeNull();
+    // The canned bridge as a council room (type decision) has no place for
+    // the tower beside a desk on its wall (GAME_VERSION 4).
+    const council = { ...CANNED_BRIDGE, type: "decision" };
+    expect(() => roomWithForcedProp(council, "designer-tower")).not.toThrow();
+    expect(roomWithForcedProp(council, "designer-tower").placed).toBeNull();
   });
 });
 
 describe("the neighbours in the seams (2.6f C9)", () => {
   it("lands a forced kind that a neighbour draws, and keeps the room's own skip in the seams (Review Focus 5)", () => {
-    // boiler-room draws the hoverboard raw (2.6f baselines), so the
-    // workshop's own pick skips it; the forced seam must not. Mutation
-    // caught: a forced draw reading near, or a seam placing the curios
-    // again without the room's near.
-    expect(nearFor(CANNED_WORKSHOP).heroes.has("hoverboard")).toBe(true);
-    const hover = roomWithForcedHero(CANNED_WORKSHOP, "hoverboard");
-    expect(hover.placed).toBe("hoverboard");
+    // A neighbour of the workshop draws the flying cloud raw (GAME_VERSION
+    // 4), so the workshop's own pick skips it; the forced seam must not.
+    // Mutation caught: a forced draw reading near, or a seam placing the
+    // curios again without the room's near.
+    expect(nearFor(CANNED_WORKSHOP).heroes.has("flying-cloud")).toBe(true);
+    const cloud = roomWithForcedHero(CANNED_WORKSHOP, "flying-cloud");
+    expect(cloud.placed).toBe("flying-cloud");
     // `placed` reads only that a hero landed, so the kind is checked too.
-    expect(hover.room.heroes.map((h) => h.kind)).toEqual(["hoverboard"]);
+    expect(cloud.room.heroes.map((h) => h.kind)).toEqual(["flying-cloud"]);
     // A lower-seeded hatch whose room draws the radar raw.
     const mine = roomSeed("station", "pipe-shop");
     let below: string | null = null;

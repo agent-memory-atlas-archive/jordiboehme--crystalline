@@ -568,12 +568,14 @@ export interface InteriorPiece {
 
 /**
  * What a surface is for (C3): a desk top, a bench top, a table, a shelf
- * level or cabinet top, or an `under` spot for the trap and the case -
+ * level or cabinet top, an `under` spot for the trap and the case -
  * ordinarily below a host's top (the floor in its knee space, or a lower
  * shelf), but the service trolley's own deck top counts too: `under`
- * names the curio slot, not the geometry.
+ * names the curio slot, not the geometry - or a crate's lid (0.25.1),
+ * which only the closed and stacked pizza boxes stand on.
  */
-export type SurfaceClass = "desk" | "bench" | "table" | "shelf" | "under";
+export type SurfaceClass =
+  "desk" | "bench" | "table" | "shelf" | "under" | "crate";
 
 /**
  * A rectangle a curio may stand on (C3), in its host's local terms at turn
@@ -614,7 +616,11 @@ export type CurioKind =
   | "breadbin-computer"
   | "slim-computer"
   | "space-bricks"
-  | "soot-puffs";
+  | "soot-puffs"
+  // 0.25.1: the desk and snack slots
+  | "floppy-disk"
+  | "pizza-box"
+  | "lottery-ticket";
 
 /**
  * One curio (C1): `x` and `y` in `Decor`'s continuous cell units, the

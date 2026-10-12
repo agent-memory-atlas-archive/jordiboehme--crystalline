@@ -63,6 +63,12 @@ export const MARKS = {
   computerBadge: "commodore 64",
   /** The reactor case's plaque line, in capitals. */
   reactorPlaque: "PROOF THAT TONY STARK HAS A HEART",
+  /** The floppy's handwritten label (0.25.1 D-3). */
+  floppyLabel: "HACK THE PLANET!",
+  /** The pizza box's lid print (0.25.1 D-4). */
+  pizzaLid: "PIZZA POWER",
+  /** The six numbers of the lottery ticket, and later of the scribble, the plate and the hatch variant, each set on its own (0.25.1 D-2). */
+  numbers: ["4", "8", "15", "16", "23", "42"],
 
   /** The eye panel's badge: two separate fields, not one block, "HAL" on the panel's own dark trim and "9000" on a blue field. */
   panelName: ["HAL", "9000"],

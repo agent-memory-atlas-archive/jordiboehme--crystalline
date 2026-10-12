@@ -476,9 +476,26 @@ describe("walking on the grid", () => {
     if (pipe === undefined) throw new Error("engineering has pipe runs");
     expect(pipe.turn).toBe(0);
     expect(decorFootprint(pipe)).toBeNull();
-    // Beside the generator, south across the pipe run's line.
-    const px = pipe.x * CELL + 3;
+    // Beside the generator, south across the pipe run's line, on the first
+    // column near it whose way south is clear of every blocker (3 m east of
+    // the pipe run's centre until GAME_VERSION 4 moved a blocker there).
     const pz = pipe.y * CELL;
+    const blockers = blockersFor(engineering);
+    const px = [3, 4, 5, 6, -3, -4, -5, -6]
+      .map((o) => pipe.x * CELL + o)
+      .find((x) => {
+        const way = {
+          x0: x - PLAYER_RADIUS,
+          x1: x + PLAYER_RADIUS,
+          z0: pz - 2 - PLAYER_RADIUS,
+          z1: pz + 1.5 + PLAYER_RADIUS,
+        };
+        return !blockers.some(
+          (b) =>
+            b.x0 < way.x1 && way.x0 < b.x1 && b.z0 < way.z1 && way.z0 < b.z1,
+        );
+      });
+    if (px === undefined) throw new Error("no clear way across the pipe run");
     const under = runIn(
       engineering,
       at(px, pz - 2),
@@ -654,12 +671,15 @@ describe("sliding around corners", () => {
   it("walks diagonally into a corner of void cells and settles in it", () => {
     // The first bay's south-east corner: void on both sides (the next bay's
     // doorway column east, the rows below the bay south), no fixture near.
+    // Undressed: a floor prop may stand in that corner (it does since
+    // GAME_VERSION 4), and the walk is about the void, not the props.
+    const bare: RoomSpec = { ...hub, props: [] };
     const corner = { x: (hub.hall.x1 + 1 + BAY) * CELL, z: BAY * CELL };
     expect(isFloor(hub.grid, hub.hall.x1 + BAY, BAY - 1)).toBe(true);
     expect(isFloor(hub.grid, hub.hall.x1 + BAY + 1, BAY - 1)).toBe(false);
     expect(isFloor(hub.grid, hub.hall.x1 + BAY, BAY)).toBe(false);
     const p = diagonalInto(
-      hub,
+      bare,
       { x: corner.x - 3, z: corner.z - 3 },
       [1, 1],
       0.3,

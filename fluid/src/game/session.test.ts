@@ -5055,15 +5055,35 @@ describe("live changes (M4 C13 to C19)", () => {
       throw new Error("no free spot");
     }
 
-    /** A spot on free floor in `a` that a blocker of `b` covers. */
-    function blockedInB(a: RoomSpec, b: RoomSpec): { x: number; z: number } {
-      for (const box of blockersFor(b)) {
-        const x = (box.x0 + box.x1) / 2;
-        const z = (box.z0 + box.z1) / 2;
-        const s = settleSpot(a, x, z);
-        if (s.x === x && s.z === z) return { x, z };
-      }
-      throw new Error("no spot blocked in the new room only");
+    /**
+     * A spot on free floor in `a` that a blocker of `b` covers: a point of
+     * a grid over each of `b`'s blockers, its centre first, with the
+     * player's whole circle clear of `a`'s blockers, so the walk never
+     * pushes them off it before the swap.
+     */
+    function blockedInB(
+      a: RoomSpec,
+      b: RoomSpec,
+    ): { x: number; z: number } | null {
+      const lit = blockersFor(a);
+      const roomy = (x: number, z: number) =>
+        lit.every(
+          (o) =>
+            Math.hypot(
+              x - Math.max(o.x0, Math.min(x, o.x1)),
+              z - Math.max(o.z0, Math.min(z, o.z1)),
+            ) >= PLAYER_RADIUS,
+        );
+      const steps = [0.5, 0.1, 0.3, 0.7, 0.9];
+      for (const box of blockersFor(b))
+        for (const fx of steps)
+          for (const fz of steps) {
+            const x = box.x0 + (box.x1 - box.x0) * fx;
+            const z = box.z0 + (box.z1 - box.z0) * fz;
+            const s = settleSpot(a, x, z);
+            if (s.x === x && s.z === z && roomy(x, z)) return { x, z };
+          }
+      return null;
     }
 
     function standAt(spot: { x: number; z: number }): Session {
@@ -5118,10 +5138,19 @@ describe("live changes (M4 C13 to C19)", () => {
 
     it("moves the player to the nearest free cell when their spot is blocked", async () => {
       const a = built(placeOf());
-      const b = next();
+      // The fewest new doors whose re-dressing covers a spot of `a`'s free
+      // floor with a blocker.
+      const doors = [1, 2, 3, 4].find(
+        (n) => blockedInB(a, built(redoored(n))) !== null,
+      );
+      if (doors === undefined)
+        throw new Error("no spot blocked in the new room only");
+      const b = built(redoored(doors));
       const spot = blockedInB(a, b);
+      if (spot === null)
+        throw new Error("no spot blocked in the new room only");
       const session = standAt(spot);
-      answers.set("hall", engramOf(redoored()));
+      answers.set("hall", engramOf(redoored(doors)));
       session.changed(frameOf());
       await run(2000);
       expect(shown()).toEqual(b);
@@ -5340,10 +5369,21 @@ describe("live changes (M4 C13 to C19)", () => {
           const dark = darkened(room, "station");
           // A point a prop of the dark room covers is the only candidate:
           // cheap to find, then checked free before the dark with
-          // `settleSpot`.
+          // `settleSpot`, and with the player's whole circle clear of the
+          // lit room's blockers, so the walk never pushes them off it
+          // before the room goes dark.
           const props = blockersFor(dark);
           const covered = (x: number, z: number) =>
             props.some((p) => x >= p.x0 && x <= p.x1 && z >= p.z0 && z <= p.z1);
+          const lit = blockersFor(room);
+          const roomy = (x: number, z: number) =>
+            lit.every(
+              (b) =>
+                Math.hypot(
+                  x - Math.max(b.x0, Math.min(x, b.x1)),
+                  z - Math.max(b.z0, Math.min(z, b.z1)),
+                ) >= PLAYER_RADIUS,
+            );
           let found: { x: number; z: number } | null = null;
           for (
             let z = 0.125;
@@ -5355,7 +5395,7 @@ describe("live changes (M4 C13 to C19)", () => {
               x < (room.grid[0]?.length ?? 0) * CELL;
               x += 0.25
             ) {
-              if (!covered(x, z)) continue;
+              if (!covered(x, z) || !roomy(x, z)) continue;
               const kept = settleSpot(room, x, z);
               if (kept.x === x && kept.z === z) {
                 found = { x, z };

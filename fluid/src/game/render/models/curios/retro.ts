@@ -90,7 +90,7 @@ import {
   textRows,
 } from "../heroes/pixels";
 import { MARKS } from "../marks";
-import { curioHalf, type CurioRecipe } from "./common";
+import { curioHalf, flatText, type CurioRecipe } from "./common";
 
 /** A point of a side profile: depth `d`, height `h`. */
 type DH = readonly [d: number, h: number];
@@ -156,59 +156,6 @@ function planBar(
     h1,
     s,
   );
-}
-
-/** A rectangle of a pixel picture's lit cells: its first column, its top row, its width and its height in cells. */
-interface PixelRect {
-  col: number;
-  row: number;
-  len: number;
-  rows: number;
-}
-
-/**
- * A pixel picture's lit cells (`#`) as rectangles: each horizontal run of
- * `pixelRuns`, merged with the runs straight under it that start and end
- * in the same columns, so an upright stroke is one piece however tall.
- * Together they cover every lit cell exactly once. For a mark built from
- * boxes or slabs, which cost a dozen triangles a piece.
- */
-function pixelRects(rows: readonly string[]): PixelRect[] {
-  const rects: PixelRect[] = [];
-  for (const r of pixelRuns(rows)) {
-    const above = rects.find(
-      (x) => x.col === r.col && x.len === r.len && x.row + x.rows === r.row,
-    );
-    if (above) above.rows++;
-    else rects.push({ ...r, rows: 1 });
-  }
-  return rects;
-}
-
-/**
- * Lays `text` flat on a face that looks up, fitted into `a0..a1` along
- * and `d0..d1` across with square pixels as large as both allow (`fit`),
- * centred: `lay` draws one rectangle of lit cells (`pixelRects`) from
- * `a0` to `a1` and `d0` to `d1`. The first row lies towards `-d`, so the
- * text reads from the curio's front (`+d`), left to right along `+a`.
- * Returns the pixel size, to hold to C13's 1 mm floor.
- */
-function flatText(
-  text: string,
-  box: readonly [a0: number, a1: number, d0: number, d1: number],
-  lay: (a0: number, a1: number, d0: number, d1: number) => void,
-): number {
-  const rows = textRows(text);
-  const { px, left } = fit(rows, ...box);
-  const far = (box[2] + box[3]) / 2 - (rows.length * px) / 2;
-  for (const r of pixelRects(rows))
-    lay(
-      left + r.col * px,
-      left + (r.col + r.len) * px,
-      far + r.row * px,
-      far + (r.row + r.rows) * px,
-    );
-  return px;
 }
 
 // --- Pocket console --------------------------------------------------------

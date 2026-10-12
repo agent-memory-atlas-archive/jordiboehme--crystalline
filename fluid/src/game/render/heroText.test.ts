@@ -160,6 +160,15 @@ const READABLE = new Set([
   "LOGIN: CRASH OVERRIDE",
   "LOGIN: ACID BURN",
   "MESS WITH THE BEST, DIE LIKE THE REST.",
+  // The floppy's label, the pizza box's lid print and the lottery
+  // ticket's numbers ("4" and "8" are above), each number set on its own
+  // (0.25.1).
+  "HACK THE PLANET!",
+  "PIZZA POWER",
+  "15",
+  "16",
+  "23",
+  "42",
 ]);
 
 /**
@@ -217,6 +226,12 @@ const MARKS_ONLY = [
   "LOGIN: CRASH OVERRIDE",
   "LOGIN: ACID BURN",
   "MESS WITH THE BEST, DIE LIKE THE REST.",
+  "HACK THE PLANET!",
+  "PIZZA POWER",
+  "15",
+  "16",
+  "23",
+  "42",
 ];
 
 /** A source with its comments stripped: comments name constants in backticks (`CLUSTER`); only code draws. */
@@ -307,6 +322,7 @@ describe("readable text in the recipes", () => {
       "finds",
       "desktop",
       "critters",
+      "office",
       "marked",
       "rare",
       "walker",

@@ -598,7 +598,8 @@ describe("heroHallRoom", () => {
     // axis (world x at an even
     // turn, world z at an odd one, `turnedPoint` in `footprints.ts`), never
     // along `d`, the axis running from the wall into the room. Grouped by
-    // the surface's own token (`key[2]`), since `hostOf` recomputes
+    // the surface's own key (its anchor ints and token, since the hall's
+    // round tables share their tokens), since `hostOf` recomputes
     // `hostSurfaces` per call and never returns the same object twice.
     const groups = new Map<
       string,
@@ -616,9 +617,10 @@ describe("heroHallRoom", () => {
         along: aIsX ? cx : cz,
         cross: aIsX ? cz : cx,
       };
-      const list = groups.get(s.key[2]) ?? [];
+      const key = s.key.join(",");
+      const list = groups.get(key) ?? [];
       list.push(point);
-      groups.set(s.key[2], list);
+      groups.set(key, list);
     }
     let rowsChecked = 0;
     for (const [host, points] of groups) {
@@ -629,11 +631,12 @@ describe("heroHallRoom", () => {
       const along = new Set(points.map((p) => Math.round(p.along * 1e6)));
       expect(along.size, `${host}: along-axis centres`).toBe(points.length);
     }
-    // The mess table, the tube bench, the laser desk, and the round
-    // table's place 0, place 2 and south under spot each carry more than
-    // one curio; a row of one (the gun bench, the round table's places 1
-    // and 3) has nothing to compare.
-    expect(rowsChecked).toBe(6);
+    // The mess table, the tube bench, the laser desk, the first round
+    // table's place 0, place 2 and south under spot, and the second round
+    // table's place 0 (0.25.1) each carry more than one curio; a row of
+    // one (the gun bench, the first round table's places 1 and 3, the
+    // pizza boxes) has nothing to compare.
+    expect(rowsChecked).toBe(7);
   });
 });
 
@@ -658,6 +661,7 @@ describe("galleryRoom curios", () => {
         "decor:round-table",
         "prop:storage-shelf",
         "prop:filing-cabinet",
+        "prop:crate",
       ].sort(),
     );
 

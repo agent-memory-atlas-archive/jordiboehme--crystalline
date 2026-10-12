@@ -17,7 +17,8 @@
  * - **C3. Catalogued surfaces.** Every host kind's tops and under spots are
  *   rectangles in its local terms at turn 0 (`SurfaceSpec`): the fixtures'
  *   (`FIXTURE_SURFACES`), the decor's (`DECOR_SURFACES`), the floor props'
- *   per variant (`PROP_SURFACES`) and the heroes' (`HERO_CATALOGUE[kind]
+ *   per variant (`PROP_SURFACES`, the crates' lids among them) and the
+ *   heroes' (`HERO_CATALOGUE[kind]
  *   .surfaces` and `.under`). Each has its height, its free height `clear`
  *   (`OPEN_CLEAR` for an open top) and its class. Nothing is read off a
  *   mesh at run time. An `under` spot is catalogued only where a standing
@@ -37,18 +38,21 @@
  * - **C5. No blocker of their own.** Every surface lies inside its host's
  *   footprint, which already blocks the player, so a curio changes no
  *   reach.
- * - **C6. Seven slots.** A room draws each of the `retro`, `gear`, `ball`,
- *   `under`, `tech`, `radar` and `capsule` slots once, rolling only over
- *   the kinds that fit it, so it holds at most one curio per slot. The two
- *   computers and the space bricks share the retro slot, so the two
- *   computers never stand in one generated room; the reactor case and the
- *   drone share the tech slot. The radar and the capsule case each have a
- *   slot of their own, so either can stand beside a ball.
+ * - **C6. Nine slots.** A room draws each of the `retro`, `gear`, `ball`,
+ *   `under`, `tech`, `radar`, `capsule`, `desk` and `snack` slots once,
+ *   rolling only over the kinds that fit it, so it holds at most one curio
+ *   per slot. The two computers and the space bricks share the retro
+ *   slot, so the two computers never stand in one generated room; the
+ *   reactor case and the drone share the tech slot. The radar and the
+ *   capsule case each have a slot of their own, so either can stand beside
+ *   a ball. The floppy and the lottery ticket share the desk slot, and the
+ *   pizza box has the snack slot to itself (0.25.1).
  * - **C7. Rates.** Each slot's chance (`RETRO_SHARE`, `GEAR_SHARE`,
  *   `BALL_SHARE`, `UNDER_SHARE`, `TECH_SHARE`, `RADAR_SHARE`,
- *   `CAPSULE_SHARE`) and its weighted pool (`RETRO_POOLS` and
- *   `GEAR_POOLS` and `TECH_POOLS` per archetype, `BALL_POOL`,
- *   `UNDER_POOL`, `RADAR_POOL`, `CAPSULE_POOL`); a drawn ball tries the
+ *   `CAPSULE_SHARE`, `DESK_SHARE`, `SNACK_SHARE`) and its weighted pool
+ *   (`RETRO_POOLS` and `GEAR_POOLS` and `TECH_POOLS` per archetype,
+ *   `BALL_POOL`, `UNDER_POOL`, `RADAR_POOL`, `CAPSULE_POOL`, `DESK_POOL`,
+ *   `SNACK_POOL`); a drawn ball tries the
  *   hall's corners at `BALL_FLOOR`. The radar takes at
  *   `RADAR_BESIDE_BALL` in a room that holds a star ball, and the capsule
  *   case at `CAPSULE_BESIDE` in a room that holds a star ball or the
@@ -80,23 +84,27 @@
  *    ball slot's (`BALL_SHARE`) and its floor chance (`BALL_FLOOR`), the
  *    under slot's (`UNDER_SHARE`) and the tech slot's (`TECH_SHARE`), then
  *    one uniform and a roll each for the radar and the capsule case, the
- *    uniform giving both the slot's own chance and its paired chance.
- *    Everything is always drawn, and the later slots come after every
- *    earlier value, so no earlier draw moves. `curioDrawsOf` reads nothing
+ *    uniform giving both the slot's own chance and its paired chance, then
+ *    the desk slot's (`DESK_SHARE`) and the snack slot's (`SNACK_SHARE`)
+ *    chance and roll (0.25.1). Everything is always drawn, and the later
+ *    slots come after every earlier value, so no earlier draw moves. `curioDrawsOf` reads nothing
  *    of a room but its seed, so a neighbour's raw curios (`rawCurios`, 2.6f
  *    C6) are made from its seed alone: it steps through the same slots,
  *    picking each from its whole pool (`poolOf`) with no fit filter and no
  *    layout, leaving out a slot whose pool is the archetype's own
  *    (`ARCHETYPE_SLOTS`) when the archetype is unknown.
  * 2. **Surfaces.** `hostSurfaces(room)`, once.
- * 3. **Slots, in order: retro, gear, ball, under, tech, radar, capsule.**
+ * 3. **Slots, in order: retro, gear, ball, under, tech, radar, capsule,
+ *    desk, snack.** The two 0.25.1 slots come last, so they never take a
+ *    place an older curio would have stood on.
  *    A slot that takes (`slotTakes`: its own chance, or for the radar and
  *    the capsule case their paired chance when a curio placed before it
  *    in this pass is a partner, a star ball for the radar, a star ball or
  *    the radar for the capsule case) takes its pool
  *    (`RETRO_POOLS[room.archetype]`, `GEAR_POOLS[room.archetype]`,
  *    `BALL_POOL`, `UNDER_POOL`, `TECH_POOLS[room.archetype]`,
- *    `RADAR_POOL`, `CAPSULE_POOL`, or only the kind its draw forces),
+ *    `RADAR_POOL`, `CAPSULE_POOL`, `DESK_POOL`, `SNACK_POOL`, or only the
+ *    kind its draw forces),
  *    keeps the kinds with a candidate that fits right now, picks one by
  *    `pickByRoll` and places it, skipping its neighbours' kinds (2.6f C7,
  *    C8): when a neighbour draws the picked kind raw (`near.curios`), the
@@ -213,11 +221,22 @@ export const CURIO_KINDS: readonly CurioKind[] = [
   "slim-computer",
   "space-bricks",
   "soot-puffs",
+  "floppy-disk",
+  "pizza-box",
+  "lottery-ticket",
 ];
 
-/** Which of a room's seven draws a kind comes from (C6, 2.6d C5). */
+/** Which of a room's nine draws a kind comes from (C6, 2.6d C5, 0.25.1). */
 export type CurioSlot =
-  "retro" | "gear" | "ball" | "under" | "tech" | "radar" | "capsule";
+  | "retro"
+  | "gear"
+  | "ball"
+  | "under"
+  | "tech"
+  | "radar"
+  | "capsule"
+  | "desk"
+  | "snack";
 
 /** One variant's box in metres at turn 0: `width` along `a`, `depth` along `d`, `top` above its base. */
 export interface CurioSize {
@@ -441,6 +460,42 @@ export const CURIO_CATALOGUE: Readonly<Record<CurioKind, CurioEntry>> = {
       { width: 0.34, depth: 0.2, top: 0.08 },
     ],
   },
+  "floppy-disk": {
+    slot: "desk",
+    variants: 1,
+    facing: "front",
+    classes: ["desk", "bench", "table"],
+    sizes: [{ width: 0.09, depth: 0.094, top: 0.004 }],
+  },
+  "pizza-box": {
+    // v0 closed, v1 a stack of two, v2 a stack of three, v3 open with one
+    // slice.
+    slot: "snack",
+    variants: 4,
+    facing: "any",
+    classes: ["desk", "table", "crate"],
+    sizes: [
+      { width: 0.36, depth: 0.36, top: 0.045 },
+      { width: 0.37, depth: 0.37, top: 0.09 },
+      { width: 0.37, depth: 0.37, top: 0.135 },
+      { width: 0.36, depth: 0.38, top: 0.37 },
+    ],
+    // The open box stands its lid up at the back (0.37 m tall); it never
+    // goes on a crate, whose top is too small and too high for it.
+    variantClasses: [
+      ["desk", "table", "crate"],
+      ["desk", "table", "crate"],
+      ["desk", "table", "crate"],
+      ["desk", "table"],
+    ],
+  },
+  "lottery-ticket": {
+    slot: "desk",
+    variants: 1,
+    facing: "front",
+    classes: ["desk", "table"],
+    sizes: [{ width: 0.1, depth: 0.06, top: 0.002 }],
+  },
 };
 
 /**
@@ -570,6 +625,15 @@ export const RADAR_POOL = [
 export const CAPSULE_POOL = [
   ["capsule-case", 1],
 ] as const satisfies readonly (readonly [CurioKind, number])[];
+/** The desk slot's pool (0.25.1 D-3, D-2): the floppy is the commoner. */
+export const DESK_POOL = [
+  ["floppy-disk", 3],
+  ["lottery-ticket", 2],
+] as const satisfies readonly (readonly [CurioKind, number])[];
+/** The snack slot's pool (0.25.1 D-4). */
+export const SNACK_POOL = [
+  ["pizza-box", 1],
+] as const satisfies readonly (readonly [CurioKind, number])[];
 
 /** Chance a room draws a retro curio (C7, 2.6f C4): about 1 room in 4. */
 export const RETRO_SHARE = 1 / 4;
@@ -594,6 +658,10 @@ export const CAPSULE_SHARE = 1 / 16;
  * C5).
  */
 export const CAPSULE_BESIDE = 1 / 3;
+/** Chance a room draws the desk slot: about 1 room in 4, "common enough to be found". */
+export const DESK_SHARE = 1 / 4;
+/** Chance a room draws the snack slot: about 1 room in 8. */
+export const SNACK_SHARE = 1 / 8;
 
 /**
  * The curio that hovers (2.6d C4): its underside's height over the surface
@@ -825,7 +893,20 @@ export const DECOR_SURFACES = {
  * (C3), per variant, local to the prop's centre: the storage shelf's open
  * top (v0) or its three levels, each `clear` up to the next level's
  * underside, and its top (v1), each filing cabinet's top, the floor
- * under each bench's seat, and the service trolley's own deck top.
+ * under each bench's seat, the service trolley's own deck top, and each
+ * crate's lid (0.25.1).
+ *
+ * The crate (`render/models/props/floor.ts`'s `crate`, its heights in
+ * `CRATE_H` there) has one lid a curio may stand on in each variant: the
+ * small crate's at 0.55 m (v0), the large crate's at 0.85 m (v1), and in
+ * the stack (v2) the small crate's on top, at 0.68 m plus 0.45 m, 1.13 m,
+ * its body offset to `a` -0.11 to 0.55 and `d` -0.55 to 0.05. A look with
+ * the prop's own accent draws a rim 0.05 m wide and 0.015 m proud round
+ * each lid, so each spot keeps inside the rim's inner edge (v0 at +-0.3085,
+ * v1 at +-0.5, v2 at `a` -0.025 to 0.465 and `d` -0.465 to -0.035) and
+ * inside the flat of each lid's bevel. The marked crate, which replaces a
+ * crate now and then, carries none. `curios.test.ts` pins the heights and
+ * the extents against the built mesh.
  *
  * The bench (`render/models/props/floor.ts`'s `bench`) is a slab seat from
  * 0.42 m on two slab legs whose inner faces stand at `a` of +-0.59, open
@@ -957,6 +1038,41 @@ export const PROP_SURFACES = {
         h: 0.57,
         clear: OPEN_CLEAR,
         cls: "under",
+      },
+    ],
+  ],
+  crate: [
+    [
+      {
+        a0: -0.3,
+        a1: 0.3,
+        d0: -0.3,
+        d1: 0.3,
+        h: 0.55,
+        clear: OPEN_CLEAR,
+        cls: "crate",
+      },
+    ],
+    [
+      {
+        a0: -0.5,
+        a1: 0.5,
+        d0: -0.5,
+        d1: 0.5,
+        h: 0.85,
+        clear: OPEN_CLEAR,
+        cls: "crate",
+      },
+    ],
+    [
+      {
+        a0: -0.02,
+        a1: 0.46,
+        d0: -0.46,
+        d1: -0.04,
+        h: 1.13,
+        clear: OPEN_CLEAR,
+        cls: "crate",
       },
     ],
   ],
@@ -1214,9 +1330,19 @@ export interface CurioDraws {
    * not drawn; `curioDraws` always sets it.
    */
   capsule?: PairedDraw;
+  /**
+   * The desk slot (the floppy, the ticket; 0.25.1). Absent means not
+   * drawn; `curioDraws` always sets it.
+   */
+  desk?: SlotDraw;
+  /**
+   * The snack slot (the pizza box; 0.25.1). Absent means not drawn;
+   * `curioDraws` always sets it.
+   */
+  snack?: SlotDraw;
 }
 
-/** The slots in the order the pass fills them (C6, 2.6d C5). */
+/** The slots in the order the pass fills them (C6, 2.6d C5, 0.25.1). */
 const SLOTS: readonly CurioSlot[] = [
   "retro",
   "gear",
@@ -1225,6 +1351,8 @@ const SLOTS: readonly CurioSlot[] = [
   "tech",
   "radar",
   "capsule",
+  "desk",
+  "snack",
 ];
 
 /**
@@ -1264,7 +1392,9 @@ export function curioDraws(room: CurioBase): CurioDraws {
  * its roll, then the radar's uniform and roll and the capsule case's
  * uniform and roll (2.6d C5): each uniform gives its `take` below its
  * share (`RADAR_SHARE`, `CAPSULE_SHARE`) and its `paired` below its chance
- * beside a partner (`RADAR_BESIDE_BALL`, `CAPSULE_BESIDE`). Everything is
+ * beside a partner (`RADAR_BESIDE_BALL`, `CAPSULE_BESIDE`), then the desk
+ * slot's chance of `DESK_SHARE` and its roll and the snack slot's chance
+ * of `SNACK_SHARE` and its roll (0.25.1). Everything is
  * drawn whether it is used or not, so no draw ever moves another. No draw
  * forces a kind. They read nothing of a room but its seed, so a
  * neighbour's draws (`rawCurios`) are made from its seed alone.
@@ -1291,6 +1421,9 @@ export function curioDrawsOf(seed: number): CurioDraws {
   };
   const radar = paired(RADAR_SHARE, RADAR_BESIDE_BALL);
   const capsule = paired(CAPSULE_SHARE, CAPSULE_BESIDE);
+  // 0.25.1: appended after every older value, so none of them moves.
+  const desk = slot(DESK_SHARE);
+  const snack = slot(SNACK_SHARE);
   return {
     retro,
     gear,
@@ -1299,6 +1432,8 @@ export function curioDrawsOf(seed: number): CurioDraws {
     tech,
     radar,
     capsule,
+    desk,
+    snack,
   };
 }
 
@@ -1661,6 +1796,10 @@ function poolOf(
       return RADAR_POOL;
     case "capsule":
       return CAPSULE_POOL;
+    case "desk":
+      return DESK_POOL;
+    case "snack":
+      return SNACK_POOL;
   }
 }
 

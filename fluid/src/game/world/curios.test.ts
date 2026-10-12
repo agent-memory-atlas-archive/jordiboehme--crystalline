@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { seedFor } from "../core/seed";
+import { createRng, seedFor } from "../core/seed";
 import { roomWithForcedHero } from "../dev/demo";
 import { frameAt, frameForSlot } from "../render/kit";
 import {
@@ -32,6 +32,8 @@ import {
   CURIO_MARGIN,
   CURIO_ORDER,
   DECOR_SURFACES,
+  DESK_POOL,
+  DESK_SHARE,
   FIXTURE_SURFACES,
   GEAR_POOLS,
   GEAR_SHARE,
@@ -41,6 +43,8 @@ import {
   RADAR_SHARE,
   RETRO_POOLS,
   RETRO_SHARE,
+  SNACK_POOL,
+  SNACK_SHARE,
   TECH_POOLS,
   TECH_SHARE,
   UNDER_POOL,
@@ -81,7 +85,7 @@ import {
   type HeroDraws,
 } from "./heroes";
 import { blockersFor } from "./move";
-import { PROP_KINDS } from "./props";
+import { PROP_CATALOGUE, PROP_KINDS } from "./props";
 import { DEGENERATE_PLACES } from "./reachChecks";
 import {
   dressingSites,
@@ -107,8 +111,15 @@ import type {
   WallSlot,
 } from "./types";
 import { CELL } from "./units";
+import { GAME_VERSION } from "../version";
 
 const SIDES: readonly Side[] = ["n", "e", "s", "w"];
+/** The 0.25.1 kinds, the desk and snack slots'. */
+const NEW_KINDS: ReadonlySet<CurioKind> = new Set([
+  "floppy-disk",
+  "pizza-box",
+  "lottery-ticket",
+]);
 const inside = (inner: Box, outer: Box, eps = 1e-6) =>
   inner.x0 >= outer.x0 - eps &&
   inner.x1 <= outer.x1 + eps &&
@@ -248,6 +259,7 @@ describe("host surfaces", () => {
       "decor:round-table",
       "prop:storage-shelf",
       "prop:filing-cabinet",
+      "prop:crate",
     ])
       expect(hosts.has(h), h).toBe(true);
   });
@@ -478,6 +490,8 @@ const only = (kind: CurioKind): CurioDraws => {
     tech: draw("tech"),
     radar: { ...draw("radar"), paired: false },
     capsule: { ...draw("capsule"), paired: false },
+    desk: draw("desk"),
+    snack: draw("snack"),
   };
 };
 /** An archetype's whole retro pool weight (`RETRO_POOLS`). */
@@ -1103,12 +1117,12 @@ describe("the curio pass (C6, C7, C9, C10, C12)", () => {
   });
 
   it("keeps a corner spot off a floor prop and off a wall prop (cornerSpots)", () => {
-    // The one room of the varied workshops whose south-west corner is
-    // usable as generated.
+    // A room of the varied workshops whose south-west corner alone is
+    // usable as generated (GAME_VERSION 4).
     const b = base(
       generateRoom({
         ...CANNED_WORKSHOP,
-        permalink: "pipe-shop-12",
+        permalink: "pipe-shop-0",
         type: ARCHETYPE_TYPES.council,
       }),
     );
@@ -1157,24 +1171,30 @@ describe("the curio pass (C6, C7, C9, C10, C12)", () => {
 
   it("draws the slots in their fixed order (a pin of curioDraws)", () => {
     expect(curioDraws(base(generateRoom(CANNED_WORKSHOP)))).toEqual({
-      retro: { take: true, roll: 0.3097186426166445 },
-      gear: { take: false, roll: 0.7412930731661618 },
-      ball: { take: false, roll: 0.29439340252429247, floor: true },
-      under: { take: false, roll: 0.9774609189480543 },
+      retro: { take: false, roll: 0.3430099105462432 },
+      gear: { take: true, roll: 0.5475928385276347 },
+      ball: { take: true, roll: 0.015863109845668077, floor: true },
+      under: { take: false, roll: 0.04107839614152908 },
       // The three 2.6d slots, appended after every old value (2.6d C5).
-      tech: { take: true, roll: 0.32370482943952084 },
-      radar: { take: true, paired: true, roll: 0.41816116753034294 },
-      capsule: { take: false, paired: false, roll: 0.9839846724644303 },
+      tech: { take: false, roll: 0.8745579037349671 },
+      radar: { take: false, paired: true, roll: 0.5469286541920155 },
+      capsule: { take: false, paired: true, roll: 0.04026875551789999 },
+      // The two 0.25.1 slots, appended after every older value.
+      desk: { take: false, roll: 0.4278619457036257 },
+      snack: { take: false, roll: 0.4251894319895655 },
     });
     expect(curioDraws(base(generateRoom(CANNED_BRIDGE)))).toEqual({
-      retro: { take: false, roll: 0.9995579079259187 },
-      gear: { take: false, roll: 0.5458925957791507 },
-      ball: { take: false, roll: 0.42699357331730425, floor: false },
-      under: { take: false, roll: 0.7664119158871472 },
+      retro: { take: false, roll: 0.9744114303030074 },
+      gear: { take: false, roll: 0.009836761513724923 },
+      ball: { take: false, roll: 0.6540312590077519, floor: false },
+      under: { take: false, roll: 0.2569371045101434 },
       // The three 2.6d slots, appended after every old value (2.6d C5).
-      tech: { take: false, roll: 0.264657162129879 },
-      radar: { take: false, paired: true, roll: 0.9681926046032459 },
-      capsule: { take: false, paired: false, roll: 0.3696695831604302 },
+      tech: { take: true, roll: 0.3062186751049012 },
+      radar: { take: false, paired: false, roll: 0.9046418715734035 },
+      capsule: { take: false, paired: true, roll: 0.8916664731223136 },
+      // The two 0.25.1 slots, appended after every older value.
+      desk: { take: true, roll: 0.7377122265752405 },
+      snack: { take: false, roll: 0.23980942158959806 },
     });
   });
 
@@ -1314,6 +1334,8 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
         tech: TECH_POOLS[a],
         radar: RADAR_POOL,
         capsule: CAPSULE_POOL,
+        desk: DESK_POOL,
+        snack: SNACK_POOL,
       })[CURIO_CATALOGUE[kind].slot];
     let untouched = 0;
     let moved = 0;
@@ -1572,7 +1594,11 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
     for (const made of rooms)
       for (let i = 0; i < 100; i++) {
         n++;
-        curios += placeCurios(reseed(made.room, "rate-f", made.name, i)).length;
+        // The 2.6f kinds alone: the 0.25.1 slots come after them and
+        // have rates of their own.
+        curios += placeCurios(reseed(made.room, "rate-f", made.name, i)).filter(
+          (c) => !NEW_KINDS.has(c.kind),
+        ).length;
       }
     const perRoom = curios / n;
     console.info(
@@ -1705,101 +1731,220 @@ describe("the 2.6d curios (2.6d C3 to C9)", () => {
   });
 });
 
+describe("the 0.25.1 curios: the floppy, the ticket and the pizza box", () => {
+  /** About 2000 rooms: every canned room in every archetype and condition, reseeded. */
+  const SWEEP = Array.from({ length: Math.ceil(2000 / ROOMS.length) }, (_, i) =>
+    ROOMS.map((made) => reseed(made.room, "office", made.name, i)),
+  ).flat();
+  /** The kinds of the catalogue before 0.25.1. */
+  const OLD = new Set<CurioKind>(CURIO_KINDS.filter((k) => !NEW_KINDS.has(k)));
+
+  it("bumps the generator version once and keeps the old draws in order (0.25.1)", () => {
+    // Mutation caught: a new draw inserted before the capsule's, which
+    // moves every older slot's roll; the version left at 3 while the
+    // goldens move.
+    expect(GAME_VERSION).toBe(4);
+    const seeds = Array.from({ length: 200 }, (_, i) => seedFor("draws", i));
+    expect(seeds.length).toBeGreaterThan(0);
+    for (const s of seeds) {
+      const d = curioDrawsOf(s);
+      const rng = createRng(seedFor(s, "curio", "draw"));
+      // Replay the pre-0.25.1 stream: 2 + 2 + 3 + 2 + 2 + 2 + 2 values.
+      for (let i = 0; i < 15; i++) rng.next();
+      expect(d.desk).toEqual({
+        take: rng.next() < DESK_SHARE,
+        roll: rng.next(),
+      });
+      expect(d.snack).toEqual({
+        take: rng.next() < SNACK_SHARE,
+        roll: rng.next(),
+      });
+    }
+  });
+
+  it("gives the crates' lids to the pizza box alone, one lid per crate variant", () => {
+    // Mutation caught: a crate variant without its lid, a second surface
+    // on one, or an older kind standing on a crate (which would move its
+    // candidates).
+    expect(PROP_SURFACES.crate).toHaveLength(PROP_CATALOGUE.crate.variants);
+    for (const specs of PROP_SURFACES.crate) {
+      expect(specs).toHaveLength(1);
+      for (const spec of specs) expect(spec.cls).toBe("crate");
+    }
+    const onCrate = CURIO_KINDS.filter((k) =>
+      CURIO_CATALOGUE[k].classes.includes("crate"),
+    );
+    expect(onCrate).toEqual(["pizza-box"]);
+  });
+
+  it("places the new curios at their rates over 2000 rooms", () => {
+    // Mutation caught: a share off by a factor.
+    let deskRooms = 0;
+    let deskGot = 0;
+    let snackRooms = 0;
+    let snackGot = 0;
+    for (const b of SWEEP) {
+      const kinds = placeCurios(b).map((c) => c.kind);
+      const deskFits = (["floppy-disk", "lottery-ticket"] as const).some(
+        (k) => placeCurios(b, only(k)).length > 0,
+      );
+      if (deskFits) {
+        deskRooms++;
+        if (kinds.includes("floppy-disk") || kinds.includes("lottery-ticket"))
+          deskGot++;
+      }
+      if (placeCurios(b, only("pizza-box")).length > 0) {
+        snackRooms++;
+        if (kinds.includes("pizza-box")) snackGot++;
+      }
+    }
+    expect(deskRooms).toBeGreaterThan(1000);
+    expect(snackRooms).toBeGreaterThan(1000);
+    const desk = deskGot / deskRooms;
+    const snack = snackGot / snackRooms;
+    expect(desk, `desk ${String(desk)}`).toBeGreaterThanOrEqual(0.22);
+    expect(desk, `desk ${String(desk)}`).toBeLessThanOrEqual(0.28);
+    expect(snack, `snack ${String(snack)}`).toBeGreaterThanOrEqual(0.1);
+    expect(snack, `snack ${String(snack)}`).toBeLessThanOrEqual(0.15);
+  }, 60_000);
+
+  it("stands the pizza box on a crate only closed or stacked", () => {
+    // Mutation caught: `variantClasses` ignored, so the open box with its
+    // lid up stands on a crate.
+    let onCrates = 0;
+    let open = 0;
+    for (const b of SWEEP) {
+      const surfaces = hostSurfaces(b);
+      for (const draws of [curioDraws(b), only("pizza-box")])
+        for (const c of placeCurios(b, draws)) {
+          if (c.kind !== "pizza-box") continue;
+          if (c.variant === 3) open++;
+          const hosts = hostsOf(surfaces, c).filter((s) => curioFits(b, c, s));
+          if (!hosts.some((s) => s.cls === "crate")) continue;
+          onCrates++;
+          expect(c.variant).toBeLessThanOrEqual(2);
+        }
+    }
+    expect(onCrates).toBeGreaterThan(0);
+    expect(open).toBeGreaterThan(0);
+  }, 60_000);
+
+  it("never moves an old curio for a new one", () => {
+    // Mutation caught: the new slots placed before the old ones.
+    let compared = 0;
+    let withNew = 0;
+    for (const b of SWEEP.slice(0, 500)) {
+      const draws = curioDraws(b);
+      const old: CurioDraws = { ...draws };
+      delete old.desk;
+      delete old.snack;
+      const got = placeCurios(b, draws);
+      if (got.some((c) => !OLD.has(c.kind))) withNew++;
+      expect(got.filter((c) => OLD.has(c.kind))).toEqual(placeCurios(b, old));
+      compared++;
+    }
+    expect(compared).toBe(500);
+    expect(withNew).toBeGreaterThan(50);
+  }, 60_000);
+});
+
 /**
  * The forced council workshop's curios (C11), written from the pass's
- * output after a look at each host: the upright green sword and the
- * laptop on two places of the round table (its places 2 and 1, the laptop
- * an exact fit, facing the table's front), the trap under the seat of the
- * bench (v0) against the east wall at (12.5, 6.5), turned 3, and the star
- * ball on the desk end of the west terminal at row 8. The mess table
- * stands at (3.5, 7.5) turned 3; no curio's first fitting candidate is on
- * it, by the seed order of C9, and it has no under spot of its own.
+ * output after a look at each host (GAME_VERSION 4): the trap under the
+ * seat of the bench (v0) against the east wall at (12.7, 2.5), turned 3,
+ * the laptop on the round table's place 2, an exact fit, facing the
+ * table's front, the star ball on the desk end of the west terminal at
+ * row 8, and the upright green sword on a desk end of the west terminal
+ * at row 10. The mess table stands at (4.5, 8) turned 2; no curio's first
+ * fitting candidate is on it, by the seed order of C9, and it has no
+ * under spot of its own.
  */
 const PINNED: Curio[] = [
   {
-    kind: "light-sword",
-    variant: 2,
-    x: 6.486,
-    y: 5.624,
-    h: 0.78,
-    turn: 3,
-    seed: 1859750762012304,
+    kind: "trap-box",
+    variant: 0,
+    x: 12.696,
+    y: 2.545,
+    h: 0,
+    turn: 1,
+    seed: 3509087118848768,
   },
   {
     kind: "beige-laptop",
     variant: 0,
-    x: 6.113,
-    y: 5.998,
+    x: 6.5,
+    y: 5.614,
     h: 0.78,
     turn: 0,
-    seed: 574460450533092,
-  },
-  {
-    kind: "trap-box",
-    variant: 0,
-    x: 12.687,
-    y: 6.419,
-    h: 0,
-    turn: 3,
-    seed: 63837989656857,
+    seed: 356101901917724,
   },
   {
     kind: "star-ball",
     variant: 0,
-    x: 0.203,
-    y: 8.787,
+    x: 0.124,
+    y: 8.778,
     h: 0.78,
-    turn: 0,
-    seed: 2159271467005853,
+    turn: 3,
+    seed: 2823452868232270,
+  },
+  {
+    kind: "light-sword",
+    variant: 2,
+    x: 0.234,
+    y: 10.231,
+    h: 0.78,
+    turn: 1,
+    seed: 1428111962763486,
   },
 ];
 
 /**
- * The forced engineering workshop's curios with the mess table at (3.5,
- * 7.5) turned 3: the laptop on the table's top (h 0.76), turned to face
- * the table's back (a free host's `fixed` curio faces front or back), the
- * star ball and the lying sword on the two desk ends of the west terminal
- * at row 8, and the trap on the service trolley's deck (v0, h 0.27) its
- * `runbook` dressing draws at (8.472, 9.48). This engineering room has no
- * workbench, no hydroponics trough, no round table and no bench, and the
- * mess table has no under spot of its own, but the trolley is now a host
- * for the under slot too.
+ * The forced engineering workshop's curios with the mess table at (4.5, 8)
+ * turned 2 (GAME_VERSION 4): the trap on the service trolley's deck (v0,
+ * h 0.27) its `runbook` dressing draws at (12.675, 2.5), the laptop on the
+ * table's top (h 0.76), turned to face the table's back (a free host's
+ * `fixed` curio faces front or back), the star ball on a desk end of the
+ * west terminal at row 8 and the upright green sword on one of the west
+ * terminal at row 10. This engineering room has no workbench, no
+ * hydroponics trough, no round table and no bench, and the mess table has
+ * no under spot of its own, but the trolley is a host for the under slot
+ * too.
  */
 const PINNED_ON_HERO: Curio[] = [
   {
+    kind: "trap-box",
+    variant: 0,
+    x: 12.652,
+    y: 2.491,
+    h: 0.27,
+    turn: 3,
+    seed: 1210304572549022,
+  },
+  {
     kind: "beige-laptop",
     variant: 0,
-    x: 3.556,
-    y: 6.698,
+    x: 4.393,
+    y: 7.913,
     h: 0.76,
-    turn: 1,
-    seed: 6857075118340509,
+    turn: 0,
+    seed: 5270867400495347,
   },
   {
     kind: "star-ball",
     variant: 0,
-    x: 0.204,
-    y: 8.211,
+    x: 0.124,
+    y: 8.778,
     h: 0.78,
-    turn: 0,
-    seed: 2478011078854370,
+    turn: 3,
+    seed: 2823452868232270,
   },
   {
     kind: "light-sword",
-    variant: 0,
-    x: 0.174,
-    y: 8.785,
+    variant: 2,
+    x: 0.234,
+    y: 10.231,
     h: 0.78,
-    turn: 0,
-    seed: 2159271467005853,
-  },
-  {
-    kind: "trap-box",
-    variant: 0,
-    x: 8.472,
-    y: 9.48,
-    h: 0.27,
-    turn: 0,
-    seed: 752718812128755,
+    turn: 1,
+    seed: 1428111962763486,
   },
 ];

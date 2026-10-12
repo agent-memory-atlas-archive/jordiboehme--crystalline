@@ -488,11 +488,12 @@ describe("decal placement (2.7 Task 10)", () => {
   it("cuts a full room down to the cap from the floor stains up, never a strip, an arrow or a stencil (2.7 C17)", () => {
     // Mutation caught: no cap at all, or a cap that drops streaks, smears,
     // faces or the never-dropped kinds before the floor stains. A derelict
-    // reseed of the hub (hub-1) is the first found over the cap.
+    // reseed of the hub (hub-3) is the first found over the cap
+    // (GAME_VERSION 4).
     const room = generateRoom({
       ...CANNED_HUB,
       status: "archived",
-      permalink: "hub-1",
+      permalink: "hub-3",
     });
     const { decals, ...rest } = room;
     const full = placeDecals(rest, Infinity);
@@ -542,7 +543,7 @@ describe("decal placement (2.7 Task 10)", () => {
       );
     const at60 = count(placeDecals(rest, 60));
     expect(at60.stains).toBe(0);
-    expect(at60.faces).toBe(10);
+    expect(at60.faces).toBe(11);
     expect(at60.smears).toBe(all.smears);
     expect(at60.streaks).toBe(all.streaks);
     expect(count(placeDecals(rest, 30))).toEqual({

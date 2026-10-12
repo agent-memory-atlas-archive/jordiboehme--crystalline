@@ -861,13 +861,17 @@ describe("the neighbours (2.6f C5)", () => {
   });
 
   it("cuts the heroes two neighbouring rooms share to a third, over a station of rooms (2.6f C7, C8)", () => {
-    // A ring of 300 typed rooms, each with ways to i+1 and i+3 and
+    // A ring of 900 typed rooms, each with ways to i+1 and i+3 and
     // hatches from i-1 and i-3. The planner forecast 6.0 percent of ways
-    // sharing a hero without the skip and 2.0 with it. Mutation caught:
+    // sharing a hero without the skip and 2.0 with it, a third; 300 rooms
+    // measured 39 -> 14 at GAME_VERSION 4, just over it, and 900 rooms
+    // 115 -> 37, so the ring was grown to hold the forecast's own ratio
+    // against the sampling noise. Mutation caught:
     // generateRoom not handing its near on, the skip dropped, or the pool
-    // skip dropped with only the solo tie-break left (the turret alone
-    // takes the ring from 51 to 24 shared ways, half and not a third).
-    const N = 300;
+    // skip dropped with only the solo tie-break left (at 300 rooms before
+    // GAME_VERSION 4 the turret alone took the ring from 51 to 24 shared
+    // ways, half and not a third).
+    const N = 900;
     const TYPES = ["manifest", "decision", "runbook", "reference", "guide"];
     const at = (i: number) => `ring-${String(((i % N) + N) % N)}`;
     const typeOf = (i: number) =>
@@ -1067,8 +1071,9 @@ describe("withHeroes (2.6e C15)", () => {
     // starts from a room already dressed as the generator dresses it, so
     // it cannot see a skipped pass; this one starts from a bare room. The
     // reseeded workshop is one whose neighbours skip a curio it would
-    // otherwise draw (the canned places' curios read no neighbour).
-    const skips = { ...CANNED_WORKSHOP, permalink: "manifest-25" };
+    // otherwise draw (manifest-2 since GAME_VERSION 4; the canned places'
+    // curios read no neighbour).
+    const skips = { ...CANNED_WORKSHOP, permalink: "manifest-2" };
     const own = generateRoom(skips);
     expect(placeCurios(own, curioDrawsOf(own.seed))).not.toEqual(own.curios);
     const places = [CANNED_BRIDGE, CANNED_WORKSHOP, CANNED_HUB, skips];

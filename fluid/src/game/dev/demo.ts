@@ -234,7 +234,7 @@ export function roomWithForcedHero(
  * surfaces, not the hall's corners, since a forced kind is meant to be
  * judged sitting on something), the two paired slots' `paired` is false
  * (a forced radar or capsule case lands by its own draw, never by its
- * partner), and the other six slots take nothing.
+ * partner), and the other eight slots take nothing.
  */
 function forcedCurioDraws(kind: CurioKind): CurioDraws {
   const untaken: SlotDraw = { take: false, roll: 0 };
@@ -250,6 +250,8 @@ function forcedCurioDraws(kind: CurioKind): CurioDraws {
     tech: pick("tech"),
     radar: { ...pick("radar"), paired: false },
     capsule: { ...pick("capsule"), paired: false },
+    desk: pick("desk"),
+    snack: pick("snack"),
   };
 }
 

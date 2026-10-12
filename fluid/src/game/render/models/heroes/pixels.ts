@@ -263,8 +263,10 @@ export function pixelPanel(
  * about six times the triangles a panel does, inside the curio budget.
  * The one exception is a curio mark on a face that looks up, where no
  * quad can lie (the tape drive's lid and the tape player's top,
- * `retro.ts`): it is built from thin slabs or boxes this thick, runs
- * merged with the runs under them to stay in budget. The designer tower's
+ * `retro.ts`, and the office curios' prints, `office.ts`): it is built
+ * from thin slabs or boxes this thick, runs merged with the runs under
+ * them to stay in budget. The floppy disk's handwriting is thinner, 0.5
+ * mm, since the whole disk stands only 4 mm tall. The designer tower's
  * badge, clock and signature and the ooze canisters' letters
  * (`props/rare.ts`) are `pixelBoxes` at this same lift, inside the
  * roomier prop budget.

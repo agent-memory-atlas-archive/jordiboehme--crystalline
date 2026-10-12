@@ -1604,22 +1604,23 @@ describe("the hero pass", () => {
   });
 
   it("pins the empty place's own hero exactly, so a change to the candidate order shows", () => {
-    // A 5 by 6 lab hall at its own seed draws the turret. It stands in the
-    // south-west corner cell (0, 5), turned north towards the hall's
-    // centre (2.5, 3), on the seed of that corner candidate.
+    // A 5 by 6 lab hall at its own seed (GAME_VERSION 4) draws the stone
+    // hand. It stands in the band at (2.5, 2.5), on the half-cell point
+    // (5, 5) of the band's candidates, turned 2 by its own roll, on the
+    // seed of that band candidate.
     const room = generateRoom(DEGENERATE_PLACES.empty);
     expect(room.hall).toEqual({ x0: 0, y0: 0, x1: 5, y1: 6 });
     expect(room.heroes).toEqual([
       {
-        kind: "turret",
+        kind: "stone-hand",
         variant: 0,
-        x: 0.5,
-        y: 5.5,
-        turn: 0,
-        seed: seedFor(room.seed, "hero", 0, 5, "corner"),
+        x: 2.5,
+        y: 2.5,
+        turn: 2,
+        seed: seedFor(room.seed, "hero", 5, 5, "band"),
       },
     ]);
-    expect(room.heroes[0]?.seed).toBe(184992945357087);
+    expect(room.heroes[0]?.seed).toBe(4648090260794684);
   });
 
   it("places heroes in degenerate rooms without breaking an invariant (Review Focus 1)", () => {
