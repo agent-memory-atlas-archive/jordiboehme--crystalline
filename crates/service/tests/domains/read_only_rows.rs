@@ -403,16 +403,23 @@ async fn a_mark_that_cannot_be_decided_leaves_the_read_standing() {
 
 /// A Viewer's mark does not depend on the write list (a role below Write is
 /// read-only before the list is read), so a broken write-list table must not
-/// unmark it. Task 11's batched marks must give the same answer.
+/// unmark it. Task 11's batched marks must give the same answer, and since
+/// the batch does not read the list for a Viewer either, nothing is logged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_viewer_stays_marked_when_the_write_list_table_is_broken() {
     let (_tmp, engine) =
         instance_with(&["eng"], &[], &[("vw", Role::Viewer, None)], &[], true).await;
+    let (logs, _guard) = crate::support::capture_logs();
     let listed = engine
         .list_domains(&ListDomainsParams::default(), &user("vw"))
         .await
         .expect("the listing still answers");
     assert_eq!(listed["domains"][0]["read_only"], true, "{listed}");
+    assert!(
+        !logs.any_contains("could not be read in one go"),
+        "no warning for a list a Viewer's answer never needs: {:?}",
+        logs.lines()
+    );
 }
 
 /// An instance Viewer who is an Editor member of a private domain is capped to
@@ -496,6 +503,15 @@ async fn batched_marks_equal_the_per_row_answer() {
         }
         for row in listed["domains"].as_array().unwrap() {
             let name = row["name"].as_str().unwrap();
+            // The listing seeds each lock from the MANIFEST under the root it
+            // lists; the per-row answer reads the lock through the domain's
+            // own content source. The two roots must be one.
+            let root = std::path::Path::new(row["path"].as_str().unwrap());
+            assert_eq!(
+                crystalline_core::read_only_at(root).is_on(),
+                engine.domain_is_read_only(name).await,
+                "{name}: {row}"
+            );
             let per_row = engine.write_block(&scope, name).await.unwrap().is_some();
             assert_eq!(
                 row.get("read_only") == Some(&serde_json::Value::Bool(true)),
