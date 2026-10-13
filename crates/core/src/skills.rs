@@ -423,6 +423,8 @@ mod tests {
                 "give its `web_url`",
                 "what is true instead and the source that shows it",
                 "Never leave a wrong engram unmentioned",
+                "Still capture the correct fact where you may write",
+                "tell the person about both",
             ] {
                 assert!(body.contains(needle), "{name} lacks {needle:?}");
             }
