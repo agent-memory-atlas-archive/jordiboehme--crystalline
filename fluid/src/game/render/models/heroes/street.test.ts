@@ -9,8 +9,9 @@
  * canopy span, belly), its two wheels of one size as its ends on the
  * floor, its glowing rims and lines in one group, its dark band and
  * short canopy and no side window, its flank split into the dark arched
- * band and the lighter recessed lower panel with a line along the split,
- * and its triangle pin.
+ * band and the recessed lower panel in a tone close to it with a line
+ * along the split, the panel's front and bottom corners rounded, and its
+ * triangle pin.
  */
 
 import { describe, expect, it } from "vitest";
@@ -46,6 +47,7 @@ import {
   CYCLE_CANOPY,
   CYCLE_GLOW,
   CYCLE_LOWER,
+  CYCLE_PANEL,
   CYCLE_WHEELS,
   HUB_SILVER,
   NOTICE_INK,
@@ -617,23 +619,31 @@ describe("the neon bike (0.25.1)", () => {
     }
   });
 
-  it("splits its flank into the dark arched band over the top and the lighter lower panel set in under it, a glowing line along the split", () => {
+  it("splits its flank into the dark arched band over the top and the lower panel set in under it, a glowing line along the split", () => {
     // Mutation caught: the panel flush with the band or standing proud,
-    // the panel in the band's dark (one tone), the band not hooding both
-    // wheels, the split up into the top half, or no line along the split.
+    // the panel in the band's very tone, or a light panel that reads as a
+    // box on the flank (0.25.2), the band not hooding both wheels, the
+    // split up into the top half, or no line along the split.
     const [band] = inked(parts, CYCLE_BODY);
     const panels = inked(parts, CYCLE_LOWER);
     expect(panels).toHaveLength(1);
     const [panel] = panels;
     if (band === undefined || panel === undefined)
       throw new Error("no band or panel");
-    // Two tones: the panel a lighter grey than the dark band.
-    expect(Math.min(...CYCLE_LOWER)).toBeGreaterThan(
-      Math.max(...CYCLE_BODY) + 0.1,
+    // The panel joins the body: a shade lighter than the band in every
+    // channel, with the band's blue cast, and no further from it than
+    // PANEL_TONE_NEAR, so the split reads through its line and the recess,
+    // not through a light colour.
+    const PANEL_TONE_NEAR = 0.05;
+    const tone = Math.hypot(
+      ...CYCLE_LOWER.map((c, i) => c - (CYCLE_BODY[i] ?? 0)),
     );
-    expect(Math.max(...CYCLE_LOWER) - Math.min(...CYCLE_LOWER)).toBeLessThan(
-      0.06,
-    );
+    expect(tone).toBeGreaterThan(0.01);
+    expect(tone).toBeLessThan(PANEL_TONE_NEAR);
+    CYCLE_LOWER.forEach((c, i) => {
+      expect(c).toBeGreaterThan(CYCLE_BODY[i] ?? 1);
+    });
+    expect(CYCLE_LOWER[2]).toBeGreaterThan(CYCLE_LOWER[0] + 0.02);
     const [bp, pp] = [local(band), local(panel)];
     // The panel is set in from the band on both sides.
     expect(span(pp, 1).hi).toBeLessThan(span(bp, 1).hi - 0.02);
@@ -673,6 +683,39 @@ describe("the neon bike (0.25.1)", () => {
           span(bp, 1).hi - 0.001,
         );
     }
+  });
+
+  it("rounds its lower panel's front and bottom, so the panel does not read as a box (0.25.2)", () => {
+    // Mutation caught: a vertical cut at the front, a square corner where
+    // the front arch or the back edge meets the belly, or a straight
+    // front edge in place of the arch's curve.
+    const n = CYCLE_PANEL.length;
+    const at = (j: number): readonly [number, number] =>
+      CYCLE_PANEL[(j + n) % n] ?? [0, 0];
+    const turn = (i: number): number => {
+      const [p, q, r] = [at(i - 1), at(i), at(i + 1)];
+      const [ua, uh] = [q[0] - p[0], q[1] - p[1]];
+      const [va, vh] = [r[0] - q[0], r[1] - q[1]];
+      const cos =
+        (ua * va + uh * vh) / (Math.hypot(ua, uh) * Math.hypot(va, vh));
+      return (Math.acos(Math.min(1, Math.max(-1, cos))) * 180) / Math.PI;
+    };
+    // Every corner of the front and the bottom (under half a metre up)
+    // turns by less than 30 degrees: no right angle anywhere there.
+    const low = CYCLE_PANEL.flatMap((p, i) => (p[1] < 0.5 ? [i] : []));
+    expect(low.length).toBeGreaterThan(8);
+    for (const i of low)
+      expect(turn(i), `corner ${String(i)}`).toBeLessThan(30);
+    // The front edge follows the front arch: it runs as a curve the
+    // tyre's arch radius off the front axle.
+    const frontEdge = CYCLE_PANEL.filter(
+      (p) => p[0] > front.a - front.r - 0.1 && p[1] > 0.4,
+    );
+    expect(frontEdge.length).toBeGreaterThan(2);
+    const radii = frontEdge.map((p) =>
+      Math.hypot(p[0] - front.a, p[1] - front.r),
+    );
+    expect(Math.max(...radii) - Math.min(...radii)).toBeLessThan(1e-6);
   });
 
   it("stays under its triangle pin", () => {

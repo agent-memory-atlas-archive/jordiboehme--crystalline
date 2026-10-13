@@ -62,9 +62,11 @@
  *   glows. The shell (`CYCLE_SHELL`) is dark and glossy, its top 1.8
  *   wheels high, and its flank splits as on the original: an arched band
  *   (`CYCLE_BAND`) hoods both wheels over their tops and runs over the
- *   top, and a lower panel (`CYCLE_PANEL`) set in from it, a lighter grey
- *   (`CYCLE_LOWER`), runs low between the wheels to a square back edge
- *   that hides the rear wheel's front, so the side reads in two tones.
+ *   top, and a lower panel (`CYCLE_PANEL`) set in from it, a shade
+ *   lighter (`CYCLE_LOWER`), runs low between the wheels, its front
+ *   following the front arch and its corners on the belly rounded, to a
+ *   square back edge that hides the rear wheel's front, so the split
+ *   reads through its glowing line and the recess.
  *   Narrower crests are grown over both like the bike's panels (`grown`).
  *   The back (`CYCLE_SPINE`) rises from a short tail over the rear wheel
  *   to a crown a little ahead of the middle and falls in a long curve to
@@ -928,10 +930,11 @@ export const CYCLE_BODY: Rgb = [0.03, 0.035, 0.06];
 const CYCLE_SHINE: Rgb = [0.07, 0.08, 0.13];
 
 /**
- * The neon bike's lower panel: a lighter grey than the band, so the
- * flank reads in two tones.
+ * The neon bike's lower panel: a shade lighter than the band and a
+ * little bluer, so it reads as part of the body and the split shows
+ * through its glowing line and the recess, not through a light colour.
  */
-export const CYCLE_LOWER: Rgb = [0.22, 0.23, 0.26];
+export const CYCLE_LOWER: Rgb = [0.045, 0.052, 0.085];
 
 /** The neon bike's canopy: a dark smoked blue. */
 export const CYCLE_CANOPY: Rgb = [0.05, 0.08, 0.16];
@@ -1011,13 +1014,55 @@ const FRONT_SPLIT = 150;
 /** The front arch's band part, from its upper front over the top. */
 const FRONT_HOOD = arc(FW.a, FW.r, CYCLE_ARCH, 35, FRONT_SPLIT, 10);
 
-/** The front arch's panel part, from the split down to the belly. */
-const FRONT_FOOT = arc(
-  FW.a,
-  FW.r,
-  CYCLE_ARCH,
-  FRONT_SPLIT,
-  180 + (Math.asin((FW.r - CYCLE_BELLY) / CYCLE_ARCH) * 180) / Math.PI,
+/**
+ * How far the lower panel's corners are rounded: `front` where the front
+ * arch runs into the belly, `back` where the belly meets the back edge.
+ */
+const PANEL_ROUND = { front: 0.16, back: 0.1 } as const;
+
+/**
+ * The front corner's round, `[a, h]`: its centre `PANEL_ROUND.front`
+ * over the belly, touching the front arch from outside, and the angle
+ * (degrees round the front axle) where it meets the arch.
+ */
+const FRONT_ROUND = (() => {
+  const r = PANEL_ROUND.front;
+  const dh = CYCLE_BELLY + r - FW.r;
+  const da = -Math.sqrt((CYCLE_ARCH + r) ** 2 - dh ** 2);
+  return {
+    a: FW.a + da,
+    h: CYCLE_BELLY + r,
+    at: 180 - (Math.atan2(dh, -da) * 180) / Math.PI,
+  };
+})();
+
+/**
+ * The front arch's panel part, from the split down along the arch, then
+ * round its corner (`FRONT_ROUND`) onto the belly, so the panel's front
+ * follows the wheel's hood.
+ */
+const FRONT_FOOT: readonly P2[] = [
+  ...arc(FW.a, FW.r, CYCLE_ARCH, FRONT_SPLIT, FRONT_ROUND.at, 5),
+  ...arc(
+    FRONT_ROUND.a,
+    FRONT_ROUND.h,
+    PANEL_ROUND.front,
+    FRONT_ROUND.at - 180,
+    -90,
+    5,
+  ).slice(1),
+];
+
+/**
+ * The back corner, from the belly round up onto the square back edge,
+ * `PANEL_ROUND.back` in from both.
+ */
+const BACK_FOOT = arc(
+  CYCLE_BACK + PANEL_ROUND.back,
+  CYCLE_BELLY + PANEL_ROUND.back,
+  PANEL_ROUND.back,
+  -90,
+  -180,
   4,
 );
 
@@ -1060,13 +1105,14 @@ const CYCLE_BAND: readonly P2[] = [
 
 /**
  * The lower panel, `[a, h]`, under the band and recessed from it
- * (`PANEL_HALF`): from the front arch's split down to the flat belly,
- * back to the square back edge, which hides the rear wheel's front, up
- * that edge to the band and forward along the split.
+ * (`PANEL_HALF`): from the front arch's split down along the arch and
+ * round onto the flat belly, back to the square back edge, which hides
+ * the rear wheel's front, round up that edge to the band and forward
+ * along the split.
  */
-const CYCLE_PANEL: readonly P2[] = [
+export const CYCLE_PANEL: readonly P2[] = [
   ...FRONT_FOOT,
-  [CYCLE_BACK, CYCLE_BELLY],
+  ...BACK_FOOT,
   ...REAR_HOOD.slice(0, 1),
   ...CYCLE_SPLIT,
 ];
@@ -1079,7 +1125,7 @@ const CYCLE_PANEL: readonly P2[] = [
 const CYCLE_SHELL: readonly P2[] = [
   ...FRONT_HOOD,
   ...FRONT_FOOT.slice(1),
-  [CYCLE_BACK, CYCLE_BELLY],
+  ...BACK_FOOT,
   ...REAR_HOOD,
   ...CYCLE_SPINE,
 ];
@@ -1221,8 +1267,8 @@ function cycleWheel(k: Kit, s: Surfaces, w: BikeWheel, glow: Surface): void {
 /**
  * The neon bike: two fat wheels of one size at its ends, their rims
  * glowing; the dark glossy shell, its arched band hooding both wheels
- * and running over the top, the lighter grey lower panel recessed under
- * it low between the wheels, and the crests over both; the short smoked
+ * and running over the top, the lower panel a shade lighter recessed
+ * under it low between the wheels, its front and bottom rounded, and the crests over both; the short smoked
  * canopy on its back over the rider, behind the crown; and the glowing
  * lines tracing the band's outline on both sides and the canopy's
  * ridge. Every light is in one group and breathes.
