@@ -4107,6 +4107,7 @@ async fn scenario_23_caller_supplied_title_and_description_are_used_verbatim() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -5279,6 +5280,7 @@ async fn scenario_35_preview_reports_create_nothing_and_diverged() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -5856,6 +5858,7 @@ async fn the_probe_runs_once_and_caches_the_verdict() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -5893,6 +5896,7 @@ async fn the_probe_runs_once_and_caches_the_verdict() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -5931,6 +5935,7 @@ async fn config_off_never_probes() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -5969,6 +5974,7 @@ async fn stacked_share(mock: &MockProvider, sub: &Subscribed) -> ProposeOutcome 
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -6162,6 +6168,7 @@ async fn divergence_on_the_top_layer_refuses_the_stacked_share() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -6205,6 +6212,7 @@ async fn preview_names_the_stack_action() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -6442,6 +6450,7 @@ async fn preview_stacks_on_the_surviving_layer_when_the_top_ref_is_gone() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -6497,6 +6506,7 @@ async fn preview_of_a_diverged_top_still_measures_against_the_tip() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -6549,6 +6559,7 @@ async fn amend_share_as(
             author_login,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -6786,6 +6797,7 @@ async fn amend_refuses_a_number_that_is_not_an_open_layer() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -6837,6 +6849,7 @@ async fn amend_preview_counts_the_layers_above() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -7056,6 +7069,7 @@ async fn a_legacy_layer_a_layer_above_overwrote_refuses_before_any_write() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -7144,6 +7158,7 @@ async fn a_refusal_on_a_later_kept_entry_leaves_no_orphan_blob_behind() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -7192,6 +7207,7 @@ async fn amend_preview_reports_a_diverged_layer_rather_than_promising_an_amend()
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -7231,6 +7247,7 @@ async fn amend_preview_refuses_over_an_unreplayable_layer_above() {
         author_login: None,
         files: None,
         sharing: Sharing::Proposal,
+        ..ShareOptions::default()
     };
     let err = propose_preview(
         &mock,
@@ -8584,6 +8601,7 @@ async fn share_with_stacks(mock: &MockProvider, sub: &Subscribed, allowed: bool)
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -9226,6 +9244,7 @@ async fn an_amend_refusal_lists_the_layers_the_repair_left_open() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -9370,6 +9389,7 @@ async fn an_amend_over_a_merge_wedged_chain_pulls_the_merge_in_and_proceeds() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -9437,6 +9457,7 @@ async fn a_fallback_amend_runs_no_repair_machinery() {
                 author_login: None,
                 files: None,
                 sharing: Sharing::Proposal,
+                ..ShareOptions::default()
             },
         )
         .await
@@ -9550,6 +9571,7 @@ async fn a_reviewer_commit_above_refuses_the_repair_too() {
             author_login: None,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -10170,6 +10192,7 @@ async fn a_status_on_a_stacked_chain_counts_only_the_work_above_the_tip() {
         author_login: None,
         files: None,
         sharing: Sharing::Proposal,
+        ..ShareOptions::default()
     };
 
     write(&sub.domain_root.join("notes/a.md"), b"alpha v2\n");
@@ -10273,6 +10296,7 @@ async fn a_merged_layer_nobody_pulled_yet_is_carried_not_unshared() {
         author_login: None,
         files: None,
         sharing: Sharing::Proposal,
+        ..ShareOptions::default()
     };
 
     // The forge merges the layer and the trunk moves onto a commit carrying
@@ -10465,6 +10489,7 @@ async fn stacked_share_as(
             author_login,
             files: None,
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await
@@ -10536,6 +10561,7 @@ async fn updating_the_living_proposal_re_attributes_it_only_when_a_login_is_know
                 author_login: Some("bob"),
                 files: None,
                 sharing: Sharing::Proposal,
+                ..ShareOptions::default()
             },
         )
         .await
@@ -10641,6 +10667,7 @@ async fn share_files(
             author_login: None,
             files: Some(files),
             sharing: Sharing::Proposal,
+            ..ShareOptions::default()
         },
     )
     .await

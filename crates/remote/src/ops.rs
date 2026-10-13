@@ -501,7 +501,15 @@ pub async fn subscribe(
 
     let engrams = extracted.keys().filter(|p| p.ends_with(".md")).count();
     let local_changes = if adopted {
-        detect_local_changes_against(domain_root, &files, state_dir)?.substantive_count()
+        detect_local_changes_against(
+            domain_root,
+            &files,
+            state_dir,
+            crystalline_core::ReflectionMode::declared(crystalline_core::reflection_at(
+                domain_root,
+            )),
+        )?
+        .substantive_count()
     } else {
         0
     };
@@ -1520,7 +1528,12 @@ pub async fn status(
 
     // After the probe, not before: a layer the forge just reported declined
     // hands its files back to this count.
-    let local = detect_local_changes_against(domain_root, &unshared_base(&state), state_dir)?;
+    let local = detect_local_changes_against(
+        domain_root,
+        &unshared_base(&state),
+        state_dir,
+        crystalline_core::ReflectionMode::declared(crystalline_core::reflection_at(domain_root)),
+    )?;
 
     let open_proposals = state
         .proposals
@@ -1629,6 +1642,11 @@ pub struct ShareOptions<'a> {
     /// domain's MANIFEST at share time (`crystalline_core::sharing_at`); this
     /// crate never opens the MANIFEST for it.
     pub sharing: Sharing,
+    /// The Reflection mode in effect, which the caller reads (the engine knows
+    /// whether a switch is pending); this crate never decides it. `Off` while
+    /// a switch is pending, so the engrams still under `reflections/` keep
+    /// being shared.
+    pub reflection: crystalline_core::ReflectionMode,
     /// How a share on a `sharing: direct` domain goes: `Some(true)` opens a
     /// proposal with the stacking and amend rules of a proposal domain,
     /// `Some(false)` tries the direct commit only and never falls back, and
@@ -2350,7 +2368,7 @@ pub async fn propose(
                 title,
                 description,
                 author_login,
-                options.files,
+                options,
             )
             .await;
         }
@@ -2390,7 +2408,7 @@ pub async fn propose(
             None => state.files.clone(),
         };
         let local = select_share_files(
-            detect_local_changes_against(domain_root, &base, state_dir)?,
+            detect_local_changes_against(domain_root, &base, state_dir, options.reflection)?,
             options.files,
         )?;
         if local.changes.is_empty() {
@@ -2724,6 +2742,7 @@ pub async fn propose_preview(
                         domain_root,
                         &effective_tip_files(&state),
                         state_dir,
+                        options.reflection,
                     )?,
                     options.files,
                 )?,
@@ -2803,7 +2822,7 @@ async fn preview_as_proposal(
             state.files.clone()
         };
         let local = select_share_files(
-            detect_local_changes_against(domain_root, &base, state_dir)?,
+            detect_local_changes_against(domain_root, &base, state_dir, options.reflection)?,
             options.files,
         )?;
         if !state.conflicts.is_empty() {
@@ -2925,7 +2944,7 @@ async fn preview_as_proposal(
         state.files.clone()
     };
     let local = select_share_files(
-        detect_local_changes_against(domain_root, &base, state_dir)?,
+        detect_local_changes_against(domain_root, &base, state_dir, options.reflection)?,
         options.files,
     )?;
 
@@ -3118,7 +3137,12 @@ fn preview_direct(
 ) -> Result<SharePlan, RemoteError> {
     // Against the chain tip, as the commit does (see [`commit_direct`]).
     let local = select_share_files(
-        detect_local_changes_against(domain_root, &effective_tip_files(state), state_dir)?,
+        detect_local_changes_against(
+            domain_root,
+            &effective_tip_files(state),
+            state_dir,
+            options.reflection,
+        )?,
         options.files,
     )?;
     let plan = |action: PlannedAction, effective_title: String| SharePlan {
@@ -3289,7 +3313,12 @@ async fn commit_direct(
     // put them on the branch past their review. With nothing open the tip is
     // the trunk.
     let mut local = select_share_files(
-        detect_local_changes_against(domain_root, &effective_tip_files(&state), state_dir)?,
+        detect_local_changes_against(
+            domain_root,
+            &effective_tip_files(&state),
+            state_dir,
+            options.reflection,
+        )?,
         options.files,
     )?;
     if local.changes.is_empty() {
@@ -3387,6 +3416,7 @@ async fn commit_direct(
                         domain_root,
                         &effective_tip_files(&state),
                         state_dir,
+                        options.reflection,
                     )?,
                     options.files,
                 )?;
@@ -4236,8 +4266,11 @@ async fn amend_layer(
     title: Option<&str>,
     description: Option<&str>,
     author_login: Option<&str>,
-    files: Option<&[String]>,
+    // Only `files` and `reflection` are read: what the share carries and the
+    // Reflection mode its detection runs under.
+    options: ShareOptions<'_>,
 ) -> Result<ProposeOutcome, RemoteError> {
+    let files = options.files;
     // Nothing is written until every layer this cascade replays is known to be
     // replayable AND known to be ours: a chain re-based halfway is worse than
     // one never touched, and a reviewer's commits above are not this share's
@@ -4275,7 +4308,12 @@ async fn amend_layer(
     // This share's own work is what stands against the chain tip; the layer's
     // recorded files are already proposed and are not it.
     let fresh = select_share_files(
-        detect_local_changes_against(domain_root, &effective_tip_files(&state), state_dir)?,
+        detect_local_changes_against(
+            domain_root,
+            &effective_tip_files(&state),
+            state_dir,
+            options.reflection,
+        )?,
         files,
     )?;
     if fresh.changes.is_empty() {

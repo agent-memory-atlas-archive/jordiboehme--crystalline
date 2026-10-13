@@ -1649,6 +1649,9 @@ impl Engine {
                 author_login: login.as_deref(),
                 files,
                 sharing,
+                reflection: crystalline_core::ReflectionMode::declared(
+                    crystalline_core::reflection_at(&root),
+                ),
             },
         )
         .await
@@ -1956,6 +1959,9 @@ impl Engine {
                 author_login: login.as_deref(),
                 files,
                 sharing,
+                reflection: crystalline_core::ReflectionMode::declared(
+                    crystalline_core::reflection_at(&root),
+                ),
             },
         )
         .await
@@ -2254,8 +2260,12 @@ impl Engine {
             EngineError::Invalid(format!("domain '{domain}' has no origin state"))
         })?;
         let base = ops::unshared_base(&state);
-        let local =
-            crystalline_remote::changes::detect_local_changes_against(&root, &base, &state_dir)?;
+        let local = crystalline_remote::changes::detect_local_changes_against(
+            &root,
+            &base,
+            &state_dir,
+            crystalline_core::ReflectionMode::declared(crystalline_core::reflection_at(&root)),
+        )?;
         Ok((root, state_dir, base, local))
     }
 

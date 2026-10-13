@@ -328,6 +328,7 @@ pub(crate) fn local_change_detail(domain_root: &Path, state_dir: &Path) -> Optio
         domain_root,
         &crystalline_remote::ops::unshared_base(&state),
         state_dir,
+        crystalline_core::ReflectionMode::declared(crystalline_core::reflection_at(domain_root)),
     )
     .ok()?;
     let mut added: Vec<&str> = Vec::new();
@@ -825,6 +826,7 @@ pub fn unshared_work(domain_root: &Path, state_dir: &Path) -> Option<UnsharedWor
         domain_root,
         &crystalline_remote::ops::unshared_base(&state),
         state_dir,
+        crystalline_core::ReflectionMode::declared(crystalline_core::reflection_at(domain_root)),
     )
     .ok()?;
     let paths: Vec<String> = detected
