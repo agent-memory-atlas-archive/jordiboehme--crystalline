@@ -8287,6 +8287,102 @@ async fn the_close_folder_hint_never_sees_another_accounts_drafts() {
     assert_eq!(found[0].engrams, 2);
 }
 
+/// An edit joined into somebody's draft by its share-link lands at the one
+/// page the link was minted on. So a joined `remove V112` takes back that
+/// page's entries alone and never reaches the owner's other pages, even ones
+/// holding the same folder pair's acknowledgment.
+#[tokio::test]
+async fn a_joined_remove_v112_stays_on_the_joined_page() {
+    let f = review_fixture().await;
+    let alice = account("alice");
+    let bob = account("bob");
+    let draft = |folder: &str, title: &str| WriteParams {
+        folder: Some(folder.to_string()),
+        ..write_params(
+            "team",
+            title,
+            "A fact about the topic.\n\n- [fact] one\n- [fact] two",
+        )
+    };
+    let ack = |identifier: &str, value: &str| EditParams {
+        identifier: identifier.to_string(),
+        domain: "team".to_string(),
+        operation: "set_frontmatter".to_string(),
+        key: Some("evolve_ack".to_string()),
+        value: Some(value.to_string()),
+        ..EditParams::default()
+    };
+    for title in ["A", "B", "C"] {
+        f.engine
+            .write_engram_as(&draft("meetings", title), None, &alice)
+            .await
+            .unwrap();
+    }
+    f.engine
+        .write_engram_as(&draft("meeting", "Kickoff"), None, &alice)
+        .await
+        .unwrap();
+    let first = f
+        .engine
+        .edit_engram_as(
+            &ack("meeting/kickoff", "V112 not the same topic"),
+            None,
+            &alice,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first["evolve_ack"]["scope"], "meeting, meetings", "{first}");
+    f.engine
+        .write_engram_as(&draft("meeting", "Agenda"), None, &alice)
+        .await
+        .unwrap();
+    f.engine
+        .edit_engram_as(&ack("meeting/agenda", "V112 still not"), None, &alice)
+        .await
+        .unwrap();
+
+    let join = crystalline_service::Join {
+        account: "bob".to_string(),
+        holder: crystalline_service::Holder::Process(1),
+        domain: "team".to_string(),
+        path: "meeting/agenda.md".to_string(),
+        owner: "alice".to_string(),
+        expires_at: None,
+    };
+    let receipt = f
+        .engine
+        .edit_engram_joined(
+            &ack("meeting/agenda", "remove V112"),
+            None,
+            &bob,
+            Some(&join),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt["evolve_ack_removed"], "V112", "{receipt}");
+    assert!(
+        receipt.get("evolve_ack_removed_from").is_none(),
+        "{receipt}"
+    );
+    let kickoff = f
+        .engine
+        .read_engram(
+            &ReadParams {
+                identifier: "meeting/kickoff".to_string(),
+                domain: Some("team".to_string()),
+                share_link: None,
+            },
+            &alice,
+        )
+        .await
+        .unwrap();
+    assert!(
+        kickoff["frontmatter"].to_string().contains("evolve_ack")
+            || kickoff.to_string().contains("not the same topic"),
+        "alice's other page keeps its entry: {kickoff}"
+    );
+}
+
 /// The close-folder probe's 500 ms budget is for its own queries, not for the
 /// wait on the store lock: a probe queued behind a slow neighbours advisory, a
 /// sync or any other holder still answers once it gets the store.

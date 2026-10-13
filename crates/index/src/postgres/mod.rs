@@ -3591,7 +3591,9 @@ impl Store for PostgresStore {
         let row = sqlx::query(
             "SELECT 1 FROM engram e WHERE e.domain_id=$1 AND e.actor = '' \
              AND e.path COLLATE \"C\" >= $2 AND e.path COLLATE \"C\" < $3 \
-             AND e.path <> $4 LIMIT 1",
+             AND e.path <> $4 \
+             AND right(e.path, 9) <> '/index.md' AND right(e.path, 7) <> '/log.md' \
+             LIMIT 1",
         )
         .bind(domain.0)
         .bind(low)

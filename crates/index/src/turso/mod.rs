@@ -3545,7 +3545,9 @@ impl Store for TursoStore {
         let row = query_first(
             &self.conn,
             "SELECT 1 FROM engram e WHERE e.domain_id=?1 AND e.actor = '' \
-             AND e.path >= ?2 AND e.path < ?3 AND e.path <> ?4 LIMIT 1",
+             AND e.path >= ?2 AND e.path < ?3 AND e.path <> ?4 \
+             AND substr(e.path, -9) <> '/index.md' AND substr(e.path, -7) <> '/log.md' \
+             LIMIT 1",
             vec![
                 Value::Integer(domain.0),
                 Value::Text(low),

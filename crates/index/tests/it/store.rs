@@ -8748,8 +8748,8 @@ parity!(a_tombstone_is_an_overlay_row_too, a_tombstone_is_a_row);
 /// question the close-folder hint asks on every write that might have started a
 /// folder. A row at any depth below the folder counts, the excepted path does
 /// not, nor does a draft, a folder whose name differs only in case, a folder
-/// whose name a `LIKE` would read as a wildcard, or a reserved `index.md`,
-/// which sync never makes a row of.
+/// whose name a `LIKE` would read as a wildcard, or a reserved `index.md` or
+/// `log.md`, whether sync skipped it or an import stored it.
 async fn folder_holds_other_asks_one_bounded_question(store: &dyn Store) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -8783,6 +8783,19 @@ async fn folder_holds_other_asks_one_bounded_question(store: &dyn Store) {
         )
         .await
         .unwrap();
+    // A virtual domain's import parses whatever `.md` files it is handed, so a
+    // reserved name can reach a base row there; it still never counts. Its
+    // case variant is an ordinary engram and does.
+    for (path, permalink) in [
+        ("lone/index.md", "lone/index"),
+        ("lone/deep/log.md", "lone/deep/log"),
+        ("caps/Index.md", "caps/index"),
+    ] {
+        store
+            .upsert_engram(domain, &record(path, permalink, "x\n", "xxxx"))
+            .await
+            .unwrap();
+    }
 
     let holds = |prefix: &'static str, except: &'static str| async move {
         store
@@ -8822,6 +8835,14 @@ async fn folder_holds_other_asks_one_bounded_question(store: &dyn Store) {
     assert!(
         !holds("solo/", "solo/new.md").await,
         "a reserved index.md is never a row"
+    );
+    assert!(
+        !holds("lone/", "lone/new.md").await,
+        "nor is a reserved row, at any depth"
+    );
+    assert!(
+        holds("caps/", "caps/new.md").await,
+        "Index.md is not reserved"
     );
     assert!(!holds("empty/", "empty/new.md").await);
 }

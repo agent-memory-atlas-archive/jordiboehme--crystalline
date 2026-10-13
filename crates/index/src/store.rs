@@ -1503,8 +1503,8 @@ pub(crate) fn folder_slash(prefix: &str) -> String {
 /// for [`Store::folder_holds_other`]: `notes/` up to `notes0`, `0` being the
 /// character after `/`. Compared bytewise (SQLite's default collation, and
 /// `COLLATE "C"` on Postgres), so the match folds no case and reads no
-/// wildcard, and a plain range over `path` is one an index can seek. The root
-/// is every path.
+/// wildcard; on SQLite a plain range over `path` is also one an index can
+/// seek. The root is every path.
 pub(crate) fn folder_range(prefix: &str) -> (String, String) {
     let prefix = folder_slash(prefix);
     match prefix.strip_suffix('/') {
@@ -2661,9 +2661,11 @@ pub trait Store: Send + Sync {
     ///
     /// The prefix is matched exactly, case included and never as a pattern:
     /// `Plan/` is not `plan/`, the same way the hint compares folder names,
-    /// and `a_b/` is not `axb/`. Drafts are not base rows and are not counted.
-    /// A reserved `index.md` or `log.md` is never a row at all (sync skips
-    /// both names and every write refuses them), so nothing here filters them.
+    /// and `a_b/` is not `axb/`. Drafts are not base rows and are not counted,
+    /// and neither is a reserved `index.md` or `log.md` at any depth, matched
+    /// exactly as [`crystalline_core::is_reserved_path`] matches: sync skips
+    /// both names and every write refuses them, but a virtual domain's import
+    /// stores any `.md` file it is handed.
     async fn folder_holds_other(
         &self,
         domain: DomainId,

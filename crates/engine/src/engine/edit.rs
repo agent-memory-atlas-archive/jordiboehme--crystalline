@@ -135,8 +135,13 @@ impl Engine {
         // on any engram of the two folders, since the anchor moves as they
         // change. Which pairs, and whether this engram holds an entry itself,
         // is settled here, before the write, like the record's scope above.
+        // Not for an edit joined into somebody's draft by its share-link: that
+        // edit lands at the one page the link was minted on and nowhere else,
+        // so it takes back this engram's entries alone, as it always did.
         let folder_pairs = match &ack {
-            Some(AckDraft::Remove(rule)) if rule.eq_ignore_ascii_case(FOLDER_PAIR_RULE) => {
+            Some(AckDraft::Remove(rule))
+                if join.is_none() && rule.eq_ignore_ascii_case(FOLDER_PAIR_RULE) =>
+            {
                 let current = view.text_at(&source, &desc).await?.unwrap_or_default();
                 let pairs = self
                     .folder_pairs_to_withdraw(&desc, &current, None, scope)

@@ -113,9 +113,8 @@ async fn close_folders_in(
     let prefix = format!("{folder}/");
 
     // Base rows first: one `LIMIT 1` probe, exact on the folder name as
-    // written. The reserved `index.md` and `log.md` need no screen here, unlike
-    // the drafts below, because no base row is ever one of them (see
-    // `Store::folder_holds_other`).
+    // written, which skips the reserved `index.md` and `log.md` in SQL just as
+    // the draft check below skips them here.
     if store.folder_holds_other(domain_id, &prefix, path).await? {
         return Ok(Vec::new());
     }

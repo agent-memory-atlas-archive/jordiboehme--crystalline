@@ -790,7 +790,9 @@ impl Engine {
     /// exactly the engrams whose entries the suppression reads.
     ///
     /// An entry with no scope is left alone: it was given for no pair in
-    /// particular, so a take-back of one pair does not decide it.
+    /// particular, so a take-back of one pair does not decide it. So is a
+    /// page another account shared with this caller and they have not joined:
+    /// the same screen as any edit keeps the take-back out of it.
     pub(super) async fn withdraw_folder_pairs_elsewhere(
         &self,
         view: &DomainView<'_>,
@@ -812,6 +814,16 @@ impl Engine {
                 || !pairs
                     .iter()
                     .any(|pair| crystalline_index::in_scoped_folder(&listed.path, pair))
+            {
+                continue;
+            }
+            // The screen every edit passes: a page somebody shared with this
+            // caller is theirs to edit only once joined, so the take-back
+            // leaves it as it is rather than writing into their draft.
+            if self
+                .screen_granted_path(&desc.domain, &listed.path, acting, None)
+                .await
+                .is_err()
             {
                 continue;
             }
