@@ -5352,7 +5352,7 @@ fn names_manifest_path(raw: &str) -> bool {
         }
     }
     let joined = parts.join("/");
-    joined.eq_ignore_ascii_case("MANIFEST.md") || joined.eq_ignore_ascii_case("MANIFEST")
+    crate::engine::names_the_manifest(&joined) || joined.eq_ignore_ascii_case("MANIFEST")
 }
 
 /// An engine error as the shape its content deserves: a refusal the model must

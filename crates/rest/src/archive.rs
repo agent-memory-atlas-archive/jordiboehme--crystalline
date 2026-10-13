@@ -537,7 +537,7 @@ fn read_archive(bytes: &[u8]) -> Result<Vec<Screened>, ApiError> {
         // filesystem, which is most of them.
         if std::path::Path::new(&raw)
             .file_name()
-            .is_some_and(|name| name.eq_ignore_ascii_case("MANIFEST.md"))
+            .is_some_and(|name| crate::engine::names_the_manifest(&name.to_string_lossy()))
         {
             out.push(Screened::Ignored {
                 path: raw,

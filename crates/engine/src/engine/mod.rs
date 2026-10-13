@@ -7565,7 +7565,8 @@ pub(crate) fn is_manifest_path(rel: &str) -> bool {
 /// Whether `rel` names the MANIFEST in any letter case. The write and move
 /// checks use this: a case-insensitive file system (the macOS and Windows
 /// defaults) opens `manifest.md` as the very `MANIFEST.md` routing reads.
-pub(crate) fn names_the_manifest(rel: &str) -> bool {
+/// Public so the archive import and the MCP path checks ask the same rule.
+pub fn names_the_manifest(rel: &str) -> bool {
     rel.eq_ignore_ascii_case("MANIFEST.md")
 }
 
