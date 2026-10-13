@@ -68,10 +68,12 @@
  *   square back edge that hides the rear wheel's front, so the split
  *   reads through its glowing line and the recess.
  *   Narrower crests are grown over both like the bike's panels (`grown`).
- *   The back (`CYCLE_SPINE`) rises from a short tail over the rear wheel
- *   to a crown a little ahead of the middle and falls in a long curve to
- *   the nose. A short smoked canopy sits on the back over the hidden
- *   rider, behind the crown and clear of the nose; the flanks carry no
+ *   The back (`CYCLE_SPINE`) rises from a short tail over the rear wheel,
+ *   runs low under the canopy, climbs to a crown a little ahead of the
+ *   middle and falls in a long curve to the nose. A short smoked canopy
+ *   sits on the back over the hidden rider, behind the crown and clear of
+ *   the nose: a rounded dome 12 to 15 cm over the crests (0.25.2,
+ *   `CANOPY_ROUND`), its front and back ends rounded; the flanks carry no
  *   window. Glowing lines trace the band's outline a little inside it on
  *   both sides, so one runs along the split (`cycleLine`, laid by
  *   `profileLine`, which the red bike's pinstripe shares), and the
@@ -992,20 +994,23 @@ const CYCLE_BELLY = 0.19;
 
 /**
  * The shell's back, `[a, h]`, from the tail forward to the nose: it
- * rises from over the rear axle to its crown a little ahead of the
- * middle and falls in a long curve to the nose over the front wheel.
- * The crests grown on it (`CYCLE_SLICES`) stand `CYCLE_CREST` above it.
+ * rises from over the rear axle, runs nearly level under the canopy
+ * over the rider's place (0.25.2: low enough that the canopy stands a
+ * proper top piece over the crests), climbs to its crown a little ahead
+ * of the middle and falls in a long curve to the nose over the front
+ * wheel. The crests grown on it (`CYCLE_SLICES`) stand `CYCLE_CREST`
+ * above it.
  */
 const CYCLE_SPINE: readonly P2[] = [
   [-1.42, 0.74],
   [-1.41, 0.86],
   [-1.29, 0.97],
   [-1.0, 1.035],
-  [-0.72, 1.075],
-  [-0.55, 1.125],
-  [-0.38, 1.165],
-  [-0.13, 1.205],
-  [0.1, 1.225],
+  [-0.72, 1.07],
+  [-0.55, 1.09],
+  [-0.38, 1.1],
+  [-0.13, 1.105],
+  [0.1, 1.17],
   [0.38, 1.22],
   [0.6, 1.19],
   [0.74, 1.155],
@@ -1163,11 +1168,11 @@ const CYCLE_SLICES: readonly (readonly [number, number])[] = [
 
 /**
  * Where the canopy runs along `a`: a short dark top piece over the
- * rider's place, from behind the back's crown forward to the crown, set
- * back from the original's longer strip so the body does not read as a
- * car's roof.
+ * rider's place, from behind the back's crown forward to the crown's
+ * foot, set back from the original's longer strip so the body does not
+ * read as a car's roof.
  */
-export const CANOPY_SPAN = { from: -0.35, to: 0.1 } as const;
+export const CANOPY_SPAN = { from: -0.48, to: 0.08 } as const;
 
 /**
  * The canopy's half width: over both crests, inside the wide slice, so
@@ -1178,8 +1183,16 @@ const CANOPY_HALF = 0.17;
 /** How far the canopy's foot sinks into the shell under the back. */
 const CANOPY_SINK = 0.05;
 
-/** How far the canopy's back corner is rounded off, along `a` and down. */
-const CANOPY_ROUND = { a: 0.08, h: 0.025 } as const;
+/**
+ * How the canopy's two ends are rounded (0.25.2): each end is a quarter
+ * ellipse `a` long along the back and `h` tall, from where its foot
+ * meets the back up to the level crown, so the piece reads as a smoked
+ * dome and not as a slab. The back end runs longer than the front.
+ */
+const CANOPY_ROUND = {
+  back: { a: 0.2, h: 0.14 },
+  front: { a: 0.14, h: 0.1 },
+} as const;
 
 /** The back's height at `a`, along `CYCLE_SPINE`. */
 function spineAt(a: number): number {
@@ -1210,21 +1223,40 @@ const CANOPY_AT: readonly number[] = [
 /**
  * The canopy's ridge height: level, so the glowing line along it tops
  * out at the cycle's top, a few millimetres under it for the line's
- * mitre at the rounded corner. The back falls away behind the crown, so
- * the canopy stands clear of the crests (`CYCLE_CREST`) over the rider's
- * place and meets the back at the crown.
+ * mitres on the rounded ends. The back runs low under it, so the canopy
+ * stands 12 to 15 cm over the crests (`CYCLE_CREST`) at its highest.
  */
 const CANOPY_TOP = CYCLE.top - CYCLE_LINE.width / 2 - 0.003;
 
+/** Points on each rounded end of the canopy's ridge. */
+const CANOPY_ROUND_STEPS = 5;
+
 /**
- * The canopy's ridge, `[a, h]`, from its back end to its front: a
- * rounded back corner (`CANOPY_ROUND`), then level to the crown.
+ * The canopy's ridge, `[a, h]`, from its back end to its front: a quarter
+ * ellipse up from the back end (`CANOPY_ROUND.back`), level along the
+ * crown, and a shorter quarter ellipse down to the front end
+ * (`CANOPY_ROUND.front`).
  */
-const CANOPY_RIDGE: readonly P2[] = [
-  [CANOPY_SPAN.from, CANOPY_TOP - CANOPY_ROUND.h],
-  [CANOPY_SPAN.from + CANOPY_ROUND.a, CANOPY_TOP],
-  [CANOPY_SPAN.to, CANOPY_TOP],
-];
+const CANOPY_RIDGE: readonly P2[] = (() => {
+  const { back, front } = CANOPY_ROUND;
+  const n = CANOPY_ROUND_STEPS;
+  const out: P2[] = [];
+  for (let i = 0; i <= n; i++) {
+    const t = ((Math.PI / 2) * i) / n;
+    out.push([
+      CANOPY_SPAN.from + back.a * (1 - Math.cos(t)),
+      CANOPY_TOP - back.h * (1 - Math.sin(t)),
+    ]);
+  }
+  for (let i = 0; i <= n; i++) {
+    const t = ((Math.PI / 2) * i) / n;
+    out.push([
+      CANOPY_SPAN.to - front.a * (1 - Math.sin(t)),
+      CANOPY_TOP - front.h * (1 - Math.cos(t)),
+    ]);
+  }
+  return out;
+})();
 
 /**
  * The canopy over the rider, `[a, h]`: a short smoked piece on the back,

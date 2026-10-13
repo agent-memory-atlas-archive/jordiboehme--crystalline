@@ -533,12 +533,13 @@ describe("the neon bike (0.25.1)", () => {
     expect((front.a - rear.a) / CYCLE.length).toBeGreaterThan(0.73);
     expect((front.a - rear.a) / CYCLE.length).toBeLessThan(0.77);
     const fromRear = (a: number) => (a - (rear.a - rear.r)) / CYCLE.length;
-    // The canopy runs from 0.38 to 0.53 of the length from the rear: from
-    // behind the crown (0.55) forward to it, behind the original's longer
-    // strip (0.55 to 0.9), so it covers a sixth of the length and stays
-    // clear of the nose.
-    expect(fromRear(CANOPY_SPAN.from)).toBeCloseTo(0.379, 3);
-    expect(fromRear(CANOPY_SPAN.to)).toBeCloseTo(0.534, 3);
+    // The canopy runs from 0.33 to 0.53 of the length from the rear: from
+    // behind the crown (0.55) forward to its foot, behind the original's
+    // longer strip (0.55 to 0.9), so it covers under a fifth of the length
+    // and stays clear of the nose (0.25.2: a little longer than the 0.25.1
+    // strip, for its rounded ends).
+    expect(fromRear(CANOPY_SPAN.from)).toBeCloseTo(0.334, 3);
+    expect(fromRear(CANOPY_SPAN.to)).toBeCloseTo(0.528, 3);
     expect(fromRear(CANOPY_SPAN.to)).toBeLessThanOrEqual(0.55);
     expect((CANOPY_SPAN.to - CANOPY_SPAN.from) / CYCLE.length).toBeLessThan(
       0.2,
@@ -731,10 +732,64 @@ describe("the neon bike (0.25.1)", () => {
     expect(Math.max(...radii) - Math.min(...radii)).toBeLessThan(1e-6);
   });
 
+  it("stands its canopy 12 to 15 cm over the crests at its highest, its front and back rounded (0.25.2)", () => {
+    // Mutation caught: the canopy back to a thin strip over the crests,
+    // grown into a tall cabin, or cut square at either end.
+    const [c] = inked(parts, CYCLE_CANOPY);
+    if (c === undefined) throw new Error("no canopy");
+    const cp = local(c);
+    const crests = inked(parts, CYCLE_SHINE).flatMap(local);
+    // How far the canopy stands over the crests, along a: each one's top
+    // line taken through its points and compared every 2 cm.
+    const topLine = (pts: readonly V3[]) => {
+      const tops = new Map<number, number>();
+      for (const q of pts) {
+        const a = Math.round(q[0] * 1e6) / 1e6;
+        tops.set(a, Math.max(tops.get(a) ?? -Infinity, q[2]));
+      }
+      const line = [...tops].sort((x, y) => x[0] - y[0]);
+      return (a: number): number => {
+        for (let i = 0; i + 1 < line.length; i++) {
+          const [p, q] = [line[i], line[i + 1]];
+          if (!p || !q || a < p[0] || a > q[0]) continue;
+          return p[1] + ((q[1] - p[1]) * (a - p[0])) / (q[0] - p[0]);
+        }
+        return NaN;
+      };
+    };
+    const [canopyAt, crestAt] = [topLine(cp), topLine(crests)];
+    let rise = 0;
+    for (let a = CANOPY_SPAN.from; a <= CANOPY_SPAN.to; a += 0.02)
+      rise = Math.max(rise, canopyAt(a) - crestAt(a));
+    expect(rise).toBeGreaterThanOrEqual(CANOPY_RISE.min);
+    expect(rise).toBeLessThanOrEqual(CANOPY_RISE.max);
+    // Rounded ends: going from the level crown out to either end, the
+    // ridge falls by several steps, each turning a little, never at a
+    // square corner.
+    const top = span(cp, 2).hi;
+    for (const end of [CANOPY_SPAN.from, CANOPY_SPAN.to]) {
+      const atEnd = cp.filter((q) => Math.abs(q[0] - end) < 1e-6);
+      expect(span(atEnd, 2).hi).toBeLessThan(top - 0.06);
+      const fall = new Set(
+        cp
+          .filter((q) => Math.abs(q[0] - end) < 0.2 && q[2] > top - 0.15)
+          .map((q) => q[2].toFixed(4)),
+      );
+      expect(fall.size).toBeGreaterThan(4);
+    }
+  });
+
   it("stays under its triangle pin", () => {
-    expect(buildHeroMesh("neon-bike", 0, LOOK).count / 3).toBeLessThan(2500);
+    expect(buildHeroMesh("neon-bike", 0, LOOK).count / 3).toBeLessThan(2800);
   });
 });
+
+/**
+ * How far the closed neon bike's canopy stands over the crests under it
+ * at its highest (0.25.2): Jordi asked for a proper smoked top piece of
+ * about 12 to 15 cm, where the 0.25.1 strip stood 7 cm.
+ */
+const CANOPY_RISE = { min: 0.12, max: 0.15 } as const;
 
 /** Whether the point `(a, h)` lies inside the closed outline `poly`. */
 const insideOutline = (
