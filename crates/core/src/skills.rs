@@ -412,6 +412,23 @@ mod tests {
         }
     }
 
+    /// An agent that finds a wrong engram it cannot fix asks the person to
+    /// fix it, with the page link and the evidence, instead of staying quiet.
+    #[test]
+    fn the_skills_teach_asking_a_person_to_fix_a_wrong_engram() {
+        for name in ["crystalline-intelligence", "crystalline-capture"] {
+            let body = skill(name).unwrap().content;
+            for needle in [
+                "A wrong engram you cannot fix yourself still gets fixed",
+                "give its `web_url`",
+                "what is true instead and the source that shows it",
+                "Never leave a wrong engram unmentioned",
+            ] {
+                assert!(body.contains(needle), "{name} lacks {needle:?}");
+            }
+        }
+    }
+
     /// The two skills an ingesting agent reads teach the sources pattern:
     /// every location in a `sources` list, kept current with set_frontmatter,
     /// found again with $contains_any, never a reason to retire on its own,
