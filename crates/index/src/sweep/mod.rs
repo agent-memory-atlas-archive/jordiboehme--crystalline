@@ -579,7 +579,7 @@ const SCOPE_SEPARATOR: &str = ", ";
 
 /// Whether `rule` is acknowledged **per pair** rather than per engram.
 ///
-/// `V301` and `V302` are the two, and the distinction is about what an
+/// `V112`, `V301` and `V302` are the three, and the distinction is about what an
 /// acknowledgment answers for rather than about how often a rule fires. Every
 /// other rule's acknowledgment is the engram's answer about that rule:
 /// re-acknowledging replaces the entry, and an entry whose scope no longer
@@ -593,12 +593,16 @@ const SCOPE_SEPARATOR: &str = ", ";
 /// answer about the engram, so those acknowledgments are stored per pair (a
 /// twin pair, or a pair of observation lines) and a pair with no entry of its
 /// own is a plain finding rather than a stale one - nobody has answered it
-/// yet.
+/// yet. A `V112` acknowledgment answers a pair of folders: one folder close
+/// to two siblings anchors two findings on one engram, and each pair keeps
+/// its own entry.
 ///
 /// Read by the sweep here and by the engine's `evolve_ack` write path, which
 /// keys its entries the same way. One predicate, so the two cannot drift.
 pub fn is_pair_scoped(rule: &str) -> bool {
-    rule.eq_ignore_ascii_case("V301") || rule.eq_ignore_ascii_case("V302")
+    rule.eq_ignore_ascii_case("V301")
+        || rule.eq_ignore_ascii_case("V302")
+        || rule.eq_ignore_ascii_case("V112")
 }
 
 /// The stable discriminator for a finding: the evidence an acknowledgment was
@@ -1568,7 +1572,7 @@ impl FindingCap {
 ///   different thing to read than a fresh finding. One entry is what a rule
 ///   acknowledged per engram always has, since the write path replaces it;
 /// - nothing matches and the rule is pair-scoped ([`is_pair_scoped`], which is
-///   `V301` and `V302`): **returned plain**. A twin or line-pair
+///   `V112`, `V301` and `V302`): **returned plain**. A twin or line-pair
 ///   acknowledgment answers one pair, so a pair with no entry of its own is
 ///   unanswered rather than stale, and lending it another pair's note would
 ///   tell a reader they have seen evidence they have not;
@@ -1579,6 +1583,13 @@ impl FindingCap {
 ///
 /// A finding with no anchor engram - `V203`'s vocabulary, `V108`'s attachment -
 /// has nowhere to hang an acknowledgment and passes through.
+///
+/// `V112` is looked up wider than its anchor: its anchor is the first engram
+/// of the smaller folder, which moves when a folder gains an engram that sorts
+/// first or the smaller folder outgrows the other, while the answer is about
+/// the two folder names. So an entry for the pair on any engram in either
+/// folder silences it, and the finding still comes back the moment a folder
+/// is renamed, since that is another pair.
 fn apply_acknowledgments(input: &SweepInput, report: &mut SweepReport) {
     let acks: HashMap<&str, &[AckEntry]> = input
         .engrams
@@ -1589,10 +1600,35 @@ fn apply_acknowledgments(input: &SweepInput, report: &mut SweepReport) {
     if acks.is_empty() {
         return;
     }
+    // Every `V112` entry with the folder path of the engram that carries it.
+    let folder_acks: Vec<(&str, &AckEntry)> = input
+        .engrams
+        .iter()
+        .flat_map(|f| {
+            f.acks
+                .iter()
+                .filter(|a| a.rule.eq_ignore_ascii_case("V112"))
+                .map(move |a| (f.path.as_str(), a))
+        })
+        .collect();
 
     let mut counts = AckCounts::default();
     let include = input.include_acknowledged;
     report.findings.retain_mut(|finding| {
+        if finding.rule == "V112" {
+            let held = folder_acks.iter().find(|(path, ack)| {
+                ack.scope.as_deref().is_none_or(|s| s == finding.scope)
+                    && in_scoped_folder(path, &finding.scope)
+            });
+            if let Some((_, ack)) = held {
+                counts.add(finding.family);
+                finding.acknowledged = true;
+                finding.ack_note = ack.note.clone();
+                finding.ack_scope = ack.scope.clone();
+                return include;
+            }
+            return true;
+        }
         let Some(entries) = acks.get(finding.permalink.as_str()) else {
             return true;
         };
@@ -1628,6 +1664,25 @@ fn apply_acknowledgments(input: &SweepInput, report: &mut SweepReport) {
         true
     });
     report.acknowledged = counts;
+}
+
+/// Whether the engram at `path` sits in one of the two folders a `V112` scope
+/// names, at any depth. Asked of the folders above the path rather than by
+/// splitting the scope, so a folder name holding the separator cannot cut it
+/// in the wrong place.
+fn in_scoped_folder(path: &str, scope: &str) -> bool {
+    let Some((folder, _)) = path.rsplit_once('/') else {
+        return false;
+    };
+    folder
+        .char_indices()
+        .filter(|(_, c)| *c == '/')
+        .map(|(i, _)| &folder[..i])
+        .chain([folder])
+        .any(|level| {
+            scope.starts_with(&format!("{level}{SCOPE_SEPARATOR}"))
+                || scope.ends_with(&format!("{SCOPE_SEPARATOR}{level}"))
+        })
 }
 
 /// The edge and node lookups every rule shares, built once per run.
@@ -2535,13 +2590,16 @@ fn detect_unsourced_ingest(input: &SweepInput, graph: &Graph<'_>, report: &mut S
 ///
 /// One finding per pair, anchored on the first engram by permalink of the
 /// folder with fewer engrams (a tie goes to the later folder name), so the
-/// acknowledgment lands on an engram the fix would move. Counts are
+/// acknowledgment lands on an engram the fix would move. Pair-scoped
+/// ([`is_pair_scoped`]): the anchor can move, so [`apply_acknowledgments`]
+/// reads the pair's entry off any engram in either folder. Counts are
 /// recursive and leave the reserved files out, the same counting the receipt
 /// uses. Retired engrams count: they are files in the folder all the same.
 ///
 /// Judgment class: whether two folders hold one topic is a reading of their
 /// content, not something the names settle. Scoped by the two folder paths,
-/// so an acknowledgment holds while neither folder is renamed.
+/// so an acknowledgment holds while neither folder is renamed; a renamed one is
+/// a new pair and comes back plain, as every pair-scoped rule does.
 fn detect_close_folders(input: &SweepInput, report: &mut SweepReport) {
     use crystalline_core::folders::{closeness, folder_counts, folder_parent};
 

@@ -3535,6 +3535,27 @@ impl Store for TursoStore {
         Ok(out)
     }
 
+    async fn overlay_paths(&self, domain: DomainId, actor: &str) -> Result<Vec<(String, bool)>> {
+        if actor.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = query_all(
+            &self.conn,
+            "SELECT path, tombstone FROM engram WHERE domain_id=?1 AND actor=?2 ORDER BY path",
+            vec![Value::Integer(domain.0), Value::Text(actor.to_string())],
+        )
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                (
+                    cell_text(row, 0).unwrap_or_default(),
+                    cell_i64(row, 1).unwrap_or(0) != 0,
+                )
+            })
+            .collect())
+    }
+
     async fn clear_overlay_entry(&self, domain: DomainId, actor: &str, path: &str) -> Result<bool> {
         if actor.is_empty() {
             return Ok(false);

@@ -8243,3 +8243,46 @@ async fn the_remote_origin_status_hides_a_domain_the_account_cannot_see() {
     let all = ask(serde_json::json!({ "v": 1, "cmd": "origin_status" })).await;
     assert!(!all.to_string().contains("team"), "{all}");
 }
+
+/// The close-folder hint reads the writer's own view of a reviewing domain:
+/// another account's drafts in `planview` are not folders this writer can
+/// see, so their `planview-work` write carries no hint, while the author of
+/// those drafts is told.
+#[tokio::test]
+async fn the_close_folder_hint_never_sees_another_accounts_drafts() {
+    let f = review_fixture().await;
+    let alice = account("alice");
+    let bob = account("bob");
+    let in_folder = |folder: &str, title: &str| WriteParams {
+        folder: Some(folder.to_string()),
+        ..write_params("team", title, "A fact about the topic.")
+    };
+    for title in ["Roadmap", "Budget"] {
+        let receipt = f
+            .engine
+            .write_engram_as(&in_folder("planview", title), None, &alice)
+            .await
+            .unwrap();
+        assert_eq!(receipt["draft"], serde_json::json!(true), "{receipt}");
+    }
+
+    let bobs = f
+        .engine
+        .write_engram_as(&in_folder("planview-work", "Standup"), None, &bob)
+        .await
+        .unwrap();
+    let probe = Engine::close_folder_probe(&bobs);
+    let found = f.engine.close_folders_for(probe.as_ref(), &bob).await;
+    assert!(found.is_empty(), "bob cannot see alice's drafts: {found:?}");
+
+    let alices = f
+        .engine
+        .write_engram_as(&in_folder("planview-work", "Retro"), None, &alice)
+        .await
+        .unwrap();
+    let probe = Engine::close_folder_probe(&alices);
+    let found = f.engine.close_folders_for(probe.as_ref(), &alice).await;
+    assert_eq!(found.len(), 1, "alice sees her own drafts: {found:?}");
+    assert_eq!(found[0].folder, "planview");
+    assert_eq!(found[0].engrams, 2);
+}

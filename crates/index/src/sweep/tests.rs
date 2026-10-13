@@ -2295,15 +2295,20 @@ fn v112_is_quiet_on_a_domain_without_close_folders() {
     assert!(!fired(&detect(&sweep)).contains(&"V112"));
 }
 
+/// The acknowledgment of the planview pair, on whichever engram carries it.
+fn planview_ack() -> AckEntry {
+    ack(
+        "V112",
+        Some("projects/planview, projects/planview-work"),
+        "two topics",
+    )
+}
+
 #[test]
-fn a_v112_ack_holds_for_the_pair_and_goes_stale_when_a_folder_is_renamed() {
+fn a_v112_ack_holds_for_the_pair_and_a_renamed_folder_asks_again() {
     let swept = |small: &str| {
         let mut anchor = at(3, &format!("projects/{small}/standup.md"));
-        anchor.acks = vec![ack(
-            "V112",
-            Some("projects/planview, projects/planview-work"),
-            "two topics",
-        )];
+        anchor.acks = vec![planview_ack()];
         detect(&input(vec![
             at(1, "projects/planview/roadmap.md"),
             at(2, "projects/planview/budget.md"),
@@ -2315,10 +2320,89 @@ fn a_v112_ack_holds_for_the_pair_and_goes_stale_when_a_folder_is_renamed() {
     assert!(!fired(&silent).contains(&"V112"), "{:?}", fired(&silent));
     assert_eq!(silent.acknowledged.structure, 1);
 
+    // A pair-scoped rule: the renamed pair is a pair nobody answered yet, so
+    // it comes back plain rather than marked stale.
     let renamed = swept("planview-team");
     let finding = only(&renamed, "V112");
-    assert!(finding.ack_stale, "a renamed folder asks again");
+    assert!(
+        !finding.ack_stale,
+        "a pair rule never lends another pair's note"
+    );
     assert!(!finding.acknowledged);
+}
+
+#[test]
+fn a_v112_ack_holds_when_the_anchor_moves_to_a_lower_permalink() {
+    let mut carrier = at(3, "projects/planview-work/standup.md");
+    carrier.acks = vec![planview_ack()];
+    let report = detect(&input(vec![
+        at(1, "projects/planview/roadmap.md"),
+        at(2, "projects/planview/budget.md"),
+        carrier,
+        // Sorts before `standup`, so the finding now anchors here.
+        at(4, "projects/planview-work/agenda.md"),
+        at(5, "projects/planview/risks.md"),
+    ]));
+    assert!(!fired(&report).contains(&"V112"), "{:?}", fired(&report));
+    assert_eq!(report.acknowledged.structure, 1);
+}
+
+#[test]
+fn a_v112_ack_holds_when_the_smaller_folder_grows_past_the_other() {
+    let mut carrier = at(3, "projects/planview-work/standup.md");
+    carrier.acks = vec![planview_ack()];
+    let report = detect(&input(vec![
+        at(1, "projects/planview/roadmap.md"),
+        carrier,
+        at(4, "projects/planview-work/retro.md"),
+        at(5, "projects/planview-work/sprint.md"),
+    ]));
+    assert!(!fired(&report).contains(&"V112"), "{:?}", fired(&report));
+    assert_eq!(report.acknowledged.structure, 1);
+}
+
+#[test]
+fn one_folder_close_to_two_siblings_keeps_an_ack_per_pair() {
+    let mut lone = at(1, "meeting/kickoff.md");
+    lone.acks = vec![
+        ack("V112", Some("meeting, meetings"), "different topic"),
+        ack(
+            "V112",
+            Some("meeting, meeting-notes"),
+            "different topic too",
+        ),
+    ];
+    let facts = vec![
+        lone,
+        at(2, "meetings/a.md"),
+        at(3, "meetings/b.md"),
+        at(4, "meeting-notes/a.md"),
+        at(5, "meeting-notes/b.md"),
+    ];
+    let mut unacked = facts.clone();
+    unacked[0].acks.clear();
+    let open = detect(&input(unacked));
+    assert_eq!(
+        fired_on(&open, "meeting/kickoff"),
+        vec!["V112", "V112"],
+        "both pairs anchor on the one engram"
+    );
+    let report = detect(&input(facts));
+    assert!(!fired(&report).contains(&"V112"), "{:?}", fired(&report));
+    assert_eq!(report.acknowledged.structure, 2);
+}
+
+#[test]
+fn an_ack_outside_the_pairs_folders_does_not_silence_it() {
+    let mut elsewhere = at(9, "projects/billing/invoices.md");
+    elsewhere.acks = vec![planview_ack()];
+    let report = detect(&input(vec![
+        at(1, "projects/planview/roadmap.md"),
+        at(2, "projects/planview/budget.md"),
+        at(3, "projects/planview-work/standup.md"),
+        elsewhere,
+    ]));
+    assert!(fired(&report).contains(&"V112"), "{:?}", fired(&report));
 }
 
 #[test]
@@ -3781,6 +3865,7 @@ fn v302_acknowledgment_is_scoped_to_the_pair_of_lines() {
     );
     assert_eq!(report.acknowledged.meaning, 1);
     assert!(is_pair_scoped("V302"));
+    assert!(is_pair_scoped("V112"));
 }
 
 /// Review mode: a draft is a row of its own and never scored, so a stored

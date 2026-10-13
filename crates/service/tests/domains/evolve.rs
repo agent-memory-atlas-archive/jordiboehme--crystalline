@@ -3376,7 +3376,8 @@ async fn v112_names_close_sibling_folders_once_and_an_ack_holds_until_a_rename()
     assert!(v["queue"].as_array().unwrap().is_empty(), "{v}");
     assert_eq!(v["acknowledged"]["by_family"]["structure"], 1, "{v}");
 
-    // Renaming the folder asks the question again, marked stale.
+    // Renaming the folder asks the question again. V112 is pair-scoped, so the
+    // renamed pair is a pair nobody answered yet: a plain finding, not stale.
     engine
         .move_engram(
             &crystalline_service::params::MoveParams {
@@ -3395,7 +3396,49 @@ async fn v112_names_close_sibling_folders_once_and_an_ack_holds_until_a_rename()
     let queue = v["queue"].as_array().unwrap();
     assert_eq!(queue.len(), 1, "{v}");
     assert_eq!(queue[0]["permalink"], "projects/planview-team/standup");
-    assert_eq!(queue[0]["ack_stale"], true, "{v}");
+    assert!(queue[0].get("ack_stale").is_none(), "{v}");
+}
+
+/// One folder close to two siblings anchors both findings on one engram, and
+/// each pair keeps its own acknowledgment there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v112_keeps_an_acknowledgment_per_pair_on_one_engram() {
+    let (tmp, engine) = folder_fixture(&[
+        "meeting/kickoff.md",
+        "meetings/a.md",
+        "meetings/b.md",
+        "meeting-notes/a.md",
+        "meeting-notes/b.md",
+    ])
+    .await;
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert_eq!(v["queue"].as_array().unwrap().len(), 2, "{v}");
+
+    let first = acknowledge(&engine, "meeting/kickoff", "V112 not the same topic").await;
+    let second = acknowledge(&engine, "meeting/kickoff", "V112 not this one either").await;
+    assert_ne!(
+        first["evolve_ack"]["scope"], second["evolve_ack"]["scope"],
+        "the second acknowledgment answers the other pair: {first} {second}"
+    );
+    let text = std::fs::read_to_string(tmp.path().join("eng/meeting/kickoff.md")).unwrap();
+    assert!(
+        text.contains("meeting, meetings") && text.contains("meeting, meeting-notes"),
+        "both entries stay: {text}"
+    );
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert!(v["queue"].as_array().unwrap().is_empty(), "{v}");
+    assert_eq!(v["acknowledged"]["by_family"]["structure"], 2, "{v}");
+
+    // The anchor moves when the lone folder gains an engram that sorts first;
+    // the acknowledgments still hold, read off any engram in the pair.
+    std::fs::write(
+        tmp.path().join("eng/meeting/agenda.md"),
+        "---\ntype: engram\ntitle: meeting/agenda\npermalink: meeting/agenda\ntags:\n  - work\nstatus: stable\nrecorded_at: 2026-07-25\n---\n\nThe agenda.\n\n- [fact] one line\n- [fact] two lines\n",
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert!(v["queue"].as_array().unwrap().is_empty(), "{v}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

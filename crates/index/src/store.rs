@@ -3192,6 +3192,12 @@ pub trait Store: Send + Sync {
     /// included, for the same reason.
     async fn overlay_entries(&self, domain: DomainId, actor: &str) -> Result<Vec<StoredEngram>>;
 
+    /// [`Store::overlay_entries`] without the bodies: every draft path one
+    /// actor holds in a domain with its tombstone flag, ordered by path. For a
+    /// caller that only asks where drafts stand, such as the close-folder hint
+    /// on a write receipt, so it never loads a draft's text to learn its path.
+    async fn overlay_paths(&self, domain: DomainId, actor: &str) -> Result<Vec<(String, bool)>>;
+
     /// Drop one actor's draft at a path. Returns whether a row was there to
     /// drop, so a caller can tell "cleared" from "there was nothing to clear"
     /// without asking twice.

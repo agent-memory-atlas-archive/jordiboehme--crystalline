@@ -8588,6 +8588,13 @@ async fn overlay_rows_shadow_nothing(store: &dyn Store) {
             .is_empty()
     );
     assert_eq!(
+        store.overlay_paths(domain, "alice").await.unwrap(),
+        vec![("a.md".to_string(), false)],
+        "the paths alone, without a body, for the same rows"
+    );
+    assert!(store.overlay_paths(domain, "bob").await.unwrap().is_empty());
+    assert!(store.overlay_paths(domain, "").await.unwrap().is_empty());
+    assert_eq!(
         store.overlay_counts(domain).await.unwrap(),
         vec![("alice".to_string(), 1)],
         "the per-actor count names who holds drafts here and how many"
@@ -10598,10 +10605,11 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
         census.failures.join("\n")
     );
     assert_eq!(
-        census.sites, 174,
+        census.sites, 176,
         "the engram statement census moved; every new one needs a predicate or a waiver. \
-         71 per backend in mod.rs (the permalink arm of `UPSERT_PROBE_SQL` is the \
-         newest, on the caller's own actor; before it the `engram_meta_value` delete of \
+         72 per backend in mod.rs (the path listing of `overlay_paths` is the newest, on \
+         the caller's own actor; before it the permalink arm of `UPSERT_PROBE_SQL`, also \
+         on the caller's own actor; before it the `engram_meta_value` delete of \
          `clear_domain`, waived below with the rest of that clear; before that the two unbinding \
          statements of `clear_domain`, also waived; before them the guarded compare \
          of `upsert_engram_checked` is the \

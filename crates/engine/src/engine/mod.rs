@@ -5400,6 +5400,7 @@ mod domain_lookup_tests {
 mod adopt_names;
 mod attachments;
 mod close_folders;
+pub use close_folders::FolderProbe;
 mod configure;
 mod context;
 mod contradictions;
@@ -7142,9 +7143,9 @@ fn without_ack(source: &str, rule: &str, scope: Option<&str>) -> String {
 /// reads. The replacement keeps the original position, which keeps a
 /// hand-ordered list hand-ordered.
 ///
-/// The exception is [`crystalline_index::is_pair_scoped`] - `V301` and `V302` -
-/// and it exists because a twin finding, like a possible contradiction, is
-/// about a pair rather than about the engram:
+/// The exception is [`crystalline_index::is_pair_scoped`] - `V112`, `V301` and
+/// `V302` - and it exists because a twin finding, like a possible contradiction
+/// or a pair of close folders, is about a pair rather than about the engram:
 /// an engram that twins two others carries two twin findings and neither is the
 /// engram's answer about the rule. Keying those by rule alone made the second
 /// acknowledgment overwrite the first, which silenced one pair and left the

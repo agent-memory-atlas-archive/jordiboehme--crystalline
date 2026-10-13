@@ -49,7 +49,7 @@ impl Closeness {
         match self {
             Closeness::Equal => "equal apart from case and separators".to_string(),
             Closeness::Words => "one name is the other plus a word".to_string(),
-            Closeness::Distance(d) => format!("{d} edit apart"),
+            Closeness::Distance(d) => format!("{} apart", crate::text::plural(d, "edit", "edits")),
         }
     }
 }
@@ -422,6 +422,12 @@ mod tests {
         assert_eq!(sib, vec![("p/planview".to_string(), 2)]);
         let top = sibling_folders("q", &counts);
         assert_eq!(top, vec![("p".to_string(), 3)]);
+    }
+
+    #[test]
+    fn describe_counts_edits_in_the_right_number() {
+        assert_eq!(Closeness::Distance(1).describe(), "1 edit apart");
+        assert_eq!(Closeness::Distance(2).describe(), "2 edits apart");
     }
 
     #[test]

@@ -670,7 +670,7 @@ impl Engine {
     /// [pair-scoped](crystalline_index::is_pair_scoped) rule: every other rule
     /// keeps one entry, so there is nothing to narrow. `None` takes every
     /// entry the rule has, which is the whole of it for a rule acknowledged
-    /// per engram and all pairs at once for `V301` and `V302`.
+    /// per engram and all pairs at once for `V112`, `V301` and `V302`.
     ///
     /// Fluid's half of the take-back an agent asks for with the `remove
     /// <rule-id>` value form; both filter through `without_ack`. They differ

@@ -3580,6 +3580,34 @@ impl Store for PostgresStore {
         Ok(out)
     }
 
+    async fn overlay_paths(&self, domain: DomainId, actor: &str) -> Result<Vec<(String, bool)>> {
+        if actor.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut conn = self.acquire().await?;
+        let rows = sqlx::query(
+            "SELECT path, tombstone FROM engram WHERE domain_id=$1 AND actor=$2 \
+             ORDER BY path COLLATE \"C\"",
+        )
+        .bind(domain.0)
+        .bind(actor)
+        .fetch_all(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                (
+                    cell_text(row, 0).unwrap_or_default(),
+                    row.try_get::<Option<bool>, _>(1)
+                        .ok()
+                        .flatten()
+                        .unwrap_or(false),
+                )
+            })
+            .collect())
+    }
+
     async fn clear_overlay_entry(&self, domain: DomainId, actor: &str, path: &str) -> Result<bool> {
         if actor.is_empty() {
             return Ok(false);
