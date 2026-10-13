@@ -47,8 +47,25 @@ const SHARING_DIRECT: &str = "direct";
 /// the name this domain is known by everywhere, which content addresses it
 /// with regardless of what any one machine calls it locally. Free text
 /// rather than a switch, which is why it needs [`PolicyKind::Text`] beside
-/// the enum kind the other two registry entries use.
+/// the choice kind the switches in the registry use.
 pub const DOMAIN_NAME_KEY: &str = "domain_name";
+
+/// The MANIFEST frontmatter key a domain switches its Reflection on with: a
+/// tree of documents for people under `reflections/`, written at the level
+/// the domain's `PACT.md` agrees on. A switch, like [`SHARING_KEY`].
+pub const REFLECTION_KEY: &str = "reflection";
+
+/// The `reflection` value that keeps the folder an ordinary folder: the default.
+const REFLECTION_OFF: &str = "off";
+
+/// The `reflection` value that turns `reflections/` into the domain's Reflection.
+const REFLECTION_ON: &str = "on";
+
+/// The MANIFEST frontmatter key naming the one instance a shared domain's
+/// Reflection lives on: that instance's `service.public_url`, as an origin.
+/// Written by the engine when Reflection is switched on for a domain
+/// connected to GitHub; never typed by hand.
+pub const REFLECTION_HOME_KEY: &str = "reflection_home";
 
 /// Declare `name` as the domain's canonical name in MANIFEST `source`: an
 /// existing [`DOMAIN_NAME_KEY`] key, however it is spelled, is rewritten in
@@ -159,6 +176,12 @@ pub struct Manifest {
     /// something other than text" (a number, boolean, null, list or
     /// mapping), and [`Manifest::domain_name`] collapses both to `None`.
     domain_name_is_string: bool,
+    /// The [`REFLECTION_KEY`] value as written, or `None` when absent. Read
+    /// through [`Manifest::reflection`].
+    reflection: Option<String>,
+    /// The [`REFLECTION_HOME_KEY`] value as written, or `None` when absent.
+    /// Read through [`Manifest::reflection_home`].
+    reflection_home: Option<String>,
 }
 
 impl Manifest {
@@ -177,6 +200,16 @@ impl Manifest {
             .map(scalar_text);
         let sharing = engram.frontmatter.extra.get(SHARING_KEY).map(scalar_text);
         let read_only = engram.frontmatter.extra.get(READ_ONLY_KEY).map(scalar_text);
+        let reflection = engram
+            .frontmatter
+            .extra
+            .get(REFLECTION_KEY)
+            .map(scalar_text);
+        let reflection_home = engram
+            .frontmatter
+            .extra
+            .get(REFLECTION_HOME_KEY)
+            .map(scalar_text);
         let domain_name_extra = engram.frontmatter.extra.get(DOMAIN_NAME_KEY);
         let declared_domain_name = domain_name_extra.map(scalar_text);
         let domain_name_is_string = matches!(domain_name_extra, Some(YamlValue::String(_)));
@@ -224,6 +257,8 @@ impl Manifest {
             declared_domain_name,
             domain_name,
             domain_name_is_string,
+            reflection,
+            reflection_home,
         }
     }
 
@@ -475,6 +510,35 @@ impl Manifest {
         self.domain_name.as_deref()
     }
 
+    /// The `reflection` declaration exactly as written, for reporting only.
+    pub fn declared_reflection(&self) -> Option<&str> {
+        self.reflection.as_deref()
+    }
+
+    /// Whether this domain keeps a Reflection. [`ReflectionSwitch::On`] only
+    /// for `on` in exactly that spelling; an absent key and a typo are both
+    /// `off`, because a typo must never turn a folder of engrams into
+    /// something the engram index stops reading.
+    pub fn reflection(&self) -> ReflectionSwitch {
+        match self.reflection.as_deref() {
+            Some(REFLECTION_ON) => ReflectionSwitch::On,
+            _ => ReflectionSwitch::Off,
+        }
+    }
+
+    /// The `reflection_home` declaration exactly as written, for reporting.
+    pub fn declared_reflection_home(&self) -> Option<&str> {
+        self.reflection_home.as_deref()
+    }
+
+    /// The home instance's origin, or `None` when the key is absent or is
+    /// not an origin [`validate_reflection_home`] accepts.
+    pub fn reflection_home(&self) -> Option<&str> {
+        self.reflection_home
+            .as_deref()
+            .filter(|value| validate_reflection_home(value).is_ok())
+    }
+
     /// Whether a declared `domain_name` was written as a YAML string, valid
     /// or not. Crate-private; see the field doc comment for why the M008
     /// verify rule needs it.
@@ -497,6 +561,11 @@ impl Manifest {
                 self.domain_name().unwrap_or(""),
             )),
             READ_ONLY_KEY => Some((self.declared_read_only(), self.read_only().as_str())),
+            REFLECTION_KEY => Some((self.declared_reflection(), self.reflection().as_str())),
+            REFLECTION_HOME_KEY => Some((
+                self.declared_reflection_home(),
+                self.reflection_home().unwrap_or(""),
+            )),
             _ => None,
         }
     }
@@ -587,6 +656,36 @@ impl Sharing {
         match value {
             SHARING_PROPOSAL => Some(Sharing::Proposal),
             SHARING_DIRECT => Some(Sharing::Direct),
+            _ => None,
+        }
+    }
+}
+
+/// Whether a domain keeps a Reflection under `reflections/`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReflectionSwitch {
+    /// `reflections/` is an ordinary folder of engrams. The default.
+    #[default]
+    Off,
+    /// `reflections/` is the domain's Reflection and stays out of every
+    /// engram path.
+    On,
+}
+
+impl ReflectionSwitch {
+    /// The value's spelling in the MANIFEST frontmatter.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReflectionSwitch::Off => REFLECTION_OFF,
+            ReflectionSwitch::On => REFLECTION_ON,
+        }
+    }
+
+    /// Parse a declared value, exact and case-sensitive.
+    pub fn parse(value: &str) -> Option<ReflectionSwitch> {
+        match value {
+            REFLECTION_OFF => Some(ReflectionSwitch::Off),
+            REFLECTION_ON => Some(ReflectionSwitch::On),
             _ => None,
         }
     }
@@ -713,6 +812,59 @@ pub fn domain_name_at(root: &Path) -> Option<String> {
     domain_name_of_source(&source)
 }
 
+/// Why `value` cannot be a Reflection's home, or `Ok` when it can: an
+/// `http` or `https` address (scheme, host, optional port) with an optional
+/// base path, no trailing slash, no query, no fragment and no whitespace -
+/// the spelling the engine stores `service.public_url` in (origin plus base
+/// path, as `PublicBase` writes it), so the home check is an exact compare.
+pub fn validate_reflection_home(value: &str) -> Result<(), String> {
+    let rest = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))
+        .ok_or_else(|| format!("`{value}` is not an http or https address"))?;
+    let (host, path) = match rest.split_once('/') {
+        Some((host, path)) => (host, Some(path)),
+        None => (rest, None),
+    };
+    if host.is_empty() {
+        return Err(format!("`{value}` names no host"));
+    }
+    let bad = |s: &str| s.contains(['?', '#', ' ', '\t', '@']);
+    // `path` is what follows the first `/` after the host, so an empty
+    // segment shows as a leading `/` (`host//kb`) or a `//` further in.
+    let bad_path = |p: &str| {
+        p.is_empty() || p.starts_with('/') || p.ends_with('/') || p.contains("//") || bad(p)
+    };
+    if bad(host) || path.is_some_and(bad_path) {
+        return Err(format!(
+            "`{value}` must be scheme, host, optional port and optional base path, with no trailing slash"
+        ));
+    }
+    Ok(())
+}
+
+/// The [`ReflectionSwitch`] the domain rooted at `root` declares, read from
+/// its `MANIFEST.md`. [`ReflectionSwitch::Off`] whenever the MANIFEST is
+/// missing, unreadable, unparseable or silent: the shape of [`sharing_at`].
+pub fn reflection_at(root: &Path) -> ReflectionSwitch {
+    let Ok(source) = std::fs::read_to_string(root.join("MANIFEST.md")) else {
+        return ReflectionSwitch::Off;
+    };
+    let Ok(engram) = parse_engram(&source) else {
+        return ReflectionSwitch::Off;
+    };
+    Manifest::from_engram(&engram, &source).reflection()
+}
+
+/// The home origin the domain rooted at `root` declares, or `None`.
+pub fn reflection_home_at(root: &Path) -> Option<String> {
+    let source = std::fs::read_to_string(root.join("MANIFEST.md")).ok()?;
+    let engram = parse_engram(&source).ok()?;
+    Manifest::from_engram(&engram, &source)
+        .reflection_home()
+        .map(str::to_string)
+}
+
 /// Who may change a policy key from a surface that asks: the domain's owner
 /// (or an instance admin, who owns every domain), or an instance admin alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -784,13 +936,15 @@ impl PolicyKey {
     /// Whether `value` is a declaration this key would act on. A
     /// [`PolicyKind::Choice`] key accepts exactly its listed `values`; a
     /// [`PolicyKind::Text`] key accepts whatever its own rule says -
-    /// [`DOMAIN_NAME_KEY`] defers to [`validate_domain_name`], and any other
+    /// [`DOMAIN_NAME_KEY`] defers to [`validate_domain_name`],
+    /// [`REFLECTION_HOME_KEY`] to [`validate_reflection_home`], and any other
     /// text key (there is none today) falls back to "not blank".
     pub fn accepts(&self, value: &str) -> bool {
         match self.kind {
             PolicyKind::Choice => self.values.contains(&value),
             PolicyKind::Text => match self.key {
                 DOMAIN_NAME_KEY => validate_domain_name(value).is_ok(),
+                REFLECTION_HOME_KEY => validate_reflection_home(value).is_ok(),
                 _ => !value.trim().is_empty(),
             },
         }
@@ -830,6 +984,22 @@ pub fn policy_registry() -> &'static [PolicyKey] {
             values: &[READ_ONLY_OFF, READ_ONLY_ON],
             default: READ_ONLY_OFF,
             meaning: "Whether every change to this domain through Crystalline is refused; pulls from the team still apply.",
+            changed_by: PolicyRole::Owner,
+        },
+        PolicyKey {
+            key: REFLECTION_KEY,
+            kind: PolicyKind::Choice,
+            values: &[REFLECTION_OFF, REFLECTION_ON],
+            default: REFLECTION_OFF,
+            meaning: "Whether this domain keeps a Reflection: documents for people under reflections/.",
+            changed_by: PolicyRole::Owner,
+        },
+        PolicyKey {
+            key: REFLECTION_HOME_KEY,
+            kind: PolicyKind::Text,
+            values: &[],
+            default: "",
+            meaning: "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.",
             changed_by: PolicyRole::Owner,
         },
     ]

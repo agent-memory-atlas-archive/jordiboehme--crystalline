@@ -13,6 +13,7 @@ use assert_cmd::Command;
 // suites, so their imports gate with them or Windows sees them as unused.
 #[cfg(unix)]
 use crystalline_core::provision::sha256_hex;
+use predicates::prelude::PredicateBooleanExt;
 use serde_json::Value;
 #[cfg(unix)]
 use serde_json::json;
@@ -968,6 +969,31 @@ fn an_invalid_domain_name_is_a_policy_problem_naming_a_valid_domain_name() {
         .stdout(predicates::str::contains(
             "MANIFEST domain_name: ../up is not a valid domain name; read as ignored; the local name holds",
         ));
+}
+
+/// A bad reflection_home is named in its own words, not the rename's.
+#[test]
+fn an_invalid_reflection_home_is_a_policy_problem_in_its_own_words() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let db = work.path().join("index.db");
+    let domain_dir = setup_domain(work.path(), "eng", &config);
+    write(
+        &domain_dir,
+        "MANIFEST.md",
+        "---\ntype: manifest\ntitle: eng\npermalink: manifest\ntags:\n  - manifest\nstatus: stable\nrecorded_at: 2026-01-01\nreflection_home: kb.example.com\n---\n\n# eng\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n",
+    );
+    let mut cmd = bin();
+    let _home = shield_ambient_home(&mut cmd);
+    cmd.args(["doctor", "--config"])
+        .arg(&config)
+        .args(["--db"])
+        .arg(&db)
+        .assert()
+        .stdout(predicates::str::contains(
+            "MANIFEST reflection_home: kb.example.com is not an http or https address with no trailing slash; read as ignored; the Reflection has no home",
+        ))
+        .stdout(predicates::str::contains("a valid domain name").not());
 }
 
 #[test]

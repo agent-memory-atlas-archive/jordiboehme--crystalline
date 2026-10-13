@@ -2371,27 +2371,37 @@ fn policy_values(key: &str) -> &'static [&'static str] {
         .unwrap_or(&[])
 }
 
+/// What a declared value has to become, as a sentence: the values a key
+/// takes, or for a text key what that key holds.
+fn policy_expected(key: &str) -> String {
+    match policy_values(key) {
+        [] if key == crystalline_core::REFLECTION_HOME_KEY => {
+            "an http or https address with no trailing slash".to_string()
+        }
+        [] => "a valid domain name".to_string(),
+        values => join_or(values),
+    }
+}
+
 /// `a`, `a or b`, `a, b or c`: the values a key takes, read as a sentence
-/// rather than as a list a reader has to parse. A [`PolicyKind::Text`](crystalline_core::PolicyKind::Text) key
-/// (`values` empty) has no enumerable list to join, so it reads as "a valid
-/// domain name" instead - the only free-text key today, and what an invalid
-/// declaration of it actually needs to become.
+/// rather than as a list a reader has to parse.
 fn join_or(values: &[&str]) -> String {
     match values {
-        [] => "a valid domain name".to_string(),
+        // Never reached: `policy_expected` answers a key with no values first.
+        [] => String::new(),
         [one] => one.to_string(),
         [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
     }
 }
 
 /// What a domain reads a policy key as, for the printed line: the value
-/// itself, or - for a [`PolicyKind::Text`](crystalline_core::PolicyKind::Text) key an invalid declaration leaves
-/// with nothing to fall back to - "ignored; the local name holds".
-fn policy_read_as(read_as: &str) -> &str {
-    if read_as.is_empty() {
-        "ignored; the local name holds"
-    } else {
-        read_as
+/// itself, or for a text key an invalid declaration leaves empty, what that
+/// means for the key.
+fn policy_read_as<'a>(key: &str, read_as: &'a str) -> &'a str {
+    match (read_as.is_empty(), key) {
+        (false, _) => read_as,
+        (true, crystalline_core::REFLECTION_HOME_KEY) => "ignored; the Reflection has no home",
+        (true, _) => "ignored; the local name holds",
     }
 }
 
@@ -4389,8 +4399,8 @@ pub fn render_human(report: &DoctorReport) -> String {
                 "  [problem] MANIFEST {}: {} is not {}; read as {}",
                 p.key,
                 p.declared,
-                join_or(policy_values(&p.key)),
-                policy_read_as(&p.read_as)
+                policy_expected(&p.key),
+                policy_read_as(&p.key, &p.read_as)
             );
         }
         // Said once per domain so an empty orphan and unindexed list is never

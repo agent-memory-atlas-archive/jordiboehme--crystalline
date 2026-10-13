@@ -72,7 +72,27 @@ async fn the_view_of_a_file_domain_names_every_policy_section_and_part() {
         .collect();
     assert_eq!(
         keys,
-        ["generated_indexes", "sharing", "domain_name", "read_only"]
+        [
+            "generated_indexes",
+            "sharing",
+            "domain_name",
+            "read_only",
+            "reflection",
+            "reflection_home"
+        ]
+    );
+    let home = row(&view["policies"], "key", "reflection_home");
+    assert_eq!(home["can_change"], false);
+    assert!(
+        home["how"]
+            .as_str()
+            .unwrap()
+            .contains("filled in when Reflection is switched on"),
+        "{home}"
+    );
+    assert_eq!(
+        row(&view["policies"], "key", "reflection")["can_change"],
+        true
     );
     let sharing = row(&view["policies"], "key", "sharing");
     assert_eq!(sharing["declared"], "direct");

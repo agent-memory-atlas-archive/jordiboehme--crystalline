@@ -92,9 +92,17 @@ fn checked_policy(domain: &str, edit: &PolicyEdit) -> Result<&'static crystallin
         )));
     };
     if spec.kind == crystalline_core::PolicyKind::Text {
-        return Err(EngineError::Invalid(format!(
-            "`{key}` changes through a rename, which also moves this machine's name and rewrites links: use Rename domain on the domain page or `crystalline domain rename {domain} <new>`"
-        )));
+        return Err(EngineError::Invalid(
+            if key == crystalline_core::REFLECTION_HOME_KEY {
+                format!(
+                    "`{key}` is filled in when Reflection is switched on for a domain connected to GitHub; it is not set by hand"
+                )
+            } else {
+                format!(
+                    "`{key}` changes through a rename, which also moves this machine's name and rewrites links: use Rename domain on the domain page or `crystalline domain rename {domain} <new>`"
+                )
+            },
+        ));
     }
     if let PolicyEdit::Set { value, .. } = edit
         && !spec.accepts(value)
@@ -714,10 +722,15 @@ fn policy_json(row: &PolicyRow, may_change: bool, domain: &str) -> Value {
     let text = row.kind == crystalline_core::PolicyKind::Text.as_str();
     let mut value = serde_json::to_value(row).expect("a policy row serializes");
     value["can_change"] = json!(may_change && !text);
-    value["how"] = json!(if text {
+    value["how"] = json!(if row.key == crystalline_core::REFLECTION_HOME_KEY {
+        "filled in when Reflection is switched on for a domain connected to GitHub; never set by hand"
+            .to_string()
+    } else if text {
         rename_how(domain)
     } else if row.key == crystalline_core::READ_ONLY_KEY {
         "switch on with configure; a person switches it off in the domain policies".to_string()
+    } else if row.key == crystalline_core::REFLECTION_KEY {
+        "set with configure; switching on refuses while engrams live in reflections/".to_string()
     } else {
         "set with configure".to_string()
     });

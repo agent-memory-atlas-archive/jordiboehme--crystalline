@@ -583,8 +583,9 @@ pub struct EvolveParams {
 pub struct ConfigureParams {
     /// A domain to see and change instead of the instance. configure then
     /// answers how that domain behaves: its MANIFEST policy keys (sharing,
-    /// generated_indexes, domain_name, read_only), what each MANIFEST section does and
-    /// its .crystalline.yaml rule overrides. set and unset then address that
+    /// generated_indexes, domain_name, read_only, reflection; reflection_home
+    /// is filled in when Reflection is switched on), what each MANIFEST
+    /// section does and its .crystalline.yaml rule overrides. set and unset then address that
     /// domain: a policy key, rules.<rule id> (a verify rule's severity) or
     /// token_budget. Omit it for the instance settings.
     #[serde(default)]

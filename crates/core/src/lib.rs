@@ -80,11 +80,12 @@ pub use line_endings::{NotUtf8, to_lf, utf8_to_lf};
 pub use manifest::{
     ArtifactType, DOMAIN_NAME_KEY, GENERATED_INDEXES_KEY, GeneratedIndexes, Manifest, PolicyKey,
     PolicyKind, PolicyRole, ProblemKind, ProvisioningDecl, ProvisioningProblem,
-    ProvisioningSection, READ_ONLY_KEY, ReadOnly, SHARING_KEY, Sharing, StarterStanza,
-    TagAliasDecl, TagAliasProblem, TagAliasProblemKind, TagAliasSection, append_tag_alias,
-    domain_name_at, domain_name_of_source, generated_indexes_at, in_root_artifact_dirs,
-    manifest_template, policy_registry, read_only_at, read_only_of_source, sharing_at,
-    starter_stanzas, tag_alias_pairs,
+    ProvisioningSection, READ_ONLY_KEY, REFLECTION_HOME_KEY, REFLECTION_KEY, ReadOnly,
+    ReflectionSwitch, SHARING_KEY, Sharing, StarterStanza, TagAliasDecl, TagAliasProblem,
+    TagAliasProblemKind, TagAliasSection, append_tag_alias, domain_name_at, domain_name_of_source,
+    generated_indexes_at, in_root_artifact_dirs, manifest_template, policy_registry, read_only_at,
+    read_only_of_source, reflection_at, reflection_home_at, sharing_at, starter_stanzas,
+    tag_alias_pairs, validate_reflection_home,
 };
 pub use names::{NameInput, NameTable};
 pub use parse::{
