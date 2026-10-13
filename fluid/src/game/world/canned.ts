@@ -1400,6 +1400,9 @@ export function heroHallRoom(): RoomSpec {
     at("camera", 0, 12.5, 3, 2),
     // 0.25.1: south of the mess table, facing north, framed from its side.
     at("neon-bike", 0, 18, 22.5, 0),
+    // 0.25.2: the open variant in the free north part of the west half,
+    // between the exhibit row and the laser desk, framed from its side.
+    at("neon-bike", 1, 10, 6, 0),
   ].sort(HERO_ORDER);
 
   const base: RoomSpec = {

@@ -28,7 +28,7 @@ import {
   type Part,
 } from "./modelChecks";
 import { buildHero, buildHeroMesh } from "./models/heroes";
-import { boxLeafMovers } from "./models/heroes/street";
+import { CYCLE_OPEN, boxLeafMovers } from "./models/heroes/street";
 import { HERO_BANK } from "./models/heroes/common";
 import { FLOOR_TOP, WALL_TOP } from "./models/props/common";
 
@@ -39,6 +39,17 @@ const EPS = 1e-4;
  */
 const FREE_AT = { x: 4.5, y: 3 } as const;
 const SIDES: readonly Side[] = ["n", "e", "s", "w"];
+
+/**
+ * The one variant whose model stands lower than its kind's catalogue
+ * top, by design, and the top it reaches instead: the neon bike's open
+ * variant (0.25.2), which has no canopy and stops at its tail
+ * (`CYCLE_OPEN.top`). The catalogue keeps one top per kind, the closed
+ * variant's, so that is still the ceiling the kind is placed under.
+ */
+const LOWER_TOPS: Partial<Record<HeroKind, Record<number, number>>> = {
+  "neon-bike": { 1: CYCLE_OPEN.top },
+};
 
 /** The grid a catalogue surface is sampled on, in each direction. */
 const SURFACE_GRID = 7;
@@ -148,7 +159,9 @@ describe("hero models", () => {
 
           it("reaches its top", () => {
             const top = Math.max(...positions(placed).map((p) => p[1]));
-            expect(top).toBeGreaterThanOrEqual(entry.top - 0.15);
+            const want = LOWER_TOPS[kind]?.[v] ?? entry.top;
+            expect(top).toBeGreaterThanOrEqual(want - 0.15);
+            expect(want).toBeLessThanOrEqual(entry.top);
           });
 
           it("winds every triangle with its normal", () => {

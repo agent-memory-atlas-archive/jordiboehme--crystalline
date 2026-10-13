@@ -598,7 +598,7 @@ export const HERO_CATALOGUE = {
   },
   "neon-bike": {
     placement: "band",
-    variants: 1,
+    variants: 2,
     top: 1.28,
     edges: 1,
     surfaces: [],

@@ -76,12 +76,25 @@
  *   both sides, so one runs along the split (`cycleLine`, laid by
  *   `profileLine`, which the red bike's pinstripe shares), and the
  *   canopy's ridge. Every light is in one group and breathes; the body
- *   carries no text.
+ *   carries no text. That is variant 0, the closed one.
+ * - The neon bike's variant 1 is the open one (`CYCLE_OPEN`, 0.25.2): the
+ *   same length and footprint, lower, with no canopy and no rider. Its
+ *   wheels (`OPEN_WHEELS`) are hubless: fat black tyre rings with a dark
+ *   face on each side and a glowing inner rim round an open middle, so
+ *   the floor shows through them. A low glossy body (`OPEN_BODY`)
+ *   bridges them as a long flat wedge, dipping into each ring's open
+ *   middle over its upper inner part only, and rising to its highest
+ *   point at the tail behind the empty rider's place: a saddle hollow
+ *   (`OPEN_SADDLE`) with a seat pad and a glowing seat line, two short
+ *   handles at the front and two footrests at the back. Thin glowing
+ *   lines run along each flank and over the top, in the closed one's
+ *   light group.
  *
  * The numbers each kind is built to are named above its recipe: `BIKE`,
  * `BIKE_WHEELS` and the profiles (`CORE`, `SKIRT`, `COWL`) for the bike,
  * `BOX` for the box, `CYCLE`, `CYCLE_WHEELS`, `CYCLE_SPINE` and `CYCLE_SHELL`
- * for the neon bike. Round parts use few facets, as in every batch.
+ * for the neon bike, `CYCLE_OPEN`, `OPEN_WHEELS` and `OPEN_BODY` for its
+ * open variant. Round parts use few facets, as in every batch.
  */
 
 import { boxKey } from "../../../world/box";
@@ -927,7 +940,7 @@ const redBike: HeroRecipe = ({ k, kitAt, s }) => {
 export const CYCLE_BODY: Rgb = [0.03, 0.035, 0.06];
 
 /** The gloss on the neon bike's crests: a lighter blue-black. */
-const CYCLE_SHINE: Rgb = [0.07, 0.08, 0.13];
+export const CYCLE_SHINE: Rgb = [0.07, 0.08, 0.13];
 
 /**
  * The neon bike's lower panel: a shade lighter than the band and a
@@ -1273,7 +1286,7 @@ function cycleWheel(k: Kit, s: Surfaces, w: BikeWheel, glow: Surface): void {
  * lines tracing the band's outline on both sides and the canopy's
  * ridge. Every light is in one group and breathes.
  */
-const neonBike: HeroRecipe = ({ k, s }) => {
+const neonBikeClosed: HeroRecipe = ({ k, s }) => {
   const glow = s.blink(CYCLE_GLOW, 0);
   cycleWheel(k, s, CYCLE_WHEELS.front, glow);
   cycleWheel(k, s, CYCLE_WHEELS.rear, glow);
@@ -1301,6 +1314,364 @@ const neonBike: HeroRecipe = ({ k, s }) => {
     );
   }
 };
+
+/**
+ * The open variant's size, in metres: `length` from tyre to tyre, the
+ * same as the closed one's, and `top`, the crown of its tail behind the
+ * empty rider's place. The full size cycle it follows has no canopy and
+ * no roof: its highest point is the rider's back, and without a rider
+ * the tail behind the seat, about a third of its length up. That is
+ * lower than the kind's catalogue top (`CYCLE.top`), which the closed
+ * variant sets.
+ */
+export const CYCLE_OPEN = { length: 2.9, top: 0.93 } as const;
+
+/** One hubless wheel of the open variant. */
+interface OpenWheel {
+  a: number;
+  r: number;
+  open: number;
+  rim: number;
+  half: number;
+}
+
+/**
+ * The open variant's hubless wheels, the front one at `+a`: the axle
+ * line at `a` (at height `r`), `r` the tyre's outer radius, `open` the
+ * radius of the open middle, which the glowing inner rim (`rim` thick)
+ * lines, and `half` the tyre's half width. A quarter of the length
+ * across, at the same places as the closed variant's wheels.
+ */
+export const OPEN_WHEELS = {
+  front: { a: 1.09, r: 0.36, open: 0.245, rim: 0.02, half: 0.17 },
+  rear: { a: -1.09, r: 0.36, open: 0.245, rim: 0.02, half: 0.17 },
+} as const satisfies Record<string, OpenWheel>;
+
+/** The tyres' rubber: a black a shade off the body's. */
+export const OPEN_TYRE: Rgb = [0.02, 0.021, 0.028];
+
+/** The tyres' side faces: a dark grey with the body's blue cast. */
+const OPEN_SIDE: Rgb = [0.07, 0.075, 0.1];
+
+/** The seat pad in the saddle hollow: the lower panel's shade. */
+export const OPEN_SEAT: Rgb = CYCLE_LOWER;
+
+/** The handles and the footrests: a dark metal. */
+export const OPEN_METAL: Rgb = [0.16, 0.17, 0.2];
+
+/** Facets round a whole tyre ring; each half ring takes half of them. */
+const OPEN_SIDES = 20;
+
+/**
+ * The glowing inner rim on each side of a tyre: how far it reaches into
+ * the open middle's wall from the side (`deep`), so the wall itself stays
+ * black and the hole reads open from an angle, and how far it stands
+ * proud of the tyre's side and of its open middle (`proud`).
+ */
+const OPEN_RIM = { deep: 0.03, proud: 0.003 } as const;
+
+/** How far a tyre's side face stands proud of the tyre and how far in. */
+const OPEN_FACE = { t: 0.008, in: 0.012 } as const;
+
+/**
+ * One half of a flat ring round `(a, h)` from radius `r0` to `r1`, its
+ * upper half (`up`) or its lower one: the outer arc one way and the
+ * inner arc back, a simple outline the kit can extrude, so two halves
+ * make a ring that is open in the middle.
+ */
+function halfRing(
+  a: number,
+  h: number,
+  r0: number,
+  r1: number,
+  up: boolean,
+): P2[] {
+  const n = OPEN_SIDES / 2;
+  const [from, to] = up ? [0, 180] : [180, 360];
+  return [...arc(a, h, r1, from, to, n), ...arc(a, h, r0, to, from, n)];
+}
+
+/** A flat ring from `r0` to `r1`, open in the middle, between `d0` and `d1`. */
+function openRing(
+  k: Kit,
+  w: OpenWheel,
+  r0: number,
+  r1: number,
+  d0: number,
+  d1: number,
+  surf: Surface,
+): void {
+  for (const up of [true, false])
+    k.extrude(halfRing(w.a, w.r, r0, r1, up), d0, d1, surf);
+}
+
+/**
+ * One hubless wheel: a fat black tyre ring from the open middle's rim
+ * out to the tread, a dark side face set on each of its sides, and the
+ * glowing inner rim lining the open middle, a little narrower than the
+ * tyre, so from the side it shows as a lit ring round the hole and the
+ * floor shows through the middle.
+ */
+function openWheel(k: Kit, s: Surfaces, w: OpenWheel, glow: Surface): void {
+  const inner = w.open + w.rim;
+  openRing(k, w, w.open, w.r, -w.half, w.half, s.tinted(OPEN_TYRE));
+  const face = s.tinted(OPEN_SIDE);
+  for (const sg of [-1, 1]) {
+    openRing(
+      k,
+      w,
+      w.open - OPEN_RIM.proud,
+      inner,
+      sg * (w.half - OPEN_RIM.deep),
+      sg * (w.half + OPEN_RIM.proud),
+      glow,
+    );
+    openRing(
+      k,
+      w,
+      inner + OPEN_FACE.in,
+      w.r - OPEN_FACE.in,
+      sg * w.half,
+      sg * (w.half + OPEN_FACE.t),
+      face,
+    );
+  }
+}
+
+/** The open body's half width: inside the tyres'. */
+const OPEN_HALF = 0.13;
+
+/**
+ * The glossy crest grown over the open body (`grown`), `g` proud of its
+ * outline and `half` wide, so its edges read rounded.
+ */
+const OPEN_CREST = { half: 0.085, g: 0.02 } as const;
+
+/**
+ * The open variant's saddle hollow, `[a, h]`, from its front lip back
+ * to its back lip: the dip in the top where the empty rider's place is,
+ * between the tank in front and the tail behind.
+ */
+export const OPEN_SADDLE: readonly P2[] = [
+  [0.3, 0.8],
+  [0.2, 0.765],
+  [0.08, 0.74],
+  [-0.12, 0.74],
+  [-0.26, 0.765],
+  [-0.36, 0.82],
+];
+
+/**
+ * The open body's top, `[a, h]`, from the front ring back to the tail:
+ * up out of the front ring's open middle over its upper back, along the
+ * tank past the handles, down into the saddle hollow, up to the crown
+ * behind it and back over the rear wheel's top to the tail's tip.
+ */
+const OPEN_TOP: readonly P2[] = [
+  [1.06, 0.58],
+  [1.03, 0.69],
+  [0.92, 0.76],
+  [0.7, 0.79],
+  [0.45, 0.805],
+  ...OPEN_SADDLE,
+  [-0.5, 0.885],
+  [-0.68, 0.92],
+  [-0.86, CYCLE_OPEN.top],
+  [-1.04, 0.92],
+  [-1.2, 0.885],
+  [-1.32, 0.82],
+  [-1.38, 0.76],
+];
+
+/**
+ * The open variant's body, `[a, h]`: a long low wedge bridging the two
+ * rings. Its top (`OPEN_TOP`) runs from the front ring to the tail's
+ * tip; under the tail it runs forward over the rear tyre, dips into the
+ * rear ring's open middle over its upper front, down along its rim to
+ * the axle line and onto the flat belly, then up into the front ring the
+ * same way. Each ring's middle stays open below the axle and on its
+ * outer side, so the floor shows through.
+ */
+export const OPEN_BODY: readonly P2[] = [
+  ...OPEN_TOP,
+  [-1.3, 0.735],
+  [-1.18, 0.76],
+  [-1.1, 0.74],
+  [-1.06, 0.58],
+  [-0.99, 0.47],
+  [-0.88, 0.37],
+  [-0.8, 0.28],
+  [-0.68, 0.21],
+  [-0.5, 0.19],
+  [0.5, 0.19],
+  [0.68, 0.21],
+  [0.8, 0.28],
+  [0.88, 0.37],
+  [0.99, 0.47],
+];
+
+/**
+ * The seat pad in the hollow, `[a, h]`: its top `OPEN_SEAT_LIFT` over
+ * the hollow and its foot sunk into the body under it.
+ */
+const OPEN_SEAT_LIFT = 0.032;
+
+/** The seat pad's half width: inside the body's. */
+const OPEN_SEAT_HALF = 0.1;
+
+/** The seat pad's top, along the hollow, the glowing seat line's path. */
+const OPEN_SEAT_TOP: readonly P2[] = OPEN_SADDLE.slice(1, -1).map(
+  ([a, h]): P2 => [a, h + OPEN_SEAT_LIFT],
+);
+
+/** The seat pad's outline, its top and its foot 6 cm under the hollow. */
+const OPEN_SEAT_PROFILE: readonly P2[] = [
+  ...OPEN_SEAT_TOP,
+  ...[...OPEN_SADDLE.slice(1, -1)].reverse().map(([a, h]): P2 => [a, h - 0.06]),
+];
+
+/**
+ * The handles, two short bars out of the body's flanks at the front,
+ * behind the front ring: along `a` from `a0` to `a1`, at `h`, `t` thick,
+ * reaching out to `out` on each side.
+ */
+const OPEN_HANDLES = {
+  a0: 0.6,
+  a1: 0.7,
+  h: 0.74,
+  t: 0.04,
+  out: 0.3,
+} as const;
+
+/**
+ * The footrests, two short pegs out of the flanks at the back, low and
+ * ahead of the rear ring: along `a` from `a0` to `a1`, at `h`, `t`
+ * thick, reaching out to `out` on each side.
+ */
+const OPEN_FOOTRESTS = {
+  a0: -0.72,
+  a1: -0.6,
+  h: 0.36,
+  t: 0.03,
+  out: 0.24,
+} as const;
+
+/** How far in from the body's outline its glowing flank line runs. */
+const OPEN_LINE_IN = 0.04;
+
+/**
+ * The open variant's glowing flank line, `[a, h]`, as an open polyline:
+ * the body's top traced `OPEN_LINE_IN` under it, from the front ring
+ * back to the tail, dipping with the saddle hollow.
+ */
+function openFlankLine(): P2[] {
+  return grown(OPEN_BODY, -OPEN_LINE_IN).slice(1, OPEN_TOP.length - 1);
+}
+
+/**
+ * The open variant's lower light line on each flank, `[a, h]`: from
+ * under the handles it sweeps down and back to the belly and runs along
+ * it to the footrests, the long curve the full size cycle's flank
+ * carries.
+ */
+const OPEN_SWEEP: readonly P2[] = [
+  [0.86, 0.66],
+  [0.72, 0.56],
+  [0.56, 0.42],
+  [0.38, 0.31],
+  [0.16, 0.255],
+  [-0.2, 0.245],
+  [-0.5, 0.25],
+  [-0.64, 0.29],
+];
+
+/**
+ * The open variant of the neon bike: two hubless wheels, fat black tyre
+ * rings with a dark side face and a glowing inner rim round an open
+ * middle; the low glossy body bridging them as a long wedge, dipping
+ * into each ring's open middle over its upper half; the empty rider's
+ * place, a saddle hollow with a seat pad and its glowing seat line, two
+ * short handles at the front and two footrests at the back; on each
+ * flank a glowing line under the top and a lower one sweeping down to
+ * the belly (`OPEN_SWEEP`), and one over the top's middle.
+ * Every light is in one group and breathes, as on the closed variant.
+ */
+const neonBikeOpen: HeroRecipe = ({ k, s }) => {
+  const glow = s.blink(CYCLE_GLOW, 0);
+  openWheel(k, s, OPEN_WHEELS.front, glow);
+  openWheel(k, s, OPEN_WHEELS.rear, glow);
+
+  k.extrude(OPEN_BODY, -OPEN_HALF, OPEN_HALF, s.tinted(CYCLE_BODY));
+  const crest = grown(OPEN_BODY, OPEN_CREST.g);
+  k.extrude(crest, -OPEN_CREST.half, OPEN_CREST.half, s.tinted(CYCLE_SHINE));
+  k.extrude(
+    OPEN_SEAT_PROFILE,
+    -OPEN_SEAT_HALF,
+    OPEN_SEAT_HALF,
+    s.tinted(OPEN_SEAT),
+  );
+
+  const metal = s.tinted(OPEN_METAL);
+  for (const sg of [-1, 1]) {
+    const H = OPEN_HANDLES;
+    k.box(
+      H.a0,
+      H.a1,
+      sg * (OPEN_HALF - 0.01),
+      sg * H.out,
+      H.h - H.t / 2,
+      H.h + H.t / 2,
+      metal,
+    );
+    const F = OPEN_FOOTRESTS;
+    k.box(
+      F.a0,
+      F.a1,
+      sg * (OPEN_HALF - 0.01),
+      sg * F.out,
+      F.h - F.t / 2,
+      F.h + F.t / 2,
+      metal,
+    );
+  }
+
+  const { width, out } = CYCLE_LINE;
+  const flank = openFlankLine();
+  for (const d of [-1, 1]) {
+    profileLine(k, flank, width, d * OPEN_HALF, d * (OPEN_HALF + out), glow);
+    profileLine(
+      k,
+      OPEN_SWEEP,
+      width,
+      d * OPEN_HALF,
+      d * (OPEN_HALF + out),
+      glow,
+    );
+    profileLine(
+      k,
+      OPEN_SEAT_TOP,
+      width,
+      d * (OPEN_SEAT_HALF - 0.004),
+      d * (OPEN_SEAT_HALF + out),
+      glow,
+    );
+  }
+  // Over the top: one line along the middle of the tank and one along
+  // the tail, laid on the top, the seat pad between them.
+  const ridge = crest.map(([a, h]): P2 => [a, h + out]);
+  const tank = ridge.slice(1, 5);
+  const tail = ridge.slice(OPEN_SADDLE.length + 5, OPEN_TOP.length - 1);
+  for (const line of [tank, tail])
+    profileLine(k, line, width, -width, width, glow);
+};
+
+/**
+ * The neon bike: variant 0 the closed racing cycle with its canopy
+ * (`neonBikeClosed`), variant 1 the open one with hubless wheels and an
+ * empty rider's place (`neonBikeOpen`).
+ */
+const neonBike: HeroRecipe = (ctx) =>
+  ctx.variant === 0 ? neonBikeClosed(ctx) : neonBikeOpen(ctx);
 
 /** The box's deep blue paint. */
 const BLUE: Rgb = [0.05, 0.15, 0.35];

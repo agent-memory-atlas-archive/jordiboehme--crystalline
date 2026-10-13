@@ -11,7 +11,12 @@
  * short canopy and no side window, its flank split into the dark arched
  * band and the recessed lower panel in a tone close to it with a line
  * along the split, the panel's front and bottom corners rounded, and its
- * triangle pin.
+ * triangle pin; and the neon bike's open variant (0.25.2): its length and
+ * lower top inside the same footprint, its hubless rings open in the
+ * middle with the body dipping only into their upper inner part, its
+ * saddle hollow with the seat pad and the glowing seat line, its handles
+ * at the front and footrests at the back, its lights in the same one
+ * group, and its own triangle pin.
  */
 
 import { describe, expect, it } from "vitest";
@@ -47,10 +52,18 @@ import {
   CYCLE_CANOPY,
   CYCLE_GLOW,
   CYCLE_LOWER,
+  CYCLE_OPEN,
   CYCLE_PANEL,
+  CYCLE_SHINE,
   CYCLE_WHEELS,
   HUB_SILVER,
   NOTICE_INK,
+  OPEN_BODY,
+  OPEN_METAL,
+  OPEN_SADDLE,
+  OPEN_SEAT,
+  OPEN_TYRE,
+  OPEN_WHEELS,
   boxDoor,
   boxLeafMovers,
   boxSignLayout,
@@ -720,5 +733,219 @@ describe("the neon bike (0.25.1)", () => {
 
   it("stays under its triangle pin", () => {
     expect(buildHeroMesh("neon-bike", 0, LOOK).count / 3).toBeLessThan(2500);
+  });
+});
+
+/** Whether the point `(a, h)` lies inside the closed outline `poly`. */
+const insideOutline = (
+  poly: readonly (readonly [number, number])[],
+  a: number,
+  h: number,
+): boolean => {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const p = poly[i];
+    const q = poly[j];
+    if (!p || !q) continue;
+    if (
+      p[1] > h !== q[1] > h &&
+      a < ((q[0] - p[0]) * (h - p[1])) / (q[1] - p[1]) + p[0]
+    )
+      inside = !inside;
+  }
+  return inside;
+};
+
+describe("the neon bike's open variant (0.25.2)", () => {
+  const parts = partsOf("neon-bike", 1);
+  const all = parts.flatMap(local);
+  const { front, rear } = OPEN_WHEELS;
+  const D = 2 * front.r;
+
+  it("is the closed variant's length inside the same footprint, on the floor, up to its own lower top", () => {
+    // Mutation caught: the open cycle scaled past its footprint, its
+    // tail run out past the tyres, or its top raised to the closed one's.
+    const { hw, d1 } = heroHalf("neon-bike", 1);
+    expect(heroHalf("neon-bike", 1)).toEqual(heroHalf("neon-bike", 0));
+    expect(front.a + front.r - (rear.a - rear.r)).toBeCloseTo(
+      CYCLE_OPEN.length,
+      6,
+    );
+    expect(CYCLE_OPEN.length).toBe(CYCLE.length);
+    const along = all.map((q) => q[0]);
+    expect(Math.max(...along)).toBeCloseTo(front.a + front.r, 6);
+    expect(Math.min(...along)).toBeGreaterThanOrEqual(rear.a - rear.r - 0.03);
+    expect(Math.max(...along.map(Math.abs))).toBeLessThanOrEqual(hw);
+    expect(Math.max(...all.map((q) => Math.abs(q[1])))).toBeLessThanOrEqual(d1);
+    expect(Math.min(...all.map((q) => q[2]))).toBeCloseTo(0, 6);
+    const top = Math.max(...all.map((q) => q[2]));
+    expect(top).toBeGreaterThan(CYCLE_OPEN.top);
+    expect(top).toBeLessThan(CYCLE_OPEN.top + 0.05);
+    // A long low wedge: about a third of its length up, under the closed
+    // variant's top.
+    expect(CYCLE_OPEN.top / CYCLE_OPEN.length).toBeGreaterThan(0.29);
+    expect(CYCLE_OPEN.top / CYCLE_OPEN.length).toBeLessThan(0.35);
+    expect(CYCLE_OPEN.top).toBeLessThan(CYCLE.top - 0.2);
+  });
+
+  it("stands on two hubless rings of one size, their middles open, the body dipping only into their upper inner part", () => {
+    // Mutation caught: a hub or a disc closing a ring's middle, the
+    // tyres off the floor or of two sizes, or the body filling a ring's
+    // lower half or its outer side, so the ring no longer reads open.
+    expect(front.r).toBe(rear.r);
+    expect(front.a).toBeCloseTo(-rear.a, 6);
+    expect(front.open / front.r).toBeGreaterThan(0.6);
+    expect(front.open / front.r).toBeLessThan(0.75);
+    const tyres = inked(parts, OPEN_TYRE, "extrude");
+    expect(tyres).toHaveLength(4);
+    for (const w of [front, rear]) {
+      const ring = tyres.filter(
+        (p) => Math.sign(span(local(p), 0).mid) === Math.sign(w.a),
+      );
+      expect(ring).toHaveLength(2);
+      const pts = ring.flatMap(local);
+      expect(span(pts, 2).lo).toBeCloseTo(0, 6);
+      expect(span(pts, 2).hi).toBeCloseTo(D, 6);
+      expect(span(pts, 1).hi).toBeCloseTo(w.half, 6);
+      // Nothing but the body and its crest stands in the open middle.
+      const shell = new Set([
+        ...inked(parts, CYCLE_BODY),
+        ...inked(parts, CYCLE_SHINE),
+      ]);
+      const inMiddle = parts
+        .filter((p) => !shell.has(p))
+        .flatMap(local)
+        .filter((q) => Math.hypot(q[0] - w.a, q[2] - w.r) < w.open - 0.004);
+      expect(inMiddle).toEqual([]);
+      // The body only dips into the middle's upper half on the inner
+      // side: the lower half and the outer side stay open.
+      let open = 0;
+      for (let i = 0; i < 24; i++)
+        for (const f of [0.3, 0.6, 0.85]) {
+          const t = (2 * Math.PI * i) / 24;
+          const a = w.a + f * w.open * Math.cos(t);
+          const h = w.r + f * w.open * Math.sin(t);
+          const lower = h < w.r - 0.01;
+          const outer =
+            Math.sign(a - w.a) === Math.sign(w.a) && Math.abs(a - w.a) > 0.01;
+          if (!lower && !outer) continue;
+          open++;
+          expect(
+            insideOutline(OPEN_BODY, a, h),
+            `${String(a)}, ${String(h)}`,
+          ).toBe(false);
+        }
+      expect(open).toBeGreaterThan(40);
+      // And it does reach into the middle, so the body wraps into the ring.
+      expect(
+        insideOutline(OPEN_BODY, w.a - Math.sign(w.a) * 0.1, w.r + 0.15),
+      ).toBe(true);
+    }
+  });
+  it("leaves an empty rider's place: a saddle hollow in the top with a seat pad and a glowing seat line in it", () => {
+    // Mutation caught: a flat top with no hollow, the seat pad missing or
+    // standing proud of the tank and the tail, or no seat line on it.
+    const shell = [
+      ...inked(parts, CYCLE_BODY),
+      ...inked(parts, CYCLE_SHINE),
+    ].flatMap(local);
+    const topOver = (a0: number, a1: number) =>
+      Math.max(
+        ...shell.filter((q) => q[0] >= a0 && q[0] <= a1).map((q) => q[2]),
+      );
+    const seatA = [OPEN_SADDLE[2]?.[0] ?? 0, OPEN_SADDLE[3]?.[0] ?? 0] as const;
+    const hollow = topOver(Math.min(...seatA), Math.max(...seatA));
+    expect(topOver(0.4, 0.75) - hollow).toBeGreaterThan(0.04);
+    expect(topOver(-1.0, -0.6) - hollow).toBeGreaterThan(0.15);
+    // The tail behind the hollow is the highest point, as the rider's
+    // back would be.
+    expect(topOver(-1.0, -0.6)).toBeCloseTo(
+      Math.max(...shell.map((q) => q[2])),
+      6,
+    );
+    const seats = inked(parts, OPEN_SEAT);
+    expect(seats).toHaveLength(1);
+    const [seat] = seats;
+    if (seat === undefined) throw new Error("no seat pad");
+    const sp = local(seat);
+    expect(span(sp, 0).lo).toBeGreaterThan(OPEN_SADDLE.at(-1)?.[0] ?? 0);
+    expect(span(sp, 0).hi).toBeLessThan(OPEN_SADDLE[0]?.[0] ?? 0);
+    expect(span(sp, 2).hi).toBeLessThan(topOver(0.4, 0.75));
+    expect(span(sp, 2).hi).toBeGreaterThan(hollow);
+    // The seat line glows along the pad's top on each side, over its
+    // foot.
+    const lit = parts.filter((p) => p.flag !== FLAG.lit);
+    for (const sg of [-1, 1]) {
+      const line = lit.filter((p) => {
+        const q = local(p);
+        return (
+          span(q, 0).lo >= span(sp, 0).lo - 0.02 &&
+          span(q, 0).hi <= span(sp, 0).hi + 0.02 &&
+          Math.sign(span(q, 1).mid) === sg &&
+          Math.abs(span(q, 1).mid) < span(sp, 1).hi + 0.01 &&
+          span(q, 2).lo > span(sp, 2).lo + 0.04
+        );
+      });
+      expect(line.length).toBeGreaterThan(2);
+    }
+  });
+
+  it("puts two short handles at the front and two footrests at the back, one of each on each side", () => {
+    // Mutation caught: a handle or footrest missing on one side, handles
+    // at the back, or footrests up at the seat.
+    const metal = inked(parts, OPEN_METAL);
+    expect(metal).toHaveLength(4);
+    const handles = metal.filter((p) => span(local(p), 0).mid > 0);
+    const rests = metal.filter((p) => span(local(p), 0).mid < 0);
+    expect(handles).toHaveLength(2);
+    expect(rests).toHaveLength(2);
+    for (const set of [handles, rests])
+      expect(set.map((p) => Math.sign(span(local(p), 1).mid)).sort()).toEqual([
+        -1, 1,
+      ]);
+    for (const p of handles) {
+      const q = local(p);
+      expect(span(q, 0).lo).toBeGreaterThan(0.3);
+      expect(span(q, 0).hi).toBeLessThan(front.a - front.r);
+      expect(span(q, 2).mid).toBeGreaterThan(D);
+      expect(Math.max(-span(q, 1).lo, span(q, 1).hi)).toBeGreaterThan(
+        front.half + 0.05,
+      );
+    }
+    for (const p of rests) {
+      const q = local(p);
+      expect(span(q, 0).lo).toBeGreaterThan(rear.a + rear.r);
+      expect(span(q, 0).hi).toBeLessThan(-0.3);
+      expect(span(q, 2).mid).toBeLessThan(0.5);
+    }
+  });
+
+  it("lights its rims and lines in the closed variant's one breathing group, on both sides, and nothing else", () => {
+    // Mutation caught: a line in another group or colour, a steady light,
+    // the lines on one side only, or the inner rims left unlit.
+    const lit = parts.filter((p) => p.flag !== FLAG.lit);
+    expect(lit.length).toBeGreaterThan(40);
+    for (const p of lit) {
+      expect(p.flag).toBe(blinkFlag(0));
+      expect(p.tint).toEqual([...CYCLE_GLOW]);
+    }
+    const side = lit.filter((p) => Math.abs(span(local(p), 1).mid) > 0.05);
+    const left = side.filter((p) => span(local(p), 1).mid < 0).length;
+    expect(side.length).toBe(2 * left);
+    // Each ring's open middle is lined by a glowing rim on each side.
+    for (const w of [front, rear]) {
+      const rims = lit.filter((p) => {
+        const q = local(p);
+        const r = q.map((x) => Math.hypot(x[0] - w.a, x[2] - w.r));
+        return (
+          Math.min(...r) < w.open && Math.max(...r) <= w.open + w.rim + 1e-6
+        );
+      });
+      expect(rims).toHaveLength(4);
+    }
+  });
+
+  it("stays under its own triangle pin", () => {
+    expect(buildHeroMesh("neon-bike", 1, LOOK).count / 3).toBeLessThan(2900);
   });
 });
