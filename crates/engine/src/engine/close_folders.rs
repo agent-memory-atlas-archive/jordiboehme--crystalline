@@ -3,15 +3,23 @@ use crystalline_core::folders::{
     CloseFolder, FOLDER_GUIDANCE, close_folders, created_folder, folder_counts, sibling_folders,
 };
 
-/// The close-folder probe's own budget. It runs beside the neighbours
-/// advisory rather than after it, so a write's worst case grows by at most
-/// this much past the wait for the store; past it the receipt goes out
-/// without the hint. **The clock starts once the probe holds the store
-/// lock**: a probe queued behind the advisory, a sync or any other holder
-/// waits its turn rather than spending its budget on the queue, and then has
-/// the whole budget for its own queries. Like that advisory's, the timeout
-/// cuts only where the store yields.
+/// The close-folder probe's own budget for its queries. **The clock starts
+/// once the probe holds the store lock**: a probe queued behind the
+/// neighbours advisory, a sync or any other holder waits its turn rather than
+/// spending this budget on the queue, and then has all of it for its own
+/// queries. Past it the receipt goes out without the hint. Like the
+/// advisory's, the timeout cuts only where the store yields.
+///
+/// The probe runs beside the advisory rather than after it, so its worst case
+/// is [`LOCK_CEILING`] waiting for the store plus this budget, the two run one
+/// after the other, and the write waits for the slower of the probe and the
+/// advisory.
 const CLOSE_FOLDER_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How long the probe waits for the store lock at most, the neighbours
+/// advisory's own ceiling ([`crate::similar::SIMILAR_TIMEOUT`]). A store held
+/// longer than that leaves the hint out.
+const LOCK_CEILING: std::time::Duration = crate::similar::SIMILAR_TIMEOUT;
 
 /// What the close-folder probe needs from a write receipt, taken off it before
 /// the receipt moves on to the neighbours advisory so the two probes can run at
@@ -43,9 +51,10 @@ impl Engine {
     /// in the caller's own view of the domain (base rows, and in review mode
     /// their own drafts over them, never another account's), or nothing.
     ///
-    /// A hint only, so it can never fail a write: a store error or the
-    /// probe's 500 ms budget, counted from the moment it holds the store lock,
-    /// is a debug line and an empty answer.
+    /// A hint only, so it can never fail a write: a store error, a store
+    /// still busy after two seconds, or the probe's 500 ms budget (counted
+    /// from the moment it holds the store lock) is a debug line and an empty
+    /// answer.
     ///
     /// Cheap in the common case. "Did anything else already stand in this
     /// folder" is one `LIMIT 1` query on the folder's prefix, base rows first,
@@ -70,8 +79,15 @@ impl Engine {
             }
         };
         // Taken outside the budget, and held for the probe's few queries so
-        // they are not queued behind another holder one by one.
-        let store = self.store.lock().await;
+        // they are not queued behind another holder one by one. The wait has
+        // its own ceiling, the neighbours advisory's: past it the hint is
+        // left out rather than holding the write's answer.
+        let Ok(store) = tokio::time::timeout(LOCK_CEILING, self.store.lock()).await else {
+            tracing::debug!(
+                "close-folder probe skipped: the store stayed busy past {LOCK_CEILING:?}"
+            );
+            return Vec::new();
+        };
         let probed = close_folders_in(&*store, probe, actor.as_deref());
         match tokio::time::timeout(CLOSE_FOLDER_TIMEOUT, probed).await {
             Ok(Ok(found)) => found,
