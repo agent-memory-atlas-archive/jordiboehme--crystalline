@@ -1,4 +1,5 @@
 use super::*;
+use crate::collab::session::RoomDoc;
 
 impl Engine {
     // --- move ----------------------------------------------------------------
@@ -227,7 +228,7 @@ impl Engine {
         if readdressed {
             self.refuse_permalink_held(&dest_domain, &new_permalink, &src, cross)
                 .await?;
-            self.refuse_readdress_under_live_room(&p.domain, &src.permalink)
+            self.refuse_under_live_rooms(&p.domain, &[RoomDoc::Engram(src.permalink.clone())])
                 .await?;
         }
 
@@ -673,25 +674,36 @@ impl Engine {
         }
     }
 
-    /// Refuse to change the address of an engram somebody has open in the
-    /// co-editing editor.
+    /// Refuse a move while somebody has one of `docs` open in the co-editing
+    /// editor: a room saves back to the document it was opened over, so a
+    /// change underneath it would turn the editor's next save into a write
+    /// to an address that no longer exists. Base rooms only: a move in review
+    /// mode never reaches this, since it moves a draft. Checked before
+    /// anything moves.
     ///
-    /// A room is keyed on the permalink it was opened under and saves back to
-    /// that permalink, so a move that changed it underneath would turn the
-    /// editor's next save into a write to an address that no longer exists -
-    /// shown to the person typing as the engram having been deleted - and a
-    /// later engram taking the old name would receive it. A path-only move
-    /// keeps the permalink and needs no refusal. Base rooms only: a move in
-    /// review mode never reaches this, since it moves a draft.
-    async fn refuse_readdress_under_live_room(&self, domain: &str, permalink: &str) -> Result<()> {
+    /// An engram room is keyed on the permalink it was opened under and saves
+    /// back to that permalink, so a move that changed it underneath would show
+    /// the person typing the engram as deleted, and a later engram taking the
+    /// old name would receive the save. A path-only move keeps the permalink
+    /// and needs no refusal, so the caller asks only on a permalink change.
+    pub(super) async fn refuse_under_live_rooms(
+        &self,
+        domain: &str,
+        docs: &[RoomDoc],
+    ) -> Result<()> {
         let Some(rooms) = self.collab_rooms() else {
             return Ok(());
         };
-        if rooms.has_live_room(domain, permalink, None).await {
-            return Err(EngineError::Conflict(format!(
-                "'{permalink}' is open in the editor right now, and moving it would change the \
-                 address the editor saves to; close the editor and move it again"
-            )));
+        for doc in docs {
+            if !rooms.has_live_doc(domain, doc, None).await {
+                continue;
+            }
+            return Err(EngineError::Conflict(match doc {
+                RoomDoc::Engram(permalink) => format!(
+                    "'{permalink}' is open in the editor right now, and moving it would change the \
+                     address the editor saves to; close the editor and move it again"
+                ),
+            }));
         }
         Ok(())
     }

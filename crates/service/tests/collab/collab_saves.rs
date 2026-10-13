@@ -613,6 +613,45 @@ async fn a_rename_moves_the_registry_key_so_the_new_permalink_finds_the_same_roo
     assert_eq!(sessions.session_count().await, 1, "one room, one file");
 }
 
+/// A permalink change under an open room is refused: the room saves back to
+/// the address it was opened under. A path-only move is not.
+#[tokio::test]
+async fn a_permalink_move_waits_while_the_engram_is_open_in_a_room() {
+    let (_tmp, engine, _scratch) = engine_fixture_with_state().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let _joined = sessions.join("eng", "alpha", None).await.unwrap();
+
+    let p = crystalline_service::params::MoveParams {
+        identifier: "alpha".into(),
+        domain: "eng".into(),
+        destination: "alpha.md".into(),
+        destination_domain: None,
+        permalink: Some("renamed".into()),
+        update_links: None,
+    };
+    let err = engine
+        .move_engram(&p, &crystalline_service::Scope::Unrestricted)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("open in the editor right now") && err.contains("alpha"),
+        "{err}"
+    );
+
+    // A path-only move keeps the address the room saves to.
+    let path_only = crystalline_service::params::MoveParams {
+        destination: "moved/alpha.md".into(),
+        permalink: Some("keep".into()),
+        ..p
+    };
+    engine
+        .move_engram(&path_only, &crystalline_service::Scope::Unrestricted)
+        .await
+        .expect("a path-only move is not refused under an open room");
+}
+
 #[tokio::test]
 async fn the_old_permalink_stops_resolving_after_a_rename() {
     // The stale key is gone rather than left pointing at the renamed room: a

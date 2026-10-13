@@ -256,14 +256,31 @@ fn agent_state_json(label: &str) -> String {
     serde_json::json!({ "user": { "name": label, "agent": true } }).to_string()
 }
 
-/// Where one room is filed: the domain, the permalink it answers to, and the
+/// What a room is a room over. A closed enum: a room over one kind of
+/// document can never answer a lookup for another kind, whatever its name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum RoomDoc {
+    /// An engram, by the permalink it answers to.
+    Engram(String),
+}
+
+impl RoomDoc {
+    /// The name the room's controls carry: an engram's permalink.
+    pub fn name(&self) -> &str {
+        match self {
+            RoomDoc::Engram(permalink) => permalink,
+        }
+    }
+}
+
+/// Where one room is filed: the domain, the document it is over, and the
 /// overlay owner whose document it is.
 ///
 /// `None` in the third slot is the document a domain that takes changes
 /// directly keeps - the folder's own text, which is what every room was before
 /// drafts existed. `Some(actor)` is that actor's draft of the page, which is
 /// the only kind of document a reviewing domain has.
-pub type RoomKey = (String, String, Option<String>);
+pub type RoomKey = (String, RoomDoc, Option<String>);
 
 /// The registry of open documents, keyed by [`RoomKey`].
 pub struct CollabSessions {
@@ -301,11 +318,18 @@ impl CollabSessions {
         permalink: &str,
         overlay: Option<&str>,
     ) -> Result<Joined, JoinError> {
-        let key = (
-            domain.to_string(),
-            permalink.to_string(),
-            overlay.map(str::to_string),
-        );
+        self.join_doc(domain, RoomDoc::Engram(permalink.to_string()), overlay)
+            .await
+    }
+
+    /// [`CollabSessions::join`] for a room over any kind of document.
+    pub async fn join_doc(
+        self: &Arc<Self>,
+        domain: &str,
+        doc: RoomDoc,
+        overlay: Option<&str>,
+    ) -> Result<Joined, JoinError> {
+        let key = (domain.to_string(), doc, overlay.map(str::to_string));
         // The registry lock is held across open AND the membership check, so a
         // stampede of joins can neither open the same document twice nor
         // overshoot MAX_PARTICIPANTS between the check and the add.
@@ -497,12 +521,21 @@ impl CollabSessions {
     /// session, never the reverse. `epoch` identifies the session that renamed
     /// itself, so an entry that was replaced meanwhile is left alone.
     async fn rekey(&self, from: &RoomKey, to_permalink: &str, epoch: &str) {
-        if from.1 == to_permalink {
+        // A rename moves an engram's permalink, and only an engram room is
+        // ever re-keyed.
+        let from_permalink = match &from.1 {
+            RoomDoc::Engram(permalink) => permalink.as_str(),
+        };
+        if from_permalink == to_permalink {
             return;
         }
         // The permalink moves and nothing else does: a rename is a new address
         // for the same document, and whose document it is has not changed.
-        let to = (from.0.clone(), to_permalink.to_string(), from.2.clone());
+        let to = (
+            from.0.clone(),
+            RoomDoc::Engram(to_permalink.to_string()),
+            from.2.clone(),
+        );
         let mut sessions = self.sessions.lock().await;
         if sessions.get(from).is_none_or(|held| held.epoch() != epoch) {
             return; // disposed or replaced meanwhile: not ours to move
@@ -516,7 +549,7 @@ impl CollabSessions {
         {
             tracing::warn!(
                 domain = %to.0,
-                permalink = %to.1,
+                permalink = %to.1.name(),
                 "a rename collided with a live session; both rooms stand"
             );
             return;
@@ -551,7 +584,9 @@ impl CollabSessions {
         permalink: &str,
         overlay: Option<&str>,
     ) -> Option<LiveText> {
-        let session = self.live_room(domain, permalink, overlay).await?;
+        let session = self
+            .live_room(domain, &RoomDoc::Engram(permalink.to_string()), overlay)
+            .await?;
         Some(session.live().await)
     }
 
@@ -591,10 +626,32 @@ impl CollabSessions {
         agent_label: &str,
         peer: Option<&AgentPeer>,
     ) -> Result<LiveApplied, String> {
-        let Some(session) = self.live_room(domain, permalink, overlay).await else {
+        self.apply_doc_text(
+            domain,
+            &RoomDoc::Engram(permalink.to_string()),
+            overlay,
+            target,
+            agent_label,
+            peer,
+        )
+        .await
+    }
+
+    /// [`CollabSessions::apply_text`] for a room over any kind of document.
+    pub async fn apply_doc_text(
+        &self,
+        domain: &str,
+        doc: &RoomDoc,
+        overlay: Option<&str>,
+        target: String,
+        agent_label: &str,
+        peer: Option<&AgentPeer>,
+    ) -> Result<LiveApplied, String> {
+        let Some(session) = self.live_room(domain, doc, overlay).await else {
             return Err(format!(
-                "the co-editing session over '{permalink}' in domain '{domain}' closed while this \
-                 write was being prepared; read it again and repeat the edit"
+                "the co-editing session over '{}' in domain '{domain}' closed while this \
+                 write was being prepared; read it again and repeat the edit",
+                doc.name()
             ));
         };
         session.apply_agent_text(&target, agent_label, peer).await
@@ -615,7 +672,9 @@ impl CollabSessions {
         overlay: Option<&str>,
         peer: &AgentPeer,
     ) -> Option<ClientID> {
-        let session = self.live_room(domain, permalink, overlay).await?;
+        let session = self
+            .live_room(domain, &RoomDoc::Engram(permalink.to_string()), overlay)
+            .await?;
         session.touch_agent_presence(peer).await
     }
 
@@ -635,7 +694,13 @@ impl CollabSessions {
         permalink: &str,
         overlay: Option<&str>,
     ) -> bool {
-        self.live_room(domain, permalink, overlay).await.is_some()
+        self.has_live_doc(domain, &RoomDoc::Engram(permalink.to_string()), overlay)
+            .await
+    }
+
+    /// [`CollabSessions::has_live_room`] for a room over any kind of document.
+    pub async fn has_live_doc(&self, domain: &str, doc: &RoomDoc, overlay: Option<&str>) -> bool {
+        self.live_room(domain, doc, overlay).await.is_some()
     }
 
     /// Who is in the room over one document right now, or an empty list when
@@ -647,7 +712,10 @@ impl CollabSessions {
         overlay: Option<&str>,
         except: Option<ClientID>,
     ) -> Vec<String> {
-        match self.live_room(domain, permalink, overlay).await {
+        match self
+            .live_room(domain, &RoomDoc::Engram(permalink.to_string()), overlay)
+            .await
+        {
             Some(session) => session.participants(except).await,
             None => Vec::new(),
         }
@@ -664,14 +732,10 @@ impl CollabSessions {
     async fn live_room(
         &self,
         domain: &str,
-        permalink: &str,
+        doc: &RoomDoc,
         overlay: Option<&str>,
     ) -> Option<Arc<CollabSession>> {
-        let key = (
-            domain.to_string(),
-            permalink.to_string(),
-            overlay.map(str::to_string),
-        );
+        let key = (domain.to_string(), doc.clone(), overlay.map(str::to_string));
         let session = self
             .sessions
             .lock()
@@ -707,11 +771,11 @@ pub struct CollabSession {
     epoch: String,
     /// The domain this room's engram lives in; no edit ever moves it.
     domain: String,
-    /// The permalink this room is REGISTERED under. A frontmatter rename moves
-    /// it together with the registry entry, so `(domain, key_permalink)` is
-    /// always where the registry holds this session. A std mutex, never held
-    /// across an await.
-    key_permalink: std::sync::Mutex<String>,
+    /// The document this room is REGISTERED under. A frontmatter rename moves
+    /// it together with the registry entry, so `(domain, key_doc)` is always
+    /// where the registry holds this session. A std mutex, never held across
+    /// an await.
+    key_doc: std::sync::Mutex<RoomDoc>,
     /// Whose document this room is a room over: `Some(actor)` for that actor's
     /// draft of the page, `None` for the one a direct domain keeps. Fixed for
     /// the life of the room - a rename moves the permalink, never the owner -
@@ -908,9 +972,7 @@ impl CollabSession {
         // is a room over one, the text the team reviewed where it is not. The
         // domain was screened by the surface that asked for the room, and so
         // was the right to be in this document.
-        let loaded = room_view(&engine, &key.0, key.2.as_deref())
-            .map_err(JoinError::Engine)?
-            .engram_text(&room_address(&key.0, &key.1))
+        let loaded = Self::load_doc(&engine, &key)
             .await
             .map_err(JoinError::Engine)?;
         // The room's text is LF whatever the file holds; a CRLF or mixed
@@ -933,7 +995,7 @@ impl CollabSession {
         Ok(Arc::new(CollabSession {
             epoch,
             domain: key.0,
-            key_permalink: std::sync::Mutex::new(key.1),
+            key_doc: std::sync::Mutex::new(key.1),
             pinned_path: key.2.is_some().then(|| loaded.path.clone()),
             overlay: key.2,
             registry,
@@ -1413,14 +1475,15 @@ impl CollabSession {
     }
 
     /// The registry key this room is filed under right now: the domain, the
-    /// permalink a frontmatter rename may have moved, and whose document it
-    /// is.
+    /// document (whose permalink a frontmatter rename may have moved), and
+    /// whose document it is.
     pub fn key(&self) -> RoomKey {
-        (
-            self.domain.clone(),
-            self.key_permalink.lock().expect("key mutex").clone(),
-            self.overlay.clone(),
-        )
+        (self.domain.clone(), self.doc(), self.overlay.clone())
+    }
+
+    /// The document this room is registered under right now.
+    fn doc(&self) -> RoomDoc {
+        self.key_doc.lock().expect("key mutex").clone()
     }
 
     /// The view this room reads and writes through, built fresh per use the
@@ -1432,7 +1495,7 @@ impl CollabSession {
 
     /// Record the permalink the registry just re-filed this room under.
     fn adopt_key(&self, permalink: &str) {
-        *self.key_permalink.lock().expect("key mutex") = permalink.to_string();
+        *self.key_doc.lock().expect("key mutex") = RoomDoc::Engram(permalink.to_string());
     }
 
     /// One saver pass at `now`: decides whether a save is due and runs it.
@@ -1588,10 +1651,7 @@ impl CollabSession {
                             return None;
                         }
                     };
-                    let theirs = match view
-                        .engram_text(&room_address(&self.domain, &state.permalink))
-                        .await
-                    {
+                    let theirs = match self.read_doc(&view, state).await {
                         Ok(theirs) => theirs,
                         // The engram the CAS refused is not there to read: the
                         // write and the delete raced, so this is the deletion.
@@ -1662,11 +1722,7 @@ impl CollabSession {
         // would leave that compare false forever, since the live text itself
         // never gained the respelling, and the room would save on every
         // debounce window for good.
-        let file = match self
-            .engine
-            .normalize_domain_spellings_for(&file, &crate::scope::Scope::Unrestricted)
-            .await
-        {
+        let file = match self.normalize_doc(&file).await {
             Ok((normalized, count)) => {
                 if count > 0 {
                     self.converge(state, &to_lf(&normalized));
@@ -1678,55 +1734,13 @@ impl CollabSession {
                 return SaveOutcome::Done(None);
             }
         };
-        if self.room_switches_read_only_on(&state.path, &file).await {
+        if self.doc_switches_read_only_on(state, &file).await {
             self.fail_save(state, ROOM_SWITCH_ON_REFUSAL.to_string());
             return SaveOutcome::Done(None);
         }
-        let params = crate::params::SaveParams {
-            domain: self.domain.clone(),
-            identifier: room_address(&self.domain, &state.permalink),
-            content: file.clone(),
-            expected_checksum: state.checksum.clone(),
-        };
-        // Whose save this is, which is whose document the room is over. A room
-        // over one actor's draft writes that actor's row and nothing else -
-        // not the folder the team reviewed, and not the draft of whoever
-        // happens to be typing. A room over the document a direct domain keeps
-        // saves as the machine owner, exactly as every room did before there
-        // was anything else to be: the surface that opened it is the gate, as
-        // it is for every other write on this instance.
-        let receipt = match self.view() {
-            // The VIEW decides, never the key on its own: a domain that has
-            // stopped reviewing changes has no draft left for this room to be
-            // over, and its text belongs in the folder (see `room_view`).
-            Ok(view) if view.actor().is_some() => {
-                // The path this room opened on, which is the only one it
-                // writes. Unreachable as a `None` here - an overlay room is
-                // the only kind whose view carries an actor - and answered
-                // with the room's current path rather than by unwrapping.
-                let pinned = self
-                    .pinned_path
-                    .clone()
-                    .unwrap_or_else(|| state.path.clone());
-                self.engine
-                    .save_engram_in_overlay(&view, &params, &pinned)
-                    .await
-            }
-            Ok(_) => {
-                self.engine
-                    .save_engram(&params, &crate::scope::Scope::Unrestricted)
-                    .await
-            }
-            Err(err) => Err(err),
-        };
+        let receipt = self.write_doc(state, &file).await;
         match receipt {
             Ok(receipt) => {
-                // A human just taught this domain something through the editor,
-                // which reaches the engine directly rather than through the
-                // REST write handler: the domain owes a consolidation sweep
-                // exactly as it would from a PUT, and this is the surface most
-                // human authoring actually comes through.
-                crate::maintenance::record_pending(&self.domain);
                 let checksum = receipt["checksum"].as_str().unwrap_or_default().to_string();
                 // The permalink the engram answers to AFTER the write: an
                 // author who edited the frontmatter line just moved the
@@ -1904,10 +1918,7 @@ impl CollabSession {
         let Ok(view) = self.view() else {
             return None;
         };
-        match view
-            .engram_text(&room_address(&self.domain, &state.permalink))
-            .await
-        {
+        match self.read_doc(&view, state).await {
             Ok(theirs) if theirs.checksum != state.checksum => {
                 let detail = format!(
                     "'{}' changed on disk while this session was idle",
@@ -2023,7 +2034,7 @@ impl CollabSession {
         let Ok(view) = self.view() else {
             return None;
         };
-        match view.engram_text_at_path(&state.path).await {
+        match self.peek_doc(&view, state).await {
             Ok(Some(theirs)) if to_lf(&theirs.content) != state.last_saved_text => {
                 let detail = format!(
                     "'{}' is on disk again with somebody else's text, so restoring \
@@ -2055,11 +2066,7 @@ impl CollabSession {
         // document shows and what `last_saved_text` is set to below all agree
         // on the canonical spelling, rather than restoring - and then living
         // with - whatever the room typed before it ever saved.
-        let file = match self
-            .engine
-            .normalize_domain_spellings_for(&file, &crate::scope::Scope::Unrestricted)
-            .await
-        {
+        let file = match self.normalize_doc(&file).await {
             Ok((normalized, count)) => {
                 if count > 0 {
                     self.converge(state, &to_lf(&normalized));
@@ -2074,36 +2081,11 @@ impl CollabSession {
         // The restore writes as the machine owner too (base arm) or through
         // the room's view (draft arm), so the room is the only place that can
         // refuse a switch-on here.
-        if self.room_switches_read_only_on(&state.path, &file).await {
+        if self.doc_switches_read_only_on(state, &file).await {
             self.refuse_restore(state, ROOM_SWITCH_ON_REFUSAL.to_string());
             return None;
         }
-        // Through the room's own view when the room is over a draft - it puts
-        // its text back in that actor's draft - and through the scope its save
-        // uses otherwise. The two arms have to agree, and the save's `None`
-        // arm goes through `Scope::Unrestricted`: routing a base room's
-        // restore through the base view instead would write the folder of a
-        // domain that reviews changes, which is the one thing review mode
-        // exists to stop. Neither arm is reachable from the collab route in a
-        // reviewing domain, which always names an owner; the registry API can
-        // still ask for it, and this is the answer it gets.
-        let restored = match view.actor() {
-            Some(_) => {
-                self.engine
-                    .restore_engram_in_view(&view, &self.domain, &state.path, &file)
-                    .await
-            }
-            None => {
-                self.engine
-                    .restore_engram(
-                        &self.domain,
-                        &state.path,
-                        &file,
-                        &crate::scope::Scope::Unrestricted,
-                    )
-                    .await
-            }
-        };
+        let restored = self.restore_doc(&view, state, &file).await;
         match restored {
             Ok(receipt) => {
                 let checksum = receipt["checksum"].as_str().unwrap_or_default().to_string();
@@ -2314,6 +2296,165 @@ enum SaveOutcome {
     Deleted(String),
 }
 
+/// The engine-bound steps of a room, each dispatched on the document the room
+/// is over. Every match is exhaustive, so a new kind of document names each
+/// step it has to answer.
+impl CollabSession {
+    /// The text a room opens over (`open`).
+    async fn load_doc(engine: &Engine, key: &RoomKey) -> Result<EngramText, EngineError> {
+        match &key.1 {
+            RoomDoc::Engram(permalink) => {
+                room_view(engine, &key.0, key.2.as_deref())?
+                    .engram_text(&room_address(&key.0, permalink))
+                    .await
+            }
+        }
+    }
+
+    /// The document as stored now, through the room's view (the external
+    /// change arm of `save_locked` and the idle probe).
+    async fn read_doc(
+        &self,
+        view: &DomainView<'_>,
+        state: &SessionState,
+    ) -> Result<EngramText, EngineError> {
+        match self.doc() {
+            RoomDoc::Engram(_) => {
+                view.engram_text(&room_address(&self.domain, &state.permalink))
+                    .await
+            }
+        }
+    }
+
+    /// What stands at the room's path before a restore writes it back.
+    async fn peek_doc(
+        &self,
+        view: &DomainView<'_>,
+        state: &SessionState,
+    ) -> Result<Option<EngramText>, EngineError> {
+        match self.doc() {
+            RoomDoc::Engram(_) => view.engram_text_at_path(&state.path).await,
+        }
+    }
+
+    /// The room's text with its cross-domain spellings made canonical.
+    async fn normalize_doc(&self, file: &str) -> Result<(String, usize), EngineError> {
+        match self.doc() {
+            RoomDoc::Engram(_) => {
+                self.engine
+                    .normalize_domain_spellings_for(file, &crate::scope::Scope::Unrestricted)
+                    .await
+            }
+        }
+    }
+
+    /// Whether the save would switch the domain to read-only.
+    async fn doc_switches_read_only_on(&self, state: &SessionState, file: &str) -> bool {
+        match self.doc() {
+            RoomDoc::Engram(_) => self.room_switches_read_only_on(&state.path, file).await,
+        }
+    }
+
+    /// The save itself; answers the receipt a save reads its checksum,
+    /// permalink and path off.
+    async fn write_doc(
+        &self,
+        state: &SessionState,
+        file: &str,
+    ) -> Result<serde_json::Value, EngineError> {
+        match self.doc() {
+            RoomDoc::Engram(_) => {
+                let params = crate::params::SaveParams {
+                    domain: self.domain.clone(),
+                    identifier: room_address(&self.domain, &state.permalink),
+                    content: file.to_string(),
+                    expected_checksum: state.checksum.clone(),
+                };
+                // Whose save this is, which is whose document the room is over. A room
+                // over one actor's draft writes that actor's row and nothing else -
+                // not the folder the team reviewed, and not the draft of whoever
+                // happens to be typing. A room over the document a direct domain keeps
+                // saves as the machine owner, exactly as every room did before there
+                // was anything else to be: the surface that opened it is the gate, as
+                // it is for every other write on this instance.
+                let receipt = match self.view() {
+                    // The VIEW decides, never the key on its own: a domain that has
+                    // stopped reviewing changes has no draft left for this room to be
+                    // over, and its text belongs in the folder (see `room_view`).
+                    Ok(view) if view.actor().is_some() => {
+                        // The path this room opened on, which is the only one it
+                        // writes. Unreachable as a `None` here - an overlay room is
+                        // the only kind whose view carries an actor - and answered
+                        // with the room's current path rather than by unwrapping.
+                        let pinned = self
+                            .pinned_path
+                            .clone()
+                            .unwrap_or_else(|| state.path.clone());
+                        self.engine
+                            .save_engram_in_overlay(&view, &params, &pinned)
+                            .await
+                    }
+                    Ok(_) => {
+                        self.engine
+                            .save_engram(&params, &crate::scope::Scope::Unrestricted)
+                            .await
+                    }
+                    Err(err) => Err(err),
+                };
+                if receipt.is_ok() {
+                    // A human just taught this domain something through the
+                    // editor, which reaches the engine directly rather than
+                    // through the REST write handler: the domain owes a
+                    // consolidation sweep exactly as it would from a PUT, and
+                    // this is the surface most human authoring actually comes
+                    // through.
+                    crate::maintenance::record_pending(&self.domain);
+                }
+                receipt
+            }
+        }
+    }
+
+    /// The restore of a deleted document from the room's text.
+    async fn restore_doc(
+        &self,
+        view: &DomainView<'_>,
+        state: &SessionState,
+        file: &str,
+    ) -> Result<serde_json::Value, EngineError> {
+        match self.doc() {
+            RoomDoc::Engram(_) => {
+                // Through the room's own view when the room is over a draft - it puts
+                // its text back in that actor's draft - and through the scope its save
+                // uses otherwise. The two arms have to agree, and the save's `None`
+                // arm goes through `Scope::Unrestricted`: routing a base room's
+                // restore through the base view instead would write the folder of a
+                // domain that reviews changes, which is the one thing review mode
+                // exists to stop. Neither arm is reachable from the collab route in a
+                // reviewing domain, which always names an owner; the registry API can
+                // still ask for it, and this is the answer it gets.
+                match view.actor() {
+                    Some(_) => {
+                        self.engine
+                            .restore_engram_in_view(view, &self.domain, &state.path, file)
+                            .await
+                    }
+                    None => {
+                        self.engine
+                            .restore_engram(
+                                &self.domain,
+                                &state.path,
+                                file,
+                                &crate::scope::Scope::Unrestricted,
+                            )
+                            .await
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The per-session saver, spawned by the registry when it opens a session:
 /// ticks [`CollabSession::tick_save`] until the session is disposed.
 ///
@@ -2339,5 +2480,24 @@ async fn run_saver(session: Arc<CollabSession>) {
             session.poison().await;
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_engram_room_is_keyed_by_its_permalink_as_a_room_doc() {
+        let doc = RoomDoc::Engram("runbooks/deploy".into());
+        assert_eq!(doc.name(), "runbooks/deploy");
+        let key: RoomKey = ("eng".into(), doc.clone(), None);
+        let mut keys = std::collections::HashSet::new();
+        keys.insert(key.clone());
+        assert!(keys.contains(&(
+            "eng".to_string(),
+            RoomDoc::Engram("runbooks/deploy".into()),
+            None
+        )));
     }
 }
