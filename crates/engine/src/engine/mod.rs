@@ -5272,19 +5272,7 @@ impl Engine {
         rel: &str,
     ) -> Result<EngramId> {
         let abs = join_rel(root, rel);
-        let bytes = std::fs::read(&abs).map_err(|source| EngineError::Io {
-            path: abs.display().to_string(),
-            source,
-        })?;
-        let meta = std::fs::metadata(&abs).map_err(|source| EngineError::Io {
-            path: abs.display().to_string(),
-            source,
-        })?;
-        let stamp = FileStamp {
-            mtime: mtime_secs(&meta),
-            size: meta.len(),
-            sha256: sha256_hex(&bytes),
-        };
+        let (bytes, stamp) = read_stamped(&abs)?;
         let text =
             String::from_utf8(bytes).map_err(|_| EngineError::Invalid(not_utf8_message(&abs)))?;
         // A file domain stores the body only; its source of truth is the file.
@@ -5409,6 +5397,9 @@ mod context;
 mod contradictions;
 pub use contradictions::run_contradiction_worker;
 mod delete;
+mod doc_file;
+#[allow(unused_imports)] // the Reflection verbs (Task 12) use the rest
+use doc_file::{FileLock, Swap, SwapRefused, check_swap, read_opt, read_stamped, remove_if_there};
 mod domain_add;
 mod domain_settings;
 mod domains;

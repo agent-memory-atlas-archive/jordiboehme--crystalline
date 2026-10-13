@@ -999,19 +999,27 @@ impl Engine {
         match &source {
             ContentSource::File { root } => {
                 let abs = join_rel(root, &desc.path);
-                // Held across the comparison and the write. See
+                // Held across the comparison, the write and the reindex. See
                 // `Engine::write_lock`.
-                let lock = self.write_lock(&abs);
-                let _guard = lock.lock().await;
-                let current = match std::fs::read_to_string(&abs) {
-                    Ok(text) => text,
+                let _lock = match self
+                    .write_checked(&abs, Swap::Expect(&p.expected_checksum), &content)
+                    .await?
+                {
+                    Ok(lock) => lock,
+                    Err(SwapRefused::Stale { found }) => {
+                        return Err(EngineError::Conflict(stale_edit_message(
+                            &p.expected_checksum,
+                            &found,
+                        )));
+                    }
                     // Indexed but absent from this machine's disk: the file was
                     // removed behind the index, or this instance is not the
                     // domain's host and only ever saw the database rows. Either
                     // way the engram the caller asked to save is not here to
                     // save, which is a miss rather than a server fault - the
                     // same reading `save_manifest` takes of its own file.
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // (`Swap::Expect` never answers `Exists`.)
+                    Err(SwapRefused::Missing | SwapRefused::Exists) => {
                         return Err(EngineError::NotFound(format!(
                             "engram '{}' in domain '{}' has no file at {}",
                             desc.permalink,
@@ -1019,16 +1027,7 @@ impl Engine {
                             abs.display()
                         )));
                     }
-                    Err(source) => return Err(text_read_error(&abs, source)),
                 };
-                let found = sha256_hex(current.as_bytes());
-                if found != p.expected_checksum {
-                    return Err(EngineError::Conflict(stale_edit_message(
-                        &p.expected_checksum,
-                        &found,
-                    )));
-                }
-                write_file(&abs, &content)?;
                 let store = self.store.lock().await;
                 self.reindex_file(&*store, desc.domain_id, root, &desc.path)
                     .await?;
