@@ -2,19 +2,22 @@
 //!
 //! Pure pieces only - paths and file classes, sections and their ids, the
 //! provenance a reflection carries in its frontmatter, the baseline and the
-//! feedback changes taken against it, and relative links. Deciding who may do
+//! feedback changes taken against it, where a thread's anchor stands, and
+//! relative links. Deciding who may do
 //! what, reading and writing files and the index are the engine's. A
 //! reflection is never an engram: nothing here calls `parse_engram`, and a
 //! page with no frontmatter at all is valid. What a reflection shares with an
 //! engram (the heading walker, the body line walker, the link target scan,
 //! the path classifier) lives beside the engram code and is used from here.
 
+pub mod anchors;
 pub mod baseline;
 pub mod layout;
 pub mod links;
 pub mod provenance;
 pub mod sections;
 
+pub use anchors::anchor_state;
 pub use baseline::{
     ChangeKind, Relinked, SectionChange, advance_baseline, baseline_ids, feedback_changes,
     parse_baseline, relink, render_baseline,
