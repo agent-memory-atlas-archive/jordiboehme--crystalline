@@ -1670,7 +1670,10 @@ fn apply_acknowledgments(input: &SweepInput, report: &mut SweepReport) {
 /// names, at any depth. Asked of the folders above the path rather than by
 /// splitting the scope, so a folder name holding the separator cannot cut it
 /// in the wrong place.
-fn in_scoped_folder(path: &str, scope: &str) -> bool {
+///
+/// Public because the take-back of a `V112` acknowledgment has to reach every
+/// engram this suppression reads, and only the same test can promise that.
+pub fn in_scoped_folder(path: &str, scope: &str) -> bool {
     let Some((folder, _)) = path.rsplit_once('/') else {
         return false;
     };

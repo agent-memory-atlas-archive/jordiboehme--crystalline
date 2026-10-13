@@ -1,5 +1,9 @@
 use super::*;
 
+/// The close-folder rule, whose acknowledgment answers a pair of folders and
+/// so can sit on any engram of the two.
+pub(super) const FOLDER_PAIR_RULE: &str = "V112";
+
 impl Engine {
     // --- evolve --------------------------------------------------------------
 
@@ -662,8 +666,13 @@ impl Engine {
     }
 
     /// Withdraw an acknowledgment, leaving the engram's other entries alone.
-    /// `false` when the engram carries none this names, which the surface
-    /// answers as a 404 rather than pretending a removal happened.
+    /// `false` when nothing this names was there to take back, which the
+    /// surface answers as a 404 rather than pretending a removal happened.
+    ///
+    /// A `V112` withdrawal reaches past the engram: the pair's entries on every
+    /// other engram of its two folders go too (see
+    /// `Engine::withdraw_folder_pairs_elsewhere`), since any one of them would
+    /// keep the finding silenced.
     ///
     /// `scope` narrows the withdrawal to the one entry given for that pair,
     /// and like the recording half it speaks only for a
@@ -709,23 +718,137 @@ impl Engine {
             })?,
             None => self.load_source(&source, &desc).await?,
         };
-        if !has_ack(&current, &rule, scope) {
-            return Ok(false);
+        // A `V112` pair's acknowledgment can sit on any engram of its two
+        // folders, so the withdrawal reaches all of them: otherwise an entry
+        // left on another engram keeps the finding silenced, and an anchor that
+        // moved away from the entry would answer "nothing to withdraw".
+        let pairs = if rule == FOLDER_PAIR_RULE {
+            self.folder_pairs_to_withdraw(&desc, &current, scope, acting)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let here = has_ack(&current, &rule, scope);
+        if here {
+            // The answer here is a bool, so a mirror warning has nowhere to
+            // ride out; `write_overlay_entry` has already logged it.
+            self.apply_source_edit(
+                &desc,
+                &source,
+                &view,
+                None,
+                &actor,
+                None,
+                acting,
+                |current| Ok(without_ack(current, &rule, scope)),
+            )
+            .await?;
         }
-        // The answer here is a bool, so a mirror warning has nowhere to ride
-        // out; `write_overlay_entry` has already logged it.
-        self.apply_source_edit(
-            &desc,
-            &source,
-            &view,
-            None,
-            &actor,
-            None,
-            acting,
-            |current| Ok(without_ack(current, &rule, scope)),
-        )
-        .await?;
-        Ok(true)
+        let elsewhere = self
+            .withdraw_folder_pairs_elsewhere(&view, &desc, &pairs, &actor, acting)
+            .await?;
+        Ok(here || !elsewhere.is_empty())
+    }
+
+    /// The `V112` pairs a take-back on `desc` answers for: the one `named`
+    /// when the caller named a pair, else every pair an entry on the engram
+    /// carries plus every pair a `V112` finding anchored on it fires for. The
+    /// second half is what reaches an acknowledgment that stayed behind on
+    /// another engram of the two folders when the anchor moved.
+    pub(super) async fn folder_pairs_to_withdraw(
+        &self,
+        desc: &EngramDescriptor,
+        current: &str,
+        named: Option<&str>,
+        acting: &crate::scope::Scope,
+    ) -> Result<Vec<String>> {
+        if let Some(named) = named {
+            return Ok(vec![named.to_string()]);
+        }
+        let mut pairs: Vec<String> = acks_of(current)
+            .into_iter()
+            .filter(|a| a.rule.eq_ignore_ascii_case(FOLDER_PAIR_RULE))
+            .filter_map(|a| a.scope)
+            .collect();
+        pairs.extend(
+            self.firing_findings(&desc.domain, &desc.permalink, FOLDER_PAIR_RULE, acting)
+                .await?
+                .into_iter()
+                .map(|f| f.scope)
+                .filter(|scope| !scope.is_empty()),
+        );
+        pairs.sort();
+        pairs.dedup();
+        Ok(pairs)
+    }
+
+    /// Take the `V112` entries for `pairs` back on every engram other than
+    /// `desc` that sits in one of a pair's two folders, as the caller's view
+    /// reads the domain (their drafts included in review mode), and answer the
+    /// permalinks rewritten, sorted. The folder test is the sweep's own
+    /// ([`crystalline_index::in_scoped_folder`]), so the take-back reaches
+    /// exactly the engrams whose entries the suppression reads.
+    ///
+    /// An entry with no scope is left alone: it was given for no pair in
+    /// particular, so a take-back of one pair does not decide it.
+    pub(super) async fn withdraw_folder_pairs_elsewhere(
+        &self,
+        view: &DomainView<'_>,
+        desc: &EngramDescriptor,
+        pairs: &[String],
+        actor: &str,
+        acting: &crate::scope::Scope,
+    ) -> Result<Vec<String>> {
+        if pairs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let base = {
+            let store = self.store.lock().await;
+            store.list_engrams(&desc.domain, None, None).await?
+        };
+        let mut cleared = Vec::new();
+        for listed in view.list_over(base).await? {
+            if listed.path == desc.path
+                || !pairs
+                    .iter()
+                    .any(|pair| crystalline_index::in_scoped_folder(&listed.path, pair))
+            {
+                continue;
+            }
+            let (other, source) = view.resolve(&listed.permalink).await?;
+            let Some(text) = view.text_at(&source, &other).await? else {
+                continue;
+            };
+            let held: Vec<&str> = pairs
+                .iter()
+                .filter(|pair| {
+                    crystalline_index::in_scoped_folder(&other.path, pair)
+                        && has_ack(&text, FOLDER_PAIR_RULE, Some(pair))
+                })
+                .map(String::as_str)
+                .collect();
+            if held.is_empty() {
+                continue;
+            }
+            self.apply_source_edit(
+                &other,
+                &source,
+                view,
+                None,
+                actor,
+                None,
+                acting,
+                |current| {
+                    Ok(held.iter().fold(current.to_string(), |text, pair| {
+                        without_ack(&text, FOLDER_PAIR_RULE, Some(pair))
+                    }))
+                },
+            )
+            .await?;
+            cleared.push(other.permalink);
+        }
+        cleared.sort();
+        Ok(cleared)
     }
 
     /// An engram's markdown as its domain holds it, whichever kind that is.

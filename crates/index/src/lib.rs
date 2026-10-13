@@ -78,7 +78,8 @@ pub use store::{
 pub use sweep::{
     AckCounts, AckEntry, Class, EngramFacts, FactObservation, Family, Finding, MIN_CONTENT_LINES,
     RULES, RuleInfo, SHARE_STALE_DAYS, ShareFacts, SpelledRef, SweepInput, SweepOptions,
-    SweepReport, UnresolvedRef, content_line_count, detect, is_pair_scoped, rank, rule_info,
+    SweepReport, UnresolvedRef, content_line_count, detect, in_scoped_folder, is_pair_scoped, rank,
+    rule_info,
 };
 pub use sync::{
     DomainScan, NoReindexHooks, PathChange, PathChangeKind, ReindexHooks, ReparseSeam, ReparseStep,

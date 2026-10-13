@@ -3441,6 +3441,139 @@ async fn v112_keeps_an_acknowledgment_per_pair_on_one_engram() {
     assert!(v["queue"].as_array().unwrap().is_empty(), "{v}");
 }
 
+/// Add one engram file to the `eng` fixture and sync it in.
+async fn add_folder_engram(tmp: &tempfile::TempDir, engine: &Engine, path: &str) {
+    let permalink = path.trim_end_matches(".md");
+    std::fs::write(
+        tmp.path().join("eng").join(path),
+        format!(
+            "---\ntype: engram\ntitle: {permalink}\npermalink: {permalink}\ntags:\n  - work\nstatus: stable\nrecorded_at: 2026-07-25\n---\n\nWhat {permalink} holds.\n\n- [fact] one line\n- [fact] two lines\n"
+        ),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+}
+
+/// A `V112` acknowledgment can sit on any engram of the two folders, because
+/// the anchor moves as the folders change. `remove V112` takes the pair's
+/// entries back wherever they sit, so the finding really resurfaces, names the
+/// other engrams it cleared, and leaves another pair's entry alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_v112_takes_the_pair_back_on_every_engram_of_both_folders() {
+    let (tmp, engine) = folder_fixture(&[
+        "meeting/kickoff.md",
+        "meetings/a.md",
+        "meetings/b.md",
+        "meetings/c.md",
+        "projects/planview/roadmap.md",
+        "projects/planview/budget.md",
+        "projects/planview-work/standup.md",
+    ])
+    .await;
+    acknowledge(&engine, "meeting/kickoff", "V112 not the same topic").await;
+    acknowledge(
+        &engine,
+        "projects/planview-work/standup",
+        "V112 two different topics",
+    )
+    .await;
+    // The anchor moves to an engram that sorts first, and the pair is
+    // acknowledged there too: two engrams of the folder now hold it.
+    add_folder_engram(&tmp, &engine, "meeting/agenda.md").await;
+    acknowledge(&engine, "meeting/agenda", "V112 still not the same topic").await;
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert!(v["queue"].as_array().unwrap().is_empty(), "{v}");
+
+    let receipt = acknowledge(&engine, "meeting/agenda", "remove V112").await;
+    assert_eq!(receipt["evolve_ack_removed"], "V112", "{receipt}");
+    assert_eq!(
+        receipt["evolve_ack_removed_from"],
+        serde_json::json!(["meeting/kickoff"]),
+        "{receipt}"
+    );
+    let kickoff = std::fs::read_to_string(tmp.path().join("eng/meeting/kickoff.md")).unwrap();
+    assert!(!kickoff.contains("evolve_ack"), "{kickoff}");
+    let standup =
+        std::fs::read_to_string(tmp.path().join("eng/projects/planview-work/standup.md")).unwrap();
+    assert!(
+        standup.contains("projects/planview, projects/planview-work"),
+        "another pair's entry stays: {standup}"
+    );
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    let queue = v["queue"].as_array().unwrap();
+    assert_eq!(
+        queue.len(),
+        1,
+        "the pair resurfaces, the other stays answered: {v}"
+    );
+    assert_eq!(queue[0]["permalink"], "meeting/agenda");
+}
+
+/// The anchor itself may hold no entry at all once it moved: `remove V112` on
+/// it still takes back the pair it anchors, from the engram that holds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_v112_on_a_moved_anchor_finds_the_entry_on_the_old_one() {
+    let (tmp, engine) = folder_fixture(&[
+        "meeting/kickoff.md",
+        "meetings/a.md",
+        "meetings/b.md",
+        "meetings/c.md",
+    ])
+    .await;
+    acknowledge(&engine, "meeting/kickoff", "V112 not the same topic").await;
+    add_folder_engram(&tmp, &engine, "meeting/agenda.md").await;
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert!(v["queue"].as_array().unwrap().is_empty(), "{v}");
+
+    let receipt = acknowledge(&engine, "meeting/agenda", "remove V112").await;
+    assert_eq!(receipt["evolve_ack_removed"], "V112", "{receipt}");
+    assert_eq!(
+        receipt["evolve_ack_removed_from"],
+        serde_json::json!(["meeting/kickoff"]),
+        "{receipt}"
+    );
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert_eq!(v["queue"].as_array().unwrap().len(), 1, "{v}");
+
+    // Nothing left anywhere: the removal errors as it always has.
+    let refused = ack_edit(&engine, "meeting/agenda", "remove V112")
+        .await
+        .unwrap_err();
+    assert!(refused.contains("nothing to remove"), "{refused}");
+}
+
+/// Fluid's withdraw is the same take-back: it reaches the entry wherever the
+/// pair's acknowledgment sits rather than answering "nothing to withdraw".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn withdrawing_v112_takes_the_pair_back_on_every_engram_of_both_folders() {
+    let (tmp, engine) = folder_fixture(&[
+        "meeting/kickoff.md",
+        "meetings/a.md",
+        "meetings/b.md",
+        "meetings/c.md",
+    ])
+    .await;
+    acknowledge(&engine, "meeting/kickoff", "V112 not the same topic").await;
+    add_folder_engram(&tmp, &engine, "meeting/agenda.md").await;
+
+    let withdrawn = engine
+        .unacknowledge_finding_as(
+            "eng",
+            "meeting/agenda",
+            "V112",
+            Some("meeting, meetings"),
+            None,
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert!(withdrawn, "the pair's entry sat on kickoff");
+    let kickoff = std::fs::read_to_string(tmp.path().join("eng/meeting/kickoff.md")).unwrap();
+    assert!(!kickoff.contains("evolve_ack"), "{kickoff}");
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert_eq!(v["queue"].as_array().unwrap().len(), 1, "{v}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v112_is_quiet_on_a_domain_without_close_folders() {
     let (_tmp, engine) = folder_fixture(&[

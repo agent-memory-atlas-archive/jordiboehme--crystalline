@@ -1,3 +1,4 @@
+use super::evolve::FOLDER_PAIR_RULE;
 use super::*;
 
 /// How many times an edit without an `expected_checksum` is applied to a
@@ -130,6 +131,43 @@ impl Engine {
         // cannot happen inside the pure text edit below. Computed before the
         // write lock is taken, so a sweep never runs while a file is held.
         let ack = self.ack_draft(p, &desc, &actor, scope).await?;
+        // `remove V112` takes the pair back wherever its acknowledgment sits:
+        // on any engram of the two folders, since the anchor moves as they
+        // change. Which pairs, and whether this engram holds an entry itself,
+        // is settled here, before the write, like the record's scope above.
+        let folder_pairs = match &ack {
+            Some(AckDraft::Remove(rule)) if rule.eq_ignore_ascii_case(FOLDER_PAIR_RULE) => {
+                let current = view.text_at(&source, &desc).await?.unwrap_or_default();
+                let pairs = self
+                    .folder_pairs_to_withdraw(&desc, &current, None, scope)
+                    .await?;
+                Some((has_ack(&current, rule, None), pairs))
+            }
+            _ => None,
+        };
+        if let Some((false, pairs)) = &folder_pairs {
+            // Nothing here to take back, so nothing here is written; the
+            // pair's entries on the other engrams are the whole removal. When
+            // there are none either, the edit below refuses as it always has.
+            let cleared = self
+                .withdraw_folder_pairs_elsewhere(&view, &desc, pairs, &actor, scope)
+                .await?;
+            if !cleared.is_empty() {
+                let mut response = json!({
+                    "domain": desc.domain,
+                    "permalink": desc.permalink,
+                    "path": desc.path,
+                    "operation": p.operation,
+                    "unchanged": true,
+                    "evolve_ack_removed": FOLDER_PAIR_RULE,
+                    "evolve_ack_removed_from": cleared,
+                });
+                if overlay.is_some() {
+                    response["draft"] = json!(true);
+                }
+                return Ok(response);
+            }
+        }
 
         // The staged form rather than the shorthand, for the one thing it
         // reports that this verb says out loud: whether the edit composed into
@@ -218,6 +256,14 @@ impl Engine {
             Some(AckDraft::Record(entry)) => response["evolve_ack"] = ack_json(entry),
             Some(AckDraft::Remove(rule)) => response["evolve_ack_removed"] = json!(rule),
             None => {}
+        }
+        if let Some((true, pairs)) = &folder_pairs {
+            let cleared = self
+                .withdraw_folder_pairs_elsewhere(&view, &desc, pairs, &actor, scope)
+                .await?;
+            if !cleared.is_empty() {
+                response["evolve_ack_removed_from"] = json!(cleared);
+            }
         }
         note_heading_stripped(&mut response, heading_stripped);
         if let Some(text) = manifest_text {

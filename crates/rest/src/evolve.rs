@@ -484,9 +484,11 @@ pub async fn acknowledge(
                    leaving the other rules' alone. A rule has one entry, except \
                    `V112`, `V301` and `V302`, which have one per pair: name the row's `scope` \
                    to take one pair back and leave the engram's other pairs \
-                   silenced, or send none to take every pair at once. 404 when \
-                   the engram carries no entry the body names, rather than \
-                   reporting a removal that did not happen.",
+                   silenced, or send none to take every pair at once. A `V112` \
+                   pair's acknowledgment can sit on any engram of its two \
+                   folders, so withdrawing one takes the pair back on all of \
+                   them. 404 when no entry the body names was there to take \
+                   back, rather than reporting a removal that did not happen.",
     params(("domain" = String, Path, description = "The engram's domain.")),
     request_body = AckBody,
     responses(
