@@ -1499,6 +1499,20 @@ pub(crate) fn folder_slash(prefix: &str) -> String {
     }
 }
 
+/// The half-open byte range `[low, high)` every path under a folder falls in,
+/// for [`Store::folder_holds_other`]: `notes/` up to `notes0`, `0` being the
+/// character after `/`. Compared bytewise (SQLite's default collation, and
+/// `COLLATE "C"` on Postgres), so the match folds no case and reads no
+/// wildcard, and a plain range over `path` is one an index can seek. The root
+/// is every path.
+pub(crate) fn folder_range(prefix: &str) -> (String, String) {
+    let prefix = folder_slash(prefix);
+    match prefix.strip_suffix('/') {
+        Some(folder) => (prefix.clone(), format!("{folder}0")),
+        None => (String::new(), char::MAX.to_string()),
+    }
+}
+
 /// A stored engram's addressing plus its full markdown content and checksum.
 /// Returned by [`Store::all_engram_contents`] to materialize a whole domain for
 /// `domain export`, and shaped so an export writes each engram back to disk
@@ -2637,6 +2651,25 @@ pub trait Store: Send + Sync {
         depth: usize,
         limit: usize,
     ) -> Result<BrowseLevel>;
+
+    /// Whether a base engram other than `except` stands anywhere under the
+    /// folder `prefix` (with or without its trailing slash), at any depth. One
+    /// `LIMIT 1` probe that stops at the first row, for a caller that asks
+    /// only "is this folder new", which is the close-folder hint on a write
+    /// receipt; [`Store::browse_level`] answers a bigger question with a count
+    /// and a `DISTINCT` scan.
+    ///
+    /// The prefix is matched exactly, case included and never as a pattern:
+    /// `Plan/` is not `plan/`, the same way the hint compares folder names,
+    /// and `a_b/` is not `axb/`. Drafts are not base rows and are not counted.
+    /// A reserved `index.md` or `log.md` is never a row at all (sync skips
+    /// both names and every write refuses them), so nothing here filters them.
+    async fn folder_holds_other(
+        &self,
+        domain: DomainId,
+        prefix: &str,
+        except: &str,
+    ) -> Result<bool>;
 
     /// Every engram carrying a tag, on its frontmatter or on one of its
     /// observations, optionally scoped to one domain. The bound tag is

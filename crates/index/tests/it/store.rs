@@ -8744,6 +8744,92 @@ async fn a_tombstone_is_a_row(store: &dyn Store) {
 }
 parity!(a_tombstone_is_an_overlay_row_too, a_tombstone_is_a_row);
 
+/// Whether a folder holds a base engram other than one path: the bounded
+/// question the close-folder hint asks on every write that might have started a
+/// folder. A row at any depth below the folder counts, the excepted path does
+/// not, nor does a draft, a folder whose name differs only in case, a folder
+/// whose name a `LIKE` would read as a wildcard, or a reserved `index.md`,
+/// which sync never makes a row of.
+async fn folder_holds_other_asks_one_bounded_question(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "planview/a.md",
+        &engram("A", "planview/a", "engram", "", "a\n"),
+    );
+    write(
+        root,
+        "deep/sub/b.md",
+        &engram("B", "deep/sub/b", "engram", "", "b\n"),
+    );
+    write(
+        root,
+        "Plan/c.md",
+        &engram("C", "plan/c", "engram", "", "c\n"),
+    );
+    write(root, "axb/d.md", &engram("D", "axb/d", "engram", "", "d\n"));
+    write(root, "solo/index.md", "# Contents\n");
+    sync_domain(store, "d", root).await.unwrap();
+    let domain = store
+        .upsert_domain("d", Some(&root.to_string_lossy()), DomainKind::File)
+        .await
+        .unwrap();
+    store
+        .upsert_overlay(
+            domain,
+            "alice",
+            &record("fresh/e.md", "fresh/e", "e\n", "eeee"),
+        )
+        .await
+        .unwrap();
+
+    let holds = |prefix: &'static str, except: &'static str| async move {
+        store
+            .folder_holds_other(domain, prefix, except)
+            .await
+            .unwrap()
+    };
+    assert!(
+        holds("planview/", "planview/new.md").await,
+        "a row stands there"
+    );
+    assert!(
+        !holds("planview/", "planview/a.md").await,
+        "the excepted path is the write itself"
+    );
+    assert!(
+        holds("planview", "planview/new.md").await,
+        "a prefix without its slash is still the folder"
+    );
+    assert!(
+        holds("deep/", "deep/new.md").await,
+        "a row at any depth counts"
+    );
+    assert!(
+        !holds("plan/", "plan/new.md").await,
+        "Plan is another folder"
+    );
+    assert!(holds("Plan/", "Plan/new.md").await);
+    assert!(
+        !holds("a_b/", "a_b/new.md").await,
+        "the name is not a pattern"
+    );
+    assert!(
+        !holds("fresh/", "fresh/new.md").await,
+        "a draft is not a base row"
+    );
+    assert!(
+        !holds("solo/", "solo/new.md").await,
+        "a reserved index.md is never a row"
+    );
+    assert!(!holds("empty/", "empty/new.md").await);
+}
+parity!(
+    folder_holds_other_is_bounded_exact_and_base_only,
+    folder_holds_other_asks_one_bounded_question
+);
+
 /// Asking which domain a name is, without registering one on the way.
 ///
 /// Every other route to a `DomainId` is `upsert_domain`, which writes. A read
@@ -10605,9 +10691,10 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
         census.failures.join("\n")
     );
     assert_eq!(
-        census.sites, 176,
+        census.sites, 178,
         "the engram statement census moved; every new one needs a predicate or a waiver. \
-         72 per backend in mod.rs (the path listing of `overlay_paths` is the newest, on \
+         73 per backend in mod.rs (the `LIMIT 1` probe of `folder_holds_other` is the \
+         newest, on the base rows; before it the path listing of `overlay_paths`, on \
          the caller's own actor; before it the permalink arm of `UPSERT_PROBE_SQL`, also \
          on the caller's own actor; before it the `engram_meta_value` delete of \
          `clear_domain`, waived below with the rest of that clear; before that the two unbinding \

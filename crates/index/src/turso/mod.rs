@@ -3535,6 +3535,28 @@ impl Store for TursoStore {
         Ok(out)
     }
 
+    async fn folder_holds_other(
+        &self,
+        domain: DomainId,
+        prefix: &str,
+        except: &str,
+    ) -> Result<bool> {
+        let (low, high) = crate::store::folder_range(prefix);
+        let row = query_first(
+            &self.conn,
+            "SELECT 1 FROM engram e WHERE e.domain_id=?1 AND e.actor = '' \
+             AND e.path >= ?2 AND e.path < ?3 AND e.path <> ?4 LIMIT 1",
+            vec![
+                Value::Integer(domain.0),
+                Value::Text(low),
+                Value::Text(high),
+                Value::Text(except.to_string()),
+            ],
+        )
+        .await?;
+        Ok(row.is_some())
+    }
+
     async fn overlay_paths(&self, domain: DomainId, actor: &str) -> Result<Vec<(String, bool)>> {
         if actor.is_empty() {
             return Ok(Vec::new());

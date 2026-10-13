@@ -8286,3 +8286,44 @@ async fn the_close_folder_hint_never_sees_another_accounts_drafts() {
     assert_eq!(found[0].folder, "planview");
     assert_eq!(found[0].engrams, 2);
 }
+
+/// The close-folder probe's 500 ms budget is for its own queries, not for the
+/// wait on the store lock: a probe queued behind a slow neighbours advisory, a
+/// sync or any other holder still answers once it gets the store.
+#[tokio::test]
+async fn the_close_folder_budget_starts_once_the_store_lock_is_held() {
+    let f = fixture().await;
+    let alice = account("alice");
+    let in_folder = |folder: &str, title: &str| WriteParams {
+        folder: Some(folder.to_string()),
+        ..write_params("team", title, "A fact about the topic.")
+    };
+    for title in ["Roadmap", "Budget"] {
+        f.engine
+            .write_engram_as(&in_folder("planview", title), None, &alice)
+            .await
+            .unwrap();
+    }
+    let receipt = f
+        .engine
+        .write_engram_as(&in_folder("planview-work", "Standup"), None, &alice)
+        .await
+        .unwrap();
+    let probe = Engine::close_folder_probe(&receipt);
+
+    let store = f.engine.store();
+    let held = store.lock().await;
+    let (found, ()) = tokio::join!(
+        f.engine.close_folders_for(probe.as_ref(), &alice),
+        async move {
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            drop(held);
+        },
+    );
+    assert_eq!(
+        found.len(),
+        1,
+        "700 ms waiting for the lock is not the probe's budget: {found:?}"
+    );
+    assert_eq!(found[0].folder, "planview");
+}
