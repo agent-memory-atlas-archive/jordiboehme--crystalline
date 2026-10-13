@@ -264,7 +264,8 @@ pub struct WriteRights {
     /// This account's membership levels, keyed the same way. Empty for any
     /// principal that is not an account.
     levels: HashMap<String, MemberLevel>,
-    /// This account's write list, `None` when it has none or is no account.
+    /// This account's write list, `None` when it has none, is no account, or
+    /// when the role cannot write (the list is not read).
     write_list: Option<Vec<String>>,
 }
 

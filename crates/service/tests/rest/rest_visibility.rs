@@ -539,6 +539,15 @@ async fn membership_level_gates_writes_not_instance_role() {
 #[tokio::test]
 async fn a_rest_write_refuses_when_the_write_list_is_unreadable() {
     let ctx = RestCtx::with_a_broken_write_list().await;
+    let listing = || {
+        let mut names: Vec<String> = std::fs::read_dir(ctx._tmp.path().join("open"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = listing();
     let out = ctx.as_user("out").await;
     let refused = out
         .post_json(
@@ -552,10 +561,7 @@ async fn a_rest_write_refuses_when_the_write_list_is_unreadable() {
         detail.contains("this domain's membership is unreadable"),
         "{detail}"
     );
-    assert!(
-        !ctx._tmp.path().join("open/fresh.md").exists(),
-        "and nothing is written"
-    );
+    assert_eq!(listing(), before, "and nothing is written");
 }
 
 /// The same rule stated from the other side, and pinned on the surface whose
