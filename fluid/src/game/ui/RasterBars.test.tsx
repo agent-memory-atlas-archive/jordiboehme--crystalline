@@ -98,7 +98,8 @@ describe("the connecting screen's raster bars", () => {
   });
 
   // Mutation caught: the preference read once, so a change while the
-  // screen shows is ignored.
+  // screen shows is ignored, or its listener left on the query after the
+  // screen went.
   it("follows a change of the reduced-motion preference", () => {
     let reduce = false;
     let listener: (() => void) | null = null;
@@ -115,7 +116,9 @@ describe("the connecting screen's raster bars", () => {
       },
     }));
     const frames = vi.spyOn(window, "requestAnimationFrame");
-    render(<Connecting number={NUMBER} name="ENG" onDone={vi.fn()} />);
+    const view = render(
+      <Connecting number={NUMBER} name="ENG" onDone={vi.fn()} />,
+    );
     act(() => {
       vi.advanceTimersByTime(FROM + 100);
     });
@@ -140,6 +143,10 @@ describe("the connecting screen's raster bars", () => {
       vi.advanceTimersByTime(300);
     });
     expect(layer?.style.backgroundPosition).not.toBe(moving);
+    // The screen going takes the listener down with it.
+    expect(listener).not.toBeNull();
+    view.unmount();
+    expect(listener).toBeNull();
   });
 
   // Mutation caught: the frame loop or the turn-on timer left running

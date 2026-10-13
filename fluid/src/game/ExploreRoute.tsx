@@ -116,12 +116,13 @@
  * when the connecting screen mounts. The screen's state is kept in a ref
  * across StrictMode's remount, so the second mount (whose context the
  * first one's cleanup suspended, and which finds the key already set)
- * holds its own session busy and dials on its own director. The same one subscription hears the carrier (C27): a drop
- * hangs up (`director.carrier`) and flashes `NO CARRIER`, the return after
- * it plays a short handshake, and `carrierGate` lets a pair sound at most
- * once per `CARRIER_QUIET_MS`. A change heard while the connecting screen
- * shows is held, never played over the dial-in: once the screen is done,
- * the state the carrier is in then is said once (a drop, or nothing).
+ * holds its own session busy and dials on its own director. The same one
+ * subscription hears the carrier (C27): a drop hangs up
+ * (`director.carrier`) and flashes `NO CARRIER`, the return after it plays
+ * a short handshake, and `carrierGate` lets a pair sound at most once per
+ * `CARRIER_QUIET_MS`. A change heard while the connecting screen shows is
+ * held, never played over the dial-in: once the screen is done, the state
+ * the carrier is in then is said once (a drop, or nothing).
  */
 
 import { useQueryClient } from "@tanstack/react-query";
