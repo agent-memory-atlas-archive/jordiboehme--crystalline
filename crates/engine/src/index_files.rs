@@ -165,7 +165,8 @@ fn collect(root: &Path) -> Walked {
             | PathClass::EngramAsset
             | PathClass::Hidden
             | PathClass::Artifact
-            | PathClass::Other => continue,
+            | PathClass::Other
+            | PathClass::Reflection(_) => continue,
         }
         let folder = parent_of(&rel).unwrap_or_default();
         let (title, description) = title_and_description(entry.path());

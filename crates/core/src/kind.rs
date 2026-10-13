@@ -9,6 +9,9 @@ pub enum ContentKind {
     /// An engram: markdown anywhere in the domain outside the reserved
     /// folders, parsed and verified.
     Engram,
+    /// A page under `reflections/`: never parsed as an engram and never
+    /// verified.
+    Reflection,
 }
 
 impl ContentKind {
@@ -17,6 +20,7 @@ impl ContentKind {
     pub fn root(self) -> &'static str {
         match self {
             ContentKind::Engram => "",
+            ContentKind::Reflection => "reflections/",
         }
     }
 
@@ -24,6 +28,7 @@ impl ContentKind {
     pub fn assets_dir(self) -> &'static str {
         match self {
             ContentKind::Engram => crate::attachment::ASSETS_PREFIX,
+            ContentKind::Reflection => "reflections/assets/",
         }
     }
 
@@ -31,6 +36,7 @@ impl ContentKind {
     pub fn verified(self) -> bool {
         match self {
             ContentKind::Engram => true,
+            ContentKind::Reflection => false,
         }
     }
 
@@ -38,6 +44,7 @@ impl ContentKind {
     pub fn link_dialect(self) -> crate::relink::LinkDialect {
         match self {
             ContentKind::Engram => crate::relink::LinkDialect::Addressed,
+            ContentKind::Reflection => crate::relink::LinkDialect::Relative,
         }
     }
 }
@@ -57,6 +64,17 @@ mod tests {
         assert_eq!(
             ContentKind::Engram.link_dialect(),
             crate::relink::LinkDialect::Addressed
+        );
+    }
+
+    #[test]
+    fn a_reflection_lives_under_reflections_and_is_never_verified() {
+        assert_eq!(ContentKind::Reflection.root(), "reflections/");
+        assert_eq!(ContentKind::Reflection.assets_dir(), "reflections/assets/");
+        assert!(!ContentKind::Reflection.verified());
+        assert_eq!(
+            ContentKind::Reflection.link_dialect(),
+            crate::relink::LinkDialect::Relative
         );
     }
 }

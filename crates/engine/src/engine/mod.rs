@@ -6490,19 +6490,28 @@ fn unique_domain_name(canonical: &Path, cfg: &GlobalConfig) -> String {
 }
 
 /// Every `.md` file under `root` as `(forward-slashed relative path, absolute
-/// path)`, skipping what `layout` calls hidden. Mirrors the sync engine's walk
+/// path)`, skipping what `layout` calls hidden and the Reflection's folder
+/// (no engram lives there while it is in effect). Mirrors the sync engine's walk
 /// so `domain import` sees the same files a file-domain sync would.
 fn walk_markdown(root: &Path, layout: &DomainLayout) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
     let walker = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
-        e.depth() == 0 || layout.classify(&slash_rel(root, e.path())) != PathClass::Hidden
+        e.depth() == 0
+            || !matches!(
+                layout.classify(&slash_rel(root, e.path())),
+                PathClass::Hidden | PathClass::Reflection(_)
+            )
     });
     for entry in walker.filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {
             continue;
         }
         let rel = slash_rel(root, entry.path());
-        if layout.classify(&rel) == PathClass::Hidden || !rel.to_lowercase().ends_with(".md") {
+        if matches!(
+            layout.classify(&rel),
+            PathClass::Hidden | PathClass::Reflection(_)
+        ) || !rel.to_lowercase().ends_with(".md")
+        {
             continue;
         }
         out.push((rel, entry.path().to_path_buf()));

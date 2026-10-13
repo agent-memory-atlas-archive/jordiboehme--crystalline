@@ -578,6 +578,10 @@ pub async fn scan_domain(
             // search hit, and a row left over from before this exclusion
             // disappears on the next scan (absent on disk means deleted).
             PathClass::Hidden | PathClass::Reserved | PathClass::Artifact | PathClass::Other => {}
+            // The Reflection's files are never engrams. Skipped until the
+            // sync routes them to the Reflection (reflection core plan,
+            // Task 9); with `ReflectionMode::Off` no path gets this class.
+            PathClass::Reflection(_) => {}
         }
     }
 
@@ -662,6 +666,12 @@ pub async fn scan_paths(
         }
         let abs = root.join(&rel);
         let class = layout.classify(&rel);
+        // The Reflection's files are never engrams or engram attachments:
+        // skipped until the sync routes them (reflection core plan, Task 9);
+        // with `ReflectionMode::Off` no path gets this class.
+        if matches!(class, PathClass::Reflection(_)) {
+            continue;
+        }
         // The reserved `assets/` prefix: an attachable file present on disk is
         // an upsert when the layout calls it an attachment (the walk never
         // indexes a hidden, reserved or artifact path), a path under the

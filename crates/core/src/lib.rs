@@ -38,6 +38,7 @@ pub mod parse;
 pub mod path;
 pub mod prompt;
 pub mod provision;
+pub mod reflection;
 pub mod relink;
 pub mod schema;
 pub mod secret_env;

@@ -2954,14 +2954,18 @@ fn settle_stray(
 }
 
 /// Every `.md` file under `root`, relative and forward-slashed, skipping
-/// dot-directories, dot-files and the OKF reserved filenames. Mirrors the sync
-/// engine's own walk so orphan and unindexed detection line up with what a sync
-/// would compute.
+/// dot-directories, dot-files, the OKF reserved filenames and the Reflection's
+/// folder while it is in effect. Mirrors the sync engine's own walk so orphan
+/// and unindexed detection line up with what a sync would compute.
 fn markdown_rel_paths(root: &Path) -> Vec<String> {
     let layout = DomainLayout::at(root, ReflectionMode::Off);
     let mut out = Vec::new();
     let walker = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
-        e.depth() == 0 || layout.classify(&slash_rel(root, e.path())) != PathClass::Hidden
+        e.depth() == 0
+            || !matches!(
+                layout.classify(&slash_rel(root, e.path())),
+                PathClass::Hidden | PathClass::Reflection(_)
+            )
     });
     for entry in walker.filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {
@@ -2980,7 +2984,8 @@ fn markdown_rel_paths(root: &Path) -> Vec<String> {
             | PathClass::EngramAsset
             | PathClass::Reserved
             | PathClass::Hidden
-            | PathClass::Other => {}
+            | PathClass::Other
+            | PathClass::Reflection(_) => {}
         }
     }
     out

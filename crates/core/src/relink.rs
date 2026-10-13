@@ -128,6 +128,8 @@ pub enum BodyGate {
 pub enum LinkDialect {
     /// Engram references: wikilinks and `crystalline://` addresses.
     Addressed,
+    /// A reflection's relative markdown links.
+    Relative,
 }
 
 impl LinkDialect {
@@ -136,6 +138,7 @@ impl LinkDialect {
     pub fn may_hold(self, line: &str) -> bool {
         match self {
             LinkDialect::Addressed => line.contains("[[") || line.contains(SCHEME),
+            LinkDialect::Relative => line.contains("]("),
         }
     }
 }

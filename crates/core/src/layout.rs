@@ -1,8 +1,9 @@
 //! What every path in a domain is, decided in one place.
 //!
 //! A domain folder holds engrams, the attachment folder `assets/`, the OKF
-//! reserved names, hidden files and the artifact folders its MANIFEST
-//! provisions from inside the root. Every walk of a domain - the sync,
+//! reserved names, hidden files, the artifact folders its MANIFEST
+//! provisions from inside the root and, while its Reflection is in effect,
+//! the Reflection's own folder `reflections/`. Every walk of a domain - the sync,
 //! verify, the folder indexes, doctor, export and import, share changes and
 //! the watcher - asks [`DomainLayout::classify`] what a path is and keeps its
 //! own policy over the answer, so a new kind of content is taught to every
@@ -11,6 +12,7 @@
 use std::path::Path;
 
 use crate::kind::ContentKind;
+use crate::reflection::ReflectionFile;
 
 /// Whether a domain keeps a Reflection that decides what its `reflections/`
 /// folder is. `Off` makes the folder ordinary.
@@ -19,6 +21,20 @@ pub enum ReflectionMode {
     /// The domain keeps no Reflection.
     #[default]
     Off,
+    /// The domain's Reflection is in effect: `reflections/` is its own.
+    Effective,
+}
+
+impl ReflectionMode {
+    /// The declared switch read as a mode, for a walk that has no index to
+    /// tell a pending switch from an effective one (verify run on its own,
+    /// the CLI hooks). A walk with an index passes the switch in effect.
+    pub fn declared(switch: crate::manifest::ReflectionSwitch) -> ReflectionMode {
+        match switch {
+            crate::manifest::ReflectionSwitch::On => ReflectionMode::Effective,
+            crate::manifest::ReflectionSwitch::Off => ReflectionMode::Off,
+        }
+    }
 }
 
 /// What one domain-relative path is.
@@ -37,6 +53,8 @@ pub enum PathClass {
     Artifact,
     /// Anything else: a file that is not markdown and not under `assets/`.
     Other,
+    /// A file inside the domain's Reflection, while it is in effect.
+    Reflection(ReflectionFile),
 }
 
 impl PathClass {
@@ -47,12 +65,13 @@ impl PathClass {
             PathClass::Reserved | PathClass::Hidden | PathClass::Artifact | PathClass::Other => {
                 None
             }
+            PathClass::Reflection(_) => Some(ContentKind::Reflection),
         }
     }
 
-    /// Whether the path may travel with an engram share. Every class here
-    /// may; a share's own rules (hidden paths, `log.md`, generated indexes)
-    /// narrow the rest.
+    /// Whether the path may travel with an engram share. Every class but the
+    /// Reflection's may; a share's own rules (hidden paths, `log.md`,
+    /// generated indexes) narrow the rest.
     pub fn shares(&self) -> bool {
         match self {
             PathClass::Engram
@@ -61,11 +80,15 @@ impl PathClass {
             | PathClass::Hidden
             | PathClass::Artifact
             | PathClass::Other => true,
+            // The Reflection has its own home and its own backup branch; a
+            // share carries engrams only.
+            PathClass::Reflection(_) => false,
         }
     }
 
     /// Whether the path belongs in the backup of a domain's own documents,
-    /// which is kept apart from the engram share. No class here does.
+    /// which is kept apart from the engram share: the Reflection's files,
+    /// all but its temp and stray files.
     pub fn backs_up(&self) -> bool {
         match self {
             PathClass::Engram
@@ -74,6 +97,7 @@ impl PathClass {
             | PathClass::Hidden
             | PathClass::Artifact
             | PathClass::Other => false,
+            PathClass::Reflection(file) => !matches!(file, ReflectionFile::Other),
         }
     }
 }
@@ -118,11 +142,21 @@ impl DomainLayout {
         self.reflection
     }
 
-    /// What `rel` (domain-relative, forward-slashed) is. The precedence is
-    /// hidden, reserved, artifact, attachment, markdown: the order every walk
-    /// applied its own filters in before they asked here.
+    /// What `rel` (domain-relative, forward-slashed) is. While the
+    /// Reflection is in effect, everything under `reflections/` (the folder
+    /// matched with ASCII case folded) is the Reflection's, hidden files
+    /// included, so its baseline under `.reflected/` is classified rather
+    /// than hidden. Below that the precedence is hidden, reserved, artifact,
+    /// attachment, markdown: the order every walk applied its own filters in
+    /// before they asked here.
     pub fn classify(&self, rel: &str) -> PathClass {
         let rel = rel.trim_start_matches("./");
+        if self.reflection == ReflectionMode::Effective
+            && crate::reflection::is_under_reflections(rel)
+        {
+            let inner = rel.split_once('/').map(|(_, rest)| rest).unwrap_or("");
+            return PathClass::Reflection(crate::reflection::classify(inner));
+        }
         if rel.split('/').any(is_hidden_segment) {
             return PathClass::Hidden;
         }
@@ -143,16 +177,21 @@ impl DomainLayout {
     }
 
     /// Whether a walk that reads this domain's own files descends into the
-    /// directory at `rel`: not into a hidden directory, not into an artifact
-    /// folder.
+    /// directory at `rel`: not into a directory with a hidden segment, not
+    /// into an artifact folder. That holds inside the Reflection too, so no
+    /// such walk descends into its baseline under `.reflected/`.
     pub fn enters_dir(&self, rel: &str) -> bool {
-        !matches!(self.classify(rel), PathClass::Hidden | PathClass::Artifact)
+        let rel = rel.trim_start_matches("./");
+        !rel.split('/').any(is_hidden_segment) && !self.in_artifact(rel)
     }
 
     /// Whether a walk over the engrams alone (verify, the folder indexes,
-    /// doctor) prunes the directory at `rel`.
+    /// doctor) prunes the directory at `rel`: what [`Self::enters_dir`]
+    /// leaves out, and the Reflection's folder itself while it is in effect.
     pub fn prunes_dir(&self, rel: &str) -> bool {
         !self.enters_dir(rel)
+            || (self.reflection == ReflectionMode::Effective
+                && crate::reflection::is_under_reflections(rel))
     }
 
     fn in_artifact(&self, rel: &str) -> bool {
@@ -242,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn every_class_shares_and_none_backs_up_yet() {
+    fn every_engram_side_class_shares_and_none_backs_up() {
         for class in [
             PathClass::Engram,
             PathClass::EngramAsset,
@@ -287,6 +326,64 @@ mod tests {
         assert_eq!(
             slash_rel(root, &root.join("skills").join("x").join("SKILL.md")),
             "skills/x/SKILL.md"
+        );
+    }
+
+    #[test]
+    fn a_reflection_folder_is_its_own_while_the_mode_is_effective() {
+        use crate::reflection::ReflectionFile;
+        let on = DomainLayout::bare(ReflectionMode::Effective);
+        for (rel, file) in [
+            (
+                "reflections/guides/a.md",
+                ReflectionFile::Page("guides/a.md".into()),
+            ),
+            ("Reflections/a.md", ReflectionFile::Page("a.md".into())),
+            ("reflections/PACT.md", ReflectionFile::Pact),
+            (
+                "reflections/a.threads.md",
+                ReflectionFile::Threads { of: "a.md".into() },
+            ),
+            (
+                "reflections/.reflected/a.md",
+                ReflectionFile::Baseline { of: "a.md".into() },
+            ),
+            ("reflections/.a.md.tmp", ReflectionFile::Other),
+            ("reflections/index.md", ReflectionFile::Other),
+        ] {
+            assert_eq!(on.classify(rel), PathClass::Reflection(file), "{rel}");
+        }
+        assert_eq!(
+            on.classify("notes/reflections/a.md"),
+            PathClass::Engram,
+            "only at the root"
+        );
+        assert_eq!(on.classify("reflectionsx/a.md"), PathClass::Engram);
+        let off = DomainLayout::bare(ReflectionMode::Off);
+        assert_eq!(
+            off.classify("reflections/a.md"),
+            PathClass::Engram,
+            "an ordinary folder while off"
+        );
+        assert!(on.prunes_dir("reflections") && on.prunes_dir("Reflections"));
+        assert!(on.enters_dir("reflections") && !on.enters_dir("reflections/.reflected"));
+        assert!(!off.prunes_dir("reflections"));
+        let page = on.classify("reflections/a.md");
+        assert_eq!(
+            (page.kind(), page.shares(), page.backs_up()),
+            (Some(ContentKind::Reflection), false, true)
+        );
+        assert!(
+            !on.classify("reflections/.a.md.tmp").backs_up(),
+            "a temp file is never backed up"
+        );
+        assert_eq!(
+            ReflectionMode::declared(crate::manifest::ReflectionSwitch::On),
+            ReflectionMode::Effective
+        );
+        assert_eq!(
+            ReflectionMode::declared(crate::manifest::ReflectionSwitch::Off),
+            ReflectionMode::Off
         );
     }
 }
