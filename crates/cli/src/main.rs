@@ -132,6 +132,8 @@ enum Command {
         command: Option<ConnectCommand>,
         /// The Crystalline server to add, for example
         /// https://crystalline.acme.com. Signing in opens your browser.
+        // Help text, not rustdoc: clap prints it as written.
+        #[allow(rustdoc::bare_urls)]
         url: Option<String>,
         /// The source's short name on this machine, used in notes and in the
         /// names of its domains when one collides. Defaults to the most
@@ -1218,6 +1220,8 @@ enum DomainCommand {
         /// A lone argument on the command line is always the NAME: use
         /// `--path` instead of this position to point at a folder without
         /// naming it.
+        // Help text, not rustdoc: clap prints the placeholders as written.
+        #[allow(rustdoc::invalid_html_tags)]
         path: Option<PathBuf>,
         /// Point at the domain's folder instead of naming it positionally;
         /// the name then comes from the folder, as described above.

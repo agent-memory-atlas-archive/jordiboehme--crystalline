@@ -93,7 +93,7 @@ use walkdir::WalkDir;
 
 use crystalline_core::{
     DomainLayout, MAX_ATTACHMENT_BYTES, PARSE_GENERATION, PathClass, ReflectionMode,
-    attachment_mime, parse_engram, validate_asset_path,
+    attachment_mime, parse_engram, slash_rel, validate_asset_path,
 };
 
 use crate::embed::{ChunkParams, chunk_engram};
@@ -504,7 +504,7 @@ pub async fn scan_domain(
         // Prune dot-directories and dot-files, but never the walk root itself
         // (a temp or dotted root would otherwise prune the whole tree), and
         // prune the provisioned artifact folders wholesale.
-        .filter_entry(|e| e.depth() == 0 || layout.enters_dir(&rel_path(root, e.path())))
+        .filter_entry(|e| e.depth() == 0 || layout.enters_dir(&slash_rel(root, e.path())))
     {
         let entry = match entry {
             Ok(e) => e,
@@ -532,7 +532,7 @@ pub async fn scan_domain(
             continue;
         }
         let fname = entry.file_name().to_string_lossy();
-        let rel = rel_path(root, entry.path());
+        let rel = slash_rel(root, entry.path());
         match layout.classify(&rel) {
             // The `assets/` folder is reserved for attachments: nothing under
             // it is ever an engram, whatever its extension, so the branch
@@ -662,12 +662,13 @@ pub async fn scan_paths(
         }
         let abs = root.join(&rel);
         let class = layout.classify(&rel);
-        // The reserved `assets/` prefix, classified exactly as the walk does it:
-        // an attachable file present on disk is an upsert, a recorded path that
-        // is gone is a delete, and nothing under the prefix is ever an engram.
-        // A hidden, reserved or artifact path under the prefix is not of this
-        // class and takes the general arm below, as the walk never indexed it.
-        if class == PathClass::EngramAsset {
+        // The reserved `assets/` prefix: an attachable file present on disk is
+        // an upsert when the layout calls it an attachment (the walk never
+        // indexes a hidden, reserved or artifact path), a path under the
+        // prefix that is gone is a delete whatever its class (a row indexed
+        // before the MANIFEST declared an artifact folder around it goes at
+        // once), and nothing under the prefix is ever an engram.
+        if crystalline_core::is_under_assets(&rel) {
             // `symlink_metadata`, not `metadata`: the complete walk uses
             // `WalkDir`'s default `follow_links(false)` and indexes nothing
             // through a symlink, so following one here would give a symlinked
@@ -675,7 +676,7 @@ pub async fn scan_paths(
             // link is neither a file nor a delete candidate, so it falls to the
             // `Ok(_)` arm and is left alone.
             match std::fs::symlink_metadata(&abs) {
-                Ok(meta) if meta.is_file() => {
+                Ok(meta) if meta.is_file() && class == PathClass::EngramAsset => {
                     let fname = rel.rsplit('/').next().unwrap_or(rel.as_str());
                     let mtime = file_mtime(&meta);
                     if let Some(candidate) =
@@ -1888,15 +1889,6 @@ fn warn_unreadable_once(domain: &str, path: Option<&Path>, reason: &str) {
             path.display()
         );
     }
-}
-
-fn rel_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 fn duration_ms(d: Duration) -> u64 {

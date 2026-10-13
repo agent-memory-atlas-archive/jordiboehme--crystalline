@@ -2372,7 +2372,7 @@ fn policy_values(key: &str) -> &'static [&'static str] {
 }
 
 /// `a`, `a or b`, `a, b or c`: the values a key takes, read as a sentence
-/// rather than as a list a reader has to parse. A [`PolicyKind::Text`] key
+/// rather than as a list a reader has to parse. A [`PolicyKind::Text`](crystalline_core::PolicyKind::Text) key
 /// (`values` empty) has no enumerable list to join, so it reads as "a valid
 /// domain name" instead - the only free-text key today, and what an invalid
 /// declaration of it actually needs to become.
@@ -2385,7 +2385,7 @@ fn join_or(values: &[&str]) -> String {
 }
 
 /// What a domain reads a policy key as, for the printed line: the value
-/// itself, or - for a [`PolicyKind::Text`] key an invalid declaration leaves
+/// itself, or - for a [`PolicyKind::Text`](crystalline_core::PolicyKind::Text) key an invalid declaration leaves
 /// with nothing to fall back to - "ignored; the local name holds".
 fn policy_read_as(read_as: &str) -> &str {
     if read_as.is_empty() {
@@ -3032,13 +3032,7 @@ fn relative_slash_path(root: &Path, p: &Path) -> String {
 /// The literal, zero-cost half of [`relative_slash_path`]: `Some` only when
 /// `root` is exactly a component prefix of `p`.
 fn strip_to_slash(root: &Path, p: &Path) -> Option<String> {
-    let rel = p.strip_prefix(root).ok()?;
-    Some(
-        rel.components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("/"),
-    )
+    p.starts_with(root).then(|| slash_rel(root, p))
 }
 
 /// The report's words for who a stale lock used to belong to. A `lock_stale`
