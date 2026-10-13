@@ -1055,6 +1055,18 @@ pub const FILE_STAMPS_SQL: &str =
 /// full-key seek of its own unique index. Run with `persistent(false)` (see
 /// `upsert_row`).
 #[doc(hidden)]
+/// The probe behind [`Store::folder_holds_other`]: one base row under a folder
+/// other than the write's own path, at any depth, never a reserved name. The
+/// range is over `path COLLATE "C"`, the bytewise order that keeps every path
+/// under `notes/` between `notes/` and `notes0`, and `idx_engram_base_path_c`
+/// (migration v19, partial on `actor = ''`) is the index that seeks it
+/// (pinned in `tests/it/plans.rs`).
+pub const FOLDER_HOLDS_OTHER_SQL: &str = "SELECT 1 FROM engram e WHERE e.domain_id=$1 AND e.actor = '' \
+     AND e.path COLLATE \"C\" >= $2 AND e.path COLLATE \"C\" < $3 \
+     AND e.path <> $4 \
+     AND right(e.path, 9) <> '/index.md' AND right(e.path, 7) <> '/log.md' \
+     LIMIT 1";
+
 pub const UPSERT_PROBE_SQL: &str = "SELECT id, path FROM engram WHERE domain_id=$1 AND path=$2 AND actor=$4 \
      UNION ALL SELECT id, path FROM engram WHERE domain_id=$1 AND permalink=$3 AND actor=$4";
 
@@ -3588,20 +3600,14 @@ impl Store for PostgresStore {
     ) -> Result<bool> {
         let (low, high) = crate::store::folder_range(prefix);
         let mut conn = self.acquire().await?;
-        let row = sqlx::query(
-            "SELECT 1 FROM engram e WHERE e.domain_id=$1 AND e.actor = '' \
-             AND e.path COLLATE \"C\" >= $2 AND e.path COLLATE \"C\" < $3 \
-             AND e.path <> $4 \
-             AND right(e.path, 9) <> '/index.md' AND right(e.path, 7) <> '/log.md' \
-             LIMIT 1",
-        )
-        .bind(domain.0)
-        .bind(low)
-        .bind(high)
-        .bind(except)
-        .fetch_optional(conn.as_mut())
-        .await
-        .map_err(IndexError::from)?;
+        let row = sqlx::query(FOLDER_HOLDS_OTHER_SQL)
+            .bind(domain.0)
+            .bind(low)
+            .bind(high)
+            .bind(except)
+            .fetch_optional(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
         Ok(row.is_some())
     }
 

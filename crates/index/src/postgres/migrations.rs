@@ -116,6 +116,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "metadata values",
         sql: SCHEMA_V18,
     },
+    Migration {
+        version: 19,
+        label: "c-collated base path index",
+        sql: SCHEMA_V19,
+    },
 ];
 
 // The whole current schema in one step. The temporal columns stay TEXT ISO
@@ -605,6 +610,23 @@ CREATE TABLE IF NOT EXISTS engram_meta_value (
     PRIMARY KEY (engram_id, key, value)
 );
 CREATE INDEX IF NOT EXISTS idx_engram_meta_value_key_value ON engram_meta_value(key, value, engram_id);
+"#;
+
+// The index the close-folder probe (`Store::folder_holds_other`) seeks on.
+// The probe asks whether a folder holds a base row as a byte range over
+// `path COLLATE "C"`, because only a bytewise order keeps every path under
+// `notes/` between `notes/` and `notes0`: under a linguistic collation such as
+// en_US the `/` is ignored at the first level, so `notes/zzz.md` sorts after
+// `notes0` and the range would miss it. `idx_engram_path_actor` carries the
+// default collation and cannot serve that range, so the probe scanned the
+// whole domain. This index matches the probe's filter exactly: base rows only
+// (`actor = ''`, the probe never asks about drafts, which the engine reads
+// through `overlay_paths`), keyed on the domain and the C-collated path.
+// `IF NOT EXISTS`, so a replay converges. No Turso twin: SQLite compares text
+// bytewise by default, so `idx_engram_path_actor` already serves the range
+// there.
+const SCHEMA_V19: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_engram_base_path_c ON engram(domain_id, (path COLLATE "C")) WHERE actor = '';
 "#;
 
 const SCHEMA_V8: &str = r#"
@@ -1619,6 +1641,117 @@ mod tests {
             meta_rows_of(&store, ids[2]).await,
             vec![("z".to_string(), "0.0".to_string())],
             "JSONB numeric has no negative zero, so the migration stores 0.0"
+        );
+        store.drop_schema().await.unwrap();
+    }
+
+    /// v19 over a v18 schema: the C-collated partial index the close-folder
+    /// probe (`Store::folder_holds_other`) seeks on is there after the store
+    /// opens, it is the base rows' alone, a replay of the step is a no-op, and
+    /// the probe's own statement reads the index rather than the whole domain.
+    #[tokio::test]
+    async fn v19_gives_the_folder_probe_a_c_collated_base_path_index() {
+        use crate::Store;
+        let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        let schema = format!("mig_pathc_{}", std::process::id());
+        let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
+        )))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS schema_migration (version BIGINT PRIMARY KEY, applied_at TEXT NOT NULL)",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(
+            MIGRATIONS[18].version, 19,
+            "the nineteenth migration is v19"
+        );
+        for m in &MIGRATIONS[..18] {
+            sqlx::raw_sql(m.sql).execute(&mut conn).await.unwrap();
+            sqlx::query("INSERT INTO schema_migration (version, applied_at) VALUES ($1, $2)")
+                .bind(m.version)
+                .bind(chrono::Utc::now().to_rfc3339())
+                .execute(&mut conn)
+                .await
+                .unwrap();
+        }
+        // A domain big enough that a scan of it would show: 4000 base rows
+        // spread over 200 folders, and drafts beside them.
+        sqlx::raw_sql(
+            "INSERT INTO domain (id, name, path) OVERRIDING SYSTEM VALUE VALUES (1, 'd', NULL);
+             INSERT INTO engram (domain_id, path, permalink, title, engram_type, status, metadata, actor)
+             SELECT 1, 'f' || (g % 200) || '/e' || g || '.md', 'f' || (g % 200) || '/e' || g,
+                    't', 'engram', 'stable', '{}', ''
+             FROM generate_series(1, 4000) g;
+             INSERT INTO engram (domain_id, path, permalink, title, engram_type, status, metadata, actor)
+             SELECT 1, 'f' || (g % 200) || '/e' || g || '.md', 'f' || (g % 200) || '/e' || g,
+                    't', 'engram', 'stable', '{}', 'alice'
+             FROM generate_series(1, 400) g;",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+        let store = crate::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .unwrap();
+        let (def,): (String,) = sqlx::query_as(
+            "SELECT indexdef FROM pg_indexes WHERE schemaname = $1 AND indexname = 'idx_engram_base_path_c'",
+        )
+        .bind(&schema)
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert!(def.contains(r#"COLLATE "C""#), "{def}");
+        assert!(def.contains("WHERE (actor = ''::text)"), "{def}");
+
+        // A replay of the step changes nothing and does not fail.
+        sqlx::raw_sql(MIGRATIONS[18].sql)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+
+        sqlx::raw_sql("ANALYZE engram")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let plan: Vec<(String,)> = sqlx::query_as(
+            r#"EXPLAIN SELECT 1 FROM engram e WHERE e.domain_id=1 AND e.actor = ''
+               AND e.path COLLATE "C" >= 'newf/' AND e.path COLLATE "C" < 'newf0'
+               AND e.path <> 'newf/x.md'
+               AND right(e.path, 9) <> '/index.md' AND right(e.path, 7) <> '/log.md'
+               LIMIT 1"#,
+        )
+        .fetch_all(&mut conn)
+        .await
+        .unwrap();
+        let plan: Vec<String> = plan.into_iter().map(|(line,)| line).collect();
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("idx_engram_base_path_c")),
+            "the probe seeks on the index: {plan:#?}"
+        );
+        assert!(
+            !store
+                .folder_holds_other(crate::DomainId(1), "newf/", "newf/x.md")
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .folder_holds_other(crate::DomainId(1), "f7/", "f7/x.md")
+                .await
+                .unwrap()
         );
         store.drop_schema().await.unwrap();
     }

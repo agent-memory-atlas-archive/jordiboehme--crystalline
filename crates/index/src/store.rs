@@ -1503,8 +1503,9 @@ pub(crate) fn folder_slash(prefix: &str) -> String {
 /// for [`Store::folder_holds_other`]: `notes/` up to `notes0`, `0` being the
 /// character after `/`. Compared bytewise (SQLite's default collation, and
 /// `COLLATE "C"` on Postgres), so the match folds no case and reads no
-/// wildcard; on SQLite a plain range over `path` is also one an index can
-/// seek. The root is every path.
+/// wildcard, and a plain range over `path` is one an index can seek
+/// (`idx_engram_path_actor` on Turso, `idx_engram_base_path_c` on Postgres).
+/// The root is every path.
 pub(crate) fn folder_range(prefix: &str) -> (String, String) {
     let prefix = folder_slash(prefix);
     match prefix.strip_suffix('/') {
