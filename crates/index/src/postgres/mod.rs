@@ -106,12 +106,12 @@ use crate::alias::{AliasMap, query_uses_tags};
 use crate::error::{IndexError, Result};
 use crate::store::WorkClaim;
 use crate::store::{
-    AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ContentMention, ContradictionRow,
-    DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage, EmbeddingRow,
-    EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode, GraphSlice,
-    HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector, NamedCount,
-    NewChunk, OBSERVATION_VECTOR_CHUNK, ObservationVector, OutboundRef, Page, RebuildKind,
-    RecentFilter, ReferenceCandidates, ScoredPair, SearchHit, SearchMode, SearchQuery,
+    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ContentMention,
+    ContradictionRow, DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage,
+    EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode,
+    GraphSlice, HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector,
+    NamedCount, NewChunk, OBSERVATION_VECTOR_CHUNK, ObservationVector, OutboundRef, Page,
+    RebuildKind, RecentFilter, ReferenceCandidates, ScoredPair, SearchHit, SearchMode, SearchQuery,
     SpellingPlan, Store, StoreInfo, StoredEngram, Vocabulary, build_vocabulary, changed_spellings,
     count_references_to_sql, domain_url_needles, folder_slash, in_transaction, names_a_domain_url,
     page_window, reference_match, referencing_domains_sql, rename_onto_taken_row,
@@ -780,6 +780,43 @@ pub(super) fn cell_text(row: &PgRow, idx: usize) -> Option<String> {
 
 pub(super) fn cell_real(row: &PgRow, idx: usize) -> Option<f64> {
     row.try_get::<Option<f64>, _>(idx).ok().flatten()
+}
+
+/// The statements of one asset table. Picked by `match`, never built with
+/// `format!`, so each statement stays a literal a grep reads.
+struct AssetSql {
+    upsert: &'static str,
+    /// The blob rows that go with a deleted row, for a table that has blobs.
+    delete_blobs: Option<&'static str>,
+    delete: &'static str,
+    get: &'static str,
+    list: &'static str,
+}
+
+const ATTACHMENT_SQL: AssetSql = AssetSql {
+    upsert: "INSERT INTO attachment(domain_id, path, sha256, mime, size, modified) \
+             VALUES($1, $2, $3, $4, $5, $6) \
+             ON CONFLICT(domain_id, path) DO UPDATE SET \
+                 sha256=excluded.sha256, mime=excluded.mime, \
+                 size=excluded.size, modified=excluded.modified",
+    delete_blobs: Some(
+        "DELETE FROM attachment_blob WHERE attachment_id IN \
+         (SELECT id FROM attachment WHERE domain_id=$1 AND path=$2)",
+    ),
+    delete: "DELETE FROM attachment WHERE domain_id=$1 AND path=$2",
+    get: "SELECT path, sha256, mime, size, modified FROM attachment \
+          WHERE domain_id=$1 AND path=$2",
+    // The path is a text sort key, so it is pinned to `COLLATE "C"` to match
+    // Turso's byte order: a locale-collated database would otherwise return
+    // the same rows in a different order.
+    list: "SELECT path, sha256, mime, size, modified FROM attachment \
+           WHERE domain_id=$1 ORDER BY path COLLATE \"C\"",
+};
+
+fn asset_sql(table: AssetTable) -> &'static AssetSql {
+    match table {
+        AssetTable::Engram => &ATTACHMENT_SQL,
+    }
 }
 
 /// Decode one attachment row: path, sha256, mime, size, modified. The column
@@ -4052,43 +4089,42 @@ impl Store for PostgresStore {
         }))
     }
 
-    async fn upsert_attachment(&self, domain: DomainId, row: &AttachmentRow) -> Result<()> {
+    async fn upsert_asset(
+        &self,
+        table: AssetTable,
+        domain: DomainId,
+        row: &AttachmentRow,
+    ) -> Result<()> {
         let mut conn = self.acquire().await?;
-        sqlx::query(
-            "INSERT INTO attachment(domain_id, path, sha256, mime, size, modified) \
-             VALUES($1, $2, $3, $4, $5, $6) \
-             ON CONFLICT(domain_id, path) DO UPDATE SET \
-                 sha256=excluded.sha256, mime=excluded.mime, \
-                 size=excluded.size, modified=excluded.modified",
-        )
-        .bind(domain.0)
-        .bind(&row.path)
-        .bind(&row.sha256)
-        .bind(&row.mime)
-        .bind(row.size as i64)
-        .bind(&row.modified)
-        .execute(conn.as_mut())
-        .await
-        .map_err(IndexError::from)?;
+        sqlx::query(asset_sql(table).upsert)
+            .bind(domain.0)
+            .bind(&row.path)
+            .bind(&row.sha256)
+            .bind(&row.mime)
+            .bind(row.size as i64)
+            .bind(&row.modified)
+            .execute(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
         Ok(())
     }
 
-    async fn delete_attachment(&self, domain: DomainId, path: &str) -> Result<bool> {
+    async fn delete_asset(&self, table: AssetTable, domain: DomainId, path: &str) -> Result<bool> {
+        let sql = asset_sql(table);
         // The declared `ON DELETE CASCADE` would take the blob here, but it is
         // deleted explicitly so both backends behave alike: Turso's connection
         // does not enable foreign keys, so its cascade never fires.
         let mut conn = self.acquire().await?;
         let c = conn.as_mut();
-        sqlx::query(
-            "DELETE FROM attachment_blob WHERE attachment_id IN \
-             (SELECT id FROM attachment WHERE domain_id=$1 AND path=$2)",
-        )
-        .bind(domain.0)
-        .bind(path)
-        .execute(&mut *c)
-        .await
-        .map_err(IndexError::from)?;
-        let n = sqlx::query("DELETE FROM attachment WHERE domain_id=$1 AND path=$2")
+        if let Some(blobs) = sql.delete_blobs {
+            sqlx::query(blobs)
+                .bind(domain.0)
+                .bind(path)
+                .execute(&mut *c)
+                .await
+                .map_err(IndexError::from)?;
+        }
+        let n = sqlx::query(sql.delete)
             .bind(domain.0)
             .bind(path)
             .execute(&mut *c)
@@ -4098,27 +4134,27 @@ impl Store for PostgresStore {
         Ok(n > 0)
     }
 
-    async fn get_attachment(&self, domain: DomainId, path: &str) -> Result<Option<AttachmentRow>> {
+    async fn get_asset(
+        &self,
+        table: AssetTable,
+        domain: DomainId,
+        path: &str,
+    ) -> Result<Option<AttachmentRow>> {
         let mut conn = self.acquire().await?;
         let row = query_first(
             conn.as_mut(),
-            "SELECT path, sha256, mime, size, modified FROM attachment \
-             WHERE domain_id=$1 AND path=$2",
+            asset_sql(table).get,
             vec![Param::Int(domain.0), Param::Text(path.to_string())],
         )
         .await?;
         Ok(row.as_ref().map(attachment_from_row))
     }
 
-    async fn list_attachments(&self, domain: DomainId) -> Result<Vec<AttachmentRow>> {
-        // The path is a text sort key, so it is pinned to `COLLATE "C"` to match
-        // Turso's byte order: a locale-collated database would otherwise return
-        // the same rows in a different order.
+    async fn list_assets(&self, table: AssetTable, domain: DomainId) -> Result<Vec<AttachmentRow>> {
         let mut conn = self.acquire().await?;
         let rows = query_all(
             conn.as_mut(),
-            "SELECT path, sha256, mime, size, modified FROM attachment \
-             WHERE domain_id=$1 ORDER BY path COLLATE \"C\"",
+            asset_sql(table).list,
             vec![Param::Int(domain.0)],
         )
         .await?;

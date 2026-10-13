@@ -25,6 +25,7 @@ mod hub;
 pub mod nli;
 #[cfg(feature = "postgres")]
 pub mod postgres;
+mod snippet;
 mod store;
 pub mod sweep;
 mod sync;
@@ -44,12 +45,12 @@ pub use embed::{
 pub use error::{IndexError, Result, SCHEMA_TOO_NEW_OPENING, is_schema_too_new_text};
 pub use factory::{open_store, store_location};
 pub use store::{
-    AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ContentMention, ContradictionRow,
-    DEFAULT_RETIRED_WEIGHT, DEFAULT_SALIENCE_WEIGHT, DomainHost, DomainId, DomainKind,
-    DomainLookup, DomainStats, EdgeKind, EmbeddingCoverage, EmbeddingRow, EngramDescriptor,
-    EngramId, EngramRecord, EngramSummary, FileStamp, FilterOp, FtsMode, GraphEdge, GraphNode,
-    GraphSlice, HitKind, HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef,
-    LEXICAL_CANDIDATE_CAP, LINKS_TO, LeadVector, MetadataFilter, NamedCount, NewChunk,
+    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ContentMention,
+    ContradictionRow, DEFAULT_RETIRED_WEIGHT, DEFAULT_SALIENCE_WEIGHT, DomainHost, DomainId,
+    DomainKind, DomainLookup, DomainStats, EdgeKind, EmbeddingCoverage, EmbeddingRow,
+    EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FilterOp, FtsMode,
+    GraphEdge, GraphNode, GraphSlice, HitKind, HostClaim, InboundHit, InboundPage, InboundQuery,
+    InboundRef, LEXICAL_CANDIDATE_CAP, LINKS_TO, LeadVector, MetadataFilter, NamedCount, NewChunk,
     OBSERVATION_VECTOR_CHUNK, ObservationVector, OutboundRef, Page, RETIRED_STATUSES, RebuildKind,
     RecentFilter, ScoredPair, SearchHit, SearchMode, SearchOrder, SearchQuery, Store, StoreInfo,
     StoredEngram, TagAlias, TagCount, Vocabulary, WorkClaim, is_current_status, is_retired_status,

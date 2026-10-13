@@ -2106,6 +2106,14 @@ pub struct AttachmentRow {
     pub modified: String,
 }
 
+/// Which table a domain's files are kept in. Each table keeps its own rows;
+/// one body of code reads and writes them all, the table chosen here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssetTable {
+    /// `attachment`: the engram attachments under `assets/`.
+    Engram,
+}
+
 /// One tag in use, with how many engrams and how many observations carry it.
 /// The two counts are separate scans so a tag applied on the frontmatter and one
 /// applied on an observation are both visible.
@@ -3282,21 +3290,53 @@ pub trait Store: Send + Sync {
     // the blob pair below is exercised by virtual domains and left untouched by
     // file domains, whose bytes stay on disk.
 
-    /// Insert or replace one attachment's metadata, keyed by `(domain, path)`.
-    /// The sync walker calls this on every scan, so a rewritten file refreshes
-    /// its row in place rather than adding a second one.
-    async fn upsert_attachment(&self, domain: DomainId, row: &AttachmentRow) -> Result<()>;
+    /// Insert or replace one file's metadata in `table`, keyed by
+    /// `(domain, path)`. The sync walker calls this on every scan, so a
+    /// rewritten file refreshes its row in place rather than adding a second
+    /// one.
+    async fn upsert_asset(
+        &self,
+        table: AssetTable,
+        domain: DomainId,
+        row: &AttachmentRow,
+    ) -> Result<()>;
 
-    /// Remove one attachment's metadata and any stored blob. Returns `false`
-    /// when no row was there, which lets a scan tell a delete from a no-op.
-    async fn delete_attachment(&self, domain: DomainId, path: &str) -> Result<bool>;
+    /// Remove one file's metadata from `table` and any stored blob. Returns
+    /// `false` when no row was there, which lets a scan tell a delete from a
+    /// no-op.
+    async fn delete_asset(&self, table: AssetTable, domain: DomainId, path: &str) -> Result<bool>;
 
-    /// One attachment's metadata by domain-relative path, or `None`.
-    async fn get_attachment(&self, domain: DomainId, path: &str) -> Result<Option<AttachmentRow>>;
+    /// One file's metadata in `table` by path, or `None`.
+    async fn get_asset(
+        &self,
+        table: AssetTable,
+        domain: DomainId,
+        path: &str,
+    ) -> Result<Option<AttachmentRow>>;
 
-    /// Every attachment in a domain, ordered by path in byte order (both
+    /// Every file of a domain in `table`, ordered by path in byte order (both
     /// backends pin the collation, so the listing is identical across them).
-    async fn list_attachments(&self, domain: DomainId) -> Result<Vec<AttachmentRow>>;
+    async fn list_assets(&self, table: AssetTable, domain: DomainId) -> Result<Vec<AttachmentRow>>;
+
+    /// [`Store::upsert_asset`] on the engram attachments.
+    async fn upsert_attachment(&self, domain: DomainId, row: &AttachmentRow) -> Result<()> {
+        self.upsert_asset(AssetTable::Engram, domain, row).await
+    }
+
+    /// [`Store::delete_asset`] on the engram attachments.
+    async fn delete_attachment(&self, domain: DomainId, path: &str) -> Result<bool> {
+        self.delete_asset(AssetTable::Engram, domain, path).await
+    }
+
+    /// [`Store::get_asset`] on the engram attachments.
+    async fn get_attachment(&self, domain: DomainId, path: &str) -> Result<Option<AttachmentRow>> {
+        self.get_asset(AssetTable::Engram, domain, path).await
+    }
+
+    /// [`Store::list_assets`] on the engram attachments.
+    async fn list_attachments(&self, domain: DomainId) -> Result<Vec<AttachmentRow>> {
+        self.list_assets(AssetTable::Engram, domain).await
+    }
 
     /// Store an attachment's bytes in the index. The metadata row must already
     /// exist, otherwise this is a [`crate::IndexError::Constraint`]: the row is

@@ -50,17 +50,17 @@ use crate::alias::{AliasMap, query_uses_tags};
 use crate::error::{IndexError, Result};
 use crate::store::WorkClaim;
 use crate::store::{
-    AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ContentMention, ContradictionRow,
-    DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage, EmbeddingRow,
-    EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode, GraphSlice,
-    HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector, NamedCount,
-    NewChunk, ObservationVector, OutboundRef, Page, RebuildKind, RecentFilter, ReferenceCandidates,
-    ScoredPair, SearchHit, SearchMode, SearchQuery, SpellingPlan, Store, StoreInfo, StoredEngram,
-    Vocabulary, build_vocabulary, changed_spellings, count_references_to_sql, domain_url_needles,
-    folder_slash, in_transaction, names_a_domain_url, page_window, reference_match,
-    referencing_domains_sql, rename_onto_taken_row, reset_spelled_references_sql,
-    resolve_references_to_sql, resolve_spelled_references_sql, spelled_references_sql,
-    spelling_plan,
+    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ContentMention,
+    ContradictionRow, DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage,
+    EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode,
+    GraphSlice, HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector,
+    NamedCount, NewChunk, ObservationVector, OutboundRef, Page, RebuildKind, RecentFilter,
+    ReferenceCandidates, ScoredPair, SearchHit, SearchMode, SearchQuery, SpellingPlan, Store,
+    StoreInfo, StoredEngram, Vocabulary, build_vocabulary, changed_spellings,
+    count_references_to_sql, domain_url_needles, folder_slash, in_transaction, names_a_domain_url,
+    page_window, reference_match, referencing_domains_sql, rename_onto_taken_row,
+    reset_spelled_references_sql, resolve_references_to_sql, resolve_spelled_references_sql,
+    spelled_references_sql, spelling_plan,
 };
 use crate::sweep::{SpelledRef, UnresolvedRef};
 
@@ -719,6 +719,43 @@ fn attachment_from_row(r: &Row) -> AttachmentRow {
         mime: cell_text(r, 2).unwrap_or_default(),
         size: cell_i64(r, 3).unwrap_or(0).max(0) as u64,
         modified: cell_text(r, 4).unwrap_or_default(),
+    }
+}
+
+/// The statements of one asset table. Picked by `match`, never built with
+/// `format!`, so each statement stays a literal the query-plan guard and a
+/// grep both read.
+struct AssetSql {
+    upsert: &'static str,
+    /// The blob rows that go with a deleted row, for a table that has blobs.
+    delete_blobs: Option<&'static str>,
+    delete: &'static str,
+    get: &'static str,
+    list: &'static str,
+}
+
+const ATTACHMENT_SQL: AssetSql = AssetSql {
+    upsert: "INSERT INTO attachment(domain_id, path, sha256, mime, size, modified) \
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT(domain_id, path) DO UPDATE SET \
+                 sha256=excluded.sha256, mime=excluded.mime, \
+                 size=excluded.size, modified=excluded.modified",
+    delete_blobs: Some(
+        "DELETE FROM attachment_blob WHERE attachment_id IN \
+         (SELECT id FROM attachment WHERE domain_id=?1 AND path=?2)",
+    ),
+    delete: "DELETE FROM attachment WHERE domain_id=?1 AND path=?2",
+    get: "SELECT path, sha256, mime, size, modified FROM attachment \
+          WHERE domain_id=?1 AND path=?2",
+    // TEXT sorts byte-wise here, the order the Postgres twin pins itself to
+    // with an explicit `COLLATE "C"`.
+    list: "SELECT path, sha256, mime, size, modified FROM attachment \
+           WHERE domain_id=?1 ORDER BY path",
+};
+
+fn asset_sql(table: AssetTable) -> &'static AssetSql {
+    match table {
+        AssetTable::Engram => &ATTACHMENT_SQL,
     }
 }
 
@@ -3991,14 +4028,15 @@ impl Store for TursoStore {
         }))
     }
 
-    async fn upsert_attachment(&self, domain: DomainId, row: &AttachmentRow) -> Result<()> {
+    async fn upsert_asset(
+        &self,
+        table: AssetTable,
+        domain: DomainId,
+        row: &AttachmentRow,
+    ) -> Result<()> {
         self.conn
             .execute(
-                "INSERT INTO attachment(domain_id, path, sha256, mime, size, modified) \
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6) \
-                 ON CONFLICT(domain_id, path) DO UPDATE SET \
-                     sha256=excluded.sha256, mime=excluded.mime, \
-                     size=excluded.size, modified=excluded.modified",
+                asset_sql(table).upsert,
                 vec![
                     Value::Integer(domain.0),
                     Value::Text(row.path.clone()),
@@ -4012,43 +4050,38 @@ impl Store for TursoStore {
         Ok(())
     }
 
-    async fn delete_attachment(&self, domain: DomainId, path: &str) -> Result<bool> {
+    async fn delete_asset(&self, table: AssetTable, domain: DomainId, path: &str) -> Result<bool> {
+        let sql = asset_sql(table);
+        let key = vec![Value::Integer(domain.0), Value::Text(path.to_string())];
         // The blob goes first and by hand: this connection does not enable
         // `PRAGMA foreign_keys`, so the declared cascade would not fire and the
         // blob would outlive its row.
-        let key = vec![Value::Integer(domain.0), Value::Text(path.to_string())];
-        self.conn
-            .execute(
-                "DELETE FROM attachment_blob WHERE attachment_id IN \
-                 (SELECT id FROM attachment WHERE domain_id=?1 AND path=?2)",
-                key.clone(),
-            )
-            .await?;
-        let n = self
-            .conn
-            .execute("DELETE FROM attachment WHERE domain_id=?1 AND path=?2", key)
-            .await?;
+        if let Some(blobs) = sql.delete_blobs {
+            self.conn.execute(blobs, key.clone()).await?;
+        }
+        let n = self.conn.execute(sql.delete, key).await?;
         Ok(n > 0)
     }
 
-    async fn get_attachment(&self, domain: DomainId, path: &str) -> Result<Option<AttachmentRow>> {
+    async fn get_asset(
+        &self,
+        table: AssetTable,
+        domain: DomainId,
+        path: &str,
+    ) -> Result<Option<AttachmentRow>> {
         let row = query_first(
             &self.conn,
-            "SELECT path, sha256, mime, size, modified FROM attachment \
-             WHERE domain_id=?1 AND path=?2",
+            asset_sql(table).get,
             vec![Value::Integer(domain.0), Value::Text(path.to_string())],
         )
         .await?;
         Ok(row.as_ref().map(attachment_from_row))
     }
 
-    async fn list_attachments(&self, domain: DomainId) -> Result<Vec<AttachmentRow>> {
-        // TEXT sorts byte-wise here, the order the Postgres twin pins itself to
-        // with an explicit `COLLATE "C"`.
+    async fn list_assets(&self, table: AssetTable, domain: DomainId) -> Result<Vec<AttachmentRow>> {
         let rows = query_all(
             &self.conn,
-            "SELECT path, sha256, mime, size, modified FROM attachment \
-             WHERE domain_id=?1 ORDER BY path",
+            asset_sql(table).list,
             vec![Value::Integer(domain.0)],
         )
         .await?;

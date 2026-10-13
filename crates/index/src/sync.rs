@@ -98,7 +98,8 @@ use crystalline_core::{
 use crate::embed::{ChunkParams, chunk_engram};
 use crate::error::{IndexError, Result};
 use crate::store::{
-    AttachmentRow, DomainId, DomainKind, EngramRecord, FileStamp, NewChunk, RebuildKind, Store,
+    AssetTable, AttachmentRow, DomainId, DomainKind, EngramRecord, FileStamp, NewChunk,
+    RebuildKind, Store,
 };
 
 /// Maximum concurrent hashing or parsing tasks.
@@ -972,6 +973,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
     if let Err(e) = apply_attachments(
         store,
         domain,
+        AssetTable::Engram,
         assets,
         asset_deletes,
         assets_complete,
@@ -1321,7 +1323,7 @@ pub async fn resolve_forward_refs<S: Store + ?Sized>(
     Ok((total_relations, total_links))
 }
 
-/// Reconcile a domain's attachment rows with the assets the scan found.
+/// Reconcile a domain's rows of `table` with the assets the scan found.
 ///
 /// The rows are metadata only, so this is deliberately not the engram pipeline:
 /// there is no move detection (an asset carries no permalink, so a rename is a
@@ -1336,6 +1338,7 @@ pub async fn resolve_forward_refs<S: Store + ?Sized>(
 async fn apply_attachments<S: Store + ?Sized>(
     store: &S,
     domain: DomainId,
+    table: AssetTable,
     assets: Vec<AssetCandidate>,
     deletes: Vec<String>,
     complete: bool,
@@ -1345,7 +1348,7 @@ async fn apply_attachments<S: Store + ?Sized>(
         return Ok(());
     }
     let existing: HashMap<String, AttachmentRow> = store
-        .list_attachments(domain)
+        .list_assets(table, domain)
         .await?
         .into_iter()
         .map(|row| (row.path.clone(), row))
@@ -1398,18 +1401,18 @@ async fn apply_attachments<S: Store + ?Sized>(
             size,
             modified,
         };
-        store.upsert_attachment(domain, &row).await?;
+        store.upsert_asset(table, domain, &row).await?;
     }
 
     if complete {
         for path in existing.keys() {
             if !seen.contains(path) {
-                store.delete_attachment(domain, path).await?;
+                store.delete_asset(table, domain, path).await?;
             }
         }
     } else {
         for path in deletes {
-            store.delete_attachment(domain, &path).await?;
+            store.delete_asset(table, domain, &path).await?;
         }
     }
     Ok(())
