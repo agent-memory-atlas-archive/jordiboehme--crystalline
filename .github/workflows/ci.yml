@@ -367,7 +367,8 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo nextest run --workspace --profile ci --locked 2>&1 | tee nextest.log
+          # The log goes to the runner's temp folder, never the workspace.
+          cargo nextest run --workspace --profile ci --locked 2>&1 | tee "$RUNNER_TEMP/nextest.log"
 
       # A test that passed on its retry is FLAKY in the log. Show each as a
       # warning on the run; the job stays green.
@@ -376,7 +377,7 @@ jobs:
         shell: bash
         run: |
           # CARGO_TERM_COLOR=always puts colour codes in the log; strip them.
-          sed $'s/\x1b\\[[0-9;]*m//g' nextest.log | grep -E '^ *FLAKY ' | while read -r line; do
+          sed $'s/\x1b\\[[0-9;]*m//g' "$RUNNER_TEMP/nextest.log" | grep -E '^ *FLAKY ' | while read -r line; do
             echo "::warning::flaky test: ${line}"
           done || true
 
