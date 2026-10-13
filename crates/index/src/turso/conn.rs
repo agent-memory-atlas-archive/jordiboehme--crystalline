@@ -152,6 +152,10 @@ impl Conn {
 
     /// Prepare a read to run many times, in or out of a transaction. Only a
     /// `SELECT` is accepted: a read changes nothing a replay has to repeat.
+    /// Its runs are neither journalled nor retried, so a refused read here
+    /// fails as it did before the retry existed, and a journal left behind by
+    /// a transaction it dropped is reset by the next statement through
+    /// [`Conn::run`].
     pub(crate) async fn prepare_read(&self, sql: &str) -> turso::Result<Statement> {
         debug_assert!(is_read(sql), "prepare_read takes a SELECT: {sql}");
         if !is_read(sql) {
@@ -188,7 +192,9 @@ impl Conn {
     }
 
     async fn run(&self, shape: Shape, sql: &str, params: Params) -> turso::Result<Outcome> {
-        let was_autocommit = self.conn.is_autocommit()?;
+        // An unknown state counts as autocommit, as in `abandon`: then no
+        // replay is tried and the journal is reset.
+        let was_autocommit = self.conn.is_autocommit().unwrap_or(true);
         let err = match self.once(shape, sql, params.clone()).await {
             Ok(outcome) => {
                 self.record(shape, sql, params, &outcome, was_autocommit)?;
@@ -200,7 +206,7 @@ impl Conn {
                 return Err(err);
             }
         };
-        let replayed = !was_autocommit && self.conn.is_autocommit()?;
+        let replayed = !was_autocommit && self.conn.is_autocommit().unwrap_or(true);
         if replayed {
             hook::event("replay");
             tracing::warn!(
@@ -312,7 +318,7 @@ impl Conn {
         outcome: &Outcome,
         was_autocommit: bool,
     ) -> turso::Result<()> {
-        let autocommit = self.conn.is_autocommit()?;
+        let autocommit = self.conn.is_autocommit().unwrap_or(true);
         let mut journal = self.lock();
         if autocommit {
             *journal = Journal::Idle;
