@@ -85,7 +85,9 @@ pub fn read_provenance(source: &str) -> Provenance {
 /// `source` with its records replaced by `provenance`: the key block is
 /// rewritten in place, appended when absent, removed when `provenance` is
 /// empty. A page with no frontmatter gets one only when there is something
-/// to record. `Err` when the frontmatter cannot be cut into key blocks.
+/// to record, and a frontmatter that held nothing but the records goes with
+/// them; one the author wrote (an empty one too) stays. `Err` when the
+/// frontmatter cannot be cut into key blocks.
 pub fn write_provenance(source: &str, provenance: &Provenance) -> Result<String, String> {
     let Some(parts) = split_frontmatter(source) else {
         if provenance.is_empty() {
@@ -118,7 +120,8 @@ pub fn write_provenance(source: &str, provenance: &Provenance) -> Result<String,
     if !placed && !provenance.is_empty() {
         yaml.push_str(&provenance_block(provenance)?);
     }
-    if yaml.trim().is_empty() {
+    let had_records = blocks.blocks.iter().any(|b| b.key == PROVENANCE_KEY);
+    if had_records && yaml.trim().is_empty() {
         return Ok(parts.body.trim_start_matches(['\n', '\r']).to_string());
     }
     Ok(format!("{}{yaml}{}{}", parts.open, parts.close, parts.body))
@@ -206,6 +209,12 @@ mod tests {
             read_provenance("---\nreflection: [broken\n---\n"),
             Provenance::new()
         );
+    }
+
+    #[test]
+    fn an_empty_frontmatter_the_author_wrote_is_kept() {
+        let page = "---\n---\n\n# P\n";
+        assert_eq!(write_provenance(page, &Provenance::new()).unwrap(), page);
     }
 
     #[test]

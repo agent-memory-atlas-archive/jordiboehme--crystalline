@@ -186,23 +186,13 @@ pub fn assign_ids(
         }
         // No id line, or a copy of one an earlier heading holds: a fresh id
         // goes on the line under the heading, in place of the copy.
-        let heading = &source[..h.line_end];
-        out.push_str(&source[at..h.line_end]);
-        if !heading.ends_with('\n') {
-            out.push('\n');
-        }
         let id = loop {
             let id = mint();
             if in_page.insert(id.clone()) {
                 break id;
             }
         };
-        out.push_str(&id_line(&id));
-        out.push_str(if heading.ends_with("\r\n") {
-            "\r\n"
-        } else {
-            "\n"
-        });
+        push_heading_with_id(&mut out, source, at, h, &id);
         seen.insert(id.clone());
         minted.push(id);
         at = existing.map_or(h.line_end, |(_, next)| next);
@@ -213,20 +203,22 @@ pub fn assign_ids(
 
 /// Give a heading that lost its id line (an editor or an agent that does
 /// not keep HTML comments) the id `previous` holds under the same heading
-/// text, unless `incoming` already carries that id. First match wins, and
-/// an id is given back once. Every other byte is kept.
+/// text, unless `incoming` already carries that id. Headings with the same
+/// text are matched in page order, and one that had no id in `previous`
+/// takes none: an id anchors threads and provenance, so it never moves to
+/// another heading. An id is given back once. Every other byte is kept.
 pub fn reattach_ids(incoming: &str, previous: &str) -> String {
-    let mut spare: Vec<(String, String)> = split_sections(previous)
+    let mut spare: Vec<(String, Option<String>)> = split_sections(previous)
         .into_iter()
         .filter(|s| !s.heading.is_empty())
-        .filter_map(|s| Some((s.heading.clone(), s.id?)))
+        .map(|s| (s.heading, s.id))
         .collect();
     let headings = level_two(incoming);
     let present: BTreeSet<&str> = headings
         .iter()
         .filter_map(|h| id_under(incoming, h).map(|(id, _)| id))
         .collect();
-    spare.retain(|(_, id)| !present.contains(id.as_str()));
+    spare.retain(|(_, id)| id.as_deref().is_none_or(|id| !present.contains(id)));
     let mut out = String::with_capacity(incoming.len() + 64);
     let mut at = 0;
     for h in &headings {
@@ -239,22 +231,38 @@ pub fn reattach_ids(incoming: &str, previous: &str) -> String {
         else {
             continue;
         };
-        let (_, id) = spare.remove(k);
-        let heading = &incoming[..h.line_end];
-        out.push_str(&incoming[at..h.line_end]);
-        if !heading.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push_str(&id_line(&id));
-        out.push_str(if heading.ends_with("\r\n") {
-            "\r\n"
-        } else {
-            "\n"
-        });
+        let (_, Some(id)) = spare.remove(k) else {
+            continue;
+        };
+        push_heading_with_id(&mut out, incoming, at, h, &id);
         at = h.line_end;
     }
     out.push_str(&incoming[at..]);
     out
+}
+
+/// Copy `source[at..]` up to the end of heading `h` and put the id line for
+/// `id` under it, in the heading's line ending. A heading on the last line
+/// without one ends in the page's line ending first (CRLF when the page
+/// uses it), so the id line never mixes the two.
+fn push_heading_with_id(out: &mut String, source: &str, at: usize, h: &HeadingSpan, id: &str) {
+    let heading = &source[at..h.line_end];
+    out.push_str(heading);
+    let eol = if heading.ends_with("\r\n") {
+        "\r\n"
+    } else if heading.ends_with('\n') {
+        "\n"
+    } else {
+        let eol = if source.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        out.push_str(eol);
+        eol
+    };
+    out.push_str(&id_line(id));
+    out.push_str(eol);
 }
 
 /// One section edit on a reflection, through the edit the engram section
@@ -449,6 +457,45 @@ mod tests {
         }
         assert_eq!(parse_id_line("<!-- r:XYZ -->"), None);
         assert_eq!(parse_id_line("  <!-- r:abcd -->  "), Some("abcd"));
+    }
+
+    /// An id anchors threads and provenance, so it never moves to another
+    /// heading with the same text: a duplicate heading that had no id keeps
+    /// having none.
+    #[test]
+    fn an_id_stays_on_its_heading_when_an_earlier_duplicate_has_none() {
+        let page = "# P\n\n## A\n\nHand.\n\n## A\n<!-- r:0b1c2d3e -->\n\nReflected.\n";
+        let bare = "# P\n\n## A\n\nHand.\n\n## A\n\nReflected.\n";
+        assert_eq!(reattach_ids(bare, page), page);
+        let edit = edit_section(
+            page,
+            SectionOp::Replace {
+                include_subsections: false,
+            },
+            "## A",
+            "Changed by hand.",
+        )
+        .unwrap();
+        assert_eq!(
+            edit.text,
+            "# P\n\n## A\n\nChanged by hand.\n\n## A\n<!-- r:0b1c2d3e -->\n\nReflected.\n"
+        );
+    }
+
+    #[test]
+    fn a_last_line_heading_on_a_crlf_page_gets_a_crlf_id_line() {
+        let crlf = "# T\r\n\r\n## A\r\n<!-- r:0b1c2d3e -->\r\nText\r\n## B";
+        let (written, _) = assign_ids(crlf, &BTreeSet::new(), &mut || "abcd0123".into());
+        assert!(
+            written.ends_with("## B\r\n<!-- r:abcd0123 -->\r\n"),
+            "{written:?}"
+        );
+        assert!(!written.replace("\r\n", "").contains('\n'), "{written:?}");
+        let previous = "# T\r\n\r\n## B\r\n<!-- r:0b1c2d3e -->\r\n";
+        assert_eq!(
+            reattach_ids("# T\r\n\r\n## B", previous),
+            "# T\r\n\r\n## B\r\n<!-- r:0b1c2d3e -->\r\n"
+        );
     }
 
     /// Open point 1 (approved): a section edit keeps the section's id line,
