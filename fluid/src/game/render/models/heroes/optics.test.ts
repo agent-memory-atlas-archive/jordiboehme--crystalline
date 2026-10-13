@@ -74,6 +74,14 @@ const BLUE_LIFT = 0.001;
 const BADGE_INK_LIFT = 0.0025;
 
 /**
+ * The most the laser desk's beam may tilt off level, in radians: 2
+ * degrees. It runs level from the lens into the sitter's back, as in the
+ * film's shot; the 0.25.1 review measured an earlier beam dropping about
+ * 21 degrees, which Jordi read as broken.
+ */
+const BEAM_TILT_MAX = (2 * Math.PI) / 180;
+
+/**
  * The eye panel at the original's true size (0.25.1): the faceplate's
  * width and its bottom and top, the eye's centre height (standing eye
  * height) and the lens's radius (a 74 mm glass).
@@ -267,12 +275,12 @@ describe("optics hero models", () => {
     expect(b.hi[0] - b.lo[0]).toBeCloseTo(width, 9);
     expect((b.lo[0] + b.hi[0]) / 2).toBeCloseTo(la, 9);
     expect((b.lo[2] + b.hi[2]) / 2).toBeCloseTo(lh, 9);
-    // Level within 2 degrees: what it rises over its run beyond its own
-    // thickness.
+    // Level within `BEAM_TILT_MAX`: what it rises over its run beyond its
+    // own thickness.
     const run = b.hi[1] - b.lo[1];
     const rise = b.hi[2] - b.lo[2] - width;
     expect(run).toBeGreaterThan(0.1);
-    expect(Math.atan2(Math.abs(rise), run)).toBeLessThan((2 * Math.PI) / 180);
+    expect(Math.atan2(Math.abs(rise), run)).toBeLessThan(BEAM_TILT_MAX);
     // It starts inside the lens disc and ends on the back's rear face.
     expect(b.hi[1]).toBeGreaterThan(lb.lo[1]);
     expect(b.hi[1]).toBeLessThan(lb.hi[1]);
