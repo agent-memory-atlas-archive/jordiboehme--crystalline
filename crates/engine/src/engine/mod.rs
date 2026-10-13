@@ -36,9 +36,10 @@ use crystalline_core::emit::{
 use crystalline_core::relink::Relink;
 use crystalline_core::schema::{self, Schema};
 use crystalline_core::{
-    CrystallineUrl, EVOLVE_ACK_KEY, Engram, EvolveAck, Frontmatter, HarnessKind, LinkTarget,
-    Manifest, YamlValue, domain_name_at, domain_name_of_source, is_lower_hyphen, parse_engram,
-    parse_engram_lossless, slugify,
+    CrystallineUrl, DomainLayout, EVOLVE_ACK_KEY, Engram, EvolveAck, Frontmatter, HarnessKind,
+    LinkTarget, Manifest, PathClass, ReflectionMode, YamlValue, domain_name_at,
+    domain_name_of_source, is_lower_hyphen, parse_engram, parse_engram_lossless, slash_rel,
+    slugify,
 };
 use crystalline_index::{
     AckCounts, AckEntry, AttachmentRow, ChunkParams, DEFAULT_RETIRED_WEIGHT,
@@ -6496,37 +6497,25 @@ fn unique_domain_name(canonical: &Path, cfg: &GlobalConfig) -> String {
 }
 
 /// Every `.md` file under `root` as `(forward-slashed relative path, absolute
-/// path)`, skipping dot-directories and dot-files. Mirrors the sync engine's
-/// walk so `domain import` sees the same files a file-domain sync would.
-fn walk_markdown(root: &Path) -> Vec<(String, PathBuf)> {
+/// path)`, skipping what `layout` calls hidden. Mirrors the sync engine's walk
+/// so `domain import` sees the same files a file-domain sync would.
+fn walk_markdown(root: &Path, layout: &DomainLayout) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
-    let walker = walkdir::WalkDir::new(root)
-        .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !is_hidden(&e.file_name().to_string_lossy()));
+    let walker = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
+        e.depth() == 0 || layout.classify(&slash_rel(root, e.path())) != PathClass::Hidden
+    });
     for entry in walker.filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {
             continue;
         }
-        let fname = entry.file_name().to_string_lossy();
-        if is_hidden(&fname) || !fname.to_lowercase().ends_with(".md") {
+        let rel = slash_rel(root, entry.path());
+        if layout.classify(&rel) == PathClass::Hidden || !rel.to_lowercase().ends_with(".md") {
             continue;
         }
-        let rel = entry
-            .path()
-            .strip_prefix(root)
-            .unwrap_or(entry.path())
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("/");
         out.push((rel, entry.path().to_path_buf()));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
-}
-
-fn is_hidden(name: &str) -> bool {
-    name.starts_with('.') && name != "." && name != ".."
 }
 
 /// Whether a directory exists and contains at least one entry.

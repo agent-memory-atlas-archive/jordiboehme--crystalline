@@ -89,7 +89,7 @@ impl Engine {
             )));
         }
 
-        let files = walk_markdown(src);
+        let files = walk_markdown(src, &DomainLayout::bare(ReflectionMode::Off));
         // A MANIFEST in the batch that switches `read_only` on meets the owner
         // check (decision D10) once, before anything is written: asked inside
         // the loop, a refusal would land after every file that sorts before
@@ -547,7 +547,7 @@ impl Engine {
         let mut files = match self.source_of(&entry) {
             ContentSource::File { root } => {
                 let mut files = Vec::new();
-                for (rel, abs) in walk_markdown(&root) {
+                for (rel, abs) in walk_markdown(&root, &DomainLayout::bare(ReflectionMode::Off)) {
                     // The OKF reserved names are excluded, as everywhere else:
                     // `index.md` is generated from the folder it sits in and
                     // regenerates itself wherever this archive is restored,

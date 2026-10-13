@@ -69,7 +69,9 @@ use crystalline_core::config::{self, DatabaseBackend, DomainEntry, GlobalConfig,
 use crystalline_core::provision;
 use crystalline_core::text::plural;
 use crystalline_core::verify::{self, VerifyOptions};
-use crystalline_core::{HarnessKind, harness_paths};
+use crystalline_core::{
+    DomainLayout, HarnessKind, PathClass, ReflectionMode, harness_paths, slash_rel,
+};
 use crystalline_index::{
     FileStamp, LocalModel, SnapshotChoice, Store, TagCluster, cached_model_dirs, choose_snapshot,
     configured_model_id, local_model, tag_clusters_with_aliases,
@@ -2946,25 +2948,30 @@ fn settle_stray(
 /// engine's own walk so orphan and unindexed detection line up with what a sync
 /// would compute.
 fn markdown_rel_paths(root: &Path) -> Vec<String> {
+    let layout = DomainLayout::at(root, ReflectionMode::Off);
     let mut out = Vec::new();
-    let walker = walkdir::WalkDir::new(root)
-        .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !is_hidden(&e.file_name().to_string_lossy()));
+    let walker = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
+        e.depth() == 0 || layout.classify(&slash_rel(root, e.path())) != PathClass::Hidden
+    });
     for entry in walker.filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {
             continue;
         }
-        let fname = entry.file_name().to_string_lossy();
+        let rel = relative_slash_path(root, entry.path());
         // The OKF reserved names are never indexed (the sync walk skips them),
-        // so counting them here would report every generated index file as
-        // unindexed.
-        if is_hidden(&fname)
-            || crystalline_core::is_reserved_file(&fname)
-            || !fname.to_lowercase().ends_with(".md")
-        {
-            continue;
+        // so counting them would report every generated index file as
+        // unindexed. Markdown in an artifact folder or under assets/ is still
+        // counted here, as it always was.
+        let markdown = rel.to_lowercase().ends_with(".md");
+        match layout.classify(&rel) {
+            PathClass::Engram => out.push(rel),
+            PathClass::Artifact | PathClass::EngramAsset if markdown => out.push(rel),
+            PathClass::Artifact
+            | PathClass::EngramAsset
+            | PathClass::Reserved
+            | PathClass::Hidden
+            | PathClass::Other => {}
         }
-        out.push(relative_slash_path(root, entry.path()));
     }
     out
 }
@@ -3032,10 +3039,6 @@ fn strip_to_slash(root: &Path, p: &Path) -> Option<String> {
             .collect::<Vec<_>>()
             .join("/"),
     )
-}
-
-fn is_hidden(name: &str) -> bool {
-    name.starts_with('.') && name != "." && name != ".."
 }
 
 /// The report's words for who a stale lock used to belong to. A `lock_stale`

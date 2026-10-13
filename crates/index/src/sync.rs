@@ -92,7 +92,8 @@ use tokio::task::JoinSet;
 use walkdir::WalkDir;
 
 use crystalline_core::{
-    MAX_ATTACHMENT_BYTES, PARSE_GENERATION, attachment_mime, parse_engram, validate_asset_path,
+    DomainLayout, MAX_ATTACHMENT_BYTES, PARSE_GENERATION, PathClass, ReflectionMode,
+    attachment_mime, parse_engram, validate_asset_path,
 };
 
 use crate::embed::{ChunkParams, chunk_engram};
@@ -486,10 +487,11 @@ pub async fn scan_domain(
 ) -> Result<DomainScan> {
     let started = Instant::now();
 
-    // Folders the MANIFEST provisions from inside this root hold deployable
-    // artifacts, not engrams, so they are pruned from the walk. Empty whenever
-    // the MANIFEST is absent or unparseable, so nothing is excluded then.
-    let excluded = crystalline_core::in_root_artifact_dirs(root);
+    // What every path of this domain is: the MANIFEST's in-root artifact
+    // folders are pruned with the hidden ones (none when the MANIFEST is
+    // absent or unparseable), the reserved `assets/` folder is routed to its
+    // rows, and only markdown is an engram.
+    let layout = DomainLayout::at(root, ReflectionMode::Off);
 
     // Walk the folder, skipping dot-directories, dot-files and non-markdown.
     let mut current: HashMap<String, Scanned> = HashMap::new();
@@ -502,11 +504,7 @@ pub async fn scan_domain(
         // Prune dot-directories and dot-files, but never the walk root itself
         // (a temp or dotted root would otherwise prune the whole tree), and
         // prune the provisioned artifact folders wholesale.
-        .filter_entry(|e| {
-            e.depth() == 0
-                || (!is_hidden(e.file_name().to_string_lossy().as_ref())
-                    && !is_excluded(e.path(), &excluded))
-        })
+        .filter_entry(|e| e.depth() == 0 || layout.enters_dir(&rel_path(root, e.path())))
     {
         let entry = match entry {
             Ok(e) => e,
@@ -534,53 +532,53 @@ pub async fn scan_domain(
             continue;
         }
         let fname = entry.file_name().to_string_lossy();
-        if is_hidden(&fname) {
-            continue;
-        }
         let rel = rel_path(root, entry.path());
-        // The `assets/` folder is reserved for attachments: nothing under it is
-        // ever an engram, whatever its extension, so the branch always ends the
-        // iteration. A file that is not attachable is skipped outright. The
-        // folder is matched case-insensitively, the same question the engine's
-        // write refusals and the daemon's watcher ask, so a directory that
-        // differs only in case cannot smuggle an engram in on APFS or NTFS.
-        if crystalline_core::is_under_assets(&rel) {
-            let Ok(meta) = entry.metadata() else { continue };
-            let mtime = file_mtime(&meta);
-            if let Some(candidate) =
-                asset_candidate(root, &rel, entry.path(), &fname, mtime, meta.len())
-            {
-                assets.push(candidate);
+        match layout.classify(&rel) {
+            // The `assets/` folder is reserved for attachments: nothing under
+            // it is ever an engram, whatever its extension, so the branch
+            // always ends the iteration. A file that is not attachable is
+            // skipped outright. The folder is matched case-insensitively, the
+            // same question the engine's write refusals and the daemon's
+            // watcher ask, so a directory that differs only in case cannot
+            // smuggle an engram in on APFS or NTFS.
+            PathClass::EngramAsset => {
+                let Ok(meta) = entry.metadata() else { continue };
+                let mtime = file_mtime(&meta);
+                if let Some(candidate) =
+                    asset_candidate(root, &rel, entry.path(), &fname, mtime, meta.len())
+                {
+                    assets.push(candidate);
+                }
             }
-            continue;
-        }
-        // OKF reserves `index.md` and `log.md` at every level: they are
-        // navigation surfaces, never concept documents, so they are skipped
-        // here the way dot-files are. Nothing downstream needs a filter: they
-        // never reach a store row, an embedding or a search hit, and a row
-        // left over from before this exclusion disappears on the next scan
-        // (absent on disk means deleted).
-        if crystalline_core::is_reserved_file(&fname) || !fname.to_lowercase().ends_with(".md") {
-            continue;
-        }
-        let meta = match entry.metadata() {
-            Ok(meta) => meta,
-            Err(err) => {
-                unread += 1;
-                warn_unreadable_once(name, Some(entry.path()), &err.to_string());
-                continue;
+            PathClass::Engram => {
+                let meta = match entry.metadata() {
+                    Ok(meta) => meta,
+                    Err(err) => {
+                        unread += 1;
+                        warn_unreadable_once(name, Some(entry.path()), &err.to_string());
+                        continue;
+                    }
+                };
+                let mtime = file_mtime(&meta);
+                current.insert(
+                    rel.clone(),
+                    Scanned {
+                        rel,
+                        abs: entry.path().to_path_buf(),
+                        mtime,
+                        size: meta.len(),
+                    },
+                );
             }
-        };
-        let mtime = file_mtime(&meta);
-        current.insert(
-            rel.clone(),
-            Scanned {
-                rel,
-                abs: entry.path().to_path_buf(),
-                mtime,
-                size: meta.len(),
-            },
-        );
+            // Hidden files, artifact folders and files that are not markdown
+            // are never engrams. OKF reserves `index.md` and `log.md` at every
+            // level: they are navigation surfaces, never concept documents, so
+            // they are skipped here the way dot-files are. Nothing downstream
+            // needs a filter: they never reach a store row, an embedding or a
+            // search hit, and a row left over from before this exclusion
+            // disappears on the next scan (absent on disk means deleted).
+            PathClass::Hidden | PathClass::Reserved | PathClass::Artifact | PathClass::Other => {}
+        }
     }
 
     // Deleted candidates: recorded files no longer present on disk. A full walk
@@ -647,9 +645,9 @@ pub async fn scan_paths(
 ) -> DomainScan {
     let started = Instant::now();
 
-    // The same artifact folders the full walk prunes: a targeted scan must index
-    // exactly what a full scan would, never a file the walk would have skipped.
-    let excluded = crystalline_core::in_root_artifact_dirs(root);
+    // The same layout the full walk asks: a targeted scan must index exactly
+    // what a full scan would, never a file the walk would have skipped.
+    let layout = DomainLayout::at(root, ReflectionMode::Off);
 
     let mut current: HashMap<String, Scanned> = HashMap::new();
     let mut deleted_paths: Vec<String> = Vec::new();
@@ -663,11 +661,13 @@ pub async fn scan_paths(
             continue;
         }
         let abs = root.join(&rel);
-        let hidden = rel.split('/').any(is_hidden);
+        let class = layout.classify(&rel);
         // The reserved `assets/` prefix, classified exactly as the walk does it:
         // an attachable file present on disk is an upsert, a recorded path that
         // is gone is a delete, and nothing under the prefix is ever an engram.
-        if crystalline_core::is_under_assets(&rel) {
+        // A hidden, reserved or artifact path under the prefix is not of this
+        // class and takes the general arm below, as the walk never indexed it.
+        if class == PathClass::EngramAsset {
             // `symlink_metadata`, not `metadata`: the complete walk uses
             // `WalkDir`'s default `follow_links(false)` and indexes nothing
             // through a symlink, so following one here would give a symlinked
@@ -675,7 +675,7 @@ pub async fn scan_paths(
             // link is neither a file nor a delete candidate, so it falls to the
             // `Ok(_)` arm and is left alone.
             match std::fs::symlink_metadata(&abs) {
-                Ok(meta) if meta.is_file() && !hidden && !is_excluded(&abs, &excluded) => {
+                Ok(meta) if meta.is_file() => {
                     let fname = rel.rsplit('/').next().unwrap_or(rel.as_str());
                     let mtime = file_mtime(&meta);
                     if let Some(candidate) =
@@ -703,20 +703,12 @@ pub async fn scan_paths(
             }
             continue;
         }
-        // The OKF reserved names the full walk skips (see `scan_domain`), so a
-        // targeted pass indexes exactly what a full pass would.
-        let reserved = crystalline_core::is_reserved_path(&rel);
-        let is_md = rel.to_lowercase().ends_with(".md");
         match std::fs::metadata(&abs) {
-            // An existing markdown file, filtered exactly as the walk filters:
-            // a change candidate, prefiltered against the stamps downstream.
-            Ok(meta)
-                if meta.is_file()
-                    && is_md
-                    && !hidden
-                    && !reserved
-                    && !is_excluded(&abs, &excluded) =>
-            {
+            // An existing markdown file, filtered exactly as the walk filters
+            // (not hidden, not an OKF reserved name, not in an artifact
+            // folder): a change candidate, prefiltered against the stamps
+            // downstream.
+            Ok(meta) if meta.is_file() && class == PathClass::Engram => {
                 let mtime = meta
                     .modified()
                     .ok()
@@ -735,8 +727,8 @@ pub async fn scan_paths(
                 );
             }
             // Exists but is not an indexable markdown file (a directory, a
-            // non-markdown file, a hidden or artifact path): ignore it, matching
-            // the walk which never indexes it either.
+            // non-markdown file, a hidden, reserved or artifact path): ignore
+            // it, matching the walk which never indexes it either.
             Ok(_) => {}
             // Not found on disk: a recorded path is a delete candidate (scoped
             // to the given paths, no walk), an unrecorded one is a no-op.
@@ -1896,15 +1888,6 @@ fn warn_unreadable_once(domain: &str, path: Option<&Path>, reason: &str) {
             path.display()
         );
     }
-}
-
-fn is_hidden(name: &str) -> bool {
-    name.starts_with('.') && name != "." && name != ".."
-}
-
-/// Whether `path` is one of the excluded artifact folders or lives inside one.
-fn is_excluded(path: &Path, excluded: &[PathBuf]) -> bool {
-    excluded.iter().any(|dir| path.starts_with(dir))
 }
 
 fn rel_path(root: &Path, path: &Path) -> String {

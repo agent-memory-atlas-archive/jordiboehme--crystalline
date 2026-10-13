@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use crystalline_core::GeneratedIndexes;
+use crystalline_core::{DomainLayout, GeneratedIndexes, ReflectionMode};
 use walkdir::WalkDir;
 
 use crate::error::RemoteError;
@@ -296,6 +296,10 @@ pub(crate) fn detect_local_changes_with(
     base_copies: Option<&Path>,
     lf_digests: Option<&BTreeMap<String, String>>,
 ) -> Result<LocalChanges, RemoteError> {
+    // What each path of the domain is. Every class takes part in a share
+    // today; a class that never travels with the engrams says so here, on the
+    // base and on the walk alike, so it never turns into a proposed deletion.
+    let layout = DomainLayout::bare(ReflectionMode::Off);
     let mut changes = Vec::new();
     let mut skipped_large = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -324,7 +328,9 @@ pub(crate) fn detect_local_changes_with(
     // reach for by accident.
     let base: BTreeMap<&str, &BaseStamp> = base
         .iter()
-        .filter(|(rel, _)| participates_in_change_detection(rel, indexes))
+        .filter(|(rel, _)| {
+            participates_in_change_detection(rel, indexes) && layout.classify(rel).shares()
+        })
         .map(|(rel, stamp)| (rel.as_str(), stamp))
         .collect();
 
@@ -350,7 +356,7 @@ pub(crate) fn detect_local_changes_with(
             continue;
         }
         let rel = rel_path(domain_root, entry.path());
-        if !participates_in_change_detection(&rel, indexes) {
+        if !(participates_in_change_detection(&rel, indexes) && layout.classify(&rel).shares()) {
             continue;
         }
 

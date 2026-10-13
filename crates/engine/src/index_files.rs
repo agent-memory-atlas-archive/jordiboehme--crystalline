@@ -21,7 +21,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crystalline_core::{IndexEntry, render_index};
+use crystalline_core::{
+    DomainLayout, IndexEntry, PathClass, ReflectionMode, render_index, slash_rel,
+};
 use walkdir::WalkDir;
 
 /// What one regeneration pass did.
@@ -133,15 +135,13 @@ impl Walked {
 fn collect(root: &Path) -> Walked {
     let mut walked = Walked::default();
 
-    // The same exclusions the sync walk applies, so the index lists exactly the
-    // files Crystalline indexes: no dot-files, no dot-directories and none of
-    // the artifact folders the MANIFEST provisions from inside this root.
-    let excluded = crystalline_core::in_root_artifact_dirs(root);
-    let walker = WalkDir::new(root).into_iter().filter_entry(|e| {
-        e.depth() == 0
-            || (!is_hidden(e.file_name().to_string_lossy().as_ref())
-                && !excluded.iter().any(|dir| e.path().starts_with(dir)))
-    });
+    // The same layout the sync walk applies, so the index lists exactly the
+    // files Crystalline indexes: no hidden file or folder and none of the
+    // artifact folders the MANIFEST provisions from inside this root.
+    let layout = DomainLayout::at(root, ReflectionMode::Off);
+    let walker = WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| e.depth() == 0 || !layout.prunes_dir(&slash_rel(root, e.path())));
 
     for entry in walker.filter_map(Result::ok) {
         let Some(rel) = rel_path(root, entry.path()) else {
@@ -151,16 +151,21 @@ fn collect(root: &Path) -> Walked {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
-        if crystalline_core::is_reserved_file(&name) {
-            if name == crystalline_core::INDEX_FILE {
-                walked
-                    .existing_indexes
-                    .insert(parent_of(&rel).unwrap_or_default());
+        match layout.classify(&rel) {
+            PathClass::Reserved => {
+                if name == crystalline_core::INDEX_FILE {
+                    walked
+                        .existing_indexes
+                        .insert(parent_of(&rel).unwrap_or_default());
+                }
+                continue;
             }
-            continue;
-        }
-        if is_hidden(&name) || !name.to_lowercase().ends_with(".md") {
-            continue;
+            PathClass::Engram | PathClass::EngramAsset if name.to_lowercase().ends_with(".md") => {}
+            PathClass::Engram
+            | PathClass::EngramAsset
+            | PathClass::Hidden
+            | PathClass::Artifact
+            | PathClass::Other => continue,
         }
         let folder = parent_of(&rel).unwrap_or_default();
         let (title, description) = title_and_description(entry.path());
@@ -228,10 +233,6 @@ fn parent_of(rel: &str) -> Option<String> {
         Some(i) => Some(rel[..i].to_string()),
         None => Some(String::new()),
     }
-}
-
-fn is_hidden(name: &str) -> bool {
-    name.starts_with('.')
 }
 
 /// Write through a sibling temp file and rename, so a reader (or the watcher)
