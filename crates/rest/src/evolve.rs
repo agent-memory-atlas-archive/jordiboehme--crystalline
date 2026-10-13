@@ -23,6 +23,7 @@ use super::{
     ApiError, ApiJson, ApiPath, ApiQuery, ProblemDetail, RestState, csv, refuse_read_only,
     require_domain_write,
 };
+use crate::engine::EngineError;
 use crate::params::{EvolveParams, ListDomainsParams};
 
 /// The query string `GET /evolve` takes, mirroring [`EvolveParams`] minus its
@@ -566,7 +567,13 @@ pub async fn unacknowledge(
             Some(&format!("human:{}", caller.name())),
             &identity.scope(),
         )
-        .await?;
+        .await
+        // A conflict on this route is a 409 like the one below, never the
+        // generic 422 the engine's Conflict maps to elsewhere.
+        .map_err(|e| match e {
+            EngineError::Conflict(message) => ApiError::conflict(message),
+            other => other.into(),
+        })?;
     // An entry for the pair left on any page keeps the row silenced, so the
     // answer says so even when other entries went: a 204 here would read as
     // done while the next sweep still shows the row acknowledged.
