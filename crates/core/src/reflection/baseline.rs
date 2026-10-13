@@ -5,44 +5,70 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::reflection::provenance::{read_provenance, write_provenance};
-use crate::reflection::sections::{TOP_SECTION, id_line, section_hash, split_sections};
+use crate::reflection::sections::{
+    TOP_SECTION, id_line, parse_id_line, section_hash, split_sections,
+};
 
 /// The marker that opens the top block of a baseline file.
 fn top_marker() -> String {
     id_line(TOP_SECTION)
 }
 
+/// The section an entry line opens: a `##` heading directly followed by an
+/// id line, which is how [`render_baseline`] writes every section.
+fn entry_start(line: &str, next: Option<&&str>) -> Option<String> {
+    let (level, _) = crate::parse::parse_heading(line)?;
+    let id = parse_id_line(next?)?;
+    (level == 2).then(|| id.to_string())
+}
+
 /// The sections of a baseline file, in file order.
+///
+/// Entries are cut where an id line stands under a `##` heading, not by the
+/// heading walker: a baseline joins sections reflected at different times,
+/// so one entry may end inside a fence it never closed, and that must not
+/// hide the entries after it. A `##` heading with no id line, fenced or not,
+/// stays part of its entry.
 pub fn parse_baseline(text: &str) -> Vec<(String, String)> {
     if text.trim().is_empty() {
         return Vec::new();
     }
-    let marker = top_marker();
-    let (top, rest) = match text.strip_prefix(&marker) {
-        Some(after) => {
-            let after = after.strip_prefix('\n').unwrap_or(after);
-            // The first section heading outside a fence ends the top block,
-            // read by the same walker the sections are split by.
-            match crate::headings::heading_spans(after)
-                .into_iter()
-                .find(|h| h.level == 2)
-            {
-                Some(h) => (Some(&after[..h.line_start]), &after[h.line_start..]),
-                None => (Some(after), ""),
-            }
-        }
-        None => (None, text),
-    };
+    let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
     let mut out = Vec::new();
-    if let Some(top) = top {
-        out.push((TOP_SECTION.to_string(), top.to_string()));
+    let mut current: Option<(String, Vec<&str>)> = None;
+    let mut k = 0;
+    if lines[0] == top_marker() {
+        current = Some((TOP_SECTION.to_string(), Vec::new()));
+        k = 1;
     }
-    for section in split_sections(rest).into_iter().skip(1) {
-        if let Some(id) = section.id {
-            out.push((id, section.text));
+    while k < lines.len() {
+        let line = lines[k];
+        if let Some(id) = entry_start(line, lines.get(k + 1)) {
+            out.extend(current.take().map(entry_text));
+            current = Some((id, vec![line]));
+            k += 2;
+            continue;
         }
+        if let Some((_, body)) = current.as_mut() {
+            body.push(line);
+        }
+        k += 1;
     }
+    out.extend(current.map(entry_text));
     out
+}
+
+/// One parsed entry: its lines without the blank lines that separate it from
+/// the next one.
+fn entry_text((id, mut lines): (String, Vec<&str>)) -> (String, String) {
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    let mut text = lines.join("\n");
+    if !lines.is_empty() {
+        text.push('\n');
+    }
+    (id, text)
 }
 
 /// A baseline file for these sections: the top block first when present,
@@ -117,7 +143,7 @@ fn heading_of(text: &str) -> String {
         .next()
         .and_then(crate::parse::parse_heading)
         .filter(|(level, _)| *level == 2)
-        .map(|(_, heading)| heading.trim().to_string())
+        .map(|(_, heading)| heading)
         .unwrap_or_default()
 }
 
@@ -207,22 +233,24 @@ pub struct Relinked {
 /// file moved and the links follow it. The baseline gets the same rewrite,
 /// so the feedback diff stays empty, and every section whose text matched
 /// its `reflected` hash before carries the hash of its new text. A section a
-/// person had already changed keeps its old hash and stays a change. Nothing
-/// changes when no link did.
+/// person had already changed keeps its old hash and stays a change. The
+/// baseline is rewritten even when the page holds no such link (a removed
+/// section may), and the page is left byte for byte when none of its links
+/// changed.
 pub fn relink(
     page: &str,
     baseline: &str,
     rewrite: &dyn Fn(&str) -> (String, usize),
 ) -> Result<Relinked, String> {
+    let (new_baseline, _) = rewrite(baseline);
     let (rewritten, links) = rewrite(page);
     if links == 0 {
         return Ok(Relinked {
             page: page.to_string(),
-            baseline: baseline.to_string(),
+            baseline: new_baseline,
             links: 0,
         });
     }
-    let (new_baseline, _) = rewrite(baseline);
     let before: BTreeMap<String, String> = split_sections(page)
         .into_iter()
         .filter_map(|s| Some((s.id?, section_hash(&s.text))))
@@ -234,10 +262,12 @@ pub fn relink(
         let Some(record) = provenance.get_mut(&id) else {
             continue;
         };
+        let now = section_hash(&section.text);
         if record.reflected.is_some()
             && record.reflected.as_deref() == before.get(&id).map(String::as_str)
+            && record.reflected.as_deref() != Some(now.as_str())
         {
-            record.reflected = Some(section_hash(&section.text));
+            record.reflected = Some(now);
             carried = true;
         }
     }
@@ -414,5 +444,130 @@ mod tests {
             (page.as_str(), 0),
             "no link, no byte changed"
         );
+    }
+    #[test]
+    fn an_unclosed_fence_in_one_entry_does_not_hide_the_entries_after_it() {
+        let text = render_baseline(&[
+            ("_top".into(), "\n# T\n\n```\nstill open\n".into()),
+            ("aaaa1111".into(), "## Code\n\n```\nfoo\n".into()),
+            ("bbbb2222".into(), "## New\n\nText.\n".into()),
+            ("cccc3333".into(), "## Last\n\nMore.\n".into()),
+        ]);
+        let ids: Vec<String> = parse_baseline(&text)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids, ["_top", "aaaa1111", "bbbb2222", "cccc3333"], "{text}");
+        let page = "## Code\n<!-- r:aaaa1111 -->\n\n```\nfoo\n```\n\n## New\n<!-- r:bbbb2222 -->\n\nText.\n";
+        let left: Vec<(Option<String>, &str)> = feedback_changes(page, &text)
+            .into_iter()
+            .map(|c| (c.id, c.kind.as_str()))
+            .collect();
+        assert_eq!(
+            left,
+            [
+                (Some("_top".to_string()), "changed"),
+                (Some("aaaa1111".to_string()), "changed"),
+                (Some("cccc3333".to_string()), "removed"),
+            ],
+            "the settled section after the open fence is no change"
+        );
+    }
+
+    #[test]
+    fn relink_rewrites_the_baseline_when_only_the_baseline_holds_the_link() {
+        let page = "## Kept\n<!-- r:aaaa1111 -->\n\nNo link here.\n";
+        let baseline = render_baseline(&[
+            ("aaaa1111".into(), "## Kept\n\nNo link here.\n".into()),
+            (
+                "dddd4444".into(),
+                "## Gone\n\nSee [rollback](rollback.md).\n".into(),
+            ),
+        ]);
+        let rewrite = |s: &str| {
+            let n = s.matches("](rollback.md)").count();
+            (s.replace("](rollback.md)", "](../guides/rollback.md)"), n)
+        };
+        let out = relink(page, &baseline, &rewrite).unwrap();
+        assert_eq!(
+            (out.page.as_str(), out.links),
+            (page, 0),
+            "the page is untouched"
+        );
+        assert!(
+            out.baseline.contains("](../guides/rollback.md)"),
+            "{}",
+            out.baseline
+        );
+    }
+
+    #[test]
+    fn relink_leaves_the_frontmatter_alone_when_no_hash_moves() {
+        let body = "## Kept\n<!-- r:aaaa1111 -->\n\nNo link here.\n\n## Other\n<!-- r:0b1c2d3e -->\n\nSee [rollback](rollback.md), changed by a person.\n";
+        let kept = split_sections(body)[1].text.clone();
+        // Written by hand with a four-space indent, which a re-emit would change.
+        let page = format!(
+            "---\nreflection:\n    aaaa1111:\n        reflected: {}\n    0b1c2d3e:\n        reflected: an older hash\n---\n\n{body}",
+            section_hash(&kept)
+        );
+        let rewrite = |s: &str| {
+            let n = s.matches("](rollback.md)").count();
+            (s.replace("](rollback.md)", "](../guides/rollback.md)"), n)
+        };
+        let out = relink(&page, "", &rewrite).unwrap();
+        assert_eq!(out.links, 1);
+        assert_eq!(
+            out.page,
+            page.replace("](rollback.md)", "](../guides/rollback.md)")
+        );
+    }
+
+    #[test]
+    fn crlf_renames_reorders_and_a_changed_top_read_as_people_expect() {
+        let lf = feedback_changes(CURRENT, &baseline());
+        let crlf = feedback_changes(&CURRENT.replace('\n', "\r\n"), &baseline());
+        let kinds = |c: &[SectionChange]| -> Vec<(Option<String>, String, &'static str)> {
+            c.iter()
+                .map(|c| (c.id.clone(), c.heading.clone(), c.kind.as_str()))
+                .collect()
+        };
+        assert_eq!(
+            kinds(&crlf),
+            kinds(&lf),
+            "a CRLF page reads like its LF twin"
+        );
+
+        let renamed = CURRENT.replace("## Kept\n", "## Kept, renamed\n");
+        let changes = feedback_changes(&renamed, &baseline());
+        let kept = changes
+            .iter()
+            .find(|c| c.id.as_deref() == Some("aaaa1111"))
+            .unwrap();
+        assert_eq!(
+            (kept.heading.as_str(), kept.kind),
+            ("Kept, renamed", ChangeKind::Changed)
+        );
+        assert!(
+            kept.before.starts_with("## Kept\n") && kept.after.starts_with("## Kept, renamed\n")
+        );
+
+        let page =
+            "## One\n<!-- r:aaaa1111 -->\n\nFirst.\n\n## Two\n<!-- r:bbbb2222 -->\n\nSecond.\n";
+        let reflected = advance_baseline("", page, &["aaaa1111".into(), "bbbb2222".into()]);
+        let swapped =
+            "## Two\n<!-- r:bbbb2222 -->\n\nSecond.\n\n## One\n<!-- r:aaaa1111 -->\n\nFirst.\n";
+        assert!(
+            feedback_changes(swapped, &reflected).is_empty(),
+            "a reorder alone is no change"
+        );
+
+        let top = CURRENT.replace("Intro.", "A new intro.");
+        let changes = feedback_changes(&top, &baseline());
+        let first = &changes[0];
+        assert_eq!(
+            (first.id.as_deref(), first.heading.as_str(), first.kind),
+            (Some("_top"), "", ChangeKind::Changed)
+        );
+        assert!(first.before.contains("Intro.") && first.after.contains("A new intro."));
     }
 }
