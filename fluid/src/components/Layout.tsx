@@ -994,7 +994,7 @@ function TopBar({
         controls keep aligning with the content's edge at either width.
       */}
       <div
-        className={`mx-auto flex h-14 w-full items-center gap-1 px-2 md:gap-3 md:px-4 ${
+        className={`mx-auto flex h-14 w-full items-center gap-0.5 px-1 md:gap-3 md:px-4 ${
           fullWidth ? "" : "max-w-350"
         }`}
       >
