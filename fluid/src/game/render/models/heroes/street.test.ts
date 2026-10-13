@@ -61,6 +61,7 @@ import {
   OPEN_BODY,
   OPEN_METAL,
   OPEN_SADDLE,
+  OPEN_SIDE_GLOW,
   OPEN_SEAT,
   OPEN_TYRE,
   OPEN_WHEELS,
@@ -891,10 +892,19 @@ describe("the neon bike's open variant (0.25.2)", () => {
           ).toBe(false);
         }
       expect(open).toBeGreaterThan(40);
-      // And it does reach into the middle, so the body wraps into the ring.
-      expect(
-        insideOutline(OPEN_BODY, w.a - Math.sign(w.a) * 0.1, w.r + 0.15),
-      ).toBe(true);
+      // And it does reach into the middle, so the body wraps into the ring:
+      // down the middle's inner half to just over the axle line and close
+      // to its centre line (0.25.2, deeper, closer to the photos).
+      const inward = -Math.sign(w.a);
+      for (const [da, dh] of [
+        [0.1, 0.15],
+        [0.15, 0.05],
+        [0.03, 0.2],
+      ] as const)
+        expect(
+          insideOutline(OPEN_BODY, w.a + inward * da, w.r + dh),
+          `${String(da)}, ${String(dh)}`,
+        ).toBe(true);
     }
   });
   it("leaves an empty rider's place: a saddle hollow in the top with a seat pad and a glowing seat line in it", () => {
@@ -958,8 +968,13 @@ describe("the neon bike's open variant (0.25.2)", () => {
       expect(set.map((p) => Math.sign(span(local(p), 1).mid)).sort()).toEqual([
         -1, 1,
       ]);
+    // Light enough to show against the dark body from the side, and
+    // long enough along it (0.25.2).
+    const tone = (c: readonly number[]) => (c[0]! + c[1]! + c[2]!) / 3;
+    expect(tone(OPEN_METAL) - tone(CYCLE_BODY)).toBeGreaterThan(0.3);
     for (const p of handles) {
       const q = local(p);
+      expect(span(q, 0).hi - span(q, 0).lo).toBeGreaterThanOrEqual(0.15);
       expect(span(q, 0).lo).toBeGreaterThan(0.3);
       expect(span(q, 0).hi).toBeLessThan(front.a - front.r);
       expect(span(q, 2).mid).toBeGreaterThan(D);
@@ -975,9 +990,10 @@ describe("the neon bike's open variant (0.25.2)", () => {
     }
   });
 
-  it("lights its rims and lines in the closed variant's one breathing group, on both sides, and nothing else", () => {
+  it("lights its side rings and lines in the closed variant's one breathing group, on both sides, and nothing else", () => {
     // Mutation caught: a line in another group or colour, a steady light,
-    // the lines on one side only, or the inner rims left unlit.
+    // the lines on one side only, a side ring left unlit or moved off the
+    // side face, or the glow back on the open middle's inner rim.
     const lit = parts.filter((p) => p.flag !== FLAG.lit);
     expect(lit.length).toBeGreaterThan(40);
     for (const p of lit) {
@@ -987,16 +1003,37 @@ describe("the neon bike's open variant (0.25.2)", () => {
     const side = lit.filter((p) => Math.abs(span(local(p), 1).mid) > 0.05);
     const left = side.filter((p) => span(local(p), 1).mid < 0).length;
     expect(side.length).toBe(2 * left);
-    // Each ring's open middle is lined by a glowing rim on each side.
+    // Each tyre carries a glowing ring on each side face, near its outer
+    // edge (0.25.2, as on the photos), standing proud of the side; and
+    // nothing glows round the open middle itself.
+    const G = OPEN_SIDE_GLOW;
+    expect(G.r0 / front.r).toBeGreaterThan(0.75);
+    expect(G.r1 / front.r).toBeGreaterThan(0.88);
+    expect(G.r1).toBeLessThan(front.r - 0.01);
     for (const w of [front, rear]) {
-      const rims = lit.filter((p) => {
-        const q = local(p);
-        const r = q.map((x) => Math.hypot(x[0] - w.a, x[2] - w.r));
+      const radii = (p: Part) =>
+        local(p).map((x) => Math.hypot(x[0] - w.a, x[2] - w.r));
+      const rings = lit.filter((p) => {
+        const r = radii(p);
         return (
-          Math.min(...r) < w.open && Math.max(...r) <= w.open + w.rim + 1e-6
+          Math.min(...r) >= G.r0 - 1e-6 &&
+          Math.max(...r) <= G.r1 + 1e-6 &&
+          Math.abs(span(local(p), 0).mid - w.a) < 0.01
         );
       });
-      expect(rims).toHaveLength(4);
+      expect(rings).toHaveLength(4);
+      for (const p of rings)
+        expect(
+          Math.min(...local(p).map((q) => Math.abs(q[1]))),
+        ).toBeGreaterThanOrEqual(w.half - 1e-6);
+      expect(rings.map((p) => Math.sign(span(local(p), 1).mid)).sort()).toEqual(
+        [-1, -1, 1, 1],
+      );
+      const inner = lit.filter((p) => {
+        const r = radii(p);
+        return Math.min(...r) < w.open + 0.03 && Math.max(...r) < G.r0;
+      });
+      expect(inner).toEqual([]);
     }
   });
 

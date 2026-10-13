@@ -81,11 +81,13 @@
  *   carries no text. That is variant 0, the closed one.
  * - The neon bike's variant 1 is the open one (`CYCLE_OPEN`, 0.25.2): the
  *   same length and footprint, lower, with no canopy and no rider. Its
- *   wheels (`OPEN_WHEELS`) are hubless: fat black tyre rings with a dark
- *   face on each side and a glowing inner rim round an open middle, so
- *   the floor shows through them. A low glossy body (`OPEN_BODY`)
- *   bridges them as a long flat wedge, dipping into each ring's open
- *   middle over its upper inner part only, and rising to its highest
+ *   wheels (`OPEN_WHEELS`) are hubless: fat black tyre rings round an
+ *   open middle, so the floor shows through them, with a glowing ring on
+ *   each side face near the outer edge (`OPEN_SIDE_GLOW`, 0.25.2) as on
+ *   the full size cycle's photos. A low glossy body (`OPEN_BODY`)
+ *   bridges them as a long flat wedge, reaching into each ring's open
+ *   middle down to the axle line over its upper inner quarter only, and
+ *   rising to its highest
  *   point at the tail behind the empty rider's place: a saddle hollow
  *   (`OPEN_SADDLE`) with a seat pad and a glowing seat line, two short
  *   handles at the front and two footrests at the back. Thin glowing
@@ -1363,20 +1365,19 @@ interface OpenWheel {
   a: number;
   r: number;
   open: number;
-  rim: number;
   half: number;
 }
 
 /**
  * The open variant's hubless wheels, the front one at `+a`: the axle
  * line at `a` (at height `r`), `r` the tyre's outer radius, `open` the
- * radius of the open middle, which the glowing inner rim (`rim` thick)
- * lines, and `half` the tyre's half width. A quarter of the length
- * across, at the same places as the closed variant's wheels.
+ * radius of the open middle, and `half` the tyre's half width. A quarter
+ * of the length across, at the same places as the closed variant's
+ * wheels.
  */
 export const OPEN_WHEELS = {
-  front: { a: 1.09, r: 0.36, open: 0.245, rim: 0.02, half: 0.17 },
-  rear: { a: -1.09, r: 0.36, open: 0.245, rim: 0.02, half: 0.17 },
+  front: { a: 1.09, r: 0.36, open: 0.245, half: 0.17 },
+  rear: { a: -1.09, r: 0.36, open: 0.245, half: 0.17 },
 } as const satisfies Record<string, OpenWheel>;
 
 /** The tyres' rubber: a black a shade off the body's. */
@@ -1388,22 +1389,27 @@ const OPEN_SIDE: Rgb = [0.07, 0.075, 0.1];
 /** The seat pad in the saddle hollow: the lower panel's shade. */
 export const OPEN_SEAT: Rgb = CYCLE_LOWER;
 
-/** The handles and the footrests: a dark metal. */
-export const OPEN_METAL: Rgb = [0.16, 0.17, 0.2];
+/**
+ * The handles and the footrests: a brushed metal, light enough to read
+ * against the dark body from the side (0.25.2).
+ */
+export const OPEN_METAL: Rgb = [0.42, 0.44, 0.48];
 
 /** Facets round a whole tyre ring; each half ring takes half of them. */
 const OPEN_SIDES = 20;
 
-/**
- * The glowing inner rim on each side of a tyre: how far it reaches into
- * the open middle's wall from the side (`deep`), so the wall itself stays
- * black and the hole reads open from an angle, and how far it stands
- * proud of the tyre's side and of its open middle (`proud`).
- */
-const OPEN_RIM = { deep: 0.03, proud: 0.003 } as const;
-
 /** How far a tyre's side face stands proud of the tyre and how far in. */
 const OPEN_FACE = { t: 0.008, in: 0.012 } as const;
+
+/**
+ * The glowing ring on each side face of a tyre (0.25.2), as on the full
+ * size cycle's photos: from radius `r0` to `r1`, near the tyre's outer
+ * edge, a bare black shoulder left outside it, standing `proud` off the
+ * tyre's side, past the dark side face it rings. The open middle keeps
+ * no glowing rim of its own: with one, the wheel read as a lit target
+ * and less as a see-through ring.
+ */
+export const OPEN_SIDE_GLOW = { r0: 0.285, r1: 0.33, proud: 0.012 } as const;
 
 /**
  * One half of a flat ring round `(a, h)` from radius `r0` to `r1`, its
@@ -1438,35 +1444,27 @@ function openRing(
 }
 
 /**
- * One hubless wheel: a fat black tyre ring from the open middle's rim
- * out to the tread, a dark side face set on each of its sides, and the
- * glowing inner rim lining the open middle, a little narrower than the
- * tyre, so from the side it shows as a lit ring round the hole and the
- * floor shows through the middle.
+ * One hubless wheel: a fat black tyre ring from the open middle out to
+ * the tread, and on each of its sides a dark side face from near the
+ * open middle out to the glowing ring (`OPEN_SIDE_GLOW`) near the outer
+ * edge, so from the side it shows as a lit ring on a black tyre round a
+ * dark hole the floor shows through.
  */
 function openWheel(k: Kit, s: Surfaces, w: OpenWheel, glow: Surface): void {
-  const inner = w.open + w.rim;
   openRing(k, w, w.open, w.r, -w.half, w.half, s.tinted(OPEN_TYRE));
   const face = s.tinted(OPEN_SIDE);
+  const G = OPEN_SIDE_GLOW;
   for (const sg of [-1, 1]) {
     openRing(
       k,
       w,
-      w.open - OPEN_RIM.proud,
-      inner,
-      sg * (w.half - OPEN_RIM.deep),
-      sg * (w.half + OPEN_RIM.proud),
-      glow,
-    );
-    openRing(
-      k,
-      w,
-      inner + OPEN_FACE.in,
-      w.r - OPEN_FACE.in,
+      w.open + OPEN_FACE.in,
+      G.r0,
       sg * w.half,
       sg * (w.half + OPEN_FACE.t),
       face,
     );
+    openRing(k, w, G.r0, G.r1, sg * w.half, sg * (w.half + G.proud), glow);
   }
 }
 
@@ -1500,7 +1498,7 @@ export const OPEN_SADDLE: readonly P2[] = [
  * behind it and back over the rear wheel's top to the tail's tip.
  */
 const OPEN_TOP: readonly P2[] = [
-  [1.06, 0.58],
+  [1.09, 0.48],
   [1.03, 0.69],
   [0.92, 0.76],
   [0.7, 0.79],
@@ -1519,27 +1517,30 @@ const OPEN_TOP: readonly P2[] = [
  * The open variant's body, `[a, h]`: a long low wedge bridging the two
  * rings. Its top (`OPEN_TOP`) runs from the front ring to the tail's
  * tip; under the tail it runs forward over the rear tyre, dips into the
- * rear ring's open middle over its upper front, down along its rim to
- * the axle line and onto the flat belly, then up into the front ring the
- * same way. Each ring's middle stays open below the axle and on its
- * outer side, so the floor shows through.
+ * rear ring's open middle over its upper front, down its middle to just
+ * over the axle line and along it onto the flat belly, then up into the
+ * front ring the same way (0.25.2: deeper, closer to the photos). Each
+ * ring's middle stays open below the axle and on its outer side, so the
+ * floor shows through.
  */
 export const OPEN_BODY: readonly P2[] = [
   ...OPEN_TOP,
   [-1.3, 0.735],
   [-1.18, 0.76],
   [-1.1, 0.74],
-  [-1.06, 0.58],
-  [-0.99, 0.47],
-  [-0.88, 0.37],
+  [-1.09, 0.48],
+  [-1.06, 0.415],
+  [-0.99, 0.375],
+  [-0.9, 0.36],
   [-0.8, 0.28],
   [-0.68, 0.21],
   [-0.5, 0.19],
   [0.5, 0.19],
   [0.68, 0.21],
   [0.8, 0.28],
-  [0.88, 0.37],
-  [0.99, 0.47],
+  [0.9, 0.36],
+  [0.99, 0.375],
+  [1.06, 0.415],
 ];
 
 /**
@@ -1568,10 +1569,10 @@ const OPEN_SEAT_PROFILE: readonly P2[] = [
  * reaching out to `out` on each side.
  */
 const OPEN_HANDLES = {
-  a0: 0.6,
-  a1: 0.7,
-  h: 0.74,
-  t: 0.04,
+  a0: 0.54,
+  a1: 0.72,
+  h: 0.75,
+  t: 0.05,
   out: 0.3,
 } as const;
 
@@ -1619,9 +1620,10 @@ const OPEN_SWEEP: readonly P2[] = [
 
 /**
  * The open variant of the neon bike: two hubless wheels, fat black tyre
- * rings with a dark side face and a glowing inner rim round an open
- * middle; the low glossy body bridging them as a long wedge, dipping
- * into each ring's open middle over its upper half; the empty rider's
+ * rings round an open middle, with a glowing ring on each side face
+ * near the outer edge; the low glossy body bridging them as a long
+ * wedge, reaching into each ring's open middle over its upper inner
+ * quarter; the empty rider's
  * place, a saddle hollow with a seat pad and its glowing seat line, two
  * short handles at the front and two footrests at the back; on each
  * flank a glowing line under the top and a lower one sweeping down to
