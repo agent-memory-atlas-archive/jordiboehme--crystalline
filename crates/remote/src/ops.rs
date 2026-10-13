@@ -3476,6 +3476,14 @@ fn advance_base_after_commit(
     author_login: Option<&str>,
     collected: &CollectedChanges,
 ) -> Result<(), RemoteError> {
+    // Removals first: on a case-insensitive file system a deleted base copy
+    // and an added one that differ only in case are one file, and removing
+    // after the write would take the new copy with it. No share carries such
+    // a pair today, so the order only keeps that from mattering later.
+    for path in &collected.deleted {
+        state::remove_base_file(state_dir, path)?;
+        state.forget_base(path);
+    }
     for (path, bytes) in collected
         .entries
         .added
@@ -3484,10 +3492,6 @@ fn advance_base_after_commit(
     {
         state::write_base_file(state_dir, path, bytes)?;
         state.record_base(path, bytes);
-    }
-    for path in &collected.deleted {
-        state::remove_base_file(state_dir, path)?;
-        state.forget_base(path);
     }
     state.base_commit = commit_sha.to_string();
     state.ref_etag = None;
@@ -6486,6 +6490,9 @@ fn needed_by_another_spelling(
         if other == rel || crystalline_core::fold_path_case(other) != folded {
             continue;
         }
+        // A spelling that cannot be checked (a crafted base path, a link
+        // out of the folder) fails the caller rather than answering false:
+        // the caller then removes nothing, which is the safe side.
         let other_path = checked_working_path(state_dir, domain_root, other)?;
         if same_physical_file(wt_path, &other_path)? {
             return Ok(true);
