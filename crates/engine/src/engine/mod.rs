@@ -5399,6 +5399,8 @@ mod domain_lookup_tests {
 // The `impl Engine` sections, one file each; FILES in the split script
 // lists them in the order they stood in the single engine.rs.
 mod adopt_names;
+mod asset_home;
+pub(crate) use asset_home::{AssetHome, ReplaceRule};
 mod attachments;
 mod close_folders;
 pub use close_folders::FolderProbe;
