@@ -335,6 +335,9 @@ mod hook {
         }
     }
 
+    /// Used by the unix-only test below; Windows cannot refuse a create the
+    /// same way, so it has no caller there.
+    #[cfg(unix)]
     pub(super) fn set_before_retry(hook: impl Fn(bool) + Send + 'static) {
         *BEFORE_RETRY.lock().unwrap() = Some(Box::new(hook));
     }
