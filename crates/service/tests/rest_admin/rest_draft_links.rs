@@ -3629,3 +3629,105 @@ async fn an_agents_join_ending_leaves_the_browsers_key_alone() {
         "which the co-editing upgrade still agrees with"
     );
 }
+
+/// `remove V112` takes the pair back on every engram of the two folders, and
+/// in a domain in review mode each of those rewrites is a draft of the
+/// caller's own. A page another account drafted over and shared with the
+/// caller to read, not joined, is left as it is and named on the receipt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_v112_skips_and_names_a_page_shared_to_read() {
+    let _serialized = crate::support::maintenance_guard().await;
+    let f = serve().await;
+    let dir = f.root.join("team");
+    let page = |permalink: &str, ack: bool| {
+        let ack = if ack {
+            "evolve_ack:\n- { rule: V112, scope: \"meeting, meetings\", note: not the same topic }\n"
+        } else {
+            ""
+        };
+        format!(
+            "---\ntype: engram\ntitle: {permalink}\npermalink: {permalink}\ntags:\n  - team\nstatus: stable\nrecorded_at: 2026-07-25\n{ack}---\n\nWhat {permalink} holds.\n\n- [fact] one line\n- [fact] two lines\n"
+        )
+    };
+    for (path, ack) in [
+        ("meeting/agenda", false),
+        ("meeting/intro", true),
+        ("meeting/kickoff", true),
+        ("meetings/a", false),
+        ("meetings/b", false),
+        ("meetings/c", false),
+        ("meetings/d", false),
+    ] {
+        let abs = dir.join(format!("{path}.md"));
+        std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        std::fs::write(abs, page(path, ack)).unwrap();
+    }
+    f.engine.sync(None).await.unwrap();
+
+    // alice drafts over kickoff and shares it with bob to read.
+    let mut over = append_edit("alice's line");
+    over.identifier = "meeting/kickoff".to_string();
+    f.engine
+        .edit_engram_as(&over, Some("alice"), &as_account("alice"))
+        .await
+        .unwrap();
+    let alice = login(f.addr, "alice").await;
+    let bob = login(f.addr, "bob").await;
+    bob_holds(&f, &alice, &bob, "meeting/kickoff.md").await;
+
+    let receipt = f
+        .engine
+        .edit_engram_as(
+            &crystalline_service::params::EditParams {
+                identifier: "meeting/agenda".to_string(),
+                domain: "team".to_string(),
+                operation: "set_frontmatter".to_string(),
+                key: Some("evolve_ack".to_string()),
+                value: Some("remove V112".to_string()),
+                ..crystalline_service::params::EditParams::default()
+            },
+            Some("bob"),
+            &as_account("bob"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt["evolve_ack_removed"], "V112", "{receipt}");
+    assert_eq!(
+        receipt["evolve_ack_removed_from"],
+        serde_json::json!(["meeting/intro"]),
+        "{receipt}"
+    );
+    let skipped = &receipt["evolve_ack_not_removed_from"];
+    assert_eq!(skipped[0]["permalink"], "meeting/kickoff", "{receipt}");
+    assert!(
+        skipped[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("shared with you to read"),
+        "{receipt}"
+    );
+    assert_eq!(skipped.as_array().unwrap().len(), 1, "{receipt}");
+
+    // Review mode: the take-back on intro is bob's draft, the team's file is
+    // untouched, and alice's draft of kickoff still holds its entry.
+    let on_disk = std::fs::read_to_string(dir.join("meeting/intro.md")).unwrap();
+    assert!(on_disk.contains("meeting, meetings"), "{on_disk}");
+    let bobs = f
+        .engine
+        .read_engram(&read_as("meeting/intro"), &as_account("bob"))
+        .await
+        .unwrap();
+    assert!(
+        !bobs["content"].as_str().unwrap().contains("evolve_ack"),
+        "{bobs}"
+    );
+    let alices = f
+        .engine
+        .read_engram(&read_as("meeting/kickoff"), &as_account("alice"))
+        .await
+        .unwrap();
+    let entries = &alices["frontmatter"]["extra"]["evolve_ack"];
+    assert_eq!(entries.as_array().map(Vec::len), Some(1), "{alices}");
+    assert_eq!(entries[0]["rule"], "V112", "{alices}");
+    assert_eq!(entries[0]["scope"], "meeting, meetings", "{alices}");
+}

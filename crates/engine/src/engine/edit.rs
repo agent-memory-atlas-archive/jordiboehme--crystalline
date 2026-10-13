@@ -138,40 +138,63 @@ impl Engine {
         // Not for an edit joined into somebody's draft by its share-link: that
         // edit lands at the one page the link was minted on and nowhere else,
         // so it takes back this engram's entries alone, as it always did.
-        let folder_pairs = match &ack {
+        let mut folder_pairs = match &ack {
             Some(AckDraft::Remove(rule))
                 if join.is_none() && rule.eq_ignore_ascii_case(FOLDER_PAIR_RULE) =>
             {
                 let current = view.text_at(&source, &desc).await?.unwrap_or_default();
+                let here = has_ack(&current, rule, None);
+                // An engram that holds nothing is not written below, so the
+                // compare-and-swap the edit would make is made here: a stale
+                // token is refused before any other engram changes.
+                if !here && let Some(expected) = p.expected_checksum.as_deref() {
+                    let found = sha256_hex(current.as_bytes());
+                    if found != expected {
+                        return Err(EngineError::Conflict(stale_edit_message(expected, &found)));
+                    }
+                }
                 let pairs = self
                     .folder_pairs_to_withdraw(&desc, &current, None, scope)
                     .await?;
-                Some((has_ack(&current, rule, None), pairs))
+                let holders = self
+                    .folder_pair_holders(&view, &desc, &pairs, scope)
+                    .await?;
+                Some((here, holders))
             }
             _ => None,
         };
-        if let Some((false, pairs)) = &folder_pairs {
+        if let Some((false, holders)) = folder_pairs.take_if(|(here, h)| !*here && !h.is_empty()) {
             // Nothing here to take back, so nothing here is written; the
             // pair's entries on the other engrams are the whole removal. When
             // there are none either, the edit below refuses as it always has.
-            let cleared = self
-                .withdraw_folder_pairs_elsewhere(&view, &desc, pairs, &actor, scope)
-                .await?;
-            if !cleared.is_empty() {
-                let mut response = json!({
-                    "domain": desc.domain,
-                    "permalink": desc.permalink,
-                    "path": desc.path,
-                    "operation": p.operation,
-                    "unchanged": true,
-                    "evolve_ack_removed": FOLDER_PAIR_RULE,
-                    "evolve_ack_removed_from": cleared,
-                });
-                if overlay.is_some() {
-                    response["draft"] = json!(true);
-                }
-                return Ok(response);
+            let done = self
+                .take_back_folder_pairs(&view, holders, &actor, scope)
+                .await;
+            if done.removed.is_empty() {
+                let named: Vec<String> = done
+                    .not_removed
+                    .iter()
+                    .map(|(permalink, reason)| format!("'{permalink}' ({reason})"))
+                    .collect();
+                return Err(EngineError::Invalid(format!(
+                    "no {FOLDER_PAIR_RULE} acknowledgment on '{}' could be taken back; the pair's acknowledgment stays on {}",
+                    desc.permalink,
+                    named.join(", ")
+                )));
             }
+            let mut response = json!({
+                "domain": desc.domain,
+                "permalink": desc.permalink,
+                "path": desc.path,
+                "operation": p.operation,
+                "unchanged": true,
+                "evolve_ack_removed": FOLDER_PAIR_RULE,
+            });
+            done.note(&mut response);
+            if overlay.is_some() {
+                response["draft"] = json!(true);
+            }
+            return Ok(response);
         }
 
         // The staged form rather than the shorthand, for the one thing it
@@ -262,13 +285,13 @@ impl Engine {
             Some(AckDraft::Remove(rule)) => response["evolve_ack_removed"] = json!(rule),
             None => {}
         }
-        if let Some((true, pairs)) = &folder_pairs {
-            let cleared = self
-                .withdraw_folder_pairs_elsewhere(&view, &desc, pairs, &actor, scope)
-                .await?;
-            if !cleared.is_empty() {
-                response["evolve_ack_removed_from"] = json!(cleared);
-            }
+        if let Some((true, holders)) = folder_pairs {
+            // Best effort from here on: this engram's own edit has landed, so
+            // a holder that cannot be rewritten is named on the receipt
+            // rather than turning a removal that happened into an error.
+            self.take_back_folder_pairs(&view, holders, &actor, scope)
+                .await
+                .note(&mut response);
         }
         note_heading_stripped(&mut response, heading_stripped);
         if let Some(text) = manifest_text {

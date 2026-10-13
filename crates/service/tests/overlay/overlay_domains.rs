@@ -8376,10 +8376,99 @@ async fn a_joined_remove_v112_stays_on_the_joined_page() {
         )
         .await
         .unwrap();
+    // One entry, which the frontmatter writes as a single mapping.
+    let entry = &kickoff["frontmatter"]["extra"]["evolve_ack"];
     assert!(
-        kickoff["frontmatter"].to_string().contains("evolve_ack")
-            || kickoff.to_string().contains("not the same topic"),
-        "alice's other page keeps its entry: {kickoff}"
+        entry.is_object(),
+        "alice's other page keeps its one entry: {kickoff}"
+    );
+    assert_eq!(entry["rule"], "V112", "{kickoff}");
+    assert_eq!(entry["scope"], "meeting, meetings", "{kickoff}");
+}
+
+/// The take-back on the other engrams is best effort: one holder whose
+/// rewrite fails is named with the reason, and the next one is still cleared.
+#[tokio::test]
+async fn a_failed_holder_is_named_and_the_take_back_goes_on() {
+    let f = review_fixture().await;
+    let alice = account("alice");
+    let draft = |folder: &str, title: &str| WriteParams {
+        folder: Some(folder.to_string()),
+        ..write_params(
+            "team",
+            title,
+            "A fact about the topic.\n\n- [fact] one\n- [fact] two",
+        )
+    };
+    let ack = |identifier: &str, value: &str| EditParams {
+        identifier: identifier.to_string(),
+        domain: "team".to_string(),
+        operation: "set_frontmatter".to_string(),
+        key: Some("evolve_ack".to_string()),
+        value: Some(value.to_string()),
+        ..EditParams::default()
+    };
+    for title in ["A", "B", "C", "D"] {
+        f.engine
+            .write_engram_as(&draft("meetings", title), None, &alice)
+            .await
+            .unwrap();
+    }
+    // Each new engram sorts first, so each is the anchor when it is
+    // acknowledged: kickoff, then intro, hold the pair; agenda holds nothing.
+    for (title, permalink) in [("Kickoff", "meeting/kickoff"), ("Intro", "meeting/intro")] {
+        f.engine
+            .write_engram_as(&draft("meeting", title), None, &alice)
+            .await
+            .unwrap();
+        let receipt = f
+            .engine
+            .edit_engram_as(&ack(permalink, "V112 not the same topic"), None, &alice)
+            .await
+            .unwrap();
+        assert_eq!(
+            receipt["evolve_ack"]["scope"], "meeting, meetings",
+            "{receipt}"
+        );
+    }
+    f.engine
+        .write_engram_as(&draft("meeting", "Agenda"), None, &alice)
+        .await
+        .unwrap();
+
+    // The first holder's rewrite fails; the second still goes.
+    f.engine.fail_next_source_edit();
+    let receipt = f
+        .engine
+        .edit_engram_as(&ack("meeting/agenda", "remove V112"), None, &alice)
+        .await
+        .unwrap();
+    assert_eq!(
+        receipt["evolve_ack_removed_from"],
+        serde_json::json!(["meeting/kickoff"]),
+        "{receipt}"
+    );
+    let failed = &receipt["evolve_ack_not_removed_from"];
+    assert_eq!(failed[0]["permalink"], "meeting/intro", "{receipt}");
+    assert!(
+        failed[0]["reason"].as_str().unwrap().contains("test seam"),
+        "{receipt}"
+    );
+    let intro = f
+        .engine
+        .read_engram(
+            &ReadParams {
+                identifier: "meeting/intro".to_string(),
+                domain: Some("team".to_string()),
+                share_link: None,
+            },
+            &alice,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        intro["frontmatter"]["extra"]["evolve_ack"]["scope"], "meeting, meetings",
+        "the failed holder keeps its entry: {intro}"
     );
 }
 

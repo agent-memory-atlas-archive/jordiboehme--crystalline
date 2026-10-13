@@ -3542,6 +3542,43 @@ async fn remove_v112_on_a_moved_anchor_finds_the_entry_on_the_old_one() {
     assert!(refused.contains("nothing to remove"), "{refused}");
 }
 
+/// A removal on an engram that holds nothing writes nothing there, so the
+/// token it presents is checked before the other engrams change: a stale one
+/// is refused and every entry stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_v112_on_a_non_holder_refuses_a_stale_checksum() {
+    let (tmp, engine) = folder_fixture(&[
+        "meeting/kickoff.md",
+        "meetings/a.md",
+        "meetings/b.md",
+        "meetings/c.md",
+    ])
+    .await;
+    acknowledge(&engine, "meeting/kickoff", "V112 not the same topic").await;
+    add_folder_engram(&tmp, &engine, "meeting/agenda.md").await;
+
+    let refused = engine
+        .edit_engram_as(
+            &crystalline_service::params::EditParams {
+                identifier: "meeting/agenda".to_string(),
+                domain: "eng".to_string(),
+                operation: "set_frontmatter".to_string(),
+                key: Some("evolve_ack".to_string()),
+                value: Some("remove V112".to_string()),
+                expected_checksum: Some("0".repeat(64)),
+                ..Default::default()
+            },
+            Some("agent:test"),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("changed since"), "{refused}");
+    let kickoff = std::fs::read_to_string(tmp.path().join("eng/meeting/kickoff.md")).unwrap();
+    assert!(kickoff.contains("meeting, meetings"), "{kickoff}");
+}
+
 /// Fluid's withdraw is the same take-back: it reaches the entry wherever the
 /// pair's acknowledgment sits rather than answering "nothing to withdraw".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

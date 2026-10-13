@@ -4,6 +4,48 @@ use super::*;
 /// so can sit on any engram of the two.
 pub(super) const FOLDER_PAIR_RULE: &str = "V112";
 
+/// Why a take-back left a holder alone that another account shared with the
+/// caller to read.
+const SHARED_NOT_JOINED: &str =
+    "a draft shared with you to read and not joined; join it to take the acknowledgment back there";
+
+/// One engram of a pair's two folders that holds the pair's acknowledgment,
+/// found before anything is written (see `Engine::folder_pair_holders`).
+pub(super) struct PairHolder {
+    desc: EngramDescriptor,
+    source: ContentSource,
+    pairs: Vec<String>,
+    /// Why the caller may not rewrite it, when they may not.
+    refused: Option<String>,
+}
+
+/// What a take-back did on the other engrams of the two folders.
+#[derive(Default)]
+pub(super) struct PairTakeBack {
+    /// The permalinks whose entries went.
+    pub(super) removed: Vec<String>,
+    /// The permalinks still holding one, each with the reason.
+    pub(super) not_removed: Vec<(String, String)>,
+}
+
+impl PairTakeBack {
+    /// Put the take-back on a receipt: `evolve_ack_removed_from` and
+    /// `evolve_ack_not_removed_from`, each only when it names anything.
+    pub(super) fn note(&self, receipt: &mut Value) {
+        if !self.removed.is_empty() {
+            receipt["evolve_ack_removed_from"] = json!(self.removed);
+        }
+        if !self.not_removed.is_empty() {
+            receipt["evolve_ack_not_removed_from"] = json!(
+                self.not_removed
+                    .iter()
+                    .map(|(permalink, reason)| json!({ "permalink": permalink, "reason": reason }))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
 impl Engine {
     // --- evolve --------------------------------------------------------------
 
@@ -671,8 +713,8 @@ impl Engine {
     ///
     /// A `V112` withdrawal reaches past the engram: the pair's entries on every
     /// other engram of its two folders go too (see
-    /// `Engine::withdraw_folder_pairs_elsewhere`), since any one of them would
-    /// keep the finding silenced.
+    /// `Engine::folder_pair_holders`), since any one of them would keep the
+    /// finding silenced.
     ///
     /// `scope` narrows the withdrawal to the one entry given for that pair,
     /// and like the recording half it speaks only for a
@@ -728,6 +770,9 @@ impl Engine {
         } else {
             Vec::new()
         };
+        let holders = self
+            .folder_pair_holders(&view, &desc, &pairs, acting)
+            .await?;
         let here = has_ack(&current, &rule, scope);
         if here {
             // The answer here is a bool, so a mirror warning has nowhere to
@@ -744,10 +789,14 @@ impl Engine {
             )
             .await?;
         }
-        let elsewhere = self
-            .withdraw_folder_pairs_elsewhere(&view, &desc, &pairs, &actor, acting)
-            .await?;
-        Ok(here || !elsewhere.is_empty())
+        // The answer is a bool, so a holder left behind can only be logged.
+        let done = self
+            .take_back_folder_pairs(&view, holders, &actor, acting)
+            .await;
+        for (permalink, reason) in &done.not_removed {
+            tracing::warn!("V112 acknowledgment on '{permalink}' not withdrawn: {reason}");
+        }
+        Ok(here || !done.removed.is_empty())
     }
 
     /// The `V112` pairs a take-back on `desc` answers for: the one `named`
@@ -782,25 +831,29 @@ impl Engine {
         Ok(pairs)
     }
 
-    /// Take the `V112` entries for `pairs` back on every engram other than
-    /// `desc` that sits in one of a pair's two folders, as the caller's view
-    /// reads the domain (their drafts included in review mode), and answer the
-    /// permalinks rewritten, sorted. The folder test is the sweep's own
-    /// ([`crystalline_index::in_scoped_folder`]), so the take-back reaches
-    /// exactly the engrams whose entries the suppression reads.
+    /// Every engram other than `desc` that holds a `V112` entry for one of
+    /// `pairs`, as the caller's view reads the domain (their drafts included
+    /// in review mode), with the pairs it holds. Read only: nothing is written
+    /// here, so a caller finds the holders before its own write lands and an
+    /// error here stops the whole take-back before anything changed.
     ///
-    /// An entry with no scope is left alone: it was given for no pair in
-    /// particular, so a take-back of one pair does not decide it. So is a
-    /// page another account shared with this caller and they have not joined:
-    /// the same screen as any edit keeps the take-back out of it.
-    pub(super) async fn withdraw_folder_pairs_elsewhere(
+    /// The folder test is the sweep's own
+    /// ([`crystalline_index::in_scoped_folder`]), so the take-back reaches
+    /// exactly the engrams whose entries the suppression reads. An entry with
+    /// no scope is not a holder: it was given for no pair in particular, so a
+    /// take-back of one pair does not decide it.
+    ///
+    /// A holder this caller may not edit - a page another account shared with
+    /// them to read and they have not joined - is kept with the reason, so the
+    /// receipt can name it, and is never written. Any other failure of that
+    /// screen is an error.
+    pub(super) async fn folder_pair_holders(
         &self,
         view: &DomainView<'_>,
         desc: &EngramDescriptor,
         pairs: &[String],
-        actor: &str,
         acting: &crate::scope::Scope,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<PairHolder>> {
         if pairs.is_empty() {
             return Ok(Vec::new());
         }
@@ -808,7 +861,7 @@ impl Engine {
             let store = self.store.lock().await;
             store.list_engrams(&desc.domain, None, None).await?
         };
-        let mut cleared = Vec::new();
+        let mut holders = Vec::new();
         for listed in view.list_over(base).await? {
             if listed.path == desc.path
                 || !pairs
@@ -817,50 +870,84 @@ impl Engine {
             {
                 continue;
             }
-            // The screen every edit passes: a page somebody shared with this
-            // caller is theirs to edit only once joined, so the take-back
-            // leaves it as it is rather than writing into their draft.
-            if self
-                .screen_granted_path(&desc.domain, &listed.path, acting, None)
-                .await
-                .is_err()
-            {
-                continue;
-            }
             let (other, source) = view.resolve(&listed.permalink).await?;
             let Some(text) = view.text_at(&source, &other).await? else {
                 continue;
             };
-            let held: Vec<&str> = pairs
+            let held: Vec<String> = pairs
                 .iter()
                 .filter(|pair| {
                     crystalline_index::in_scoped_folder(&other.path, pair)
                         && has_ack(&text, FOLDER_PAIR_RULE, Some(pair))
                 })
-                .map(String::as_str)
+                .cloned()
                 .collect();
             if held.is_empty() {
                 continue;
             }
-            self.apply_source_edit(
-                &other,
-                &source,
-                view,
-                None,
-                actor,
-                None,
-                acting,
-                |current| {
-                    Ok(held.iter().fold(current.to_string(), |text, pair| {
-                        without_ack(&text, FOLDER_PAIR_RULE, Some(pair))
-                    }))
-                },
-            )
-            .await?;
-            cleared.push(other.permalink);
+            // The screen every edit passes: a page somebody shared with this
+            // caller is theirs to edit only once joined.
+            let refused = match self
+                .screen_granted_path(&desc.domain, &other.path, acting, None)
+                .await
+            {
+                Ok(()) => None,
+                Err(EngineError::Refused(_)) => Some(SHARED_NOT_JOINED.to_string()),
+                Err(e) => return Err(e),
+            };
+            holders.push(PairHolder {
+                desc: other,
+                source,
+                pairs: held,
+                refused,
+            });
         }
-        cleared.sort();
-        Ok(cleared)
+        holders.sort_by(|a, b| a.desc.permalink.cmp(&b.desc.permalink));
+        Ok(holders)
+    }
+
+    /// Take the pairs' entries back on each of `holders`, one edit each and
+    /// best effort: a holder that cannot be rewritten is reported with the
+    /// reason and the others still are, because the caller's own write has
+    /// usually landed already and an entry left behind only keeps one finding
+    /// silenced. A refused holder is reported without a write.
+    pub(super) async fn take_back_folder_pairs(
+        &self,
+        view: &DomainView<'_>,
+        holders: Vec<PairHolder>,
+        actor: &str,
+        acting: &crate::scope::Scope,
+    ) -> PairTakeBack {
+        let mut done = PairTakeBack::default();
+        for holder in holders {
+            if let Some(reason) = holder.refused {
+                done.not_removed.push((holder.desc.permalink, reason));
+                continue;
+            }
+            let written = self
+                .apply_source_edit(
+                    &holder.desc,
+                    &holder.source,
+                    view,
+                    None,
+                    actor,
+                    None,
+                    acting,
+                    |current| {
+                        Ok(holder.pairs.iter().fold(current.to_string(), |text, pair| {
+                            without_ack(&text, FOLDER_PAIR_RULE, Some(pair))
+                        }))
+                    },
+                )
+                .await;
+            match written {
+                Ok(_) => done.removed.push(holder.desc.permalink),
+                Err(e) => done
+                    .not_removed
+                    .push((holder.desc.permalink, e.to_string())),
+            }
+        }
+        done
     }
 
     /// An engram's markdown as its domain holds it, whichever kind that is.
