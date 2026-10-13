@@ -167,7 +167,22 @@ impl RestCtx {
         RestCtx::build(true, false, true).await
     }
 
+    /// The two domains over an accounts store whose write-list table has the
+    /// wrong shape, so every write-list read fails and nothing else does.
+    async fn with_a_broken_write_list() -> RestCtx {
+        RestCtx::build_with(false, false, false, true).await
+    }
+
     async fn build(team: bool, anonymous: bool, review: bool) -> RestCtx {
+        RestCtx::build_with(team, anonymous, review, false).await
+    }
+
+    async fn build_with(
+        team: bool,
+        anonymous: bool,
+        review: bool,
+        break_write_list: bool,
+    ) -> RestCtx {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
         let mut cfg = GlobalConfig {
@@ -282,6 +297,14 @@ impl RestCtx {
                 .await
                 .unwrap();
         }
+        let auth = if break_write_list {
+            // No store holds the file while the table is replaced.
+            drop(auth);
+            break_the_write_list_table(&root.join("web-auth.db")).await;
+            Arc::new(AuthStore::open(&root.join("web-auth.db")).await.unwrap())
+        } else {
+            auth
+        };
         let addr = serve(engine, auth.clone());
         RestCtx {
             addr,
@@ -322,6 +345,27 @@ impl RestCtx {
             session: Some(login(self.addr, name, "s3cret").await),
         }
     }
+}
+
+/// Replace `path`'s `account_write_domain` table with one of the wrong shape,
+/// so every write-list read fails and nothing else does. Sequential: no store
+/// holds the file while this runs.
+async fn break_the_write_list_table(path: &std::path::Path) {
+    let name = path.to_string_lossy().to_string();
+    let db = match turso::Builder::new_local(&name)
+        .experimental_multiprocess_wal(true)
+        .build()
+        .await
+    {
+        Ok(db) => db,
+        Err(_) => turso::Builder::new_local(&name).build().await.unwrap(),
+    };
+    let conn = db.connect().unwrap();
+    conn.execute_batch(
+        "DROP TABLE account_write_domain; CREATE TABLE account_write_domain (junk TEXT);",
+    )
+    .await
+    .unwrap();
 }
 
 fn serve(engine: Arc<Engine>, auth: Arc<AuthStore>) -> std::net::SocketAddr {
@@ -486,6 +530,32 @@ async fn membership_level_gates_writes_not_instance_role() {
         )
         .await;
     assert_eq!(now.status(), 201, "{:?}", now.text().await);
+}
+
+/// A write whose caller's write list cannot be read is refused, never let
+/// through on an assumption: the REST write gate answers 500 with the
+/// membership sentence, and nothing is written. The MCP twin is
+/// `a_write_refuses_when_the_write_list_is_unreadable` in mcp_auth.rs.
+#[tokio::test]
+async fn a_rest_write_refuses_when_the_write_list_is_unreadable() {
+    let ctx = RestCtx::with_a_broken_write_list().await;
+    let out = ctx.as_user("out").await;
+    let refused = out
+        .post_json(
+            "/api/v1/domains/open/engrams",
+            json!({"title": "Fresh", "content": "# Fresh\n"}),
+        )
+        .await;
+    assert_eq!(refused.status(), 500);
+    let detail = refused.text().await.unwrap();
+    assert!(
+        detail.contains("this domain's membership is unreadable"),
+        "{detail}"
+    );
+    assert!(
+        !ctx._tmp.path().join("open/fresh.md").exists(),
+        "and nothing is written"
+    );
 }
 
 /// The same rule stated from the other side, and pinned on the surface whose
@@ -2216,6 +2286,19 @@ async fn only_the_owner_or_an_admin_switches_read_only_on_over_rest() {
             .unwrap()
             .contains("read_only: on"),
         "the owner's switch-on reached the MANIFEST"
+    );
+    // On the locked domain an editor restating `on` still gets the owner
+    // rule, not the unlock refusal, and nothing is written.
+    let locked = std::fs::read_to_string(&path).unwrap();
+    let restate = editor
+        .patch_json("/api/v1/domains/lab/manifest", on.clone())
+        .await;
+    assert_eq!(restate.status(), 403);
+    assert!(restate.text().await.unwrap().contains(OWNER_RULE));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        locked,
+        "the MANIFEST is byte-identical"
     );
     let unset = owner
         .patch_json("/api/v1/domains/lab/manifest", off.clone())

@@ -8322,11 +8322,15 @@ fn desktop_manifest_tool_names() -> Vec<String> {
     let script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/mcpb/generate-manifest.sh");
     let text = std::fs::read_to_string(&script).unwrap();
+    // The block opens on its key and closes on the first `]` at the
+    // two-space indentation of a top-level manifest key.
+    const BLOCK_START: &str = "\"tools\": [";
+    const BLOCK_END: &str = "\n  ]";
     let start = text
-        .find("\"tools\": [")
+        .find(BLOCK_START)
         .expect("the manifest has a tools block");
     let block = &text[start..];
-    let block = &block[..block.find("\n  ]").expect("the tools block ends")];
+    let block = &block[..block.find(BLOCK_END).expect("the tools block ends")];
     block
         .lines()
         .filter_map(|line| line.trim().strip_prefix("\"name\": \""))

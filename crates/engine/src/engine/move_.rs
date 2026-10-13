@@ -139,7 +139,9 @@ impl Engine {
         if names_the_manifest(&dest_rel) {
             // In a reviewing domain the move writes the mover's draft, so the
             // text that lands is what they see: their own draft when they hold
-            // one, the base text otherwise.
+            // one, the base text otherwise. The miss below is reached only when
+            // the mover's tombstone lands between `view.resolve` above and this
+            // read; otherwise the resolve answers the same miss first.
             let text = match overlay {
                 Some(_) => view.text_at(&src_source, &src).await?.ok_or_else(|| {
                     EngineError::NotFound(format!(
