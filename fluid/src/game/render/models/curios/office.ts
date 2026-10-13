@@ -82,6 +82,12 @@ const slab =
 /** The disk's shell: a near black plastic. */
 export const FLOPPY_BODY: Rgb = [0.11, 0.11, 0.12];
 
+/**
+ * The second disk's shell: a light grey plastic, as on its source photo
+ * (0.25.2), a little darker than the shutter so the metal still reads.
+ */
+export const FLOPPY_BODY_LIGHT: Rgb = [0.56, 0.56, 0.55];
+
 /** The shutter: a light grey metal. */
 export const FLOPPY_SHUTTER: Rgb = [0.72, 0.73, 0.75];
 
@@ -128,7 +134,7 @@ export const FLOPPY_PRINTED = {
 /** The floppy disk: shell, cut corner, shutter, label and its writing or print. */
 const floppyDisk: CurioRecipe = ({ k, kitAt, s, kind, variant }) => {
   const { hw, hd, top } = curioHalf(kind, variant);
-  const body = s.tinted(FLOPPY_BODY);
+  const body = s.tinted(variant === 1 ? FLOPPY_BODY_LIGHT : FLOPPY_BODY);
   const c = FLOPPY.corner;
   const t = FLOPPY.shell;
   // The shell, its back right corner left out and closed on the slant by
