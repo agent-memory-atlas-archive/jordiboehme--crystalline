@@ -15,7 +15,8 @@
  *
  * Their colours and their motion are in `raster.ts`, with why they never
  * flash. With `prefers-reduced-motion: reduce` the bars show still from
- * the same moment and no frame is requested. The bars are decoration,
+ * the same moment and no frame is requested; a change of the preference
+ * while the screen shows starts or stops the loop. The bars are decoration,
  * hidden from a screen reader.
  */
 
@@ -23,12 +24,11 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { BARS_IMAGE, CYCLE_PX, barsOffset } from "./raster";
 
-/** Whether the viewer asked for less motion. */
-function reducedMotion(): boolean {
-  return (
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
+/** The viewer's reduced-motion preference, or null where there is no query. */
+function reducedMotionQuery(): MediaQueryList | null {
+  return typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-reduced-motion: reduce)")
+    : null;
 }
 
 /** The props of `RasterBars`. */
@@ -54,17 +54,27 @@ export function RasterBars({ from }: RasterBarsProps) {
     };
   }, [from]);
 
+  // The preference is followed, not read once: the frame loop starts and
+  // stops with the media query's changes while the screen shows.
   useEffect(() => {
     const el = bars.current;
-    if (!on || el === null || reducedMotion()) return;
+    if (!on || el === null) return;
+    const query = reducedMotionQuery();
     let frame = 0;
     const draw = () => {
       const ms = performance.now() - started.current - from;
       el.style.backgroundPosition = `0 ${barsOffset(ms) % CYCLE_PX}px`;
       frame = requestAnimationFrame(draw);
     };
-    frame = requestAnimationFrame(draw);
+    const follow = () => {
+      cancelAnimationFrame(frame);
+      frame = 0;
+      if (query?.matches !== true) frame = requestAnimationFrame(draw);
+    };
+    follow();
+    query?.addEventListener?.("change", follow);
     return () => {
+      query?.removeEventListener?.("change", follow);
       cancelAnimationFrame(frame);
     };
   }, [on, from]);

@@ -8,7 +8,8 @@
  * and are added in the commit that shows the screen, so the first key
  * already skips it. A browser's shortcut (a key held with Ctrl, Cmd or
  * Alt, or F1 to F12) is left to the browser: it neither skips the screen
- * nor is cancelled. The typing runs on `performance.now()`, the station's
+ * nor is cancelled; the auto-repeat of a held key is cancelled but does
+ * not skip it. The typing runs on `performance.now()`, the station's
  * own clock, so a wall clock set back or stepped forward neither stalls
  * the lines nor prints them all at once. The screen takes the focus when
  * it shows and gives it back to what had it when it goes.
@@ -87,6 +88,9 @@ export function useC64Screen(
     const onKey = (event: KeyboardEvent) => {
       if (isShortcut(event)) return;
       event.preventDefault();
+      // A key still held from before the screen showed would skip it with
+      // its auto-repeat; only a fresh press does.
+      if (event.repeat) return;
       finish();
     };
     const onClick = () => {

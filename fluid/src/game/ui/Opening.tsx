@@ -13,7 +13,7 @@
  * with the screen, is handed the line.
  */
 
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 
 import { TYPE_CPS, typedCount, useC64Screen } from "./c64Clock";
 import { C64Screen } from "./c64Screen";
@@ -45,12 +45,28 @@ export interface OpeningProps {
 /** The screen. See the module doc. */
 export function Opening({ onDone }: OpeningProps) {
   const dialog = useRef<HTMLDivElement>(null);
-  const elapsed = useC64Screen(dialog, onDone, END_MS, END_MS);
+  const cursor = useRef<HTMLSpanElement>(null);
+  // The clock stops ticking once the line is typed, so the blinks below
+  // do not render the screen again.
+  const elapsed = useC64Screen(dialog, onDone, END_MS, TYPED_MS);
   const count = Math.min(typedCount(elapsed), OPENING_TEXT.length);
   const typed = count >= OPENING_TEXT.length;
+
   // Solid while typing; then on for BLINK_MS, off for BLINK_MS, in turn.
-  const cursorOn =
-    !typed || Math.floor((elapsed - TYPED_MS) / BLINK_MS) % 2 === 0;
+  // The cursor is written straight to its element, so a blink is no render.
+  useEffect(() => {
+    const el = cursor.current;
+    if (!typed || el === null) return;
+    let on = true;
+    const flip = setInterval(() => {
+      on = !on;
+      el.dataset.cursor = on ? "on" : "off";
+      el.textContent = on ? "\u2588" : " ";
+    }, BLINK_MS);
+    return () => {
+      clearInterval(flip);
+    };
+  }, [typed]);
 
   return (
     <C64Screen
@@ -60,8 +76,8 @@ export function Opening({ onDone }: OpeningProps) {
     >
       <p className="min-h-[1.75rem]">
         {OPENING_TEXT.slice(0, count)}
-        <span data-cursor={cursorOn ? "on" : "off"}>
-          {cursorOn ? "█" : " "}
+        <span ref={cursor} data-cursor="on">
+          {"\u2588"}
         </span>
       </p>
     </C64Screen>
