@@ -310,6 +310,14 @@ mod tests {
     }
 
     #[test]
+    fn the_capture_skill_teaches_the_close_folder_hint() {
+        let capture = skill("crystalline-capture").unwrap().content;
+        for needle in ["`close_folders`", "`move_engram`", "V112"] {
+            assert!(capture.contains(needle), "capture skill lacks {needle}");
+        }
+    }
+
+    #[test]
     fn the_skills_teach_per_engram_provenance_and_citing_it() {
         let capture = skill("crystalline-capture").unwrap().content;
         for needle in [

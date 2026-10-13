@@ -2201,9 +2201,129 @@ fn v111_exempt_types_are_matched_case_insensitively() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// V112 - sibling folders with close names
+// ---------------------------------------------------------------------------
+
+/// A fact filed at `path` whose permalink is the path's own, so `V109` stays
+/// quiet on it.
+fn at(id: i64, path: &str) -> EngramFacts {
+    filed(id, path.trim_end_matches(".md"), path)
+}
+
 #[test]
-fn the_catalog_carries_twenty_six_rules_and_v006_is_temporal() {
-    assert_eq!(RULES.len(), 26);
+fn v112_names_a_pair_of_close_sibling_folders_once() {
+    let sweep = input(vec![
+        at(1, "projects/planview/roadmap.md"),
+        at(2, "projects/planview/budget.md"),
+        at(3, "projects/planview-work/standup.md"),
+        at(4, "projects/billing/invoices.md"),
+    ]);
+    let report = detect(&sweep);
+    let finding = only(&report, "V112");
+    assert_eq!(finding.class, Class::Judgment);
+    assert_eq!(finding.family, Family::Structure);
+    assert_eq!(
+        finding.permalink, "projects/planview-work/standup",
+        "anchored on the folder with fewer engrams"
+    );
+    assert!(
+        finding.finding.contains("projects/planview-work/")
+            && finding.finding.contains("projects/planview/"),
+        "{}",
+        finding.finding
+    );
+    assert!(
+        finding
+            .evidence
+            .contains("projects/planview holds 2 engrams")
+            && finding
+                .evidence
+                .contains("projects/planview-work holds 1 engram"),
+        "{}",
+        finding.evidence
+    );
+    assert!(
+        finding.fix.contains("move_engram") && finding.fix.contains("evolve_ack V112"),
+        "{}",
+        finding.fix
+    );
+    assert_eq!(
+        finding.scope, "projects/planview, projects/planview-work",
+        "the two folder paths, sorted"
+    );
+}
+
+#[test]
+fn v112_anchors_on_the_first_permalink_and_breaks_a_tie_by_the_later_name() {
+    let sweep = input(vec![
+        at(1, "notes/b.md"),
+        at(2, "note/z.md"),
+        at(3, "note/a.md"),
+        at(4, "notes/a.md"),
+    ]);
+    let finding = only(&detect(&sweep), "V112");
+    assert_eq!(finding.permalink, "notes/a");
+}
+
+#[test]
+fn v112_compares_only_siblings_and_skips_reserved_files() {
+    let sweep = input(vec![
+        // Close names under different parents are not siblings.
+        at(1, "alpha/planview/a.md"),
+        at(2, "beta/planview-work/b.md"),
+        // A folder holding only a generated listing is no folder.
+        at(3, "gamma/notes/one.md"),
+        filed(4, "gamma/note/index", "gamma/note/index.md"),
+    ]);
+    assert!(
+        !fired(&detect(&sweep)).contains(&"V112"),
+        "{:?}",
+        fired(&detect(&sweep))
+    );
+}
+
+#[test]
+fn v112_is_quiet_on_a_domain_without_close_folders() {
+    let sweep = input(vec![
+        at(1, "projects/alpha/a.md"),
+        at(2, "projects/billing/b.md"),
+        at(3, "meetings/2025/c.md"),
+        at(4, "meetings/2026/d.md"),
+        at(5, "root.md"),
+    ]);
+    assert!(!fired(&detect(&sweep)).contains(&"V112"));
+}
+
+#[test]
+fn a_v112_ack_holds_for_the_pair_and_goes_stale_when_a_folder_is_renamed() {
+    let swept = |small: &str| {
+        let mut anchor = at(3, &format!("projects/{small}/standup.md"));
+        anchor.acks = vec![ack(
+            "V112",
+            Some("projects/planview, projects/planview-work"),
+            "two topics",
+        )];
+        detect(&input(vec![
+            at(1, "projects/planview/roadmap.md"),
+            at(2, "projects/planview/budget.md"),
+            anchor,
+        ]))
+    };
+
+    let silent = swept("planview-work");
+    assert!(!fired(&silent).contains(&"V112"), "{:?}", fired(&silent));
+    assert_eq!(silent.acknowledged.structure, 1);
+
+    let renamed = swept("planview-team");
+    let finding = only(&renamed, "V112");
+    assert!(finding.ack_stale, "a renamed folder asks again");
+    assert!(!finding.acknowledged);
+}
+
+#[test]
+fn the_catalog_carries_twenty_seven_rules_and_v006_is_temporal() {
+    assert_eq!(RULES.len(), 27);
     let info = rule_info("V006").expect("V006 is in the catalog");
     assert_eq!(info.family, Family::Temporal);
     assert_eq!(info.base, 50);
@@ -2246,8 +2366,8 @@ fn the_catalog_covers_every_rule_id_exactly_once() {
         ids,
         vec![
             "V001", "V002", "V003", "V004", "V005", "V006", "V007", "V008", "V009", "V010", "V101",
-            "V102", "V103", "V104", "V105", "V106", "V107", "V108", "V109", "V110", "V111", "V201",
-            "V202", "V203", "V301", "V302",
+            "V102", "V103", "V104", "V105", "V106", "V107", "V108", "V109", "V110", "V111", "V112",
+            "V201", "V202", "V203", "V301", "V302",
         ]
     );
     for rule in RULES {
@@ -2615,8 +2735,8 @@ fn every_rule_in_the_catalog_has_a_decided_scope() {
     // empty-scope arm, which is the safe default, and this pins that the
     // catalog and the scope function are read together.
     let scoped = [
-        "V007", "V008", "V010", "V101", "V102", "V103", "V107", "V109", "V110", "V201", "V202",
-        "V301", "V302",
+        "V007", "V008", "V010", "V101", "V102", "V103", "V107", "V109", "V110", "V112", "V201",
+        "V202", "V301", "V302",
     ];
     for info in RULES {
         let produced = scope_for(info.id, vec!["one".to_string()]);

@@ -21,6 +21,7 @@ pub mod base;
 pub mod config;
 pub mod emit;
 pub mod engram;
+pub mod folders;
 pub mod frontmatter;
 pub mod harness;
 pub mod import;

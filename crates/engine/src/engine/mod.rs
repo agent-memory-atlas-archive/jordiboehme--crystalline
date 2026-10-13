@@ -5399,6 +5399,7 @@ mod domain_lookup_tests {
 // lists them in the order they stood in the single engine.rs.
 mod adopt_names;
 mod attachments;
+mod close_folders;
 mod configure;
 mod context;
 mod contradictions;

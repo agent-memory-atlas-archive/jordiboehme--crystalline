@@ -721,6 +721,29 @@ async fn the_evolve_queue_names_no_hidden_domain() {
     let scoped = out.get_json("/api/v1/evolve?limit=100").await.to_string();
     assert!(!scoped.contains("lab"), "{scoped}");
     assert!(!scoped.contains("intake"), "{scoped}");
+
+    // V112 names folders, so two close folders inside the hidden domain are
+    // named to a caller who sees it and never to one who does not.
+    for (folder, title) in [("planview", "Roadmap"), ("planview-work", "Standup")] {
+        let written = boss
+            .post_json(
+                "/api/v1/domains/lab/engrams",
+                json!({ "title": title, "folder": folder, "content": "A fact about the topic.\n" }),
+            )
+            .await;
+        assert_eq!(written.status(), 201, "{:?}", written.text().await);
+    }
+    let v112_in_lab = |queue: &serde_json::Value| {
+        queue["queue"].as_array().is_some_and(|rows| {
+            rows.iter()
+                .any(|f| f["rule"] == "V112" && f["domain"] == "lab")
+        })
+    };
+    let swept = boss.get_json("/api/v1/evolve?rules=V112&limit=100").await;
+    assert!(v112_in_lab(&swept), "{swept}");
+    let scoped = out.get_json("/api/v1/evolve?rules=V112&limit=100").await;
+    assert!(!v112_in_lab(&scoped), "{scoped}");
+    assert!(!scoped.to_string().contains("planview"), "{scoped}");
 }
 
 /// **Privatizing a domain that is already private changes nothing.**

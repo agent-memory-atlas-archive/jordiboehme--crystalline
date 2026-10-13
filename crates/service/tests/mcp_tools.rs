@@ -8352,3 +8352,154 @@ async fn the_desktop_manifest_names_the_tools_a_default_install_lists() {
         "packaging/mcpb/generate-manifest.sh's tools block differs from the binary's tool list"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The close-folder hint on a write receipt
+// ---------------------------------------------------------------------------
+
+/// A `write_engram` call into `folder` of `eng`, returning the receipt.
+async fn write_in(peer: &Peer<RoleClient>, folder: &str, title: &str) -> Value {
+    call(
+        peer,
+        "write_engram",
+        json!({ "domain": "eng", "folder": folder, "title": title, "content": "A fact about the topic." }),
+    )
+    .await
+    .unwrap()
+}
+
+fn assert_no_folder_hint(receipt: &Value) {
+    assert!(receipt.get("close_folders").is_none(), "{receipt}");
+    assert!(receipt.get("folder_guidance").is_none(), "{receipt}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_that_starts_a_folder_next_to_a_close_one_says_so() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+
+    let first = write_in(peer, "projects/planview", "Roadmap").await;
+    // The very first folder under `projects` has no sibling at all.
+    assert_no_folder_hint(&first);
+    write_in(peer, "projects/planview", "Budget").await;
+    let unrelated = write_in(peer, "projects/billing", "Invoices").await;
+    assert_no_folder_hint(&unrelated);
+
+    let started = write_in(peer, "projects/planview-work", "Standup").await;
+    assert_eq!(
+        started["close_folders"],
+        json!([{ "folder": "projects/planview", "engrams": 2 }]),
+        "{started}"
+    );
+    assert_eq!(
+        started["folder_guidance"],
+        "This write started a new folder next to existing folders with a close name. If it is the same topic, move the engram there with move_engram and keep one folder; if the topics differ, leave it."
+    );
+
+    // The second engram in the new folder does not start it.
+    let second = write_in(peer, "projects/planview-work", "Retro").await;
+    assert_no_folder_hint(&second);
+    // Nor does a write into a folder that already held engrams.
+    let existing = write_in(peer, "projects/planview", "Risks").await;
+    assert_no_folder_hint(&existing);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_top_level_folder_is_compared_with_the_top_level_folders() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+
+    write_in(peer, "meetings", "Kickoff").await;
+    let started = write_in(peer, "meeting", "Weekly").await;
+    assert_eq!(
+        started["close_folders"],
+        json!([{ "folder": "meetings", "engrams": 1 }]),
+        "{started}"
+    );
+    // A deeper new level is compared at the first level the write created:
+    // `meeting` exists now, so `meeting/notes/2026` creates `meeting/notes`,
+    // which has no sibling.
+    let deeper = write_in(peer, "meeting/notes/2026", "Planning").await;
+    assert_no_folder_hint(&deeper);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_overwrite_never_carries_the_folder_hint() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+
+    write_in(peer, "planview", "Roadmap").await;
+    write_in(peer, "planview-work", "Standup").await;
+    let replaced = call(
+        peer,
+        "write_engram",
+        json!({
+            "domain": "eng",
+            "folder": "planview-work",
+            "title": "Standup",
+            "content": "A new body.",
+            "overwrite": true
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(replaced["action"], "written", "{replaced}");
+    assert_no_folder_hint(&replaced);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_review_mode_the_folder_hint_sees_the_callers_own_drafts() {
+    let h = Harness::build_tweaked(&["eng"], false, true, |cfg, _| {
+        cfg.domains.get_mut("eng").unwrap().review = Some(ReviewMode::Overlay);
+    })
+    .await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+
+    let first = write_in(peer, "planview", "Roadmap").await;
+    assert_eq!(first["draft"], true, "{first}");
+    write_in(peer, "planview", "Budget").await;
+    assert!(
+        !h.root.join("eng/planview").exists(),
+        "the drafts did not move the tree"
+    );
+    let started = write_in(peer, "planview-work", "Standup").await;
+    assert_eq!(
+        started["close_folders"],
+        json!([{ "folder": "planview", "engrams": 2 }]),
+        "{started}"
+    );
+    let second = write_in(peer, "planview-work", "Retro").await;
+    assert_no_folder_hint(&second);
+}
+
+/// write_engram's copy names the close_folders receipt key and the verb that
+/// acts on it; evolve_engrams' copy names V112.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_descriptions_teach_close_folders_and_v112() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let tools = client.peer().list_tools(Default::default()).await.unwrap();
+    let description = |name: &str| {
+        tools
+            .tools
+            .iter()
+            .find(|t| t.name == name)
+            .and_then(|t| t.description.as_deref())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let write = description("write_engram");
+    assert!(
+        write.contains("close_folders") && write.contains("move_engram"),
+        "write_engram names the hint: {write}"
+    );
+    let evolve = description("evolve_engrams");
+    assert!(
+        evolve.contains("V112") && evolve.contains("close names"),
+        "evolve_engrams names V112: {evolve}"
+    );
+}

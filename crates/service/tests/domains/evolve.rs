@@ -3294,6 +3294,123 @@ async fn v111_fires_on_a_blank_or_whitespace_resource() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// V112 - sibling folders with close names
+// ---------------------------------------------------------------------------
+
+/// An engine over one file domain `eng` holding an engram at each path, synced.
+async fn folder_fixture(paths: &[&str]) -> (tempfile::TempDir, Arc<Engine>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("eng");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("MANIFEST.md"),
+        crystalline_core::manifest_template("eng", "2026-07-25"),
+    )
+    .unwrap();
+    for path in paths {
+        let abs = dir.join(path);
+        std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        let permalink = path.trim_end_matches(".md");
+        std::fs::write(
+            &abs,
+            format!(
+                "---\ntype: engram\ntitle: {permalink}\npermalink: {permalink}\ntags:\n  - work\nstatus: stable\nrecorded_at: 2026-07-25\n---\n\nWhat {permalink} holds.\n\n- [fact] one line\n- [fact] two lines\n"
+            ),
+        )
+        .unwrap();
+    }
+    let mut cfg = GlobalConfig::default();
+    cfg.domains
+        .insert("eng".to_string(), DomainEntry::file(dir));
+    let config_path = tmp.path().join("config.yaml");
+    crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
+    let store = TursoStore::open_in_memory().await.unwrap();
+    let engine = Arc::new(Engine::new(
+        Arc::new(Mutex::new(store)),
+        cfg,
+        None,
+        Some(config_path),
+    ));
+    engine.sync(None).await.unwrap();
+    (tmp, engine)
+}
+
+fn only_v112() -> EvolveParams {
+    EvolveParams {
+        domains: vec!["eng".to_string()],
+        rules: vec!["V112".to_string()],
+        limit: Some(10),
+        ..EvolveParams::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v112_names_close_sibling_folders_once_and_an_ack_holds_until_a_rename() {
+    let (_tmp, engine) = folder_fixture(&[
+        "projects/planview/roadmap.md",
+        "projects/planview/budget.md",
+        "projects/planview-work/standup.md",
+        "projects/billing/invoices.md",
+    ])
+    .await;
+
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    let queue = v["queue"].as_array().unwrap();
+    assert_eq!(queue.len(), 1, "{v}");
+    assert_eq!(queue[0]["rule"], "V112");
+    assert_eq!(queue[0]["class"], "judgment");
+    assert_eq!(queue[0]["permalink"], "projects/planview-work/standup");
+
+    let receipt = acknowledge(
+        &engine,
+        "projects/planview-work/standup",
+        "V112 two different topics",
+    )
+    .await;
+    assert_eq!(
+        receipt["evolve_ack"]["scope"], "projects/planview, projects/planview-work",
+        "the evidence is the two folder paths: {receipt}"
+    );
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert!(v["queue"].as_array().unwrap().is_empty(), "{v}");
+    assert_eq!(v["acknowledged"]["by_family"]["structure"], 1, "{v}");
+
+    // Renaming the folder asks the question again, marked stale.
+    engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "projects/planview-work/standup".to_string(),
+                domain: "eng".to_string(),
+                destination: "projects/planview-team/standup".to_string(),
+                destination_domain: None,
+                permalink: Some("path".to_string()),
+                update_links: None,
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    let queue = v["queue"].as_array().unwrap();
+    assert_eq!(queue.len(), 1, "{v}");
+    assert_eq!(queue[0]["permalink"], "projects/planview-team/standup");
+    assert_eq!(queue[0]["ack_stale"], true, "{v}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v112_is_quiet_on_a_domain_without_close_folders() {
+    let (_tmp, engine) = folder_fixture(&[
+        "projects/planview/roadmap.md",
+        "projects/billing/invoices.md",
+        "meetings/2025/kickoff.md",
+        "meetings/2026/kickoff.md",
+    ])
+    .await;
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert!(v["queue"].as_array().unwrap().is_empty(), "{v}");
+}
+
 /// Nobody could act on a read-only domain's findings, so the sweep leaves it
 /// out and says so, an explicitly named one included, and a scoped run
 /// settles it so a pending mark from before the switch never arms the nudge
