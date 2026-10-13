@@ -374,7 +374,7 @@ pub struct RuleInfo {
 
 /// The full rule catalog, in id order. The single place a base priority or a
 /// prescribed action is written down.
-pub const RULES: [RuleInfo; 26] = [
+pub const RULES: [RuleInfo; 27] = [
     RuleInfo {
         id: "V001",
         family: Family::Temporal,
@@ -523,6 +523,13 @@ pub const RULES: [RuleInfo; 26] = [
         instruction: "An ingestion record names this engram as knowledge it fed, or the engram declares ingested_from, but it carries no resource, so an answer from it cannot say where the knowledge came from. Read the record and the source, then set resource to the most specific location it was distilled from with edit_engram set_frontmatter key resource: the page, or for a git source the file at the ingested commit (https://github.com/org/repo/blob/sha/path). Set source_date too where the source has one. Guessing a location writes a false citation, so ask first. When no single location fits, acknowledge with evolve_ack V111.",
     },
     RuleInfo {
+        id: "V112",
+        family: Family::Structure,
+        base: 40,
+        summary: "sibling folders with close names",
+        instruction: "Two sibling folders carry names that read as one topic (planview and planview-work, note and notes, Plan_View and plan-view), usually two captures that each started a folder of their own, so a build_context glob on either folder misses half the topic. Read both. If they hold one topic, move the engrams of the smaller folder into the other with move_engram, which rewrites every reference, and keep one folder. If the topics differ, acknowledge with evolve_ack V112; the acknowledgment holds while both folder names stay the same.",
+    },
+    RuleInfo {
         id: "V201",
         family: Family::Redundancy,
         base: 80,
@@ -572,7 +579,7 @@ const SCOPE_SEPARATOR: &str = ", ";
 
 /// Whether `rule` is acknowledged **per pair** rather than per engram.
 ///
-/// `V301` and `V302` are the two, and the distinction is about what an
+/// `V112`, `V301` and `V302` are the three, and the distinction is about what an
 /// acknowledgment answers for rather than about how often a rule fires. Every
 /// other rule's acknowledgment is the engram's answer about that rule:
 /// re-acknowledging replaces the entry, and an entry whose scope no longer
@@ -586,12 +593,16 @@ const SCOPE_SEPARATOR: &str = ", ";
 /// answer about the engram, so those acknowledgments are stored per pair (a
 /// twin pair, or a pair of observation lines) and a pair with no entry of its
 /// own is a plain finding rather than a stale one - nobody has answered it
-/// yet.
+/// yet. A `V112` acknowledgment answers a pair of folders: one folder close
+/// to two siblings anchors two findings on one engram, and each pair keeps
+/// its own entry.
 ///
 /// Read by the sweep here and by the engine's `evolve_ack` write path, which
 /// keys its entries the same way. One predicate, so the two cannot drift.
 pub fn is_pair_scoped(rule: &str) -> bool {
-    rule.eq_ignore_ascii_case("V301") || rule.eq_ignore_ascii_case("V302")
+    rule.eq_ignore_ascii_case("V301")
+        || rule.eq_ignore_ascii_case("V302")
+        || rule.eq_ignore_ascii_case("V112")
 }
 
 /// The stable discriminator for a finding: the evidence an acknowledgment was
@@ -603,7 +614,8 @@ pub fn is_pair_scoped(rule: &str) -> bool {
 ///
 /// - `V010` (the normalized text of the observations that survive nowhere),
 ///   `V101` (the retired targets), `V102` (the unresolved targets), `V103` (the
-///   counterparts), `V107` (the missing attachment paths), `V201` (the cluster
+///   counterparts), `V107` (the missing attachment paths), `V112` (the two
+///   folder paths), `V201` (the cluster
 ///   members), `V202` (the colliding titles) and `V301` (the twin pair) are
 ///   **sets**, so the parts are sorted and deduplicated before joining:
 ///   reordering the links in a body must not re-raise an acknowledged finding,
@@ -627,7 +639,7 @@ pub fn is_pair_scoped(rule: &str) -> bool {
 ///   looks like next time.
 fn scope_for(rule: &str, mut parts: Vec<String>) -> String {
     match rule {
-        "V010" | "V101" | "V102" | "V103" | "V107" | "V201" | "V202" | "V301" => {
+        "V010" | "V101" | "V102" | "V103" | "V107" | "V112" | "V201" | "V202" | "V301" => {
             parts.sort();
             parts.dedup();
             parts.join(SCOPE_SEPARATOR)
@@ -1560,7 +1572,7 @@ impl FindingCap {
 ///   different thing to read than a fresh finding. One entry is what a rule
 ///   acknowledged per engram always has, since the write path replaces it;
 /// - nothing matches and the rule is pair-scoped ([`is_pair_scoped`], which is
-///   `V301` and `V302`): **returned plain**. A twin or line-pair
+///   `V112`, `V301` and `V302`): **returned plain**. A twin or line-pair
 ///   acknowledgment answers one pair, so a pair with no entry of its own is
 ///   unanswered rather than stale, and lending it another pair's note would
 ///   tell a reader they have seen evidence they have not;
@@ -1571,6 +1583,20 @@ impl FindingCap {
 ///
 /// A finding with no anchor engram - `V203`'s vocabulary, `V108`'s attachment -
 /// has nowhere to hang an acknowledgment and passes through.
+///
+/// `V112` is looked up wider than its anchor: its anchor is the first engram
+/// of the smaller folder, which moves when a folder gains an engram that sorts
+/// first or the smaller folder outgrows the other, while the answer is about
+/// the two folder names. So an entry for the pair on any engram in either
+/// folder silences it, and the finding still comes back the moment a folder
+/// is renamed, since that is another pair.
+///
+/// A `V112` entry with no pair (hand-written, or recorded before the write
+/// path resolved one for every acknowledgment) is read narrower: it answers
+/// only for a pair one of whose folders is the very folder its engram sits in
+/// ([`in_own_folder`]). Read at every ancestor level it would also silence a
+/// pair one level up that nobody answered, and every close pair that appears
+/// above it later.
 fn apply_acknowledgments(input: &SweepInput, report: &mut SweepReport) {
     let acks: HashMap<&str, &[AckEntry]> = input
         .engrams
@@ -1581,10 +1607,37 @@ fn apply_acknowledgments(input: &SweepInput, report: &mut SweepReport) {
     if acks.is_empty() {
         return;
     }
+    // Every `V112` entry with the folder path of the engram that carries it.
+    let folder_acks: Vec<(&str, &AckEntry)> = input
+        .engrams
+        .iter()
+        .flat_map(|f| {
+            f.acks
+                .iter()
+                .filter(|a| a.rule.eq_ignore_ascii_case("V112"))
+                .map(move |a| (f.path.as_str(), a))
+        })
+        .collect();
 
     let mut counts = AckCounts::default();
     let include = input.include_acknowledged;
     report.findings.retain_mut(|finding| {
+        if finding.rule == "V112" {
+            let held = folder_acks
+                .iter()
+                .find(|(path, ack)| match ack.scope.as_deref() {
+                    Some(scope) => scope == finding.scope && in_scoped_folder(path, &finding.scope),
+                    None => in_own_folder(path, &finding.scope),
+                });
+            if let Some((_, ack)) = held {
+                counts.add(finding.family);
+                finding.acknowledged = true;
+                finding.ack_note = ack.note.clone();
+                finding.ack_scope = ack.scope.clone();
+                return include;
+            }
+            return true;
+        }
         let Some(entries) = acks.get(finding.permalink.as_str()) else {
             return true;
         };
@@ -1620,6 +1673,41 @@ fn apply_acknowledgments(input: &SweepInput, report: &mut SweepReport) {
         true
     });
     report.acknowledged = counts;
+}
+
+/// Whether the engram at `path` sits in one of the two folders a `V112` scope
+/// names, at any depth. Asked of the folders above the path rather than by
+/// splitting the scope, so a folder name holding the separator cannot cut it
+/// in the wrong place.
+///
+/// Public because the take-back of a `V112` acknowledgment has to reach every
+/// engram this suppression reads, and only the same test can promise that.
+pub fn in_scoped_folder(path: &str, scope: &str) -> bool {
+    let Some((folder, _)) = path.rsplit_once('/') else {
+        return false;
+    };
+    folder
+        .char_indices()
+        .filter(|(_, c)| *c == '/')
+        .map(|(i, _)| &folder[..i])
+        .chain([folder])
+        .any(|level| {
+            scope.starts_with(&format!("{level}{SCOPE_SEPARATOR}"))
+                || scope.ends_with(&format!("{SCOPE_SEPARATOR}{level}"))
+        })
+}
+
+/// Whether one of the two folders a `V112` scope names is the folder `path`
+/// sits in directly, not an ancestor of it. The reach of a `V112` entry that
+/// carries no pair (see `apply_acknowledgments`), and public for the same
+/// reason [`in_scoped_folder`] is: the take-back has to find exactly the
+/// entries this suppression reads.
+pub fn in_own_folder(path: &str, scope: &str) -> bool {
+    let Some((folder, _)) = path.rsplit_once('/') else {
+        return false;
+    };
+    scope.starts_with(&format!("{folder}{SCOPE_SEPARATOR}"))
+        || scope.ends_with(&format!("{SCOPE_SEPARATOR}{folder}"))
 }
 
 /// The edge and node lookups every rule shares, built once per run.
@@ -2304,6 +2392,7 @@ fn detect_structure(input: &SweepInput, graph: &Graph<'_>, report: &mut SweepRep
     detect_reciprocal(input, graph, report);
     detect_local_spellings(input, graph, report);
     detect_unsourced_ingest(input, graph, report);
+    detect_close_folders(input, report);
 }
 
 /// `V109`: the permalink's folder part differs from the folder the file sits
@@ -2517,6 +2606,90 @@ fn detect_unsourced_ingest(input: &SweepInput, graph: &Graph<'_>, report: &mut S
             "edit_engram set_frontmatter key resource value <the page or file it was distilled from>"
                 .to_string(),
         ));
+    }
+}
+
+/// `V112`: two sibling folders whose names read as one topic, by
+/// [`crystalline_core::folders::closeness`] - the matcher the write receipt's
+/// `close_folders` hint asks too.
+///
+/// One finding per pair, anchored on the first engram by permalink of the
+/// folder with fewer engrams (a tie goes to the later folder name), so the
+/// acknowledgment lands on an engram the fix would move. Pair-scoped
+/// ([`is_pair_scoped`]): the anchor can move, so [`apply_acknowledgments`]
+/// reads the pair's entry off any engram in either folder. Counts are
+/// recursive and leave the reserved files out, the same counting the receipt
+/// uses. Retired engrams count: they are files in the folder all the same.
+///
+/// Judgment class: whether two folders hold one topic is a reading of their
+/// content, not something the names settle. Scoped by the two folder paths,
+/// so an acknowledgment holds while neither folder is renamed; a renamed one is
+/// a new pair and comes back plain, as every pair-scoped rule does.
+fn detect_close_folders(input: &SweepInput, report: &mut SweepReport) {
+    use crystalline_core::folders::{closeness, folder_counts, folder_parent};
+
+    let mut by_path: BTreeMap<&str, &EngramFacts> = BTreeMap::new();
+    for fact in &input.engrams {
+        by_path.entry(fact.path.as_str()).or_insert(fact);
+    }
+    let counts = folder_counts(by_path.keys().copied());
+    if counts.len() < 2 {
+        return;
+    }
+    // The first engram of each folder by permalink, the anchor a finding
+    // about that folder lands on.
+    let first_in = |folder: &str| -> Option<&EngramFacts> {
+        let prefix = format!("{folder}/");
+        by_path
+            .iter()
+            .filter(|(path, _)| {
+                path.starts_with(&prefix) && !crystalline_core::is_reserved_path(path)
+            })
+            .map(|(_, fact)| *fact)
+            .min_by(|a, b| a.permalink.cmp(&b.permalink))
+    };
+    let mut by_parent: BTreeMap<&str, Vec<(&str, usize)>> = BTreeMap::new();
+    for (folder, count) in &counts {
+        by_parent
+            .entry(folder_parent(folder))
+            .or_default()
+            .push((folder.as_str(), *count));
+    }
+    let engrams = |n: usize| crystalline_core::text::plural(n, "engram", "engrams");
+    for siblings in by_parent.values() {
+        for (i, &(a, a_count)) in siblings.iter().enumerate() {
+            for &(b, b_count) in &siblings[i + 1..] {
+                let Some(close) = closeness(a, b) else {
+                    continue;
+                };
+                // `a` sorts before `b`, so a tie goes to `b`, the later name.
+                let ((small, small_count), (large, large_count)) = if a_count < b_count {
+                    ((a, a_count), (b, b_count))
+                } else {
+                    ((b, b_count), (a, a_count))
+                };
+                let Some(anchor) = first_in(small) else {
+                    continue;
+                };
+                report.findings.push(
+                    Finding::about("V112", anchor)
+                        .with(
+                            Class::Judgment,
+                            format!("folders {small}/ and {large}/ have close names"),
+                            format!(
+                                "{large} holds {}; {small} holds {}; names {}",
+                                engrams(large_count),
+                                engrams(small_count),
+                                close.describe()
+                            ),
+                            format!(
+                                "move_engram the engrams of {small}/ into {large}/ if they are one topic; otherwise acknowledge with evolve_ack V112"
+                            ),
+                        )
+                        .scoped([small.to_string(), large.to_string()]),
+                );
+            }
+        }
     }
 }
 

@@ -2339,6 +2339,14 @@ pub(crate) async fn dispatch_engine(
                     &Scope::Unrestricted,
                 )
                 .await?;
+            // The close-folder hint the MCP receipt carries, so `crystalline
+            // write` can print it too. After the write returned, for the same
+            // store-lock reason as there.
+            let folders = Engine::close_folder_probe(&v);
+            let close = engine
+                .close_folders_for(folders.as_ref(), &Scope::Unrestricted)
+                .await;
+            Engine::attach_close_folders(&mut v, &close);
             crate::web_url::attach_engram_url(&mut v, &base);
             v
         }
@@ -2940,6 +2948,38 @@ mod tests {
             relay.outstanding.contains_key("0"),
             "the handshake id survives an unrelated cancellation"
         );
+        // A cancelled onboarding request no longer waits for the note either.
+        relay.note_client_line(r#"{"jsonrpc":"2.0","id":5,"method":"server/discover"}"#);
+        assert!(relay.onboarding.contains("5"));
+        relay.note_client_line(
+            r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":0}}"#,
+        );
+        relay.note_client_line(
+            r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":5}}"#,
+        );
+        assert!(relay.onboarding.is_empty());
+        assert!(relay.outstanding.is_empty());
+    }
+
+    /// A JSON-RPC batch (an array line) is neither tracked nor settled, so no
+    /// id from it can be left behind: a batch from the client records nothing,
+    /// and a batched answer is forwarded verbatim, without the launcher note.
+    #[test]
+    fn relay_state_leaves_a_batch_untracked() {
+        let mut relay = RelayState {
+            launcher_note: Some(LAUNCHER_NOTE),
+            ..RelayState::default()
+        };
+        relay.note_client_line(
+            r#"[{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}},{"jsonrpc":"2.0","id":1,"method":"server/discover"}]"#,
+        );
+        assert!(relay.outstanding.is_empty());
+        assert!(relay.onboarding.is_empty());
+        assert!(relay.init_request.is_none());
+        let answer = r#"[{"jsonrpc":"2.0","id":0,"result":{"instructions":"x"}},{"jsonrpc":"2.0","id":1,"result":{"instructions":"y"}}]"#;
+        assert_eq!(relay.note_server_line(answer), None);
+        assert!(relay.outstanding.is_empty());
+        assert!(relay.onboarding.is_empty());
     }
 
     #[tokio::test]

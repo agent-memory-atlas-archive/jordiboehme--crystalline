@@ -1005,6 +1005,9 @@ async fn a_cold_refresh_keeps_its_deadline_and_records_no_failure() {
         assert!(Instant::now() < until, "never asked: {:?}", again[0].1);
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    // Not a timing question: the loop ends only on Fresh, that same refresh
+    // removes the source's failure under the set's write lock, and nothing
+    // else in this test refreshes or records one.
     assert!(set.failures().is_empty(), "{:?}", set.failures());
 }
 

@@ -33,10 +33,12 @@
  *   focus assist lamp beside them. On top stand the exposure dial, the
  *   shutter button in its collar with its thread, the shutter speed dial
  *   and the hot shoe; at the back the screen and the eyepiece. The
- *   maker's name runs across the top plate's front, left of the window
- *   (`CAMERA_MARK`); its model name runs across the back of the top
- *   plate over the screen, reading from behind (`CAMERA_MODEL_MARK`), the
- *   one strip of the top plate where it fits at the 3 mm pixel floor. The
+ *   maker's name runs small across the top plate's front, left of the
+ *   window (`CAMERA_MARK`), at the real lettering's size against the body
+ *   (`CAMERA_MARK_SIZE`, the one mark under the 3 mm floor); its model
+ *   name runs across the back of the top plate over the screen, reading
+ *   from behind (`CAMERA_MODEL_MARK`), the one strip of the top plate
+ *   where it fits at the 3 mm pixel floor. The
  *   tripod (`TRIPOD`): its centre column through the spider, a pan head
  *   with its tilt block, plate and handle, and three legs of two sections
  *   each. The focus assist lamp (group 0) breathes.
@@ -528,11 +530,23 @@ export const LENS = {
 } as const;
 
 /**
- * The maker's name's box on the top plate's front, `[a0, a1, h0, h1]` in
- * metres over the body's bottom: left of the viewfinder window, over the
- * lens.
+ * The strip of the top plate's front the maker's name is centred in,
+ * `[a0, a1, h0, h1]` in metres over the body's bottom: left of the
+ * viewfinder window, over the lens.
  */
 export const CAMERA_MARK = [-0.067, 0.027, 0.062, 0.0785] as const;
+
+/**
+ * The maker's name's pixel size, 0.6 mm, and how far its boxes stand
+ * proud of the plate, 0.5 mm (0.25.2). On the real body (140.5 mm wide)
+ * the lettering runs about 18 mm, an eighth of the width, and stands
+ * about 2.5 mm tall, measured on a front photo of the camera. At the 3 mm
+ * floor every hero mark keeps, the font's 31 by 5 cells came to 94 by 15
+ * mm, two thirds of the body. So this one mark is a documented exception
+ * to the floor: at 0.6 mm it runs 18.6 by 3 mm, the real lettering's
+ * size, and reads as the thin bright line it is on the real camera.
+ */
+export const CAMERA_MARK_SIZE = { px: 0.0006, proud: 0.0005 } as const;
 
 /**
  * The model name's box on the back of the top plate, `[a0, a1, h0, h1]`
@@ -761,11 +775,15 @@ const camera: HeroRecipe = ({ k, kitAt, s }) => {
   k.box(-0.055, 0.03, -dd - 0.001, -dd, b + 0.008, b + 0.056, glass);
   k.box(0.035, 0.062, -dd - 0.008, -dd, b + 0.056, b + 0.078, leather);
 
-  // The maker's name across the top plate's front.
+  // The maker's name across the top plate's front, small as on the real
+  // camera, centred in its strip.
   const [m0, m1, n0, n1] = CAMERA_MARK;
   const rows = textRows(MARKS.cameraMark);
-  const { px, left, top } = fit(rows, m0, m1, b + n0, b + n1);
-  pixelBoxes(k, rows, left, top, px, dd, dd + MARK_PROUD, (ch) =>
+  const { px, proud } = CAMERA_MARK_SIZE;
+  const cols = rows[0]?.length ?? 0;
+  const left = (m0 + m1) / 2 - (cols * px) / 2;
+  const top = b + (n0 + n1) / 2 + (rows.length * px) / 2;
+  pixelBoxes(k, rows, left, top, px, dd, dd + proud, (ch) =>
     ch === "#" ? s.tinted(CAMERA_INK) : null,
   );
 

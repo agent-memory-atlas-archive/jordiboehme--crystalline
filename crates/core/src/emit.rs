@@ -474,19 +474,35 @@ pub fn set_evolve_ack(source: &str, entries: &[EvolveAck]) -> String {
 }
 
 /// Replace the frontmatter value of `key` with `items` as a block list, one
-/// `  - item` line each, leaving every other byte untouched. The old value goes
-/// whole whatever shape it was written in - a block list, a flow list on one
-/// line or several, a comma-separated scalar - so no old item is left behind
-/// under the new list. An empty `items` removes the key with its items.
+/// `- item` line each at the key's own indent, leaving every other byte
+/// untouched. The old value goes whole whatever shape it was written in - a
+/// block list, a flow list on one line or several, a comma-separated scalar -
+/// so no old item is left behind under the new list. An empty `items` removes
+/// the key with its items.
+///
+/// The block is rendered by the same YAML emitter [`emit_engram`] uses, as a
+/// one-key mapping, so a list this writes is the list a whole emission
+/// writes: same indent, same quoting. An edit right after a write therefore
+/// changes only the lines it meant to change.
 pub fn set_frontmatter_list(source: &str, key: &str, items: &[String]) -> String {
     if items.is_empty() {
         return remove_frontmatter_block(source, key);
     }
-    let mut block = format!("{key}:");
-    for item in items {
-        block.push_str(&format!("\n  - {}", flow_scalar(item)));
-    }
-    set_frontmatter_block(source, key, block)
+    set_frontmatter_block(source, key, list_block(key, items))
+}
+
+/// Render `key` and its `items` as a YAML block list, key included and without
+/// a trailing newline, through the emitter [`emit_engram`] uses.
+fn list_block(key: &str, items: &[String]) -> String {
+    let mut m = Mapping::new();
+    m.insert(
+        Value::String(key.to_string()),
+        Value::Sequence(items.iter().cloned().map(Value::String).collect()),
+    );
+    serde_yaml_ng::to_string(&Value::Mapping(m))
+        .unwrap_or_default()
+        .trim_end_matches('\n')
+        .to_string()
 }
 
 fn evolve_ack_block(entries: &[EvolveAck]) -> String {
@@ -1162,7 +1178,7 @@ mod tests {
 
     #[test]
     fn a_list_replaces_every_shape_of_the_old_value_with_a_block_list() {
-        let want = "---\ntype: engram\ntags:\n  - a\n  - b\nstatus: stable\n---\n\nbody\n";
+        let want = "---\ntype: engram\ntags:\n- a\n- b\nstatus: stable\n---\n\nbody\n";
         for old in [
             "tags:\n  - x\n  - y\n",
             "tags:\n- x\n- y\n",
@@ -1193,13 +1209,13 @@ mod tests {
             "---\ntype: engram\ntags:\n  - x\n\n# lifecycle\nstatus: stable\n---\n\nbody\n";
         assert_eq!(
             set_frontmatter_list(source, "tags", &["a".to_string()]),
-            "---\ntype: engram\ntags:\n  - a\n\n# lifecycle\nstatus: stable\n---\n\nbody\n"
+            "---\ntype: engram\ntags:\n- a\n\n# lifecycle\nstatus: stable\n---\n\nbody\n"
         );
         // At the end of the frontmatter too.
         let source = "---\ntype: engram\ntags:\n  - x\n# end\n---\n\nbody\n";
         assert_eq!(
             set_frontmatter_list(source, "tags", &["a".to_string()]),
-            "---\ntype: engram\ntags:\n  - a\n# end\n---\n\nbody\n"
+            "---\ntype: engram\ntags:\n- a\n# end\n---\n\nbody\n"
         );
     }
 
@@ -1212,7 +1228,7 @@ mod tests {
         let out = set_frontmatter_list(source, "tags", &["a".to_string(), "b".to_string()]);
         assert_eq!(
             out,
-            "---\r\ntype: engram\r\ntags:\n  - a\n  - b\nstatus: stable\r\n---\r\n\r\nbody\r\n"
+            "---\r\ntype: engram\r\ntags:\n- a\n- b\nstatus: stable\r\n---\r\n\r\nbody\r\n"
         );
         let parsed = crate::parse_engram(&out).unwrap();
         assert_eq!(
@@ -1242,7 +1258,7 @@ mod tests {
         let out = set_frontmatter_list(source, "tags", &["new-tag".to_string()]);
         assert_eq!(
             out,
-            "---\ntype: engram\nstatus: stable\ntags:\n  - new-tag\n---\n\nbody\n"
+            "---\ntype: engram\nstatus: stable\ntags:\n- new-tag\n---\n\nbody\n"
         );
         let parsed = crate::parse_engram(&out).unwrap();
         assert_eq!(parsed.frontmatter.tags, vec!["new-tag".to_string()]);
@@ -1265,6 +1281,68 @@ mod tests {
         assert_eq!(
             parsed.frontmatter.tags,
             vec!["a: b".to_string(), "#x".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_list_is_written_exactly_as_a_whole_emission_writes_it() {
+        let items: Vec<String> = [
+            "plain",
+            "#hash",
+            "a: b",
+            "-dash",
+            "- dash space",
+            "\"double\"",
+            "'single'",
+            "Grüße 日本語",
+            "https://example.com/page#frag",
+            "https://example.com/a?b=c:d",
+            "true",
+            "1",
+            "null",
+            "~",
+            ":lead",
+            "trail:",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let mut engram =
+            crate::parse_engram("---\ntype: engram\nstatus: stable\n---\n\nbody\n").unwrap();
+        engram.frontmatter.tags = items.clone();
+        let emitted = emit_engram(&engram);
+        let bare = "---\ntype: engram\nstatus: stable\n---\n\nbody\n";
+        let written = set_frontmatter_list(bare, "tags", &items);
+        // The list block a whole emission writes is the block this writes.
+        let block = |text: &str| -> String {
+            let start = text.find("tags:").unwrap();
+            let rest = &text[start..];
+            let end = rest
+                .split_inclusive('\n')
+                .enumerate()
+                .skip(1)
+                .find(|(_, l)| !l.starts_with("- ") && !l.starts_with("  "))
+                .map(|(i, _)| rest.split_inclusive('\n').take(i).map(str::len).sum())
+                .unwrap_or(rest.len());
+            rest[..end].to_string()
+        };
+        assert_eq!(block(&written), block(&emitted));
+        let parsed = crate::parse_engram(&written).unwrap();
+        assert_eq!(parsed.frontmatter.tags, items);
+    }
+
+    #[test]
+    fn a_list_item_over_several_lines_cannot_end_the_frontmatter() {
+        let source = "---\ntype: engram\nstatus: stable\n---\n\nbody\n";
+        let items = vec!["first\n---\nsecond".to_string(), "after".to_string()];
+        let out = set_frontmatter_list(source, "sources", &items);
+        let parsed = crate::parse_engram(&out).unwrap();
+        assert_eq!(parsed.body, "\nbody\n");
+        assert_eq!(
+            parsed.frontmatter.extra.get("sources"),
+            Some(&crate::YamlValue::Sequence(
+                items.into_iter().map(crate::YamlValue::String).collect()
+            ))
         );
     }
 

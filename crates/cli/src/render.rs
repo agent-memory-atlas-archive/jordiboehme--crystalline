@@ -497,6 +497,28 @@ pub fn render_write(v: &Value, out: &mut impl Write) -> io::Result<()> {
     {
         writeln!(out, "note: {notice}")?;
     }
+    // A write that started a folder beside a sibling with a close name: each
+    // close folder with its size, then the receipt's own guidance once.
+    let close: Vec<(&str, usize)> = v
+        .get("close_folders")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|f| {
+            let folder = f.get("folder").and_then(Value::as_str)?;
+            let engrams = f.get("engrams").and_then(Value::as_u64)? as usize;
+            Some((folder, engrams))
+        })
+        .collect();
+    if !close.is_empty() {
+        for (folder, engrams) in close {
+            let size = crystalline_core::text::plural(engrams, "engram", "engrams");
+            writeln!(out, "close folder: {folder} ({size})")?;
+        }
+        if let Some(guidance) = v.get("folder_guidance").and_then(Value::as_str) {
+            writeln!(out, "  {guidance}")?;
+        }
+    }
     Ok(())
 }
 
@@ -1055,6 +1077,32 @@ mod tests {
         assert_eq!(
             out,
             "created crystalline://eng/zeta\nnote: first\nnote: second\n"
+        );
+    }
+
+    // A write that started a folder next to a sibling with a close name names
+    // each close folder with its engram count, then the receipt's guidance.
+    #[test]
+    fn write_names_close_folders_and_the_guidance() {
+        let v = json!({
+            "domain": "eng",
+            "permalink": "planview-work/standup",
+            "action": "created",
+            "close_folders": [
+                {"folder": "planview", "engrams": 2},
+                {"folder": "plan-view", "engrams": 1},
+            ],
+            "folder_guidance": "Move it or leave it.",
+        });
+        let out = render_to_string(render_write, &v);
+        assert_eq!(
+            out,
+            concat!(
+                "created crystalline://eng/planview-work/standup\n",
+                "close folder: planview (2 engrams)\n",
+                "close folder: plan-view (1 engram)\n",
+                "  Move it or leave it.\n"
+            )
         );
     }
 

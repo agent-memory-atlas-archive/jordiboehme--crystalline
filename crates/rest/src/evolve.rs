@@ -23,6 +23,7 @@ use super::{
     ApiError, ApiJson, ApiPath, ApiQuery, ProblemDetail, RestState, csv, refuse_read_only,
     require_domain_write,
 };
+use crate::engine::EngineError;
 use crate::params::{EvolveParams, ListDomainsParams};
 
 /// The query string `GET /evolve` takes, mirroring [`EvolveParams`] minus its
@@ -101,9 +102,9 @@ pub struct EvolveQuery {
 /// `include_acknowledged` to see the suppressed rows themselves, each marked
 /// `acknowledged` and carrying the same two fields.
 ///
-/// A `V301` or `V302` row carries its own `scope`: the twin pair, or the pair
-/// of observation lines, it fired on. They are the two rules that fire more
-/// than once on an engram, so naming the engram and the rule does not name the
+/// A `V112`, `V301` or `V302` row carries its own `scope`: the pair of sibling
+/// folders, the twin pair or the pair of observation lines it fired on. They
+/// are the three rules that fire more than once on an engram, so naming the engram and the rule does not name the
 /// finding - send this value back on the acknowledgment route to silence the
 /// pair that was read rather than whichever one the server would have picked.
 /// A `V302` row also carries `counterpart` (the other engram's permalink),
@@ -347,15 +348,16 @@ pub struct AckBody {
     /// The evidence this acknowledgment is for, copied from the queue row's
     /// own `scope`.
     ///
-    /// Only `V301` and `V302` send one: they are the two rules that fire more
-    /// than once on an engram (an engram can be the semantic twin of several
-    /// others, and several of its lines can read as contradicting another's),
-    /// so they are the ones where naming the rule does not name the finding.
+    /// Only `V112`, `V301` and `V302` send one: they are the three rules that
+    /// fire more than once on an engram (a folder can sit close to two sibling
+    /// folders, an engram can be the semantic twin of several others, and
+    /// several of its lines can read as contradicting another's), so they are
+    /// the ones where naming the rule does not name the finding.
     /// On `POST` the server checks the scope is really firing and refuses with
     /// a 422 if it is not, which is what a queue read too long ago looks like;
     /// on `DELETE` it takes back that pair's entry and leaves the engram's
     /// other pairs silenced. Every other rule ignores it, and omitting it on
-    /// `V301` or `V302` means the whole rule: the server's own pick on `POST`,
+    /// `V112`, `V301` or `V302` means the whole rule: the server's own pick on `POST`,
     /// every pair at once on `DELETE`.
     #[serde(default)]
     #[schema(example = "notes/backoff-lesson, notes/retry-queue-gotcha")]
@@ -390,8 +392,12 @@ pub struct AckBody {
                    changes the finding returns marked `ack_stale`. The \
                    evidence is the server's, either picked by running \
                    detection or - when the body names the row's `scope`, which \
-                   is how a caller says which of an engram's `V301` or \
-                   `V302` findings it read - checked against it.",
+                   is how a caller says which of an engram's `V112`, `V301` \
+                   or `V302` findings it read - checked against it. A `V112` \
+                   acknowledgment always records a pair: without a `scope` \
+                   on an engram that is not the row's own, the pair is the \
+                   one whose folders hold the engram, and the request is \
+                   refused when no pair or more than one does.",
     params(("domain" = String, Path, description = "The engram's domain.")),
     request_body = AckBody,
     responses(
@@ -436,9 +442,10 @@ pub struct AckBody {
         ),
         (
             status = 422,
-            description = "The rule id is not one the sweep catalog holds, or \
+            description = "The rule id is not one the sweep catalog holds, \
                            the `scope` names evidence the rule is not firing \
-                           on here.",
+                           on here, or a `V112` request without a `scope` \
+                           leaves no single pair of close folders to record.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -481,11 +488,18 @@ pub async fn acknowledge(
     summary = "Withdraw an acknowledgment.",
     description = "Removes the engram's `evolve_ack` entries for that rule, \
                    leaving the other rules' alone. A rule has one entry, except \
-                   `V301` and `V302`, which have one per pair: name the row's `scope` \
+                   `V112`, `V301` and `V302`, which have one per pair: name the row's `scope` \
                    to take one pair back and leave the engram's other pairs \
-                   silenced, or send none to take every pair at once. 404 when \
-                   the engram carries no entry the body names, rather than \
-                   reporting a removal that did not happen.",
+                   silenced, or send none to take every pair at once. \
+                   Withdrawing `V112` takes back every pair the engram holds \
+                   or anchors (or the one `scope` names) on every engram of \
+                   its two folders, since a pair's acknowledgment can sit on \
+                   any of them; in review mode each engram it changes gets a \
+                   draft of the caller's, and an entry there that names no \
+                   pair goes with the pairs of its own folder. 404 when no \
+                   entry the body names was there to take back, rather than \
+                   reporting a removal that did not happen; 409 when an entry \
+                   for the pair stays on a page that could not be rewritten.",
     params(("domain" = String, Path, description = "The engram's domain.")),
     request_body = AckBody,
     responses(
@@ -511,6 +525,17 @@ pub async fn acknowledge(
             content_type = "application/problem+json",
         ),
         (
+            status = 409,
+            description = "A `V112` withdrawal left the pair's acknowledgment \
+                           on at least one page: one this caller may not \
+                           rewrite (a draft shared to read and not joined) or \
+                           whose rewrite failed. The finding stays silenced; \
+                           the detail names the pages left with their reasons \
+                           and the pages whose entries did go, if any.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
             status = 415,
             description = "The body is not `application/json`.",
             body = ProblemDetail,
@@ -532,7 +557,7 @@ pub async fn unacknowledge(
 ) -> Result<StatusCode, ApiError> {
     let caller = require_domain_write(&state, &identity, &domain).await?;
     refuse_read_only(&state)?;
-    let removed = state
+    let withdrawal = state
         .engine
         .unacknowledge_finding_as(
             &domain,
@@ -542,8 +567,44 @@ pub async fn unacknowledge(
             Some(&format!("human:{}", caller.name())),
             &identity.scope(),
         )
-        .await?;
-    if !removed {
+        .await
+        // A conflict on this route is a 409 like the one below, never the
+        // generic 422 the engine's Conflict maps to elsewhere.
+        .map_err(|e| match e {
+            EngineError::Conflict(message) => ApiError::conflict(message),
+            other => other.into(),
+        })?;
+    // An entry for the pair left on any page keeps the row silenced, so the
+    // answer says so even when other entries went: a 204 here would read as
+    // done while the next sweep still shows the row acknowledged.
+    if !withdrawal.not_removed_from.is_empty() {
+        let left: Vec<String> = withdrawal
+            .not_removed_from
+            .iter()
+            .map(|(permalink, reason)| format!("'{permalink}' ({reason})"))
+            .collect();
+        let rule = body.rule.trim().to_ascii_uppercase();
+        let message = if withdrawal.removed() {
+            let gone: Vec<String> = withdrawal
+                .removed_from
+                .iter()
+                .map(|permalink| format!("'{permalink}'"))
+                .collect();
+            format!(
+                "the {rule} acknowledgment was taken back on {} but stays on {}, so the finding stays silenced",
+                gone.join(", "),
+                left.join(", ")
+            )
+        } else {
+            format!(
+                "no {rule} acknowledgment could be taken back for '{}'; the pair's acknowledgment stays on {}",
+                body.permalink,
+                left.join(", ")
+            )
+        };
+        return Err(ApiError::conflict(message));
+    }
+    if !withdrawal.removed() {
         return Err(ApiError::not_found(format!(
             "no acknowledgment of {} on '{}' in domain '{}'",
             body.rule.trim().to_ascii_uppercase(),

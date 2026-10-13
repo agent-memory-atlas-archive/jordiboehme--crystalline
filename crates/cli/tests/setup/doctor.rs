@@ -3239,21 +3239,24 @@ fn every_delete_engram_caller_holds_a_transaction() {
                 continue;
             }
             sites += 1;
+            // In order, inside the function: the transaction opens above the
+            // delete and ends (commit or rollback) below it.
             let (from, to) = enclosing_function(&lines, i);
-            let function = &lines[from..to];
+            let above = &lines[from..i];
+            let below = &lines[i + 1..to];
             assert!(
-                function.iter().any(|l| l.contains(".begin().await")),
-                "{name}:{}: delete_engram runs with no begin() in its function",
+                above.iter().any(|l| l.contains(".begin().await")),
+                "{name}:{}: delete_engram runs with no begin() above it in its function",
                 i + 1
             );
             assert!(
-                function.iter().any(|l| l.contains(".commit().await")),
-                "{name}:{}: delete_engram has no commit() in its function",
+                below.iter().any(|l| l.contains(".commit().await")),
+                "{name}:{}: delete_engram has no commit() below it in its function",
                 i + 1
             );
             assert!(
-                function.iter().any(|l| l.contains(".rollback().await")),
-                "{name}:{}: delete_engram has no rollback() in its function",
+                below.iter().any(|l| l.contains(".rollback().await")),
+                "{name}:{}: delete_engram has no rollback() below it in its function",
                 i + 1
             );
         }

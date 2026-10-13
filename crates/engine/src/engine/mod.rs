@@ -5399,6 +5399,8 @@ mod domain_lookup_tests {
 // lists them in the order they stood in the single engine.rs.
 mod adopt_names;
 mod attachments;
+mod close_folders;
+pub use close_folders::FolderProbe;
 mod configure;
 mod context;
 mod contradictions;
@@ -6279,6 +6281,10 @@ struct SourceEdited {
     /// How many domain spellings the final text had rewritten to their
     /// canonical name, `0` when none were.
     normalized: usize,
+    /// Whether the edit was found to change nothing and so wrote nothing:
+    /// no file, no row, no draft, no live compose and no generated stamp.
+    /// Only an edit that asked for the check (`skip_unchanged`) reports it.
+    unchanged: bool,
 }
 
 /// A source edit that failed, and whether the source may already carry the new
@@ -6931,6 +6937,28 @@ pub enum AckIntent {
     },
 }
 
+/// What [`Engine::unacknowledge_finding_as`] took back, and what it had to
+/// leave. Nothing in either list is a withdrawal of an entry that was not
+/// there, which the REST surface answers as a 404.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Withdrawal {
+    /// The permalinks whose entries went: the named engram first when it held
+    /// one, then for `V112` every other engram of the pair's two folders.
+    pub removed_from: Vec<String>,
+    /// The permalinks still holding an entry for the named pair, each with
+    /// the reason it could not be taken back (a draft shared to read and not
+    /// joined, or a rewrite that failed). Only `V112` reaches past the engram,
+    /// so only a `V112` withdrawal ever fills it.
+    pub not_removed_from: Vec<(String, String)>,
+}
+
+impl Withdrawal {
+    /// Whether any entry went.
+    pub fn removed(&self) -> bool {
+        !self.removed_from.is_empty()
+    }
+}
+
 /// An [`AckIntent`] the server has completed, on its way to the text edit: the
 /// record carries the scope only a sweep could supply, the removal carries the
 /// rule alone because the entry it names is already in the file.
@@ -7137,9 +7165,9 @@ fn without_ack(source: &str, rule: &str, scope: Option<&str>) -> String {
 /// reads. The replacement keeps the original position, which keeps a
 /// hand-ordered list hand-ordered.
 ///
-/// The exception is [`crystalline_index::is_pair_scoped`] - `V301` and `V302` -
-/// and it exists because a twin finding, like a possible contradiction, is
-/// about a pair rather than about the engram:
+/// The exception is [`crystalline_index::is_pair_scoped`] - `V112`, `V301` and
+/// `V302` - and it exists because a twin finding, like a possible contradiction
+/// or a pair of close folders, is about a pair rather than about the engram:
 /// an engram that twins two others carries two twin findings and neither is the
 /// engram's answer about the rule. Keying those by rule alone made the second
 /// acknowledgment overwrite the first, which silenced one pair and left the
@@ -7559,7 +7587,8 @@ pub(crate) fn is_manifest_path(rel: &str) -> bool {
 /// Whether `rel` names the MANIFEST in any letter case. The write and move
 /// checks use this: a case-insensitive file system (the macOS and Windows
 /// defaults) opens `manifest.md` as the very `MANIFEST.md` routing reads.
-pub(crate) fn names_the_manifest(rel: &str) -> bool {
+/// Public so the archive import and the MCP path checks ask the same rule.
+pub fn names_the_manifest(rel: &str) -> bool {
     rel.eq_ignore_ascii_case("MANIFEST.md")
 }
 

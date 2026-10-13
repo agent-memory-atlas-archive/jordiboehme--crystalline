@@ -46,10 +46,13 @@ import {
   DISK_SLEEVE,
   FLOPPY,
   FLOPPY_BAND,
+  FLOPPY_BODY,
+  FLOPPY_BODY_LIGHT,
   FLOPPY_INK,
   FLOPPY_LABEL,
   FLOPPY_PRINT,
   FLOPPY_PRINTED,
+  FLOPPY_SHUTTER,
   OPEN_BOX,
   PIZZA,
   PIZZA_LID,
@@ -169,6 +172,22 @@ describe("the office models", () => {
     const hs = pointsOf(print).map((q) => q[2]);
     expect(Math.min(...hs)).toBeCloseTo(FLOPPY.labelTop, 9);
     expect(Math.max(...hs)).toBeCloseTo(curioHalf("floppy-disk", 1).top, 9);
+  });
+
+  it("gives the second floppy the light grey shell of its photo and keeps the first one dark (0.25.2)", () => {
+    // Mutation caught: v1 left dark, v0 turned grey, the grey shell as
+    // light as the shutter or as the white label, or only part of the
+    // shell turned grey.
+    const v0 = partsOf("floppy-disk", 0);
+    const v1 = partsOf("floppy-disk", 1);
+    expect(tinted(v0, FLOPPY_BODY)).toHaveLength(3);
+    expect(tinted(v0, FLOPPY_BODY_LIGHT)).toHaveLength(0);
+    expect(tinted(v1, FLOPPY_BODY)).toHaveLength(0);
+    expect(tinted(v1, FLOPPY_BODY_LIGHT)).toHaveLength(3);
+    const tone = (c: Rgb) => (c[0] + c[1] + c[2]) / 3;
+    expect(tone(FLOPPY_BODY_LIGHT)).toBeGreaterThan(0.45);
+    expect(tone(FLOPPY_BODY_LIGHT)).toBeLessThan(tone(FLOPPY_SHUTTER) - 0.1);
+    expect(tone(FLOPPY_BODY_LIGHT)).toBeLessThan(tone(FLOPPY_LABEL) - 0.2);
   });
 
   it("builds the 5.25 inch disk's hub, head window, index hole and notch", () => {

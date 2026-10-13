@@ -12,15 +12,16 @@ import {
   COMPUTER_LOGO,
   HAMMER_RUNES,
   MARKS,
+  SCREEN_TEXT_KEYS,
   SIGNATURE,
   SPACE_BADGE,
   stencilMarks,
 } from "./marks";
 
-/** The marks the block-pixel font sets: all but the terminals' handle lines, which a screen draws as text. */
+/** The marks the block-pixel font sets: all but the keys marked as screen text (`SCREEN_TEXT_KEYS`), which a screen draws as text. */
 const strings = (): string[] =>
   Object.entries(MARKS)
-    .filter(([name]) => name !== "handleLines")
+    .filter(([name]) => !(SCREEN_TEXT_KEYS as readonly string[]).includes(name))
     .flatMap(([, v]): string[] => (typeof v === "string" ? [v] : [...v]));
 
 describe("the approved marks", () => {

@@ -147,10 +147,11 @@ export interface EvolveFinding {
   /** The note the matching or stale acknowledgment carries, when it has one. */
   ackNote: string | null;
   /**
-   * The evidence this row fired on, which the sweep sends for `V301` and
-   * `V302` alone. They are the two rules that fire more than once on an
-   * engram - an engram can be the semantic twin of several others, and
-   * several of its lines can read as contradicting another engram's - so the
+   * The evidence this row fired on, which the sweep sends for `V112`, `V301`
+   * and `V302` alone. They are the three rules that fire more than once on an
+   * engram - a folder can sit close to two sibling folders, an engram can be
+   * the semantic twin of several others, and several of its lines can read as
+   * contradicting another engram's - so the
    * engram and the rule do not name the finding and this is what tells two
    * rows apart. Send it back to acknowledge the pair that was read rather
    * than whichever one the server would have picked. Null for every other
@@ -536,8 +537,8 @@ export async function acknowledgeFinding(
 /**
  * Take an acknowledgment back, leaving the engram's other rules alone.
  *
- * A rule has one acknowledgment, so this takes back one - except `V301` and
- * `V302`, which have one per pair. Pass the row's own
+ * A rule has one acknowledgment, so this takes back one - except `V112`,
+ * `V301` and `V302`, which have one per pair. Pass the row's own
  * {@link EvolveFinding.ackScope}, the entry the engram actually holds, and
  * the engram's other pairs stay silenced; omit it and every pair goes at
  * once.

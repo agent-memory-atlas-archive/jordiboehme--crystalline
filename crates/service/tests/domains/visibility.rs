@@ -1377,3 +1377,56 @@ async fn a_reviewing_draft_move_onto_the_manifest_is_judged_by_the_draft() {
     assert_eq!(moved["draft"], true, "{moved}");
     assert!(!engine.domain_is_read_only("open").await);
 }
+
+/// In a reviewing domain an engram the mover deleted in their own view (a
+/// tombstone) is not there for them to move onto the MANIFEST: the plain
+/// miss, and nothing is written. The resolve answers it; the draft read's own
+/// miss behind it is the same sentence and is reached only by a race.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_move_of_an_engram_deleted_in_review_is_not_found() {
+    let (tmp, engine) = fixture_with(&["open"]).await;
+    let open = tmp.path().join("open");
+    std::fs::remove_file(open.join("MANIFEST.md")).unwrap();
+    let onto_manifest = |identifier: &str| MoveParams {
+        identifier: identifier.into(),
+        domain: "open".into(),
+        destination: "MANIFEST.md".into(),
+        destination_domain: None,
+        permalink: None,
+        update_links: None,
+    };
+    std::fs::write(
+        open.join("gone.md"),
+        switch_on(
+            &OPEN_NOTE
+                .replacen("permalink: open-note", "permalink: gone", 1)
+                .replace("Open Note", "Gone Note"),
+        ),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    let deleted = engine
+        .delete_engram_as(
+            &crystalline_service::params::DeleteParams {
+                identifier: "gone".into(),
+                domain: "open".into(),
+                expected_checksum: None,
+            },
+            None,
+            &user("out"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted["draft"], true, "{deleted}");
+    let err = engine
+        .move_engram(&onto_manifest("gone"), &user("out"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, crystalline_service::EngineError::NotFound(_)),
+        "{err:?}"
+    );
+    assert_eq!(err.to_string(), "no engram 'gone' in domain 'open'");
+    assert!(!open.join("MANIFEST.md").exists());
+    assert!(!engine.domain_is_read_only("open").await);
+}

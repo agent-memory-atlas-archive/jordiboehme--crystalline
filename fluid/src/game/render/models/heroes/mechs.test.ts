@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { FLAG, blinkFlag, type V3 } from "../../geometry";
 import { frameAt } from "../../kit";
 import { partsOf, toLocal, type Part } from "../../modelChecks";
+import { TANK_BEZEL } from "./mechs";
 
 const local = (p: Part): V3[] =>
   p.points.map((q) => toLocal(frameAt([0, 0, 0], 0), q));
@@ -68,10 +69,13 @@ describe("mech hero models", () => {
         q[0] <= Math.max(...l.map((x) => x[0])) + 1e-6 &&
         q[2] >= lo(lens) - 1e-6 &&
         q[2] <= hi(lens) + 1e-6;
+      // Named by their own colour (the bezel black), then placed by the
+      // lens they sit on.
       const pins = parts.filter(
         (p) =>
           p !== lens &&
           p.flag < FLAG.blink &&
+          p.tint?.every((c, i) => c === TANK_BEZEL[i]) === true &&
           local(p).every((q) => q[1] >= front - 1e-6 && within(q)),
       );
       expect(pins).toHaveLength(3);

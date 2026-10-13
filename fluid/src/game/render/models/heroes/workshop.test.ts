@@ -210,6 +210,31 @@ describe("workshop hero models", () => {
     }
   });
 
+  it("keeps the big gun's top within its 0.30 m envelope and just under it, on the rack and the bench", () => {
+    // Mutation caught: a part rising past the envelope the rests and the
+    // shelf above are measured for, or the top sunk well below it (the
+    // gun measures 0.299 m from its body's underside).
+    const { rack, bench, i, j, n } = gunRun();
+    for (const [name, parts, at] of [
+      ["rack", rack, i],
+      ["bench", bench, j],
+    ] as const) {
+      const gun = parts.slice(at, at + n);
+      const z = (p: Part) => local(p).map((q) => q[2]);
+      const body = gun.find(
+        (p) =>
+          p.method === "bevelBox" &&
+          Math.max(...local(p).map((q) => q[0])) -
+            Math.min(...local(p).map((q) => q[0])) >
+            0.5,
+      );
+      if (!body) throw new Error(`${name}: no body in the gun`);
+      const top = Math.max(...gun.flatMap(z)) - Math.min(...z(body));
+      expect(top, name).toBeLessThanOrEqual(0.3 + 1e-9);
+      expect(top, name).toBeGreaterThan(0.298);
+    }
+  });
+
   it("ends the big gun in a round dark aperture with the green glow in its middle, in a silver-grey shell", () => {
     // Mutation caught: the square barrel back, the glow off the muzzle's
     // axis or out of its aperture, a dark shell, or the shell tinted green.

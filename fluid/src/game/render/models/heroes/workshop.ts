@@ -100,24 +100,24 @@ const GUN_LENGTH = 1.3;
 const GUN_DEPTH = 0.22;
 const GUN_HEIGHT = 0.3;
 /** The rear frame's length and how far above `h0` its lower rail's belly sits. */
-const STOCK_LEN = 0.2;
-const STOCK_H0 = 0.05;
+const FRAME_LEN = 0.2;
+const FRAME_H0 = 0.05;
 /** The body's length after the rear frame; the vents and the muzzle housing take the rest. */
 const BODY_LEN = 0.6;
 /** The muzzle housing's ribs' diameter: the gun's full depth. */
-const BARREL_SIDE = 0.22;
+const HOUSING_SIDE = 0.22;
 /** The grip's top point along the body (from the body's rear), and how far it hangs. */
 const GRIP_AT = 0.12;
 /** How far the grip hangs below the gun's belly: every support keeps this clear. */
 const GRIP_DROP = 0.14;
 /** Where the front rest sits along the vents and the housing, under a slat and a rib. */
-const BARREL_REST = 0.165;
+const HOUSING_REST = 0.165;
 /** A gun rest's half width along `a`. */
 const REST_HALF = 0.06;
 
 /**
  * The big gun's measures past the constants above, in metres, along `a`
- * from the part's start (`aStart`, `aBody` or `aBarrel`) and in height
+ * from the part's start (`aStart`, `aBody` or `aHousing`) and in height
  * from `h0`; `d` is out from the gun's middle `dc`:
  * - `frame`: the open rear frame: the lower `rail` (`d` half, height
  *   band), the `butt` plate at the very rear, the rear `upright` from its
@@ -139,15 +139,15 @@ const REST_HALF = 0.06;
  *   the gun's full depth, and the green glow between them, `glowHalf`
  *   tall;
  * - `housing`: the round muzzle housing from `start`, its radius, the
- *   three silver `ribs` (`rib` long, out to `BARREL_SIDE`), the thick
+ *   three silver `ribs` (`rib` long, out to `HOUSING_SIDE`), the thick
  *   `lip` round the muzzle, the dark `aperture` inside it and the green
  *   `glow` in its middle, each 8 mm proud of the one round it, so the
  *   steps hold in the depth buffer across a hall.
  */
 const GUN = {
   frame: {
-    rail: { half: 0.045, h0: STOCK_H0, h1: 0.1 },
-    butt: { len: 0.04, half: 0.07, h0: STOCK_H0, h1: 0.2 },
+    rail: { half: 0.045, h0: FRAME_H0, h1: 0.1 },
+    butt: { len: 0.04, half: 0.07, h0: FRAME_H0, h1: 0.2 },
     upright: [
       [0.03, 0.08],
       [0.1, 0.27],
@@ -205,7 +205,7 @@ const GUN = {
     r: 0.1,
     ribs: [0.175, 0.24, 0.305],
     rib: 0.025,
-    lip: { len: 0.04, r: BARREL_SIDE / 2 },
+    lip: { len: 0.04, r: HOUSING_SIDE / 2 },
     aperture: { len: 0.05, r: 0.07 },
     glow: { len: 0.05, r: 0.04 },
   },
@@ -226,11 +226,11 @@ export function gunRests(
 ): { a: number; top: number }[] {
   const aStart = (a0 + a1) / 2 - GUN_LENGTH / 2;
   return [
-    { a: aStart + STOCK_LEN / 2, top: h0 + STOCK_H0 },
-    { a: aStart + STOCK_LEN + BODY_LEN - 0.08, top: h0 },
+    { a: aStart + FRAME_LEN / 2, top: h0 + FRAME_H0 },
+    { a: aStart + FRAME_LEN + BODY_LEN - 0.08, top: h0 },
     {
-      a: aStart + STOCK_LEN + BODY_LEN + BARREL_REST,
-      top: h0 + (GUN_HEIGHT - BARREL_SIDE) / 2,
+      a: aStart + FRAME_LEN + BODY_LEN + HOUSING_REST,
+      top: h0 + (GUN_HEIGHT - HOUSING_SIDE) / 2,
     },
   ];
 }
@@ -266,8 +266,8 @@ export function bigGun(
   h0: number,
 ): void {
   const aStart = (a0 + a1) / 2 - GUN_LENGTH / 2;
-  const aBody = aStart + STOCK_LEN;
-  const aBarrel = aBody + BODY_LEN;
+  const aBody = aStart + FRAME_LEN;
+  const aHousing = aBody + BODY_LEN;
   const aEnd = aStart + GUN_LENGTH;
   const dc = (d0 + d1) / 2;
   const dBack = dc - GUN_DEPTH / 2;
@@ -357,14 +357,14 @@ export function bigGun(
   }
 
   const B = GUN.body;
-  k.bevelBox(aBody, aBarrel, dBack, dFront, h0, h0 + B.h1, B.bevel, silver);
+  k.bevelBox(aBody, aHousing, dBack, dFront, h0, h0 + B.h1, B.bevel, silver);
   const Ce = GUN.cells;
   for (const sg of [-1, 1]) {
     const d = dc + sg * Ce.d;
     const h = h0 + Ce.h;
     k.cylinderAlong(
       aBody + Ce.a0,
-      aBarrel + Ce.a1,
+      aHousing + Ce.a1,
       d,
       h,
       Ce.r,
@@ -373,13 +373,13 @@ export function bigGun(
     );
     // The caps reach a few millimetres past the cylinder's ends, so no
     // end face shares a plane with the cylinder's own.
-    for (const a of [aBody + Ce.a0 - 0.004, aBarrel + Ce.a1 + 0.004 - Ce.cap])
+    for (const a of [aBody + Ce.a0 - 0.004, aHousing + Ce.a1 + 0.004 - Ce.cap])
       k.cylinderAlong(a, a + Ce.cap, d, h, Ce.r + 0.003, 10, dark);
   }
   const T = GUN.trough;
   k.box(
     aBody + T.in,
-    aBarrel - T.in,
+    aHousing - T.in,
     dc - T.half,
     dc + T.half,
     h0 + B.h1 - 0.005,
@@ -391,7 +391,7 @@ export function bigGun(
   const face = dFront + DECAL_LIFT;
   k.panel(
     aBody + B.bevel,
-    aBarrel - B.bevel,
+    aHousing - B.bevel,
     face,
     h0 + Fl.seamH - Fl.seamHalf,
     h0 + Fl.seamH + Fl.seamHalf,
@@ -470,18 +470,18 @@ export function bigGun(
 
   const V = GUN.vents;
   k.box(
-    aBarrel - 0.005,
-    aBarrel + V.len,
+    aHousing - 0.005,
+    aHousing + V.len,
     dc - V.half,
     dc + V.half,
     hc - V.half,
     hc + V.half,
     dark,
   );
-  const r = BARREL_SIDE / 2;
+  const r = HOUSING_SIDE / 2;
   const slats = Array.from(
     { length: V.slats },
-    (_, i) => aBarrel + V.first + i * V.pitch,
+    (_, i) => aHousing + V.first + i * V.pitch,
   );
   for (const a of slats)
     k.box(a, a + V.slat, dc - r, dc + r, hc - r, hc + r, s.tinted(GUN_SLAT));
@@ -499,7 +499,7 @@ export function bigGun(
 
   const Ho = GUN.housing;
   k.cylinderAlong(
-    aBarrel + Ho.start,
+    aHousing + Ho.start,
     aEnd - Ho.lip.len,
     dc,
     hc,
@@ -508,7 +508,7 @@ export function bigGun(
     dark,
   );
   for (const a of Ho.ribs)
-    k.cylinderAlong(aBarrel + a, aBarrel + a + Ho.rib, dc, hc, r, 16, silver);
+    k.cylinderAlong(aHousing + a, aHousing + a + Ho.rib, dc, hc, r, 16, silver);
   k.cylinderAlong(
     aEnd - Ho.lip.len,
     aEnd - 0.016,

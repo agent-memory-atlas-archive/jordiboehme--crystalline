@@ -13,11 +13,14 @@
 //! created under a locale collation orders text differently; the queries there
 //! are otherwise column for column the ones here.
 //!
-//! A single [`Connection`] is used from a single task. The M5 daemon will own
+//! A single [`Connection`] is used from a single task, through `Conn`, which
+//! runs a statement again when the engine could not create the temp directory
+//! for one of its ephemeral tables (see the `conn` module). The M5 daemon will own
 //! this store; other processes never open the database concurrently, so Turso's
 //! young multi-process path is never exercised. The socket dispatch that the
 //! daemon adds will wrap calls to this store, not replace them.
 
+mod conn;
 mod migrations;
 mod search;
 
@@ -40,6 +43,8 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use turso::{Builder, Connection, Database, Row, Value};
+
+use conn::Conn;
 
 use crate::alias::{AliasMap, query_uses_tags};
 use crate::error::{IndexError, Result};
@@ -72,7 +77,7 @@ fn placeholders(from: usize, count: usize) -> String {
 pub struct TursoStore {
     // The database handle is retained so the connection stays valid.
     _db: Database,
-    conn: Connection,
+    conn: Conn,
     db_path: Option<String>,
     schema_version: i64,
     fts_native: bool,
@@ -293,7 +298,7 @@ impl TursoStore {
         let fts_native = probe_fts(&conn).await;
         Ok(TursoStore {
             _db: db,
-            conn,
+            conn: Conn::new(conn),
             db_path,
             schema_version,
             fts_native,
@@ -674,24 +679,18 @@ impl TursoStore {
 
 // --- query helpers -----------------------------------------------------------
 
-async fn query_all(conn: &Connection, sql: &str, params: Vec<Value>) -> Result<Vec<Row>> {
-    let mut rows = conn.query(sql, params).await?;
-    let mut out = Vec::new();
-    while let Some(r) = rows.next().await? {
-        out.push(r);
-    }
-    Ok(out)
+async fn query_all(conn: &Conn, sql: &str, params: Vec<Value>) -> Result<Vec<Row>> {
+    Ok(conn.query_all(sql, params).await?)
 }
 
-async fn query_first(conn: &Connection, sql: &str, params: Vec<Value>) -> Result<Option<Row>> {
-    let mut rows = conn.query(sql, params).await?;
-    let first = rows.next().await?;
-    // Drain so the statement runs to completion and does not roll back on drop.
-    while rows.next().await?.is_some() {}
-    Ok(first)
+/// The first row of a query. The query is still drained to the end, so the
+/// statement runs to completion and does not roll back on drop, and every row
+/// is held until then: this is for queries that return one row.
+async fn query_first(conn: &Conn, sql: &str, params: Vec<Value>) -> Result<Option<Row>> {
+    Ok(conn.query_all(sql, params).await?.into_iter().next())
 }
 
-async fn scalar_i64(conn: &Connection, sql: &str, params: Vec<Value>) -> Result<i64> {
+async fn scalar_i64(conn: &Conn, sql: &str, params: Vec<Value>) -> Result<i64> {
     Ok(query_first(conn, sql, params)
         .await?
         .and_then(|r| cell_i64(&r, 0))
@@ -726,7 +725,7 @@ fn attachment_from_row(r: &Row) -> AttachmentRow {
 /// The primary key of one attachment, or a [`IndexError::Constraint`] when the
 /// path has no row. Writing a blob without a metadata row would leave bytes
 /// nothing can serve, so the missing row is refused rather than created blank.
-async fn attachment_id(conn: &Connection, domain: DomainId, path: &str) -> Result<i64> {
+async fn attachment_id(conn: &Conn, domain: DomainId, path: &str) -> Result<i64> {
     query_first(
         conn,
         "SELECT id FROM attachment WHERE domain_id=?1 AND path=?2",
@@ -988,7 +987,7 @@ const BACKFILL_PAGE: i64 = 1000;
 /// caller's transaction (see [`crate::store::meta_value_rows`]). The caller
 /// has cleared the old rows: [`TursoStore::delete_children`] on an update.
 async fn insert_meta_values(
-    conn: &Connection,
+    conn: &Conn,
     engram_id: i64,
     metadata: &serde_json::Value,
 ) -> Result<()> {
@@ -1002,7 +1001,7 @@ async fn insert_meta_values(
 /// Insert `(engram id, key, value)` rows into `engram_meta_value`, any number
 /// of engrams' rows per statement, [`INSERT_CHUNK`] rows at a time (three
 /// binds a row, under the 999-parameter ceiling).
-async fn insert_meta_rows(conn: &Connection, rows: &[(i64, String, String)]) -> Result<()> {
+async fn insert_meta_rows(conn: &impl conn::Execute, rows: &[(i64, String, String)]) -> Result<()> {
     for batch in rows.chunks(INSERT_CHUNK) {
         let mut params: Vec<Value> = Vec::with_capacity(batch.len() * 3);
         for (engram_id, key, value) in batch {
@@ -1069,6 +1068,16 @@ pub const FILE_STAMPS_SQL: &str =
 #[doc(hidden)]
 pub const UPSERT_PROBE_SQL: &str = "SELECT id, path FROM engram WHERE domain_id=?1 AND path=?2 AND actor=?4 \
      UNION ALL SELECT id, path FROM engram WHERE domain_id=?1 AND permalink=?3 AND actor=?4";
+
+/// The probe behind [`Store::folder_holds_other`]: one base row under a folder
+/// other than the write's own path, at any depth, never a reserved name. A
+/// byte range over `path`, which SQLite compares bytewise by default, so
+/// `idx_engram_path_actor` seeks it (pinned in `tests/it/plans.rs`).
+#[doc(hidden)]
+pub const FOLDER_HOLDS_OTHER_SQL: &str = "SELECT 1 FROM engram e WHERE e.domain_id=?1 AND e.actor = '' \
+     AND e.path >= ?2 AND e.path < ?3 AND e.path <> ?4 \
+     AND substr(e.path, -9) <> '/index.md' AND substr(e.path, -7) <> '/log.md' \
+     LIMIT 1";
 
 /// The ids of one engram's observations, read before their tags are deleted.
 #[doc(hidden)]
@@ -1397,7 +1406,7 @@ async fn probe_fts(conn: &Connection) -> bool {
 #[async_trait]
 impl Store for TursoStore {
     async fn migrate(&self) -> Result<()> {
-        migrations::apply(&self.conn).await?;
+        migrations::apply(self.conn.raw()).await?;
         Ok(())
     }
 
@@ -3193,7 +3202,10 @@ impl Store for TursoStore {
         if hashes.is_empty() {
             return Ok(out);
         }
-        let mut stmt = self.conn.prepare(OBSERVATION_VECTOR_PRESENT_SQL).await?;
+        let mut stmt = self
+            .conn
+            .prepare_read(OBSERVATION_VECTOR_PRESENT_SQL)
+            .await?;
         for hash in hashes {
             let mut rows = stmt
                 .query(vec![
@@ -3220,7 +3232,7 @@ impl Store for TursoStore {
         if hashes.is_empty() {
             return Ok(out);
         }
-        let mut stmt = self.conn.prepare(OBSERVATION_VECTOR_SQL).await?;
+        let mut stmt = self.conn.prepare_read(OBSERVATION_VECTOR_SQL).await?;
         for wanted in hashes {
             let mut rows = stmt
                 .query(vec![
@@ -3298,14 +3310,14 @@ impl Store for TursoStore {
             return Ok(0);
         }
         in_transaction(self, async {
-            let mut stmt = self.conn.prepare(DELETE_OBSERVATION_VECTOR_SQL).await?;
             let mut gone = 0u64;
             for hash in hashes {
-                gone += stmt
-                    .execute(vec![
-                        Value::Text(model.to_string()),
-                        Value::Text(hash.clone()),
-                    ])
+                gone += self
+                    .conn
+                    .execute(
+                        DELETE_OBSERVATION_VECTOR_SQL,
+                        vec![Value::Text(model.to_string()), Value::Text(hash.clone())],
+                    )
                     .await?;
             }
             Ok(gone)
@@ -3533,6 +3545,48 @@ impl Store for TursoStore {
         let mut out: Vec<StoredEngram> = rows.iter().map(stored_engram_from_row).collect();
         out.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(out)
+    }
+
+    async fn folder_holds_other(
+        &self,
+        domain: DomainId,
+        prefix: &str,
+        except: &str,
+    ) -> Result<bool> {
+        let (low, high) = crate::store::folder_range(prefix);
+        let row = query_first(
+            &self.conn,
+            FOLDER_HOLDS_OTHER_SQL,
+            vec![
+                Value::Integer(domain.0),
+                Value::Text(low),
+                Value::Text(high),
+                Value::Text(except.to_string()),
+            ],
+        )
+        .await?;
+        Ok(row.is_some())
+    }
+
+    async fn overlay_paths(&self, domain: DomainId, actor: &str) -> Result<Vec<(String, bool)>> {
+        if actor.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = query_all(
+            &self.conn,
+            "SELECT path, tombstone FROM engram WHERE domain_id=?1 AND actor=?2 ORDER BY path",
+            vec![Value::Integer(domain.0), Value::Text(actor.to_string())],
+        )
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                (
+                    cell_text(row, 0).unwrap_or_default(),
+                    cell_i64(row, 1).unwrap_or(0) != 0,
+                )
+            })
+            .collect())
     }
 
     async fn clear_overlay_entry(&self, domain: DomainId, actor: &str, path: &str) -> Result<bool> {

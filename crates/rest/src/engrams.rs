@@ -747,7 +747,10 @@ pub struct MoveBody {
 /// its `guidance` string are copied off the receipt onto the answer, so a
 /// create is also the search the author did not run. A title that slugifies
 /// into something its author would not expect back carries `notices` beside
-/// them. Every one of those keys is absent when there is nothing to say.
+/// them, and a create that started a new folder next to a sibling folder with
+/// a close name carries `close_folders` and `folder_guidance`, as the MCP
+/// write receipt does. Every one of those keys is absent when there is nothing
+/// to say.
 ///
 /// A permalink already taken is the engine's `Conflict`, answered 409: this
 /// route never overwrites, so a client that means to replace something saves it
@@ -779,7 +782,11 @@ pub struct MoveBody {
                            which lands the engram nested, or a `:`, which a \
                            link reads as a domain prefix - also carries a \
                            `notices` list of sentences naming what happened \
-                           and what to write instead.",
+                           and what to write instead. A create that started a \
+                           new folder next to sibling folders with a close name \
+                           (planview beside planview-work, note beside notes) \
+                           carries `close_folders`, up to three \
+                           {folder, engrams}, and a `folder_guidance` string.",
             body = Object,
             headers(("etag" = String, description = "The quoted \
                      `\"{checksum}-{version}\"` of the engram as written, \
@@ -904,11 +911,20 @@ pub async fn create(
     // verb: the probe takes that lock again and it is not reentrant. It never
     // fails and never delays the answer past its own two-second ceiling; a
     // probe that finds nothing leaves the receipt untouched.
+    //
+    // The close-folder hint rides beside it, run at the same time so the
+    // answer waits for the slower of the two rather than both: a create that
+    // started a folder next to a sibling with a close name says so, exactly as
+    // the MCP write receipt does.
     let scope = identity.scope();
-    state
-        .engine
-        .attach_similar(&mut written, SimilarProbe::for_write(&params), &scope)
-        .await;
+    let folders = crate::engine::Engine::close_folder_probe(&written);
+    let ((), close) = tokio::join!(
+        state
+            .engine
+            .attach_similar(&mut written, SimilarProbe::for_write(&params), &scope),
+        state.engine.close_folders_for(folders.as_ref(), &scope),
+    );
+    crate::engine::Engine::attach_close_folders(&mut written, &close);
     let permalink = written["permalink"]
         .as_str()
         .ok_or_else(|| ApiError::internal("the write did not report a permalink to read back"))?
@@ -1972,10 +1988,11 @@ async fn detail_response(
 /// route answers with. The detail is what the editor renders; these ride beside
 /// it under the same keys the MCP receipt uses, so one reader learns one shape.
 ///
-/// Two independent things travel here. The neighbours advisory is a pair -
+/// Three independent things travel here. The neighbours advisory is a pair -
 /// `similar` and `guidance` - and travels as a pair or not at all. The title
 /// notices are their own: a write can produce a surprising permalink with no
-/// neighbour in sight.
+/// neighbour in sight. The close-folder hint is a pair too, `close_folders`
+/// and `folder_guidance`.
 ///
 /// Safe to do before [`etag`] runs: the tag is taken from the payload's own
 /// `checksum`, which is the version of the engram on disk, rather than hashed
@@ -1990,6 +2007,12 @@ fn carry_advisory(detail: &mut Value, receipt: &Value) {
     }
     if let Some(notices) = receipt.get("notices") {
         detail.insert("notices".to_string(), notices.clone());
+    }
+    if let (Some(folders), Some(guidance)) =
+        (receipt.get("close_folders"), receipt.get("folder_guidance"))
+    {
+        detail.insert("close_folders".to_string(), folders.clone());
+        detail.insert("folder_guidance".to_string(), guidance.clone());
     }
 }
 

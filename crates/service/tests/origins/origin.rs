@@ -6660,12 +6660,19 @@ async fn a_pull_still_updates_a_read_only_copy() {
         .await
         .unwrap_err();
     assert!(matches!(share, EngineError::DomainReadOnly(_)), "{share}");
+    // Every recorded call that is not one of the mock's reads counts, so a
+    // write call added to the mock later is caught without a list change.
     let written: Vec<String> = mock.calls()[calls_before..]
         .iter()
         .filter(|c| {
-            ["create_", "update_", "close_", "delete_", "dissolve_"]
-                .iter()
-                .any(|write| c.starts_with(write))
+            ![
+                "branch_ref:",
+                "proposal_feedback:",
+                "list_open_proposals",
+                "list_stacks",
+            ]
+            .iter()
+            .any(|read| c.starts_with(read))
         })
         .cloned()
         .collect();

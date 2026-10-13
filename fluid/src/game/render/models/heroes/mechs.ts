@@ -519,7 +519,7 @@ const TANK_WHITE: Rgb = [0.92, 0.93, 0.95];
 const TANK_GREY: Rgb = [0.3, 0.32, 0.35];
 
 /** The eyes' pinholes and the gun's muzzle: near black. */
-const TANK_BEZEL: Rgb = [0.08, 0.08, 0.1];
+export const TANK_BEZEL: Rgb = [0.08, 0.08, 0.1];
 
 /** The small marker lights near the pod's top: amber, not lit. */
 const TANK_AMBER: Rgb = [0.95, 0.6, 0.2];

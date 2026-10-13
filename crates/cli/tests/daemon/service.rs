@@ -285,10 +285,12 @@ impl Env {
     }
 
     /// The daemon's own account of its lifecycle: every daemon.log line about
-    /// a session, the idle exit, the shutdown steps and the watchdog, with the
-    /// time between the test's own marks. A plain tail does not show these
-    /// when a model download is running: its transfer lines fill the last
-    /// sixty lines, as on the 2026-10-06 macOS failure.
+    /// a session, the idle exit, the shutdown steps and the watchdog, plus the
+    /// model download's start notice and its failure. The tracing lines carry
+    /// the daemon's own timestamps, so the gaps between them show where the
+    /// time went; the download notice has none. A plain tail does not show
+    /// these when a model download is running: its transfer lines fill the
+    /// last sixty lines, as on the 2026-10-06 macOS failure.
     fn daemon_lifecycle_lines(&self) -> String {
         const MARKS: [&str; 8] = [
             "no client for",
@@ -297,8 +299,8 @@ impl Env {
             "shutdown did not finish",
             "input stream terminated",
             "client initialized",
-            "downloading",
-            "embedding provider",
+            "crystalline: downloading ",
+            "embedding provider unavailable",
         ];
         let path = self.state_dir().join("daemon.log");
         match std::fs::read_to_string(&path) {
@@ -3181,10 +3183,7 @@ fn edit_set_frontmatter_sets_tags_from_a_comma_list() {
     ]);
     assert!(ok, "edit set_frontmatter tags: {out}");
     let text = std::fs::read_to_string(env.dir.join("kb-eng/seed.md")).unwrap();
-    assert!(
-        text.contains("tags:\n  - api\n  - retry-policy\n"),
-        "{text}"
-    );
+    assert!(text.contains("tags:\n- api\n- retry-policy\n"), "{text}");
 
     // --values with nothing after it is the empty list: every tag goes.
     let (ok, out) = env.run(&[

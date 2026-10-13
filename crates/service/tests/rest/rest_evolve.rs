@@ -27,6 +27,9 @@ use tokio::sync::Mutex;
 struct Options {
     /// `auth.anonymous`: serve a request that carries no identity.
     anonymous: bool,
+    /// Also file engrams in two close sibling folders, `meeting/` (one) and
+    /// `meetings/` (three), so `V112` fires on `meeting/kickoff`.
+    close_folders: bool,
 }
 
 struct Fixture {
@@ -123,6 +126,24 @@ async fn serve(opts: Options) -> Fixture {
         ),
     )
     .unwrap();
+    if opts.close_folders {
+        for path in ["meeting/kickoff", "meetings/a", "meetings/b", "meetings/c"] {
+            let abs = dir.join(format!("{path}.md"));
+            std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+            std::fs::write(
+                abs,
+                engram(
+                    path,
+                    path,
+                    None,
+                    &format!(
+                        "What {path} holds.\n\n- relates_to [[Live doc]]\n- [fact] one line\n"
+                    ),
+                ),
+            )
+            .unwrap();
+        }
+    }
     cfg.domains
         .insert("eng".to_string(), DomainEntry::file(dir));
     // A registered domain with nothing in it, so scoping the sweep to a name
@@ -177,7 +198,11 @@ async fn serve(opts: Options) -> Fixture {
 
 /// The anonymous fixture: the shortest way past the guard and into the handler.
 async fn serve_anonymous() -> Fixture {
-    serve(Options { anonymous: true }).await
+    serve(Options {
+        anonymous: true,
+        ..Options::default()
+    })
+    .await
 }
 
 /// A client with proxy discovery disabled: the target is loopback, where a
@@ -638,6 +663,62 @@ async fn acknowledging_removes_a_finding_and_withdrawing_brings_it_back() {
     .await
     .unwrap();
     assert_eq!(resp.status(), 404);
+}
+
+/// A `V112` acknowledgment Fluid records on an engram of the pair that is not
+/// the row's anchor gets the pair, and the Unacknowledge on the row (the
+/// anchor, no `scope`) takes it back with a 204 rather than a 404.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_v112_ack_off_the_anchor_is_withdrawn_from_the_row() {
+    let fixture = serve(Options {
+        close_folders: true,
+        ..Options::default()
+    })
+    .await;
+    fixture
+        .auth
+        .add_user("ada", "Ada", None, Role::Editor, "s3cret")
+        .await
+        .unwrap();
+    let session = login_session(fixture.addr, "ada", "s3cret").await;
+    let v112 = |body: &serde_json::Value| -> Vec<String> {
+        rows(body)
+            .iter()
+            .filter(|r| r["rule"] == "V112")
+            .map(|r| r["permalink"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let before = queue_as(fixture.addr, &session, "?rules=V112").await;
+    assert_eq!(v112(&before), ["meeting/kickoff"], "{before}");
+
+    let resp = ack_request(
+        fixture.addr,
+        reqwest::Method::POST,
+        &session,
+        serde_json::json!({ "permalink": "meetings/a", "rule": "V112", "note": "two topics" }),
+    )
+    .send()
+    .await
+    .unwrap();
+    let status = resp.status();
+    let entry: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(status, 200, "{entry}");
+    assert_eq!(entry["scope"], "meeting, meetings", "{entry}");
+    let silenced = queue_as(fixture.addr, &session, "?rules=V112").await;
+    assert!(v112(&silenced).is_empty(), "{silenced}");
+
+    let resp = ack_request(
+        fixture.addr,
+        reqwest::Method::DELETE,
+        &session,
+        serde_json::json!({ "permalink": "meeting/kickoff", "rule": "V112" }),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), 204);
+    let back = queue_as(fixture.addr, &session, "?rules=V112").await;
+    assert_eq!(v112(&back), ["meeting/kickoff"], "{back}");
 }
 
 /// A body may name the evidence it is acknowledging, which is how a caller

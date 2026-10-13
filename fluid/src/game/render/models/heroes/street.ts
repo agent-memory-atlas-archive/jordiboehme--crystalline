@@ -62,24 +62,43 @@
  *   glows. The shell (`CYCLE_SHELL`) is dark and glossy, its top 1.8
  *   wheels high, and its flank splits as on the original: an arched band
  *   (`CYCLE_BAND`) hoods both wheels over their tops and runs over the
- *   top, and a lower panel (`CYCLE_PANEL`) set in from it, a lighter grey
- *   (`CYCLE_LOWER`), runs low between the wheels to a square back edge
- *   that hides the rear wheel's front, so the side reads in two tones.
+ *   top, and a lower panel (`CYCLE_PANEL`) set in from it, a shade
+ *   lighter (`CYCLE_LOWER`), runs low between the wheels, its front
+ *   following the front arch and its corners on the belly rounded, to a
+ *   square back edge that hides the rear wheel's front, so the split
+ *   reads through its glowing line and the recess.
  *   Narrower crests are grown over both like the bike's panels (`grown`).
- *   The back (`CYCLE_SPINE`) rises from a short tail over the rear wheel
- *   to a crown a little ahead of the middle and falls in a long curve to
- *   the nose. A short smoked canopy sits on the back over the hidden
- *   rider, behind the crown and clear of the nose; the flanks carry no
+ *   The back (`CYCLE_SPINE`) rises from a short tail over the rear wheel,
+ *   runs low under the canopy, climbs to a crown a little ahead of the
+ *   middle and falls in a long curve to the nose. A short smoked canopy
+ *   sits on the back over the hidden rider, behind the crown and clear of
+ *   the nose: a rounded dome 12 to 15 cm over the crests (0.25.2,
+ *   `CANOPY_ROUND`), its front and back ends rounded; the flanks carry no
  *   window. Glowing lines trace the band's outline a little inside it on
  *   both sides, so one runs along the split (`cycleLine`, laid by
  *   `profileLine`, which the red bike's pinstripe shares), and the
  *   canopy's ridge. Every light is in one group and breathes; the body
- *   carries no text.
+ *   carries no text. That is variant 0, the closed one.
+ * - The neon bike's variant 1 is the open one (`CYCLE_OPEN`, 0.25.2): the
+ *   same length and footprint, lower, with no canopy and no rider. Its
+ *   wheels (`OPEN_WHEELS`) are hubless: fat black tyre rings round an
+ *   open middle, so the floor shows through them, with a glowing ring on
+ *   each side face near the outer edge (`OPEN_SIDE_GLOW`, 0.25.2) as on
+ *   the full size cycle's photos. A low glossy body (`OPEN_BODY`)
+ *   bridges them as a long flat wedge, reaching into each ring's open
+ *   middle down to the axle line over its upper inner quarter only, and
+ *   rising to its highest
+ *   point at the tail behind the empty rider's place: a saddle hollow
+ *   (`OPEN_SADDLE`) with a seat pad and a glowing seat line, two short
+ *   handles at the front and two footrests at the back. Thin glowing
+ *   lines run along each flank and over the top, in the closed one's
+ *   light group.
  *
  * The numbers each kind is built to are named above its recipe: `BIKE`,
  * `BIKE_WHEELS` and the profiles (`CORE`, `SKIRT`, `COWL`) for the bike,
  * `BOX` for the box, `CYCLE`, `CYCLE_WHEELS`, `CYCLE_SPINE` and `CYCLE_SHELL`
- * for the neon bike. Round parts use few facets, as in every batch.
+ * for the neon bike, `CYCLE_OPEN`, `OPEN_WHEELS` and `OPEN_BODY` for its
+ * open variant. Round parts use few facets, as in every batch.
  */
 
 import { boxKey } from "../../../world/box";
@@ -925,13 +944,14 @@ const redBike: HeroRecipe = ({ k, kitAt, s }) => {
 export const CYCLE_BODY: Rgb = [0.03, 0.035, 0.06];
 
 /** The gloss on the neon bike's crests: a lighter blue-black. */
-const CYCLE_SHINE: Rgb = [0.07, 0.08, 0.13];
+export const CYCLE_SHINE: Rgb = [0.07, 0.08, 0.13];
 
 /**
- * The neon bike's lower panel: a lighter grey than the band, so the
- * flank reads in two tones.
+ * The neon bike's lower panel: a shade lighter than the band and a
+ * little bluer, so it reads as part of the body and the split shows
+ * through its glowing line and the recess, not through a light colour.
  */
-export const CYCLE_LOWER: Rgb = [0.22, 0.23, 0.26];
+export const CYCLE_LOWER: Rgb = [0.045, 0.052, 0.085];
 
 /** The neon bike's canopy: a dark smoked blue. */
 export const CYCLE_CANOPY: Rgb = [0.05, 0.08, 0.16];
@@ -976,20 +996,23 @@ const CYCLE_BELLY = 0.19;
 
 /**
  * The shell's back, `[a, h]`, from the tail forward to the nose: it
- * rises from over the rear axle to its crown a little ahead of the
- * middle and falls in a long curve to the nose over the front wheel.
- * The crests grown on it (`CYCLE_SLICES`) stand `CYCLE_CREST` above it.
+ * rises from over the rear axle, runs nearly level under the canopy
+ * over the rider's place (0.25.2: low enough that the canopy stands a
+ * proper top piece over the crests), climbs to its crown a little ahead
+ * of the middle and falls in a long curve to the nose over the front
+ * wheel. The crests grown on it (`CYCLE_SLICES`) stand `CYCLE_CREST`
+ * above it.
  */
 const CYCLE_SPINE: readonly P2[] = [
   [-1.42, 0.74],
   [-1.41, 0.86],
   [-1.29, 0.97],
   [-1.0, 1.035],
-  [-0.72, 1.075],
-  [-0.55, 1.125],
-  [-0.38, 1.165],
-  [-0.13, 1.205],
-  [0.1, 1.225],
+  [-0.72, 1.07],
+  [-0.55, 1.09],
+  [-0.38, 1.1],
+  [-0.13, 1.105],
+  [0.1, 1.17],
   [0.38, 1.22],
   [0.6, 1.19],
   [0.74, 1.155],
@@ -1011,13 +1034,55 @@ const FRONT_SPLIT = 150;
 /** The front arch's band part, from its upper front over the top. */
 const FRONT_HOOD = arc(FW.a, FW.r, CYCLE_ARCH, 35, FRONT_SPLIT, 10);
 
-/** The front arch's panel part, from the split down to the belly. */
-const FRONT_FOOT = arc(
-  FW.a,
-  FW.r,
-  CYCLE_ARCH,
-  FRONT_SPLIT,
-  180 + (Math.asin((FW.r - CYCLE_BELLY) / CYCLE_ARCH) * 180) / Math.PI,
+/**
+ * How far the lower panel's corners are rounded: `front` where the front
+ * arch runs into the belly, `back` where the belly meets the back edge.
+ */
+const PANEL_ROUND = { front: 0.16, back: 0.1 } as const;
+
+/**
+ * The front corner's round, `[a, h]`: its centre `PANEL_ROUND.front`
+ * over the belly, touching the front arch from outside, and the angle
+ * (degrees round the front axle) where it meets the arch.
+ */
+const FRONT_ROUND = (() => {
+  const r = PANEL_ROUND.front;
+  const dh = CYCLE_BELLY + r - FW.r;
+  const da = -Math.sqrt((CYCLE_ARCH + r) ** 2 - dh ** 2);
+  return {
+    a: FW.a + da,
+    h: CYCLE_BELLY + r,
+    at: 180 - (Math.atan2(dh, -da) * 180) / Math.PI,
+  };
+})();
+
+/**
+ * The front arch's panel part, from the split down along the arch, then
+ * round its corner (`FRONT_ROUND`) onto the belly, so the panel's front
+ * follows the wheel's hood.
+ */
+const FRONT_FOOT: readonly P2[] = [
+  ...arc(FW.a, FW.r, CYCLE_ARCH, FRONT_SPLIT, FRONT_ROUND.at, 5),
+  ...arc(
+    FRONT_ROUND.a,
+    FRONT_ROUND.h,
+    PANEL_ROUND.front,
+    FRONT_ROUND.at - 180,
+    -90,
+    5,
+  ).slice(1),
+];
+
+/**
+ * The back corner, from the belly round up onto the square back edge,
+ * `PANEL_ROUND.back` in from both.
+ */
+const BACK_FOOT = arc(
+  CYCLE_BACK + PANEL_ROUND.back,
+  CYCLE_BELLY + PANEL_ROUND.back,
+  PANEL_ROUND.back,
+  -90,
+  -180,
   4,
 );
 
@@ -1060,13 +1125,14 @@ const CYCLE_BAND: readonly P2[] = [
 
 /**
  * The lower panel, `[a, h]`, under the band and recessed from it
- * (`PANEL_HALF`): from the front arch's split down to the flat belly,
- * back to the square back edge, which hides the rear wheel's front, up
- * that edge to the band and forward along the split.
+ * (`PANEL_HALF`): from the front arch's split down along the arch and
+ * round onto the flat belly, back to the square back edge, which hides
+ * the rear wheel's front, round up that edge to the band and forward
+ * along the split.
  */
-const CYCLE_PANEL: readonly P2[] = [
+export const CYCLE_PANEL: readonly P2[] = [
   ...FRONT_FOOT,
-  [CYCLE_BACK, CYCLE_BELLY],
+  ...BACK_FOOT,
   ...REAR_HOOD.slice(0, 1),
   ...CYCLE_SPLIT,
 ];
@@ -1079,7 +1145,7 @@ const CYCLE_PANEL: readonly P2[] = [
 const CYCLE_SHELL: readonly P2[] = [
   ...FRONT_HOOD,
   ...FRONT_FOOT.slice(1),
-  [CYCLE_BACK, CYCLE_BELLY],
+  ...BACK_FOOT,
   ...REAR_HOOD,
   ...CYCLE_SPINE,
 ];
@@ -1104,11 +1170,11 @@ const CYCLE_SLICES: readonly (readonly [number, number])[] = [
 
 /**
  * Where the canopy runs along `a`: a short dark top piece over the
- * rider's place, from behind the back's crown forward to the crown, set
- * back from the original's longer strip so the body does not read as a
- * car's roof.
+ * rider's place, from behind the back's crown forward to the crown's
+ * foot, set back from the original's longer strip so the body does not
+ * read as a car's roof.
  */
-export const CANOPY_SPAN = { from: -0.35, to: 0.1 } as const;
+export const CANOPY_SPAN = { from: -0.48, to: 0.08 } as const;
 
 /**
  * The canopy's half width: over both crests, inside the wide slice, so
@@ -1119,8 +1185,16 @@ const CANOPY_HALF = 0.17;
 /** How far the canopy's foot sinks into the shell under the back. */
 const CANOPY_SINK = 0.05;
 
-/** How far the canopy's back corner is rounded off, along `a` and down. */
-const CANOPY_ROUND = { a: 0.08, h: 0.025 } as const;
+/**
+ * How the canopy's two ends are rounded (0.25.2): each end is a quarter
+ * ellipse `a` long along the back and `h` tall, from where its foot
+ * meets the back up to the level crown, so the piece reads as a smoked
+ * dome and not as a slab. The back end runs longer than the front.
+ */
+const CANOPY_ROUND = {
+  back: { a: 0.2, h: 0.14 },
+  front: { a: 0.14, h: 0.1 },
+} as const;
 
 /** The back's height at `a`, along `CYCLE_SPINE`. */
 function spineAt(a: number): number {
@@ -1151,21 +1225,40 @@ const CANOPY_AT: readonly number[] = [
 /**
  * The canopy's ridge height: level, so the glowing line along it tops
  * out at the cycle's top, a few millimetres under it for the line's
- * mitre at the rounded corner. The back falls away behind the crown, so
- * the canopy stands clear of the crests (`CYCLE_CREST`) over the rider's
- * place and meets the back at the crown.
+ * mitres on the rounded ends. The back runs low under it, so the canopy
+ * stands 12 to 15 cm over the crests (`CYCLE_CREST`) at its highest.
  */
 const CANOPY_TOP = CYCLE.top - CYCLE_LINE.width / 2 - 0.003;
 
+/** Points on each rounded end of the canopy's ridge. */
+const CANOPY_ROUND_STEPS = 5;
+
 /**
- * The canopy's ridge, `[a, h]`, from its back end to its front: a
- * rounded back corner (`CANOPY_ROUND`), then level to the crown.
+ * The canopy's ridge, `[a, h]`, from its back end to its front: a quarter
+ * ellipse up from the back end (`CANOPY_ROUND.back`), level along the
+ * crown, and a shorter quarter ellipse down to the front end
+ * (`CANOPY_ROUND.front`).
  */
-const CANOPY_RIDGE: readonly P2[] = [
-  [CANOPY_SPAN.from, CANOPY_TOP - CANOPY_ROUND.h],
-  [CANOPY_SPAN.from + CANOPY_ROUND.a, CANOPY_TOP],
-  [CANOPY_SPAN.to, CANOPY_TOP],
-];
+const CANOPY_RIDGE: readonly P2[] = (() => {
+  const { back, front } = CANOPY_ROUND;
+  const n = CANOPY_ROUND_STEPS;
+  const out: P2[] = [];
+  for (let i = 0; i <= n; i++) {
+    const t = ((Math.PI / 2) * i) / n;
+    out.push([
+      CANOPY_SPAN.from + back.a * (1 - Math.cos(t)),
+      CANOPY_TOP - back.h * (1 - Math.sin(t)),
+    ]);
+  }
+  for (let i = 0; i <= n; i++) {
+    const t = ((Math.PI / 2) * i) / n;
+    out.push([
+      CANOPY_SPAN.to - front.a * (1 - Math.sin(t)),
+      CANOPY_TOP - front.h * (1 - Math.cos(t)),
+    ]);
+  }
+  return out;
+})();
 
 /**
  * The canopy over the rider, `[a, h]`: a short smoked piece on the back,
@@ -1221,13 +1314,13 @@ function cycleWheel(k: Kit, s: Surfaces, w: BikeWheel, glow: Surface): void {
 /**
  * The neon bike: two fat wheels of one size at its ends, their rims
  * glowing; the dark glossy shell, its arched band hooding both wheels
- * and running over the top, the lighter grey lower panel recessed under
- * it low between the wheels, and the crests over both; the short smoked
+ * and running over the top, the lower panel a shade lighter recessed
+ * under it low between the wheels, its front and bottom rounded, and the crests over both; the short smoked
  * canopy on its back over the rider, behind the crown; and the glowing
  * lines tracing the band's outline on both sides and the canopy's
  * ridge. Every light is in one group and breathes.
  */
-const neonBike: HeroRecipe = ({ k, s }) => {
+const neonBikeClosed: HeroRecipe = ({ k, s }) => {
   const glow = s.blink(CYCLE_GLOW, 0);
   cycleWheel(k, s, CYCLE_WHEELS.front, glow);
   cycleWheel(k, s, CYCLE_WHEELS.rear, glow);
@@ -1255,6 +1348,364 @@ const neonBike: HeroRecipe = ({ k, s }) => {
     );
   }
 };
+
+/**
+ * The open variant's size, in metres: `length` from tyre to tyre, the
+ * same as the closed one's, and `top`, the crown of its tail behind the
+ * empty rider's place. The full size cycle it follows has no canopy and
+ * no roof: its highest point is the rider's back, and without a rider
+ * the tail behind the seat, about a third of its length up. That is
+ * lower than the kind's catalogue top (`CYCLE.top`), which the closed
+ * variant sets.
+ */
+export const CYCLE_OPEN = { length: 2.9, top: 0.93 } as const;
+
+/** One hubless wheel of the open variant. */
+interface OpenWheel {
+  a: number;
+  r: number;
+  open: number;
+  half: number;
+}
+
+/**
+ * The open variant's hubless wheels, the front one at `+a`: the axle
+ * line at `a` (at height `r`), `r` the tyre's outer radius, `open` the
+ * radius of the open middle, and `half` the tyre's half width. A quarter
+ * of the length across, at the same places as the closed variant's
+ * wheels.
+ */
+export const OPEN_WHEELS = {
+  front: { a: 1.09, r: 0.36, open: 0.245, half: 0.17 },
+  rear: { a: -1.09, r: 0.36, open: 0.245, half: 0.17 },
+} as const satisfies Record<string, OpenWheel>;
+
+/** The tyres' rubber: a black a shade off the body's. */
+export const OPEN_TYRE: Rgb = [0.02, 0.021, 0.028];
+
+/** The tyres' side faces: a dark grey with the body's blue cast. */
+const OPEN_SIDE: Rgb = [0.07, 0.075, 0.1];
+
+/** The seat pad in the saddle hollow: the lower panel's shade. */
+export const OPEN_SEAT: Rgb = CYCLE_LOWER;
+
+/**
+ * The handles and the footrests: a brushed metal, light enough to read
+ * against the dark body from the side (0.25.2).
+ */
+export const OPEN_METAL: Rgb = [0.42, 0.44, 0.48];
+
+/** Facets round a whole tyre ring; each half ring takes half of them. */
+const OPEN_SIDES = 20;
+
+/** How far a tyre's side face stands proud of the tyre and how far in. */
+const OPEN_FACE = { t: 0.008, in: 0.012 } as const;
+
+/**
+ * The glowing ring on each side face of a tyre (0.25.2), as on the full
+ * size cycle's photos: from radius `r0` to `r1`, near the tyre's outer
+ * edge, a bare black shoulder left outside it, standing `proud` off the
+ * tyre's side, past the dark side face it rings. The open middle keeps
+ * no glowing rim of its own: with one, the wheel read as a lit target
+ * and less as a see-through ring.
+ */
+export const OPEN_SIDE_GLOW = { r0: 0.285, r1: 0.33, proud: 0.012 } as const;
+
+/**
+ * One half of a flat ring round `(a, h)` from radius `r0` to `r1`, its
+ * upper half (`up`) or its lower one: the outer arc one way and the
+ * inner arc back, a simple outline the kit can extrude, so two halves
+ * make a ring that is open in the middle.
+ */
+function halfRing(
+  a: number,
+  h: number,
+  r0: number,
+  r1: number,
+  up: boolean,
+): P2[] {
+  const n = OPEN_SIDES / 2;
+  const [from, to] = up ? [0, 180] : [180, 360];
+  return [...arc(a, h, r1, from, to, n), ...arc(a, h, r0, to, from, n)];
+}
+
+/** A flat ring from `r0` to `r1`, open in the middle, between `d0` and `d1`. */
+function openRing(
+  k: Kit,
+  w: OpenWheel,
+  r0: number,
+  r1: number,
+  d0: number,
+  d1: number,
+  surf: Surface,
+): void {
+  for (const up of [true, false])
+    k.extrude(halfRing(w.a, w.r, r0, r1, up), d0, d1, surf);
+}
+
+/**
+ * One hubless wheel: a fat black tyre ring from the open middle out to
+ * the tread, and on each of its sides a dark side face from near the
+ * open middle out to the glowing ring (`OPEN_SIDE_GLOW`) near the outer
+ * edge, so from the side it shows as a lit ring on a black tyre round a
+ * dark hole the floor shows through.
+ */
+function openWheel(k: Kit, s: Surfaces, w: OpenWheel, glow: Surface): void {
+  openRing(k, w, w.open, w.r, -w.half, w.half, s.tinted(OPEN_TYRE));
+  const face = s.tinted(OPEN_SIDE);
+  const G = OPEN_SIDE_GLOW;
+  for (const sg of [-1, 1]) {
+    openRing(
+      k,
+      w,
+      w.open + OPEN_FACE.in,
+      G.r0,
+      sg * w.half,
+      sg * (w.half + OPEN_FACE.t),
+      face,
+    );
+    openRing(k, w, G.r0, G.r1, sg * w.half, sg * (w.half + G.proud), glow);
+  }
+}
+
+/** The open body's half width: inside the tyres'. */
+const OPEN_HALF = 0.13;
+
+/**
+ * The glossy crest grown over the open body (`grown`), `g` proud of its
+ * outline and `half` wide, so its edges read rounded.
+ */
+const OPEN_CREST = { half: 0.085, g: 0.02 } as const;
+
+/**
+ * The open variant's saddle hollow, `[a, h]`, from its front lip back
+ * to its back lip: the dip in the top where the empty rider's place is,
+ * between the tank in front and the tail behind.
+ */
+export const OPEN_SADDLE: readonly P2[] = [
+  [0.3, 0.8],
+  [0.2, 0.765],
+  [0.08, 0.74],
+  [-0.12, 0.74],
+  [-0.26, 0.765],
+  [-0.36, 0.82],
+];
+
+/**
+ * The open body's top, `[a, h]`, from the front ring back to the tail:
+ * up out of the front ring's open middle over its upper back, along the
+ * tank past the handles, down into the saddle hollow, up to the crown
+ * behind it and back over the rear wheel's top to the tail's tip.
+ */
+const OPEN_TOP: readonly P2[] = [
+  [1.09, 0.48],
+  [1.03, 0.69],
+  [0.92, 0.76],
+  [0.7, 0.79],
+  [0.45, 0.805],
+  ...OPEN_SADDLE,
+  [-0.5, 0.885],
+  [-0.68, 0.92],
+  [-0.86, CYCLE_OPEN.top],
+  [-1.04, 0.92],
+  [-1.2, 0.885],
+  [-1.32, 0.82],
+  [-1.38, 0.76],
+];
+
+/**
+ * The open variant's body, `[a, h]`: a long low wedge bridging the two
+ * rings. Its top (`OPEN_TOP`) runs from the front ring to the tail's
+ * tip; under the tail it runs forward over the rear tyre, dips into the
+ * rear ring's open middle over its upper front, down its middle to just
+ * over the axle line and along it onto the flat belly, then up into the
+ * front ring the same way (0.25.2: deeper, closer to the photos). Each
+ * ring's middle stays open below the axle and on its outer side, so the
+ * floor shows through.
+ */
+export const OPEN_BODY: readonly P2[] = [
+  ...OPEN_TOP,
+  [-1.3, 0.735],
+  [-1.18, 0.76],
+  [-1.1, 0.74],
+  [-1.09, 0.48],
+  [-1.06, 0.415],
+  [-0.99, 0.375],
+  [-0.9, 0.36],
+  [-0.8, 0.28],
+  [-0.68, 0.21],
+  [-0.5, 0.19],
+  [0.5, 0.19],
+  [0.68, 0.21],
+  [0.8, 0.28],
+  [0.9, 0.36],
+  [0.99, 0.375],
+  [1.06, 0.415],
+];
+
+/**
+ * The seat pad in the hollow, `[a, h]`: its top `OPEN_SEAT_LIFT` over
+ * the hollow and its foot sunk into the body under it.
+ */
+const OPEN_SEAT_LIFT = 0.032;
+
+/** The seat pad's half width: inside the body's. */
+const OPEN_SEAT_HALF = 0.1;
+
+/** The seat pad's top, along the hollow, the glowing seat line's path. */
+const OPEN_SEAT_TOP: readonly P2[] = OPEN_SADDLE.slice(1, -1).map(
+  ([a, h]): P2 => [a, h + OPEN_SEAT_LIFT],
+);
+
+/** The seat pad's outline, its top and its foot 6 cm under the hollow. */
+const OPEN_SEAT_PROFILE: readonly P2[] = [
+  ...OPEN_SEAT_TOP,
+  ...[...OPEN_SADDLE.slice(1, -1)].reverse().map(([a, h]): P2 => [a, h - 0.06]),
+];
+
+/**
+ * The handles, two short bars out of the body's flanks at the front,
+ * behind the front ring: along `a` from `a0` to `a1`, at `h`, `t` thick,
+ * reaching out to `out` on each side.
+ */
+const OPEN_HANDLES = {
+  a0: 0.54,
+  a1: 0.72,
+  h: 0.75,
+  t: 0.05,
+  out: 0.3,
+} as const;
+
+/**
+ * The footrests, two short pegs out of the flanks at the back, low and
+ * ahead of the rear ring: along `a` from `a0` to `a1`, at `h`, `t`
+ * thick, reaching out to `out` on each side.
+ */
+const OPEN_FOOTRESTS = {
+  a0: -0.72,
+  a1: -0.6,
+  h: 0.36,
+  t: 0.03,
+  out: 0.24,
+} as const;
+
+/** How far in from the body's outline its glowing flank line runs. */
+const OPEN_LINE_IN = 0.04;
+
+/**
+ * The open variant's glowing flank line, `[a, h]`, as an open polyline:
+ * the body's top traced `OPEN_LINE_IN` under it, from the front ring
+ * back to the tail, dipping with the saddle hollow.
+ */
+function openFlankLine(): P2[] {
+  return grown(OPEN_BODY, -OPEN_LINE_IN).slice(1, OPEN_TOP.length - 1);
+}
+
+/**
+ * The open variant's lower light line on each flank, `[a, h]`: from
+ * under the handles it sweeps down and back to the belly and runs along
+ * it to the footrests, the long curve the full size cycle's flank
+ * carries.
+ */
+const OPEN_SWEEP: readonly P2[] = [
+  [0.86, 0.66],
+  [0.72, 0.56],
+  [0.56, 0.42],
+  [0.38, 0.31],
+  [0.16, 0.255],
+  [-0.2, 0.245],
+  [-0.5, 0.25],
+  [-0.64, 0.29],
+];
+
+/**
+ * The open variant of the neon bike: two hubless wheels, fat black tyre
+ * rings round an open middle, with a glowing ring on each side face
+ * near the outer edge; the low glossy body bridging them as a long
+ * wedge, reaching into each ring's open middle over its upper inner
+ * quarter; the empty rider's
+ * place, a saddle hollow with a seat pad and its glowing seat line, two
+ * short handles at the front and two footrests at the back; on each
+ * flank a glowing line under the top and a lower one sweeping down to
+ * the belly (`OPEN_SWEEP`), and one over the top's middle.
+ * Every light is in one group and breathes, as on the closed variant.
+ */
+const neonBikeOpen: HeroRecipe = ({ k, s }) => {
+  const glow = s.blink(CYCLE_GLOW, 0);
+  openWheel(k, s, OPEN_WHEELS.front, glow);
+  openWheel(k, s, OPEN_WHEELS.rear, glow);
+
+  k.extrude(OPEN_BODY, -OPEN_HALF, OPEN_HALF, s.tinted(CYCLE_BODY));
+  const crest = grown(OPEN_BODY, OPEN_CREST.g);
+  k.extrude(crest, -OPEN_CREST.half, OPEN_CREST.half, s.tinted(CYCLE_SHINE));
+  k.extrude(
+    OPEN_SEAT_PROFILE,
+    -OPEN_SEAT_HALF,
+    OPEN_SEAT_HALF,
+    s.tinted(OPEN_SEAT),
+  );
+
+  const metal = s.tinted(OPEN_METAL);
+  for (const sg of [-1, 1]) {
+    const H = OPEN_HANDLES;
+    k.box(
+      H.a0,
+      H.a1,
+      sg * (OPEN_HALF - 0.01),
+      sg * H.out,
+      H.h - H.t / 2,
+      H.h + H.t / 2,
+      metal,
+    );
+    const F = OPEN_FOOTRESTS;
+    k.box(
+      F.a0,
+      F.a1,
+      sg * (OPEN_HALF - 0.01),
+      sg * F.out,
+      F.h - F.t / 2,
+      F.h + F.t / 2,
+      metal,
+    );
+  }
+
+  const { width, out } = CYCLE_LINE;
+  const flank = openFlankLine();
+  for (const d of [-1, 1]) {
+    profileLine(k, flank, width, d * OPEN_HALF, d * (OPEN_HALF + out), glow);
+    profileLine(
+      k,
+      OPEN_SWEEP,
+      width,
+      d * OPEN_HALF,
+      d * (OPEN_HALF + out),
+      glow,
+    );
+    profileLine(
+      k,
+      OPEN_SEAT_TOP,
+      width,
+      d * (OPEN_SEAT_HALF - 0.004),
+      d * (OPEN_SEAT_HALF + out),
+      glow,
+    );
+  }
+  // Over the top: one line along the middle of the tank and one along
+  // the tail, laid on the top, the seat pad between them.
+  const ridge = crest.map(([a, h]): P2 => [a, h + out]);
+  const tank = ridge.slice(1, 5);
+  const tail = ridge.slice(OPEN_SADDLE.length + 5, OPEN_TOP.length - 1);
+  for (const line of [tank, tail])
+    profileLine(k, line, width, -width, width, glow);
+};
+
+/**
+ * The neon bike: variant 0 the closed racing cycle with its canopy
+ * (`neonBikeClosed`), variant 1 the open one with hubless wheels and an
+ * empty rider's place (`neonBikeOpen`).
+ */
+const neonBike: HeroRecipe = (ctx) =>
+  ctx.variant === 0 ? neonBikeClosed(ctx) : neonBikeOpen(ctx);
 
 /** The box's deep blue paint. */
 const BLUE: Rgb = [0.05, 0.15, 0.35];

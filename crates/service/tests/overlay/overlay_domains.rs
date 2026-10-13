@@ -8243,3 +8243,363 @@ async fn the_remote_origin_status_hides_a_domain_the_account_cannot_see() {
     let all = ask(serde_json::json!({ "v": 1, "cmd": "origin_status" })).await;
     assert!(!all.to_string().contains("team"), "{all}");
 }
+
+/// The close-folder hint reads the writer's own view of a reviewing domain:
+/// another account's drafts in `planview` are not folders this writer can
+/// see, so their `planview-work` write carries no hint, while the author of
+/// those drafts is told.
+#[tokio::test]
+async fn the_close_folder_hint_never_sees_another_accounts_drafts() {
+    let f = review_fixture().await;
+    let alice = account("alice");
+    let bob = account("bob");
+    let in_folder = |folder: &str, title: &str| WriteParams {
+        folder: Some(folder.to_string()),
+        ..write_params("team", title, "A fact about the topic.")
+    };
+    for title in ["Roadmap", "Budget"] {
+        let receipt = f
+            .engine
+            .write_engram_as(&in_folder("planview", title), None, &alice)
+            .await
+            .unwrap();
+        assert_eq!(receipt["draft"], serde_json::json!(true), "{receipt}");
+    }
+
+    let bobs = f
+        .engine
+        .write_engram_as(&in_folder("planview-work", "Standup"), None, &bob)
+        .await
+        .unwrap();
+    let probe = Engine::close_folder_probe(&bobs);
+    let found = f.engine.close_folders_for(probe.as_ref(), &bob).await;
+    assert!(found.is_empty(), "bob cannot see alice's drafts: {found:?}");
+
+    let alices = f
+        .engine
+        .write_engram_as(&in_folder("planview-work", "Retro"), None, &alice)
+        .await
+        .unwrap();
+    let probe = Engine::close_folder_probe(&alices);
+    let found = f.engine.close_folders_for(probe.as_ref(), &alice).await;
+    assert_eq!(found.len(), 1, "alice sees her own drafts: {found:?}");
+    assert_eq!(found[0].folder, "planview");
+    assert_eq!(found[0].engrams, 2);
+}
+
+/// An edit joined into somebody's draft by its share-link lands at the one
+/// page the link was minted on. So a joined `remove V112` takes back that
+/// page's entries alone and never reaches the owner's other pages, even ones
+/// holding the same folder pair's acknowledgment.
+#[tokio::test]
+async fn a_joined_remove_v112_stays_on_the_joined_page() {
+    let f = review_fixture().await;
+    let alice = account("alice");
+    let bob = account("bob");
+    let draft = |folder: &str, title: &str| WriteParams {
+        folder: Some(folder.to_string()),
+        ..write_params(
+            "team",
+            title,
+            "A fact about the topic.\n\n- [fact] one\n- [fact] two",
+        )
+    };
+    let ack = |identifier: &str, value: &str| EditParams {
+        identifier: identifier.to_string(),
+        domain: "team".to_string(),
+        operation: "set_frontmatter".to_string(),
+        key: Some("evolve_ack".to_string()),
+        value: Some(value.to_string()),
+        ..EditParams::default()
+    };
+    for title in ["A", "B", "C"] {
+        f.engine
+            .write_engram_as(&draft("meetings", title), None, &alice)
+            .await
+            .unwrap();
+    }
+    f.engine
+        .write_engram_as(&draft("meeting", "Kickoff"), None, &alice)
+        .await
+        .unwrap();
+    let first = f
+        .engine
+        .edit_engram_as(
+            &ack("meeting/kickoff", "V112 not the same topic"),
+            None,
+            &alice,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first["evolve_ack"]["scope"], "meeting, meetings", "{first}");
+    f.engine
+        .write_engram_as(&draft("meeting", "Agenda"), None, &alice)
+        .await
+        .unwrap();
+    f.engine
+        .edit_engram_as(&ack("meeting/agenda", "V112 still not"), None, &alice)
+        .await
+        .unwrap();
+
+    let join = crystalline_service::Join {
+        account: "bob".to_string(),
+        holder: crystalline_service::Holder::Process(1),
+        domain: "team".to_string(),
+        path: "meeting/agenda.md".to_string(),
+        owner: "alice".to_string(),
+        expires_at: None,
+    };
+    let receipt = f
+        .engine
+        .edit_engram_joined(
+            &ack("meeting/agenda", "remove V112"),
+            None,
+            &bob,
+            Some(&join),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt["evolve_ack_removed"], "V112", "{receipt}");
+    assert!(
+        receipt.get("evolve_ack_removed_from").is_none(),
+        "{receipt}"
+    );
+    let kickoff = f
+        .engine
+        .read_engram(
+            &ReadParams {
+                identifier: "meeting/kickoff".to_string(),
+                domain: Some("team".to_string()),
+                share_link: None,
+            },
+            &alice,
+        )
+        .await
+        .unwrap();
+    // One entry, which the frontmatter writes as a single mapping.
+    let entry = &kickoff["frontmatter"]["extra"]["evolve_ack"];
+    assert!(
+        entry.is_object(),
+        "alice's other page keeps its one entry: {kickoff}"
+    );
+    assert_eq!(entry["rule"], "V112", "{kickoff}");
+    assert_eq!(entry["scope"], "meeting, meetings", "{kickoff}");
+}
+
+/// The take-back on the other engrams is best effort: one holder whose
+/// rewrite fails is named with the reason, and the next one is still cleared.
+/// The draft arm's seam fails before it writes, so the failed holder really
+/// keeps its entry here; a failure after a file was written is
+/// `a_holder_written_before_its_error_is_named_as_maybe_taken_back`.
+#[tokio::test]
+async fn a_failed_holder_is_named_and_the_take_back_goes_on() {
+    let f = review_fixture().await;
+    let alice = account("alice");
+    let draft = |folder: &str, title: &str| WriteParams {
+        folder: Some(folder.to_string()),
+        ..write_params(
+            "team",
+            title,
+            "A fact about the topic.\n\n- [fact] one\n- [fact] two",
+        )
+    };
+    let ack = |identifier: &str, value: &str| EditParams {
+        identifier: identifier.to_string(),
+        domain: "team".to_string(),
+        operation: "set_frontmatter".to_string(),
+        key: Some("evolve_ack".to_string()),
+        value: Some(value.to_string()),
+        ..EditParams::default()
+    };
+    for title in ["A", "B", "C", "D"] {
+        f.engine
+            .write_engram_as(&draft("meetings", title), None, &alice)
+            .await
+            .unwrap();
+    }
+    // Each new engram sorts first, so each is the anchor when it is
+    // acknowledged: kickoff, then intro, hold the pair; agenda holds nothing.
+    for (title, permalink) in [("Kickoff", "meeting/kickoff"), ("Intro", "meeting/intro")] {
+        f.engine
+            .write_engram_as(&draft("meeting", title), None, &alice)
+            .await
+            .unwrap();
+        let receipt = f
+            .engine
+            .edit_engram_as(&ack(permalink, "V112 not the same topic"), None, &alice)
+            .await
+            .unwrap();
+        assert_eq!(
+            receipt["evolve_ack"]["scope"], "meeting, meetings",
+            "{receipt}"
+        );
+    }
+    f.engine
+        .write_engram_as(&draft("meeting", "Agenda"), None, &alice)
+        .await
+        .unwrap();
+
+    // The first holder's rewrite fails; the second still goes.
+    f.engine.fail_next_source_edit();
+    let receipt = f
+        .engine
+        .edit_engram_as(&ack("meeting/agenda", "remove V112"), None, &alice)
+        .await
+        .unwrap();
+    assert_eq!(
+        receipt["evolve_ack_removed_from"],
+        serde_json::json!(["meeting/kickoff"]),
+        "{receipt}"
+    );
+    let failed = &receipt["evolve_ack_not_removed_from"];
+    assert_eq!(failed[0]["permalink"], "meeting/intro", "{receipt}");
+    assert!(
+        failed[0]["reason"].as_str().unwrap().contains("test seam"),
+        "{receipt}"
+    );
+    let intro = f
+        .engine
+        .read_engram(
+            &ReadParams {
+                identifier: "meeting/intro".to_string(),
+                domain: Some("team".to_string()),
+                share_link: None,
+            },
+            &alice,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        intro["frontmatter"]["extra"]["evolve_ack"]["scope"], "meeting, meetings",
+        "the failed holder keeps its entry: {intro}"
+    );
+}
+
+/// The wait for the store has a ceiling of its own, the neighbours advisory's
+/// two seconds plus 250 ms: a probe stuck behind a holder that does not let go
+/// gives up with no hint rather than holding the write's answer for as long as
+/// the holder takes.
+#[tokio::test]
+async fn the_close_folder_probe_gives_up_on_a_store_held_past_its_ceiling() {
+    let f = fixture().await;
+    let alice = account("alice");
+    let in_folder = |folder: &str, title: &str| WriteParams {
+        folder: Some(folder.to_string()),
+        ..write_params("team", title, "A fact about the topic.")
+    };
+    for title in ["Roadmap", "Budget"] {
+        f.engine
+            .write_engram_as(&in_folder("planview", title), None, &alice)
+            .await
+            .unwrap();
+    }
+    let receipt = f
+        .engine
+        .write_engram_as(&in_folder("planview-work", "Standup"), None, &alice)
+        .await
+        .unwrap();
+    let probe = Engine::close_folder_probe(&receipt);
+
+    let ceiling =
+        crystalline_service::similar::SIMILAR_TIMEOUT + std::time::Duration::from_millis(250);
+    let store = f.engine.store();
+    let held = store.lock().await;
+    let started = std::time::Instant::now();
+    let (found, ()) = tokio::join!(
+        async {
+            let found = f.engine.close_folders_for(probe.as_ref(), &alice).await;
+            let waited = started.elapsed();
+            assert!(
+                waited < ceiling + std::time::Duration::from_millis(400),
+                "the probe answered after {waited:?}, past its {ceiling:?} ceiling"
+            );
+            found
+        },
+        async move {
+            tokio::time::sleep(ceiling + std::time::Duration::from_millis(1500)).await;
+            drop(held);
+        },
+    );
+    assert!(found.is_empty(), "no hint past the ceiling: {found:?}");
+    let mut receipt = receipt;
+    Engine::attach_close_folders(&mut receipt, &found);
+    assert!(receipt.get("close_folders").is_none(), "{receipt}");
+}
+
+/// A probe queued behind a neighbours advisory that used its whole two
+/// seconds still gets the store when the advisory lets go: the probe's ceiling
+/// is a little longer than the advisory's, so a tie does not lose the hint.
+#[tokio::test]
+async fn the_close_folder_probe_outwaits_an_advisory_that_used_its_whole_budget() {
+    let f = fixture().await;
+    let alice = account("alice");
+    let in_folder = |folder: &str, title: &str| WriteParams {
+        folder: Some(folder.to_string()),
+        ..write_params("team", title, "A fact about the topic.")
+    };
+    for title in ["Roadmap", "Budget"] {
+        f.engine
+            .write_engram_as(&in_folder("planview", title), None, &alice)
+            .await
+            .unwrap();
+    }
+    let receipt = f
+        .engine
+        .write_engram_as(&in_folder("planview-work", "Standup"), None, &alice)
+        .await
+        .unwrap();
+    let probe = Engine::close_folder_probe(&receipt);
+
+    let store = f.engine.store();
+    let held = store.lock().await;
+    let (found, ()) = tokio::join!(
+        f.engine.close_folders_for(probe.as_ref(), &alice),
+        async move {
+            tokio::time::sleep(crystalline_service::similar::SIMILAR_TIMEOUT).await;
+            drop(held);
+        },
+    );
+    assert_eq!(found.len(), 1, "the hint survives the tie: {found:?}");
+    assert_eq!(found[0].folder, "planview");
+}
+
+/// The close-folder probe's 500 ms budget is for its own queries, not for the
+/// wait on the store lock: a probe queued behind a slow neighbours advisory, a
+/// sync or any other holder still answers once it gets the store.
+#[tokio::test]
+async fn the_close_folder_budget_starts_once_the_store_lock_is_held() {
+    let f = fixture().await;
+    let alice = account("alice");
+    let in_folder = |folder: &str, title: &str| WriteParams {
+        folder: Some(folder.to_string()),
+        ..write_params("team", title, "A fact about the topic.")
+    };
+    for title in ["Roadmap", "Budget"] {
+        f.engine
+            .write_engram_as(&in_folder("planview", title), None, &alice)
+            .await
+            .unwrap();
+    }
+    let receipt = f
+        .engine
+        .write_engram_as(&in_folder("planview-work", "Standup"), None, &alice)
+        .await
+        .unwrap();
+    let probe = Engine::close_folder_probe(&receipt);
+
+    let store = f.engine.store();
+    let held = store.lock().await;
+    let (found, ()) = tokio::join!(
+        f.engine.close_folders_for(probe.as_ref(), &alice),
+        async move {
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            drop(held);
+        },
+    );
+    assert_eq!(
+        found.len(),
+        1,
+        "700 ms waiting for the lock is not the probe's budget: {found:?}"
+    );
+    assert_eq!(found[0].folder, "planview");
+}

@@ -264,7 +264,8 @@ pub struct WriteRights {
     /// This account's membership levels, keyed the same way. Empty for any
     /// principal that is not an account.
     levels: HashMap<String, MemberLevel>,
-    /// This account's write list, `None` when it has none or is no account.
+    /// This account's write list, `None` when it has none, is no account, or
+    /// when the role cannot write (the list is not read).
     write_list: Option<Vec<String>>,
 }
 
@@ -495,6 +496,11 @@ impl DomainAccess {
     /// [`WriteRights`] for `scope`, read from the store once: the principal,
     /// every private domain, this account's memberships and its write list.
     /// A listing asks this once and every row from the answer.
+    ///
+    /// The write list is read only for a role that can write somewhere, as in
+    /// [`DomainAccess::write_right`]: the list can only lower a right, so a
+    /// Viewer's answers are the same without it, and a broken list table does
+    /// not fail the batch for one.
     pub async fn write_rights(&self, scope: &Scope) -> Result<WriteRights> {
         let principal = self.principal(scope).await?;
         let acls = self
@@ -504,10 +510,15 @@ impl DomainAccess {
             .into_iter()
             .map(|acl| (acl.domain.clone(), acl))
             .collect();
+        let writes_somewhere = instance_cap(&principal) > DomainRight::Read;
         let (levels, write_list) = match &principal {
             Principal::Account { name, .. } => (
                 self.auth.memberships_of(name).await?.into_iter().collect(),
-                self.auth.write_list(name).await?,
+                if writes_somewhere {
+                    self.auth.write_list(name).await?
+                } else {
+                    None
+                },
             ),
             _ => (HashMap::new(), None),
         };
@@ -581,10 +592,12 @@ impl DomainAccess {
     /// The policy answer for one scope on one domain, with the principal it
     /// was decided for. Both public answers are this one, read differently.
     ///
-    /// **The write list caps here**, so [`DomainAccess::right`] (what the
-    /// owner gates read) and [`DomainAccess::write_right`] (what a content
-    /// write reads) both carry it: an account with a write list that does
-    /// not name `domain` is a reader there and nothing more. The cap only
+    /// **The write list caps here** for [`DomainAccess::right`] (what the
+    /// owner gates read): an account with a write list that does not name
+    /// `domain` is a reader there and nothing more. [`DomainAccess::write_right`]
+    /// (what a content write reads) carries the same list in another order:
+    /// the instance cap first, then the list, read only when the capped right
+    /// is still above Read, so a Viewer never waits on it. The cap only
     /// lowers - a domain the caller may not see stays [`DomainRight::None`] -
     /// and visibility never comes through here ([`DomainAccess::hidden_domains`]
     /// folds [`decide`] directly), so every read is unchanged. The machine

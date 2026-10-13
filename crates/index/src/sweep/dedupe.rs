@@ -343,15 +343,7 @@ mod tests {
         let original = long_body("deploy");
         // The same words in a scrambled order: the character pairs still
         // agree, the word pairs do not.
-        let words: Vec<&str> = original.split_whitespace().collect();
-        let half = words.len() / 2;
-        let mut interleaved = Vec::with_capacity(words.len());
-        for i in 0..half {
-            interleaved.push(words[i]);
-            interleaved.push(words[half + i]);
-        }
-        interleaved.extend(&words[half * 2..]);
-        let scrambled = interleaved.join(" ");
+        let scrambled = crystalline_core::similarity::interleave_halves(&original);
         let out = cluster(&[original, scrambled]);
         assert!(out.clusters.is_empty(), "{:?}", out.clusters);
     }

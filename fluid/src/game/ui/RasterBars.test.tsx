@@ -97,6 +97,58 @@ describe("the connecting screen's raster bars", () => {
     expect(layer?.style.backgroundPosition).toBe(still);
   });
 
+  // Mutation caught: the preference read once, so a change while the
+  // screen shows is ignored, or its listener left on the query after the
+  // screen went.
+  it("follows a change of the reduced-motion preference", () => {
+    let reduce = false;
+    let listener: (() => void) | null = null;
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      get matches() {
+        return reduce && query === "(prefers-reduced-motion: reduce)";
+      },
+      media: query,
+      addEventListener: (_: string, fn: () => void) => {
+        listener = fn;
+      },
+      removeEventListener: () => {
+        listener = null;
+      },
+    }));
+    const frames = vi.spyOn(window, "requestAnimationFrame");
+    const view = render(
+      <Connecting number={NUMBER} name="ENG" onDone={vi.fn()} />,
+    );
+    act(() => {
+      vi.advanceTimersByTime(FROM + 100);
+    });
+    const layer = bars(document.body);
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    const moving = layer?.style.backgroundPosition;
+    reduce = true;
+    act(() => {
+      listener?.();
+    });
+    const calls = frames.mock.calls.length;
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(frames.mock.calls.length).toBe(calls);
+    expect(layer?.style.backgroundPosition).toBe(moving);
+    reduce = false;
+    act(() => {
+      listener?.();
+      vi.advanceTimersByTime(300);
+    });
+    expect(layer?.style.backgroundPosition).not.toBe(moving);
+    // The screen going takes the listener down with it.
+    expect(listener).not.toBeNull();
+    view.unmount();
+    expect(listener).toBeNull();
+  });
+
   // Mutation caught: the frame loop or the turn-on timer left running
   // after the screen went.
   it("stops the frame loop and its timer when the screen goes", () => {

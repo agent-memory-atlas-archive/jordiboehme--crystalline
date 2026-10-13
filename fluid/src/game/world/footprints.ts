@@ -272,7 +272,10 @@ export const FOOTPRINTS: Footprints = {
     "slab-walker": [{ width: 0.9, depth: 1.5 }],
     turntable: [{ width: 0.8, depth: 0.6 }],
     camera: [{ width: 0.9, depth: 0.9 }],
-    "neon-bike": [{ width: 3.0, depth: 0.8 }],
+    "neon-bike": [
+      { width: 3.0, depth: 0.8 },
+      { width: 3.0, depth: 0.8 },
+    ],
   },
 };
 

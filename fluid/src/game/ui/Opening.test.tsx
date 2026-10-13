@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -85,6 +86,56 @@ describe("Opening", () => {
       vi.advanceTimersByTime(END_MS);
     });
     expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  // Mutation caught: the auto-repeat of a key held before the screen showed
+  // skips it, or is let through to act in the station.
+  it("ignores the auto-repeat of a held key but still cancels it", () => {
+    const onDone = vi.fn();
+    render(<Opening onDone={onDone} />);
+    const held = new KeyboardEvent("keydown", {
+      key: "a",
+      code: "KeyA",
+      repeat: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      document.body.dispatchEvent(held);
+    });
+    expect(onDone).not.toHaveBeenCalled();
+    expect(held.defaultPrevented).toBe(true);
+    fireEvent.keyDown(document.body, { key: "a", code: "KeyA" });
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  // Mutation caught: the blink rendering the screen again.
+  it("does not render again through the blinks", () => {
+    let renders = 0;
+    render(
+      <Profiler
+        id="opening"
+        onRender={() => {
+          renders += 1;
+        }}
+      >
+        <Opening onDone={vi.fn()} />
+      </Profiler>,
+    );
+    act(() => {
+      vi.advanceTimersByTime(Math.ceil(TYPED_MS) + 100);
+    });
+    const typedRenders = renders;
+    expect(cursor()).toBe("on");
+    act(() => {
+      vi.advanceTimersByTime(BLINK_MS);
+    });
+    expect(cursor()).toBe("off");
+    act(() => {
+      vi.advanceTimersByTime(BLINK_MS);
+    });
+    expect(cursor()).toBe("on");
+    expect(renders).toBe(typedRenders);
   });
 
   // Mutation caught: the typing timed by `Date.now()`.

@@ -95,8 +95,9 @@ pub fn dice_coefficient(a: &str, b: &str) -> f64 {
 /// 0.86 to 1.00 on word bigrams, the false positives 0.12 to 0.76. One changed
 /// word in an otherwise identical text destroys two word bigrams, so a lightly
 /// edited copy loses a little per edit. 0.5 sits well below the lowest copy
-/// and keeps edited copies, while it still rejects most vocabulary-only
-/// overlap.
+/// and keeps edited copies. It rejects the false positives of that issue
+/// that scored below 0.5; the ones that scored from 0.5 to 0.76 still pass
+/// it.
 pub const WORD_BIGRAM_FLOOR: f64 = 0.5;
 
 /// Word bigram Dice coefficient: the same arithmetic as [`dice_coefficient`]
@@ -249,6 +250,23 @@ fn bigrams(s: &str) -> Vec<(char, char)> {
     chars.windows(2).map(|w| (w[0], w[1])).collect()
 }
 
+/// A fixed permutation that keeps every word and destroys word order:
+/// interleave the first half of the words with the second half. A test
+/// fixture for the word-order checks here and in the index crate's duplicate
+/// sweep, public only so both use the one permutation.
+#[doc(hidden)]
+pub fn interleave_halves(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let half = words.len() / 2;
+    let mut out = Vec::with_capacity(words.len());
+    for i in 0..half {
+        out.push(words[i]);
+        out.push(words[half + i]);
+    }
+    out.extend(&words[half * 2..]);
+    out.join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,18 +328,8 @@ mod tests {
         stops the release and pages the on call engineer right away so nobody \
         ships a broken build";
 
-    /// A fixed permutation that keeps every word and destroys word order:
-    /// interleave the first half of the words with the second half.
     fn shuffled(text: &str) -> String {
-        let words: Vec<&str> = text.split_whitespace().collect();
-        let half = words.len() / 2;
-        let mut out = Vec::with_capacity(words.len());
-        for i in 0..half {
-            out.push(words[i]);
-            out.push(words[half + i]);
-        }
-        out.extend(&words[half * 2..]);
-        out.join(" ")
+        interleave_halves(text)
     }
 
     #[test]

@@ -114,14 +114,15 @@
  * An opening question (`Opening`) stands before the connecting screen and
  * holds the session busy the same way; it is silent, and the dial starts
  * when the connecting screen mounts. The screen's state is kept in a ref
- * across StrictMode's remount, so the second mount (whose context the first one's cleanup suspended, and which
- * finds the key already set) holds its own session busy and dials on its
- * own director. The same one subscription hears the carrier (C27): a drop
- * hangs up (`director.carrier`) and flashes `NO CARRIER`, the return after
- * it plays a short handshake, and `carrierGate` lets a pair sound at most
- * once per `CARRIER_QUIET_MS`. A change heard while the connecting screen
- * shows is held, never played over the dial-in: once the screen is done,
- * the state the carrier is in then is said once (a drop, or nothing).
+ * across StrictMode's remount, so the second mount (whose context the
+ * first one's cleanup suspended, and which finds the key already set)
+ * holds its own session busy and dials on its own director. The same one
+ * subscription hears the carrier (C27): a drop hangs up
+ * (`director.carrier`) and flashes `NO CARRIER`, the return after it plays
+ * a short handshake, and `carrierGate` lets a pair sound at most once per
+ * `CARRIER_QUIET_MS`. A change heard while the connecting screen shows is
+ * held, never played over the dial-in: once the screen is done, the state
+ * the carrier is in then is said once (a drop, or nothing).
  */
 
 import { useQueryClient } from "@tanstack/react-query";
@@ -152,11 +153,11 @@ import {
 } from "./paths";
 import { createSession, type Session } from "./session";
 import { Connecting } from "./ui/Connecting";
-import { Opening } from "./ui/Opening";
 import { DeviceRefusal } from "./ui/DeviceRefusal";
 import { GAME_LEGEND } from "./ui/keys";
 import { LevelSelect } from "./ui/LevelSelect";
 import { LiftSelect } from "./ui/LiftSelect";
+import { Opening } from "./ui/Opening";
 import { PauseScreen } from "./ui/PauseScreen";
 import { StationView } from "./ui/StationView";
 import { useHud } from "./ui/useHud";

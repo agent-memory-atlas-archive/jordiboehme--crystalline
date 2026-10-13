@@ -1058,6 +1058,19 @@ pub const FILE_STAMPS_SQL: &str =
 pub const UPSERT_PROBE_SQL: &str = "SELECT id, path FROM engram WHERE domain_id=$1 AND path=$2 AND actor=$4 \
      UNION ALL SELECT id, path FROM engram WHERE domain_id=$1 AND permalink=$3 AND actor=$4";
 
+/// The probe behind [`Store::folder_holds_other`]: one base row under a folder
+/// other than the write's own path, at any depth, never a reserved name. The
+/// range is over `path COLLATE "C"`, the bytewise order that keeps every path
+/// under `notes/` between `notes/` and `notes0`, and `idx_engram_base_path_c`
+/// (migration v19, partial on `actor = ''`) is the index that seeks it
+/// (pinned in `tests/it/plans.rs`).
+#[doc(hidden)]
+pub const FOLDER_HOLDS_OTHER_SQL: &str = "SELECT 1 FROM engram e WHERE e.domain_id=$1 AND e.actor = '' \
+     AND e.path COLLATE \"C\" >= $2 AND e.path COLLATE \"C\" < $3 \
+     AND e.path <> $4 \
+     AND right(e.path, 9) <> '/index.md' AND right(e.path, 7) <> '/log.md' \
+     LIMIT 1";
+
 /// The read behind [`Store::contradiction_pairs_scored`], one domain's pair
 /// rows for one model through `idx_contradiction_pair_domain`. The Turso text
 /// with `$n` placeholders.
@@ -3578,6 +3591,53 @@ impl Store for PostgresStore {
         let mut out: Vec<StoredEngram> = rows.iter().map(stored_engram_from_row).collect();
         out.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(out)
+    }
+
+    async fn folder_holds_other(
+        &self,
+        domain: DomainId,
+        prefix: &str,
+        except: &str,
+    ) -> Result<bool> {
+        let (low, high) = crate::store::folder_range(prefix);
+        let mut conn = self.acquire().await?;
+        let row = sqlx::query(FOLDER_HOLDS_OTHER_SQL)
+            .bind(domain.0)
+            .bind(low)
+            .bind(high)
+            .bind(except)
+            .fetch_optional(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
+        Ok(row.is_some())
+    }
+
+    async fn overlay_paths(&self, domain: DomainId, actor: &str) -> Result<Vec<(String, bool)>> {
+        if actor.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut conn = self.acquire().await?;
+        let rows = sqlx::query(
+            "SELECT path, tombstone FROM engram WHERE domain_id=$1 AND actor=$2 \
+             ORDER BY path COLLATE \"C\"",
+        )
+        .bind(domain.0)
+        .bind(actor)
+        .fetch_all(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                (
+                    cell_text(row, 0).unwrap_or_default(),
+                    row.try_get::<Option<bool>, _>(1)
+                        .ok()
+                        .flatten()
+                        .unwrap_or(false),
+                )
+            })
+            .collect())
     }
 
     async fn clear_overlay_entry(&self, domain: DomainId, actor: &str, path: &str) -> Result<bool> {

@@ -379,6 +379,54 @@ async fn a_created_title_that_will_not_read_back_carries_its_notice() {
     assert!(plain.get("notices").is_none(), "{plain}");
 }
 
+/// A create that starts a folder next to a sibling with a close name answers
+/// with the same `close_folders` hint and `folder_guidance` the MCP write
+/// receipt carries, and a create into a folder that already exists carries
+/// neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_create_that_starts_a_close_folder_carries_the_hint() {
+    let _serialized = crate::support::maintenance_guard().await;
+    let fx = serve(Options::default()).await;
+    let editor = login(fx.addr, "eddy", "eddypw").await;
+    let create = |title: &'static str, folder: &'static str| {
+        as_session(
+            fx.addr,
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/engrams",
+            &editor,
+        )
+        .json(&serde_json::json!({
+            "title": title,
+            "folder": folder,
+            "content": "A fact about the topic.\n"
+        }))
+        .send()
+    };
+
+    for title in ["Roadmap", "Budget"] {
+        let resp = create(title, "planview").await.unwrap();
+        assert_eq!(resp.status(), 201);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        if title == "Budget" {
+            assert!(body.get("close_folders").is_none(), "{body}");
+            assert!(body.get("folder_guidance").is_none(), "{body}");
+        }
+    }
+    let resp = create("Standup", "planview-work").await.unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["close_folders"],
+        serde_json::json!([{"folder": "planview", "engrams": 2}]),
+        "{body}"
+    );
+    assert_eq!(
+        body["folder_guidance"],
+        crystalline_core::folders::FOLDER_GUIDANCE,
+        "{body}"
+    );
+}
+
 /// A CRLF file reads back as LF over the JSON API, its ETag is the checksum
 /// of the bytes on disk, and the guarded save made with that ETag lands as
 /// LF. The same holds for a CRLF MANIFEST.

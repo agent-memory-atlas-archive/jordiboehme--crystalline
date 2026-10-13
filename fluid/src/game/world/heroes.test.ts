@@ -343,15 +343,26 @@ describe("the hero catalogue", () => {
     expect(HERO_POOLS.engineering.at(-1)).toEqual(["neon-bike", 2]);
     expect(HERO_CATALOGUE["neon-bike"]).toMatchObject({
       placement: HERO_CATALOGUE["red-bike"].placement,
-      variants: 1,
+      variants: 2,
       top: 1.28,
       surfaces: [],
       under: [],
       use: null,
     });
     expect(HERO_FOOTING["neon-bike"]).toBe(HERO_FOOTING["red-bike"]);
-    expect(FOOTPRINTS.hero["neon-bike"]).toEqual([{ width: 3.0, depth: 0.8 }]);
+    expect(FOOTPRINTS.hero["neon-bike"][0]).toEqual({ width: 3.0, depth: 0.8 });
     expect(isTallHero("neon-bike")).toBe(false);
+  });
+
+  it("gives the neon bike two variants of one size, the closed one and the open one (0.25.2)", () => {
+    // Mutation caught: the open variant dropped from the catalogue, or
+    // given a footprint of its own, so it would stand and block apart
+    // from the closed one.
+    expect(HERO_CATALOGUE["neon-bike"].variants).toBe(2);
+    expect(FOOTPRINTS.hero["neon-bike"]).toEqual([
+      { width: 3.0, depth: 0.8 },
+      { width: 3.0, depth: 0.8 },
+    ]);
   });
 
   it("keeps a use point only where a later spec needs one, inside the reserve", () => {

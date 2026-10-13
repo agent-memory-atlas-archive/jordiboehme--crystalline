@@ -776,7 +776,9 @@ pub async fn apply(conn: &Connection) -> Result<i64> {
 /// [`apply`] over a given list, so a test can hand it a migration that fails.
 ///
 /// The migrations run with the connection's temp store in memory, and the
-/// setting it had before is put back on every way out. Several migrations
+/// setting it had before is put back on every return, an error included. A
+/// panic inside a migration, or the open's future dropped before it ends,
+/// skips that restore and leaves the connection on memory. Several migrations
 /// read and rewrite the same table (v7's `DELETE ... WHERE tag_id NOT IN
 /// (SELECT ...)` is the plainest case), which the engine answers with an
 /// ephemeral table. With the default temp store it creates each of those as a
@@ -786,7 +788,9 @@ pub async fn apply(conn: &Connection) -> Result<i64> {
 /// then with "permission denied", and the open failed with
 /// `Migration("v7 ...: I/O error (tempdir): permission denied")`. What a
 /// migration keeps in such a table is ids and short keys, so memory is the
-/// right home for it. Queries after the open keep the default: a runtime
+/// right home for it. Inside that window the engine's sorters and hash joins
+/// stay in memory too, so a migration that sorts or joins a large table holds
+/// that work in RAM. Queries after the open keep the default: a runtime
 /// sorter that outgrows its buffer must spill to disk, not to RAM (see
 /// `research/2026-07-28-turso-sorter-spill.md`).
 async fn apply_migrations(conn: &Connection, migrations: &[Migration]) -> Result<i64> {
@@ -2377,15 +2381,15 @@ mod tests {
         let store = crate::TursoStore::open(&db_path).await.unwrap();
         assert_eq!(store.store_info().await.unwrap().schema_version, 19);
 
-        let base_rows = meta_rows(&store.conn, 7).await;
+        let base_rows = meta_rows(store.conn.raw(), 7).await;
         assert_eq!(base_rows, crate::store::meta_value_rows(&base));
         assert_eq!(
-            meta_rows(&store.conn, 8).await,
+            meta_rows(store.conn.raw(), 8).await,
             crate::store::meta_value_rows(&draft),
             "a draft gets its rows too"
         );
         assert!(
-            meta_rows(&store.conn, 9).await.is_empty(),
+            meta_rows(store.conn.raw(), 9).await.is_empty(),
             "metadata that does not parse gets no rows"
         );
         for (key, value) in [

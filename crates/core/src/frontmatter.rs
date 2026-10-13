@@ -51,6 +51,29 @@ pub fn split_frontmatter(source: &str) -> Option<FrontmatterParts<'_>> {
     })
 }
 
+/// Whether two sources say the same thing: their frontmatter parses to the
+/// same YAML value and their bodies are byte for byte equal. Quoting, indent,
+/// comments and key spelling style never count as a difference, the order of
+/// a list's items does. A source whose frontmatter does not parse is never the
+/// same as anything, so a caller that skips a write on `true` never skips a
+/// repair. Two sources without frontmatter are compared as text.
+pub fn same_content(a: &str, b: &str) -> bool {
+    match (split_frontmatter(a), split_frontmatter(b)) {
+        (None, None) => a == b,
+        (Some(x), Some(y)) => {
+            if x.body != y.body {
+                return false;
+            }
+            let parse = |yaml: &str| serde_yaml_ng::from_str::<Value>(yaml).ok();
+            match (parse(x.yaml), parse(y.yaml)) {
+                (Some(left), Some(right)) => left == right,
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 /// One top-level frontmatter key with its exact text.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeyBlock {
@@ -695,6 +718,30 @@ mod tests {
     use super::*;
 
     const DOC: &str = "---\ntype: engram\ntitle: T\npermalink: t\n---\n\n# T\n\nBody.\n";
+
+    #[test]
+    fn same_content_reads_values_not_spelling() {
+        let flat = "---\ntype: engram\ntags:\n- a\n- b\n---\n\nbody\n";
+        // The indented and quoted 0.25.1 style holds the same list.
+        let indented = "---\ntype: engram\ntags:\n  - \"a\"\n  - b # kept\n---\n\nbody\n";
+        let flow = "---\ntype: engram\ntags: [a, b]\n---\n\nbody\n";
+        assert!(same_content(flat, indented));
+        assert!(same_content(flat, flow));
+        // Order is a change, and so is the body.
+        assert!(!same_content(
+            flat,
+            "---\ntype: engram\ntags:\n- b\n- a\n---\n\nbody\n"
+        ));
+        assert!(!same_content(
+            flat,
+            "---\ntype: engram\ntags:\n- a\n- b\n---\n\nbody.\n"
+        ));
+        // A frontmatter that does not parse is never the same.
+        let broken = "---\ntype: [engram\n---\n\nbody\n";
+        assert!(!same_content(broken, broken));
+        assert!(same_content("just text\n", "just text\n"));
+        assert!(!same_content("just text\n", flat));
+    }
 
     #[test]
     fn split_frontmatter_separates_delimiters_yaml_and_body() {

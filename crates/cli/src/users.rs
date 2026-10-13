@@ -663,8 +663,8 @@ fn parse_write_list(raw: &str) -> Result<Vec<String>> {
 /// One entry: a domain name, or a name prefix with one `*` at the end. The
 /// stem is checked with the domain-name rule; a prefix is checked with one
 /// letter after it (unless the stem is already at the length limit), so
-/// `agents-*` and `team.*` pass while `agents/*` does not. A bare `*` names every domain, which is the same as no list, and is
-/// refused.
+/// `agents-*` and `team.*` pass while `agents/*` does not. A bare `*` names
+/// every domain, which is the same as no list, and is refused.
 fn check_write_entry(entry: &str) -> Result<()> {
     let (stem, prefix) = match entry.strip_suffix('*') {
         Some(stem) => (stem, true),

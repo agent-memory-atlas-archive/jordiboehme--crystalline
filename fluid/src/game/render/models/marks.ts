@@ -173,6 +173,14 @@ export function wordMarks(word: StencilWord): readonly (readonly string[])[] {
 }
 
 /**
+ * The keys of `MARKS` a screen draws as plain text, not the block-pixel
+ * font, so the font check in `marks.test.ts` leaves exactly these out.
+ */
+export const SCREEN_TEXT_KEYS = [
+  "handleLines",
+] as const satisfies readonly (keyof typeof MARKS)[];
+
+/**
  * A stencil's marks (2.7 C19), line by line, each line's marks in reading
  * order: the wall's two lines (`lines` 2) are the deck word and the deck's
  * numerals over the bay word and the bay's numerals; a floor stencil's one
@@ -191,7 +199,7 @@ export function stencilMarks(t: StencilText): readonly (readonly string[])[] {
     const out: string[] = [];
     for (let m = n; m > 0; m = Math.floor(m / 10)) {
       const mark = MARKS.numerals[m % 10];
-      if (mark === undefined) throw new Error("stencilMarks has no numeral");
+      if (mark === undefined) throw new Error("stencilMarks: no numeral");
       out.unshift(mark);
     }
     return out;

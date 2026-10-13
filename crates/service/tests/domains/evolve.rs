@@ -1343,7 +1343,7 @@ async fn a_hand_written_ack_holds_until_it_is_withdrawn() {
         )
         .await
         .unwrap();
-    assert!(removed);
+    assert!(removed.removed());
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert!(!on_disk.contains("evolve_ack"), "{on_disk}");
 
@@ -1374,6 +1374,7 @@ async fn a_hand_written_ack_holds_until_it_is_withdrawn() {
             )
             .await
             .unwrap()
+            .removed()
     );
 }
 
@@ -1586,6 +1587,7 @@ async fn a_lowercase_hand_written_rule_id_can_still_be_withdrawn() {
             )
             .await
             .unwrap()
+            .removed()
     );
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert!(!on_disk.contains("evolve_ack"), "{on_disk}");
@@ -3292,6 +3294,554 @@ async fn v111_fires_on_a_blank_or_whitespace_resource() {
         vec!["backoff-policy", "retry-policy"],
         "an empty or whitespace-only resource must not be read as present: {v}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// V112 - sibling folders with close names
+// ---------------------------------------------------------------------------
+
+/// An engine over one file domain `eng` holding an engram at each path, synced.
+async fn folder_fixture(paths: &[&str]) -> (tempfile::TempDir, Arc<Engine>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("eng");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("MANIFEST.md"),
+        crystalline_core::manifest_template("eng", "2026-07-25"),
+    )
+    .unwrap();
+    for path in paths {
+        let abs = dir.join(path);
+        std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        let permalink = path.trim_end_matches(".md");
+        std::fs::write(
+            &abs,
+            format!(
+                "---\ntype: engram\ntitle: {permalink}\npermalink: {permalink}\ntags:\n  - work\nstatus: stable\nrecorded_at: 2026-07-25\n---\n\nWhat {permalink} holds.\n\n- [fact] one line\n- [fact] two lines\n"
+            ),
+        )
+        .unwrap();
+    }
+    let mut cfg = GlobalConfig::default();
+    cfg.domains
+        .insert("eng".to_string(), DomainEntry::file(dir));
+    let config_path = tmp.path().join("config.yaml");
+    crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
+    let store = TursoStore::open_in_memory().await.unwrap();
+    let engine = Arc::new(Engine::new(
+        Arc::new(Mutex::new(store)),
+        cfg,
+        None,
+        Some(config_path),
+    ));
+    engine.sync(None).await.unwrap();
+    (tmp, engine)
+}
+
+fn only_v112() -> EvolveParams {
+    EvolveParams {
+        domains: vec!["eng".to_string()],
+        rules: vec!["V112".to_string()],
+        limit: Some(10),
+        ..EvolveParams::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v112_names_close_sibling_folders_once_and_an_ack_holds_until_a_rename() {
+    let (_tmp, engine) = folder_fixture(&[
+        "projects/planview/roadmap.md",
+        "projects/planview/budget.md",
+        "projects/planview-work/standup.md",
+        "projects/billing/invoices.md",
+    ])
+    .await;
+
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    let queue = v["queue"].as_array().unwrap();
+    assert_eq!(queue.len(), 1, "{v}");
+    assert_eq!(queue[0]["rule"], "V112");
+    assert_eq!(queue[0]["class"], "judgment");
+    assert_eq!(queue[0]["permalink"], "projects/planview-work/standup");
+
+    let receipt = acknowledge(
+        &engine,
+        "projects/planview-work/standup",
+        "V112 two different topics",
+    )
+    .await;
+    assert_eq!(
+        receipt["evolve_ack"]["scope"], "projects/planview, projects/planview-work",
+        "the evidence is the two folder paths: {receipt}"
+    );
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert!(v["queue"].as_array().unwrap().is_empty(), "{v}");
+    assert_eq!(v["acknowledged"]["by_family"]["structure"], 1, "{v}");
+
+    // Renaming the folder asks the question again. V112 is pair-scoped, so the
+    // renamed pair is a pair nobody answered yet: a plain finding, not stale.
+    engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "projects/planview-work/standup".to_string(),
+                domain: "eng".to_string(),
+                destination: "projects/planview-team/standup".to_string(),
+                destination_domain: None,
+                permalink: Some("path".to_string()),
+                update_links: None,
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    let queue = v["queue"].as_array().unwrap();
+    assert_eq!(queue.len(), 1, "{v}");
+    assert_eq!(queue[0]["permalink"], "projects/planview-team/standup");
+    assert!(queue[0].get("ack_stale").is_none(), "{v}");
+}
+
+/// One folder close to two siblings anchors both findings on one engram, and
+/// each pair keeps its own acknowledgment there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v112_keeps_an_acknowledgment_per_pair_on_one_engram() {
+    let (tmp, engine) = folder_fixture(&[
+        "meeting/kickoff.md",
+        "meetings/a.md",
+        "meetings/b.md",
+        "meeting-notes/a.md",
+        "meeting-notes/b.md",
+    ])
+    .await;
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert_eq!(v["queue"].as_array().unwrap().len(), 2, "{v}");
+
+    let first = acknowledge(&engine, "meeting/kickoff", "V112 not the same topic").await;
+    let second = acknowledge(&engine, "meeting/kickoff", "V112 not this one either").await;
+    assert_ne!(
+        first["evolve_ack"]["scope"], second["evolve_ack"]["scope"],
+        "the second acknowledgment answers the other pair: {first} {second}"
+    );
+    let text = std::fs::read_to_string(tmp.path().join("eng/meeting/kickoff.md")).unwrap();
+    assert!(
+        text.contains("meeting, meetings") && text.contains("meeting, meeting-notes"),
+        "both entries stay: {text}"
+    );
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert!(v["queue"].as_array().unwrap().is_empty(), "{v}");
+    assert_eq!(v["acknowledged"]["by_family"]["structure"], 2, "{v}");
+
+    // The anchor moves when the lone folder gains an engram that sorts first;
+    // the acknowledgments still hold, read off any engram in the pair.
+    std::fs::write(
+        tmp.path().join("eng/meeting/agenda.md"),
+        "---\ntype: engram\ntitle: meeting/agenda\npermalink: meeting/agenda\ntags:\n  - work\nstatus: stable\nrecorded_at: 2026-07-25\n---\n\nThe agenda.\n\n- [fact] one line\n- [fact] two lines\n",
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert!(v["queue"].as_array().unwrap().is_empty(), "{v}");
+}
+
+/// Add one engram file to the `eng` fixture and sync it in.
+async fn add_folder_engram(tmp: &tempfile::TempDir, engine: &Engine, path: &str) {
+    let permalink = path.trim_end_matches(".md");
+    std::fs::write(
+        tmp.path().join("eng").join(path),
+        format!(
+            "---\ntype: engram\ntitle: {permalink}\npermalink: {permalink}\ntags:\n  - work\nstatus: stable\nrecorded_at: 2026-07-25\n---\n\nWhat {permalink} holds.\n\n- [fact] one line\n- [fact] two lines\n"
+        ),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+}
+
+/// A `V112` acknowledgment can sit on any engram of the two folders, because
+/// the anchor moves as the folders change. `remove V112` takes the pair's
+/// entries back wherever they sit, so the finding really resurfaces, names the
+/// other engrams it cleared, and leaves another pair's entry alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_v112_takes_the_pair_back_on_every_engram_of_both_folders() {
+    let (tmp, engine) = folder_fixture(&[
+        "meeting/kickoff.md",
+        "meetings/a.md",
+        "meetings/b.md",
+        "meetings/c.md",
+        "projects/planview/roadmap.md",
+        "projects/planview/budget.md",
+        "projects/planview-work/standup.md",
+    ])
+    .await;
+    acknowledge(&engine, "meeting/kickoff", "V112 not the same topic").await;
+    acknowledge(
+        &engine,
+        "projects/planview-work/standup",
+        "V112 two different topics",
+    )
+    .await;
+    // The anchor moves to an engram that sorts first, and the pair is
+    // acknowledged there too: two engrams of the folder now hold it.
+    add_folder_engram(&tmp, &engine, "meeting/agenda.md").await;
+    acknowledge(&engine, "meeting/agenda", "V112 still not the same topic").await;
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert!(v["queue"].as_array().unwrap().is_empty(), "{v}");
+
+    let receipt = acknowledge(&engine, "meeting/agenda", "remove V112").await;
+    assert_eq!(receipt["evolve_ack_removed"], "V112", "{receipt}");
+    assert_eq!(
+        receipt["evolve_ack_removed_from"],
+        serde_json::json!(["meeting/kickoff"]),
+        "{receipt}"
+    );
+    let kickoff = std::fs::read_to_string(tmp.path().join("eng/meeting/kickoff.md")).unwrap();
+    assert!(!kickoff.contains("evolve_ack"), "{kickoff}");
+    let standup =
+        std::fs::read_to_string(tmp.path().join("eng/projects/planview-work/standup.md")).unwrap();
+    assert!(
+        standup.contains("projects/planview, projects/planview-work"),
+        "another pair's entry stays: {standup}"
+    );
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    let queue = v["queue"].as_array().unwrap();
+    assert_eq!(
+        queue.len(),
+        1,
+        "the pair resurfaces, the other stays answered: {v}"
+    );
+    assert_eq!(queue[0]["permalink"], "meeting/agenda");
+}
+
+/// The anchor itself may hold no entry at all once it moved: `remove V112` on
+/// it still takes back the pair it anchors, from the engram that holds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_v112_on_a_moved_anchor_finds_the_entry_on_the_old_one() {
+    let (tmp, engine) = folder_fixture(&[
+        "meeting/kickoff.md",
+        "meetings/a.md",
+        "meetings/b.md",
+        "meetings/c.md",
+    ])
+    .await;
+    acknowledge(&engine, "meeting/kickoff", "V112 not the same topic").await;
+    add_folder_engram(&tmp, &engine, "meeting/agenda.md").await;
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert!(v["queue"].as_array().unwrap().is_empty(), "{v}");
+
+    let receipt = acknowledge(&engine, "meeting/agenda", "remove V112").await;
+    assert_eq!(receipt["evolve_ack_removed"], "V112", "{receipt}");
+    assert_eq!(
+        receipt["evolve_ack_removed_from"],
+        serde_json::json!(["meeting/kickoff"]),
+        "{receipt}"
+    );
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert_eq!(v["queue"].as_array().unwrap().len(), 1, "{v}");
+
+    // Nothing left anywhere: the removal errors as it always has.
+    let refused = ack_edit(&engine, "meeting/agenda", "remove V112")
+        .await
+        .unwrap_err();
+    assert!(refused.contains("nothing to remove"), "{refused}");
+}
+
+/// A holder whose rewrite fails after its file was written is named with a
+/// reason that says so: its entry may already be gone, and the receipt does
+/// not claim otherwise.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_holder_written_before_its_error_is_named_as_maybe_taken_back() {
+    let (tmp, engine) = folder_fixture(&[
+        "meeting/kickoff.md",
+        "meetings/a.md",
+        "meetings/b.md",
+        "meetings/c.md",
+        "meetings/d.md",
+    ])
+    .await;
+    acknowledge(&engine, "meeting/kickoff", "V112 not the same topic").await;
+    add_folder_engram(&tmp, &engine, "meeting/intro.md").await;
+    acknowledge(&engine, "meeting/intro", "V112 still not").await;
+    add_folder_engram(&tmp, &engine, "meeting/agenda.md").await;
+
+    // The file arm's seam fails after the file is written.
+    engine.fail_next_source_edit();
+    let receipt = acknowledge(&engine, "meeting/agenda", "remove V112").await;
+    assert_eq!(
+        receipt["evolve_ack_removed_from"],
+        serde_json::json!(["meeting/kickoff"]),
+        "{receipt}"
+    );
+    let left = &receipt["evolve_ack_not_removed_from"];
+    assert_eq!(left[0]["permalink"], "meeting/intro", "{receipt}");
+    let reason = left[0]["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("after the file was written")
+            && reason.contains("may already be taken back"),
+        "{reason}"
+    );
+    let intro = std::fs::read_to_string(tmp.path().join("eng/meeting/intro.md")).unwrap();
+    assert!(!intro.contains("evolve_ack"), "the bytes did land: {intro}");
+}
+
+/// A removal on an engram that holds nothing writes nothing there, so the
+/// token it presents is checked before the other engrams change: a stale one
+/// is refused and every entry stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_v112_on_a_non_holder_refuses_a_stale_checksum() {
+    let (tmp, engine) = folder_fixture(&[
+        "meeting/kickoff.md",
+        "meetings/a.md",
+        "meetings/b.md",
+        "meetings/c.md",
+    ])
+    .await;
+    acknowledge(&engine, "meeting/kickoff", "V112 not the same topic").await;
+    add_folder_engram(&tmp, &engine, "meeting/agenda.md").await;
+
+    let refused = engine
+        .edit_engram_as(
+            &crystalline_service::params::EditParams {
+                identifier: "meeting/agenda".to_string(),
+                domain: "eng".to_string(),
+                operation: "set_frontmatter".to_string(),
+                key: Some("evolve_ack".to_string()),
+                value: Some("remove V112".to_string()),
+                expected_checksum: Some("0".repeat(64)),
+                ..Default::default()
+            },
+            Some("agent:test"),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("changed since"), "{refused}");
+    let kickoff = std::fs::read_to_string(tmp.path().join("eng/meeting/kickoff.md")).unwrap();
+    assert!(kickoff.contains("meeting, meetings"), "{kickoff}");
+}
+
+/// Fluid's withdraw is the same take-back: it reaches the entry wherever the
+/// pair's acknowledgment sits rather than answering "nothing to withdraw".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn withdrawing_v112_takes_the_pair_back_on_every_engram_of_both_folders() {
+    let (tmp, engine) = folder_fixture(&[
+        "meeting/kickoff.md",
+        "meetings/a.md",
+        "meetings/b.md",
+        "meetings/c.md",
+    ])
+    .await;
+    acknowledge(&engine, "meeting/kickoff", "V112 not the same topic").await;
+    add_folder_engram(&tmp, &engine, "meeting/agenda.md").await;
+
+    let withdrawn = engine
+        .unacknowledge_finding_as(
+            "eng",
+            "meeting/agenda",
+            "V112",
+            Some("meeting, meetings"),
+            None,
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        withdrawn.removed_from,
+        vec!["meeting/kickoff".to_string()],
+        "the pair's entry sat on kickoff"
+    );
+    let kickoff = std::fs::read_to_string(tmp.path().join("eng/meeting/kickoff.md")).unwrap();
+    assert!(!kickoff.contains("evolve_ack"), "{kickoff}");
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert_eq!(v["queue"].as_array().unwrap().len(), 1, "{v}");
+}
+
+/// The reviewer's fixture: three close pairs, one of them (`project`,
+/// `projects`) one level above another (`projects/planview`,
+/// `projects/planview-work`), plus a folder close to nothing.
+const THREE_PAIRS: &[&str] = &[
+    "meeting/kickoff.md",
+    "meetings/a.md",
+    "meetings/b.md",
+    "meetings/c.md",
+    "projects/planview/roadmap.md",
+    "projects/planview/budget.md",
+    "projects/planview-work/standup.md",
+    "project/x.md",
+    "solo/alone.md",
+];
+
+/// The scopes of the `V112` rows a sweep still shows.
+fn open_pairs(v: &Value) -> Vec<String> {
+    let mut pairs: Vec<String> = v["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["scope"].as_str().unwrap_or_default().to_string())
+        .collect();
+    pairs.sort();
+    pairs
+}
+
+/// Rewrite the engram at `path` with a hand-written `V112` entry that names no
+/// pair, the shape an acknowledgment recorded before 0.25.2 could have.
+async fn hand_ack_without_pair(tmp: &tempfile::TempDir, engine: &Engine, path: &str) {
+    let permalink = path.trim_end_matches(".md");
+    std::fs::write(
+        tmp.path().join("eng").join(path),
+        format!(
+            "---\ntype: engram\ntitle: {permalink}\npermalink: {permalink}\ntags:\n  - work\nstatus: stable\nrecorded_at: 2026-07-25\nevolve_ack:\n- {{ rule: V112, note: hand-written }}\n---\n\nWhat {permalink} holds.\n\n- [fact] one line\n- [fact] two lines\n"
+        ),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+}
+
+/// `evolve_ack V112` on an engram that is not the row's anchor records the
+/// one pair its folder is in, never an entry without a pair. Several pairs
+/// is refused with the anchors to use instead, none with "not firing", and a
+/// pair one level up stays visible.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_v112_ack_off_the_anchor_records_the_pair_its_folder_is_in() {
+    let (_tmp, engine) = folder_fixture(THREE_PAIRS).await;
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert_eq!(
+        open_pairs(&v),
+        [
+            "meeting, meetings",
+            "project, projects",
+            "projects/planview, projects/planview-work"
+        ],
+        "{v}"
+    );
+
+    let receipt = acknowledge(&engine, "meetings/a", "V112 not the same topic").await;
+    assert_eq!(
+        receipt["evolve_ack"]["scope"], "meeting, meetings",
+        "{receipt}"
+    );
+
+    // Two pairs hold `projects/planview/roadmap`: its own folder's and the
+    // top-level one its parent folder is in. The server does not guess.
+    let refused = ack_edit(&engine, "projects/planview/roadmap", "V112 two topics")
+        .await
+        .unwrap_err();
+    assert!(
+        refused.contains("more than one pair")
+            && refused.contains("'project, projects'")
+            && refused.contains(
+                "'projects/planview, projects/planview-work' on 'projects/planview-work/standup'"
+            ),
+        "{refused}"
+    );
+    let refused = ack_edit(&engine, "solo/alone", "V112 two topics")
+        .await
+        .unwrap_err();
+    assert!(refused.contains("not firing"), "{refused}");
+
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert_eq!(
+        open_pairs(&v),
+        [
+            "project, projects",
+            "projects/planview, projects/planview-work"
+        ],
+        "only the pair that was acknowledged went: {v}"
+    );
+    assert_eq!(v["acknowledged"]["total"], 1, "{v}");
+}
+
+/// An acknowledgment recorded off the anchor is taken back from the anchor,
+/// the row the queue and Fluid show: by `remove V112` and by the withdrawal
+/// Fluid's Unacknowledge sends, which names no pair for a row whose entry
+/// was found off the anchor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_v112_ack_off_the_anchor_is_taken_back_from_the_anchor() {
+    let (_tmp, engine) = folder_fixture(THREE_PAIRS).await;
+    acknowledge(&engine, "meetings/a", "V112 not the same topic").await;
+    let receipt = acknowledge(&engine, "meeting/kickoff", "remove V112").await;
+    assert_eq!(
+        receipt["evolve_ack_removed_from"],
+        serde_json::json!(["meetings/a"]),
+        "{receipt}"
+    );
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert_eq!(open_pairs(&v).len(), 3, "{v}");
+
+    acknowledge(&engine, "meetings/b", "V112 not the same topic").await;
+    let withdrawn = engine
+        .unacknowledge_finding_as(
+            "eng",
+            "meeting/kickoff",
+            "V112",
+            None,
+            Some("human:jordi"),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(withdrawn.removed_from, ["meetings/b"], "{withdrawn:?}");
+    assert!(withdrawn.not_removed_from.is_empty(), "{withdrawn:?}");
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert_eq!(open_pairs(&v).len(), 3, "{v}");
+}
+
+/// A `V112` entry that names no pair, written by hand or by an earlier
+/// version, silences only the pairs of its own engram's folder: never the pair
+/// one level up. It is taken back from the anchor like any other, by `remove
+/// V112` and by Fluid's withdrawal, with or without the row's pair.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_v112_entry_without_a_pair_silences_only_its_own_folder_and_is_taken_back() {
+    let (tmp, engine) = folder_fixture(THREE_PAIRS).await;
+    hand_ack_without_pair(&tmp, &engine, "projects/planview/roadmap.md").await;
+    hand_ack_without_pair(&tmp, &engine, "meetings/a.md").await;
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert_eq!(
+        open_pairs(&v),
+        ["project, projects"],
+        "the pair one level up stays visible: {v}"
+    );
+    assert_eq!(v["acknowledged"]["total"], 2, "{v}");
+
+    let receipt = acknowledge(&engine, "projects/planview-work/standup", "remove V112").await;
+    assert_eq!(
+        receipt["evolve_ack_removed_from"],
+        serde_json::json!(["projects/planview/roadmap"]),
+        "{receipt}"
+    );
+    let roadmap =
+        std::fs::read_to_string(tmp.path().join("eng/projects/planview/roadmap.md")).unwrap();
+    assert!(!roadmap.contains("evolve_ack"), "{roadmap}");
+
+    // Fluid names the row's pair when it has one; the entry without one goes
+    // all the same, since it is what silences that row.
+    let withdrawn = engine
+        .unacknowledge_finding_as(
+            "eng",
+            "meeting/kickoff",
+            "V112",
+            Some("meeting, meetings"),
+            Some("human:jordi"),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(withdrawn.removed_from, ["meetings/a"], "{withdrawn:?}");
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert_eq!(open_pairs(&v).len(), 3, "{v}");
+    assert_eq!(v["acknowledged"]["total"], 0, "{v}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v112_is_quiet_on_a_domain_without_close_folders() {
+    let (_tmp, engine) = folder_fixture(&[
+        "projects/planview/roadmap.md",
+        "projects/billing/invoices.md",
+        "meetings/2025/kickoff.md",
+        "meetings/2026/kickoff.md",
+    ])
+    .await;
+    let v = sweep(&engine, "2026-07-26", only_v112()).await;
+    assert!(v["queue"].as_array().unwrap().is_empty(), "{v}");
 }
 
 /// Nobody could act on a read-only domain's findings, so the sweep leaves it

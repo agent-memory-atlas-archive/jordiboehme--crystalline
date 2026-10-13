@@ -310,6 +310,14 @@ mod tests {
     }
 
     #[test]
+    fn the_capture_skill_teaches_the_close_folder_hint() {
+        let capture = skill("crystalline-capture").unwrap().content;
+        for needle in ["`close_folders`", "`move_engram`", "V112"] {
+            assert!(capture.contains(needle), "capture skill lacks {needle}");
+        }
+    }
+
+    #[test]
     fn the_skills_teach_per_engram_provenance_and_citing_it() {
         let capture = skill("crystalline-capture").unwrap().content;
         for needle in [
@@ -401,6 +409,25 @@ mod tests {
         for name in ["crystalline-intelligence", "crystalline-capture"] {
             let body = skill(name).unwrap().content;
             assert!(body.contains(sentence), "{name}");
+        }
+    }
+
+    /// An agent that finds a wrong engram it cannot fix asks the person to
+    /// fix it, with the page link and the evidence, instead of staying quiet.
+    #[test]
+    fn the_skills_teach_asking_a_person_to_fix_a_wrong_engram() {
+        for name in ["crystalline-intelligence", "crystalline-capture"] {
+            let body = skill(name).unwrap().content;
+            for needle in [
+                "A wrong engram you cannot fix yourself still gets fixed",
+                "give its `web_url`",
+                "what is true instead and the source that shows it",
+                "Never leave a wrong engram unmentioned",
+                "Still capture the correct fact where you may write",
+                "tell the person about both",
+            ] {
+                assert!(body.contains(needle), "{name} lacks {needle:?}");
+            }
         }
     }
 

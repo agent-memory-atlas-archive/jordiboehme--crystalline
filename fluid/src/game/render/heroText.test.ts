@@ -336,6 +336,15 @@ function picturesFound(): Set<string> {
 }
 
 /**
+ * The message of a thrown `new Error(...)` is not drawn, so the scan leaves
+ * it out on purpose: a message may carry a colon or capitals and needs no
+ * rewording to pass.
+ */
+function withoutErrorMessages(code: string): string {
+  return code.replace(/new Error\(\s*(?:"[^"\n]*"|`[^`\n]*`)/g, "new Error(");
+}
+
+/**
  * Every double-quoted or backtick literal of the readable class in `code`
  * that holds a digit or a mark, or capitals and no lower case. Each literal
  * is cut out whole first and then tested against the class, so the code
@@ -347,7 +356,7 @@ function picturesFound(): Set<string> {
  * scanned on its own; `textCalls.test.ts` covers what is drawn.
  */
 function scanLiterals(code: string): string[] {
-  return [...code.matchAll(/"([^"\n]*)"|`([^`\n]*)`/g)]
+  return [...withoutErrorMessages(code).matchAll(/"([^"\n]*)"|`([^`\n]*)`/g)]
     .map((m) => m[1] ?? m[2] ?? "")
     .filter(
       (t) =>
@@ -375,6 +384,13 @@ describe("readable text in the recipes", () => {
         'const a = "X-Pro2"; const b = "lo-fi"; const c = "disk-525"; const d = "red-bike";',
       ),
     ).toEqual(["X-Pro2", "lo-fi"]);
+  });
+
+  it("leaves an Error message out of the scan and nothing else", () => {
+    // Mutation caught: the exemption widened to every literal near a throw.
+    expect(
+      scanLiterals('throw new Error("FOO: BAR 42"); const a = "FOO: BAR 42";'),
+    ).toEqual(["FOO: BAR 42"]);
   });
 
   it("catches a literal of marks alone and ignores separators", () => {

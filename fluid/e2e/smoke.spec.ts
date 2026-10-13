@@ -203,6 +203,21 @@ async function topBarBoxes(page: Page, width: number) {
   await expect(
     page.getByRole("button", { name: "Help", exact: true }),
   ).toBeVisible();
+  // Wait for the new width to be the page's own and for two frames to lay
+  // out under it, so the boxes below are read after the resize rather than
+  // just before it (a failure here that does not repeat is a read that came
+  // early, not a layout that settled late).
+  await page.waitForFunction((w) => window.innerWidth === w, width);
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            resolve();
+          });
+        });
+      }),
+  );
   return page.evaluate(() => {
     const row = document.querySelector("header > div");
     const input =
@@ -295,7 +310,12 @@ for (const share of [false, true]) {
       expect(boxes.rowOverflow).toBeLessThanOrEqual(0);
       // The room left to type in: the box minus its padding. 40 px is about
       // five characters, the least that still reads as a field.
-      expect(boxes.typing).toBeGreaterThanOrEqual(40);
+      //
+      // Headless hides the scrollbar, which a visible one takes 15 px of the
+      // width from: the field is checked with that scrollbar counted, so a
+      // layout that only fits without it fails here too.
+      const SCROLLBAR = 15;
+      expect(boxes.typing - SCROLLBAR).toBeGreaterThanOrEqual(40);
       if (share) {
         // A refetch the app starts while the page closes must not fail the
         // test from a canned handler that has nothing left to answer.

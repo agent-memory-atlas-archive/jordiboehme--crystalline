@@ -82,15 +82,16 @@ export type AckBody = {
      * The evidence this acknowledgment is for, copied from the queue row's
      * own `scope`.
      *
-     * Only `V301` and `V302` send one: they are the two rules that fire more
-     * than once on an engram (an engram can be the semantic twin of several
-     * others, and several of its lines can read as contradicting another's),
-     * so they are the ones where naming the rule does not name the finding.
+     * Only `V112`, `V301` and `V302` send one: they are the three rules that
+     * fire more than once on an engram (a folder can sit close to two sibling
+     * folders, an engram can be the semantic twin of several others, and
+     * several of its lines can read as contradicting another's), so they are
+     * the ones where naming the rule does not name the finding.
      * On `POST` the server checks the scope is really firing and refuses with
      * a 422 if it is not, which is what a queue read too long ago looks like;
      * on `DELETE` it takes back that pair's entry and leaves the engram's
      * other pairs silenced. Every other rule ignores it, and omitting it on
-     * `V301` or `V302` means the whole rule: the server's own pick on `POST`,
+     * `V112`, `V301` or `V302` means the whole rule: the server's own pick on `POST`,
      * every pair at once on `DELETE`.
      */
     scope?: string | null;
@@ -3085,7 +3086,7 @@ export type CreateEngramError = CreateEngramErrors[keyof CreateEngramErrors];
 
 export type CreateEngramResponses = {
     /**
-     * The engine's own read payload for the new engram, plus - when the `capture.similar` advisory found neighbours - a `similar` list of up to three engrams {domain, permalink, title, status, type} and a `guidance` string. A title that will not read back the way it was written - one holding a `/`, which lands the engram nested, or a `:`, which a link reads as a domain prefix - also carries a `notices` list of sentences naming what happened and what to write instead.
+     * The engine's own read payload for the new engram, plus - when the `capture.similar` advisory found neighbours - a `similar` list of up to three engrams {domain, permalink, title, status, type} and a `guidance` string. A title that will not read back the way it was written - one holding a `/`, which lands the engram nested, or a `:`, which a link reads as a domain prefix - also carries a `notices` list of sentences naming what happened and what to write instead. A create that started a new folder next to sibling folders with a close name (planview beside planview-work, note beside notes) carries `close_folders`, up to three {folder, engrams}, and a `folder_guidance` string.
      */
     201: {
         [key: string]: unknown;
@@ -3310,6 +3311,10 @@ export type UnacknowledgeFindingErrors = {
      */
     404: ProblemDetail;
     /**
+     * A `V112` withdrawal left the pair's acknowledgment on at least one page: one this caller may not rewrite (a draft shared to read and not joined) or whose rewrite failed. The finding stays silenced; the detail names the pages left with their reasons and the pages whose entries did go, if any.
+     */
+    409: ProblemDetail;
+    /**
      * The body is not `application/json`.
      */
     415: ProblemDetail;
@@ -3360,7 +3365,7 @@ export type AcknowledgeFindingErrors = {
      */
     415: ProblemDetail;
     /**
-     * The rule id is not one the sweep catalog holds, or the `scope` names evidence the rule is not firing on here.
+     * The rule id is not one the sweep catalog holds, the `scope` names evidence the rule is not firing on here, or a `V112` request without a `scope` leaves no single pair of close folders to record.
      */
     422: ProblemDetail;
 };

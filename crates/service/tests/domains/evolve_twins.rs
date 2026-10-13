@@ -476,7 +476,7 @@ async fn withdrawing_one_pair_leaves_the_other_acknowledged() {
         )
         .await
         .unwrap();
-    assert!(removed);
+    assert!(removed.removed());
     engine.embed_pending().await.unwrap();
 
     let after = sweep(&engine).await;

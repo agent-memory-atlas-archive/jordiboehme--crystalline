@@ -67,6 +67,21 @@ const BADGE = { a0: -0.046, a1: 0.046, h0: 1.766, h1: 1.788, front: 0.033 };
 const BLUE_LIFT = 0.001;
 
 /**
+ * How far the badge's words stand proud of their field: 2.5 mm, inside
+ * the 2 to 3 mm Jordi asked for (0.25.2), where a full `DECAL_LIFT` (10
+ * mm) stood two thirds of the letters' height off the badge.
+ */
+const BADGE_INK_LIFT = 0.0025;
+
+/**
+ * The most the laser desk's beam may tilt off level, in radians: 2
+ * degrees. It runs level from the lens into the sitter's back, as in the
+ * film's shot; the 0.25.1 review measured an earlier beam dropping about
+ * 21 degrees, which Jordi read as broken.
+ */
+const BEAM_TILT_MAX = (2 * Math.PI) / 180;
+
+/**
  * The eye panel at the original's true size (0.25.1): the faceplate's
  * width and its bottom and top, the eye's centre height (standing eye
  * height) and the lens's radius (a 74 mm glass).
@@ -260,12 +275,12 @@ describe("optics hero models", () => {
     expect(b.hi[0] - b.lo[0]).toBeCloseTo(width, 9);
     expect((b.lo[0] + b.hi[0]) / 2).toBeCloseTo(la, 9);
     expect((b.lo[2] + b.hi[2]) / 2).toBeCloseTo(lh, 9);
-    // Level within 2 degrees: what it rises over its run beyond its own
-    // thickness.
+    // Level within `BEAM_TILT_MAX`: what it rises over its run beyond its
+    // own thickness.
     const run = b.hi[1] - b.lo[1];
     const rise = b.hi[2] - b.lo[2] - width;
     expect(run).toBeGreaterThan(0.1);
-    expect(Math.atan2(Math.abs(rise), run)).toBeLessThan((2 * Math.PI) / 180);
+    expect(Math.atan2(Math.abs(rise), run)).toBeLessThan(BEAM_TILT_MAX);
     // It starts inside the lens disc and ends on the back's rear face.
     expect(b.hi[1]).toBeGreaterThan(lb.lo[1]);
     expect(b.hi[1]).toBeLessThan(lb.hi[1]);
@@ -451,7 +466,7 @@ describe("optics hero models", () => {
     expect(onBlue.length).toBeGreaterThanOrEqual(runsOfLines(last));
   });
 
-  it("sets the first word on the black and the last inside the blue field, one lift proud and the same size (2.6f C17)", () => {
+  it("sets the first word on the black and the last inside the blue field, 2.5 mm proud and the same size (2.6f C17, 0.25.2)", () => {
     // Mutation caught: both words on the blue, a word off the badge, the
     // ink sunk into or floating off its field, or the two words at two
     // different sizes.
@@ -480,10 +495,12 @@ describe("optics hero models", () => {
     expect(onBlack).toHaveLength(runsOfLines(first));
     for (const p of onBlack)
       for (const q of local(p))
-        expect(q[1]).toBeCloseTo(BADGE.front + DECAL_LIFT, 9);
+        expect(q[1]).toBeCloseTo(BADGE.front + BADGE_INK_LIFT, 9);
     for (const p of onBlue)
       for (const q of local(p))
-        expect(q[1]).toBeCloseTo(BADGE.front + BLUE_LIFT + DECAL_LIFT, 9);
+        expect(q[1]).toBeCloseTo(BADGE.front + BLUE_LIFT + BADGE_INK_LIFT, 9);
+    expect(BADGE_INK_LIFT).toBeGreaterThanOrEqual(0.002);
+    expect(BADGE_INK_LIFT).toBeLessThanOrEqual(0.003);
     const sizes = ink.map(heightOf);
     for (const h of sizes) expect(h).toBeCloseTo(sizes[0] ?? NaN, 9);
   });
