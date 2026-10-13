@@ -176,7 +176,10 @@ impl Engine {
                     .iter()
                     .map(|(permalink, reason)| format!("'{permalink}' ({reason})"))
                     .collect();
-                return Err(EngineError::Invalid(format!(
+                // The same variant the REST withdrawal answers this with:
+                // nothing is wrong with the request, the entries just sit
+                // where this caller may not write.
+                return Err(EngineError::Conflict(format!(
                     "no {FOLDER_PAIR_RULE} acknowledgment on '{}' could be taken back; the pair's acknowledgment stays on {}",
                     desc.permalink,
                     named.join(", ")

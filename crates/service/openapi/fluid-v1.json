@@ -2790,7 +2790,7 @@
           "maintenance"
         ],
         "summary": "Acknowledge one evolve finding on one engram.",
-        "description": "Records `evolve_ack` on the engram: the rule, the evidence it fired on, the note, the acknowledging user and the instant. A matching acknowledgment keeps the finding out of the queue and counted in `acknowledged`; when the evidence changes the finding returns marked `ack_stale`. The evidence is the server's, either picked by running detection or - when the body names the row's `scope`, which is how a caller says which of an engram's `V301` or `V302` findings it read - checked against it.",
+        "description": "Records `evolve_ack` on the engram: the rule, the evidence it fired on, the note, the acknowledging user and the instant. A matching acknowledgment keeps the finding out of the queue and counted in `acknowledged`; when the evidence changes the finding returns marked `ack_stale`. The evidence is the server's, either picked by running detection or - when the body names the row's `scope`, which is how a caller says which of an engram's `V112`, `V301` or `V302` findings it read - checked against it. A `V112` acknowledgment always records a pair: without a `scope` on an engram that is not the row's own, the pair is the one whose folders hold the engram, and the request is refused when no pair or more than one does.",
         "operationId": "acknowledge_finding",
         "parameters": [
           {
@@ -2872,7 +2872,7 @@
             }
           },
           "422": {
-            "description": "The rule id is not one the sweep catalog holds, or the `scope` names evidence the rule is not firing on here.",
+            "description": "The rule id is not one the sweep catalog holds, the `scope` names evidence the rule is not firing on here, or a `V112` request without a `scope` leaves no single pair of close folders to record.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2888,7 +2888,7 @@
           "maintenance"
         ],
         "summary": "Withdraw an acknowledgment.",
-        "description": "Removes the engram's `evolve_ack` entries for that rule, leaving the other rules' alone. A rule has one entry, except `V112`, `V301` and `V302`, which have one per pair: name the row's `scope` to take one pair back and leave the engram's other pairs silenced, or send none to take every pair at once. Withdrawing `V112` takes back every pair the engram holds or anchors (or the one `scope` names) on every engram of its two folders, since a pair's acknowledgment can sit on any of them; in review mode each engram it changes gets a draft of the caller's. 404 when no entry the body names was there to take back, rather than reporting a removal that did not happen.",
+        "description": "Removes the engram's `evolve_ack` entries for that rule, leaving the other rules' alone. A rule has one entry, except `V112`, `V301` and `V302`, which have one per pair: name the row's `scope` to take one pair back and leave the engram's other pairs silenced, or send none to take every pair at once. Withdrawing `V112` takes back every pair the engram holds or anchors (or the one `scope` names) on every engram of its two folders, since a pair's acknowledgment can sit on any of them; in review mode each engram it changes gets a draft of the caller's, and an entry there that names no pair goes with the pairs of its own folder. 404 when no entry the body names was there to take back, rather than reporting a removal that did not happen; 409 when an entry for the pair stays on a page that could not be rewritten.",
         "operationId": "unacknowledge_finding",
         "parameters": [
           {
@@ -2946,7 +2946,7 @@
             }
           },
           "409": {
-            "description": "A `V112` withdrawal took nothing back: the pair's acknowledgment stays only on pages this caller may not rewrite (a draft shared to read and not joined) or whose rewrite failed, and the detail names them.",
+            "description": "A `V112` withdrawal left the pair's acknowledgment on at least one page: one this caller may not rewrite (a draft shared to read and not joined) or whose rewrite failed. The finding stays silenced; the detail names the pages left with their reasons and the pages whose entries did go, if any.",
             "content": {
               "application/problem+json": {
                 "schema": {

@@ -3311,7 +3311,7 @@ export type UnacknowledgeFindingErrors = {
      */
     404: ProblemDetail;
     /**
-     * A `V112` withdrawal took nothing back: the pair's acknowledgment stays only on pages this caller may not rewrite (a draft shared to read and not joined) or whose rewrite failed, and the detail names them.
+     * A `V112` withdrawal left the pair's acknowledgment on at least one page: one this caller may not rewrite (a draft shared to read and not joined) or whose rewrite failed. The finding stays silenced; the detail names the pages left with their reasons and the pages whose entries did go, if any.
      */
     409: ProblemDetail;
     /**
@@ -3365,7 +3365,7 @@ export type AcknowledgeFindingErrors = {
      */
     415: ProblemDetail;
     /**
-     * The rule id is not one the sweep catalog holds, or the `scope` names evidence the rule is not firing on here.
+     * The rule id is not one the sweep catalog holds, the `scope` names evidence the rule is not firing on here, or a `V112` request without a `scope` leaves no single pair of close folders to record.
      */
     422: ProblemDetail;
 };

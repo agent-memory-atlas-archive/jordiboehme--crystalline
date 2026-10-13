@@ -1590,6 +1590,13 @@ impl FindingCap {
 /// the two folder names. So an entry for the pair on any engram in either
 /// folder silences it, and the finding still comes back the moment a folder
 /// is renamed, since that is another pair.
+///
+/// A `V112` entry with no pair (hand-written, or recorded before the write
+/// path resolved one for every acknowledgment) is read narrower: it answers
+/// only for a pair one of whose folders is the very folder its engram sits in
+/// ([`in_own_folder`]). Read at every ancestor level it would also silence a
+/// pair one level up that nobody answered, and every close pair that appears
+/// above it later.
 fn apply_acknowledgments(input: &SweepInput, report: &mut SweepReport) {
     let acks: HashMap<&str, &[AckEntry]> = input
         .engrams
@@ -1616,10 +1623,12 @@ fn apply_acknowledgments(input: &SweepInput, report: &mut SweepReport) {
     let include = input.include_acknowledged;
     report.findings.retain_mut(|finding| {
         if finding.rule == "V112" {
-            let held = folder_acks.iter().find(|(path, ack)| {
-                ack.scope.as_deref().is_none_or(|s| s == finding.scope)
-                    && in_scoped_folder(path, &finding.scope)
-            });
+            let held = folder_acks
+                .iter()
+                .find(|(path, ack)| match ack.scope.as_deref() {
+                    Some(scope) => scope == finding.scope && in_scoped_folder(path, &finding.scope),
+                    None => in_own_folder(path, &finding.scope),
+                });
             if let Some((_, ack)) = held {
                 counts.add(finding.family);
                 finding.acknowledged = true;
@@ -1686,6 +1695,19 @@ pub fn in_scoped_folder(path: &str, scope: &str) -> bool {
             scope.starts_with(&format!("{level}{SCOPE_SEPARATOR}"))
                 || scope.ends_with(&format!("{SCOPE_SEPARATOR}{level}"))
         })
+}
+
+/// Whether one of the two folders a `V112` scope names is the folder `path`
+/// sits in directly, not an ancestor of it. The reach of a `V112` entry that
+/// carries no pair (see `apply_acknowledgments`), and public for the same
+/// reason [`in_scoped_folder`] is: the take-back has to find exactly the
+/// entries this suppression reads.
+pub fn in_own_folder(path: &str, scope: &str) -> bool {
+    let Some((folder, _)) = path.rsplit_once('/') else {
+        return false;
+    };
+    scope.starts_with(&format!("{folder}{SCOPE_SEPARATOR}"))
+        || scope.ends_with(&format!("{SCOPE_SEPARATOR}{folder}"))
 }
 
 /// The edge and node lookups every rule shares, built once per run.

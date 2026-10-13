@@ -6937,6 +6937,28 @@ pub enum AckIntent {
     },
 }
 
+/// What [`Engine::unacknowledge_finding_as`] took back, and what it had to
+/// leave. Nothing in either list is a withdrawal of an entry that was not
+/// there, which the REST surface answers as a 404.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Withdrawal {
+    /// The permalinks whose entries went: the named engram first when it held
+    /// one, then for `V112` every other engram of the pair's two folders.
+    pub removed_from: Vec<String>,
+    /// The permalinks still holding an entry for the named pair, each with
+    /// the reason it could not be taken back (a draft shared to read and not
+    /// joined, or a rewrite that failed). Only `V112` reaches past the engram,
+    /// so only a `V112` withdrawal ever fills it.
+    pub not_removed_from: Vec<(String, String)>,
+}
+
+impl Withdrawal {
+    /// Whether any entry went.
+    pub fn removed(&self) -> bool {
+        !self.removed_from.is_empty()
+    }
+}
+
 /// An [`AckIntent`] the server has completed, on its way to the text edit: the
 /// record carries the scope only a sweep could supply, the removal carries the
 /// rule alone because the entry it names is already in the file.

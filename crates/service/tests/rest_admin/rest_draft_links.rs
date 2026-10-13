@@ -3630,13 +3630,11 @@ async fn an_agents_join_ending_leaves_the_browsers_key_alone() {
     );
 }
 
-/// `remove V112` takes the pair back on every engram of the two folders, and
-/// in a domain in review mode each of those rewrites is a draft of the
-/// caller's own. A page another account drafted over and shared with the
-/// caller to read, not joined, is left as it is and named on the receipt.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remove_v112_skips_and_names_a_page_shared_to_read() {
-    let _serialized = crate::support::maintenance_guard().await;
+/// The review-mode fixture the `V112` take-back tests share: the pair
+/// `meeting`, `meetings` acknowledged on `meeting/intro` and on
+/// `meeting/kickoff`, and alice's draft of kickoff shared with bob to read,
+/// which bob has not joined.
+async fn shared_v112_fixture() -> (Fixture, Session, Session, std::path::PathBuf) {
     let f = serve().await;
     let dir = f.root.join("team");
     let page = |permalink: &str, ack: bool| {
@@ -3674,6 +3672,17 @@ async fn remove_v112_skips_and_names_a_page_shared_to_read() {
     let alice = login(f.addr, "alice").await;
     let bob = login(f.addr, "bob").await;
     bob_holds(&f, &alice, &bob, "meeting/kickoff.md").await;
+    (f, alice, bob, dir)
+}
+
+/// `remove V112` takes the pair back on every engram of the two folders, and
+/// in a domain in review mode each of those rewrites is a draft of the
+/// caller's own. A page another account drafted over and shared with the
+/// caller to read, not joined, is left as it is and named on the receipt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_v112_skips_and_names_a_page_shared_to_read() {
+    let _serialized = crate::support::maintenance_guard().await;
+    let (f, _alice, bob, dir) = shared_v112_fixture().await;
 
     let receipt = f
         .engine
@@ -3749,5 +3758,67 @@ async fn remove_v112_skips_and_names_a_page_shared_to_read() {
     assert!(
         detail.contains("meeting/kickoff") && detail.contains("shared with you to read"),
         "{problem}"
+    );
+
+    // The agent's `remove V112` meets the same state with the same variant
+    // the REST answer comes from: a conflict, not an invalid request.
+    let refused = f
+        .engine
+        .edit_engram_as(
+            &crystalline_service::params::EditParams {
+                identifier: "meeting/agenda".to_string(),
+                domain: "team".to_string(),
+                operation: "set_frontmatter".to_string(),
+                key: Some("evolve_ack".to_string()),
+                value: Some("remove V112".to_string()),
+                ..crystalline_service::params::EditParams::default()
+            },
+            Some("bob"),
+            &as_account("bob"),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&refused, crystalline_service::EngineError::Conflict(m)
+            if m.contains("meeting/kickoff") && m.contains("shared with you to read")),
+        "{refused:?}"
+    );
+}
+
+/// Fluid's withdrawal that takes the pair back on some pages and has to leave
+/// it on one answers 409, not 204: the row stays silenced, and the detail
+/// names the page left with its reason and the pages whose entries went.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_withdrawal_that_leaves_an_entry_behind_answers_409() {
+    let _serialized = crate::support::maintenance_guard().await;
+    let (f, _alice, bob, _dir) = shared_v112_fixture().await;
+
+    let withdrawn = bob
+        .request(
+            f.addr,
+            reqwest::Method::DELETE,
+            "/api/v1/domains/team/evolve/ack",
+        )
+        .json(&serde_json::json!({"permalink": "meeting/agenda", "rule": "V112"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(withdrawn.status(), 409);
+    let problem: serde_json::Value = withdrawn.json().await.unwrap();
+    let detail = problem["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("taken back on 'meeting/intro'")
+            && detail.contains("stays on 'meeting/kickoff'")
+            && detail.contains("shared with you to read"),
+        "{problem}"
+    );
+    let bobs = f
+        .engine
+        .read_engram(&read_as("meeting/intro"), &as_account("bob"))
+        .await
+        .unwrap();
+    assert!(
+        !bobs["content"].as_str().unwrap().contains("evolve_ack"),
+        "the entry that could go went: {bobs}"
     );
 }

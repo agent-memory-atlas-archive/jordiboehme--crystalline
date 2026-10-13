@@ -2405,6 +2405,37 @@ fn an_ack_outside_the_pairs_folders_does_not_silence_it() {
     assert!(fired(&report).contains(&"V112"), "{:?}", fired(&report));
 }
 
+/// A `V112` entry with no pair - hand-written, or recorded before 0.25.2 -
+/// answers only for the pairs of the folder its engram sits in: never a pair
+/// one level up, which the engram reaches only as an ancestor.
+#[test]
+fn a_scopeless_v112_ack_silences_only_the_pairs_of_its_own_folder() {
+    let mut roadmap = at(5, "projects/planview/roadmap.md");
+    roadmap.acks = vec![ack("V112", None, "two topics")];
+    let report = detect(&input(vec![
+        at(1, "meeting/kickoff.md"),
+        at(2, "meetings/a.md"),
+        at(3, "meetings/b.md"),
+        at(4, "meetings/c.md"),
+        roadmap,
+        at(6, "projects/planview/budget.md"),
+        at(7, "projects/planview-work/standup.md"),
+        at(8, "project/x.md"),
+    ]));
+    let open: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|f| f.rule == "V112")
+        .map(|f| f.scope.as_str())
+        .collect();
+    assert_eq!(
+        open,
+        vec!["meeting, meetings", "project, projects"],
+        "only the planview pair is silenced: {open:?}"
+    );
+    assert_eq!(report.acknowledged.structure, 1);
+}
+
 #[test]
 fn the_catalog_carries_twenty_seven_rules_and_v006_is_temporal() {
     assert_eq!(RULES.len(), 27);

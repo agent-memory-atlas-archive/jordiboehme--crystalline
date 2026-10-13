@@ -8507,3 +8507,57 @@ async fn tool_descriptions_teach_close_folders_and_v112() {
         "evolve_engrams names V112: {evolve}"
     );
 }
+
+/// Over MCP, `evolve_ack V112` on an engram that is not the row's anchor
+/// records the pair its folder is in, and `remove V112` on the anchor (the
+/// engram the queue row names) takes it back from there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_v112_ack_off_the_anchor_is_recorded_for_its_pair_and_removed_from_the_anchor() {
+    let h = Harness::new(&["eng"]).await;
+    for path in ["meeting/kickoff", "meetings/a", "meetings/b", "meetings/c"] {
+        let abs = h.root.join(format!("eng/{path}.md"));
+        std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        std::fs::write(
+            abs,
+            format!(
+                "---\ntype: engram\ntitle: {path}\npermalink: {path}\ntags:\n  - work\nstatus: stable\nrecorded_at: 2026-07-25\n---\n\nWhat {path} holds.\n\n- [fact] one line\n- [fact] two lines\n"
+            ),
+        )
+        .unwrap();
+    }
+    h.engine.sync(None).await.unwrap();
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    let ack = |identifier: &str, value: &str| {
+        json!({
+            "domain": "eng",
+            "identifier": identifier,
+            "operation": "set_frontmatter",
+            "key": "evolve_ack",
+            "value": value,
+        })
+    };
+
+    let recorded = call(
+        peer,
+        "edit_engram",
+        ack("meetings/a", "V112 not the same topic"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        recorded["evolve_ack"]["scope"], "meeting, meetings",
+        "{recorded}"
+    );
+    let removed = call(peer, "edit_engram", ack("meeting/kickoff", "remove V112"))
+        .await
+        .unwrap();
+    assert_eq!(removed["evolve_ack_removed"], "V112", "{removed}");
+    assert_eq!(
+        removed["evolve_ack_removed_from"],
+        json!(["meetings/a"]),
+        "{removed}"
+    );
+    let a = std::fs::read_to_string(h.root.join("eng/meetings/a.md")).unwrap();
+    assert!(!a.contains("evolve_ack"), "{a}");
+}
