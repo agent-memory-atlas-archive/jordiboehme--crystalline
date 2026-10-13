@@ -165,9 +165,12 @@ describe("the manifest policies", () => {
         // key and what holds are what a card draws, and the rest has
         // defaults of its own.
         { key: "generated_indexes", effective: "local" },
-        // Neither of these is a row anything could be drawn from.
+        // A text key nothing has set holds an empty value, which is a value.
+        { key: "reflection_home", kind: "text", effective: "" },
+        // None of these is a row anything could be drawn from.
         { declared: "x", effective: "y" },
         { key: "orphan" },
+        { key: "blank_choice", effective: "" },
       ],
     });
 
@@ -194,6 +197,16 @@ describe("the manifest policies", () => {
         // No default on the wire reads as "what holds is the default", which
         // is true of every key nobody declared.
         default: "local",
+        meaning: "",
+        changedBy: "owner",
+      },
+      {
+        key: "reflection_home",
+        kind: "text",
+        declared: null,
+        effective: "",
+        values: [],
+        default: "",
         meaning: "",
         changedBy: "owner",
       },

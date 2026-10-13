@@ -812,32 +812,20 @@ pub fn domain_name_at(root: &Path) -> Option<String> {
     domain_name_of_source(&source)
 }
 
-/// Why `value` cannot be a Reflection's home, or `Ok` when it can: an
-/// `http` or `https` address (scheme, host, optional port) with an optional
-/// base path, no trailing slash, no query, no fragment and no whitespace -
-/// the spelling the engine stores `service.public_url` in (origin plus base
-/// path, as `PublicBase` writes it), so the home check is an exact compare.
+/// Why `value` cannot be a Reflection's home, or `Ok` when it can: a server
+/// address exactly as [`crate::base::PublicBase`] writes `service.public_url`
+/// (an `http` or `https` origin in its canonical spelling plus an optional
+/// base path, no trailing slash), so the home check is an exact compare. A
+/// value that parses but is spelled differently (an uppercase host, an
+/// explicit default port, a trailing slash) is refused with the spelling
+/// that would be accepted, since it would never compare equal.
 pub fn validate_reflection_home(value: &str) -> Result<(), String> {
-    let rest = value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-        .ok_or_else(|| format!("`{value}` is not an http or https address"))?;
-    let (host, path) = match rest.split_once('/') {
-        Some((host, path)) => (host, Some(path)),
-        None => (rest, None),
-    };
-    if host.is_empty() {
-        return Err(format!("`{value}` names no host"));
-    }
-    let bad = |s: &str| s.contains(['?', '#', ' ', '\t', '@']);
-    // `path` is what follows the first `/` after the host, so an empty
-    // segment shows as a leading `/` (`host//kb`) or a `//` further in.
-    let bad_path = |p: &str| {
-        p.is_empty() || p.starts_with('/') || p.ends_with('/') || p.contains("//") || bad(p)
-    };
-    if bad(host) || path.is_some_and(bad_path) {
+    let base = crate::base::PublicBase::parse(value)
+        .map_err(|problem| format!("`{value}` is not a server address: {}", problem.sentence()))?;
+    let canonical = base.to_string();
+    if canonical != value {
         return Err(format!(
-            "`{value}` must be scheme, host, optional port and optional base path, with no trailing slash"
+            "`{value}` is not written the way the server writes its address: `{canonical}`, with no trailing slash"
         ));
     }
     Ok(())

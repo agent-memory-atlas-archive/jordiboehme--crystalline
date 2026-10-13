@@ -193,8 +193,8 @@ export interface PolicyView {
   key: string;
   /**
    * `"choice"` (a closed set, drawn as a dropdown) or `"text"` (free text,
-   * changed through a different flow - `domain_name` through a rename, never
-   * this card's select). Defaults to `"choice"` for a daemon that predates
+   * never this card's select: `domain_name` changes through a rename,
+   * `reflection_home` is filled in by the server). Defaults to `"choice"` for a daemon that predates
    * this field, the shape every row had before it existed.
    */
   kind: "choice" | "text";
@@ -202,8 +202,9 @@ export interface PolicyView {
   declared: string | null;
   /**
    * The value that holds: absent and unrecognized both fall to `default` for
-   * a `"choice"` key. For a `"text"` key, an absent or invalid declaration
-   * falls to this domain's local name instead.
+   * a `"choice"` key. For `domain_name`, an absent or invalid declaration
+   * falls to this domain's local name instead; any other `"text"` key is
+   * empty when nothing is set.
    */
   effective: string;
   /** The values this key takes, in display order. Empty for a `"text"` key. */
@@ -248,7 +249,10 @@ function readProblems(value: unknown): ManifestProblem[] {
  * The registry rows, dropped one by one where a row says nothing.
  *
  * A row is its key and what holds; without either there is no line to draw,
- * so it goes rather than being drawn as a blank. The three describing fields
+ * so it goes rather than being drawn as a blank. A `"text"` key is the one
+ * exception: an empty value is what holds for a text key nothing has set
+ * (`reflection_home` before Reflection is switched on), so it is kept and
+ * the card says "not set". The three describing fields
  * have quiet defaults instead: a row that carries no `default` is read as
  * declaring that what holds IS the default, which is true of every key
  * nobody wrote in the frontmatter.
@@ -257,14 +261,18 @@ function readPolicies(value: unknown): PolicyView[] {
   return asArray(value).flatMap((entry) => {
     const record = asObject(entry);
     const key = asString(record?.key);
-    const effective = asString(record?.effective);
+    const kind = asString(record?.kind) === "text" ? "text" : "choice";
+    const effective =
+      kind === "text" && record?.effective === ""
+        ? ""
+        : asString(record?.effective);
     if (key === null || effective === null) {
       return [];
     }
     return [
       {
         key,
-        kind: asString(record?.kind) === "text" ? "text" : "choice",
+        kind,
         declared: asString(record?.declared),
         effective,
         values: asStrings(record?.values),

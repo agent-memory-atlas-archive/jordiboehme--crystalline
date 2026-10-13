@@ -1086,6 +1086,40 @@ fn reflection_home_is_a_url_or_nothing() {
     assert!(validate_reflection_home("ftp://kb.example.com").is_err());
     assert!(validate_reflection_home("https://").is_err());
     assert!(validate_reflection_home("https://a b").is_err());
+    // Spellings the server's own address never takes, so they would never
+    // compare equal with it.
+    assert!(
+        validate_reflection_home("https://:8080").is_err(),
+        "no host"
+    );
+    assert!(
+        validate_reflection_home("https://kb.example.com:443").is_err(),
+        "default port"
+    );
+    assert!(
+        validate_reflection_home("http://kb.example.com:80").is_err(),
+        "default port"
+    );
+    assert!(
+        validate_reflection_home("https://kb.example.com:8443").is_ok(),
+        "another port"
+    );
+    assert!(
+        validate_reflection_home("https://KB.example.com").is_err(),
+        "uppercase host"
+    );
+    assert!(
+        validate_reflection_home("HTTPS://kb.example.com").is_err(),
+        "uppercase scheme"
+    );
+    assert!(validate_reflection_home("https://kb.example.com:port").is_err());
+    assert!(validate_reflection_home("https://user@kb.example.com").is_err());
+    assert!(
+        validate_reflection_home(" https://kb.example.com").is_err(),
+        "whitespace"
+    );
+    let err = validate_reflection_home("https://KB.example.com:443").unwrap_err();
+    assert!(err.contains("`https://kb.example.com`"), "{err}");
 }
 
 #[test]
@@ -1137,8 +1171,13 @@ fn reflection_at_reads_the_domain_root() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     assert_eq!(reflection_at(root), ReflectionSwitch::Off, "no MANIFEST");
-    std::fs::write(root.join("MANIFEST.md"), "not a manifest").unwrap();
+    // A null byte is refused by the format layer, so this MANIFEST does not parse.
+    let unparseable = "---\ntype: manifest\nreflection: on\n---\n\0\n";
+    assert!(parse_engram(unparseable).is_err());
+    std::fs::write(root.join("MANIFEST.md"), unparseable).unwrap();
     assert_eq!(reflection_at(root), ReflectionSwitch::Off, "unparseable");
+    std::fs::write(root.join("MANIFEST.md"), manifest_declaring_reflection("")).unwrap();
+    assert_eq!(reflection_at(root), ReflectionSwitch::Off, "silent");
     std::fs::write(
         root.join("MANIFEST.md"),
         manifest_declaring_reflection("reflection: on\nreflection_home: https://kb.example.com\n"),

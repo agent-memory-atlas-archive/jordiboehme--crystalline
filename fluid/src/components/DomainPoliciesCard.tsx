@@ -26,9 +26,9 @@
  * After a write the answer's `policies` go straight into the manifest
  * query, so the card holds the new values without a second read.
  *
- * `domain_name` is the one row with no select at all: a `PolicyKind::Text`
- * key changes through a rename, not a PATCH, so its row carries a "Change
- * name" button instead - gated by the same `own` this card already derives
+ * A `PolicyKind::Text` row has no select at all: its value is shown, never
+ * edited here. `domain_name` changes through a rename, not a PATCH, so its
+ * row carries a "Change name" button - gated by the same `own` this card already derives
  * for every select, and disabled with the same reason "Rename domain" on the
  * page itself carries (read-only, or a rename already running). Pressing it
  * does not open a dialog of its own: `onRename` is the screen's own callback,
@@ -269,14 +269,16 @@ export function DomainPoliciesCard({
                 </td>
                 <td role="cell" className="pr-3">
                   {row.kind === "text" ? (
-                    // A free-text key changes through a different flow
-                    // entirely: `domain_name` through the "Change name"
-                    // button below, which opens the rename dialog, never
-                    // this card's own select - so the value itself is
-                    // read-only here whatever `mayChange` would otherwise
-                    // say.
+                    // A free-text key never changes through this card's own
+                    // select, so the value is read-only here whatever
+                    // `mayChange` would otherwise say: `domain_name` changes
+                    // through the "Change name" button below, which opens the
+                    // rename dialog, and `reflection_home` is filled in by the
+                    // server when Reflection is switched on.
                     <>
-                      <output aria-labelledby={rowId}>{row.effective}</output>
+                      <output aria-labelledby={rowId}>
+                        {row.effective === "" ? "not set" : row.effective}
+                      </output>
                       {row.key === "domain_name" && own && (
                         <>
                           {" "}
