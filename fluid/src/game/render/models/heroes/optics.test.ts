@@ -67,6 +67,13 @@ const BADGE = { a0: -0.046, a1: 0.046, h0: 1.766, h1: 1.788, front: 0.033 };
 const BLUE_LIFT = 0.001;
 
 /**
+ * How far the badge's words stand proud of their field: 2.5 mm, inside
+ * the 2 to 3 mm Jordi asked for (0.25.2), where a full `DECAL_LIFT` (10
+ * mm) stood two thirds of the letters' height off the badge.
+ */
+const BADGE_INK_LIFT = 0.0025;
+
+/**
  * The eye panel at the original's true size (0.25.1): the faceplate's
  * width and its bottom and top, the eye's centre height (standing eye
  * height) and the lens's radius (a 74 mm glass).
@@ -451,7 +458,7 @@ describe("optics hero models", () => {
     expect(onBlue.length).toBeGreaterThanOrEqual(runsOfLines(last));
   });
 
-  it("sets the first word on the black and the last inside the blue field, one lift proud and the same size (2.6f C17)", () => {
+  it("sets the first word on the black and the last inside the blue field, 2.5 mm proud and the same size (2.6f C17, 0.25.2)", () => {
     // Mutation caught: both words on the blue, a word off the badge, the
     // ink sunk into or floating off its field, or the two words at two
     // different sizes.
@@ -480,10 +487,12 @@ describe("optics hero models", () => {
     expect(onBlack).toHaveLength(runsOfLines(first));
     for (const p of onBlack)
       for (const q of local(p))
-        expect(q[1]).toBeCloseTo(BADGE.front + DECAL_LIFT, 9);
+        expect(q[1]).toBeCloseTo(BADGE.front + BADGE_INK_LIFT, 9);
     for (const p of onBlue)
       for (const q of local(p))
-        expect(q[1]).toBeCloseTo(BADGE.front + BLUE_LIFT + DECAL_LIFT, 9);
+        expect(q[1]).toBeCloseTo(BADGE.front + BLUE_LIFT + BADGE_INK_LIFT, 9);
+    expect(BADGE_INK_LIFT).toBeGreaterThanOrEqual(0.002);
+    expect(BADGE_INK_LIFT).toBeLessThanOrEqual(0.003);
     const sizes = ink.map(heightOf);
     for (const h of sizes) expect(h).toBeCloseTo(sizes[0] ?? NaN, 9);
   });

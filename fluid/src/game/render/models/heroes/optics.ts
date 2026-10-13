@@ -560,8 +560,9 @@ const blackSlab: HeroRecipe = ({ k, s, variant, kind }) => {
  * faceplate's half width, depth, bottom and own small bevel (a portrait
  * plate of about 3 : 1, 0.116 by 0.346 m, h 1.454 to 1.8, so the eye sits
  * at standing eye height); the name badge at the top (half width,
- * heights, depth, its blue field's `a` range, lift and inset, and the
- * margin its second word keeps inside the blue), sized so both words keep
+ * heights, depth, its blue field's `a` range, lift and inset, the
+ * margin its second word keeps inside the blue, and how far its words
+ * stand proud of their field, 2.5 mm, a sixth of the letters' height), sized so both words keep
  * the 3 mm pixel floor; the eye (its height, the black bezel disc's
  * radius and depth, the lens radius and its ring's tube, so the ring is
  * 96 mm across round a 74 mm glass as on the original, the red dome's
@@ -584,6 +585,7 @@ const EYE_PANEL = {
     lift: 0.001,
     inset: 0.003,
     margin: 0.0025,
+    ink: 0.0025,
   },
   eye: {
     h: 1.6,
@@ -617,7 +619,7 @@ const EYE_PANEL = {
  * - a black name badge with a blue field on its right half, its two words
  *   (`MARKS.panelName`) split between them as the original splits them:
  *   the first on the black, the second on the blue, both in `BADGE_INK`
- *   one `DECAL_LIFT` proud of their field and at the one pixel size the
+ *   2.5 mm proud of their field (`badge.ink`) and at the one pixel size the
  *   blue field allows the second, so the two read at the same height;
  * - the eye at standing eye height (h 1.6): a black round bezel disc, a
  *   red `lens` (r 0.037, on a thinner ring than `BEZEL_MIN` so it fits
@@ -671,7 +673,7 @@ const eyePanel: HeroRecipe = ({ k, s, variant, kind }) => {
     k,
     second,
     [blue0 + b.margin, blue1 - b.margin, mid - 2.5 * px, mid + 2.5 * px],
-    face + b.depth + b.lift + DECAL_LIFT,
+    face + b.depth + b.lift + b.ink,
     ink,
   );
   const blackMid = (-b.half + blue0) / 2;
@@ -680,7 +682,7 @@ const eyePanel: HeroRecipe = ({ k, s, variant, kind }) => {
     k,
     first,
     [blackMid - half, blackMid + half, mid - 2.5 * px, mid + 2.5 * px],
-    face + b.depth + DECAL_LIFT,
+    face + b.depth + b.ink,
     ink,
   );
   // The eye: the bezel disc, the lens seated on it, the dome and the dot.
