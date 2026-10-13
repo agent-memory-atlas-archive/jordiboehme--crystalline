@@ -73,6 +73,10 @@ impl Engine {
     /// fails because this could not be decided: the row is served without
     /// the mark and a warning is logged. A write still runs its own check,
     /// which refuses on the same error.
+    ///
+    /// Public but hidden for one reason: the service crate's tests compare
+    /// every batched listing mark with this per-row answer, and they live
+    /// outside this crate.
     #[doc(hidden)]
     pub async fn read_only_mark(&self, scope: &Scope, domain: &str) -> bool {
         match self.write_block(scope, domain).await {

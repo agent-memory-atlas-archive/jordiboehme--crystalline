@@ -776,7 +776,9 @@ pub async fn apply(conn: &Connection) -> Result<i64> {
 /// [`apply`] over a given list, so a test can hand it a migration that fails.
 ///
 /// The migrations run with the connection's temp store in memory, and the
-/// setting it had before is put back on every way out. Several migrations
+/// setting it had before is put back on every return, an error included. A
+/// panic inside a migration, or the open's future dropped before it ends,
+/// skips that restore and leaves the connection on memory. Several migrations
 /// read and rewrite the same table (v7's `DELETE ... WHERE tag_id NOT IN
 /// (SELECT ...)` is the plainest case), which the engine answers with an
 /// ephemeral table. With the default temp store it creates each of those as a
@@ -786,7 +788,9 @@ pub async fn apply(conn: &Connection) -> Result<i64> {
 /// then with "permission denied", and the open failed with
 /// `Migration("v7 ...: I/O error (tempdir): permission denied")`. What a
 /// migration keeps in such a table is ids and short keys, so memory is the
-/// right home for it. Queries after the open keep the default: a runtime
+/// right home for it. Inside that window the engine's sorters and hash joins
+/// stay in memory too, so a migration that sorts or joins a large table holds
+/// that work in RAM. Queries after the open keep the default: a runtime
 /// sorter that outgrows its buffer must spill to disk, not to RAM (see
 /// `research/2026-07-28-turso-sorter-spill.md`).
 async fn apply_migrations(conn: &Connection, migrations: &[Migration]) -> Result<i64> {
