@@ -40,7 +40,30 @@
 //! statement itself is returned as it is.
 //!
 //! Only the directory create is retried. A failure to open the file inside
-//! the new directory has another label and is returned as it is.
+//! the new directory has another label and is returned as it is. When the
+//! connection cannot say whether it is in a transaction (`is_autocommit`
+//! errors), nothing is retried either: the refusal is returned as it is and
+//! the journal is closed, because a statement run again outside a transaction
+//! the refusal dropped would commit on its own.
+//!
+//! The replay is sound only under three assumptions, which the store keeps:
+//!
+//! - **One writer.** A replayed statement is checked against what it returned
+//!   the first time, but its parameters are not recomputed: one derived from
+//!   `last_insert_rowid` or from an earlier change count would replay
+//!   "successfully" with other content if another connection wrote between
+//!   the drop and the replay. The store owns its database file and writes
+//!   through this one connection.
+//! - **Reads through [`Conn::prepare_read`] are not journalled.** Their
+//!   results are not checked again on a replay, so the caller must not base a
+//!   write inside a transaction on one in a way a replay would get wrong; a
+//!   read whose answer matters to the transaction goes through
+//!   [`Conn::query_all`], which is journalled and checked.
+//! - **No `SAVEPOINT`, `RELEASE` or `ROLLBACK TO`.** The journal is one flat
+//!   list from the `BEGIN`; a statement rolled back to a savepoint would still
+//!   be in it and be replayed. [`Conn::execute`] and [`Conn::query_all`]
+//!   refuse those statements in a debug build, so a change that adds one
+//!   breaks a test instead of the journal.
 
 use std::hash::{Hash, Hasher};
 use std::mem::size_of;
@@ -123,6 +146,24 @@ pub(crate) fn is_tempdir_refusal(err: &turso::Error) -> bool {
     )
 }
 
+/// Whether `sql` opens, releases or rolls back to a savepoint, which the
+/// journal cannot follow (see the module doc).
+fn is_savepoint_statement(sql: &str) -> bool {
+    let mut words = sql
+        .split(|c: char| c.is_whitespace() || c == ';')
+        .filter(|w| !w.is_empty())
+        .map(str::to_ascii_uppercase);
+    match words.next().as_deref() {
+        Some("SAVEPOINT" | "RELEASE") => true,
+        Some("ROLLBACK") => match words.next().as_deref() {
+            Some("TO") => true,
+            Some("TRANSACTION") => words.next().as_deref() == Some("TO"),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Whether `sql` is a read: what [`Conn::prepare_read`] accepts.
 fn is_read(sql: &str) -> bool {
     sql.trim_start()
@@ -192,12 +233,14 @@ impl Conn {
     }
 
     async fn run(&self, shape: Shape, sql: &str, params: Params) -> turso::Result<Outcome> {
-        // An unknown state counts as autocommit, as in `abandon`: then no
-        // replay is tried and the journal is reset.
-        let was_autocommit = self.conn.is_autocommit().unwrap_or(true);
+        debug_assert!(
+            !is_savepoint_statement(sql),
+            "the journal cannot follow a savepoint: {sql}"
+        );
+        let before = self.autocommit().ok();
         let err = match self.once(shape, sql, params.clone()).await {
             Ok(outcome) => {
-                self.record(shape, sql, params, &outcome, was_autocommit)?;
+                self.record(shape, sql, params, &outcome, before)?;
                 return Ok(outcome);
             }
             Err(err) if is_tempdir_refusal(&err) => err,
@@ -206,7 +249,17 @@ impl Conn {
                 return Err(err);
             }
         };
-        let replayed = !was_autocommit && self.conn.is_autocommit().unwrap_or(true);
+        // Whether the refusal dropped a transaction decides between a retry
+        // and a replay, and a guess either way is wrong somewhere: a statement
+        // retried as if in autocommit mode inside a transaction the refusal
+        // dropped commits on its own. So an unknown state is no retry at all:
+        // the refusal goes back as it is, with the journal closed.
+        let (Some(was_autocommit), Ok(now_autocommit)) = (before, self.autocommit()) else {
+            hook::event("retry:unknown");
+            *self.lock() = Journal::Idle;
+            return Err(err);
+        };
+        let replayed = !was_autocommit && now_autocommit;
         if replayed {
             hook::event("replay");
             tracing::warn!(
@@ -224,7 +277,7 @@ impl Conn {
         }
         match self.once(shape, sql, params.clone()).await {
             Ok(outcome) => {
-                self.record(shape, sql, params, &outcome, was_autocommit)?;
+                self.record(shape, sql, params, &outcome, Some(was_autocommit))?;
                 Ok(outcome)
             }
             Err(err) if replayed => {
@@ -309,20 +362,25 @@ impl Conn {
     /// Bring the journal in line with the connection after a statement ran:
     /// a statement that left autocommit mode opened a transaction and starts a
     /// journal, one inside a transaction joins it with what it returned, and
-    /// one that ended in autocommit mode leaves none.
+    /// one that ended in autocommit mode leaves none. `was_autocommit` is
+    /// `None` when the state before the statement was unknown, and then the
+    /// journal is closed: it may be missing this statement, and a replay
+    /// without it would be wrong.
     fn record(
         &self,
         shape: Shape,
         sql: &str,
         params: Params,
         outcome: &Outcome,
-        was_autocommit: bool,
+        was_autocommit: Option<bool>,
     ) -> turso::Result<()> {
-        let autocommit = self.conn.is_autocommit().unwrap_or(true);
+        let autocommit = self.autocommit().unwrap_or(true);
         let mut journal = self.lock();
-        if autocommit {
+        let Some(was_autocommit) = was_autocommit.filter(|_| !autocommit) else {
             *journal = Journal::Idle;
-        } else if was_autocommit {
+            return Ok(());
+        };
+        if was_autocommit {
             *journal = Journal::Open {
                 begin: sql.to_string(),
                 entries: Vec::new(),
@@ -344,9 +402,19 @@ impl Conn {
         Ok(())
     }
 
+    /// Whether the connection is in autocommit mode, as the engine says; a
+    /// test can make it fail.
+    fn autocommit(&self) -> turso::Result<bool> {
+        #[cfg(test)]
+        if hook::autocommit_fails() {
+            return Err(turso::Error::Misuse("autocommit state unknown".into()));
+        }
+        self.conn.is_autocommit()
+    }
+
     /// Drop the journal when a failed statement ended the transaction.
     fn forget_if_closed(&self) {
-        if self.conn.is_autocommit().unwrap_or(true) {
+        if self.autocommit().unwrap_or(true) {
             *self.lock() = Journal::Idle;
         }
     }
@@ -355,7 +423,7 @@ impl Conn {
     /// so the caller sees what it would have seen without the retry: the
     /// transaction gone and its own `ROLLBACK` refused or a no-op.
     async fn abandon(&self) {
-        if !self.conn.is_autocommit().unwrap_or(true) {
+        if !self.autocommit().unwrap_or(true) {
             let _ = self.conn.execute("ROLLBACK", ()).await;
         }
         *self.lock() = Journal::Idle;
@@ -434,13 +502,27 @@ mod hook {
     type Hook = Box<dyn Fn(&str) + Send>;
 
     /// Called with "retry" or "replay" between a refused attempt and its
-    /// retry, and with "replay:unavailable", "replay:failed" or
+    /// retry, with "retry:unknown" when the connection's state was unknown and
+    /// nothing is retried, and with "replay:unavailable", "replay:failed" or
     /// "replay:mismatch" when a replay is given up.
     #[cfg(test)]
     static EVENT: Mutex<Option<Hook>> = Mutex::new(None);
 
     #[cfg(test)]
     static JOURNAL_CAP: Mutex<Option<usize>> = Mutex::new(None);
+
+    #[cfg(test)]
+    static AUTOCOMMIT_FAILS: Mutex<bool> = Mutex::new(false);
+
+    #[cfg(test)]
+    pub(super) fn autocommit_fails() -> bool {
+        *AUTOCOMMIT_FAILS.lock().unwrap()
+    }
+
+    #[cfg(all(test, unix))]
+    pub(super) fn set_autocommit_fails(on: bool) {
+        *AUTOCOMMIT_FAILS.lock().unwrap() = on;
+    }
 
     pub(super) fn event(_what: &str) {
         #[cfg(test)]
@@ -464,6 +546,35 @@ mod hook {
     #[cfg(all(test, unix))]
     pub(super) fn set_journal_cap(cap: Option<usize>) {
         *JOURNAL_CAP.lock().unwrap() = cap;
+    }
+}
+
+#[cfg(test)]
+mod savepoint_tests {
+    use super::is_savepoint_statement;
+
+    #[test]
+    fn the_statements_the_journal_cannot_follow_are_recognised() {
+        for sql in [
+            "SAVEPOINT a",
+            "  savepoint a;",
+            "RELEASE a",
+            "RELEASE SAVEPOINT a",
+            "ROLLBACK TO a",
+            "rollback transaction to savepoint a",
+        ] {
+            assert!(is_savepoint_statement(sql), "{sql}");
+        }
+        for sql in [
+            "ROLLBACK",
+            "ROLLBACK TRANSACTION",
+            "BEGIN",
+            "COMMIT",
+            "SELECT 'SAVEPOINT'",
+            "INSERT INTO release_notes(v) VALUES (1)",
+        ] {
+            assert!(!is_savepoint_statement(sql), "{sql}");
+        }
     }
 }
 
@@ -786,6 +897,35 @@ mod tests {
             texts(conn, "SELECT v FROM t WHERE id = 23")
                 .await
                 .is_empty()
+        );
+
+        // An unknown connection state is no retry at all, in autocommit mode
+        // or in a transaction the refusal dropped: the refusal goes back as it
+        // is, nothing commits and no transaction is left open.
+        hook::set_autocommit_fails(true);
+        w.lock();
+        let err = conn.query_all(PICK, vec![]).await.unwrap_err();
+        assert!(is_tempdir_refusal(&err), "{err}");
+        assert_eq!(w.take(), ["retry:unknown"]);
+        hook::set_autocommit_fails(false);
+        w.unlock();
+        conn.execute("BEGIN", ()).await.unwrap();
+        conn.execute("INSERT INTO t(id, v) VALUES (24, 'x')", ())
+            .await
+            .unwrap();
+        hook::set_autocommit_fails(true);
+        w.lock();
+        let err = conn.query_all(PICK, vec![]).await.unwrap_err();
+        assert!(is_tempdir_refusal(&err), "the original refusal: {err}");
+        assert_eq!(w.take(), ["retry:unknown"], "neither retried nor replayed");
+        hook::set_autocommit_fails(false);
+        w.unlock();
+        assert!(!in_txn(conn), "no transaction left open");
+        assert!(
+            texts(conn, "SELECT v FROM t WHERE id = 24")
+                .await
+                .is_empty(),
+            "nothing of the transaction committed"
         );
     }
 
