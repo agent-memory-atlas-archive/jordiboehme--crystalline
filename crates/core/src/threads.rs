@@ -146,7 +146,7 @@ impl Thread {
 
 /// The yaml block of one thread. `section` for an anchor by id, `heading`
 /// for one by heading path; exactly one of them is written.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Meta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     section: Option<String>,
@@ -235,8 +235,12 @@ fn render_entry(entry: &Entry) -> String {
     }
     out.push('\n');
     for line in lines {
-        out.push_str("  ");
-        out.push_str(line);
+        // An empty line is written empty, not as two spaces an editor would
+        // strip; the reader keeps it as a paragraph break either way.
+        if !line.is_empty() {
+            out.push_str("  ");
+            out.push_str(line);
+        }
         out.push('\n');
     }
     out
@@ -284,21 +288,106 @@ fn render_thread(thread: &Thread) -> String {
     out
 }
 
+/// One thread's place in a threads file: its id (the `##` line trimmed),
+/// where the `##` line starts, where the text under it starts and where the
+/// thread ends (the next `##` line or the end of the file).
+struct Span<'a> {
+    id: &'a str,
+    start: usize,
+    body: usize,
+    end: usize,
+}
+
+/// Every `## ` line of `text` and the stretch it heads. Text before the first
+/// one (the `# Threads` title) belongs to no thread, and a file without the
+/// title loses nothing.
+fn thread_spans(text: &str) -> Vec<Span<'_>> {
+    let mut spans: Vec<Span<'_>> = Vec::new();
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        if let Some(id) = line.strip_prefix("## ") {
+            if let Some(last) = spans.last_mut() {
+                last.end = at;
+            }
+            spans.push(Span {
+                id: id.trim(),
+                start: at,
+                body: at + line.len(),
+                end: text.len(),
+            });
+        }
+        at += line.len();
+    }
+    spans
+}
+
 /// The yaml block of one thread's text (everything after its `##` line):
-/// the byte range of the yaml between the opening ```` ```yaml ```` line and
-/// the first line that is exactly the closing fence, and where the entries
-/// start. A fence inside a quoted passage is never a line of its own (the
-/// quote is a YAML scalar on the `quote:` line, or indented under it).
+/// the byte range of the yaml between the opening fence line (```` ```yaml ````,
+/// spaces allowed after the backticks and at the end) and the first line
+/// that is only the closing fence (trailing spaces allowed), and where the
+/// entries start. A fence inside a quoted passage is never a line of its own
+/// (the quote is a YAML scalar on the `quote:` line, or indented under it).
 fn yaml_block(rest: &str) -> Option<(usize, usize, usize)> {
-    let open = rest.find("```yaml\n")? + "```yaml\n".len();
-    let mut at = open;
-    for line in rest[open..].split_inclusive('\n') {
-        if line.trim_end_matches('\n') == "```" {
-            return Some((open, at, at + line.len()));
+    let mut at = 0;
+    let mut open = None;
+    for line in rest.split_inclusive('\n') {
+        let bare = line.trim_end();
+        match open {
+            None if bare.strip_prefix("```").is_some_and(|r| r.trim() == "yaml") => {
+                open = Some(at + line.len());
+            }
+            Some(open) if bare == "```" => return Some((open, at, at + line.len())),
+            _ => {}
         }
         at += line.len();
     }
     None
+}
+
+/// The thread a span holds, with its yaml block as read, or `None` when the
+/// block does not read as a thread.
+fn read_thread(text: &str, span: &Span<'_>) -> Option<(Thread, Meta)> {
+    let rest = &text[span.body..span.end];
+    let (start, end, entries_at) = yaml_block(rest)?;
+    let meta = serde_yaml_ng::from_str::<Meta>(&rest[start..end]).ok()?;
+    let section = match (&meta.section, &meta.heading) {
+        (Some(id), _) => SectionRef::Id(id.clone()),
+        (None, Some(path)) => SectionRef::Heading(path.clone()),
+        (None, None) => return None,
+    };
+    let mut entries: Vec<Entry> = Vec::new();
+    // Blank lines seen since the last entry line: inside an entry they are
+    // paragraph breaks, written as empty lines and read whether or not an
+    // editor left the two spaces of indentation on them.
+    let mut blanks = 0;
+    for line in rest[entries_at..].lines() {
+        if line.trim().is_empty() {
+            blanks += 1;
+            continue;
+        }
+        if let Some(cont) = line.strip_prefix("  ")
+            && let Some(last) = entries.last_mut()
+        {
+            for _ in 0..=blanks {
+                last.text.push('\n');
+            }
+            last.text.push_str(cont);
+        } else if let Some(entry) = parse_entry(line) {
+            entries.push(entry);
+        }
+        blanks = 0;
+    }
+    let thread = Thread {
+        id: span.id.to_string(),
+        anchor: Anchor {
+            section,
+            quote: meta.quote.clone(),
+            occurrence: meta.occurrence,
+        },
+        status: meta.status,
+        entries,
+    };
+    Some((thread, meta))
 }
 
 /// Every thread in a threads file, in file order. A block that does not
@@ -306,43 +395,10 @@ fn yaml_block(rest: &str) -> Option<(usize, usize, usize)> {
 /// file reads like an LF one.
 pub fn parse_threads(text: &str) -> Vec<Thread> {
     let text = crate::to_lf(text);
-    let mut threads = Vec::new();
-    for block in text.split("\n## ").skip(1) {
-        let (id, rest) = block.split_once('\n').unwrap_or((block, ""));
-        let Some((start, end, entries_at)) = yaml_block(rest) else {
-            continue;
-        };
-        let Ok(meta) = serde_yaml_ng::from_str::<Meta>(&rest[start..end]) else {
-            continue;
-        };
-        let section = match (meta.section, meta.heading) {
-            (Some(id), _) => SectionRef::Id(id),
-            (None, Some(path)) => SectionRef::Heading(path),
-            (None, None) => continue,
-        };
-        let mut entries: Vec<Entry> = Vec::new();
-        for line in rest[entries_at..].lines() {
-            if let Some(cont) = line.strip_prefix("  ")
-                && let Some(last) = entries.last_mut()
-            {
-                last.text.push('\n');
-                last.text.push_str(cont);
-            } else if let Some(entry) = parse_entry(line) {
-                entries.push(entry);
-            }
-        }
-        threads.push(Thread {
-            id: id.trim().to_string(),
-            anchor: Anchor {
-                section,
-                quote: meta.quote,
-                occurrence: meta.occurrence,
-            },
-            status: meta.status,
-            entries,
-        });
-    }
-    threads
+    thread_spans(&text)
+        .iter()
+        .filter_map(|span| read_thread(&text, span).map(|(thread, _)| thread))
+        .collect()
 }
 
 /// `file` with `thread` appended; an empty file gets its `# Threads` title.
@@ -360,13 +416,16 @@ pub fn open_thread(file: &str, thread: &Thread) -> String {
 
 /// `file` with `entry` appended to thread `id`. A resolve sets the status to
 /// resolved and needs an outcome; a reopen sets it to open; a comment needs
-/// the thread open. The only existing byte that changes is the `status:`
-/// line of that thread's yaml block. The file comes back as LF.
+/// the thread open. The only existing byte that changes is the value on the
+/// `status:` line of that thread's yaml block (a comment after it is kept).
+/// The file comes back as LF.
 pub fn append_entry(file: &str, id: &str, entry: &Entry) -> Result<String, ThreadError> {
     let file = crate::to_lf(file).into_owned();
-    let thread = parse_threads(&file)
-        .into_iter()
-        .find(|t| t.id == id)
+    let spans = thread_spans(&file);
+    let (span, (thread, meta)) = spans
+        .iter()
+        .filter(|span| span.id == id)
+        .find_map(|span| read_thread(&file, span).map(|read| (span, read)))
         .ok_or_else(|| ThreadError::NoThread(id.to_string()))?;
     let refused = |why: String| -> Result<String, ThreadError> { Err(ThreadError::Refused(why)) };
     let new_status = match (entry.kind, thread.status) {
@@ -386,15 +445,7 @@ pub fn append_entry(file: &str, id: &str, entry: &Entry) -> Result<String, Threa
             return refused(format!("thread {id} is open already"));
         }
     };
-    let header = format!("\n## {id}\n");
-    let start = file
-        .find(&header)
-        .ok_or_else(|| ThreadError::NoThread(id.to_string()))?;
-    let body_start = start + header.len();
-    let end = file[body_start..]
-        .find("\n## ")
-        .map(|i| body_start + i + 1)
-        .unwrap_or(file.len());
+    let (start, body_start, end) = (span.start, span.body, span.end);
     // The entry goes right after the thread's last line; the blank lines
     // before the next thread stay as they are.
     let content_end = start + file[start..end].trim_end_matches('\n').len();
@@ -405,29 +456,14 @@ pub fn append_entry(file: &str, id: &str, entry: &Entry) -> Result<String, Threa
     };
     let mut head = file[..insert_at].to_string();
     if let Some(status) = new_status {
-        // The status line inside this thread's yaml block, and nowhere else:
-        // a quoted passage may hold the same words, and a line inside the
-        // block that is not a top-level key is indented.
         let (yaml_start, yaml_end, _) = yaml_block(&file[body_start..end])
             .ok_or_else(|| ThreadError::NoThread(id.to_string()))?;
         let (yaml_start, yaml_end) = (body_start + yaml_start, body_start + yaml_end);
-        let mut replaced = false;
-        let yaml: String = file[yaml_start..yaml_end]
-            .split_inclusive('\n')
-            .map(|line| {
-                if !replaced && line.starts_with("status:") {
-                    replaced = true;
-                    format!("status: {}\n", status.as_str())
-                } else {
-                    line.to_string()
-                }
-            })
-            .collect();
-        if !replaced {
+        let Some(yaml) = with_status(&file[yaml_start..yaml_end], &meta, status) else {
             return refused(format!(
                 "thread {id} has no status line of its own to change"
             ));
-        }
+        };
         head.replace_range(yaml_start..yaml_end, &yaml);
     }
     Ok(format!(
@@ -435,6 +471,33 @@ pub fn append_entry(file: &str, id: &str, entry: &Entry) -> Result<String, Threa
         render_entry(entry),
         &file[insert_at..]
     ))
+}
+
+/// `yaml` (a thread's block, read as `meta`) with its status set to
+/// `status`. The status line is the `status:` line at the start of a line
+/// whose rewrite reads back as the same block with only the status changed:
+/// a quoted passage may hold the same words, even at the start of a line of
+/// a quote that spans lines, and such a line is never taken. A comment after
+/// the value stays. `None` when no line qualifies (a flow-style block, say).
+fn with_status(yaml: &str, meta: &Meta, status: ThreadStatus) -> Option<String> {
+    let lines: Vec<&str> = yaml.split_inclusive('\n').collect();
+    let wanted = Meta {
+        status,
+        ..meta.clone()
+    };
+    lines.iter().enumerate().find_map(|(i, line)| {
+        let value = line.trim_end_matches('\n').strip_prefix("status:")?;
+        let comment = value.find(" #").map(|at| &value[at..]).unwrap_or("");
+        let newline = if line.ends_with('\n') { "\n" } else { "" };
+        let rewritten = format!(
+            "{}status: {}{comment}{newline}{}",
+            lines[..i].concat(),
+            status.as_str(),
+            lines[i + 1..].concat()
+        );
+        let read = serde_yaml_ng::from_str::<Meta>(&rewritten).ok()?;
+        (read == wanted).then_some(rewritten)
+    })
 }
 
 /// Where an anchor stands in its document now.
@@ -750,6 +813,97 @@ mod tests {
         assert!(
             at_the_end.ends_with("Other.\n- t, comment by claude-code (agent): Yes.\n"),
             "{at_the_end}"
+        );
+    }
+
+    /// A hand-written quote in quotes may span lines and hold a `status:`
+    /// line at the start of a line; that line is part of the quote, never
+    /// the status.
+    #[test]
+    fn a_status_line_inside_a_quote_that_spans_lines_is_never_the_status() {
+        for (quote, read) in [
+            ("'run\nstatus: open\nhere'", "run status: open here"),
+            ("\"run\nstatus: open\nhere\"", "run status: open here"),
+        ] {
+            let file = format!(
+                "# Threads\n\n## t-3f9a2c1b\n\n```yaml\nsection: 7f3a9c2e\nquote: {quote}\nstatus: open\n```\n\n- 2026-09-30T10:00:00Z, comment by jordi (person): Still true?\n"
+            );
+            assert_eq!(parse_threads(&file)[0].anchor.quote.as_deref(), Some(read));
+            let resolved =
+                append_entry(&file, "t-3f9a2c1b", &agent("Yes.", EntryKind::Resolve, "t")).unwrap();
+            assert!(
+                resolved.contains(&format!("quote: {quote}\nstatus: resolved\n```")),
+                "{resolved}"
+            );
+            let t = &parse_threads(&resolved)[0];
+            assert_eq!(
+                (t.status, t.anchor.quote.as_deref()),
+                (ThreadStatus::Resolved, Some(read))
+            );
+            assert!(
+                append_entry(
+                    &resolved,
+                    "t-3f9a2c1b",
+                    &agent("Again.", EntryKind::Resolve, "t")
+                )
+                .is_err()
+            );
+        }
+        let flow = "# Threads\n\n## t-3f9a2c1b\n\n```yaml\n{section: 7f3a9c2e, status: open}\n```\n\n- t, comment by jordi (person): x\n";
+        assert_eq!(parse_threads(flow).len(), 1);
+        assert!(
+            matches!(
+                append_entry(flow, "t-3f9a2c1b", &agent("Yes.", EntryKind::Resolve, "t")),
+                Err(ThreadError::Refused(_))
+            ),
+            "a block whose status line cannot be found is refused, not half written"
+        );
+        let noted = "# Threads\n\n## t-3f9a2c1b\n\n```yaml\nsection: 7f3a9c2e\nstatus: open # asked in the standup\n```\n\n- t, comment by jordi (person): x\n";
+        let resolved =
+            append_entry(noted, "t-3f9a2c1b", &agent("Yes.", EntryKind::Resolve, "t")).unwrap();
+        assert!(
+            resolved.contains("\nstatus: resolved # asked in the standup\n"),
+            "a comment on the status line stays: {resolved}"
+        );
+    }
+
+    /// Hand edits the reader takes are taken by the appender too: a `##`
+    /// line with trailing spaces, fence lines with spaces, a file without
+    /// its `# Threads` title.
+    #[test]
+    fn what_the_reader_lists_the_appender_finds() {
+        let canonical = open_thread("", &thread(None, 1));
+        for file in [
+            canonical.replace("## t-3f9a2c1b\n", "## t-3f9a2c1b  \n"),
+            canonical.replace("```yaml\n", "```yaml  \n"),
+            canonical.replace("```yaml\n", "``` yaml\n"),
+            canonical.replace("```\n\n-", "```  \n\n-"),
+            canonical.replace("# Threads\n\n", ""),
+        ] {
+            assert_eq!(parse_threads(&file), vec![thread(None, 1)], "{file}");
+            let answered =
+                append_entry(&file, "t-3f9a2c1b", &agent("Yes.", EntryKind::Comment, "t")).unwrap();
+            assert_eq!(
+                answered,
+                format!("{file}- t, comment by claude-code (agent): Yes.\n")
+            );
+        }
+    }
+
+    /// A paragraph break inside an entry is an empty line, which an editor
+    /// that strips trailing spaces leaves alone; two spaces on it read too.
+    #[test]
+    fn a_paragraph_break_in_an_entry_survives_an_editor() {
+        let broken = Thread {
+            entries: vec![person("First.\n\nSecond.", EntryKind::Comment, "t")],
+            ..thread(None, 1)
+        };
+        let file = open_thread("", &broken);
+        assert!(file.contains("(person): First.\n\n  Second.\n"), "{file}");
+        assert_eq!(parse_threads(&file), vec![broken.clone()]);
+        assert_eq!(
+            parse_threads(&file.replace("First.\n\n", "First.\n  \n")),
+            vec![broken]
         );
     }
 
