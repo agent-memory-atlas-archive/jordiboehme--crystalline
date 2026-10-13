@@ -9,11 +9,16 @@
 //! engram (the heading walker, the body line walker, the link target scan,
 //! the path classifier) lives beside the engram code and is used from here.
 
+pub mod baseline;
 pub mod layout;
 pub mod links;
 pub mod provenance;
 pub mod sections;
 
+pub use baseline::{
+    ChangeKind, Relinked, SectionChange, advance_baseline, baseline_ids, feedback_changes,
+    parse_baseline, relink, render_baseline,
+};
 pub use layout::{
     BASELINE_DIR, PACT_FILE, REFLECTIONS_DIR, ReflectionFile, Structure, THREADS_SUFFIX,
     baseline_path, classify, domain_rel, fits_structure, is_under_reflections, structure_globs,
