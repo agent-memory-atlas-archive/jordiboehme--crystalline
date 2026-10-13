@@ -355,10 +355,13 @@ async fn load_pinned(
 
 /// The checks a build makes that need no device: `config.json` parses and
 /// names this model. A cache that holds the wrong files, or files that are
-/// not a model at all, fails here, before a GPU is opened for it.
-fn check_files(files: &HubFiles, model: &LocalModel) -> Result<()> {
+/// not a model at all, fails here, by name, before a GPU is opened for it
+/// and rather than deep inside candle on a missing tensor. Answers the
+/// config text, so every build of this load reads the file once.
+fn check_files(files: &HubFiles, model: &LocalModel) -> Result<String> {
     let config_text = read(files.config()?)?;
-    check_model_type(&config_text, model)
+    check_model_type(&config_text, model)?;
+    Ok(config_text)
 }
 
 /// [`build_encoder`] on a blocking thread: it mmaps and parses the weights.
@@ -374,10 +377,10 @@ async fn build_on_blocking(
     model: &'static LocalModel,
 ) -> Result<ModelSlot<Encoder>> {
     tokio::task::spawn_blocking(move || {
-        check_files(&files, model)?;
+        let config_text = check_files(&files, model)?;
         let (encoder, report) = load_on_best_device(
             EMBEDDING_MODEL,
-            |device| build_encoder(&files, model, device),
+            |device| build_encoder(&files, &config_text, model, device),
             |encoder| embed_texts(encoder, &["warm-up".to_string()]).map(|_| ()),
         )?;
         Ok(ModelSlot::new(
@@ -385,26 +388,28 @@ async fn build_on_blocking(
             encoder,
             report,
             IndexError::Embedding,
-            move || build_encoder(&files, model, &Device::Cpu),
+            move || build_encoder(&files, &config_text, model, &Device::Cpu),
         ))
     })
     .await
     .map_err(|e| IndexError::Embedding(format!("model load task failed: {e}")))?
 }
 
-fn build_encoder(files: &HubFiles, model: &LocalModel, device: &Device) -> Result<Encoder> {
-    let config_text = read(files.config()?)?;
-    // A cache holding another model's files fails here, by name, rather than
-    // deep inside candle on a missing tensor.
-    check_model_type(&config_text, model)?;
-
+/// Build the encoder on `device` from `config_text`, the `config.json`
+/// [`check_files`] already read and checked.
+fn build_encoder(
+    files: &HubFiles,
+    config_text: &str,
+    model: &LocalModel,
+    device: &Device,
+) -> Result<Encoder> {
     let mut tokenizer = Tokenizer::from_file(files.tokenizer()?)
         .map_err(|e| IndexError::Embedding(format!("loading tokenizer.json: {e}")))?;
     let tokenizer_config_text = match files.tokenizer_config() {
         Some(path) => read(path)?,
         None => "{}".to_string(),
     };
-    let pad = pad_id(&tokenizer, &tokenizer_config_text, &config_text)?;
+    let pad = pad_id(&tokenizer, &tokenizer_config_text, config_text)?;
     tokenizer.with_padding(Some(PaddingParams {
         strategy: PaddingStrategy::BatchLongest,
         pad_id: pad,
@@ -432,11 +437,11 @@ fn build_encoder(files: &HubFiles, model: &LocalModel, device: &Device) -> Resul
     };
     let loaded = match model.architecture {
         Architecture::Bert => {
-            let config: BertConfig = parse_config(&config_text)?;
+            let config: BertConfig = parse_config(config_text)?;
             Loaded::Bert(Box::new(BertModel::load(vb, &config).map_err(build_error)?))
         }
         Architecture::ModernBert => {
-            let config: ModernBertConfig = parse_config(&config_text)?;
+            let config: ModernBertConfig = parse_config(config_text)?;
             Loaded::ModernBert(ModernBert::load(vb, &config).map_err(build_error)?)
         }
     };

@@ -278,13 +278,15 @@ where
 /// The checks a build makes that need no device: `config.json` parses, names
 /// this model and carries an `id2label` with a contradiction row. A cache
 /// that holds the wrong files, or files that are not a model at all, fails
-/// here, before a GPU is opened for it.
-fn check_files(files: &HubFiles, model: &NliModel) -> Result<()> {
+/// here, before a GPU is opened for it. Answers the config text, so every
+/// build of this load reads the file once.
+fn check_files(files: &HubFiles, model: &NliModel) -> Result<String> {
     let config_text = read(files.config()?)?;
     let raw: serde_json::Value = serde_json::from_str(&config_text)
         .map_err(|e| IndexError::Nli(format!("parsing config.json: {e}")))?;
     check_model_type(&raw, model)?;
-    contradiction_index(&id2label(&raw)?).map(|_| ())
+    contradiction_index(&id2label(&raw)?)?;
+    Ok(config_text)
 }
 
 /// [`build`] on a blocking thread, on the device [`crate::device`] picks: the
@@ -296,10 +298,10 @@ fn check_files(files: &HubFiles, model: &NliModel) -> Result<()> {
 /// reaches the self-heal.
 async fn build_on_blocking(files: HubFiles, model: &'static NliModel) -> Result<LocalNli> {
     tokio::task::spawn_blocking(move || {
-        check_files(&files, model)?;
+        let config_text = check_files(&files, model)?;
         let (loaded, report) = load_on_best_device(
             CONTRADICTION_MODEL,
-            |device| build(&files, model, device),
+            |device| build(&files, &config_text, device),
             warm_up,
         )?;
         let slot = ModelSlot::new(
@@ -307,7 +309,7 @@ async fn build_on_blocking(files: HubFiles, model: &'static NliModel) -> Result<
             loaded,
             report,
             IndexError::Nli,
-            move || build(&files, model, &Device::Cpu),
+            move || build(&files, &config_text, &Device::Cpu),
         );
         Ok(LocalNli { model, slot })
     })
@@ -323,11 +325,11 @@ fn warm_up(nli: &Loaded) -> Result<()> {
         .map(|_| ())
 }
 
-fn build(files: &HubFiles, model: &'static NliModel, device: &Device) -> Result<Loaded> {
-    let config_text = read(files.config()?)?;
-    let raw: serde_json::Value = serde_json::from_str(&config_text)
+/// Build the checkpoint on `device` from `config_text`, the `config.json`
+/// [`check_files`] already read and checked.
+fn build(files: &HubFiles, config_text: &str, device: &Device) -> Result<Loaded> {
+    let raw: serde_json::Value = serde_json::from_str(config_text)
         .map_err(|e| IndexError::Nli(format!("parsing config.json: {e}")))?;
-    check_model_type(&raw, model)?;
     let labels = id2label(&raw)?;
     let contradiction = contradiction_index(&labels)?;
 
@@ -337,7 +339,7 @@ fn build(files: &HubFiles, model: &'static NliModel, device: &Device) -> Result<
         Some(path) => read(path)?,
         None => "{}".to_string(),
     };
-    let pad = pad_id(&tokenizer, &tokenizer_config_text, &config_text)?;
+    let pad = pad_id(&tokenizer, &tokenizer_config_text, config_text)?;
     let pad_token = tokenizer.id_to_token(pad).unwrap_or_default();
     tokenizer.with_padding(Some(PaddingParams {
         strategy: PaddingStrategy::BatchLongest,
@@ -365,7 +367,7 @@ fn build(files: &HubFiles, model: &'static NliModel, device: &Device) -> Result<
         .map_err(|e| IndexError::Nli(format!("loading weights: {e}")))?
     };
     let build_error = |e: candle_core::Error| IndexError::Nli(format!("building model: {e}"));
-    let config: DebertaConfig = serde_json::from_str(&config_text)
+    let config: DebertaConfig = serde_json::from_str(config_text)
         .map_err(|e| IndexError::Nli(format!("parsing config.json: {e}")))?;
     let head = Box::new(
         DebertaV2SeqClassificationModel::load(vb.pp("deberta"), &config, None)
