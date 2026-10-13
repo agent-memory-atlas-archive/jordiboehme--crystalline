@@ -2983,3 +2983,41 @@ async fn save_manifest_refuses_a_read_only_domain_and_checks_the_switch_on() {
         "nothing was written"
     );
 }
+
+/// The CLI's `crystalline write` reaches the engine through the data-verb
+/// dispatch (in process, or the daemon's ctl `tool` command), not through MCP,
+/// so the close-folder hint is attached there too and the CLI can print it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cli_write_that_starts_a_close_folder_carries_the_hint() {
+    let (_tmp, engine) = engine_fixture().await;
+    let agent = crystalline_remote::ForwardedAgent::default();
+    let write = |title: &str, folder: &str| {
+        crystalline_service::route::run_tool_routed(
+            &engine,
+            "write_engram",
+            serde_json::json!({
+                "domain": "eng",
+                "title": title,
+                "folder": folder,
+                "content": "A fact about the topic.",
+            }),
+            &agent,
+            None,
+        )
+    };
+    write("Roadmap", "planview").await.unwrap();
+    let second = write("Budget", "planview").await.unwrap();
+    assert!(second.get("close_folders").is_none(), "{second}");
+
+    let receipt = write("Standup", "planview-work").await.unwrap();
+    assert_eq!(
+        receipt["close_folders"],
+        serde_json::json!([{"folder": "planview", "engrams": 2}]),
+        "{receipt}"
+    );
+    assert_eq!(
+        receipt["folder_guidance"],
+        crystalline_core::folders::FOLDER_GUIDANCE,
+        "{receipt}"
+    );
+}

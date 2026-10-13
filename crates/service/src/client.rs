@@ -2339,6 +2339,14 @@ pub(crate) async fn dispatch_engine(
                     &Scope::Unrestricted,
                 )
                 .await?;
+            // The close-folder hint the MCP receipt carries, so `crystalline
+            // write` can print it too. After the write returned, for the same
+            // store-lock reason as there.
+            let folders = Engine::close_folder_probe(&v);
+            let close = engine
+                .close_folders_for(folders.as_ref(), &Scope::Unrestricted)
+                .await;
+            Engine::attach_close_folders(&mut v, &close);
             crate::web_url::attach_engram_url(&mut v, &base);
             v
         }

@@ -3086,7 +3086,7 @@ export type CreateEngramError = CreateEngramErrors[keyof CreateEngramErrors];
 
 export type CreateEngramResponses = {
     /**
-     * The engine's own read payload for the new engram, plus - when the `capture.similar` advisory found neighbours - a `similar` list of up to three engrams {domain, permalink, title, status, type} and a `guidance` string. A title that will not read back the way it was written - one holding a `/`, which lands the engram nested, or a `:`, which a link reads as a domain prefix - also carries a `notices` list of sentences naming what happened and what to write instead.
+     * The engine's own read payload for the new engram, plus - when the `capture.similar` advisory found neighbours - a `similar` list of up to three engrams {domain, permalink, title, status, type} and a `guidance` string. A title that will not read back the way it was written - one holding a `/`, which lands the engram nested, or a `:`, which a link reads as a domain prefix - also carries a `notices` list of sentences naming what happened and what to write instead. A create that started a new folder next to sibling folders with a close name (planview beside planview-work, note beside notes) carries `close_folders`, up to three {folder, engrams}, and a `folder_guidance` string.
      */
     201: {
         [key: string]: unknown;
