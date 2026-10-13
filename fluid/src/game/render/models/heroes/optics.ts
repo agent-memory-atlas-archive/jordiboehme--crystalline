@@ -342,8 +342,9 @@ export function labStool(
  * side panels (their foot and head, the yaw of the two seam planes that
  * bound them, a lathe corner's multiple so they ride ridges, and the
  * middle yaws of the two facets between those planes, where the black
- * bars that close each panel at its foot and head lie); and the eye: its height, its plane (`d`, just proud of the
- * shell), its socket's back and radius, and the lens radius.
+ * bars that close each panel at its foot and head lie); and the eye: its
+ * height, its plane (`d`, just proud of the shell), its socket's back and
+ * radius, and the lens radius.
  */
 const TURRET = {
   legHub: [0.03, 0.42],
