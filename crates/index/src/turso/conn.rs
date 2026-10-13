@@ -25,25 +25,33 @@
 //!   whole transaction (a read, or a write without a statement savepoint, takes
 //!   that path). The statement alone cannot run again: the writes before it
 //!   are lost. So the connection keeps a journal of every statement since the
-//!   `BEGIN`, opens the transaction again, replays the journal and then runs
-//!   the statement. The replay starts from the state the first `BEGIN` saw,
-//!   because the store is the only writer and its callers hold it for the
-//!   whole transaction, so every replayed statement does what it did the first
-//!   time. A journal that grows past [`JOURNAL_CAP`] is dropped, and a failure
-//!   there is not retried.
+//!   `BEGIN`, with what each one returned (its change count, or a hash of its
+//!   rows). It opens the transaction again, replays the journal and then runs
+//!   the statement. The replay is checked, not assumed: every replayed
+//!   statement must return what it returned the first time, so the caller,
+//!   which acted on those results, is still right about the transaction. Any
+//!   difference (another writer got in between, say) ends the replay. A
+//!   journal that grows past [`JOURNAL_CAP`] is dropped, and a failure there
+//!   is not retried.
 //!
-//! A second failure is returned as it is. After a replay that failed, no
-//! explicit transaction is left open, which is where the caller would have
-//! been without the retry.
+//! When a replay cannot be done, fails or does not match, it is rolled back
+//! and the caller gets the original refusal, with no explicit transaction
+//! open: exactly what it got before this retry existed. A failed retry of the
+//! statement itself is returned as it is.
+//!
+//! Only the directory create is retried. A failure to open the file inside
+//! the new directory has another label and is returned as it is.
 
+use std::hash::{Hash, Hasher};
+use std::mem::size_of;
 use std::sync::Mutex;
 
 use turso::params::{IntoParams, Params};
-use turso::{Connection, Row, Value};
+use turso::{Connection, Row, Statement, Value};
 
-/// The most parameter bytes a transaction's journal holds before it is
-/// dropped. A full reindex runs in one transaction and carries every body as a
-/// parameter; past this size a replay is not worth the memory.
+/// The most bytes a transaction's journal holds before it is dropped. A full
+/// reindex runs in one transaction and carries every body as a parameter;
+/// past this size a replay is not worth the memory.
 const JOURNAL_CAP: usize = 64 << 20;
 
 /// The store's connection: the engine's connection plus the retry.
@@ -71,6 +79,8 @@ struct Entry {
     shape: Shape,
     sql: String,
     params: Params,
+    /// [`fingerprint`] of what the statement returned the first time.
+    result: u64,
 }
 
 /// How a statement is run: through `execute`, or as a query drained to the end.
@@ -113,6 +123,13 @@ pub(crate) fn is_tempdir_refusal(err: &turso::Error) -> bool {
     )
 }
 
+/// Whether `sql` is a read: what [`Conn::prepare_read`] accepts.
+fn is_read(sql: &str) -> bool {
+    sql.trim_start()
+        .get(..6)
+        .is_some_and(|head| head.eq_ignore_ascii_case("SELECT"))
+}
+
 impl Conn {
     /// Wrap an open connection, which must be in autocommit mode.
     pub(crate) fn new(conn: Connection) -> Conn {
@@ -122,11 +139,27 @@ impl Conn {
         }
     }
 
-    /// The engine's connection, for the callers that need it directly: the
-    /// migrations, and a prepared statement reused across reads. Nothing that
-    /// writes may run on it inside a transaction, or a replay would miss it.
+    /// The engine's connection, for the migrations and for tests, and only
+    /// outside a transaction: a write on it inside one would be missing from
+    /// the journal, and a replay would come back without it.
     pub(crate) fn raw(&self) -> &Connection {
+        debug_assert!(
+            self.conn.is_autocommit().unwrap_or(true),
+            "the raw connection is for use outside a transaction only"
+        );
         &self.conn
+    }
+
+    /// Prepare a read to run many times, in or out of a transaction. Only a
+    /// `SELECT` is accepted: a read changes nothing a replay has to repeat.
+    pub(crate) async fn prepare_read(&self, sql: &str) -> turso::Result<Statement> {
+        debug_assert!(is_read(sql), "prepare_read takes a SELECT: {sql}");
+        if !is_read(sql) {
+            return Err(turso::Error::Misuse(format!(
+                "prepare_read takes a SELECT: {sql}"
+            )));
+        }
+        self.conn.prepare(sql).await
     }
 
     /// The rowid of the last row this connection inserted.
@@ -158,7 +191,7 @@ impl Conn {
         let was_autocommit = self.conn.is_autocommit()?;
         let err = match self.once(shape, sql, params.clone()).await {
             Ok(outcome) => {
-                self.record(shape, sql, params, was_autocommit)?;
+                self.record(shape, sql, params, &outcome, was_autocommit)?;
                 return Ok(outcome);
             }
             Err(err) if is_tempdir_refusal(&err) => err,
@@ -168,9 +201,8 @@ impl Conn {
             }
         };
         let replayed = !was_autocommit && self.conn.is_autocommit()?;
-        #[cfg(test)]
-        hook::before_retry(replayed);
         if replayed {
+            hook::event("replay");
             tracing::warn!(
                 statement = sql,
                 "the engine could not create a temp directory and dropped the transaction; \
@@ -178,6 +210,7 @@ impl Conn {
             );
             self.replay(err).await?;
         } else {
+            hook::event("retry");
             tracing::warn!(
                 statement = sql,
                 "the engine could not create a temp directory; running the statement again"
@@ -185,7 +218,7 @@ impl Conn {
         }
         match self.once(shape, sql, params.clone()).await {
             Ok(outcome) => {
-                self.record(shape, sql, params, was_autocommit)?;
+                self.record(shape, sql, params, &outcome, was_autocommit)?;
                 Ok(outcome)
             }
             Err(err) if replayed => {
@@ -214,28 +247,51 @@ impl Conn {
         }
     }
 
-    /// Open the dropped transaction again and run every statement it had run.
-    /// When that cannot be done, `err` (the refusal that dropped it) is
+    /// Open the dropped transaction again and run every statement it had run,
+    /// each of which must return what it returned the first time. When that
+    /// cannot be done, `err` (the refusal that dropped the transaction) is
     /// returned and no transaction is left open.
     async fn replay(&self, err: turso::Error) -> turso::Result<()> {
         let journal = std::mem::replace(&mut *self.lock(), Journal::Idle);
-        let Journal::Open { begin, entries, .. } = journal else {
+        let Journal::Open {
+            begin,
+            entries,
+            bytes,
+        } = journal
+        else {
+            hook::event("replay:unavailable");
+            tracing::warn!("the transaction's journal was dropped; it cannot be replayed");
             return Err(err);
         };
-        self.conn.execute(&begin, ()).await?;
+        if self.conn.execute(&begin, ()).await.is_err() {
+            hook::event("replay:failed");
+            self.abandon().await;
+            return Err(err);
+        }
         for entry in &entries {
-            if let Err(e) = self
+            match self
                 .once(entry.shape, &entry.sql, entry.params.clone())
                 .await
             {
-                self.abandon().await;
-                return Err(e);
+                Ok(outcome) if fingerprint(&outcome) == entry.result => {}
+                Ok(_) => {
+                    hook::event("replay:mismatch");
+                    tracing::warn!(
+                        statement = entry.sql,
+                        "the replayed statement returned something else than the first time; \
+                         giving the transaction up"
+                    );
+                    self.abandon().await;
+                    return Err(err);
+                }
+                Err(e) => {
+                    hook::event("replay:failed");
+                    tracing::warn!(statement = entry.sql, error = %e, "the replay failed");
+                    self.abandon().await;
+                    return Err(err);
+                }
             }
         }
-        let bytes = entries
-            .iter()
-            .map(|e| e.sql.len() + params_bytes(&e.params))
-            .sum();
         *self.lock() = Journal::Open {
             begin,
             entries,
@@ -246,13 +302,14 @@ impl Conn {
 
     /// Bring the journal in line with the connection after a statement ran:
     /// a statement that left autocommit mode opened a transaction and starts a
-    /// journal, one inside a transaction joins it, and one that ended in
-    /// autocommit mode leaves none.
+    /// journal, one inside a transaction joins it with what it returned, and
+    /// one that ended in autocommit mode leaves none.
     fn record(
         &self,
         shape: Shape,
         sql: &str,
         params: Params,
+        outcome: &Outcome,
         was_autocommit: bool,
     ) -> turso::Result<()> {
         let autocommit = self.conn.is_autocommit()?;
@@ -266,14 +323,15 @@ impl Conn {
                 bytes: 0,
             };
         } else if let Journal::Open { entries, bytes, .. } = &mut *journal {
-            *bytes += sql.len() + params_bytes(&params);
-            if *bytes > JOURNAL_CAP {
+            *bytes += entry_bytes(sql, &params);
+            if *bytes > journal_cap() {
                 *journal = Journal::TooLarge;
             } else {
                 entries.push(Entry {
                     shape,
                     sql: sql.to_string(),
                     params,
+                    result: fingerprint(outcome),
                 });
             }
         }
@@ -287,9 +345,9 @@ impl Conn {
         }
     }
 
-    /// Leave no explicit transaction open after a retry that failed, so the
-    /// caller sees what it would have seen without the retry: the transaction
-    /// gone and its own `ROLLBACK` refused or a no-op.
+    /// Leave no explicit transaction open after a replay or retry that failed,
+    /// so the caller sees what it would have seen without the retry: the
+    /// transaction gone and its own `ROLLBACK` refused or a no-op.
     async fn abandon(&self) {
         if !self.conn.is_autocommit().unwrap_or(true) {
             let _ = self.conn.execute("ROLLBACK", ()).await;
@@ -302,44 +360,104 @@ impl Conn {
     }
 }
 
-/// Roughly how many bytes a statement's parameters hold.
-fn params_bytes(params: &Params) -> usize {
-    fn value(v: &Value) -> usize {
-        match v {
-            Value::Text(s) => s.len(),
-            Value::Blob(b) => b.len(),
-            _ => 8,
+/// A hash of what a statement returned: its change count, or every value of
+/// every row in order. A replayed statement must give the same one.
+fn fingerprint(outcome: &Outcome) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    match outcome {
+        Outcome::Changes(n) => {
+            0u8.hash(&mut h);
+            n.hash(&mut h);
+        }
+        Outcome::Rows(rows) => {
+            1u8.hash(&mut h);
+            rows.len().hash(&mut h);
+            for row in rows {
+                let width = row.column_count();
+                width.hash(&mut h);
+                for i in 0..width {
+                    match row.get_value(i) {
+                        Ok(Value::Null) => 0u8.hash(&mut h),
+                        Ok(Value::Integer(n)) => (1u8, n).hash(&mut h),
+                        Ok(Value::Real(f)) => (2u8, f.to_bits()).hash(&mut h),
+                        Ok(Value::Text(t)) => (3u8, t).hash(&mut h),
+                        Ok(Value::Blob(b)) => (4u8, b).hash(&mut h),
+                        Err(_) => 5u8.hash(&mut h),
+                    }
+                }
+            }
         }
     }
-    match params {
-        Params::None => 0,
-        Params::Positional(values) => values.iter().map(value).sum(),
-        Params::Named(values) => values.iter().map(|(k, v)| k.len() + value(v)).sum(),
-    }
+    h.finish()
 }
 
-#[cfg(test)]
+/// What a journal entry for `sql` with `params` costs in memory.
+fn entry_bytes(sql: &str, params: &Params) -> usize {
+    fn value(v: &Value) -> usize {
+        size_of::<Value>()
+            + match v {
+                Value::Text(s) => s.len(),
+                Value::Blob(b) => b.len(),
+                _ => 0,
+            }
+    }
+    size_of::<Entry>()
+        + sql.len()
+        + match params {
+            Params::None => 0,
+            Params::Positional(values) => values.iter().map(value).sum(),
+            Params::Named(values) => values.iter().map(|(k, v)| k.len() + value(v)).sum(),
+        }
+}
+
+/// [`JOURNAL_CAP`], which a test can lower.
+fn journal_cap() -> usize {
+    #[cfg(test)]
+    if let Some(cap) = hook::journal_cap() {
+        return cap;
+    }
+    JOURNAL_CAP
+}
+
+/// Test seams: the retry reports each step here, and a test can act on it.
 mod hook {
+    #[cfg(test)]
     use std::sync::Mutex;
 
-    type Hook = Box<dyn Fn(bool) + Send>;
+    #[cfg(test)]
+    type Hook = Box<dyn Fn(&str) + Send>;
 
-    /// Run in [`super::Conn::run`] between a refused attempt and its retry,
-    /// told whether the transaction is replayed, so a test can see which way
-    /// the retry went and make the temp location usable again exactly there.
-    static BEFORE_RETRY: Mutex<Option<Hook>> = Mutex::new(None);
+    /// Called with "retry" or "replay" between a refused attempt and its
+    /// retry, and with "replay:unavailable", "replay:failed" or
+    /// "replay:mismatch" when a replay is given up.
+    #[cfg(test)]
+    static EVENT: Mutex<Option<Hook>> = Mutex::new(None);
 
-    pub(super) fn before_retry(replayed: bool) {
-        if let Some(hook) = BEFORE_RETRY.lock().unwrap().as_ref() {
-            hook(replayed);
+    #[cfg(test)]
+    static JOURNAL_CAP: Mutex<Option<usize>> = Mutex::new(None);
+
+    pub(super) fn event(_what: &str) {
+        #[cfg(test)]
+        if let Some(hook) = EVENT.lock().unwrap().as_ref() {
+            hook(_what);
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn journal_cap() -> Option<usize> {
+        *JOURNAL_CAP.lock().unwrap()
     }
 
     /// Used by the unix-only test below; Windows cannot refuse a create the
     /// same way, so it has no caller there.
-    #[cfg(unix)]
-    pub(super) fn set_before_retry(hook: impl Fn(bool) + Send + 'static) {
-        *BEFORE_RETRY.lock().unwrap() = Some(Box::new(hook));
+    #[cfg(all(test, unix))]
+    pub(super) fn set_event(hook: impl Fn(&str) + Send + 'static) {
+        *EVENT.lock().unwrap() = Some(Box::new(hook));
+    }
+
+    #[cfg(all(test, unix))]
+    pub(super) fn set_journal_cap(cap: Option<usize>) {
+        *JOURNAL_CAP.lock().unwrap() = cap;
     }
 }
 
@@ -349,7 +467,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
-    use turso::{Builder, Value};
+    use turso::{Builder, Connection, Value};
 
     use super::{Conn, hook, is_tempdir_refusal};
     use crate::store::{DomainKind, Store};
@@ -358,6 +476,9 @@ mod tests {
     /// [`a_refused_temp_directory_is_retried_once_and_leaves_no_trace`],
     /// holding the folder the child's temp location points at.
     const CHILD: &str = "CRYSTALLINE_TEST_TEMPDIR_REFUSED";
+    /// Set beside [`CHILD`]: a folder for the file-backed databases, outside
+    /// the locked temp location.
+    const CHILD_DB: &str = "CRYSTALLINE_TEST_TEMPDIR_DB";
 
     fn lock(dir: &Path) {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o500)).unwrap();
@@ -367,25 +488,57 @@ mod tests {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    /// Every retry the hook saw, as "was the transaction replayed".
-    type Seen = Arc<Mutex<Vec<bool>>>;
+    type Action = Box<dyn FnOnce() + Send>;
 
-    /// A hook that records each retry and, when `heal`, unlocks `dir` so the
-    /// retry finds a usable temp location.
-    fn watch(dir: PathBuf, heal: Arc<Mutex<bool>>) -> Seen {
-        let seen: Seen = Arc::default();
-        let log = seen.clone();
-        hook::set_before_retry(move |replayed| {
-            log.lock().unwrap().push(replayed);
-            if *heal.lock().unwrap() {
-                unlock(&dir);
-            }
-        });
-        seen
+    /// What the hook saw, and what it does on the next "retry" or "replay".
+    #[derive(Clone)]
+    struct Watch {
+        dir: PathBuf,
+        seen: Arc<Mutex<Vec<String>>>,
+        /// Unlock the temp location before the retry.
+        heal: Arc<Mutex<bool>>,
+        /// Run once before the next replay, after the transaction dropped.
+        before_replay: Arc<Mutex<Option<Action>>>,
     }
 
-    fn take(seen: &Seen) -> Vec<bool> {
-        std::mem::take(&mut *seen.lock().unwrap())
+    impl Watch {
+        fn install(dir: &Path) -> Watch {
+            let watch = Watch {
+                dir: dir.to_path_buf(),
+                seen: Arc::default(),
+                heal: Arc::new(Mutex::new(true)),
+                before_replay: Arc::default(),
+            };
+            let w = watch.clone();
+            hook::set_event(move |what| {
+                w.seen.lock().unwrap().push(what.to_string());
+                if what == "replay"
+                    && let Some(action) = w.before_replay.lock().unwrap().take()
+                {
+                    action();
+                }
+                if (what == "retry" || what == "replay") && *w.heal.lock().unwrap() {
+                    unlock(&w.dir);
+                }
+            });
+            watch
+        }
+
+        fn take(&self) -> Vec<String> {
+            std::mem::take(&mut *self.seen.lock().unwrap())
+        }
+
+        fn heal(&self, on: bool) {
+            *self.heal.lock().unwrap() = on;
+        }
+
+        fn lock(&self) {
+            lock(&self.dir);
+        }
+
+        fn unlock(&self) {
+            unlock(&self.dir);
+        }
     }
 
     async fn texts(conn: &Conn, sql: &str) -> Vec<String> {
@@ -400,13 +553,14 @@ mod tests {
             .collect()
     }
 
-    /// The scenarios, run in the child where the temp location is a folder
-    /// this test can lock (no directory can be created in it) and unlock.
-    async fn child(dir: PathBuf) {
-        let heal = Arc::new(Mutex::new(true));
-        let seen = watch(dir.clone(), heal.clone());
-        let db = Builder::new_local(":memory:").build().await.unwrap();
-        let conn = Conn::new(db.connect().unwrap());
+    fn in_txn(conn: &Conn) -> bool {
+        !conn.conn.is_autocommit().unwrap()
+    }
+
+    /// An `IN (SELECT ...)` is answered with an ephemeral table.
+    const PICK: &str = "SELECT v FROM t WHERE id IN (SELECT id FROM u) ORDER BY id";
+
+    async fn tables(conn: &Conn) {
         conn.execute(
             "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT NOT NULL)",
             (),
@@ -425,16 +579,19 @@ mod tests {
         conn.execute("INSERT INTO u(id) VALUES (1), (3)", ())
             .await
             .unwrap();
-        // An `IN (SELECT ...)` is answered with an ephemeral table.
-        let pick = "SELECT v FROM t WHERE id IN (SELECT id FROM u) ORDER BY id";
+    }
+
+    /// The scenarios every backing (memory, file with WAL) runs.
+    async fn scenarios(conn: &Conn, w: &Watch) {
+        tables(conn).await;
 
         // A read in autocommit mode runs again.
-        lock(&dir);
-        assert_eq!(texts(&conn, pick).await, ["one", "three"]);
-        assert_eq!(take(&seen), [false], "one retry, no replay");
+        w.lock();
+        assert_eq!(texts(conn, PICK).await, ["one", "three"]);
+        assert_eq!(w.take(), ["retry"]);
 
         // A write in autocommit mode was rolled back and runs again, once.
-        lock(&dir);
+        w.lock();
         let changed = conn
             .execute(
                 "UPDATE t SET v = v || '!' WHERE id IN (SELECT id FROM u)",
@@ -443,9 +600,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(changed, 2);
-        assert_eq!(take(&seen), [false]);
+        assert_eq!(w.take(), ["retry"]);
         assert_eq!(
-            texts(&conn, "SELECT v FROM t ORDER BY id").await,
+            texts(conn, "SELECT v FROM t ORDER BY id").await,
             ["one!", "two", "three!"],
             "the update applied exactly once"
         );
@@ -460,23 +617,20 @@ mod tests {
         conn.execute("INSERT INTO u(id) VALUES (4)", ())
             .await
             .unwrap();
-        lock(&dir);
+        w.lock();
         assert_eq!(
-            texts(&conn, pick).await,
+            texts(conn, PICK).await,
             ["one!", "three!", "four"],
             "the replayed transaction is the one the read sees"
         );
-        assert_eq!(take(&seen), [true], "the transaction was replayed");
+        assert_eq!(w.take(), ["replay"]);
         conn.execute("INSERT INTO t(id, v) VALUES (5, 'five')", ())
             .await
             .unwrap();
-        assert!(
-            !conn.raw().is_autocommit().unwrap(),
-            "still in the transaction"
-        );
+        assert!(in_txn(conn), "still in the transaction");
         conn.execute("COMMIT", ()).await.unwrap();
         assert_eq!(
-            texts(&conn, "SELECT v FROM t ORDER BY id").await,
+            texts(conn, "SELECT v FROM t ORDER BY id").await,
             ["one!", "two", "three!", "four", "five"]
         );
 
@@ -487,7 +641,7 @@ mod tests {
         conn.execute("INSERT INTO u(id) VALUES (2)", ())
             .await
             .unwrap();
-        lock(&dir);
+        w.lock();
         let changed = conn
             .execute(
                 "UPDATE t SET v = v || '?' WHERE id IN (SELECT id FROM u)",
@@ -496,51 +650,197 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(changed, 4);
-        assert_eq!(take(&seen), [false], "only the statement was undone");
+        assert_eq!(w.take(), ["retry"], "only the statement was undone");
         conn.execute("COMMIT", ()).await.unwrap();
         assert_eq!(
-            texts(&conn, "SELECT v FROM t ORDER BY id").await,
+            texts(conn, "SELECT v FROM t ORDER BY id").await,
             ["one!?", "two?", "three!?", "four?", "five"]
+        );
+
+        // A single-row write with no statement savepoint drops the
+        // transaction: the transaction is replayed and the write runs again.
+        // A `RETURNING` is what gives it an ephemeral table.
+        conn.execute("BEGIN", ()).await.unwrap();
+        conn.execute("INSERT INTO t(id, v) VALUES (10, 'ten')", ())
+            .await
+            .unwrap();
+        w.lock();
+        let rows = conn
+            .query_all("INSERT INTO t(v) VALUES ('eleven') RETURNING id", vec![])
+            .await
+            .unwrap();
+        assert_eq!(rows[0].get_value(0).unwrap(), Value::Integer(11));
+        assert_eq!(w.take(), ["replay"], "the single-row write dropped it");
+        conn.execute("COMMIT", ()).await.unwrap();
+        assert_eq!(
+            texts(conn, "SELECT v FROM t WHERE id >= 10 ORDER BY id").await,
+            ["ten", "eleven"]
+        );
+
+        // A replayed `INSERT ... RETURNING` gives the id it gave the first
+        // time, and the caller's later use of that id stays right.
+        conn.execute("BEGIN", ()).await.unwrap();
+        let rows = conn
+            .query_all("INSERT INTO t(v) VALUES ('kept') RETURNING id", vec![])
+            .await
+            .unwrap();
+        let Value::Integer(kept) = rows[0].get_value(0).unwrap() else {
+            panic!("an integer id");
+        };
+        w.lock();
+        assert_eq!(texts(conn, PICK).await.len(), 4);
+        assert_eq!(w.take(), ["replay"]);
+        conn.execute("INSERT INTO u(id) VALUES (?1)", vec![Value::Integer(kept)])
+            .await
+            .unwrap();
+        conn.execute("COMMIT", ()).await.unwrap();
+        assert_eq!(
+            texts(conn, PICK).await.last().map(String::as_str),
+            Some("kept"),
+            "the id the caller kept points at the replayed row"
         );
 
         // A rolled back replay leaves nothing behind either.
         conn.execute("BEGIN", ()).await.unwrap();
-        conn.execute("INSERT INTO t(id, v) VALUES (6, 'six')", ())
+        conn.execute("INSERT INTO t(id, v) VALUES (20, 'twenty')", ())
             .await
             .unwrap();
-        lock(&dir);
-        assert_eq!(texts(&conn, pick).await.len(), 4);
-        assert_eq!(take(&seen), [true]);
+        w.lock();
+        assert_eq!(texts(conn, PICK).await.len(), 5);
+        assert_eq!(w.take(), ["replay"]);
         conn.execute("ROLLBACK", ()).await.unwrap();
-        assert_eq!(
-            texts(&conn, "SELECT v FROM t WHERE id = 6").await,
-            Vec::<String>::new()
+        assert!(
+            texts(conn, "SELECT v FROM t WHERE id = 20")
+                .await
+                .is_empty()
         );
 
         // A refusal that does not go away is returned after one retry, and a
         // transaction it dropped stays dropped.
-        *heal.lock().unwrap() = false;
-        lock(&dir);
-        let err = conn.query_all(pick, vec![]).await.unwrap_err();
+        w.heal(false);
+        w.lock();
+        let err = conn.query_all(PICK, vec![]).await.unwrap_err();
         assert!(is_tempdir_refusal(&err), "{err}");
-        assert_eq!(take(&seen), [false]);
+        assert_eq!(w.take(), ["retry"]);
+        w.unlock();
         conn.execute("BEGIN", ()).await.unwrap();
-        conn.execute("INSERT INTO t(id, v) VALUES (7, 'seven')", ())
+        conn.execute("INSERT INTO t(id, v) VALUES (21, 'x')", ())
             .await
             .unwrap();
-        let err = conn.query_all(pick, vec![]).await.unwrap_err();
+        w.lock();
+        let err = conn.query_all(PICK, vec![]).await.unwrap_err();
         assert!(is_tempdir_refusal(&err), "{err}");
-        assert_eq!(take(&seen), [true]);
+        assert_eq!(w.take(), ["replay"]);
+        assert!(!in_txn(conn), "no transaction left open");
+        w.unlock();
         assert!(
-            conn.raw().is_autocommit().unwrap(),
-            "no transaction left open"
+            texts(conn, "SELECT v FROM t WHERE id = 21")
+                .await
+                .is_empty()
         );
-        unlock(&dir);
-        *heal.lock().unwrap() = true;
+
+        // A refusal during the replay itself: the journal holds a statement
+        // with an ephemeral table, and the temp location stays locked. The
+        // caller gets the original refusal and nothing commits.
+        conn.execute("BEGIN", ()).await.unwrap();
+        conn.query_all("INSERT INTO t(id, v) VALUES (22, 'x') RETURNING id", vec![])
+            .await
+            .unwrap();
+        w.lock();
+        let err = conn.query_all(PICK, vec![]).await.unwrap_err();
+        assert!(is_tempdir_refusal(&err), "{err}");
+        assert_eq!(w.take(), ["replay", "replay:failed"]);
+        assert!(!in_txn(conn), "no transaction left open");
+        w.unlock();
+        assert!(
+            texts(conn, "SELECT v FROM t WHERE id = 22")
+                .await
+                .is_empty()
+        );
+
+        // A journal past the cap is dropped: the caller gets the original
+        // refusal and nothing commits.
+        w.heal(true);
+        hook::set_journal_cap(Some(1024));
+        conn.execute("BEGIN", ()).await.unwrap();
+        conn.execute(
+            "INSERT INTO t(id, v) VALUES (23, ?1)",
+            vec![Value::Text("x".repeat(2048))],
+        )
+        .await
+        .unwrap();
+        w.lock();
+        let err = conn.query_all(PICK, vec![]).await.unwrap_err();
+        assert!(is_tempdir_refusal(&err), "{err}");
+        assert_eq!(w.take(), ["replay", "replay:unavailable"]);
+        assert!(!in_txn(conn), "no transaction left open");
+        hook::set_journal_cap(None);
+        w.unlock();
+        assert!(
+            texts(conn, "SELECT v FROM t WHERE id = 23")
+                .await
+                .is_empty()
+        );
+    }
+
+    /// A replay that does not reproduce the first run is given up: another
+    /// connection changes a row the transaction had read, between the drop
+    /// and the replay.
+    async fn mismatch(conn: &Conn, other: Connection, w: &Watch) {
+        conn.execute("BEGIN", ()).await.unwrap();
+        conn.execute("INSERT INTO t(id, v) VALUES (30, 'thirty')", ())
+            .await
+            .unwrap();
+        assert_eq!(texts(conn, "SELECT v FROM t WHERE id = 1").await, ["one!?"]);
+        *w.before_replay.lock().unwrap() = Some(Box::new(move || {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    other
+                        .execute("UPDATE t SET v = 'changed' WHERE id = 1", ())
+                        .await
+                        .unwrap();
+                })
+            })
+        }));
+        w.lock();
+        let err = conn.query_all(PICK, vec![]).await.unwrap_err();
+        assert!(is_tempdir_refusal(&err), "the original refusal: {err}");
+        assert_eq!(w.take(), ["replay", "replay:mismatch"]);
+        assert!(!in_txn(conn), "no transaction left open");
+        w.unlock();
+        assert!(
+            texts(conn, "SELECT v FROM t WHERE id = 30")
+                .await
+                .is_empty(),
+            "nothing of the transaction committed"
+        );
         assert_eq!(
-            texts(&conn, "SELECT v FROM t WHERE id = 7").await,
-            Vec::<String>::new()
+            texts(conn, "SELECT v FROM t WHERE id = 1").await,
+            ["changed"]
         );
+    }
+
+    /// The child: runs where the temp location is a folder this test can
+    /// lock (no directory can be created in it) and unlock.
+    async fn child(dir: PathBuf, db_dir: PathBuf) {
+        let w = Watch::install(&dir);
+
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = Conn::new(db.connect().unwrap());
+        scenarios(&conn, &w).await;
+
+        let path = db_dir.join("wal.db");
+        let db = Builder::new_local(path.to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        let conn = Conn::new(db.connect().unwrap());
+        let mut rows = conn.raw().query("PRAGMA journal_mode", ()).await.unwrap();
+        let mode = rows.next().await.unwrap().unwrap().get_value(0).unwrap();
+        drop(rows);
+        assert_eq!(mode, Value::Text("wal".to_string()));
+        scenarios(&conn, &w).await;
+        mismatch(&conn, db.connect().unwrap(), &w).await;
 
         // Through the store: the domain listing reads with subqueries the
         // engine answers with ephemeral tables.
@@ -549,11 +849,10 @@ mod tests {
             .upsert_domain("notes", None, DomainKind::Virtual)
             .await
             .unwrap();
-        lock(&dir);
-        let stats = store.domain_stats().await.unwrap();
-        assert_eq!(stats.len(), 1);
-        assert_eq!(take(&seen), [false]);
-        unlock(&dir);
+        w.lock();
+        assert_eq!(store.domain_stats().await.unwrap().len(), 1);
+        assert_eq!(w.take(), ["retry"]);
+        w.unlock();
     }
 
     /// A statement whose ephemeral table cannot get its temp directory is run
@@ -566,15 +865,17 @@ mod tests {
     /// folder, and a hook unlocks it between the refused attempt and the
     /// retry. The environment can only be changed for a whole process, hence
     /// the child.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_refused_temp_directory_is_retried_once_and_leaves_no_trace() {
-        if let Some(dir) = std::env::var_os(CHILD) {
-            child(PathBuf::from(dir)).await;
+        if let (Some(dir), Some(db_dir)) = (std::env::var_os(CHILD), std::env::var_os(CHILD_DB)) {
+            child(PathBuf::from(dir), PathBuf::from(db_dir)).await;
             return;
         }
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("temp");
+        let db_dir = root.path().join("db");
         std::fs::create_dir(&dir).unwrap();
+        std::fs::create_dir(&db_dir).unwrap();
         lock(&dir);
         if std::fs::create_dir(dir.join("probe")).is_ok() {
             // Root ignores the permission bits, so nothing can be refused.
@@ -591,6 +892,7 @@ mod tests {
                 "--nocapture",
             ])
             .env(CHILD, &dir)
+            .env(CHILD_DB, &db_dir)
             .env("TMPDIR", &dir)
             .env_remove("TURSO_TMPDIR")
             .env_remove("SQLITE_TMPDIR")

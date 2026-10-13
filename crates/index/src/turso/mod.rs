@@ -684,7 +684,8 @@ async fn query_all(conn: &Conn, sql: &str, params: Vec<Value>) -> Result<Vec<Row
 }
 
 /// The first row of a query. The query is still drained to the end, so the
-/// statement runs to completion and does not roll back on drop.
+/// statement runs to completion and does not roll back on drop, and every row
+/// is held until then: this is for queries that return one row.
 async fn query_first(conn: &Conn, sql: &str, params: Vec<Value>) -> Result<Option<Row>> {
     Ok(conn.query_all(sql, params).await?.into_iter().next())
 }
@@ -3203,8 +3204,7 @@ impl Store for TursoStore {
         }
         let mut stmt = self
             .conn
-            .raw()
-            .prepare(OBSERVATION_VECTOR_PRESENT_SQL)
+            .prepare_read(OBSERVATION_VECTOR_PRESENT_SQL)
             .await?;
         for hash in hashes {
             let mut rows = stmt
@@ -3232,7 +3232,7 @@ impl Store for TursoStore {
         if hashes.is_empty() {
             return Ok(out);
         }
-        let mut stmt = self.conn.raw().prepare(OBSERVATION_VECTOR_SQL).await?;
+        let mut stmt = self.conn.prepare_read(OBSERVATION_VECTOR_SQL).await?;
         for wanted in hashes {
             let mut rows = stmt
                 .query(vec![
@@ -3310,18 +3310,14 @@ impl Store for TursoStore {
             return Ok(0);
         }
         in_transaction(self, async {
-            let mut stmt = self
-                .conn
-                .raw()
-                .prepare(DELETE_OBSERVATION_VECTOR_SQL)
-                .await?;
             let mut gone = 0u64;
             for hash in hashes {
-                gone += stmt
-                    .execute(vec![
-                        Value::Text(model.to_string()),
-                        Value::Text(hash.clone()),
-                    ])
+                gone += self
+                    .conn
+                    .execute(
+                        DELETE_OBSERVATION_VECTOR_SQL,
+                        vec![Value::Text(model.to_string()), Value::Text(hash.clone())],
+                    )
                     .await?;
             }
             Ok(gone)
