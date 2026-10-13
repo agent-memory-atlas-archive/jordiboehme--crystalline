@@ -33,6 +33,7 @@ import {
   CAMERA,
   CAMERA_INK,
   CAMERA_MARK,
+  CAMERA_MARK_SIZE,
   CAMERA_MODEL_MARK,
   DECK,
   DECK_INK,
@@ -309,9 +310,10 @@ describe("the camera's model", () => {
     expect(span(pts, 0).mid).toBeLessThan(FINDER[0]);
   });
 
-  it("reads the maker's name from the front across the top plate, at 3 mm pixels or more", () => {
-    // Mutation caught: the name mirrored, under the 3 mm floor, or off the
-    // top plate's front.
+  it("reads the maker's name from the front across the top plate, at the real lettering's size against the body (0.25.2)", () => {
+    // Mutation caught: the name mirrored, back at the 3 mm floor (two
+    // thirds of the body wide), shrunk out of reading, floating off the
+    // plate, or off the top plate's front.
     const ink = inked(parts, CAMERA_INK);
     expect(ink.length).toBeGreaterThan(0);
     const { rows, px } = cellsOf(ink, (q) => {
@@ -319,8 +321,20 @@ describe("the camera's model", () => {
       return [a, -h];
     });
     expect(trimmed(rows)).toEqual(trimmed(textRows(MARKS.cameraMark)));
-    expect(px).toBeGreaterThanOrEqual(0.003 - 1e-9);
+    // The documented exception to the 3 mm floor: the real lettering runs
+    // about an eighth of the body's width and stands about 2.5 mm tall.
+    expect(px).toBeCloseTo(CAMERA_MARK_SIZE.px, 9);
+    expect(px).toBeGreaterThanOrEqual(0.0005);
+    const as = pointsOf(ink).map((q) => q[0]);
+    const hs = pointsOf(ink).map((q) => q[2]);
+    const width = Math.max(...as) - Math.min(...as);
+    const height = Math.max(...hs) - Math.min(...hs);
+    expect(width / CAMERA.w).toBeGreaterThan(0.1);
+    expect(width / CAMERA.w).toBeLessThan(0.16);
+    expect(height).toBeGreaterThanOrEqual(0.002);
+    expect(height).toBeLessThanOrEqual(0.0035);
     for (const q of pointsOf(ink)) {
+      expect(q[1]).toBeLessThanOrEqual(dd + CAMERA_MARK_SIZE.proud + 1e-9);
       expect(q[1]).toBeGreaterThanOrEqual(dd - 1e-9);
       expect(q[2]).toBeGreaterThanOrEqual(b + CAMERA.plate);
       expect(q[2]).toBeLessThanOrEqual(b + CAMERA.h);
