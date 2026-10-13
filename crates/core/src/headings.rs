@@ -3,15 +3,24 @@
 //! sections of a reflection both read headings through it, so the two agree
 //! about a `#` inside a fence and about where a section ends.
 
-use crate::parse::{locate, parse_heading};
+use crate::parse::{fence_marker, locate, parse_heading};
 
+/// One ATX heading of a body, outside fenced code.
 pub(crate) struct HeadingSpan {
+    /// The number of `#`, 1 to 6.
     pub(crate) level: u8,
+    /// The heading text, without the `#` run and any closing `#` run.
     pub(crate) text: String,
+    /// Byte offset of the heading line's first byte in the source.
     pub(crate) line_start: usize,
+    /// Byte offset just past the heading line, its line ending included.
     pub(crate) line_end: usize,
 }
 
+/// Every heading of `source`'s body in file order, skipping the frontmatter
+/// and every line inside fenced code. A fence opens and closes by the one
+/// fence rule the body walker uses (`crate::parse::fence_marker`), so a
+/// fence means the same thing to every reader of a body.
 pub(crate) fn heading_spans(source: &str) -> Vec<HeadingSpan> {
     let (_, _, body_start) = locate(source);
     let mut spans = Vec::new();
@@ -25,7 +34,7 @@ pub(crate) fn heading_spans(source: &str) -> Vec<HeadingSpan> {
 
         match fence {
             None => {
-                if let Some((c, n)) = fence_open(line) {
+                if let Some((c, n, _)) = fence_marker(line) {
                     fence = Some((c, n));
                     continue;
                 }
@@ -39,7 +48,7 @@ pub(crate) fn heading_spans(source: &str) -> Vec<HeadingSpan> {
                 }
             }
             Some((fc, fcount)) => {
-                if let Some((c, n)) = fence_open(line)
+                if let Some((c, n, _)) = fence_marker(line)
                     && c == fc
                     && n >= fcount
                 {
@@ -52,21 +61,4 @@ pub(crate) fn heading_spans(source: &str) -> Vec<HeadingSpan> {
         }
     }
     spans
-}
-
-pub(crate) fn fence_open(line: &str) -> Option<(char, usize)> {
-    let indent = line.len() - line.trim_start_matches(' ').len();
-    if indent > 3 {
-        return None;
-    }
-    let rest = &line[indent..];
-    let first = rest.chars().next()?;
-    if first != '`' && first != '~' {
-        return None;
-    }
-    let count = rest.chars().take_while(|c| *c == first).count();
-    if count < 3 {
-        return None;
-    }
-    Some((first, count))
 }

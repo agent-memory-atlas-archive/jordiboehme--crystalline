@@ -807,7 +807,10 @@ impl Engine {
         ack: Option<&AckDraft>,
     ) -> Result<(String, Option<String>)> {
         // The three section edits share one dispatch with every other kind
-        // of document that edits sections.
+        // of document that edits sections. Replace and insert_after put their
+        // content under a heading that stays: a repeat of that heading is
+        // dropped by the core edit, and reported here so the receipt can say
+        // so. insert_before never strips one.
         if let Some(op) = SectionOp::parse(&p.operation, p.include_subsections) {
             let content = self.require_content(p)?;
             let section = self.require_section(p)?;

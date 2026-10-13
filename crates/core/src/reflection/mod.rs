@@ -11,6 +11,8 @@
 
 pub mod layout;
 pub mod links;
+pub mod provenance;
+pub mod sections;
 
 pub use layout::{
     BASELINE_DIR, PACT_FILE, REFLECTIONS_DIR, ReflectionFile, Structure, THREADS_SUFFIX,
@@ -18,3 +20,11 @@ pub use layout::{
     threads_path, validate_reflection_path,
 };
 pub use links::{rebase_links, relative_to, rewrite_links_to};
+pub use provenance::{
+    PROVENANCE_KEY, Provenance, SectionRecord, SourceRef, read_provenance, text_changed, title_of,
+    write_provenance,
+};
+pub use sections::{
+    Section, TOP_SECTION, assign_ids, edit_section, find_section, id_line, normalize_section_text,
+    parse_id_line, random_section_id, reattach_ids, section_hash, split_sections,
+};
