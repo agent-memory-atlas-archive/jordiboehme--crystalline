@@ -24,6 +24,7 @@ pub mod engram;
 pub mod folders;
 pub mod frontmatter;
 pub mod harness;
+mod headings;
 pub mod import;
 pub mod index;
 pub mod jsonc_edit;

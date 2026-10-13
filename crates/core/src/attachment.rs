@@ -234,6 +234,21 @@ pub fn validate_asset_path(path: &str) -> Result<(), AssetPathError> {
 /// that is nothing but the prefix once the fragment is gone (`assets/#left`)
 /// names no file and is dropped.
 pub fn find_asset_refs(body: &str) -> Vec<String> {
+    link_targets(body)
+        .into_iter()
+        .filter(|target| {
+            target
+                .strip_prefix(ASSETS_PREFIX)
+                .is_some_and(|rest| !rest.is_empty())
+        })
+        .collect()
+}
+
+/// Every distinct link target of a markdown body outside fenced code, in
+/// order of first appearance, read the way [`find_asset_refs`] reads one.
+/// The one target scan: engram attachments and every other kind of document
+/// read their references off it.
+pub(crate) fn link_targets(body: &str) -> Vec<String> {
     let mut refs: Vec<String> = Vec::new();
     // A fence opens on a marker of at least three backticks or tildes and
     // closes only on the same character repeated at least as many times, the
@@ -261,7 +276,7 @@ pub fn find_asset_refs(body: &str) -> Vec<String> {
                 continue;
             }
         }
-        for target in line_targets(line) {
+        for target in line_link_targets(line) {
             if !refs.contains(&target) {
                 refs.push(target);
             }
@@ -286,7 +301,7 @@ fn hex_nibble(byte: Option<&u8>) -> Option<u8> {
 /// any malformed escape or invalid sequence leaves the target untouched -
 /// the same catch-and-keep fallback Fluid's `decodeTarget` uses, so the two
 /// scanners read one spelling.
-fn percent_decode_target(target: &str) -> String {
+pub(crate) fn percent_decode_target(target: &str) -> String {
     // The common case by far: nothing to decode, so the target allocates once
     // as a whole instead of being pushed back together byte by byte.
     if !target.contains('%') {
@@ -317,8 +332,10 @@ fn percent_decode_target(target: &str) -> String {
     }
 }
 
-/// The `assets/` link targets on one line, in order, duplicates included.
-fn line_targets(line: &str) -> Vec<String> {
+/// Every link target on one line, in order, duplicates included: decoded,
+/// without a leading `./`, a title clause or a `#fragment`; an empty target,
+/// a bare fragment, is dropped.
+fn line_link_targets(line: &str) -> Vec<String> {
     let bytes = line.as_bytes();
     let mut targets = Vec::new();
     let mut idx = 0;
@@ -357,9 +374,7 @@ fn line_targets(line: &str) -> Vec<String> {
             Some((path, _)) => path,
             None => target,
         };
-        if let Some(rest) = target.strip_prefix(ASSETS_PREFIX)
-            && !rest.is_empty()
-        {
+        if !target.is_empty() {
             targets.push(target.to_string());
         }
     }
@@ -683,6 +698,20 @@ Again: ![d](assets/flow.png)\n\
         assert_eq!(
             find_asset_refs("plain prose, no links"),
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn link_targets_are_every_target_outside_fences_decoded_once() {
+        let body = "![a](assets/a.png#right) [b](../peer.md \"Title\") [c](./assets/a.png)\n```\n[d](x.md)\n```\n[e](#top) [f](caf%C3%A9.md)\n";
+        assert_eq!(
+            link_targets(body),
+            ["assets/a.png", "../peer.md", "café.md"]
+        );
+        assert_eq!(
+            find_asset_refs(body),
+            ["assets/a.png"],
+            "the engram scan is a filter over it"
         );
     }
 }

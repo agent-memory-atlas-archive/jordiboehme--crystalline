@@ -33,6 +33,13 @@ impl ContentKind {
             ContentKind::Engram => true,
         }
     }
+
+    /// The links a document of this kind uses for its references.
+    pub fn link_dialect(self) -> crate::relink::LinkDialect {
+        match self {
+            ContentKind::Engram => crate::relink::LinkDialect::Addressed,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -47,5 +54,9 @@ mod tests {
             crate::attachment::ASSETS_PREFIX
         );
         assert!(ContentKind::Engram.verified());
+        assert_eq!(
+            ContentKind::Engram.link_dialect(),
+            crate::relink::LinkDialect::Addressed
+        );
     }
 }

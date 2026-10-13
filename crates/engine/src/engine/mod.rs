@@ -29,9 +29,9 @@ use crystalline_core::config::{
     ResponseFormat, ShareIdentityMode, VerifyConfig,
 };
 use crystalline_core::emit::{
-    append_body, insert_after_section_reporting, insert_before_section, prepend_body,
-    remove_frontmatter_field, replace_section_reporting, set_evolve_ack, set_frontmatter_field,
-    set_frontmatter_number, set_stale_after, set_verified, touch_generated,
+    SectionOp, append_body, apply_section_op, prepend_body, remove_frontmatter_field,
+    set_evolve_ack, set_frontmatter_field, set_frontmatter_number, set_stale_after, set_verified,
+    touch_generated,
 };
 use crystalline_core::relink::Relink;
 use crystalline_core::schema::{self, Schema};

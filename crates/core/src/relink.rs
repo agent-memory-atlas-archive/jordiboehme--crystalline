@@ -25,7 +25,9 @@
 //! an inline code span are never touched, since `[[x]]` inside code is an
 //! example rather than a link. Every byte outside a rewritten reference is
 //! kept verbatim, and a source whose frontmatter does not parse comes back
-//! unchanged - the index never read a reference out of it either.
+//! unchanged - the index never read a reference out of it either. The walker
+//! itself (`rewrite_body_lines`) is shared with every other kind of document
+//! that rewrites links; a dialect decides which lines can hold its links.
 
 use crate::address::SCHEME;
 use crate::engram::LinkTarget;
@@ -81,7 +83,11 @@ pub fn relink(source: &str, read_in: &str, written_in: &str, spec: &Relink<'_>) 
     if !spec.changes_address() && read_in == written_in {
         return (source.to_string(), 0);
     }
-    rewrite_body(source, &|line| relink_line(line, read_in, written_in, spec))
+    rewrite_body_lines(source, BodyGate::Lossless, &|line| {
+        through(LinkDialect::Addressed, line, |l| {
+            relink_line(l, read_in, written_in, spec)
+        })
+    })
 }
 
 /// Rewrite the domain part of every `[[x:target]]` wikilink and every
@@ -89,20 +95,75 @@ pub fn relink(source: &str, read_in: &str, written_in: &str, spec: &Relink<'_>) 
 /// different name. Same scan as [`relink`]: body only, fences and inline
 /// code untouched, every other byte kept.
 pub fn respell_domains(source: &str, respell: &dyn Fn(&str) -> Option<String>) -> (String, usize) {
-    rewrite_body(source, &|line| respell_line(line, respell))
+    respell_domains_with(source, BodyGate::Lossless, respell)
 }
 
-/// Walk the body one line at a time exactly as [`relink`] and
-/// [`respell_domains`] both need to: frontmatter kept verbatim, a fenced or
-/// unparseable source left untouched, and a line handed to `line_fn` only
-/// when it can plausibly hold a wikilink or a `crystalline://` URL.
-fn rewrite_body(source: &str, line_fn: &dyn Fn(&str) -> (String, usize)) -> (String, usize) {
-    let Ok(lossless) = parse_engram_lossless(source) else {
-        return (source.to_string(), 0);
+/// [`respell_domains`] over a body the gate names: `BodyGate::Split` for a
+/// document that is never an engram.
+pub fn respell_domains_with(
+    source: &str,
+    gate: BodyGate,
+    respell: &dyn Fn(&str) -> Option<String>,
+) -> (String, usize) {
+    rewrite_body_lines(source, gate, &|line| {
+        through(LinkDialect::Addressed, line, |l| respell_line(l, respell))
+    })
+}
+
+/// How a rewrite finds the body of the source it walks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyGate {
+    /// An engram: the body as the lossless engram parser cuts it, and a
+    /// source whose frontmatter does not parse comes back untouched (the
+    /// index never read a reference out of it either).
+    Lossless,
+    /// A document that is never an engram: the body after a frontmatter
+    /// block when there is one (never parsed), else the whole source.
+    Split,
+}
+
+/// The links a rewrite follows. Each dialect knows which lines can hold one,
+/// and its line rewrite does the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkDialect {
+    /// Engram references: wikilinks and `crystalline://` addresses.
+    Addressed,
+}
+
+impl LinkDialect {
+    /// Whether `line` can hold a link of this dialect at all: the cheap test
+    /// before a line is handed to the rewrite.
+    pub fn may_hold(self, line: &str) -> bool {
+        match self {
+            LinkDialect::Addressed => line.contains("[[") || line.contains(SCHEME),
+        }
+    }
+}
+
+/// Walk the body one line at a time: frontmatter kept verbatim, fenced lines
+/// kept, every other line handed to `line`, which answers the line and how
+/// many links it changed. Every byte outside a changed line is kept, CR
+/// included. The one walker every link rewrite runs on.
+pub(crate) fn rewrite_body_lines(
+    source: &str,
+    gate: BodyGate,
+    line: &dyn Fn(&str) -> (String, usize),
+) -> (String, usize) {
+    let (body_start, body_line_start) = match gate {
+        BodyGate::Lossless => match parse_engram_lossless(source) {
+            Ok(lossless) => (lossless.body_span.start, lossless.body_line_start),
+            Err(_) => return (source.to_string(), 0),
+        },
+        BodyGate::Split => match crate::frontmatter::split_frontmatter(source) {
+            Some(parts) => {
+                let start = source.len() - parts.body.len();
+                (start, source[..start].matches('\n').count() + 1)
+            }
+            None => (0, 1),
+        },
     };
-    let body_start = lossless.body_span.start;
     let body = &source[body_start..];
-    let lines = body_lines(body, lossless.body_line_start);
+    let lines = body_lines(body, body_line_start);
     let mut out = String::with_capacity(source.len());
     out.push_str(&source[..body_start]);
     let mut count = 0usize;
@@ -113,16 +174,29 @@ fn rewrite_body(source: &str, line_fn: &dyn Fn(&str) -> (String, usize)) -> (Str
         if index > 0 {
             out.push('\n');
         }
-        let in_fence = lines.get(index).is_some_and(|line| line.in_fence);
-        if in_fence || !(raw.contains("[[") || raw.contains(SCHEME)) {
+        if lines.get(index).is_some_and(|l| l.in_fence) {
             out.push_str(raw);
             continue;
         }
-        let (rewritten, n) = line_fn(raw);
+        let (rewritten, n) = line(raw);
         out.push_str(&rewritten);
         count += n;
     }
     (out, count)
+}
+
+/// One line through a dialect's rewrite, skipped when the dialect says the
+/// line cannot hold a link.
+fn through(
+    dialect: LinkDialect,
+    raw: &str,
+    rewrite: impl Fn(&str) -> (String, usize),
+) -> (String, usize) {
+    if dialect.may_hold(raw) {
+        rewrite(raw)
+    } else {
+        (raw.to_string(), 0)
+    }
 }
 
 /// One body line, outside any fence.
@@ -539,5 +613,42 @@ mod tests {
     fn an_unparseable_source_comes_back_unchanged() {
         let src = "---\nnot: [valid\n---\n[[old:x]]\n";
         assert_eq!(respell_domains(src, &old_to_new), (src.to_string(), 0));
+    }
+
+    #[test]
+    fn the_split_gate_rewrites_a_body_the_engram_parser_refuses() {
+        // Frontmatter that is no engram's (a list where a mapping goes) and
+        // no frontmatter at all: Lossless leaves both alone, Split walks
+        // their bodies, fences and inline code untouched as ever.
+        let respell = |d: &str| (d == "old").then(|| "new".to_string());
+        let odd = "---\n- \"[[old:z]]\"\n---\n\nSee [[old:a]].\n\n```\n[[old:b]]\n```\n";
+        assert_eq!(
+            respell_domains_with(odd, BodyGate::Lossless, &respell),
+            (odd.to_string(), 0)
+        );
+        let (out, n) = respell_domains_with(odd, BodyGate::Split, &respell);
+        assert_eq!(
+            n, 1,
+            "the frontmatter is kept verbatim, links and all: {out}"
+        );
+        assert!(
+            out.starts_with("---\n- \"[[old:z]]\"\n---\n")
+                && out.contains("[[new:a]]")
+                && out.contains("[[old:b]]")
+        );
+        let bare = "# Page\r\n\r\nSee `[[old:c]]` and crystalline://old/x.\r\n";
+        let (out, n) = respell_domains_with(bare, BodyGate::Split, &respell);
+        assert_eq!(n, 1);
+        assert_eq!(
+            out, "# Page\r\n\r\nSee `[[old:c]]` and crystalline://new/x.\r\n",
+            "CRLF and inline code kept"
+        );
+    }
+
+    #[test]
+    fn the_addressed_dialect_names_the_lines_it_may_rewrite() {
+        assert!(LinkDialect::Addressed.may_hold("see [[a]]"));
+        assert!(LinkDialect::Addressed.may_hold("see crystalline://eng/a"));
+        assert!(!LinkDialect::Addressed.may_hold("see [a](b.md)"));
     }
 }

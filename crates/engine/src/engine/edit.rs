@@ -806,6 +806,14 @@ impl Engine {
         model: Option<&str>,
         ack: Option<&AckDraft>,
     ) -> Result<(String, Option<String>)> {
+        // The three section edits share one dispatch with every other kind
+        // of document that edits sections.
+        if let Some(op) = SectionOp::parse(&p.operation, p.include_subsections) {
+            let content = self.require_content(p)?;
+            let section = self.require_section(p)?;
+            let edit = apply_section_op(source, op, section, content).map_err(section_err)?;
+            return Ok((edit.text, edit.heading_stripped));
+        }
         let text = match p.operation.as_str() {
             "append" => append_body(source, self.require_content(p)?),
             "prepend" => prepend_body(source, self.require_content(p)?),
@@ -831,29 +839,6 @@ impl Engine {
                     )));
                 }
                 source.replace(find, content)
-            }
-            // The two operations whose content lands under a heading that
-            // stays: a repeat of that heading is dropped by the core edit, and
-            // reported here so the receipt can say so.
-            "replace_section" => {
-                let content = self.require_content(p)?;
-                let section = self.require_section(p)?;
-                let edit =
-                    replace_section_reporting(source, section, content, p.include_subsections)
-                        .map_err(section_err)?;
-                return Ok((edit.text, edit.heading_stripped));
-            }
-            "insert_before_section" => {
-                let content = self.require_content(p)?;
-                let section = self.require_section(p)?;
-                insert_before_section(source, section, content).map_err(section_err)?
-            }
-            "insert_after_section" => {
-                let content = self.require_content(p)?;
-                let section = self.require_section(p)?;
-                let edit = insert_after_section_reporting(source, section, content)
-                    .map_err(section_err)?;
-                return Ok((edit.text, edit.heading_stripped));
             }
             "set_frontmatter" => {
                 Self::apply_set_frontmatter(source, p, permalink, actor, model, ack)?
