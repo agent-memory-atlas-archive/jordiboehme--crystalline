@@ -1067,17 +1067,18 @@ pub const FILE_STAMPS_SQL: &str =
 /// reindex. A row that matches both arms comes back twice, which the caller
 /// reads as the same id.
 #[doc(hidden)]
+pub const UPSERT_PROBE_SQL: &str = "SELECT id, path FROM engram WHERE domain_id=?1 AND path=?2 AND actor=?4 \
+     UNION ALL SELECT id, path FROM engram WHERE domain_id=?1 AND permalink=?3 AND actor=?4";
+
 /// The probe behind [`Store::folder_holds_other`]: one base row under a folder
 /// other than the write's own path, at any depth, never a reserved name. A
 /// byte range over `path`, which SQLite compares bytewise by default, so
 /// `idx_engram_path_actor` seeks it (pinned in `tests/it/plans.rs`).
+#[doc(hidden)]
 pub const FOLDER_HOLDS_OTHER_SQL: &str = "SELECT 1 FROM engram e WHERE e.domain_id=?1 AND e.actor = '' \
      AND e.path >= ?2 AND e.path < ?3 AND e.path <> ?4 \
      AND substr(e.path, -9) <> '/index.md' AND substr(e.path, -7) <> '/log.md' \
      LIMIT 1";
-
-pub const UPSERT_PROBE_SQL: &str = "SELECT id, path FROM engram WHERE domain_id=?1 AND path=?2 AND actor=?4 \
-     UNION ALL SELECT id, path FROM engram WHERE domain_id=?1 AND permalink=?3 AND actor=?4";
 
 /// The ids of one engram's observations, read before their tags are deleted.
 #[doc(hidden)]

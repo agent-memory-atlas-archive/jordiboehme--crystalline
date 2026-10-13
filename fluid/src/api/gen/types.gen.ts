@@ -3311,6 +3311,10 @@ export type UnacknowledgeFindingErrors = {
      */
     404: ProblemDetail;
     /**
+     * A `V112` withdrawal took nothing back: the pair's acknowledgment stays only on pages this caller may not rewrite (a draft shared to read and not joined) or whose rewrite failed, and the detail names them.
+     */
+    409: ProblemDetail;
+    /**
      * The body is not `application/json`.
      */
     415: ProblemDetail;

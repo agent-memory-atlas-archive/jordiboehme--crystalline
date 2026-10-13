@@ -8388,6 +8388,9 @@ async fn a_joined_remove_v112_stays_on_the_joined_page() {
 
 /// The take-back on the other engrams is best effort: one holder whose
 /// rewrite fails is named with the reason, and the next one is still cleared.
+/// The draft arm's seam fails before it writes, so the failed holder really
+/// keeps its entry here; a failure after a file was written is
+/// `a_holder_written_before_its_error_is_named_as_maybe_taken_back`.
 #[tokio::test]
 async fn a_failed_holder_is_named_and_the_take_back_goes_on() {
     let f = review_fixture().await;
@@ -8473,9 +8476,9 @@ async fn a_failed_holder_is_named_and_the_take_back_goes_on() {
 }
 
 /// The wait for the store has a ceiling of its own, the neighbours advisory's
-/// two seconds: a probe stuck behind a holder that does not let go gives up
-/// with no hint rather than holding the write's answer for as long as the
-/// holder takes.
+/// two seconds plus 250 ms: a probe stuck behind a holder that does not let go
+/// gives up with no hint rather than holding the write's answer for as long as
+/// the holder takes.
 #[tokio::test]
 async fn the_close_folder_probe_gives_up_on_a_store_held_past_its_ceiling() {
     let f = fixture().await;
@@ -8497,7 +8500,8 @@ async fn the_close_folder_probe_gives_up_on_a_store_held_past_its_ceiling() {
         .unwrap();
     let probe = Engine::close_folder_probe(&receipt);
 
-    let ceiling = crystalline_service::similar::SIMILAR_TIMEOUT;
+    let ceiling =
+        crystalline_service::similar::SIMILAR_TIMEOUT + std::time::Duration::from_millis(250);
     let store = f.engine.store();
     let held = store.lock().await;
     let started = std::time::Instant::now();
@@ -8520,6 +8524,43 @@ async fn the_close_folder_probe_gives_up_on_a_store_held_past_its_ceiling() {
     let mut receipt = receipt;
     Engine::attach_close_folders(&mut receipt, &found);
     assert!(receipt.get("close_folders").is_none(), "{receipt}");
+}
+
+/// A probe queued behind a neighbours advisory that used its whole two
+/// seconds still gets the store when the advisory lets go: the probe's ceiling
+/// is a little longer than the advisory's, so a tie does not lose the hint.
+#[tokio::test]
+async fn the_close_folder_probe_outwaits_an_advisory_that_used_its_whole_budget() {
+    let f = fixture().await;
+    let alice = account("alice");
+    let in_folder = |folder: &str, title: &str| WriteParams {
+        folder: Some(folder.to_string()),
+        ..write_params("team", title, "A fact about the topic.")
+    };
+    for title in ["Roadmap", "Budget"] {
+        f.engine
+            .write_engram_as(&in_folder("planview", title), None, &alice)
+            .await
+            .unwrap();
+    }
+    let receipt = f
+        .engine
+        .write_engram_as(&in_folder("planview-work", "Standup"), None, &alice)
+        .await
+        .unwrap();
+    let probe = Engine::close_folder_probe(&receipt);
+
+    let store = f.engine.store();
+    let held = store.lock().await;
+    let (found, ()) = tokio::join!(
+        f.engine.close_folders_for(probe.as_ref(), &alice),
+        async move {
+            tokio::time::sleep(crystalline_service::similar::SIMILAR_TIMEOUT).await;
+            drop(held);
+        },
+    );
+    assert_eq!(found.len(), 1, "the hint survives the tie: {found:?}");
+    assert_eq!(found[0].folder, "planview");
 }
 
 /// The close-folder probe's 500 ms budget is for its own queries, not for the

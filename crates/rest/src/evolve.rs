@@ -23,6 +23,7 @@ use super::{
     ApiError, ApiJson, ApiPath, ApiQuery, ProblemDetail, RestState, csv, refuse_read_only,
     require_domain_write,
 };
+use crate::engine::EngineError;
 use crate::params::{EvolveParams, ListDomainsParams};
 
 /// The query string `GET /evolve` takes, mirroring [`EvolveParams`] minus its
@@ -516,6 +517,15 @@ pub async fn acknowledge(
             content_type = "application/problem+json",
         ),
         (
+            status = 409,
+            description = "A `V112` withdrawal took nothing back: the pair's \
+                           acknowledgment stays only on pages this caller may \
+                           not rewrite (a draft shared to read and not joined) \
+                           or whose rewrite failed, and the detail names them.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
             status = 415,
             description = "The body is not `application/json`.",
             body = ProblemDetail,
@@ -547,7 +557,13 @@ pub async fn unacknowledge(
             Some(&format!("human:{}", caller.name())),
             &identity.scope(),
         )
-        .await?;
+        .await
+        // A `V112` withdrawal whose entries all sit on pages this caller may
+        // not rewrite took nothing back, and says which pages hold them.
+        .map_err(|e| match e {
+            EngineError::Conflict(message) => ApiError::conflict(message),
+            other => other.into(),
+        })?;
     if !removed {
         return Err(ApiError::not_found(format!(
             "no acknowledgment of {} on '{}' in domain '{}'",

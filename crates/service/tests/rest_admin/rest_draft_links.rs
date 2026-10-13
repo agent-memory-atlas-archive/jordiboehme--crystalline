@@ -3730,4 +3730,24 @@ async fn remove_v112_skips_and_names_a_page_shared_to_read() {
     assert_eq!(entries.as_array().map(Vec::len), Some(1), "{alices}");
     assert_eq!(entries[0]["rule"], "V112", "{alices}");
     assert_eq!(entries[0]["scope"], "meeting, meetings", "{alices}");
+
+    // Fluid's withdraw, now that the pair's entry stands only on the page bob
+    // may not rewrite: not a 404 "nothing to withdraw" but a 409 naming it.
+    let withdrawn = bob
+        .request(
+            f.addr,
+            reqwest::Method::DELETE,
+            "/api/v1/domains/team/evolve/ack",
+        )
+        .json(&serde_json::json!({"permalink": "meeting/agenda", "rule": "V112"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(withdrawn.status(), 409);
+    let problem: serde_json::Value = withdrawn.json().await.unwrap();
+    let detail = problem["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("meeting/kickoff") && detail.contains("shared with you to read"),
+        "{problem}"
+    );
 }

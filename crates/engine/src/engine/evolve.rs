@@ -793,10 +793,26 @@ impl Engine {
         let done = self
             .take_back_folder_pairs(&view, holders, &actor, acting)
             .await;
+        let removed = here || !done.removed.is_empty();
+        // Nothing went, and entries stay only on engrams this caller could not
+        // rewrite: a conflict naming them, never "nothing to withdraw".
+        if !removed && !done.not_removed.is_empty() {
+            let named: Vec<String> = done
+                .not_removed
+                .iter()
+                .map(|(permalink, reason)| format!("'{permalink}' ({reason})"))
+                .collect();
+            return Err(EngineError::Conflict(format!(
+                "no {rule} acknowledgment could be taken back for '{identifier}'; the pair's acknowledgment stays on {}",
+                named.join(", ")
+            )));
+        }
+        // The answer is a bool, so a holder left behind beside a removal that
+        // happened can only be logged.
         for (permalink, reason) in &done.not_removed {
             tracing::warn!("V112 acknowledgment on '{permalink}' not withdrawn: {reason}");
         }
-        Ok(here || !done.removed.is_empty())
+        Ok(removed)
     }
 
     /// The `V112` pairs a take-back on `desc` answers for: the one `named`
@@ -925,7 +941,7 @@ impl Engine {
                 continue;
             }
             let written = self
-                .apply_source_edit(
+                .apply_source_edit_staged(
                     &holder.desc,
                     &holder.source,
                     view,
@@ -933,6 +949,8 @@ impl Engine {
                     actor,
                     None,
                     acting,
+                    None,
+                    false,
                     |current| {
                         Ok(holder.pairs.iter().fold(current.to_string(), |text, pair| {
                             without_ack(&text, FOLDER_PAIR_RULE, Some(pair))
@@ -942,9 +960,19 @@ impl Engine {
                 .await;
             match written {
                 Ok(_) => done.removed.push(holder.desc.permalink),
-                Err(e) => done
+                // A failure after the bytes went down (a file written, then a
+                // reindex that failed) may well have taken the entry back, so
+                // the reason says that instead of claiming it is still there.
+                Err(failure) if failure.wrote => done.not_removed.push((
+                    holder.desc.permalink,
+                    format!(
+                        "the rewrite reported an error after the file was written: {}; it may already be taken back",
+                        failure.error
+                    ),
+                )),
+                Err(failure) => done
                     .not_removed
-                    .push((holder.desc.permalink, e.to_string())),
+                    .push((holder.desc.permalink, failure.error.to_string())),
             }
         }
         done

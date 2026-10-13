@@ -1741,6 +1741,38 @@ mod tests {
                 .any(|line| line.contains("idx_engram_base_path_c")),
             "the probe seeks on the index: {plan:#?}"
         );
+
+        // The shipped statement, prepared with its parameters and forced onto
+        // the generic plan a prepared statement settles on after its first
+        // executions: that plan seeks the index too, whatever the folder.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "SET plan_cache_mode = force_generic_plan; \
+             PREPARE folder_probe(BIGINT, TEXT, TEXT, TEXT) AS {}",
+            crate::postgres::FOLDER_HOLDS_OTHER_SQL
+        )))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let generic: Vec<(String,)> =
+            sqlx::query_as("EXPLAIN EXECUTE folder_probe(1, 'newf/', 'newf0', 'newf/x.md')")
+                .fetch_all(&mut conn)
+                .await
+                .unwrap();
+        let generic: Vec<String> = generic.into_iter().map(|(line,)| line).collect();
+        assert!(
+            generic.iter().any(|line| line.contains("$2")),
+            "the plan is the generic one, over the parameters: {generic:#?}"
+        );
+        assert!(
+            generic
+                .iter()
+                .any(|line| line.contains("idx_engram_base_path_c")),
+            "the generic plan seeks on the index: {generic:#?}"
+        );
+        sqlx::raw_sql("DEALLOCATE folder_probe; RESET plan_cache_mode")
+            .execute(&mut conn)
+            .await
+            .unwrap();
         assert!(
             !store
                 .folder_holds_other(crate::DomainId(1), "newf/", "newf/x.md")

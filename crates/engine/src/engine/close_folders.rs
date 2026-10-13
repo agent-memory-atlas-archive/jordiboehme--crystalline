@@ -16,10 +16,15 @@ use crystalline_core::folders::{
 /// advisory.
 const CLOSE_FOLDER_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// How long the probe waits for the store lock at most, the neighbours
-/// advisory's own ceiling ([`crate::similar::SIMILAR_TIMEOUT`]). A store held
-/// longer than that leaves the hint out.
-const LOCK_CEILING: std::time::Duration = crate::similar::SIMILAR_TIMEOUT;
+/// How long the probe waits for the store lock at most: the neighbours
+/// advisory's own ceiling ([`crate::similar::SIMILAR_TIMEOUT`]) plus 250 ms. The
+/// probe runs beside that advisory and is often queued behind it, so with the
+/// same ceiling a probe waiting out an advisory that used its whole budget
+/// would give up at the very moment the lock came free, and the hint would be
+/// lost on a tie. The margin lets it take the lock the advisory hands over.
+/// A store held longer than that leaves the hint out.
+const LOCK_CEILING: std::time::Duration =
+    crate::similar::SIMILAR_TIMEOUT.saturating_add(std::time::Duration::from_millis(250));
 
 /// What the close-folder probe needs from a write receipt, taken off it before
 /// the receipt moves on to the neighbours advisory so the two probes can run at
@@ -52,7 +57,7 @@ impl Engine {
     /// their own drafts over them, never another account's), or nothing.
     ///
     /// A hint only, so it can never fail a write: a store error, a store
-    /// still busy after two seconds, or the probe's 500 ms budget (counted
+    /// still busy past its ceiling (2.25 s, `LOCK_CEILING`), or the probe's 500 ms budget (counted
     /// from the moment it holds the store lock) is a debug line and an empty
     /// answer.
     ///

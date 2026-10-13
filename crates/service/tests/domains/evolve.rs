@@ -3542,6 +3542,44 @@ async fn remove_v112_on_a_moved_anchor_finds_the_entry_on_the_old_one() {
     assert!(refused.contains("nothing to remove"), "{refused}");
 }
 
+/// A holder whose rewrite fails after its file was written is named with a
+/// reason that says so: its entry may already be gone, and the receipt does
+/// not claim otherwise.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_holder_written_before_its_error_is_named_as_maybe_taken_back() {
+    let (tmp, engine) = folder_fixture(&[
+        "meeting/kickoff.md",
+        "meetings/a.md",
+        "meetings/b.md",
+        "meetings/c.md",
+        "meetings/d.md",
+    ])
+    .await;
+    acknowledge(&engine, "meeting/kickoff", "V112 not the same topic").await;
+    add_folder_engram(&tmp, &engine, "meeting/intro.md").await;
+    acknowledge(&engine, "meeting/intro", "V112 still not").await;
+    add_folder_engram(&tmp, &engine, "meeting/agenda.md").await;
+
+    // The file arm's seam fails after the file is written.
+    engine.fail_next_source_edit();
+    let receipt = acknowledge(&engine, "meeting/agenda", "remove V112").await;
+    assert_eq!(
+        receipt["evolve_ack_removed_from"],
+        serde_json::json!(["meeting/kickoff"]),
+        "{receipt}"
+    );
+    let left = &receipt["evolve_ack_not_removed_from"];
+    assert_eq!(left[0]["permalink"], "meeting/intro", "{receipt}");
+    let reason = left[0]["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("after the file was written")
+            && reason.contains("may already be taken back"),
+        "{reason}"
+    );
+    let intro = std::fs::read_to_string(tmp.path().join("eng/meeting/intro.md")).unwrap();
+    assert!(!intro.contains("evolve_ack"), "the bytes did land: {intro}");
+}
+
 /// A removal on an engram that holds nothing writes nothing there, so the
 /// token it presents is checked before the other engrams change: a stale one
 /// is refused and every entry stays.
