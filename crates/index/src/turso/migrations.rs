@@ -2381,15 +2381,15 @@ mod tests {
         let store = crate::TursoStore::open(&db_path).await.unwrap();
         assert_eq!(store.store_info().await.unwrap().schema_version, 19);
 
-        let base_rows = meta_rows(&store.conn, 7).await;
+        let base_rows = meta_rows(store.conn.raw(), 7).await;
         assert_eq!(base_rows, crate::store::meta_value_rows(&base));
         assert_eq!(
-            meta_rows(&store.conn, 8).await,
+            meta_rows(store.conn.raw(), 8).await,
             crate::store::meta_value_rows(&draft),
             "a draft gets its rows too"
         );
         assert!(
-            meta_rows(&store.conn, 9).await.is_empty(),
+            meta_rows(store.conn.raw(), 9).await.is_empty(),
             "metadata that does not parse gets no rows"
         );
         for (key, value) in [

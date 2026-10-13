@@ -9,7 +9,9 @@
 
 use std::collections::HashSet;
 
-use turso::{Connection, Row, Value};
+use turso::{Row, Value};
+
+use super::conn::Conn;
 
 use crate::alias::AliasMap;
 use crate::error::{IndexError, Result};
@@ -57,7 +59,7 @@ const SINGLE_SOURCE_PENALTY: f64 = 0.85;
 /// `candidate_cap` bounds the lexical prefilter; production passes
 /// [`crate::store::LEXICAL_CANDIDATE_CAP`].
 pub(super) async fn run_search(
-    conn: &Connection,
+    conn: &Conn,
     query: &SearchQuery,
     coverage: Option<&EmbeddingCoverage>,
     aliases: &AliasMap,
@@ -94,7 +96,7 @@ fn require_coverage(coverage: Option<&EmbeddingCoverage>) -> Result<&EmbeddingCo
 /// every search mode routes its final page through, so tagging is defined once
 /// and never duplicated per mode.
 async fn finish_page(
-    conn: &Connection,
+    conn: &Conn,
     mut hits: Vec<(i64, SearchHit)>,
     page: usize,
     limit: usize,
@@ -114,7 +116,7 @@ async fn finish_page(
 /// engram ids only (never the candidate prefilter) and is skipped when the page
 /// is empty. An untagged engram keeps its empty vec. An observation-kind hit is
 /// keyed by its engram id, so it carries that engram's tags like any other.
-async fn attach_tags(conn: &Connection, hits: &mut [(i64, SearchHit)]) -> Result<()> {
+async fn attach_tags(conn: &Conn, hits: &mut [(i64, SearchHit)]) -> Result<()> {
     if hits.is_empty() {
         return Ok(());
     }
@@ -217,7 +219,7 @@ pub(super) fn drafts_only_on(
 /// The lexical modes: Text, Title and Permalink. A LIKE-candidate prefilter in
 /// SQL, ranked in Rust by a weighted term-frequency score.
 async fn run_lexical(
-    conn: &Connection,
+    conn: &Conn,
     query: &SearchQuery,
     aliases: &AliasMap,
     candidate_cap: usize,
@@ -285,7 +287,7 @@ async fn run_lexical(
 /// domain can never pull the whole matched corpus into memory. See
 /// [`crate::store::LEXICAL_CANDIDATE_CAP`] for what the cut means for ranking.
 async fn scored_lexical(
-    conn: &Connection,
+    conn: &Conn,
     query: &SearchQuery,
     terms: &[String],
     aliases: &AliasMap,
@@ -348,7 +350,7 @@ async fn scored_lexical(
 }
 
 async fn filter_only(
-    conn: &Connection,
+    conn: &Conn,
     actor_screen: &str,
     and_filters: &str,
     params: Vec<Value>,
@@ -408,7 +410,7 @@ fn pack_vector(v: &[f32]) -> Vec<u8> {
 /// Semantic search over chunk embeddings. Requires the caller to have embedded
 /// the query and set the active model on the [`SearchQuery`].
 async fn run_semantic(
-    conn: &Connection,
+    conn: &Conn,
     query: &SearchQuery,
     coverage: &EmbeddingCoverage,
     aliases: &AliasMap,
@@ -475,7 +477,7 @@ async fn run_semantic(
 /// Hits are deduplicated per engram, keeping the best score, and every filter is
 /// pushed into the SQL of both halves rather than dropped afterwards.
 async fn run_hybrid(
-    conn: &Connection,
+    conn: &Conn,
     query: &SearchQuery,
     coverage: &EmbeddingCoverage,
     aliases: &AliasMap,
@@ -748,7 +750,7 @@ pub fn semantic_hydrate_sql(actor_screen: &str, ids: &str) -> String {
 /// distance order - but the engram bodies are read once per hit instead of once
 /// per chunk fed to a sorter.
 async fn semantic_candidates(
-    conn: &Connection,
+    conn: &Conn,
     query: &SearchQuery,
     qvec: &[f32],
     active: &str,
@@ -1262,7 +1264,7 @@ impl Candidate {
         score
     }
 
-    async fn into_hit(self, conn: &Connection, terms: &[String], score: f64) -> Result<SearchHit> {
+    async fn into_hit(self, conn: &Conn, terms: &[String], score: f64) -> Result<SearchHit> {
         let in_title = terms.iter().any(|t| count_occ(&self.title_lower, t) > 0);
         let in_desc =
             self.description.is_some() && terms.iter().any(|t| count_occ(&self.desc_lower, t) > 0);
@@ -1355,7 +1357,7 @@ impl Candidate {
 }
 
 async fn matching_observation(
-    conn: &Connection,
+    conn: &Conn,
     engram_id: i64,
     terms: &[String],
 ) -> Result<Option<Row>> {
@@ -1450,7 +1452,7 @@ pub fn node_hydrate_sql(node_screen: &str, list: &str) -> String {
 /// team shares. Deliberate, and the reason a reader seeded on their own draft
 /// meets what it points at rather than what points at the page beneath it.
 pub(super) async fn neighbors(
-    conn: &Connection,
+    conn: &Conn,
     ids: &[EngramId],
     depth: u8,
     actor: Option<&str>,
