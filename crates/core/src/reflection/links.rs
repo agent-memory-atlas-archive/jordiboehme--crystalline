@@ -5,10 +5,17 @@
 //! when there is one, fences untouched, CR kept): only inline links
 //! `[text](target)` whose target is relative (no scheme, no leading `/`, not
 //! a bare `#fragment`) are touched, outside inline code, and a title after
-//! the target and a `#fragment` stay as written. A target that climbs out of
-//! `reflections/` is left alone.
+//! the target and a `#fragment` stay as written. A target is read in either
+//! markdown form, bare or in angle brackets, percent-decoded, and written
+//! back in angle brackets when it holds a space or a parenthesis (the form
+//! the folder indexes write). A target that climbs out of the domain is left
+//! alone.
 
+use crate::attachment::percent_decode_target;
+use crate::index::escape_link_url;
 use crate::relink::{BodyGate, LinkDialect, rewrite_body_lines};
+
+use super::layout::domain_rel;
 
 /// The folder a reflection path sits in, `""` at the root.
 fn folder_of(path: &str) -> &str {
@@ -97,63 +104,102 @@ fn code_spans(line: &str) -> Vec<(usize, usize)> {
     spans
 }
 
+/// One link destination, read from just after a `](`.
+struct Destination<'a> {
+    /// The path, percent-decoded, without a `#fragment` or a title.
+    path: String,
+    /// The `#fragment` as written, without the `#`.
+    fragment: Option<&'a str>,
+    /// What follows the target up to the closing parenthesis: a title.
+    rest: &'a str,
+    /// The byte offset of the closing parenthesis.
+    close: usize,
+}
+
+/// The byte offset of the depth-zero `)` at or after `from`, the rule the
+/// link target scan (`crate::attachment`'s `link_targets`) reads a
+/// destination by.
+fn closing_paren(line: &str, from: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    for (offset, byte) in line.as_bytes()[from..].iter().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(from + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The destination that starts at `open` (just after `](`), or `None` when
+/// none closes on this line.
+fn destination(line: &str, open: usize) -> Option<Destination<'_>> {
+    let (target, rest, close) = if line[open..].starts_with('<') {
+        // `[a](<my page.md> "Title")`: the target runs to the first `>`.
+        let gt = open + 1 + line[open + 1..].find('>')?;
+        let close = closing_paren(line, gt + 1)?;
+        (&line[open + 1..gt], &line[gt + 1..close], close)
+    } else {
+        let close = closing_paren(line, open)?;
+        let inside = &line[open..close];
+        // A title after the target (`[a](b.md "Title")`) is kept as written.
+        let target_len = inside.find(char::is_whitespace).unwrap_or(inside.len());
+        let (target, rest) = inside.split_at(target_len);
+        (target, rest, close)
+    };
+    let (path, fragment) = match target.split_once('#') {
+        Some((p, f)) => (p, Some(f)),
+        None => (target, None),
+    };
+    Some(Destination {
+        path: percent_decode_target(path),
+        fragment,
+        rest,
+        close,
+    })
+}
+
 /// One line of the reflection dialect: every relative link target outside
-/// inline code goes through `map`, which is handed the path (no title, no
-/// `#fragment`) and answers the replacement or `None` to keep it. The
-/// closing parenthesis is the depth-zero one, the rule the link target scan
-/// (`crate::attachment`'s `link_targets`) reads a destination by.
+/// inline code goes through `map`, which is handed the path (decoded, no
+/// title, no `#fragment`) and answers the replacement or `None` to keep it.
+/// A `](` that opens no destination is read past, so a later link on the
+/// line is still found.
 fn map_line(line: &str, map: &dyn Fn(&str) -> Option<String>) -> (String, usize) {
     let spans = code_spans(line);
     let in_code = |at: usize| spans.iter().any(|(s, e)| (*s..*e).contains(&at));
-    let bytes = line.as_bytes();
     let mut out = String::with_capacity(line.len());
     let mut changed = 0;
     let mut cursor = 0;
     while let Some(found) = line[cursor..].find("](") {
         let open = cursor + found + 2;
-        let mut depth = 1usize;
-        let mut close = None;
-        for (offset, byte) in bytes[open..].iter().enumerate() {
-            match byte {
-                b'(' => depth += 1,
-                b')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        close = Some(open + offset);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        let Some(close) = close else { break };
         out.push_str(&line[cursor..open]);
-        let inside = &line[open..close];
-        // A title after the target (`[a](b.md "Title")`) is kept as written.
-        let target_len = inside.find(char::is_whitespace).unwrap_or(inside.len());
-        let (target, rest) = inside.split_at(target_len);
-        let (path, fragment) = match target.split_once('#') {
-            Some((p, f)) => (p, Some(f)),
-            None => (target, None),
+        cursor = open;
+        let Some(dest) = destination(line, open) else {
+            continue;
         };
-        let replacement = if in_code(open - 2) || !is_relative(path) {
+        let replacement = if in_code(open - 2) || !is_relative(&dest.path) {
             None
         } else {
-            map(path)
+            map(&dest.path)
         };
         match replacement {
-            Some(new) => {
-                out.push_str(&new);
-                if let Some(f) = fragment {
-                    out.push('#');
-                    out.push_str(f);
+            Some(mut target) => {
+                if let Some(f) = dest.fragment {
+                    target.push('#');
+                    target.push_str(f);
                 }
-                out.push_str(rest);
+                out.push_str(&escape_link_url(&target));
+                out.push_str(dest.rest);
                 changed += 1;
             }
-            None => out.push_str(inside),
+            None => out.push_str(&line[open..dest.close]),
         }
-        cursor = close;
+        cursor = dest.close;
     }
     out.push_str(&line[cursor..]);
     (out, changed)
@@ -182,11 +228,13 @@ pub fn rewrite_links_to(source: &str, source_path: &str, from: &str, to: &str) -
 }
 
 /// Rebase the relative links inside a reflection that moved from `from` to
-/// `to`, so each still points at the file it pointed at.
+/// `to`, so each still points at the file it pointed at. The links resolve
+/// inside the domain, so one that leaves `reflections/` for another file of
+/// the domain still lands on it after the move changes the depth.
 pub fn rebase_links(source: &str, from: &str, to: &str) -> (String, usize) {
     map_links(source, &|target| {
-        let resolved = resolve(from, target)?;
-        let rebased = relative_to(to, &resolved);
+        let resolved = resolve(&domain_rel(from), target)?;
+        let rebased = relative_to(&domain_rel(to), &resolved);
         (rebased != target.trim_start_matches("./")).then_some(rebased)
     })
 }
@@ -246,6 +294,42 @@ mod tests {
         let (out, n) = rewrite_links_to(source, "home.md", "guides/a_(draft).md", "ops/a.md");
         assert_eq!(n, 1, "{out}");
         assert_eq!(out, "See [a](ops/a.md \"The draft\") and [b](b.md 'B').\n");
+    }
+
+    #[test]
+    fn a_link_out_to_the_domain_keeps_its_file_when_the_depth_changes() {
+        let source = "[m](../MANIFEST.md) and [n](../notes/a.md#top)\n";
+        let (out, n) = rebase_links(source, "a.md", "b/a.md");
+        assert_eq!(n, 2, "{out}");
+        assert_eq!(
+            out,
+            "[m](../../MANIFEST.md) and [n](../../notes/a.md#top)\n"
+        );
+    }
+
+    #[test]
+    fn a_target_with_a_space_is_written_in_angle_brackets_and_read_back() {
+        let source = "See [a](guides/a.md#top \"A\").\n";
+        let (out, n) = rewrite_links_to(source, "home.md", "guides/a.md", "ops/my page.md");
+        assert_eq!(n, 1);
+        assert_eq!(out, "See [a](<ops/my page.md#top> \"A\").\n");
+        let (back, n) = rewrite_links_to(&out, "home.md", "ops/my page.md", "ops/b.md");
+        assert_eq!(n, 1);
+        assert_eq!(back, "See [a](ops/b.md#top \"A\").\n");
+        let encoded = "See [c](ops/my%20page.md).\n";
+        let (out, n) = rewrite_links_to(encoded, "home.md", "ops/my page.md", "c.md");
+        assert_eq!(
+            (out.as_str(), n),
+            ("See [c](c.md).\n", 1),
+            "a percent-encoded target is read"
+        );
+    }
+
+    #[test]
+    fn a_bracket_that_opens_no_link_does_not_hide_a_later_one() {
+        let source = "x ](y and [a](b.md)\n";
+        let (out, n) = rewrite_links_to(source, "home.md", "b.md", "c.md");
+        assert_eq!((out.as_str(), n), ("x ](y and [a](c.md)\n", 1));
     }
 
     #[test]

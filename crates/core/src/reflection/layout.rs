@@ -1,6 +1,6 @@
 //! Where a Reflection's files live and what each one is.
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 
 use crate::parse::{body_lines, parse_heading};
 
@@ -24,6 +24,13 @@ pub fn is_under_reflections(rel: &str) -> bool {
         .is_some_and(|first| first.eq_ignore_ascii_case(REFLECTIONS_DIR))
 }
 
+/// Whether a path inside `reflections/` names the pact. The name is
+/// compared with ASCII case folded, the way the folder is: on a case-folding
+/// filesystem `pact.md` is the same file as `PACT.md`.
+fn is_pact(path: &str) -> bool {
+    path.eq_ignore_ascii_case(PACT_FILE)
+}
+
 /// A path inside `reflections/` as a domain-relative path.
 pub fn domain_rel(path: &str) -> String {
     format!("{REFLECTIONS_DIR}/{path}")
@@ -32,7 +39,8 @@ pub fn domain_rel(path: &str) -> String {
 /// Why `path` cannot name a reflection, or `Ok`. A reflection path is
 /// relative to `reflections/`, forward-slashed, ends in `.md`, has no empty,
 /// `.` or `..` segment, no hidden segment, no backslash, is not a threads
-/// file and does not take an OKF reserved name.
+/// file, does not take an OKF reserved name and does not spell the pact in
+/// another case.
 pub fn validate_reflection_path(path: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("the reflection path is empty".to_string());
@@ -64,6 +72,9 @@ pub fn validate_reflection_path(path: &str) -> Result<(), String> {
     if crate::is_reserved_file(name) {
         return Err(format!("'{path}' uses a reserved name ({name})"));
     }
+    if is_pact(path) && path != PACT_FILE {
+        return Err(format!("'{path}' names the pact; spell it {PACT_FILE}"));
+    }
     Ok(())
 }
 
@@ -93,22 +104,33 @@ pub enum ReflectionFile {
     Other,
 }
 
-/// Classify a path inside `reflections/`. The baseline prefix is read
-/// first, so a baseline of anything is a baseline.
+/// The page a threads file belongs to, when `path` is one of a valid page.
+fn threads_of(path: &str) -> Option<String> {
+    let of = format!("{}.md", path.strip_suffix(THREADS_SUFFIX)?);
+    validate_reflection_path(&of).is_ok().then_some(of)
+}
+
+/// Classify a path inside `reflections/`. The pact's name is matched with
+/// ASCII case folded, as the folder is. The baseline prefix is read first,
+/// so a baseline of a page or of a threads file is a baseline. A threads
+/// file or a baseline whose page could not be a reflection (hidden, reserved,
+/// climbing out) is `Other`, like any stray file.
 pub fn classify(path: &str) -> ReflectionFile {
-    if path == PACT_FILE {
+    if is_pact(path) {
         return ReflectionFile::Pact;
     }
     if let Some(of) = path.strip_prefix(&format!("{BASELINE_DIR}/")) {
-        return if of.ends_with(".md") {
+        let mirrors = validate_reflection_path(of).is_ok() || threads_of(of).is_some();
+        return if mirrors {
             ReflectionFile::Baseline { of: of.to_string() }
         } else {
             ReflectionFile::Other
         };
     }
-    if let Some(stem) = path.strip_suffix(THREADS_SUFFIX) {
-        return ReflectionFile::Threads {
-            of: format!("{stem}.md"),
+    if path.ends_with(THREADS_SUFFIX) {
+        return match threads_of(path) {
+            Some(of) => ReflectionFile::Threads { of },
+            None => ReflectionFile::Other,
         };
     }
     if validate_reflection_path(path).is_ok() {
@@ -164,7 +186,12 @@ impl Structure {
             return Structure { set: None };
         }
         let mut builder = GlobSetBuilder::new();
-        for glob in globs.iter().filter_map(|g| Glob::new(g).ok()) {
+        // `*` and `?` stay inside one folder (`guides/*.md` is the pages
+        // directly in `guides/`); `**` crosses folders.
+        let compiled = globs
+            .iter()
+            .filter_map(|g| GlobBuilder::new(g).literal_separator(true).build().ok());
+        for glob in compiled {
             builder.add(glob);
         }
         Structure {
@@ -206,7 +233,13 @@ mod tests {
 
     #[test]
     fn reflection_paths_are_validated() {
-        for ok in ["a.md", "guides/deploying.md", "PACT.md", "a/b/c/d.md"] {
+        for ok in [
+            "a.md",
+            "guides/deploying.md",
+            "PACT.md",
+            "a/b/c/d.md",
+            "guides/pact.md",
+        ] {
             assert!(validate_reflection_path(ok).is_ok(), "{ok}");
         }
         for bad in [
@@ -223,6 +256,7 @@ mod tests {
             "guides/",
             "index.md",
             "log.md",
+            "pact.md",
         ] {
             assert!(validate_reflection_path(bad).is_err(), "{bad}");
         }
@@ -281,6 +315,39 @@ mod tests {
     }
 
     #[test]
+    fn the_pact_name_folds_case_like_the_folder() {
+        assert_eq!(classify("pact.md"), ReflectionFile::Pact);
+        assert_eq!(classify("Pact.MD"), ReflectionFile::Pact);
+        assert_eq!(
+            classify("guides/pact.md"),
+            ReflectionFile::Page("guides/pact.md".into()),
+            "only at the folder root"
+        );
+    }
+
+    #[test]
+    fn threads_and_baselines_belong_to_a_page_that_could_exist() {
+        assert_eq!(
+            classify("PACT.threads.md"),
+            ReflectionFile::Threads {
+                of: "PACT.md".into()
+            }
+        );
+        for stray in [
+            ".x.threads.md",
+            "guides/.x.threads.md",
+            "index.threads.md",
+            "a.threads.threads.md",
+            ".reflected/../x.md",
+            ".reflected/.tmp.md",
+            ".reflected/index.md",
+            ".reflected/.x.threads.md",
+        ] {
+            assert_eq!(classify(stray), ReflectionFile::Other, "{stray}");
+        }
+    }
+
+    #[test]
     fn the_pact_structure_is_a_list_of_globs() {
         let pact = "---\ntitle: Pact\n---\n\n# Pact\n\n## Audience\n\n- new team members\n\n## Structure\n<!-- r:0a1b2c3d -->\n\n- guides/*.md\n- `howto/**/*.md`\n- not a glob [\n\n## Other\n\n- x.md\n";
         let globs = structure_globs(pact);
@@ -291,6 +358,11 @@ mod tests {
         let structure = Structure::new(&globs);
         assert!(structure.fits("guides/a.md"));
         assert!(structure.fits("howto/deep/b.md"));
+        assert!(
+            !structure.fits("guides/x/y.md"),
+            "`*` stays inside one folder"
+        );
+        assert!(structure.fits("howto/b.md"), "`**/` matches no folder too");
         assert!(!structure.fits("misc/c.md"));
         assert!(fits_structure("guides/a.md", &globs));
         assert!(

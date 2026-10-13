@@ -157,7 +157,7 @@ fn escape_link_text(text: &str) -> String {
 
 /// Render a link target. A target holding a space or a parenthesis is wrapped
 /// in angle brackets, the markdown form that survives both.
-fn escape_link_url(url: &str) -> String {
+pub(crate) fn escape_link_url(url: &str) -> String {
     if url.contains([' ', '(', ')', '<', '>']) {
         format!("<{}>", url.replace('<', "%3C").replace('>', "%3E"))
     } else {
