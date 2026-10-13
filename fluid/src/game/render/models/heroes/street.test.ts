@@ -507,7 +507,7 @@ describe("the neon bike (0.25.1)", () => {
     expect(CYCLE.top).toBeLessThan(3.0 - 0.05);
   });
 
-  it("keeps the film model's proportions: wheels a quarter of its length, its top 1.8 wheels high, a short canopy behind the crown", () => {
+  it("keeps its sourced proportions: wheels a quarter of its length, its top 1.8 wheels high, a short canopy behind the crown", () => {
     // Mutation caught: the wheels grown or shrunk against the body, the
     // wheels moved in under it, the top raised or lowered, or the canopy
     // grown long again or moved forward over the nose.

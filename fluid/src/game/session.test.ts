@@ -6358,9 +6358,11 @@ describe("the gravity console (spec D-9)", () => {
     expect(strafed(12) / light).toBeGreaterThan(0.9);
   });
 
-  it("does not switch while the reader is open, and a terminal in focus wins", async () => {
-    // Mutation caught: the use key read for the console while the reader
-    // is open; a fixture in focus losing to the console.
+  it("lets a terminal in focus win over the console, and keeps Space from it while the reader is open", async () => {
+    // Mutation caught: a fixture in focus losing to the console (the first
+    // Space, checked on its own before the reader is open); the use key
+    // read for the console while the reader is open, or kept until the
+    // reader closes (checked by closing it and looking for a late switch).
     const { cues, sink } = recordSound();
     facing.kind = "terminal";
     facing.edit = (built) => {
@@ -6401,11 +6403,43 @@ describe("the gravity console (spec D-9)", () => {
     await flush();
     frames(1);
     tapSpace();
+    // The terminal won this Space, with the reader still shut before it.
     expect(hud.reader).toHaveBeenLastCalledWith(
       expect.objectContaining({ title: CANNED_WORKSHOP.title }),
     );
+    expect(gravityCues(cues)).toEqual([]);
+    // Open now: the console is not the reader's to switch, and no Space
+    // pressed under it waits for the close.
     tapSpace();
     tapSpace();
+    expect(gravityCues(cues)).toEqual([]);
+    session.closeReader();
+    frames(3);
+    expect(gravityCues(cues)).toEqual([]);
+    expect(hud.notice).not.toHaveBeenCalledWith("GRAVITY 300G");
+  });
+
+  it("lets a door in focus win over the console", () => {
+    // Mutation caught: the console ranked above the room's doors, so Space
+    // at a door with a console in front of it switches the weight and the
+    // door stays shut.
+    const { cues, sink } = recordSound();
+    const session = start({ client: null, sound: sink });
+    const index = bridge.fixtures.findIndex(
+      (f) => f.kind === "door" && f.address !== null && f.style !== "sliding",
+    );
+    const door = bridge.fixtures[index];
+    if (door === undefined) throw new Error("no door in the bridge");
+    const facing_ = { ...bridge, spawn: wallFacingSpawn(door.slot) };
+    session.showRoom({
+      ...facing_,
+      props: [propAhead(facing_, "gravity-console", 0.5)],
+    });
+    frames(1);
+    expect(hud.prompt.mock.calls.at(-1)?.[0]).toMatch(/^SPACE OPEN/);
+    tapSpace();
+    frames(10);
+    expect(lastDoors().get(`door:${String(index)}`) ?? 0).toBeGreaterThan(0);
     expect(gravityCues(cues)).toEqual([]);
     expect(hud.notice).not.toHaveBeenCalledWith("GRAVITY 300G");
   });

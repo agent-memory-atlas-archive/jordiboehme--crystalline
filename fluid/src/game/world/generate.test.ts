@@ -865,8 +865,9 @@ describe("the neighbours (2.6f C5)", () => {
     // hatches from i-1 and i-3. The planner forecast 6.0 percent of ways
     // sharing a hero without the skip and 2.0 with it, a third; 300 rooms
     // measured 39 -> 14 at GAME_VERSION 4, just over it, and 900 rooms
-    // 115 -> 37, so the ring was grown to hold the forecast's own ratio
-    // against the sampling noise. Mutation caught:
+    // 117 -> 34 (the draw is seeded, so the counts repeat), so the ring was
+    // grown to hold the forecast's own ratio against the sampling noise; the
+    // ceiling is the forecast's 2.0 percent, 36 of 1800. Mutation caught:
     // generateRoom not handing its near on, the skip dropped, or the pool
     // skip dropped with only the solo tie-break left (at 300 rooms before
     // GAME_VERSION 4 the turret alone took the ring from 51 to 24 shared
@@ -917,7 +918,7 @@ describe("the neighbours (2.6f C5)", () => {
     );
     expect(before).toBeGreaterThan(15);
     expect(after).toBeLessThanOrEqual(before / 3);
-    expect(after).toBeLessThanOrEqual(0.04 * 2 * N);
+    expect(after).toBeLessThanOrEqual(0.02 * 2 * N);
   }, 30_000);
   it("keeps a shared solo draw in the lower-seeded room only, and moves both rooms off a shared pool pick (Review Focus 4)", () => {
     // Mutation caught: both rooms dropping the turret (no tie-break),
