@@ -318,6 +318,7 @@ mod tests {
         for needle in [
             "`reflect`",
             "`read_reflection`",
+            "`read_reflection` with `query`",
             "`write_reflection`",
             "`discuss`",
             "`replace_section`",

@@ -710,6 +710,11 @@ async fn the_descriptions_of_the_call_time_gated_tools_state_their_condition() {
             "{name}'s description must name the switch it needs: {text}"
         );
     }
+    let read = description("read_reflection");
+    assert!(
+        read.contains("query") && read.contains("search_type"),
+        "{read}"
+    );
     // Open point 1: write_reflection names the section operations it shares
     // with edit_engram.
     let write = description("write_reflection");
@@ -8652,6 +8657,10 @@ async fn the_reflection_tools_refuse_while_reflection_is_off() {
         ("reflect", json!({ "domains": ["eng"] })),
         ("read_reflection", json!({ "domain": "eng" })),
         (
+            "read_reflection",
+            json!({ "domain": "eng", "query": "night" }),
+        ),
+        (
             "write_reflection",
             json!({ "domain": "eng", "path": "a.md", "markdown": "# A\n" }),
         ),
@@ -8715,6 +8724,55 @@ async fn an_agent_writes_reads_and_works_the_reflection_over_mcp() {
             || queue.contains("\"total\":0"),
         "{queue}"
     );
+}
+
+/// R57: read_reflection with a query answers section hits, never a score, and
+/// refuses a call that names a path too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_reflection_with_a_query_answers_section_hits() {
+    let h = Harness::new(&["eng"]).await;
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    call(
+        peer,
+        "write_reflection",
+        json!({
+            "domain": "eng",
+            "path": "guides/deploying.md",
+            "markdown": "# Deploying\n\n## Night deploys\n\nDeploys run at night.\n\n## Rollback\n\nRoll back with the script.\n",
+        }),
+    )
+    .await
+    .unwrap();
+    let found = call_text(
+        peer,
+        "read_reflection",
+        json!({ "domain": "eng", "query": "night", "search_type": "text" }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        found.contains("Night deploys") && !found.contains("Rollback"),
+        "{found}"
+    );
+    assert!(found.contains("text"), "the mode that ran: {found}");
+    assert!(!found.contains("score"), "{found}");
+    let both = serde_json::to_value(
+        call_result(
+            peer,
+            "read_reflection",
+            json!({ "domain": "eng", "path": "guides/deploying.md", "query": "night" }),
+        )
+        .await,
+    )
+    .unwrap();
+    assert_eq!(both["isError"], true, "{both}");
+    let text = both
+        .pointer("/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(text.contains("not both"), "{text}");
 }
 
 /// Open point 1 (approved): an agent changes one section of a reflection the

@@ -581,6 +581,21 @@ pub struct ReadReflectionParams {
     /// thread counts.
     #[serde(default)]
     pub path: Option<String>,
+    /// Words to search the Reflection for, instead of reading one page or the
+    /// tree: the answer is the matching sections, best first, each with its
+    /// page, title, section id, heading and a snippet. Leave out path.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// With query: hybrid (default), text or semantic. hybrid and semantic
+    /// answer as text until the pages are embedded.
+    #[serde(default)]
+    pub search_type: Option<String>,
+    /// With query: hits per page, default 10.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// With query: one-based page, default 1.
+    #[serde(default)]
+    pub page: Option<usize>,
 }
 
 /// Parameters for `write_reflection`.
@@ -1249,6 +1264,19 @@ mod tests {
             back["type"], "decision",
             "renamed fields keep their wire name"
         );
+        let read: ReadReflectionParams = serde_json::from_value(serde_json::json!({
+            "domain": "eng",
+            "query": "night",
+            "search_type": "text",
+            "limit": 5,
+            "page": 2,
+        }))
+        .unwrap();
+        let again: ReadReflectionParams =
+            serde_json::from_value(serde_json::to_value(&read).unwrap()).unwrap();
+        assert_eq!(again.query.as_deref(), Some("night"));
+        assert_eq!(again.search_type.as_deref(), Some("text"));
+        assert_eq!((again.limit, again.page), (Some(5), Some(2)));
         let write: WriteReflectionParams = serde_json::from_value(serde_json::json!({
             "domain": "jordi-acme",
             "path": "guides/a.md",

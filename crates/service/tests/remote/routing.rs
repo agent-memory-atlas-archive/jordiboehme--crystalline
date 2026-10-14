@@ -1508,6 +1508,21 @@ async fn a_mounted_reflection_is_worked_under_its_local_name_on_its_own_server()
             .contains("Text for people."),
         "{doc}"
     );
+    let found = call(
+        &machine,
+        "read_reflection",
+        json!({ "domain": "open-beta", "query": "people", "search_type": "text" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        found["hits"][0]["path"], "guides/a.md",
+        "the source searched its own page: {found}"
+    );
+    assert_eq!(
+        found["domain"], "open-beta",
+        "and the answer names the local name: {found}"
+    );
     let opened = call(
         &machine,
         "discuss",
@@ -1533,7 +1548,7 @@ async fn a_mounted_reflection_is_worked_under_its_local_name_on_its_own_server()
         all.get("missing").is_none(),
         "acme has no Reflection on and still answers: {all}"
     );
-    for answer in [&written, &doc, &opened, &named, &all] {
+    for answer in [&written, &doc, &found, &opened, &named, &all] {
         let mut leaks = Vec::new();
         find_server_names(answer, None, &mut leaks);
         assert!(leaks.is_empty(), "beta's own name in {leaks:?}\n{answer}");

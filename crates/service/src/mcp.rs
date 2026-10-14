@@ -936,8 +936,13 @@ use crate::collab::session::AgentPeer;
 use crate::domain_view::DomainView;
 use crate::engine::{
     ACTOR_MAX_CHARS, ConfigureAction, Engine, EngineError, LiveWriteTarget, OVERLAY_NEEDS_IDENTITY,
-    ProvisionAction, ShareActor, WriteBlock, sanitize_actor,
+    ProvisionAction, ReflectionSearch, SEARCH_DEFAULT_LIMIT, ShareActor, WriteBlock,
+    sanitize_actor,
 };
+
+/// The refusal for a `read_reflection` call that names both a page and a query.
+const READ_REFLECTION_BOTH: &str =
+    "pass path to read one reflection or query to search them, not both";
 /// The two facts the `crystalline mcp` process resolved about its harness,
 /// re-exported here because [`McpServer::with_harness_gate`] takes one.
 pub use crate::instance::HarnessGate;
@@ -2754,13 +2759,25 @@ impl McpServer {
                     .await
                     .map_err(remote_engine)?;
                 let reflection_caller = remote_reflection_caller(caller);
-                match p.path.as_deref() {
-                    None => {
+                match (p.query.as_deref(), p.path.as_deref()) {
+                    (Some(_), Some(_)) => Err(EngineError::Invalid(READ_REFLECTION_BOTH.into())),
+                    (Some(query), None) => {
+                        let search = ReflectionSearch {
+                            query,
+                            search_type: p.search_type.as_deref(),
+                            limit: p.limit.unwrap_or(SEARCH_DEFAULT_LIMIT),
+                            page: p.page.unwrap_or(1),
+                        };
+                        self.engine
+                            .search_reflection(&p.domain, &search, &reflection_caller)
+                            .await
+                    }
+                    (None, None) => {
                         self.engine
                             .read_reflection_tree(&p.domain, &reflection_caller)
                             .await
                     }
-                    Some(path) => {
+                    (None, Some(path)) => {
                         self.engine
                             .read_reflection(&p.domain, path, &reflection_caller)
                             .await
@@ -3155,7 +3172,7 @@ impl McpServer {
     #[tool(
         name = "read_reflection",
         title = "Read reflection",
-        description = "Read a domain's Reflection - its documents for people under reflections/, where the MANIFEST says reflection: on. Without path: the tree of reflections with titles, section counts and open thread counts, and PACT.md, the agreement on audience, level of detail and structure. With path: one reflection's markdown with every section's hidden id (the <!-- r:... --> line under its ## heading), whether its text changed since it was last reflected, the engrams it was built from and its open threads. Files the reflection shows (under reflections/assets/) come back as resource links; fetch one with resources/read when the file itself matters. Read before write_reflection or discuss, and pass the checksum back as expected_checksum. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
+        description = "Read a domain's Reflection - its documents for people under reflections/, where the MANIFEST says reflection: on. Without path: the tree of reflections with titles, section counts and open thread counts, and PACT.md, the agreement on audience, level of detail and structure. With path: one reflection's markdown with every section's hidden id (the <!-- r:... --> line under its ## heading), whether its text changed since it was last reflected, the engrams it was built from and its open threads. With query: search the reflections by words and meaning (search_type hybrid by default, text or semantic) and get the matching sections, best first, each with its page, section id, heading and a snippet; pass path or query, not both. Files the reflection shows (under reflections/assets/) come back as resource links; fetch one with resources/read when the file itself matters. Read before write_reflection or discuss, and pass the checksum back as expected_checksum. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn read_reflection(
@@ -3168,12 +3185,31 @@ impl McpServer {
         }
         let p = self.localized(p, &ctx).await?;
         let caller = self.reflection_caller(&ctx);
-        match p.path.as_deref() {
-            None => match self.engine.read_reflection_tree(&p.domain, &caller).await {
+        match (p.query.as_deref(), p.path.as_deref()) {
+            // A call-time refusal the agent reads, like the gate's (V1).
+            (Some(_), Some(_)) => refuse(READ_REFLECTION_BOTH.to_string()),
+            (Some(query), None) => {
+                let search = ReflectionSearch {
+                    query,
+                    search_type: p.search_type.as_deref(),
+                    limit: p.limit.unwrap_or(SEARCH_DEFAULT_LIMIT),
+                    page: p.page.unwrap_or(1),
+                };
+                match self
+                    .engine
+                    .search_reflection(&p.domain, &search, &caller)
+                    .await
+                {
+                    Ok(v) => self.ok_list(v),
+                    Err(e) => Self::reflection_refused(e),
+                }
+            }
+            (None, None) => match self.engine.read_reflection_tree(&p.domain, &caller).await {
                 Ok(v) => self.ok_list(v),
                 Err(e) => Self::reflection_refused(e),
             },
-            Some(path) => match self.engine.read_reflection(&p.domain, path, &caller).await {
+            (None, Some(path)) => match self.engine.read_reflection(&p.domain, path, &caller).await
+            {
                 Ok(value) => {
                     let links = self.reflection_asset_links(&value, &caller).await;
                     let mut result = ok(value)?;
