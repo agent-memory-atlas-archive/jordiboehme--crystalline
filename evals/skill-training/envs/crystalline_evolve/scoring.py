@@ -550,6 +550,11 @@ def describe_expectations(expect: dict) -> str:
             "a reflect call, which returns the Reflection's queue - what people "
             "changed, what the engrams changed and the threads waiting for the agent."
         )
+        spec = expect["require_reflect"]
+        if isinstance(spec, dict) and spec.get("domains"):
+            lines.append(
+                f"The reflect call had to be scoped to domains {spec['domains']}."
+            )
     if expect.get("forbid_reflect"):
         lines.append(
             "This is not about the Reflection. Calling reflect here is the "
