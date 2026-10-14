@@ -559,8 +559,7 @@ impl Engine {
         };
 
         // Where the MANIFEST row answers, read back the way a save's receipt
-        // reads it, then announced: the verb carries no scope, so nobody is
-        // named.
+        // reads it, then announced under the account that saved it.
         let permalink = {
             let store = self.store.lock().await;
             let found = store
@@ -585,7 +584,7 @@ impl Engine {
             },
             from: None,
             checksum: Some(sha256_hex(markdown.as_bytes())),
-            actor: None,
+            actor: change_label(scope),
             draft_of: None,
             audience: None,
         }));

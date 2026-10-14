@@ -666,6 +666,31 @@ async fn a_manifest_save_announces_the_manifest() {
     );
 }
 
+/// The MANIFEST editor names the account that saved, as every other save
+/// does.
+#[tokio::test]
+async fn a_manifest_save_names_the_account_that_saved_it() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let current = std::fs::read_to_string(tmp.path().join("notes/MANIFEST.md")).unwrap();
+    let mut rx = engine.changes().subscribe();
+    let revised = current.replace("Everything about notes", "Everything about notes, revised");
+    engine
+        .save_manifest(
+            "notes",
+            &revised,
+            &support::sha256_hex(current.as_bytes()),
+            &Scope::User {
+                account: "ada".into(),
+                admin: false,
+            },
+        )
+        .await
+        .unwrap();
+    let heard = drain(&mut rx);
+    assert_eq!(heard.len(), 1, "{heard:?}");
+    assert_eq!(engram_of(&heard[0]).actor.as_deref(), Some("ada"));
+}
+
 /// A save into a domain that had no MANIFEST creates the file, and the bus
 /// says so: Added, not the Modified an edit of an existing MANIFEST announces.
 #[tokio::test]
