@@ -1324,7 +1324,7 @@ pub struct GraphSlice {
 /// full prior; absent or non-positive salience adds nothing.
 const SALIENCE_SCALE: f64 = 10.0;
 /// The default salience-prior weight when a query does not override it: the
-/// maximum lift a fully-salient engram gets on the normalized [0,1] relevance
+/// maximum lift a fully-salient engram gets on the normalized `[0,1]` relevance
 /// score. Small on purpose so relevance dominates and the prior only reorders
 /// within a relevance band, never filters.
 pub const DEFAULT_SALIENCE_WEIGHT: f64 = 0.15;

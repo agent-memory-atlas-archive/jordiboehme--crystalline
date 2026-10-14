@@ -90,7 +90,7 @@ pub struct WriteParams {
     /// the knowledge is due a re-check) must be plain ISO dates (YYYY-MM-DD);
     /// any other value fails the write, while an explicit null or a sentinel
     /// far-future date is dropped. A verification goes here too, as
-    /// verified: { by: <actor>, at: <RFC 3339 instant> } or a list of those.
+    /// verified: { by: `<actor>`, at: `<RFC 3339 instant>` } or a list of those.
     /// The write provenance keys generated and timestamp are engine-owned and
     /// are ignored when passed here, as are type, title, permalink, tags,
     /// status and recorded_at, which have their own parameters.
@@ -338,7 +338,7 @@ pub struct MoveParams {
     /// the engram's own current path to change only its permalink.
     pub destination: String,
     /// Move to a different domain. Bare links from the domain it leaves gain
-    /// the domain prefix, [[domain:Target]], so they still resolve.
+    /// the domain prefix, `[[domain:Target]]`, so they still resolve.
     #[serde(default)]
     pub destination_domain: Option<String>,
     /// The permalink the engram answers to after the move. Omit it and the
@@ -354,7 +354,7 @@ pub struct MoveParams {
     #[serde(default)]
     pub permalink: Option<String>,
     /// Rewrite every reference to the moved engram when its address changes:
-    /// [[old]] and [[domain:old]] links, relations and crystalline://domain/old
+    /// `[[old]]` and `[[domain:old]]` links, relations and `crystalline://domain/old`
     /// URLs (a #fragment is kept), in every domain you can see. Defaults to
     /// true; false leaves them dangling.
     #[serde(default)]
@@ -754,7 +754,7 @@ pub struct ConfigureParams {
     /// generated_indexes, domain_name, read_only, reflection; reflection_home
     /// is filled in when Reflection is switched on), what each MANIFEST
     /// section does and its .crystalline.yaml rule overrides. set and unset then address that
-    /// domain: a policy key, rules.<rule id> (a verify rule's severity) or
+    /// domain: a policy key, `rules.<rule id>` (a verify rule's severity) or
     /// token_budget. Omit it for the instance settings.
     #[serde(default)]
     pub domain: Option<String>,

@@ -1070,7 +1070,7 @@ pub struct SweepInput {
     /// target domain apart from a target that simply does not exist.
     pub known_domains: Vec<String>,
     /// Every `(spelling, canonical name)` pair the engine's name table would
-    /// rewrite on write - the same set [`NameTable::normalize`] answers
+    /// rewrite on write - the same set [`crystalline_core::names::NameTable::normalize`] answers
     /// `Some` for, one entry per spelling. A spelling that is already
     /// canonical, resolves nowhere, or is shadowed or contested is never in
     /// here, and neither is one that resolves to a domain hidden from the

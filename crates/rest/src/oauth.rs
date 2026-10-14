@@ -131,7 +131,7 @@ pub const AUTHORIZE_PATH: &str = "/oauth/authorize";
 /// The consent pair, relative to the API mount: `GET` reads what is being
 /// asked for and `POST` answers it. Guarded like every other account-bearing
 /// route - the whole point is that a person decides - so it is not in
-/// [`super::auth::PUBLIC_PATHS`] the way [`AUTHORIZE_PATH`] is.
+/// `PUBLIC_PATHS` in the `auth` module the way [`AUTHORIZE_PATH`] is.
 pub const AUTHORIZATIONS_PATH: &str = "/oauth/authorizations/{id}";
 
 /// The Fluid screen a person consents on, at the application root under the

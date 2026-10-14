@@ -224,8 +224,8 @@ pub struct AgentPeer {
     /// The account the call authenticated as, or the identity a local session
     /// acts with. Half the presence key.
     pub account: String,
-    /// The name the participant strip shows, "<account> (agent)" or
-    /// "<account> (agent: <client>)".
+    /// The name the participant strip shows, `<account> (agent)` or
+    /// `<account> (agent: <client>)`.
     pub label: String,
 }
 
