@@ -996,22 +996,22 @@ impl Engine {
         if let Some(rooms) = self.collab_rooms()
             && rooms.has_live_doc(&p.domain, &doc, None).await
         {
-            // The room never holds the block (contract "Co-editing a
-            // reflection"): the text enters it stripped, and the room's save
-            // re-attaches the stored block.
-            let applied = rooms
-                .apply_doc_text(
-                    &p.domain,
-                    &doc,
-                    None,
-                    without_provenance(&final_text),
-                    &caller.author.name,
-                    None,
-                )
-                .await
-                .map_err(EngineError::Conflict)?;
-            receipt["landed"] = json!("live");
-            receipt["present"] = json!(applied.participants);
+            // The room takes the file in by a three-way merge into its own
+            // live text, so a person's unsaved typing stays; it reads the
+            // page without the block (contract "Co-editing a reflection"),
+            // and its save re-attaches the stored block. The write has landed
+            // either way: a room that closed meanwhile is no refusal.
+            match rooms.absorb_doc_change(&p.domain, &doc, None).await {
+                Ok(applied) => {
+                    receipt["landed"] = json!("live");
+                    receipt["present"] = json!(applied.participants);
+                }
+                Err(e) => tracing::debug!(
+                    domain = %p.domain,
+                    path = %p.path,
+                    "the open room did not take the write in: {e}"
+                ),
+            }
         }
         Ok(receipt)
     }
@@ -1073,17 +1073,6 @@ impl Engine {
                 "path": r::domain_rel(inner),
             })
         };
-        // An agent's live write already put exactly this text, plus the
-        // stored block, in the file (the live arm of `write_reflection_text`):
-        // the room is only catching up, which is not a conflict. The answer is
-        // the file's checksum, never the room text's, or the room's next save
-        // would be refused as stale.
-        if !final_save
-            && let Some(file) = current.as_deref()
-            && without_provenance(file) == text
-        {
-            return Ok(receipt(file));
-        }
         match current.as_deref() {
             None if !expected_checksum.is_empty() => return Err(not_found()),
             Some(file) if sha256_hex(file.as_bytes()) != expected_checksum => {

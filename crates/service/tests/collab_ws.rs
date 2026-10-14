@@ -842,9 +842,22 @@ async fn a_full_room_is_refused_before_the_upgrade_and_frees_its_slot() {
 /// A served instance whose `eng` has Reflection on, is private to `keeper`,
 /// and holds `reflections/guides/a.md` and `reflections/PACT.md`: `ann` a
 /// member with knowledge `none` and Reflection `contributor`, `vera` a viewer
-/// member, `ed` an editor member. Built like the Reflection suite's `serve`,
-/// which this test crate cannot import.
+/// member, `ed` an editor member, `out` an editor who is no member. Built
+/// like the Reflection suite's `serve`, which this test crate cannot import.
 async fn serve_reflection() -> (
+    std::net::SocketAddr,
+    support::ScratchStateDir,
+    tempfile::TempDir,
+) {
+    serve_reflection_with(false, true).await
+}
+
+/// [`serve_reflection`] with the anonymous viewer on or off, and `eng`
+/// private with its members or shared with every account.
+async fn serve_reflection_with(
+    anonymous: bool,
+    private: bool,
+) -> (
     std::net::SocketAddr,
     support::ScratchStateDir,
     tempfile::TempDir,
@@ -871,7 +884,7 @@ async fn serve_reflection() -> (
     .unwrap();
     let mut cfg = GlobalConfig {
         auth: Some(AuthConfig {
-            anonymous: Some(false),
+            anonymous: Some(anonymous),
             ..Default::default()
         }),
         ..GlobalConfig::default()
@@ -898,29 +911,32 @@ async fn serve_reflection() -> (
         ("ann", Role::Viewer),
         ("vera", Role::Viewer),
         ("ed", Role::Editor),
+        ("out", Role::Editor),
     ] {
         auth.add_user(name, name, None, role, "pw12345678")
             .await
             .unwrap();
     }
-    auth.set_domain_visibility("eng", true, "keeper")
+    if private {
+        auth.set_domain_visibility("eng", true, "keeper")
+            .await
+            .unwrap();
+        auth.upsert_domain_member(
+            "eng",
+            "ann",
+            MemberLevel::None,
+            Some(ReflectionLevel::Contributor),
+            "keeper",
+        )
         .await
         .unwrap();
-    auth.upsert_domain_member(
-        "eng",
-        "ann",
-        MemberLevel::None,
-        Some(ReflectionLevel::Contributor),
-        "keeper",
-    )
-    .await
-    .unwrap();
-    auth.upsert_domain_member("eng", "vera", MemberLevel::Viewer, None, "keeper")
-        .await
-        .unwrap();
-    auth.upsert_domain_member("eng", "ed", MemberLevel::Editor, None, "keeper")
-        .await
-        .unwrap();
+        auth.upsert_domain_member("eng", "vera", MemberLevel::Viewer, None, "keeper")
+            .await
+            .unwrap();
+        auth.upsert_domain_member("eng", "ed", MemberLevel::Editor, None, "keeper")
+            .await
+            .unwrap();
+    }
     let router = http_router(engine, Arc::new(AtomicUsize::new(0)), &[], auth, None).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -935,6 +951,41 @@ async fn serve_reflection() -> (
         .unwrap();
     });
     (addr, scratch, tmp)
+}
+
+/// Who may not read the domain learns nothing on the room route: a
+/// signed-in stranger and the anonymous viewer of a private domain meet
+/// the 404 of an unregistered name. The anonymous viewer of a public domain
+/// reads the Reflection and is told to sign in (401).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_reflection_room_hides_a_private_domain_and_asks_the_anonymous_to_sign_in() {
+    let page = "/api/v1/collab-reflection/eng/guides/a.md";
+    let ghost = "/api/v1/collab-reflection/ghost/guides/a.md";
+
+    let (addr, _scratch, _tmp) = serve_reflection_with(true, true).await;
+    let out = login(addr, "out", "pw12345678").await;
+    for cookie in [Some(out.0.as_str()), None] {
+        let err = connect(addr, page, cookie, same_host(addr))
+            .await
+            .unwrap_err();
+        assert_eq!(refusal_status(&err), Some(404), "{cookie:?}");
+        assert_eq!(
+            refusal_detail(&err).replace("ghost", "eng"),
+            refusal_detail(
+                &connect(addr, ghost, cookie, same_host(addr))
+                    .await
+                    .unwrap_err()
+            )
+            .replace("ghost", "eng"),
+            "answered like an unregistered name"
+        );
+    }
+
+    let (addr, _scratch, _tmp) = serve_reflection_with(true, false).await;
+    let err = connect(addr, page, None, same_host(addr))
+        .await
+        .unwrap_err();
+    assert_eq!(refusal_status(&err), Some(401));
 }
 
 /// A reflection room takes the Reflection's edit right, not the engram write

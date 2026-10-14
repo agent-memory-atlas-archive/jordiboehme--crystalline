@@ -335,6 +335,8 @@ impl CollabSessions {
         domain: &str,
         path: &str,
     ) -> Result<Joined, JoinError> {
+        crystalline_core::reflection::validate_reflection_path(path)
+            .map_err(|e| JoinError::Engine(EngineError::Invalid(e)))?;
         self.engine
             .refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await
@@ -657,6 +659,32 @@ impl CollabSessions {
             peer,
         )
         .await
+    }
+
+    /// Have the room over `doc` take in a change an engine verb just wrote
+    /// to its file, now rather than on its next idle probe: a three-way merge
+    /// of the file into the room's own live text, against the text the room
+    /// last saw on disk, so typing nobody has saved yet stays. A collision
+    /// raises the room's edit conflict; nothing in the room is erased.
+    ///
+    /// Takes no target text, unlike [`CollabSessions::apply_doc_text`]: the
+    /// file is the change, so a caller that composed it from the file cannot
+    /// hand the room a target that was never computed from the room. The
+    /// caller holds no page lock, because a room's save takes that lock
+    /// under the room's own state.
+    pub async fn absorb_doc_change(
+        &self,
+        domain: &str,
+        doc: &RoomDoc,
+        overlay: Option<&str>,
+    ) -> Result<LiveApplied, String> {
+        let Some(session) = self.live_room(domain, doc, overlay).await else {
+            return Err(format!(
+                "the co-editing session over '{}' in domain '{domain}' closed",
+                doc.name()
+            ));
+        };
+        session.absorb_file_change().await
     }
 
     /// [`CollabSessions::apply_text`] for a room over any kind of document.
@@ -2221,6 +2249,51 @@ impl CollabSession {
         });
     }
 
+    /// Take in a change written to the room's file by an engine verb (see
+    /// [`CollabSessions::absorb_doc_change`]). The idle probe's merge, run at
+    /// once: a file the room has already taken in (its checksum is the
+    /// room's, because the room saved in between) is left alone, a room with
+    /// a standing conflict or failure meets the file on its next save, and
+    /// otherwise the file is merged three ways into the live text. A merge
+    /// that kept unsaved typing arms the save timers, as typing does.
+    async fn absorb_file_change(&self) -> Result<LiveApplied, String> {
+        if self.is_disposed() {
+            return Err("this co-editing session ended while the write was being prepared".into());
+        }
+        let mut state = self.state.lock().await;
+        if state.closed {
+            return Err(
+                "this co-editing session ended while the write was being prepared".to_string(),
+            );
+        }
+        if matches!(state.save_state, SaveStateTag::Ok) {
+            let view = self.view().map_err(|e| e.to_string())?;
+            match self.read_doc(&view, &state).await {
+                Ok(theirs) if theirs.checksum != state.checksum => {
+                    let detail = format!(
+                        "'{}' was changed by an agent while this room was open",
+                        state.permalink
+                    );
+                    if self.merge_external(&mut state, theirs, detail).await
+                        && Self::file_text_locked(&state) != state.last_saved_text
+                    {
+                        let now = Instant::now();
+                        state.dirty = true;
+                        state.last_edit = Some(now);
+                        state.oldest_unsaved.get_or_insert(now);
+                    }
+                }
+                Ok(_) => {}
+                // Gone again already: the room's save or probe raises it.
+                Err(EngineError::NotFound(_)) => {}
+                Err(err) => return Err(err.to_string()),
+            }
+        }
+        Ok(LiveApplied {
+            participants: Self::participants_locked(&state, None),
+        })
+    }
+
     /// Compose an agent's text into this room's document.
     ///
     /// The engine computed `target` from this room's own live text a moment
@@ -2534,7 +2607,8 @@ impl CollabSession {
                 // there, or nothing.
                 let expected = match self.engine.reflection_room_text(&self.domain, &path).await {
                     Ok(text) => text.checksum,
-                    Err(_) => String::new(),
+                    Err(EngineError::NotFound(_)) => String::new(),
+                    Err(err) => return Err(err),
                 };
                 self.engine
                     .save_reflection_room(&self.domain, &path, file, &expected, &[], false)

@@ -2068,10 +2068,14 @@ fn no_engine_function_composes_into_a_room_under_a_file_write_lock() {
 
     /// Every way an engine function reaches into a room, all of which take
     /// the same session state lock the room's saver holds across the file
-    /// lock: the one write, the four reads and the two disposals.
-    const ROOM_ENTRY_NEEDLES: [&str; 7] = [
+    /// lock: the writes (an engram's, a reflection's merge), the reads and
+    /// the disposals.
+    const ROOM_ENTRY_NEEDLES: [&str; 10] = [
         ".apply_text(",
+        ".apply_doc_text(",
+        ".absorb_doc_change(",
         ".has_live_room(",
+        ".has_live_doc(",
         ".live_text(",
         ".participants(",
         ".touch_agent_presence(",
@@ -2084,14 +2088,18 @@ fn no_engine_function_composes_into_a_room_under_a_file_write_lock() {
     /// wraps the same map. Both are per-path mutexes held across a
     /// read-modify-write, so both close the same cycle against the room's
     /// saver; watching only the spelling that says `write_lock` would leave
-    /// every overlay arm unwatched.
-    const LOCK_NEEDLES: [&str; 2] = [".write_lock(", ".draft_lock("];
+    /// every overlay arm unwatched. `lock_file` is the reflection pages'
+    /// spelling of the same lock.
+    const LOCK_NEEDLES: [&str; 3] = [".write_lock(", ".draft_lock(", ".lock_file("];
 
     // Per function, the first line that takes a per-path write lock and the
     // first that makes a room call. A comment mentioning either is not a call,
     // so the scan skips the comment lines the arms are thick with.
     let mut current = "<file scope>".to_string();
     let mut locked: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    // A function that releases its lock by name (`drop(_lock)`) before it
+    // reaches a room is safe; one that composes while holding it is not.
+    let mut offending: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut composed: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for (i, line) in text.lines().enumerate() {
         if file_starts.contains(&i) {
@@ -2107,6 +2115,9 @@ fn no_engine_function_composes_into_a_room_under_a_file_write_lock() {
         if LOCK_NEEDLES.iter().any(|needle| code.contains(needle)) {
             locked.entry(current.clone()).or_insert(i);
         }
+        if code.starts_with("drop(_lock)") {
+            locked.remove(&current);
+        }
         if ROOM_ENTRY_NEEDLES
             .iter()
             .any(|needle| code.contains(needle))
@@ -2120,13 +2131,20 @@ fn no_engine_function_composes_into_a_room_under_a_file_write_lock() {
             // "any needle after any lock", which is what the discipline
             // actually requires.
             composed.insert(current.clone(), i);
+            if locked.contains_key(&current) {
+                offending.insert(current.clone());
+            }
         }
     }
 
-    let offenders: Vec<&String> = composed
+    let mut offenders: Vec<&String> = composed
         .keys()
-        .filter(|name| matches!(locked.get(*name), Some(lock) if lock < &composed[*name]))
+        .filter(|name| {
+            offending.contains(*name)
+                || matches!(locked.get(*name), Some(lock) if lock < &composed[*name])
+        })
         .collect();
+    offenders.sort();
     assert!(
         offenders.is_empty(),
         "these engine functions take a file write lock and then compose into a room while holding \
