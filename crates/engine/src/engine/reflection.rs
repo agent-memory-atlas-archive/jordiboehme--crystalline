@@ -35,6 +35,12 @@ pub const REFUSED_ELSEWHERE_START: &str = "this domain's Reflection lives at ";
 pub const ANONYMOUS_COMMENT: &str =
     "anonymous visitors read this Reflection and cannot comment; sign in to comment";
 
+/// A reflection write's receipt when the open room raised its edit conflict
+/// over it.
+pub const ROOM_CONFLICT_NOTE: &str = "your write is on disk, and it collides with text somebody in the open room has not saved yet: the people in the room are choosing between their text and yours";
+/// A reflection write's receipt when the open room could not take it in yet.
+pub const ROOM_WAITING_NOTE: &str = "your write is on disk; the open room has an unresolved change of its own, and the people in it meet yours when they resolve it";
+
 /// What the gate hands a reflection verb.
 #[derive(Debug, Clone)]
 pub(crate) struct ReflectionAccess {
@@ -1002,9 +1008,22 @@ impl Engine {
             // and its save re-attaches the stored block. The write has landed
             // either way: a room that closed meanwhile is no refusal.
             match rooms.absorb_doc_change(&p.domain, &doc, None).await {
-                Ok(applied) => {
-                    receipt["landed"] = json!("live");
-                    receipt["present"] = json!(applied.participants);
+                Ok(outcome) => {
+                    use crate::collab::session::Absorbed;
+                    receipt["present"] = json!(outcome.participants);
+                    match outcome.absorbed {
+                        Absorbed::Merged => receipt["landed"] = json!("live"),
+                        Absorbed::Conflict => {
+                            receipt["landed"] = json!("file");
+                            receipt["room"] = json!("conflict");
+                            receipt["room_note"] = json!(ROOM_CONFLICT_NOTE);
+                        }
+                        Absorbed::Deferred => {
+                            receipt["landed"] = json!("file");
+                            receipt["room"] = json!("waiting");
+                            receipt["room_note"] = json!(ROOM_WAITING_NOTE);
+                        }
+                    }
                 }
                 Err(e) => tracing::debug!(
                     domain = %p.domain,

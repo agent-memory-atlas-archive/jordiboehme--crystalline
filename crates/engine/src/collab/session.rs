@@ -185,6 +185,29 @@ pub struct LiveApplied {
     pub participants: Vec<String>,
 }
 
+/// What a room did with a change written to its file
+/// ([`CollabSessions::absorb_doc_change`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Absorbed {
+    /// The change is in the room's text: merged into it, or already there
+    /// because the room saved it in between.
+    Merged,
+    /// The change collides with text in the room nobody has saved: the room
+    /// raised its edit conflict, and a person chooses.
+    Conflict,
+    /// The room has a conflict or a failed save of its own, or the page is
+    /// gone: it meets the change when that is resolved.
+    Deferred,
+}
+
+/// [`Absorbed`] and who was in the room.
+#[derive(Debug, Clone)]
+pub struct AbsorbOutcome {
+    pub absorbed: Absorbed,
+    /// Who is in the room, as [`LiveApplied::participants`] names them.
+    pub participants: Vec<String>,
+}
+
 /// An agent in a room, as the room shows it.
 ///
 /// Two halves because presence is per (account, label) rather than per
@@ -677,7 +700,7 @@ impl CollabSessions {
         domain: &str,
         doc: &RoomDoc,
         overlay: Option<&str>,
-    ) -> Result<LiveApplied, String> {
+    ) -> Result<AbsorbOutcome, String> {
         let Some(session) = self.live_room(domain, doc, overlay).await else {
             return Err(format!(
                 "the co-editing session over '{}' in domain '{domain}' closed",
@@ -2256,7 +2279,7 @@ impl CollabSession {
     /// a standing conflict or failure meets the file on its next save, and
     /// otherwise the file is merged three ways into the live text. A merge
     /// that kept unsaved typing arms the save timers, as typing does.
-    async fn absorb_file_change(&self) -> Result<LiveApplied, String> {
+    async fn absorb_file_change(&self) -> Result<AbsorbOutcome, String> {
         if self.is_disposed() {
             return Err("this co-editing session ended while the write was being prepared".into());
         }
@@ -2266,7 +2289,9 @@ impl CollabSession {
                 "this co-editing session ended while the write was being prepared".to_string(),
             );
         }
-        if matches!(state.save_state, SaveStateTag::Ok) {
+        let absorbed = if !matches!(state.save_state, SaveStateTag::Ok) {
+            Absorbed::Deferred
+        } else {
             let view = self.view().map_err(|e| e.to_string())?;
             match self.read_doc(&view, &state).await {
                 Ok(theirs) if theirs.checksum != state.checksum => {
@@ -2274,22 +2299,26 @@ impl CollabSession {
                         "'{}' was changed by an agent while this room was open",
                         state.permalink
                     );
-                    if self.merge_external(&mut state, theirs, detail).await
-                        && Self::file_text_locked(&state) != state.last_saved_text
-                    {
-                        let now = Instant::now();
-                        state.dirty = true;
-                        state.last_edit = Some(now);
-                        state.oldest_unsaved.get_or_insert(now);
+                    if self.merge_external(&mut state, theirs, detail).await {
+                        if Self::file_text_locked(&state) != state.last_saved_text {
+                            let now = Instant::now();
+                            state.dirty = true;
+                            state.last_edit = Some(now);
+                            state.oldest_unsaved.get_or_insert(now);
+                        }
+                        Absorbed::Merged
+                    } else {
+                        Absorbed::Conflict
                     }
                 }
-                Ok(_) => {}
+                Ok(_) => Absorbed::Merged,
                 // Gone again already: the room's save or probe raises it.
-                Err(EngineError::NotFound(_)) => {}
+                Err(EngineError::NotFound(_)) => Absorbed::Deferred,
                 Err(err) => return Err(err.to_string()),
             }
-        }
-        Ok(LiveApplied {
+        };
+        Ok(AbsorbOutcome {
+            absorbed,
             participants: Self::participants_locked(&state, None),
         })
     }

@@ -2108,3 +2108,122 @@ async fn a_reflection_room_takes_only_a_reflection_path() {
         );
     }
 }
+
+/// The agent's section write collides with a person's unsaved change of
+/// the same line: the room raises its edit conflict with the agent's text
+/// as theirs, keeps the person's text, and the receipt says the write is
+/// on disk and the room is choosing, not that it landed live.
+#[tokio::test]
+async fn an_agent_write_that_collides_with_unsaved_typing_raises_the_rooms_conflict() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    let mine = doc
+        .get_or_insert_text("content")
+        .get_string(&doc.transact())
+        .replace("First.", "First, by a person.");
+    replace_all(&joined, &doc, &mine).await;
+    let p = crystalline_service::params::WriteReflectionParams {
+        domain: "eng".into(),
+        path: "guides/a.md".into(),
+        operation: Some("replace_section".into()),
+        section: Some("## One".into()),
+        content: Some("First, from the agent.\n".into()),
+        ..Default::default()
+    };
+    let caller = crystalline_service::ReflectionCaller::agent(
+        crystalline_service::Scope::Unrestricted,
+        "claude-code",
+        false,
+    );
+    let receipt = engine.write_reflection(&p, &caller).await.unwrap();
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    assert_eq!(receipt["room"], "conflict", "{receipt}");
+    assert!(receipt["room_note"].as_str().unwrap().contains("choosing"));
+    match next_control(&mut joined.rx).await {
+        Control::Conflict {
+            conflict_kind,
+            theirs,
+            ..
+        } => {
+            assert_eq!(conflict_kind, "edit");
+            assert!(theirs.unwrap().contains("First, from the agent."));
+        }
+        other => panic!("the room's edit conflict, not {other:?}"),
+    }
+    let (live, _) = joined.session.snapshot().await;
+    assert!(live.contains("First, by a person."), "not erased: {live}");
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("First, from the agent."),
+        "the agent's write is on disk"
+    );
+}
+
+/// A room with a conflict of its own takes nothing in: the agent's write is
+/// on disk, and the receipt says the room meets it when its conflict is
+/// resolved.
+#[tokio::test]
+async fn an_agent_write_into_a_room_in_conflict_is_reported_as_waiting() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    // A change outside Crystalline collides with unsaved typing on the same
+    // line: the room's save raises its edit conflict.
+    let mine = doc
+        .get_or_insert_text("content")
+        .get_string(&doc.transact())
+        .replace("First.", "First, by a person.");
+    replace_all(&joined, &doc, &mine).await;
+    let outside = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("First.", "First, from outside.");
+    std::fs::write(&path, outside).unwrap();
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    assert!(matches!(
+        next_control(&mut joined.rx).await,
+        Control::Conflict { .. }
+    ));
+    let p = crystalline_service::params::WriteReflectionParams {
+        domain: "eng".into(),
+        path: "guides/a.md".into(),
+        operation: Some("replace_section".into()),
+        section: Some("## Two".into()),
+        content: Some("Second, from the agent.\n".into()),
+        ..Default::default()
+    };
+    let caller = crystalline_service::ReflectionCaller::agent(
+        crystalline_service::Scope::Unrestricted,
+        "claude-code",
+        false,
+    );
+    let receipt = engine.write_reflection(&p, &caller).await.unwrap();
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    assert_eq!(receipt["room"], "waiting", "{receipt}");
+    let (live, _) = joined.session.snapshot().await;
+    assert!(
+        live.contains("First, by a person.") && !live.contains("Second, from the agent."),
+        "the room took nothing in: {live}"
+    );
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("Second, from the agent.")
+    );
+}
