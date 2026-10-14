@@ -2300,9 +2300,22 @@ async fn a_reflection_room_names_the_accounts_that_typed_and_nobody_else() {
     let _silent_doc = sync_client(&silent).await;
     publish_name(&typist, &doc, "keeper").await;
     publish_name(&silent, &_silent_doc, "bob").await;
+    // ada deletes a word as well, so the echo below carries a delete set.
+    let text = doc.get_or_insert_text("content");
+    let removal = {
+        let mut txn = doc.transact_mut();
+        let current = text.get_string(&txn);
+        let at = current.find("Second.").unwrap() as u32;
+        text.remove_range(&mut txn, at, "Second.".len() as u32);
+        txn.encode_update_v1()
+    };
+    typist
+        .session
+        .handle_frame(typist.conn, &frame_update(removal))
+        .await;
     append_line(&typist, &doc, "Typed by ada.").await;
-    // bob's provider answers with everything it holds, ada's edit included:
-    // it applies, and it is no edit of bob's.
+    // bob's provider answers with everything it holds, ada's edit and her
+    // deletion included: it applies, and it is no edit of bob's.
     let echo = doc
         .transact()
         .encode_state_as_update_v1(&Default::default());
