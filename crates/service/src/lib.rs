@@ -73,8 +73,8 @@ pub use crystalline_engine::review::{FoldChoice, ReviewModeConfirm};
 pub use crystalline_engine::similar::{SIMILAR_GUIDANCE, SimilarEngram, SimilarProbe};
 pub use crystalline_identity::join::{Holder, Join, Joins};
 pub use crystalline_identity::scope::{
-    DomainAccess, DomainRight, DomainVisibility, ReflectionCaller, ReflectionRight, Scope,
-    WriteRights, overlay_actor, reflection_right_word, write_list_matches,
+    DomainAccess, DomainRight, DomainScreen, DomainVisibility, ReflectionCaller, ReflectionRight,
+    Scope, WriteRights, overlay_actor, reflection_right_word, write_list_matches,
 };
 pub use crystalline_remote::ops::DiscardTarget;
 pub use daemon::run_serve;

@@ -969,6 +969,10 @@ fn add_with_mcp_token_creates_a_passwordless_account_and_prints_its_token() {
     let issued: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(issued["name"], "agent-build");
     assert_eq!(issued["role"], "editor");
+    assert_eq!(
+        issued["reflection"], "default",
+        "the same account fields as `users add --json`: {issued}"
+    );
     assert_eq!(issued["label"], "build");
     assert!(issued["id"].is_i64(), "{issued}");
     let token = issued["token"].as_str().unwrap();

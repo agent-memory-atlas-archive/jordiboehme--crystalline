@@ -1376,14 +1376,38 @@ impl AuthStore {
         role: Role,
         password: &str,
     ) -> Result<()> {
+        self.add_user_with_reflection(
+            name,
+            display,
+            email,
+            role,
+            ReflectionLevel::Default,
+            password,
+        )
+        .await
+    }
+
+    /// [`AuthStore::add_user`] with the account's Reflection level on every
+    /// shared domain, written in the same statement as the account, so an
+    /// account never exists without the level it was created with.
+    pub async fn add_user_with_reflection(
+        &self,
+        name: &str,
+        display: &str,
+        email: Option<&str>,
+        role: Role,
+        reflection: ReflectionLevel,
+        password: &str,
+    ) -> Result<()> {
         let name = normalize_new_account_name(name)?;
         // Hash before taking the lock: argon2 is CPU, not database.
         let hash = hash_password(password).await?;
         let _guard = self.guard.lock().await;
         self.conn
             .execute(
-                "INSERT INTO users (name, display, email, role, pass_hash, disabled, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
+                "INSERT INTO users
+                     (name, display, email, role, reflection, pass_hash, disabled, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
                 vec![
                     Value::Text(name.clone()),
                     Value::Text(display.to_string()),
@@ -1392,6 +1416,7 @@ impl AuthStore {
                         None => Value::Null,
                     },
                     Value::Text(role.as_str().to_string()),
+                    reflection.to_db(),
                     Value::Text(hash),
                     Value::Text(chrono::Utc::now().to_rfc3339()),
                 ],
@@ -2708,19 +2733,44 @@ impl AuthStore {
         role: Role,
         label: &str,
     ) -> Result<IssuedMcpToken> {
+        self.add_token_only_user_with_reflection(
+            name,
+            display,
+            email,
+            role,
+            ReflectionLevel::Default,
+            label,
+        )
+        .await
+    }
+
+    /// [`AuthStore::add_token_only_user`] with the account's Reflection level
+    /// on every shared domain, written in the same transaction as the account
+    /// and its token.
+    pub async fn add_token_only_user_with_reflection(
+        &self,
+        name: &str,
+        display: &str,
+        email: Option<&str>,
+        role: Role,
+        reflection: ReflectionLevel,
+        label: &str,
+    ) -> Result<IssuedMcpToken> {
         let token = format!("{MCP_TOKEN_PREFIX}{}", random_hex());
-        self.add_token_only_user_with(name, display, email, role, label, token)
+        self.add_token_only_user_with(name, display, email, role, reflection, label, token)
             .await
     }
 
     /// [`AuthStore::add_token_only_user`] with the token already minted, the
     /// seam a test uses to force the token insert to fail.
+    #[allow(clippy::too_many_arguments)]
     async fn add_token_only_user_with(
         &self,
         name: &str,
         display: &str,
         email: Option<&str>,
         role: Role,
+        reflection: ReflectionLevel,
         label: &str,
         token: String,
     ) -> Result<IssuedMcpToken> {
@@ -2734,8 +2784,9 @@ impl AuthStore {
         let result = async {
             self.conn
                 .execute(
-                    "INSERT INTO users (name, display, email, role, pass_hash, disabled, created_at)
-                     VALUES (?1, ?2, ?3, ?4, NULL, 0, ?5)",
+                    "INSERT INTO users
+                         (name, display, email, role, reflection, pass_hash, disabled, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, NULL, 0, ?6)",
                     vec![
                         Value::Text(name.clone()),
                         Value::Text(display.to_string()),
@@ -2744,6 +2795,7 @@ impl AuthStore {
                             None => Value::Null,
                         },
                         Value::Text(role.as_str().to_string()),
+                        reflection.to_db(),
                         Value::Text(created_at.clone()),
                     ],
                 )
@@ -7064,6 +7116,35 @@ mod tests {
         auth.set_reflection_level("ann", ReflectionLevel::Default)
             .await
             .unwrap();
+        // Created with a level: one write, read back as given.
+        auth.add_user_with_reflection(
+            "bea",
+            "Bea",
+            None,
+            Role::None,
+            ReflectionLevel::Reader,
+            "pw12345678",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            auth.user("bea").await.unwrap().unwrap().reflection,
+            ReflectionLevel::Reader
+        );
+        auth.add_token_only_user_with_reflection(
+            "bot",
+            "bot",
+            None,
+            Role::None,
+            ReflectionLevel::Contributor,
+            "bot",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            auth.user("bot").await.unwrap().unwrap().reflection,
+            ReflectionLevel::Contributor
+        );
         assert_eq!(
             auth.user("ann").await.unwrap().unwrap().reflection,
             ReflectionLevel::Default
@@ -7529,6 +7610,7 @@ mod tests {
                 "agent-build",
                 None,
                 Role::Editor,
+                ReflectionLevel::Default,
                 "build",
                 taken.token.clone(),
             )

@@ -61,13 +61,27 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
                 // An account for an agent: no password to ask for, and the
                 // token is issued in the same transaction as the account.
                 Some(label) => store
-                    .add_token_only_user(&name, &display, email.as_deref(), role, label)
+                    .add_token_only_user_with_reflection(
+                        &name,
+                        &display,
+                        email.as_deref(),
+                        role,
+                        reflection,
+                        label,
+                    )
                     .await
                     .map(Some),
                 None => {
                     let password = read_password(password_stdin, password_file.as_deref())?;
                     store
-                        .add_user(&name, &display, email.as_deref(), role, &password)
+                        .add_user_with_reflection(
+                            &name,
+                            &display,
+                            email.as_deref(),
+                            role,
+                            reflection,
+                            &password,
+                        )
                         .await
                         .map(|()| None)
                 }
@@ -95,9 +109,6 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
                 keep_write_list_or_remove(&store, &name, entries).await?;
                 warn_unmatched(entries);
             }
-            if reflection != ReflectionLevel::Default {
-                store.set_reflection_level(&name, reflection).await?;
-            }
             match issued {
                 Some(issued) => {
                     if !json {
@@ -117,7 +128,7 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
                         &stored_name(&name),
                         json,
                         None,
-                        Some(role),
+                        Some((role, reflection)),
                         writes.as_deref(),
                     );
                 }
@@ -482,7 +493,7 @@ fn print_issued_token(
     account: &str,
     json: bool,
     replaced: Option<i64>,
-    created_with_role: Option<Role>,
+    created_with_role: Option<(Role, ReflectionLevel)>,
     writes: Option<&[String]>,
 ) {
     if json {
@@ -492,9 +503,10 @@ fn print_issued_token(
             "label": issued.label,
         });
         // A token issued together with its account also names the account.
-        if let Some(role) = created_with_role {
+        if let Some((role, reflection)) = created_with_role {
             object["name"] = account.into();
             object["role"] = role.to_string().into();
+            object["reflection"] = reflection.to_string().into();
             object["writes"] = serde_json::json!(writes);
         }
         crate::print_value(&object, true);

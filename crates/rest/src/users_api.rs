@@ -238,22 +238,16 @@ pub async fn create(
     // list of new accounts would otherwise reserve that memory without bound
     // while logins on the same instance are being held to four.
     state
-        .with_login_slot(state.auth.add_user(
+        .with_login_slot(state.auth.add_user_with_reflection(
             &body.name,
             &display,
             body.email.as_deref(),
             body.role,
+            body.reflection.unwrap_or_default(),
             &body.password,
         ))
         .await?
         .map_err(|e| store_error(e, &body.name))?;
-    if let Some(level) = body.reflection.filter(|l| *l != ReflectionLevel::Default) {
-        state
-            .auth
-            .set_reflection_level(&body.name, level)
-            .await
-            .map_err(|e| store_error(e, &body.name))?;
-    }
     let user = read_back(&state, &body.name).await?;
     Ok((StatusCode::CREATED, Json(UserResponse { user })))
 }

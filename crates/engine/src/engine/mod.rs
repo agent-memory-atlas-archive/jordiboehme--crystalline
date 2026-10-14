@@ -1144,7 +1144,8 @@ pub struct Engine {
     // gives up, when a test wants less than the real limit.
     #[cfg(any(test, feature = "testing"))]
     rename_drain_wait: std::sync::Mutex<Option<std::time::Duration>>,
-    // The event-stream seam: while armed, `hidden_domains` fails the way an
+    // The event-stream seam: while armed, `hidden_domains` and
+    // `domain_screen` fail the way an
     // accounts store that cannot answer does. See
     // `Engine::fail_hidden_domains`.
     #[cfg(any(test, feature = "testing"))]
@@ -2647,6 +2648,41 @@ impl Engine {
             );
         }
         Ok(Some(hidden))
+    }
+
+    /// Which domain names `scope` may hear about, as a filter that holds
+    /// without the registrations: a listener that keeps it for a while (the
+    /// event stream) asks this rather than [`Engine::hidden_domains`],
+    /// whose set is complete only for the domains registered when it was
+    /// built. For an account whose instance knowledge level is `none` it is
+    /// an allowlist of the private domains it reads, so a shared domain
+    /// registered later stays out.
+    ///
+    /// [`DomainScreen::All`](crate::scope::DomainScreen::All) when no
+    /// resolver is installed and for the machine owner. The same armed
+    /// failure seam as [`Engine::hidden_domains`].
+    pub async fn domain_screen(
+        &self,
+        scope: &crate::scope::Scope,
+    ) -> Result<crate::scope::DomainScreen> {
+        #[cfg(any(test, feature = "testing"))]
+        if self
+            .fail_hidden_domains
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(EngineError::Internal("armed".to_string()));
+        }
+        let Some(access) = self.domain_access.get() else {
+            return Ok(crate::scope::DomainScreen::All);
+        };
+        if matches!(scope, crate::scope::Scope::Unrestricted) {
+            return Ok(crate::scope::DomainScreen::All);
+        }
+        Ok(access
+            .visibility(scope)
+            .await
+            .map_err(|e| EngineError::Internal(e.to_string()))?
+            .screen())
     }
 
     /// What `scope` may do on one domain, for a surface that has to refuse a

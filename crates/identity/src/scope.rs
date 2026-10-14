@@ -10,7 +10,7 @@
 //!
 //! The policy itself is one small synchronous function, `decide`. Both public
 //! answers - [`DomainAccess::right`] for a single domain and
-//! [`DomainAccess::hidden_domains`] for the whole set - are folds over it, so
+//! [`DomainAccess::visibility`] for the whole set - are folds over it, so
 //! the per-domain answer and the bulk filter cannot drift apart. They read the
 //! same records differently (one domain's row against one user's whole
 //! membership list) purely to keep the bulk path from being N queries, and that
@@ -515,10 +515,14 @@ pub struct DomainAccess {
 /// The two sets answer two different questions and only one of them is a
 /// secret. `private` is a property of the domain, true for every private
 /// domain on the instance whoever is asking; `hidden` is a property of the
-/// caller, and carries [`DomainAccess::hidden_domains`]' own meaning
-/// unchanged, `None` for the machine owner and otherwise the names to
+/// caller: `None` for the machine owner and otherwise the private names to
 /// subtract. A listing subtracts `hidden` first and marks what is left from
 /// `private`, so no row it keeps was ever a name this caller may not learn.
+///
+/// `hidden` alone is not the whole screen: for an account with
+/// `shared_hidden` every shared domain is hidden too, and this type cannot
+/// name them. [`DomainVisibility::screen`] folds the three fields into the
+/// one answer a filter can apply without the registrations.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DomainVisibility {
     /// Every private domain on the instance, by name.
@@ -531,6 +535,59 @@ pub struct DomainVisibility {
     /// domains (it holds only the accounts store), so the engine, which holds
     /// the registrations, adds them to `hidden` (`Engine::hidden_domains`).
     pub shared_hidden: bool,
+}
+
+/// Which domain names one scope may hear about, as a filter that needs no
+/// list of the registered domains. Built by [`DomainVisibility::screen`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum DomainScreen {
+    /// Every domain: the machine owner.
+    All,
+    /// Every domain but these (private domains this scope may not read).
+    Except(HashSet<String>),
+    /// These domains and no other: an account whose instance knowledge level
+    /// is `none` reads no shared domain, so only the private domains it may
+    /// read are named. A domain registered after the screen was built is not
+    /// among them, so it stays out until the screen is built again: the
+    /// filter fails closed.
+    Only(HashSet<String>),
+}
+
+impl DomainScreen {
+    /// Whether `domain` passes the screen.
+    pub fn admits(&self, domain: &str) -> bool {
+        match self {
+            DomainScreen::All => true,
+            DomainScreen::Except(hidden) => !hidden.contains(domain),
+            DomainScreen::Only(readable) => readable.contains(domain),
+        }
+    }
+
+    /// Whether this scope reads the shared domains at all. `false` only for
+    /// [`DomainScreen::Only`]: a change whose audience is every reader of a
+    /// shared domain does not reach such a scope.
+    pub fn admits_shared(&self) -> bool {
+        !matches!(self, DomainScreen::Only(_))
+    }
+}
+
+impl DomainVisibility {
+    /// The one filter these records make: everything for no filtering at all,
+    /// the private domains this scope may read for an account with
+    /// `shared_hidden`, and every domain but `hidden` otherwise.
+    pub fn screen(&self) -> DomainScreen {
+        match &self.hidden {
+            None => DomainScreen::All,
+            Some(hidden) if self.shared_hidden => DomainScreen::Only(
+                self.private
+                    .iter()
+                    .filter(|name| !hidden.contains(*name))
+                    .cloned()
+                    .collect(),
+            ),
+            Some(hidden) => DomainScreen::Except(hidden.clone()),
+        }
+    }
 }
 
 impl DomainAccess {
@@ -832,7 +889,7 @@ impl DomainAccess {
     /// the instance cap first, then the list, read only when the capped right
     /// is still above Read, so a Viewer never waits on it. The cap only
     /// lowers - a domain the caller may not see stays [`DomainRight::None`] -
-    /// and visibility never comes through here ([`DomainAccess::hidden_domains`]
+    /// and visibility never comes through here ([`DomainAccess::visibility`]
     /// folds [`decide`] directly), so every read is unchanged. The machine
     /// owner and the anonymous tier have no list. One more read of the
     /// accounts table, and only when there is a right above Read to cap.
@@ -864,56 +921,21 @@ impl DomainAccess {
         Ok((principal, right))
     }
 
-    /// The private domains `scope` may not read.
-    ///
-    /// `None` means no filtering at all (the machine owner). `Some(set)` is the
-    /// set of domain names to *subtract*: every other domain, private or not,
-    /// is visible. An empty set is therefore the normal answer on an
-    /// installation with no private domains, and the answer an admin always
-    /// gets.
-    ///
-    /// The name says which side of the question this returns, because it is
-    /// the side callers need: filtering is a `contains` against a set that is
-    /// almost always empty, rather than an intersection with a set of every
-    /// domain on the instance. (An earlier draft of the plan called this
-    /// `visible_domains`; there is deliberately no such method. This type
-    /// holds only the accounts store, so it cannot enumerate the registered
-    /// domains, and a method named for the complement of what it returns is
-    /// how an inverted filter ships.)
-    ///
-    /// Half of [`DomainAccess::visibility`], and the half nearly every caller
-    /// wants. The machine owner is still answered without reading anything at
-    /// all: this is the filter on every scoped read, and the one scope that
-    /// filters nothing must not pay a query to be told so.
-    ///
-    /// One case answers less than [`DomainAccess::right`] by design: an
-    /// account whose instance knowledge level is `none` reads no shared
-    /// domain, yet a shared domain never appears here, because this type
-    /// cannot list them. [`DomainVisibility::shared_hidden`] carries that
-    /// fact, and the engine (`Engine::hidden_domains`), which holds the
-    /// registrations, adds the shared domains to the set.
-    pub async fn hidden_domains(&self, scope: &Scope) -> Result<Option<HashSet<String>>> {
-        let principal = self.principal(scope).await?;
-        if matches!(principal, Principal::Unrestricted) {
-            return Ok(None);
-        }
-        Ok(self.resolve(&principal).await?.hidden)
-    }
-
     /// The accounts that may read `domain` right now, or `None` when the
     /// domain is not private and so every scope that reaches the instance
-    /// reads it.
+    /// reads it, except an account whose instance knowledge level is `none`
+    /// (a listener keeps those out with [`DomainScreen::admits_shared`]).
     ///
-    /// The other direction of [`DomainAccess::hidden_domains`]: from one
+    /// The other direction of [`DomainAccess::visibility`]: from one
     /// domain to the accounts, where that method goes from one scope to the
     /// domains. The engine asks it in the instant before a change takes the
     /// domain's name out of these records (a removal, the old name of a
     /// rename), so the change can carry who could read the domain a moment
     /// before it, rather than leaving a listener to ask a registry the change
     /// is emptying. Each account is decided by `decide`, the rule every
-    /// other answer here uses: the owner, every member at any level and every
-    /// instance admin; a disabled account reads nothing, as
-    /// `DomainAccess::principal` rules. Names are the store's own folded
+    /// other answer here uses: the owner, every member who reads engrams there
+    /// (a member at knowledge `none` does not) and every instance admin; a
+    /// disabled account reads nothing, as `DomainAccess::principal` rules. Names are the store's own folded
     /// spelling. The machine owner is never named: it reads every domain.
     pub async fn readers_of(&self, domain: &str) -> Result<Option<HashSet<String>>> {
         let Some(acl) = self.auth.domain_visibility(domain).await? else {
@@ -982,14 +1004,19 @@ impl DomainAccess {
     ///
     /// Both facts from one read of `domain_acl`, for the caller that needs
     /// them together: a domain listing marks each row it kept private or
-    /// shared and drops the hidden ones, and doing that through
-    /// [`DomainAccess::hidden_domains`] plus a second reader would be two
-    /// sweeps of the same table for one answer.
+    /// shared and drops the hidden ones, and reading the two separately would
+    /// be two sweeps of the same table for one answer.
     ///
-    /// `private` is filled for every scope, the machine owner included, and
-    /// that is the one thing this answers that `hidden_domains` does not:
+    /// `private` is filled for every scope, the machine owner included:
     /// whether a domain is private is not a secret from anybody who can see
-    /// the domain at all, and the machine owner sees all of them.
+    /// the domain at all, and the machine owner sees all of them. `hidden` is
+    /// `None` for the machine owner and otherwise the private names to
+    /// subtract; with `shared_hidden` the shared domains are hidden too
+    /// ([`DomainVisibility::screen`]).
+    ///
+    /// There is deliberately no public answer that carries `hidden` alone: it
+    /// would drop `shared_hidden`, and a filter built on it would show an
+    /// account at knowledge `none` every shared domain.
     pub async fn visibility(&self, scope: &Scope) -> Result<DomainVisibility> {
         let principal = self.principal(scope).await?;
         self.resolve(&principal).await
@@ -1078,7 +1105,7 @@ impl DomainAccess {
     /// One account's membership level on one domain, if it has one.
     ///
     /// Read out of the account's own membership list rather than through a
-    /// per-domain lookup, so this path and [`DomainAccess::hidden_domains`]
+    /// per-domain lookup, so this path and [`DomainAccess::visibility`]
     /// read the same rows the same way. A membership list is a handful of rows
     /// even for a heavy user.
     async fn level_of(&self, account: &str, domain: &str) -> Result<Option<MemberLevel>> {
@@ -1096,6 +1123,15 @@ impl DomainAccess {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl DomainAccess {
+        /// The `hidden` half of [`DomainAccess::visibility`], which is what
+        /// most tests here compare against `right`. Test only: a caller that
+        /// filters on it alone drops `shared_hidden`.
+        async fn hidden_domains(&self, scope: &Scope) -> Result<Option<HashSet<String>>> {
+            Ok(self.visibility(scope).await?.hidden)
+        }
+    }
 
     async fn store(dir: &tempfile::TempDir) -> Arc<AuthStore> {
         Arc::new(
@@ -2374,6 +2410,22 @@ mod tests {
         assert_eq!(access.right(&out, "open").await.unwrap(), DomainRight::None);
         assert!(access.visibility(&out).await.unwrap().shared_hidden);
         assert!(!access.visibility(&mem).await.unwrap().shared_hidden);
+        // The screen a filter applies fails closed for out: no shared domain,
+        // known or registered later, and no private one it does not read.
+        let screen = access.visibility(&out).await.unwrap().screen();
+        assert_eq!(screen, DomainScreen::Only(HashSet::new()));
+        assert!(!screen.admits("open") && !screen.admits("lab") && !screen.admits("later"));
+        assert!(!screen.admits_shared());
+        let screen = access.visibility(&mem).await.unwrap().screen();
+        assert!(screen.admits("open") && !screen.admits("lab") && screen.admits_shared());
+        assert_eq!(
+            access
+                .visibility(&Scope::Unrestricted)
+                .await
+                .unwrap()
+                .screen(),
+            DomainScreen::All
+        );
         assert_eq!(
             access.reflection_right(&out, "open").await.unwrap(),
             ReflectionRight::Read
