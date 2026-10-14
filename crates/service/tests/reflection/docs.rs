@@ -1141,7 +1141,48 @@ async fn a_page_that_cannot_be_relinked_is_named_in_the_move_receipt() {
 /// new text is unstamped and the next walk reads and chunks it.
 #[tokio::test]
 async fn a_failed_reflection_index_leaves_the_page_for_the_next_walk() {
-    let fx = reflecting().await;
+    a_failed_index_leaves_the_page(reflecting().await).await;
+}
+
+/// The same on Postgres, where the row and the chunks are separate
+/// autocommitted statements unless the write's transaction holds them.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_failed_reflection_index_leaves_the_page_for_the_next_walk_on_postgres() {
+    use std::sync::Arc;
+
+    use crate::fixture::{fixture_on, pg_url, unique_schema};
+
+    let Some(url) = pg_url() else { return };
+    let schema = unique_schema();
+    let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+        .await
+        .expect("open the postgres test schema");
+    let fx = fixture_on(
+        Arc::new(tokio::sync::Mutex::new(store)),
+        &[
+            ("MANIFEST.md", &manifest("reflection: on\n")),
+            (
+                "runbooks/deploy.md",
+                &engram("Deploy", "runbooks/deploy", "- [fact] deploys run at night"),
+            ),
+        ],
+        |_, _| {},
+        None,
+        None,
+        None,
+    )
+    .await;
+    a_failed_index_leaves_the_page(fx).await;
+    crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+        .await
+        .unwrap()
+        .drop_schema()
+        .await
+        .unwrap();
+}
+
+async fn a_failed_index_leaves_the_page(fx: Fx) {
     fx.engine
         .write_reflection(&write("a.md", "# A\n\nfirst text\n"), &person())
         .await

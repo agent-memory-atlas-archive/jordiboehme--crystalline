@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crystalline_core::config::{DomainEntry, EmbeddingsConfig, GlobalConfig};
-use crystalline_index::{EmbeddingProvider, TursoStore};
+use crystalline_index::{EmbeddingProvider, Store, TursoStore};
 use crystalline_service::Engine;
 use crystalline_service::params::{DeleteParams, MoveParams, WriteParams};
 use tokio::sync::Mutex;
@@ -143,6 +143,28 @@ pub async fn fixture_wired_with(
     embed_tx: Option<UnboundedSender<()>>,
     contradiction_tx: Option<UnboundedSender<()>>,
 ) -> Fx {
+    let store = TursoStore::open_in_memory().await.unwrap();
+    fixture_on(
+        Arc::new(Mutex::new(store)),
+        files,
+        tweak,
+        provider,
+        embed_tx,
+        contradiction_tx,
+    )
+    .await
+}
+
+/// [`fixture_wired_with`] over a store the caller opened, so one body can
+/// run on Turso and on Postgres.
+pub async fn fixture_on(
+    store: Arc<Mutex<dyn Store>>,
+    files: &[(&str, &str)],
+    tweak: impl FnOnce(&mut GlobalConfig, &std::path::Path),
+    provider: Option<Arc<dyn EmbeddingProvider>>,
+    embed_tx: Option<UnboundedSender<()>>,
+    contradiction_tx: Option<UnboundedSender<()>>,
+) -> Fx {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path().to_path_buf();
     let root = base.join("eng");
@@ -159,17 +181,11 @@ pub async fn fixture_wired_with(
     tweak(&mut cfg, &base);
     let config_path = base.join("config.yaml");
     crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
-    let store = TursoStore::open_in_memory().await.unwrap();
-    let mut engine = Engine::new(
-        Arc::new(Mutex::new(store)),
-        cfg,
-        provider,
-        Some(config_path),
-    )
-    .with_state_dir(base.join("state"))
-    // Origin state (base snapshots, the backup state) lands in the
-    // temp dir, never in the developer's own state directory.
-    .with_origins_dir(base.join("origins"));
+    let mut engine = Engine::new(store, cfg, provider, Some(config_path))
+        .with_state_dir(base.join("state"))
+        // Origin state (base snapshots, the backup state) lands in the
+        // temp dir, never in the developer's own state directory.
+        .with_origins_dir(base.join("origins"));
     if let Some(tx) = embed_tx {
         engine = engine.with_embed_channel(tx);
     }
@@ -179,6 +195,41 @@ pub async fn fixture_wired_with(
     let engine = Arc::new(engine);
     engine.sync(None).await.unwrap();
     Fx { tmp, engine, root }
+}
+
+/// The Postgres URL the parity legs run against, or `None` with a note
+/// when `CRYSTALLINE_TEST_POSTGRES_URL` is unset.
+#[cfg(feature = "postgres")]
+pub fn pg_url() -> Option<String> {
+    use std::sync::Once;
+    static NOTE: Once = Once::new();
+    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
+        Ok(u) if !u.is_empty() => Some(u),
+        _ => {
+            NOTE.call_once(|| {
+                eprintln!(
+                    "note: skipping the postgres reflection leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
+                )
+            });
+            None
+        }
+    }
+}
+
+/// A distinct schema name per call, salted so a recycled pid never adopts
+/// a schema a panicking run left behind.
+#[cfg(feature = "postgres")]
+pub fn unique_schema() -> String {
+    use std::hash::{BuildHasher, RandomState};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "refl_{}_{}_{:x}",
+        std::process::id(),
+        n,
+        RandomState::new().hash_one(n)
+    )
 }
 
 /// A deterministic provider over eight hashed word buckets: texts sharing

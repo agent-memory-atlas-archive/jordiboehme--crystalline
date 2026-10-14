@@ -400,6 +400,13 @@ mod tests {
                 ("howto/oncall.md", Some("dddd4444")),
             ]
         );
+        // The scores, not just the order: swapping the two blend weights
+        // (0.6 text, 0.4 semantic) gives the pager section 0.86, which still
+        // ranks first.
+        let scores: Vec<f64> = page.items.iter().map(|h| h.score).collect();
+        for (got, want) in scores.iter().zip([0.89, 0.85, 0.64]) {
+            assert!((got - want).abs() < 1e-9, "{scores:?}");
+        }
         assert!(
             page.items[0].snippet.contains("night"),
             "the lexical half matched: the snippet is cut there"

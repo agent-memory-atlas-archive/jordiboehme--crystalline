@@ -6,8 +6,8 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use crystalline_index::{
-    ChunkTable, EmbeddingProvider, IndexError, Result, SearchMode, SearchQuery, Store, TursoStore,
-    run_embedding_pass, run_embedding_pass_with_page, sync_domain,
+    ChunkTable, EmbeddingProvider, EmbeddingRow, IndexError, Result, SearchMode, SearchQuery,
+    Store, TursoStore, run_embedding_pass, run_embedding_pass_with_page, sync_domain,
 };
 
 // --- harness, copied from `lead_vectors` -------------------------------------
@@ -559,4 +559,62 @@ async fn reflection_coverage_is_counted_per_domain(store: &dyn Store) {
 parity!(
     reflection_coverage_is_counted_per_domain_on_both_backends,
     reflection_coverage_is_counted_per_domain
+);
+
+/// The vector statement reads the active model's vectors only: a section
+/// whose chunk holds another model's vector of the same width, the closest
+/// one to the query, is never a hit. Same width, so the staleness gate lets
+/// the statement run and only its model predicate keeps the section out.
+async fn vector_hits_read_the_active_model_only(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "MANIFEST.md", &manifest_on());
+    write(
+        dir.path(),
+        "reflections/a.md",
+        "# A\n\n## Pager\n<!-- r:aaaa1111 -->\n\npager rings loudly\n\n## Tea\n<!-- r:bbbb2222 -->\n\nbrew green tea\n",
+    );
+    sync_domain(store, "eng", dir.path()).await.unwrap();
+    run_embedding_pass(store, &FakeProvider::new("fake"), |_, _| {})
+        .await
+        .unwrap();
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    let query = embed_one("brew green tea");
+    let before = store
+        .reflection_vector_hits(did, &query, "fake")
+        .await
+        .unwrap();
+    assert_eq!(
+        (before[0].path.as_str(), before[0].section_ord),
+        ("a.md", 2),
+        "precondition: the tea section is the closest: {before:?}"
+    );
+    let tea: Vec<EmbeddingRow> = store
+        .chunks_needing_embedding_in(ChunkTable::Reflection, "other", None, 100, None)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|j| j.text.contains("tea"))
+        .map(|j| EmbeddingRow {
+            chunk_id: j.chunk_id,
+            embedding: query.clone(),
+            dims: 8,
+        })
+        .collect();
+    assert_eq!(tea.len(), 1, "one chunk for the tea section");
+    store
+        .store_embeddings_in(ChunkTable::Reflection, &tea, "other")
+        .await
+        .unwrap();
+    let hits = store
+        .reflection_vector_hits(did, &query, "fake")
+        .await
+        .unwrap();
+    assert!(
+        !hits.is_empty() && hits.iter().all(|h| h.section_ord != 2),
+        "the other model's vector of the tea section is no hit: {hits:?}"
+    );
+}
+parity!(
+    vector_hits_read_the_active_model_only_on_both_backends,
+    vector_hits_read_the_active_model_only
 );

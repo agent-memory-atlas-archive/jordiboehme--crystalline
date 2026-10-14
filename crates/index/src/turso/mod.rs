@@ -4482,6 +4482,71 @@ mod tests {
     use super::*;
     use crate::store::{FileStamp, ObservationRecord};
 
+    /// The reflection vector statement compares the query only with vectors
+    /// of its own width: a chunk of the active model stored at another width
+    /// is left out, not handed to the distance function. Run against the
+    /// statement itself, because `reflection_vector_hits` refuses such a
+    /// domain at its staleness gate before the statement runs, so the width
+    /// predicate is the statement's own guard.
+    #[tokio::test]
+    async fn the_reflection_vector_statement_reads_one_width() {
+        let store = TursoStore::open_in_memory().await.unwrap();
+        let did = store
+            .upsert_domain("eng", Some("/k/eng"), crate::store::DomainKind::File)
+            .await
+            .unwrap();
+        let chunk = |ord: i64, text: &str| NewReflectionChunk {
+            section_ord: ord,
+            section: None,
+            heading: String::new(),
+            chunk: crate::store::NewChunk {
+                seq: ord,
+                text: text.to_string(),
+                text_hash: text.to_string(),
+            },
+        };
+        store
+            .replace_reflection_chunks(did, "a.md", &[chunk(0, "wide"), chunk(1, "narrow")])
+            .await
+            .unwrap();
+        let jobs = store
+            .chunks_needing_embedding_in(ChunkTable::Reflection, "m", None, 10, None)
+            .await
+            .unwrap();
+        for job in &jobs {
+            let width = if job.text == "wide" { 8 } else { 4 };
+            store
+                .store_embeddings_in(
+                    ChunkTable::Reflection,
+                    &[crate::store::EmbeddingRow {
+                        chunk_id: job.chunk_id,
+                        embedding: vec![0.5; width],
+                        dims: width,
+                    }],
+                    "m",
+                )
+                .await
+                .unwrap();
+        }
+        let rows = query_all(
+            &store.conn,
+            REFLECTION_VECTOR_SQL,
+            vec![
+                Value::Blob(crate::store::pack_f32_le(&[0.5; 8])),
+                Value::Integer(did.0),
+                Value::Text("m".to_string()),
+                Value::Integer(8),
+            ],
+        )
+        .await
+        .expect("the narrow chunk never reaches the distance function");
+        let got: Vec<(String, i64)> = rows
+            .iter()
+            .map(|r| (cell_text(r, 0).unwrap(), cell_i64(r, 1).unwrap()))
+            .collect();
+        assert_eq!(got, [("a.md".to_string(), 0)], "the 8-wide chunk alone");
+    }
+
     /// A line vector whose stored blob disagrees with its `dims` column is
     /// skipped, not returned: a blob of one float under `dims` 4, and a blob
     /// that is not a whole number of floats, beside one good row.

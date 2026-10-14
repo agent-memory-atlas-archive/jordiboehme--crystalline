@@ -9295,6 +9295,67 @@ parity!(
     a_forced_rebuild_rechunks_reflections
 );
 
+/// A page of more chunks than one insert batch holds (90 rows of 11
+/// binds) is written whole, in order, and an unchanged rewrite carries every
+/// vector across the batch boundaries.
+async fn a_page_of_many_chunks_is_written_in_batches(store: &dyn Store) {
+    let did = store
+        .upsert_domain("eng", Some("/k/eng"), DomainKind::File)
+        .await
+        .unwrap();
+    let chunks: Vec<crystalline_index::NewReflectionChunk> = (0..181)
+        .map(|i| crystalline_index::NewReflectionChunk {
+            section_ord: i / 3,
+            section: None,
+            heading: format!("H{}", i / 3),
+            chunk: NewChunk {
+                seq: i,
+                text: format!("chunk {i}"),
+                text_hash: format!("h{i}"),
+            },
+        })
+        .collect();
+    store
+        .replace_reflection_chunks(did, "long.md", &chunks)
+        .await
+        .unwrap();
+    let jobs = store
+        .chunks_needing_embedding_in(ChunkTable::Reflection, "m", None, 500, None)
+        .await
+        .unwrap();
+    let mut texts: Vec<(i64, String)> = jobs.iter().map(|j| (j.seq, j.text.clone())).collect();
+    texts.sort();
+    let want: Vec<(i64, String)> = (0..181).map(|i| (i, format!("chunk {i}"))).collect();
+    assert_eq!(texts, want, "every chunk, each once, across three batches");
+
+    let rows: Vec<EmbeddingRow> = jobs
+        .iter()
+        .map(|j| EmbeddingRow {
+            chunk_id: j.chunk_id,
+            embedding: vec![0.5; 8],
+            dims: 8,
+        })
+        .collect();
+    store
+        .store_embeddings_in(ChunkTable::Reflection, &rows, "m")
+        .await
+        .unwrap();
+    store
+        .replace_reflection_chunks(did, "long.md", &chunks)
+        .await
+        .unwrap();
+    let cov = store.reflection_coverage(did).await.unwrap();
+    assert_eq!(
+        (cov.total_chunks, cov.embedded_for("m")),
+        (181, 181),
+        "the rewrite kept every vector: {cov:?}"
+    );
+}
+parity!(
+    a_page_of_many_chunks_is_written_in_batches_on_both_backends,
+    a_page_of_many_chunks_is_written_in_batches
+);
+
 /// A stray chunk row is not content: an otherwise empty domain row still
 /// goes, and takes the chunk with it (on postgres the foreign key would
 /// refuse the domain delete otherwise).
