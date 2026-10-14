@@ -189,7 +189,9 @@
       "answer_any": [
         "sunset",
         "thirty minutes",
-        "lamp"
+        "feedback",
+        "lighting up",
+        "unreflected"
       ]
     }
   },
@@ -205,8 +207,10 @@
         ]
       },
       "answer_any": [
-        "lamp",
-        "log"
+        "sunset",
+        "thirty minutes",
+        "signed",
+        "lighting up"
       ]
     }
   },

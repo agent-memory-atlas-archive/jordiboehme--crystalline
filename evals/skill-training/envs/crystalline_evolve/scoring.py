@@ -531,7 +531,13 @@ def describe_expectations(expect: dict) -> str:
                 "The question named no domain, so the sweep had to run over "
                 "every registered domain with the domains argument omitted."
             )
-    if expect.get("forbid_evolve"):
+    if expect.get("forbid_evolve") and expect.get("require_reflect"):
+        lines.append(
+            "This is about the Reflection, not an engram maintenance pass. "
+            "Calling evolve_engrams here is the failure: reflect is the queue "
+            "for the Reflection."
+        )
+    elif expect.get("forbid_evolve"):
         lines.append(
             "This is an ordinary recall or capture request, not a "
             "maintenance pass. Calling evolve_engrams here is the failure: "
@@ -546,7 +552,9 @@ def describe_expectations(expect: dict) -> str:
         )
     if expect.get("forbid_reflect"):
         lines.append(
-            "This is not about the Reflection. Calling reflect here is the failure."
+            "This is not about the Reflection. Calling reflect here is the "
+            "failure, even when the routing block names open Reflection items: "
+            "a plain recall answers from the engrams."
         )
     if expect.get("evolve_rerun"):
         lines.append(

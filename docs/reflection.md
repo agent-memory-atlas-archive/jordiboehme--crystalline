@@ -21,6 +21,8 @@ Switching it on is refused in these cases, and the refusal says why:
 - The domain is connected to GitHub and this instance has no `service.public_url`. A shared domain's Reflection has one home, and the home needs an address (see [One home, one backup](#one-home-one-backup)).
 - The domain is connected to GitHub and the team's copy still holds files in `reflections/`. Share the change that moves them out first.
 - The domain has two folders that differ only in letter case, for example `reflections/` and `Reflections/`.
+- The domain is connected to GitHub and the record of the team's copy cannot be read. Repair or remove that record; the next pull writes it again.
+- This instance's `service.public_url` cannot be a Reflection's home, for example because it is not a valid address for that.
 
 A plain editor or a pull can still write `reflection: on` into the MANIFEST. If engrams still live in `reflections/` then, the switch is pending: the folder stays engram content until the last engram has left it, and the Reflection tools answer that they wait for that. A `reflect` call over all domains names such a domain under `scope.pending`. A page written by hand with no hidden section id counts as such an engram too (see the next sections).
 
@@ -38,7 +40,7 @@ The agent reads the pact before it writes. A page that fits none of the `## Stru
 
 Every `##` heading of a reflection gets a hidden id on the next line, for example `<!-- r:7f3a9c2e -->`. The id ties a section to its threads and to the engrams it was built from, so a section keeps them when its heading changes. Leave the line alone. A heading added in another editor gets its id on the next write through Crystalline.
 
-The id lines also mark a file as a page. A new page written outside Crystalline needs at least one: an id line under one of its `##` headings (4 to 16 lowercase hex digits, for example `<!-- r:c3d4e5f6 -->`). Without any, Crystalline reads the file as an engram, and the Reflection waits until it is moved out or marked. A page written through Crystalline always has its id lines.
+The id lines also mark a file as a page. Give every page at least one `##` heading, and put an id line under it. A page written through Crystalline gets its id lines, but only under `##` headings, so a page without one has none. For an id you write by hand, use 4 to 16 lowercase hex digits that start with a letter, for example `<!-- r:c3d4e5f6 -->` (an id like `1234e567` can be read as a number). A file with no id line reads as an engram when Crystalline looks at the folder from scratch: when Reflection is switched on, after a rebuild such as `crystalline reindex --full`, and on the first sync of a new machine. The Reflection then waits until the file is moved out or marked.
 
 The frontmatter block `reflection:` is Crystalline's own. For each section it records the engrams the section was built from (with their checksum at that time), a hash of the text at the last reflect, and who changed the text since then. A person who cannot read the engrams gets the page without this block, so engram names stay hidden from them. Do not edit the block by hand.
 
@@ -68,7 +70,7 @@ Access has two axes. They are set side by side: per account for every shared dom
 - **Edit** adds writing pages: create, change, move and delete them, and add new files.
 - **Curate** adds writing `PACT.md`, recording the engrams a section was built from, settling feedback, and replacing, moving and removing files. Everyone who may edit the engrams curates. Readers and contributors propose a pact change in a thread.
 - A member of a private domain at knowledge `none` needs a Reflection level; without one the membership grants nothing and is refused.
-- An account whose write list leaves a domain out only reads and comments there, whatever its levels say.
+- An account whose write list leaves a domain out at most reads and comments there, whatever its levels say. The list never grants access.
 - An anonymous visitor reads a public domain's Reflection and never comments.
 
 The commands:
@@ -145,7 +147,7 @@ These files are not engram attachments. The engram sweep never reports them as o
 
 A local domain keeps its Reflection where it is, in its folder.
 
-A domain shared through GitHub has one home: the instance whose `service.public_url` is the domain's `reflection_home`. This key is filled in when Reflection is switched on at that instance, and it is never set by hand. Every other instance answers "this domain's Reflection lives at <url>". People and agents work on the Reflection at the home.
+A domain shared through GitHub has one home: the instance whose `service.public_url` is the domain's `reflection_home`. This key is filled in when Reflection is switched on at that instance, and it is never set by hand. Every other instance answers `this domain's Reflection lives at <url>`. People and agents work on the Reflection at the home.
 
 The home backs the whole `reflections/` folder up to the branch `crystalline/reflections` of the domain's repository, with its own GitHub token:
 
@@ -170,15 +172,17 @@ A domain export (the archive download in Fluid or `crystalline domain export`) a
 
 ## A scheduled run
 
-A daily headless agent on the home instance can work the queue. Two examples, both plain text to adapt to your setup.
+A daily headless agent on the home instance can work the queue. The examples below are plain text to adapt to your setup. They pass `--allowedTools "mcp__crystalline"`, because a headless run has nobody to approve a tool call: without it every crystalline tool call is refused and the run does nothing.
+
+Cron, daily at 06:30, as the account that runs the daemon:
 
 ```bash
-# cron, daily at 06:30, as the account that runs the daemon
-30 6 * * * cd /srv/kb && claude -p "Call the crystalline reflect tool for the domain eng and work the queue: feedback items first, then update items, then answer review threads in plain words. Stop when the queue is empty or after 20 items." >> /var/log/crystalline-reflect.log 2>&1
+30 6 * * * cd /srv/kb && /usr/local/bin/claude -p "Call the crystalline reflect tool for the domain eng and work the queue: feedback items first, then update items, then answer review threads in plain words. Stop when the queue is empty or after 20 items." --allowedTools "mcp__crystalline" >> /var/log/crystalline-reflect.log 2>&1
 ```
 
+With systemd, use two files. `/etc/systemd/system/crystalline-reflect.service`:
+
 ```ini
-# systemd: /etc/systemd/system/crystalline-reflect.service and .timer
 [Unit]
 Description=Work the Reflection queue of eng
 
@@ -186,7 +190,14 @@ Description=Work the Reflection queue of eng
 Type=oneshot
 User=crystalline
 WorkingDirectory=/srv/kb
-ExecStart=/usr/local/bin/claude -p "Call the crystalline reflect tool for the domain eng and work the queue: feedback items first, then update items, then answer review threads in plain words. Stop when the queue is empty or after 20 items."
+ExecStart=/usr/local/bin/claude -p "Call the crystalline reflect tool for the domain eng and work the queue: feedback items first, then update items, then answer review threads in plain words. Stop when the queue is empty or after 20 items." --allowedTools "mcp__crystalline"
+```
+
+`/etc/systemd/system/crystalline-reflect.timer`:
+
+```ini
+[Unit]
+Description=Work the Reflection queue of eng every day
 
 [Timer]
 OnCalendar=*-*-* 06:30:00
@@ -195,5 +206,7 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 ```
+
+Enable the timer with `systemctl enable --now crystalline-reflect.timer`.
 
 The agent needs the crystalline MCP server registered for that account (`crystalline install`). When the instance asks agents to authenticate, it also needs an account with curate access, through an MCP token in the harness config of that account. `crystalline install` does not set up the scheduled run in this release.

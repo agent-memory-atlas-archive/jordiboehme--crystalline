@@ -329,7 +329,7 @@ flowchart LR
 
 ## Reflection on a team server
 
-A domain shared through GitHub keeps its [Reflection](reflection.md), its documents for people, on one home instance: the team server whose `service.public_url` is the domain's `reflection_home`. That key is filled in when Reflection is switched on at the team server, so switch it on there and not on a laptop. Every other instance that holds the domain answers "this domain's Reflection lives at <url>", and people and agents work on the Reflection at the home.
+A domain shared through GitHub keeps its [Reflection](reflection.md), its documents for people, on one home instance: the team server whose `service.public_url` is the domain's `reflection_home`. That key is filled in when Reflection is switched on at the team server, so switch it on there and not on a laptop. Every other instance that holds the domain answers `this domain's Reflection lives at <url>`, and people and agents work on the Reflection at the home.
 
 The home backs the whole `reflections/` folder up to the branch `crystalline/reflections` of the domain's repository. The branch never carries an engram, and sharing engram changes never carries a file under `reflections/`. A daily agent run on the home instance can work the Reflection's queue; see [A scheduled run](reflection.md#a-scheduled-run) for a cron and a systemd example, and [Restore from the backup](reflection.md#restore-from-the-backup) for the way back.
 
