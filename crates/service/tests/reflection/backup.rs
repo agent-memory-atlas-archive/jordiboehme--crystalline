@@ -747,3 +747,63 @@ async fn the_start_marks_every_reflection_once() {
         "{done:?}"
     );
 }
+
+/// An upload, a move and a removal of a Reflection's file are settled
+/// changes: each reaches the backup branch byte for byte, and the old path
+/// leaves it.
+#[tokio::test]
+async fn the_backup_branch_carries_the_reflection_files_byte_for_byte() {
+    // A file change marks the backup and never the evolve sweep's state
+    // file; held so a regression that writes it stays out of the
+    // developer's state directory.
+    let _state = crate::support::ScratchStateDir::acquire();
+    let mock = Arc::new(MockProvider::new());
+    main_commit(&mock);
+    let fx = home(mock.clone()).await;
+    let png = crate::assets::PNG;
+    fx.engine
+        .reflection_asset_write("eng", "assets/diagrams/flow.png", png.to_vec(), &agent())
+        .await
+        .unwrap();
+    let results = fx.engine.reflection_backup_tick(Instant::now()).await;
+    assert_eq!(
+        results.len(),
+        1,
+        "an upload is a settled change: {results:?}"
+    );
+    let head = mock.branch_commit(BACKUP_BRANCH).unwrap();
+    assert_eq!(
+        mock.commit_file(&head, "reflections/assets/diagrams/flow.png")
+            .as_deref(),
+        Some(png)
+    );
+    fx.engine
+        .move_reflection_asset(
+            "eng",
+            "assets/diagrams/flow.png",
+            "assets/flow.png",
+            &agent(),
+        )
+        .await
+        .unwrap();
+    fx.engine.reflection_backup_tick(Instant::now()).await;
+    let paths = mock.commit_paths(&mock.branch_commit(BACKUP_BRANCH).unwrap());
+    assert!(
+        paths.contains(&"reflections/assets/flow.png".to_string()),
+        "{paths:?}"
+    );
+    assert!(
+        !paths.contains(&"reflections/assets/diagrams/flow.png".to_string()),
+        "{paths:?}"
+    );
+    fx.engine
+        .reflection_asset_delete("eng", "assets/flow.png", &agent())
+        .await
+        .unwrap();
+    fx.engine.reflection_backup_tick(Instant::now()).await;
+    let paths = mock.commit_paths(&mock.branch_commit(BACKUP_BRANCH).unwrap());
+    assert!(
+        !paths.iter().any(|p| p.starts_with("reflections/assets/")),
+        "{paths:?}"
+    );
+}

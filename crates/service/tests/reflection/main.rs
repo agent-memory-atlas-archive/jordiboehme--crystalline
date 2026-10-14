@@ -6,6 +6,7 @@
 mod support;
 
 mod assets;
+mod assets_mcp;
 mod backup;
 mod docs;
 mod fixture;

@@ -4,10 +4,11 @@
 //! through unchanged, so the MCP tools and this surface describe one thing.
 
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use utoipa::{IntoParams, ToSchema};
 
@@ -17,6 +18,7 @@ use crate::engine::{
     ANONYMOUS_COMMENT, EngineError, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_OFF_START,
     REFUSED_PENDING, REFUSED_PENDING_NAMED,
 };
+use crate::files::{AttachmentView, attachment_response};
 use crate::params::{DiscussParams, WriteReflectionParams};
 use crate::scope::ReflectionCaller;
 
@@ -61,9 +63,10 @@ pub(crate) async fn refuse_anonymous(
 /// Engine errors as this surface answers them: the four Reflection states a
 /// verb refuses on are 409 (the request is fine, the Reflection is not where
 /// it could serve it), with `home_url` when it lives elsewhere; a stale
-/// checksum, a create over an existing page and a move or delete of a page
-/// somebody is editing are 409 (the shared mapping answers every other
-/// `Conflict` 422); everything else keeps the shared mapping.
+/// checksum, a create over an existing page, a move or delete of a page
+/// somebody is editing and a file move onto a path that already holds a
+/// file are 409 (the shared mapping answers every other `Conflict` 422);
+/// everything else keeps the shared mapping.
 pub(crate) fn reflection_error(e: EngineError) -> ApiError {
     match &e {
         EngineError::Refused(text) if text.starts_with(REFUSED_ELSEWHERE_START) => {
@@ -86,7 +89,8 @@ pub(crate) fn reflection_error(e: EngineError) -> ApiError {
         EngineError::Conflict(text)
             if text.starts_with("stale edit")
                 || text.starts_with("a reflection already lives at")
-                || text.starts_with("somebody is editing") =>
+                || text.starts_with("somebody is editing")
+                || text.contains("already holds a file") =>
         {
             ApiError::conflict(text.clone())
         }
@@ -379,7 +383,13 @@ pub struct SaveReflectionBody {
             status = 200,
             description = "Written: `{ domain, path, checksum, created, \
                            ids_assigned, curated }`. `curated` says whether \
-                           this write advanced the baseline.",
+                           this write advanced the baseline. While a \
+                           co-editing room is open over the page the receipt \
+                           also carries `present` (who is in it) and \
+                           `landed`: `live` when the room took the write in, \
+                           `file` when it is on disk only, and then `room` \
+                           (`conflict` or `waiting`) with `room_note`, a \
+                           sentence saying what the people in the room meet.",
             body = Object,
             example = json!({ "domain": "eng", "path": "guides/deploying.md",
                 "checksum": "9f2c...", "created": false,
@@ -915,7 +925,14 @@ pub struct QueueQuery {
                            the same shape with `scope: { domains, kinds }` in \
                            place of `domain` and a `domain` member on each row; \
                            its `scope` may carry `unreadable`, the names of the \
-                           domains whose queue could not be read.",
+                           domains whose queue could not be read, and \
+                           `pending`, the names of the domains whose \
+                           Reflection waits for engrams to leave \
+                           `reflections/`. An update item's `what` may also \
+                           be `asset_missing` (per section, with `assets`), \
+                           `engram_attachment` (per section, with `targets`) \
+                           or `asset_unreferenced` (`path` empty, with \
+                           `asset`).",
             body = Object,
             example = json!({ "domain": "eng", "total": 1, "page": 1, "limit": 10,
                 "count": 1, "kinds": { "feedback": 0, "update": 1, "review": 0 },
@@ -1087,6 +1104,418 @@ pub async fn search(
         .map_err(reflection_error)
 }
 
+/// The path inside `reflections/` a file route's wildcard names.
+fn asset_path(rel: &str) -> String {
+    format!("{}{rel}", crystalline_core::ASSETS_PREFIX)
+}
+
+/// Every file of a domain's Reflection.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReflectionAssetsResponse {
+    /// The rows, ordered by path; `path` is inside `reflections/`
+    /// (`assets/...`).
+    pub assets: Vec<AttachmentView>,
+}
+
+/// What an upload into a Reflection answers.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UploadedReflectionAsset {
+    /// The path inside `reflections/`, `assets/...`: how a reflection in the
+    /// folder root links it.
+    #[schema(example = "assets/diagrams/flow.png")]
+    pub path: String,
+    /// The mime it is served under, from the extension.
+    #[schema(example = "image/png")]
+    pub mime: String,
+    /// Byte length as stored.
+    #[schema(example = 20481)]
+    pub size: u64,
+    /// Lowercase hex SHA-256 of the stored bytes, the token the read's
+    /// `ETag` carries.
+    #[schema(example = "9f2a1c05e2b7")]
+    pub sha256: String,
+    /// Whether the path held no file before.
+    pub created: bool,
+}
+
+/// What `POST /domains/{domain}/reflection/move-asset` takes.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct MoveReflectionAssetBody {
+    /// The file's path inside `reflections/`, `assets/...`.
+    #[schema(example = "assets/diagrams/flow.png")]
+    pub from: String,
+    /// Its new path inside `reflections/`, `assets/...`.
+    #[schema(example = "assets/flow.png")]
+    pub to: String,
+}
+
+/// `GET /domains/{domain}/reflection/assets`
+#[utoipa::path(
+    get,
+    path = "/api/v1/domains/{domain}/reflection/assets",
+    tag = "reflection",
+    operation_id = "list_reflection_assets",
+    summary = "Every file of the Reflection, metadata only.",
+    description = "Needs `read` on the Reflection; knowledge rights play no \
+                   part, so a person at knowledge `none` with a Reflection \
+                   level lists every file.",
+    params(("domain" = String, Path, description = "The domain.")),
+    responses(
+        (
+            status = 200,
+            description = "Every file under reflections/assets/, ordered by \
+                           path; each `path` is inside `reflections/`.",
+            body = ReflectionAssetsResponse,
+        ),
+        (
+            status = 404,
+            description = "No such domain, or none this caller may see (the \
+                           anonymous viewer included).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 409,
+            description = "The Reflection is not here (off, pending, homeless or \
+                           elsewhere, then with `home_url`).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+    ),
+)]
+pub async fn assets(
+    State(state): State<RestState>,
+    identity: Identity,
+    ApiPath(domain): ApiPath<String>,
+) -> Result<Json<ReflectionAssetsResponse>, ApiError> {
+    let rows = state
+        .engine
+        .reflection_asset_list(&domain, &caller(&identity))
+        .await
+        .map_err(reflection_error)?;
+    Ok(Json(ReflectionAssetsResponse {
+        assets: rows.into_iter().map(AttachmentView::from).collect(),
+    }))
+}
+
+/// `GET /domains/{domain}/reflection/assets/{*path}`
+#[utoipa::path(
+    get,
+    path = "/api/v1/domains/{domain}/reflection/assets/{path}",
+    tag = "reflection",
+    operation_id = "read_reflection_asset",
+    summary = "One file of the Reflection, its bytes.",
+    description = "Needs `read` on the Reflection; knowledge rights play no \
+                   part. Served like an engram attachment, with the same \
+                   headers.",
+    params(
+        ("domain" = String, Path, description = "The domain."),
+        ("path" = String, Path, description = "The path under \
+                                               reflections/assets/; may contain slashes.",
+         example = "diagrams/flow.png"),
+    ),
+    responses(
+        (
+            status = 200,
+            description = "The bytes, under the mime the allowlist assigns.",
+            body = String,
+            content_type = "application/octet-stream",
+            headers(
+                ("etag" = String, description = "The strong quoted SHA-256 of the bytes served."),
+                ("cache-control" = String, description = "Always `no-cache`: store it, but revalidate before every use."),
+                ("x-content-type-options" = String, description = "Always `nosniff`."),
+                ("content-security-policy" = String, description = "Always `default-src 'none'; sandbox`."),
+                ("content-disposition" = String, description = "`inline` for images, PDFs and text; `attachment; filename=\"...\"` otherwise."),
+            ),
+        ),
+        (
+            status = 304,
+            description = "The `If-None-Match` token matches the stored bytes; \
+                           no body, the `ETag` and the same `Cache-Control`.",
+        ),
+        (
+            status = 404,
+            description = "No such file, or no such domain for this caller (the \
+                           anonymous viewer included).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 409,
+            description = "The Reflection is not here (then possibly `home_url`).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 422,
+            description = "A path rule or the extension allowlist refused the path.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+    ),
+)]
+pub async fn asset_read(
+    State(state): State<RestState>,
+    identity: Identity,
+    headers: HeaderMap,
+    ApiPath((domain, rel)): ApiPath<(String, String)>,
+) -> Result<Response, ApiError> {
+    let (bytes, row) = state
+        .engine
+        .reflection_asset_read(&domain, &asset_path(&rel), &caller(&identity))
+        .await
+        .map_err(reflection_error)?;
+    Ok(attachment_response(&headers, bytes, &row))
+}
+
+/// `PUT /domains/{domain}/reflection/assets/{*path}`
+#[utoipa::path(
+    put,
+    path = "/api/v1/domains/{domain}/reflection/assets/{path}",
+    tag = "reflection",
+    operation_id = "write_reflection_asset",
+    summary = "Add a file to the Reflection, or replace one.",
+    description = "Needs `edit` for a new path and `curate` to replace a \
+                   file, since a replace removes the old bytes. The request \
+                   body is the raw file, not multipart; the extension \
+                   allowlist decides the mime. The path rules, the allowlist \
+                   and the 10 MiB ceiling are the engram attachments' own.",
+    params(
+        ("domain" = String, Path, description = "The domain."),
+        ("path" = String, Path, description = "Where to store it, under \
+                                               reflections/assets/; may contain slashes.",
+         example = "diagrams/flow.png"),
+    ),
+    request_body(
+        description = "The raw file bytes.",
+        content_type = "application/octet-stream",
+        content = String,
+    ),
+    responses(
+        (
+            status = 200,
+            description = "Stored. `path` is inside `reflections/`.",
+            body = UploadedReflectionAsset,
+        ),
+        (
+            status = 401,
+            description = "The anonymous viewer of a domain it reads: it reads \
+                           the Reflection and never changes it.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 403,
+            description = "Below edit access; a replace below curate access, \
+                           with a detail naming the right held and curate \
+                           (upload it under a new name instead); the domain \
+                           is off the caller's write list; or this instance \
+                           is read-only.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 404,
+            description = "No such domain, or none this caller may see (the \
+                           anonymous viewer included).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 409,
+            description = "The Reflection is not here (then possibly `home_url`).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 413,
+            description = "Over the 10 MiB ceiling.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 422,
+            description = "A path rule or the extension allowlist refused it.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+    ),
+)]
+pub async fn asset_write(
+    State(state): State<RestState>,
+    identity: Identity,
+    ApiPath((domain, rel)): ApiPath<(String, String)>,
+    body: Bytes,
+) -> Result<Json<UploadedReflectionAsset>, ApiError> {
+    refuse_anonymous(&state, &identity, &domain, ANONYMOUS_EDIT).await?;
+    refuse_read_only(&state)?;
+    let written = state
+        .engine
+        .reflection_asset_write(
+            &domain,
+            &asset_path(&rel),
+            body.to_vec(),
+            &caller(&identity),
+        )
+        .await
+        .map_err(reflection_error)?;
+    Ok(Json(UploadedReflectionAsset {
+        path: written.row.path,
+        mime: written.row.mime,
+        size: written.row.size,
+        sha256: written.row.sha256,
+        created: written.created,
+    }))
+}
+
+/// `DELETE /domains/{domain}/reflection/assets/{*path}`
+#[utoipa::path(
+    delete,
+    path = "/api/v1/domains/{domain}/reflection/assets/{path}",
+    tag = "reflection",
+    operation_id = "delete_reflection_asset",
+    summary = "Remove a file from the Reflection.",
+    params(
+        ("domain" = String, Path, description = "The domain."),
+        ("path" = String, Path, description = "The path under \
+                                               reflections/assets/; may contain slashes.",
+         example = "diagrams/flow.png"),
+    ),
+    responses(
+        (
+            status = 204,
+            description = "Removed. A reflection that still links it keeps the \
+                           link; the reflect queue names it as missing.",
+        ),
+        (
+            status = 401,
+            description = "The anonymous viewer of a domain it reads: it reads \
+                           the Reflection and never changes it.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 403,
+            description = "Below curate access, or this instance is read-only.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 404,
+            description = "No such file, or no such domain for this caller (the \
+                           anonymous viewer included).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 409,
+            description = "The Reflection is not here (then possibly `home_url`).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 422,
+            description = "A path rule refused the path.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+    ),
+)]
+pub async fn asset_remove(
+    State(state): State<RestState>,
+    identity: Identity,
+    ApiPath((domain, rel)): ApiPath<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    refuse_anonymous(&state, &identity, &domain, ANONYMOUS_EDIT).await?;
+    refuse_read_only(&state)?;
+    state
+        .engine
+        .reflection_asset_delete(&domain, &asset_path(&rel), &caller(&identity))
+        .await
+        .map_err(reflection_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /domains/{domain}/reflection/move-asset`
+#[utoipa::path(
+    post,
+    path = "/api/v1/domains/{domain}/reflection/move-asset",
+    tag = "reflection",
+    operation_id = "move_reflection_asset",
+    summary = "Move or rename a file of the Reflection.",
+    description = "Needs `curate`. Every reflection that links the file \
+                   (PACT.md included) is rewritten to the new path; the \
+                   rewrite is not a person's change and owes no feedback. A \
+                   move never overwrites a file, and waits while a page it \
+                   would rewrite is open in a co-editing room.",
+    params(("domain" = String, Path, description = "The domain.")),
+    request_body = MoveReflectionAssetBody,
+    responses(
+        (
+            status = 200,
+            description = "Moved: `{ domain, from, to, links_rewritten }`. \
+                           Two keys appear only when needed: `links_failed`, \
+                           `[{ path, reason }]` for each page whose link \
+                           could not be rewritten after the file moved, and \
+                           `note`, a sentence saying the file moved and its \
+                           index row did not follow (the next sync brings it \
+                           up to date).",
+            body = Object,
+            example = json!({ "domain": "eng", "from": "assets/diagrams/flow.png",
+                "to": "assets/flow.png", "links_rewritten": 2 }),
+        ),
+        (
+            status = 401,
+            description = "The anonymous viewer of a domain it reads: it reads \
+                           the Reflection and never changes it.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 403,
+            description = "Below curate access, or this instance is read-only.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 404,
+            description = "No such file, or no such domain for this caller (the \
+                           anonymous viewer included).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 409,
+            description = "The new path already holds a file, a page that links \
+                           it is open in a co-editing room, or the Reflection \
+                           is not here (then possibly `home_url`).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 422,
+            description = "A path rule refused a path, or both name the same file.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+    ),
+)]
+pub async fn asset_move(
+    State(state): State<RestState>,
+    identity: Identity,
+    ApiPath(domain): ApiPath<String>,
+    ApiJson(body): ApiJson<MoveReflectionAssetBody>,
+) -> Result<Json<Value>, ApiError> {
+    refuse_anonymous(&state, &identity, &domain, ANONYMOUS_EDIT).await?;
+    refuse_read_only(&state)?;
+    state
+        .engine
+        .move_reflection_asset(&domain, &body.from, &body.to, &caller(&identity))
+        .await
+        .map(Json)
+        .map_err(reflection_error)
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
@@ -1132,19 +1561,26 @@ mod tests {
         assert_eq!(e.status, StatusCode::FORBIDDEN);
     }
 
-    /// A stale edit, a create over a page and a busy page are 409; any other
-    /// conflict keeps the shared 422.
+    /// A stale edit, a create over a page, a busy page and a file move onto
+    /// a file are 409; any other conflict keeps the shared 422.
     #[test]
-    fn the_three_reflection_conflicts_are_409() {
+    fn the_reflection_conflicts_are_409() {
         for text in [
             "stale edit: the reflection changed since it was read",
             "a reflection already lives at 'guides/deploying.md'",
             "somebody is editing 'guides/deploying.md'",
+            "'assets/flow.png' already holds a file; remove it first or pick another name",
         ] {
             let e = reflection_error(EngineError::Conflict(text.into()));
             assert_eq!(e.status, StatusCode::CONFLICT, "{text}");
         }
         let other = reflection_error(EngineError::Conflict("something else".into()));
         assert_eq!(other.status, StatusCode::UNPROCESSABLE_ENTITY);
+        // A contributor's replace carries the same words and is no conflict:
+        // the right is too low, which is 403.
+        let replace = reflection_error(EngineError::Forbidden(
+            "'assets/flow.png' already holds a file, and replacing it removes that file".into(),
+        ));
+        assert_eq!(replace.status, StatusCode::FORBIDDEN);
     }
 }

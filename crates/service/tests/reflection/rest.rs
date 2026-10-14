@@ -854,7 +854,7 @@ fn reflection_requests(domain: &str) -> Vec<(reqwest::Method, String, Option<Val
         .collect();
     assert_eq!(
         ops.len(),
-        12,
+        17,
         "every per-domain reflection operation: {ops:?}"
     );
     ops
@@ -1002,4 +1002,203 @@ async fn an_unknown_thread_action_is_404_and_a_search_needs_words() {
         assert_eq!(status, 422, "search{query}: {err}");
         assert_eq!(err["detail"], "search needs `q`, the words to find");
     }
+}
+
+impl Session {
+    pub async fn put_bytes(&self, path: &str, bytes: &[u8]) -> (u16, Value) {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let resp = client
+            .put(format!("http://{}{path}", self.addr))
+            .header("cookie", format!("fluid_session={}", self.cookie))
+            .header("x-csrf-token", &self.csrf)
+            .header("content-type", "application/octet-stream")
+            .body(bytes.to_vec())
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap();
+        (
+            status,
+            serde_json::from_str(&text).unwrap_or(Value::String(text)),
+        )
+    }
+
+    pub async fn get_raw(&self, path: &str) -> (u16, reqwest::header::HeaderMap, Vec<u8>) {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let resp = client
+            .get(format!("http://{}{path}", self.addr))
+            .header("cookie", format!("fluid_session={}", self.cookie))
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let headers = resp.headers().clone();
+        (status, headers, resp.bytes().await.unwrap().to_vec())
+    }
+}
+
+/// A Reflection's files over REST: a reader reads, a contributor at
+/// knowledge `none` adds, a curator replaces, moves and removes, with the
+/// engram attachment headers on every read.
+#[tokio::test]
+async fn the_file_routes_follow_the_reflection_rights() {
+    let s = serve().await;
+    let (ann, vera, ed) = (
+        Session::login(s.addr, "ann").await,
+        Session::login(s.addr, "vera").await,
+        Session::login(s.addr, "ed").await,
+    );
+    const FILE: &str = "/api/v1/domains/eng/reflection/assets/diagrams/flow.png";
+    let png = crate::assets::PNG;
+    let (status, _) = vera.put_bytes(FILE, png).await;
+    assert_eq!(status, 403, "a reader does not add");
+    let (status, up) = ann.put_bytes(FILE, png).await;
+    assert_eq!(status, 200, "a contributor at knowledge none adds: {up}");
+    assert_eq!(up["path"], "assets/diagrams/flow.png");
+    assert_eq!(up["created"], true);
+    let (status, headers, bytes) = vera.get_raw(FILE).await;
+    assert_eq!((status, bytes.as_slice()), (200, png));
+    // A person at knowledge none reads the image of a Reflection it reads.
+    let (status, _, bytes) = ann.get_raw(FILE).await;
+    assert_eq!(
+        (status, bytes.as_slice()),
+        (200, png),
+        "knowledge none reads the file"
+    );
+    assert_eq!(headers["content-type"], "image/png");
+    assert_eq!(headers["x-content-type-options"], "nosniff");
+    assert_eq!(
+        headers["content-security-policy"],
+        "default-src 'none'; sandbox"
+    );
+    assert_eq!(headers["cache-control"], "no-cache");
+    let etag = headers["etag"].to_str().unwrap().to_string();
+    assert_eq!(etag, format!("\"{}\"", up["sha256"].as_str().unwrap()));
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let revalidated = client
+        .get(format!("http://{}{FILE}", s.addr))
+        .header("cookie", format!("fluid_session={}", vera.cookie))
+        .header("if-none-match", &etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revalidated.status().as_u16(), 304, "a matching ETag");
+    let (_, listing) = ann.get("/api/v1/domains/eng/reflection/assets").await;
+    assert_eq!(
+        listing["assets"][0]["path"], "assets/diagrams/flow.png",
+        "{listing}"
+    );
+    let (status, err) = ann.put_bytes(FILE, b"other").await;
+    assert_eq!(status, 403, "replacing needs curate: {err}");
+    assert!(
+        err["detail"]
+            .as_str()
+            .unwrap()
+            .contains("upload it under a new name instead"),
+        "{err}"
+    );
+    let (status, _) = ann.send(reqwest::Method::DELETE, FILE, None).await;
+    assert_eq!(status, 403, "removing needs curate");
+    let (status, bad) = ed
+        .put_bytes("/api/v1/domains/eng/reflection/assets/tool.exe", png)
+        .await;
+    assert_eq!(status, 422, "{bad}");
+    let (status, moved) = ed
+        .send(
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/reflection/move-asset",
+            Some(json!({ "from": "assets/diagrams/flow.png", "to": "assets/flow.png" })),
+        )
+        .await;
+    assert_eq!(status, 200, "{moved}");
+    assert_eq!(moved["to"], "assets/flow.png", "{moved}");
+    assert_eq!(moved["links_rewritten"], 0, "{moved}");
+    let (status, up) = ed
+        .put_bytes("/api/v1/domains/eng/reflection/assets/other.png", png)
+        .await;
+    assert_eq!(status, 200, "the setup upload landed: {up}");
+    let (status, _) = ed
+        .send(
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/reflection/move-asset",
+            Some(json!({ "from": "assets/flow.png", "to": "assets/other.png" })),
+        )
+        .await;
+    assert_eq!(status, 409, "a move never overwrites");
+    let (status, _) = ed
+        .send(
+            reqwest::Method::DELETE,
+            "/api/v1/domains/eng/reflection/assets/flow.png",
+            None,
+        )
+        .await;
+    assert_eq!(status, 204);
+    let (status, _, _) = vera
+        .get_raw("/api/v1/domains/eng/reflection/assets/flow.png")
+        .await;
+    assert_eq!(status, 404);
+    // `other.png` exists under reflections/assets/ (uploaded above): the
+    // engram file route must not serve it under either spelling (the probe
+    // names a file that is really there).
+    for probe in [
+        "/api/v1/domains/eng/files/assets/other.png",
+        "/api/v1/domains/eng/files/reflections/assets/other.png",
+    ] {
+        let (status, _, _) = ed.get_raw(probe).await;
+        assert_ne!(
+            status, 200,
+            "a Reflection's file is no engram attachment: {probe}"
+        );
+    }
+}
+
+/// The anonymous viewer of a public domain reads a Reflection's files and
+/// changes none: each file write is 401 with the edit sentence.
+#[tokio::test]
+async fn an_anonymous_visitor_reads_the_files_and_changes_none() {
+    let s = serve_with(true).await;
+    s.fx.engine
+        .reflection_asset_write(
+            "eng",
+            "assets/flow.png",
+            crate::assets::PNG.to_vec(),
+            &crystalline_service::ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let resp = client
+        .get(format!(
+            "http://{}/api/v1/domains/eng/reflection/assets/flow.png",
+            s.addr
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), crate::assets::PNG);
+    for (method, path, body) in [
+        (
+            reqwest::Method::PUT,
+            "/api/v1/domains/eng/reflection/assets/new.png",
+            None,
+        ),
+        (
+            reqwest::Method::DELETE,
+            "/api/v1/domains/eng/reflection/assets/flow.png",
+            None,
+        ),
+        (
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/reflection/move-asset",
+            Some(json!({ "from": "assets/flow.png", "to": "assets/moved.png" })),
+        ),
+    ] {
+        let (status, err) = anonymous(s.addr, method.clone(), path, body).await;
+        assert_eq!(status, 401, "{method} {path}: {err}");
+        assert_eq!(err["detail"], ANONYMOUS_EDIT, "{method} {path}");
+    }
+    assert!(s.fx.root.join("reflections/assets/flow.png").exists());
+    assert!(!s.fx.root.join("reflections/assets/new.png").exists());
 }

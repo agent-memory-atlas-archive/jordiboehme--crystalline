@@ -21,8 +21,10 @@
 //!   UTF-8, any path that could escape the domain root. A hostile archive
 //!   gets no partial import.
 //! - A *per-entry* demotion - a non-`.md` file, a MANIFEST, an OKF reserved
-//!   name, bytes that are not UTF-8 text, a hard verify error - stays in the
-//!   report as that entry's status and never reaches the engine.
+//!   name, bytes that are not UTF-8 text, a hard verify error, and anything
+//!   under `reflections/` when the archive's own MANIFEST keeps a Reflection
+//!   there - stays in the report as that entry's status and never reaches
+//!   the engine.
 //!
 //! Attachments travel in both directions. The download carries every
 //! attachment the domain holds under its `assets/` path, whichever storage
@@ -94,6 +96,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Json, body::Bytes};
 
 use crate::domain_view::DomainView;
+use crate::engine::REFLECTION_NOT_IMPORTED;
 
 use super::auth::Identity;
 use super::engrams::ValidateFinding;
@@ -406,6 +409,44 @@ fn asset_name_verdict(path: &str) -> Option<Screened> {
     })
 }
 
+/// Whether the archive's root `MANIFEST.md` declares `reflection: on`.
+/// Read under the per-entry ceiling the screen applies to markdown; a
+/// missing, oversized or unparseable MANIFEST declares nothing.
+fn archive_keeps_a_reflection(
+    archive: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>,
+) -> Result<bool, ApiError> {
+    use std::io::Read;
+    let entry = match archive.by_name("MANIFEST.md") {
+        Ok(entry) => entry,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(false),
+        Err(e) => {
+            return Err(ApiError::unprocessable(format!(
+                "unreadable archive entry 'MANIFEST.md': {e}"
+            )));
+        }
+    };
+    if entry.size() > MAX_ENTRY_BYTES {
+        return Ok(false);
+    }
+    let mut buf = Vec::new();
+    entry
+        .take(MAX_ENTRY_BYTES + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| {
+            ApiError::unprocessable(format!("unreadable archive entry 'MANIFEST.md': {e}"))
+        })?;
+    if buf.len() as u64 > MAX_ENTRY_BYTES {
+        return Ok(false);
+    }
+    let Ok(source) = String::from_utf8(buf) else {
+        return Ok(false);
+    };
+    Ok(crystalline_core::parse_engram(&source)
+        .map(|engram| crystalline_core::Manifest::from_engram(&engram, &source).reflection())
+        .unwrap_or_default()
+        == crystalline_core::ReflectionSwitch::On)
+}
+
 /// Open and screen an uploaded archive.
 ///
 /// Hygiene refusals reject the WHOLE request, because a hostile archive gets
@@ -423,6 +464,12 @@ fn asset_name_verdict(path: &str) -> Option<Screened> {
 /// worth remembering: an oversized markdown entry refuses the archive, an
 /// oversized attachment refuses only itself.
 ///
+/// Where the archive's own root `MANIFEST.md` declares `reflection: on`,
+/// every entry its Reflection keeps (under `reflections/`) is ignored with
+/// [`REFLECTION_NOT_IMPORTED`]: the MANIFEST is dropped before the engine
+/// sees the batch, so this screen applies it (R33), and the engine applies
+/// the receiving domain's own switch.
+///
 /// Size limits are enforced on the bytes actually decompressed, never on the
 /// header's claim alone. Synchronous and metering up to
 /// [`MAX_TOTAL_BYTES`] of inflation, so callers run it on the blocking pool.
@@ -435,6 +482,10 @@ fn read_archive(bytes: &[u8]) -> Result<Vec<Screened>, ApiError> {
             archive.len()
         )));
     }
+    // The archive's MANIFEST first, by name, so the one pass below knows
+    // whether a Reflection keeps `reflections/`.
+    let reflection = archive_keeps_a_reflection(&mut archive)?;
+    let layout = crystalline_core::DomainLayout::bare(crystalline_core::ReflectionMode::Effective);
     let mut total: u64 = 0;
     let mut out = Vec::new();
     for index in 0..archive.len() {
@@ -468,6 +519,21 @@ fn read_archive(bytes: &[u8]) -> Result<Vec<Screened>, ApiError> {
             return Err(ApiError::unprocessable(format!(
                 "archive entry '{raw}' escapes the extraction root; refusing the archive"
             )));
+        }
+        // A Reflection's pages and files are never engrams or attachments:
+        // answered before both screens below, so a `reflections/assets/`
+        // file is named for what it is rather than as "not markdown".
+        if reflection
+            && matches!(
+                layout.classify(&raw),
+                crystalline_core::PathClass::Reflection(_)
+            )
+        {
+            out.push(Screened::Ignored {
+                path: raw,
+                reason: REFLECTION_NOT_IMPORTED.to_string(),
+            });
+            continue;
         }
         // The reserved folder is answered first, and before the markdown rule
         // below, because both directions of that order would be wrong: an

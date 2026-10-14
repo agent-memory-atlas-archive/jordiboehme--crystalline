@@ -1823,6 +1823,36 @@ async fn a_contributor_gets_nothing_from_engram_tools_and_works_the_reflection()
         pact.contains("curate"),
         "a contributor does not write the pact:\n{pact}"
     );
+    // A Reflection's file is read under the Reflection right: knowledge
+    // `none` reads the image of a reflection it reads.
+    let png: &[u8] = b"\x89PNG\r\n\x1a\n\x00lab\xff";
+    ctx.engine
+        .reflection_asset_write(
+            "lab",
+            "assets/x.png",
+            png.to_vec(),
+            &crystalline_service::ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+    let read = session
+        .request(
+            "resources/read",
+            serde_json::json!({ "uri": "crystalline://lab/reflections/assets/x.png" }),
+        )
+        .await;
+    let payload = payload_of(&read);
+    let blob = payload["result"]["contents"][0]["blob"]
+        .as_str()
+        .unwrap_or_else(|| panic!("knowledge none reads the file:\n{read}"));
+    use base64::Engine as _;
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(blob)
+            .unwrap(),
+        png,
+        "the uploaded bytes"
+    );
 }
 
 /// **An instance account with knowledge `none` gets nothing from any engram

@@ -4630,6 +4630,362 @@
         }
       }
     },
+    "/api/v1/domains/{domain}/reflection/assets": {
+      "get": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "Every file of the Reflection, metadata only.",
+        "description": "Needs `read` on the Reflection; knowledge rights play no part, so a person at knowledge `none` with a Reflection level lists every file.",
+        "operationId": "list_reflection_assets",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every file under reflections/assets/, ordered by path; each `path` is inside `reflections/`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReflectionAssetsResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see (the anonymous viewer included).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Reflection is not here (off, pending, homeless or elsewhere, then with `home_url`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/reflection/assets/{path}": {
+      "get": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "One file of the Reflection, its bytes.",
+        "description": "Needs `read` on the Reflection; knowledge rights play no part. Served like an engram attachment, with the same headers.",
+        "operationId": "read_reflection_asset",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "The path under reflections/assets/; may contain slashes.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "diagrams/flow.png"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The bytes, under the mime the allowlist assigns.",
+            "headers": {
+              "cache-control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always `no-cache`: store it, but revalidate before every use."
+              },
+              "content-disposition": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`inline` for images, PDFs and text; `attachment; filename=\"...\"` otherwise."
+              },
+              "content-security-policy": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always `default-src 'none'; sandbox`."
+              },
+              "etag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The strong quoted SHA-256 of the bytes served."
+              },
+              "x-content-type-options": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always `nosniff`."
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The `If-None-Match` token matches the stored bytes; no body, the `ETag` and the same `Cache-Control`."
+          },
+          "404": {
+            "description": "No such file, or no such domain for this caller (the anonymous viewer included).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Reflection is not here (then possibly `home_url`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A path rule or the extension allowlist refused the path.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "Add a file to the Reflection, or replace one.",
+        "description": "Needs `edit` for a new path and `curate` to replace a file, since a replace removes the old bytes. The request body is the raw file, not multipart; the extension allowlist decides the mime. The path rules, the allowlist and the 10 MiB ceiling are the engram attachments' own.",
+        "operationId": "write_reflection_asset",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "Where to store it, under reflections/assets/; may contain slashes.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "diagrams/flow.png"
+          }
+        ],
+        "requestBody": {
+          "description": "The raw file bytes.",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Stored. `path` is inside `reflections/`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadedReflectionAsset"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Below edit access; a replace below curate access, with a detail naming the right held and curate (upload it under a new name instead); the domain is off the caller's write list; or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see (the anonymous viewer included).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Reflection is not here (then possibly `home_url`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Over the 10 MiB ceiling.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A path rule or the extension allowlist refused it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "Remove a file from the Reflection.",
+        "operationId": "delete_reflection_asset",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "The path under reflections/assets/; may contain slashes.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "diagrams/flow.png"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed. A reflection that still links it keeps the link; the reflect queue names it as missing."
+          },
+          "401": {
+            "description": "The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Below curate access, or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such file, or no such domain for this caller (the anonymous viewer included).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Reflection is not here (then possibly `home_url`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A path rule refused the path.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/domains/{domain}/reflection/move": {
       "post": {
         "tags": [
@@ -4728,6 +5084,105 @@
         }
       }
     },
+    "/api/v1/domains/{domain}/reflection/move-asset": {
+      "post": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "Move or rename a file of the Reflection.",
+        "description": "Needs `curate`. Every reflection that links the file (PACT.md included) is rewritten to the new path; the rewrite is not a person's change and owes no feedback. A move never overwrites a file, and waits while a page it would rewrite is open in a co-editing room.",
+        "operationId": "move_reflection_asset",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveReflectionAssetBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Moved: `{ domain, from, to, links_rewritten }`. Two keys appear only when needed: `links_failed`, `[{ path, reason }]` for each page whose link could not be rewritten after the file moved, and `note`, a sentence saying the file moved and its index row did not follow (the next sync brings it up to date).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "domain": "eng",
+                  "from": "assets/diagrams/flow.png",
+                  "links_rewritten": 2,
+                  "to": "assets/flow.png"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Below curate access, or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such file, or no such domain for this caller (the anonymous viewer included).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The new path already holds a file, a page that links it is open in a co-editing room, or the Reflection is not here (then possibly `home_url`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A path rule refused a path, or both name the same file.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/domains/{domain}/reflection/queue": {
       "get": {
         "tags": [
@@ -4769,7 +5224,7 @@
         ],
         "responses": {
           "200": {
-            "description": "ReflectQueue. `kind` is `feedback` (`what`: `new`, `changed`, `removed`), `update` (`source_changed`, `source_retired`, `source_missing`, `unreflected`, `off_structure`, `pact_changed`) or `review` (`thread`). `sources`, and an `unreflected` item's `folder` and `engrams`, are absent for a caller who cannot read engrams. The MCP `reflect` tool answers the same shape with `scope: { domains, kinds }` in place of `domain` and a `domain` member on each row; its `scope` may carry `unreadable`, the names of the domains whose queue could not be read.",
+            "description": "ReflectQueue. `kind` is `feedback` (`what`: `new`, `changed`, `removed`), `update` (`source_changed`, `source_retired`, `source_missing`, `unreflected`, `off_structure`, `pact_changed`) or `review` (`thread`). `sources`, and an `unreflected` item's `folder` and `engrams`, are absent for a caller who cannot read engrams. The MCP `reflect` tool answers the same shape with `scope: { domains, kinds }` in place of `domain` and a `domain` member on each row; its `scope` may carry `unreadable`, the names of the domains whose queue could not be read, and `pending`, the names of the domains whose Reflection waits for engrams to leave `reflections/`. An update item's `what` may also be `asset_missing` (per section, with `assets`), `engram_attachment` (per section, with `targets`) or `asset_unreferenced` (`path` empty, with `asset`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -5561,7 +6016,7 @@
         },
         "responses": {
           "200": {
-            "description": "Written: `{ domain, path, checksum, created, ids_assigned, curated }`. `curated` says whether this write advanced the baseline.",
+            "description": "Written: `{ domain, path, checksum, created, ids_assigned, curated }`. `curated` says whether this write advanced the baseline. While a co-editing room is open over the page the receipt also carries `present` (who is in it) and `landed`: `live` when the room took the write in, `file` when it is on disk only, and then `room` (`conflict` or `waiting`) with `room_note`, a sentence saying what the people in the room meet.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11608,6 +12063,26 @@
           }
         }
       },
+      "MoveReflectionAssetBody": {
+        "type": "object",
+        "description": "What `POST /domains/{domain}/reflection/move-asset` takes.",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "The file's path inside `reflections/`, `assets/...`.",
+            "example": "assets/diagrams/flow.png"
+          },
+          "to": {
+            "type": "string",
+            "description": "Its new path inside `reflections/`, `assets/...`.",
+            "example": "assets/flow.png"
+          }
+        }
+      },
       "MoveReflectionBody": {
         "type": "object",
         "description": "What `POST /domains/{domain}/reflection/move` takes.",
@@ -12068,6 +12543,22 @@
               "$ref": "#/components/schemas/ManifestProblem"
             },
             "description": "The bullets that did not parse, or lost to an earlier duplicate."
+          }
+        }
+      },
+      "ReflectionAssetsResponse": {
+        "type": "object",
+        "description": "Every file of a domain's Reflection.",
+        "required": [
+          "assets"
+        ],
+        "properties": {
+          "assets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentView"
+            },
+            "description": "The rows, ordered by path; `path` is inside `reflections/`\n(`assets/...`)."
           }
         }
       },
@@ -12748,6 +13239,45 @@
           "sha256": {
             "type": "string",
             "description": "Lowercase hex SHA-256 of the stored bytes.",
+            "example": "9f2a1c05e2b7"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Byte length as stored.",
+            "example": 20481,
+            "minimum": 0
+          }
+        }
+      },
+      "UploadedReflectionAsset": {
+        "type": "object",
+        "description": "What an upload into a Reflection answers.",
+        "required": [
+          "path",
+          "mime",
+          "size",
+          "sha256",
+          "created"
+        ],
+        "properties": {
+          "created": {
+            "type": "boolean",
+            "description": "Whether the path held no file before."
+          },
+          "mime": {
+            "type": "string",
+            "description": "The mime it is served under, from the extension.",
+            "example": "image/png"
+          },
+          "path": {
+            "type": "string",
+            "description": "The path inside `reflections/`, `assets/...`: how a reflection in the\nfolder root links it.",
+            "example": "assets/diagrams/flow.png"
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Lowercase hex SHA-256 of the stored bytes, the token the read's\n`ETag` carries.",
             "example": "9f2a1c05e2b7"
           },
           "size": {

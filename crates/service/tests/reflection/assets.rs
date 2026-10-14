@@ -4,12 +4,14 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crystalline_service::params::{EvolveParams, ReflectParams, WriteReflectionParams};
+use crystalline_service::params::{
+    DiscussParams, EvolveParams, ReflectParams, WriteReflectionParams,
+};
 use crystalline_service::rest::{AuthStore, ReflectionLevel, Role};
 use crystalline_service::{DomainAccess, ReflectionCaller, Scope};
 
 use crate::docs::{agent, person, reflecting, write};
-use crate::fixture::{Fx, fixture, manifest};
+use crate::fixture::{Fx, engram, fixture, manifest};
 
 pub const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00flow\xff\xfe\x00";
 
@@ -890,5 +892,187 @@ async fn an_undo_never_replaces_a_file_that_appeared_at_the_old_path() {
         std::fs::read(fx.root.join("reflections/assets/b.png")).unwrap(),
         PNG,
         "the moved file stays"
+    );
+}
+
+/// A domain export carries the Reflection's files while the switch is on,
+/// and with it off the folder is nobody's.
+#[tokio::test]
+async fn a_domain_export_carries_the_reflection_files() {
+    let fx = reflecting().await;
+    fx.engine
+        .reflection_asset_write("eng", "assets/flow.png", PNG.to_vec(), &person())
+        .await
+        .unwrap();
+    let files = fx.engine.domain_files("eng").await.unwrap();
+    let got = files
+        .iter()
+        .find(|(p, _)| p == "reflections/assets/flow.png")
+        .map(|(_, b)| b.as_slice());
+    assert_eq!(got, Some(PNG));
+    // Markdown in the folder that is no page is an engram waiting to move
+    // out: it travels as it did before the Reflection.
+    std::fs::write(
+        fx.root.join("reflections/assets/notes.md"),
+        engram("Notes", "notes", "- [fact] notes"),
+    )
+    .unwrap();
+    let files = fx.engine.domain_files("eng").await.unwrap();
+    assert!(
+        files
+            .iter()
+            .any(|(p, _)| p == "reflections/assets/notes.md"),
+        "an engram waiting in the folder is exported"
+    );
+    let dest = fx.tmp.path().join("export");
+    fx.engine
+        .export_domain("eng", &dest, false, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(dest.join("reflections/assets/flow.png")).unwrap(),
+        PNG
+    );
+    let off = fixture(&[("reflections/assets/stray.png", "x")]).await;
+    let files = off.engine.domain_files("eng").await.unwrap();
+    assert!(
+        files.iter().all(|(p, _)| !p.starts_with("reflections/")),
+        "with the switch off the folder is nobody's"
+    );
+}
+
+/// While the switch is on the export carries the hidden baseline and
+/// the threads, so a restore keeps every reflected section; and no import
+/// reads a file under reflections/ as an engram where a Reflection keeps it.
+#[tokio::test]
+async fn an_export_carries_the_baseline_and_no_import_reads_reflections_as_engrams() {
+    let fx = reflecting().await;
+    fx.engine
+        .write_reflection(
+            &curated("guides/a.md", "# A\n\n## One\n\nText.\n"),
+            &agent(),
+        )
+        .await
+        .unwrap();
+    let opened = DiscussParams {
+        domain: "eng".into(),
+        path: Some("guides/a.md".into()),
+        section: Some("One".into()),
+        text: Some("question (non-blocking): still true?".into()),
+        ..Default::default()
+    };
+    fx.engine.discuss(&opened, &person()).await.unwrap();
+    let files = fx.engine.domain_files("eng").await.unwrap();
+    let paths: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+    for want in [
+        "reflections/guides/a.md",
+        "reflections/guides/a.threads.md",
+        "reflections/.reflected/guides/a.md",
+    ] {
+        assert!(paths.contains(&want), "{want} missing from {paths:?}");
+    }
+    let off = fixture(&[("reflections/.reflected/x.md", "# X\n")]).await;
+    let files = off.engine.domain_files("eng").await.unwrap();
+    assert!(
+        files.iter().all(|(p, _)| !p.contains("/.reflected/")),
+        "switch off: a dot folder is nobody's"
+    );
+
+    let stray = engram("Stray", "reflections/stray", "- [fact] stray");
+    // The receiving domain keeps a Reflection: the entry is reported, not imported.
+    let out = fx
+        .engine
+        .import_domain_files(
+            "eng",
+            &[("reflections/stray.md".to_string(), stray.clone())],
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(out["files"][0]["action"], "ignored", "{out}");
+    assert_eq!(
+        out["files"][0]["reason"],
+        crystalline_service::engine::REFLECTION_NOT_IMPORTED,
+        "{out}"
+    );
+    assert!(!fx.root.join("reflections/stray.md").exists());
+    // Switch off here, but the batch's own MANIFEST says on: the same.
+    let batch = vec![
+        ("MANIFEST.md".to_string(), manifest("reflection: on\n")),
+        ("reflections/stray.md".to_string(), stray.clone()),
+        (
+            "notes/kept.md".to_string(),
+            engram("Kept", "notes/kept", "- [fact] kept"),
+        ),
+    ];
+    let out = off
+        .engine
+        .import_domain_files("eng", &batch, false, false)
+        .await
+        .unwrap();
+    let action = |path: &str| {
+        out["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == path)
+            .unwrap()["action"]
+            .clone()
+    };
+    assert_eq!(action("reflections/stray.md"), "ignored", "{out}");
+    assert_eq!(action("notes/kept.md"), "create", "{out}");
+    // Without a Reflection anywhere, reflections/ is an ordinary folder, as today.
+    let out = off
+        .engine
+        .import_domain_files(
+            "eng",
+            &[(
+                "reflections/old.md".to_string(),
+                engram("Old", "reflections/old", "- [fact] old"),
+            )],
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(out["files"][0]["action"], "create", "{out}");
+
+    // A directory import into a virtual domain whose MANIFEST says on.
+    let vfx = crate::fixture::fixture_with(&[], |cfg, _| {
+        cfg.domains.insert(
+            "vd".into(),
+            crystalline_core::config::DomainEntry::virtual_domain(),
+        );
+    })
+    .await;
+    let src = vfx.tmp.path().join("src");
+    std::fs::create_dir_all(src.join("reflections")).unwrap();
+    std::fs::create_dir_all(src.join("notes")).unwrap();
+    std::fs::write(src.join("MANIFEST.md"), manifest("reflection: on\n")).unwrap();
+    std::fs::write(src.join("reflections/stray.md"), &stray).unwrap();
+    std::fs::write(
+        src.join("notes/kept.md"),
+        engram("Kept", "notes/kept", "- [fact] kept"),
+    )
+    .unwrap();
+    let out = vfx
+        .engine
+        .import_domain("vd", &src, false, false)
+        .await
+        .unwrap();
+    let written: Vec<&str> = out["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert!(
+        written.contains(&"notes/kept.md") && !written.contains(&"reflections/stray.md"),
+        "{out}"
+    );
+    assert!(
+        out["warnings"].to_string().contains("reflections/stray.md"),
+        "{out}"
     );
 }

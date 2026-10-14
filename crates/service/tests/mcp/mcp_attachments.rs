@@ -233,7 +233,11 @@ async fn the_attachment_template_is_listed_with_its_reserved_path_expansion() {
         .await
         .unwrap()
         .resource_templates;
-    assert_eq!(listed.len(), 1, "one template: {listed:?}");
+    assert_eq!(
+        listed.len(),
+        2,
+        "two templates, the attachment one first: {listed:?}"
+    );
     assert_eq!(
         listed[0].uri_template,
         "crystalline://{domain}/assets/{+path}"
@@ -681,7 +685,7 @@ async fn the_whole_read_surface_is_served_over_streamable_http_too() {
     let listed = templates["result"]["resourceTemplates"]
         .as_array()
         .unwrap_or_else(|| panic!("no templates in {templates}"));
-    assert_eq!(listed.len(), 1);
+    assert_eq!(listed.len(), 2);
     assert_eq!(
         listed[0]["uriTemplate"].as_str(),
         Some("crystalline://{domain}/assets/{+path}")

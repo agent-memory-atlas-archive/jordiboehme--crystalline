@@ -275,7 +275,7 @@ use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::{RoleServer, ServerHandler, prompt, prompt_router, tool, tool_handler, tool_router};
 use serde_json::{Value, json};
 
-use crystalline_core::{CrystallineUrl, SKILL_ASSETS};
+use crystalline_core::{ContentKind, CrystallineUrl, SKILL_ASSETS};
 use crystalline_remote::RemoteError;
 
 /// The tools hidden in read-only mode: the five content-mutating engram tools
@@ -743,6 +743,16 @@ const ATTACHMENT_TEMPLATE_NAME: &str = "attachment";
 /// What the template is for, in the words a model reads before deciding to
 /// fetch one.
 const ATTACHMENT_TEMPLATE_DESCRIPTION: &str = "A file attachment a human added to a domain: read it here when an engram's resource links or an evolve finding point at it.";
+
+/// The template every Reflection file is addressed by, the reserved
+/// expansion again so a nested path keeps its separators.
+const REFLECTION_ASSET_URI_TEMPLATE: &str = "crystalline://{domain}/reflections/assets/{+path}";
+
+/// Its programmatic name.
+const REFLECTION_ASSET_TEMPLATE_NAME: &str = "reflection_file";
+
+/// What it is for, in the words a model reads before fetching one.
+const REFLECTION_ASSET_TEMPLATE_DESCRIPTION: &str = "A file a person added to a domain's Reflection (reflections/assets/), an image or a document a reflection shows: read it here when read_reflection's resource links or a reflect item point at it. Needs read access to that Reflection; engram access plays no part.";
 
 /// Whether the whole skill-serving surface (the `skills` tool, the `skill://`
 /// resources and the two prompts) is hidden.
@@ -3123,7 +3133,7 @@ impl McpServer {
     #[tool(
         name = "reflect",
         title = "Reflect",
-        description = "Get the work queue of a domain's Reflection and work it. The Reflection is the domain's documents for people under reflections/, written at the level its PACT.md agrees on; it exists where the domain's MANIFEST says reflection: on. Three kinds of item, oldest first: feedback (a person changed a section - the diff, who changed it and the engrams the section was built from; judge it into the engrams, keep it as their text, or answer it in a thread), update (an engram behind a section changed, was retired or is gone; engrams no section covers yet; a page off the pact's structure; a changed pact - bring the engrams into the reflections) and review (threads waiting for you). Within a section the feedback item comes before any update item, so you read a person's change before you rewrite it. Read-only: it changes nothing. Call it when a session-end reminder or the routing block names a domain's Reflection, when the user asks what the Reflection needs, and in a scheduled run on the home instance. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server. domains narrows the queue, kinds filters it, limit and page page through it. When the answer's scope carries unreadable, those domains were left out because their Reflection could not be read; the rest of the queue is complete. When it carries pending, those domains' Reflection waits until the engrams in their reflections/ folder are moved out: tell the person.",
+        description = "Get the work queue of a domain's Reflection and work it. The Reflection is the domain's documents for people under reflections/, written at the level its PACT.md agrees on; it exists where the domain's MANIFEST says reflection: on. Three kinds of item, oldest first: feedback (a person changed a section - the diff, who changed it and the engrams the section was built from; judge it into the engrams, keep it as their text, or answer it in a thread), update (an engram behind a section changed, was retired or is gone; engrams no section covers yet; a page off the pact's structure; a changed pact; a file nobody links, a link to a missing file, an embedded engram attachment - bring the engrams into the reflections) and review (threads waiting for you). Within a section the feedback item comes before any update item, so you read a person's change before you rewrite it. Read-only: it changes nothing. Call it when a session-end reminder or the routing block names a domain's Reflection, when the user asks what the Reflection needs, and in a scheduled run on the home instance. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server. domains narrows the queue, kinds filters it, limit and page page through it. When the answer's scope carries unreadable, those domains were left out because their Reflection could not be read; the rest of the queue is complete. When it carries pending, those domains' Reflection waits until the engrams in their reflections/ folder are moved out: tell the person.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn reflect(
@@ -3145,7 +3155,7 @@ impl McpServer {
     #[tool(
         name = "read_reflection",
         title = "Read reflection",
-        description = "Read a domain's Reflection - its documents for people under reflections/, where the MANIFEST says reflection: on. Without path: the tree of reflections with titles, section counts and open thread counts, and PACT.md, the agreement on audience, level of detail and structure. With path: one reflection's markdown with every section's hidden id (the <!-- r:... --> line under its ## heading), whether its text changed since it was last reflected, the engrams it was built from and its open threads. Read before write_reflection or discuss, and pass the checksum back as expected_checksum. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
+        description = "Read a domain's Reflection - its documents for people under reflections/, where the MANIFEST says reflection: on. Without path: the tree of reflections with titles, section counts and open thread counts, and PACT.md, the agreement on audience, level of detail and structure. With path: one reflection's markdown with every section's hidden id (the <!-- r:... --> line under its ## heading), whether its text changed since it was last reflected, the engrams it was built from and its open threads. Files the reflection shows (under reflections/assets/) come back as resource links; fetch one with resources/read when the file itself matters. Read before write_reflection or discuss, and pass the checksum back as expected_checksum. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn read_reflection(
@@ -3164,7 +3174,12 @@ impl McpServer {
                 Err(e) => Self::reflection_refused(e),
             },
             Some(path) => match self.engine.read_reflection(&p.domain, path, &caller).await {
-                Ok(v) => ok(v),
+                Ok(value) => {
+                    let links = self.reflection_asset_links(&value, &caller).await;
+                    let mut result = ok(value)?;
+                    result.content.extend(links);
+                    Ok(result)
+                }
                 Err(e) => Self::reflection_refused(e),
             },
         }
@@ -3173,7 +3188,7 @@ impl McpServer {
     #[tool(
         name = "write_reflection",
         title = "Write reflection",
-        description = "Create, change, move or delete a reflection - a document for people under reflections/, where the domain's MANIFEST says reflection: on - or edit PACT.md, the domain's agreement on audience, level of detail and structure (PACT.md and every write with sources need curate access, which everyone who edits the engrams holds; anyone else proposes a PACT.md change with discuss). Write at the level PACT.md describes. action write (the default) takes the whole markdown: keep each ## heading's <!-- r:... --> id line as it is; new headings get one. To change one section instead, pass operation replace_section, insert_before_section or insert_after_section with section (the heading path, for example ## Night deploys) and content, exactly as edit_engram does; the section keeps its id line. Pass sources (section id or heading to engram permalinks in this domain) for every section you built from engrams: that curates the section and records what it reflects. Without sources a write is an ordinary edit, and a person's change stays a feedback item in reflect. action settle with sections and outcome kept (the person's text stands, sources stay) or taken_in (you changed the engrams to match) settles feedback items. action move carries the reflection's threads and baseline and rewrites relative links to it; delete takes both along. Needs edit access; sources and settle need curate access. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
+        description = "Create, change, move or delete a reflection - a document for people under reflections/, where the domain's MANIFEST says reflection: on - or edit PACT.md, the domain's agreement on audience, level of detail and structure (PACT.md and every write with sources need curate access, which everyone who edits the engrams holds; anyone else proposes a PACT.md change with discuss). Write at the level PACT.md describes. action write (the default) takes the whole markdown: keep each ## heading's <!-- r:... --> id line as it is; new headings get one. To change one section instead, pass operation replace_section, insert_before_section or insert_after_section with section (the heading path, for example ## Night deploys) and content, exactly as edit_engram does; the section keeps its id line. Pass sources (section id or heading to engram permalinks in this domain) for every section you built from engrams: that curates the section and records what it reflects. Without sources a write is an ordinary edit, and a person's change stays a feedback item in reflect. action settle with sections and outcome kept (the person's text stands, sources stay) or taken_in (you changed the engrams to match) settles feedback items. action move carries the reflection's threads and baseline and rewrites relative links to it; delete takes both along. action move_asset (path and to) or delete_asset (path) moves or removes a file under reflections/assets/ and needs curate access; a move rewrites every link to the file, and its receipt carries links_failed (pages whose link could not be rewritten) or note (the file moved and its index row did not follow) when that happened. A page that embeds an engram attachment is refused (copy the file into reflections/assets/ first, which a person does). When a person has the page open in a co-editing room, the receipt says landed live (the room took your text in) or landed file with room (conflict or waiting) and room_note: tell the person what room_note says. Needs edit access; sources and settle need curate access. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -4205,6 +4220,50 @@ impl McpServer {
             .collect()
     }
 
+    /// The resource links a `read_reflection` answer carries: one per
+    /// distinct file under `reflections/assets/` the page references and the
+    /// Reflection holds. Links, never bytes, as for an engram, and checked
+    /// against the Reflection right only. A listing that cannot be read
+    /// costs the links, never the read.
+    async fn reflection_asset_links(
+        &self,
+        value: &Value,
+        caller: &ReflectionCaller,
+    ) -> Vec<ContentBlock> {
+        let (Some(domain), Some(path), Some(markdown)) = (
+            value.get("domain").and_then(Value::as_str),
+            value.get("path").and_then(Value::as_str),
+            value.get("markdown").and_then(Value::as_str),
+        ) else {
+            return Vec::new();
+        };
+        let refs = crystalline_core::reflection::reflection_asset_refs(markdown, path);
+        if refs.is_empty() {
+            return Vec::new();
+        }
+        let Ok(rows) = self.engine.reflection_asset_list(domain, caller).await else {
+            return Vec::new();
+        };
+        refs.iter()
+            .filter_map(|target| rows.iter().find(|row| row.path == *target))
+            .map(|row| {
+                let name = row.path.rsplit('/').next().unwrap_or(row.path.as_str());
+                ContentBlock::resource_link(
+                    Resource::new(
+                        format!(
+                            "crystalline://{domain}/{}/{}",
+                            crystalline_core::reflection::REFLECTIONS_DIR,
+                            row.path
+                        ),
+                        name,
+                    )
+                    .with_mime_type(row.mime.clone())
+                    .with_size(row.size),
+                )
+            })
+            .collect()
+    }
+
     /// Wrap a list-shaped engine value as a successful tool result: TOON
     /// under the default `service.response_format`, byte-identical to [`ok`]
     /// under `json`. The format is read per response, so a runtime configure
@@ -4897,8 +4956,11 @@ impl ServerHandler for McpServer {
         Ok(ListResourcesResult::with_all_items(resources).with_cache_hints(&context))
     }
 
-    /// The one template this server serves: every attachment a domain carries,
-    /// addressed as `crystalline://<domain>/assets/<path>`.
+    /// The two templates this server serves: every attachment a domain
+    /// carries, addressed as `crystalline://<domain>/assets/<path>`, and
+    /// every file of a domain's Reflection, addressed as
+    /// `crystalline://<domain>/reflections/assets/<path>`. The attachment
+    /// template is listed first.
     ///
     /// A template rather than a listing because the set is open and per domain:
     /// enumerating every screenshot of every registered domain would spend a
@@ -4915,12 +4977,20 @@ impl ServerHandler for McpServer {
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
-        let template = ResourceTemplate::new(ATTACHMENT_URI_TEMPLATE, ATTACHMENT_TEMPLATE_NAME)
-            .with_description(ATTACHMENT_TEMPLATE_DESCRIPTION);
-        Ok(ListResourceTemplatesResult::with_all_items(vec![template]).with_cache_hints(&context))
+        let templates = vec![
+            ResourceTemplate::new(ATTACHMENT_URI_TEMPLATE, ATTACHMENT_TEMPLATE_NAME)
+                .with_description(ATTACHMENT_TEMPLATE_DESCRIPTION),
+            ResourceTemplate::new(
+                REFLECTION_ASSET_URI_TEMPLATE,
+                REFLECTION_ASSET_TEMPLATE_NAME,
+            )
+            .with_description(REFLECTION_ASSET_TEMPLATE_DESCRIPTION),
+        ];
+        Ok(ListResourceTemplatesResult::with_all_items(templates).with_cache_hints(&context))
     }
 
-    /// Read one shipped skill, or one attachment, by its resource uri.
+    /// Read one shipped skill, one attachment or one file of a Reflection, by
+    /// its resource uri.
     ///
     /// A skill answers even while `skills.serve` is off, like every hidden
     /// tool: the gate hides the surface from a listing rather than disabling
@@ -4928,11 +4998,14 @@ impl ServerHandler for McpServer {
     /// client holding a uri from an earlier listing gets the bytes rather than
     /// a puzzle.
     ///
-    /// An attachment uri is anything [`CrystallineUrl::asset_path`] recognizes
-    /// once its path has been percent-decoded (see `decoded_uri_path`), and
-    /// the bytes come back the way the file is read rather than the way it was
-    /// asked for: a text mime as `TextResourceContents`, everything else base64
-    /// in `BlobResourceContents`. This is the one place base64 is ever emitted
+    /// A file uri is anything [`CrystallineUrl::asset_ref`] recognizes once
+    /// its path has been percent-decoded (see `decoded_uri_path`): one branch
+    /// for both kinds, the right check following the kind (the caller's
+    /// engram view for an attachment, the Reflection right for a
+    /// Reflection's file, never the engram right), and the bytes come back
+    /// the way the file is read rather than the way it was asked for: a text
+    /// mime as `TextResourceContents`, everything else base64 in
+    /// `BlobResourceContents`. This is the one place base64 is ever emitted
     /// - a tool result carries links, never bytes - so a model spends the
     /// context on an image or a deck only when it decided to open it.
     async fn read_resource(
@@ -4952,26 +5025,42 @@ impl ServerHandler for McpServer {
                 permalink: decoded_uri_path(&url.permalink)?,
                 ..url
             };
-            if let Some(path) = url.asset_path() {
-                // An attachment uri names its domain outright, and nothing had
-                // to be read first to learn the name, so this is the one
-                // attachment path a caller can reach cold. A domain it may not
-                // see is refused exactly as an unregistered one - the same
-                // bytes, from the engine's own line - before the file is
-                // touched. The domain may be spelled by any of its names; one
-                // this caller may not see keeps the spelling they sent.
+            if let Some((kind, path)) = url.asset_ref() {
+                // A file uri names its domain outright, and nothing had to be
+                // read first to learn the name, so this is the one file path
+                // a caller can reach cold. The domain may be spelled by any
+                // of its names; one this caller may not see keeps the
+                // spelling they sent.
                 let scope = self.scope_of(&context);
                 let hidden = self.engine.hidden_for(&scope).await.map_err(to_error)?;
                 let domain = self.engine.localize_visible(&url.domain, &hidden).await;
-                self.engine
-                    .require_domain(&domain, &scope)
-                    .await
-                    .map_err(to_error)?;
-                let (bytes, row) = DomainView::for_read(&self.engine, &domain, &hidden, &scope)
-                    .map_err(to_error)?
-                    .attachment_bytes(path)
-                    .await
-                    .map_err(to_error)?;
+                let (bytes, row) = match kind {
+                    // A domain the caller may not see is refused exactly as
+                    // an unregistered one - the same bytes, from the engine's
+                    // own line - before the file is touched, and the bytes
+                    // come through the caller's own view (their drafts in a
+                    // reviewing domain).
+                    ContentKind::Engram => {
+                        self.engine
+                            .require_domain(&domain, &scope)
+                            .await
+                            .map_err(to_error)?;
+                        DomainView::for_read(&self.engine, &domain, &hidden, &scope)
+                            .map_err(to_error)?
+                            .attachment_bytes(path)
+                            .await
+                            .map_err(to_error)?
+                    }
+                    // A Reflection's file is read under the Reflection right,
+                    // never the engram right: a reader at knowledge `none`
+                    // reads every file of a Reflection it reads, and the
+                    // gate answers a domain it may not see as unregistered.
+                    ContentKind::Reflection => self
+                        .engine
+                        .reflection_asset_read(&domain, path, &self.reflection_caller(&context))
+                        .await
+                        .map_err(to_error)?,
+                };
                 return Ok(ReadResourceResult::new(vec![attachment_contents(
                     &request.uri,
                     bytes,
@@ -4985,7 +5074,7 @@ impl ServerHandler for McpServer {
         }
         Err(ErrorData::invalid_params(
             format!(
-                "unknown resource '{}'; this server serves {} and every attachment addressed as {ATTACHMENT_URI_TEMPLATE}",
+                "unknown resource '{}'; this server serves {} and every attachment addressed as {ATTACHMENT_URI_TEMPLATE} or {REFLECTION_ASSET_URI_TEMPLATE}",
                 request.uri,
                 skill_uris()
             ),

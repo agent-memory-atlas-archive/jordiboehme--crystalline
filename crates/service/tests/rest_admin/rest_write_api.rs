@@ -3142,7 +3142,7 @@ fn write_ops() -> Vec<WriteOp> {
             min_role: Role::Editor,
             read_only_exempt: false,
         },
-        // The Reflection's five writes. The fixture's `eng` has Reflection
+        // The Reflection's five page and thread writes. The fixture's `eng` has Reflection
         // off, so every signed-in role passes authorization and meets the
         // engine's 409; the Reflection's own rights are pinned in
         // `tests/reflection/rest.rs`.
@@ -3178,6 +3178,29 @@ fn write_ops() -> Vec<WriteOp> {
             method: Method::POST,
             path: "/api/v1/domains/eng/reflection/threads/t-00000000/answer",
             body: Some(serde_json::json!({"path": "guides/a.md", "text": "Because."})),
+            min_role: Role::Viewer,
+            read_only_exempt: false,
+        },
+        // The Reflection's three file writes, held to the same rule: every
+        // signed-in role passes authorization and meets the engine's 409.
+        WriteOp {
+            method: Method::PUT,
+            path: "/api/v1/domains/eng/reflection/assets/flow.png",
+            body: None,
+            min_role: Role::Viewer,
+            read_only_exempt: false,
+        },
+        WriteOp {
+            method: Method::DELETE,
+            path: "/api/v1/domains/eng/reflection/assets/flow.png",
+            body: None,
+            min_role: Role::Viewer,
+            read_only_exempt: false,
+        },
+        WriteOp {
+            method: Method::POST,
+            path: "/api/v1/domains/eng/reflection/move-asset",
+            body: Some(serde_json::json!({"from": "assets/flow.png", "to": "assets/b.png"})),
             min_role: Role::Viewer,
             read_only_exempt: false,
         },
@@ -3696,6 +3719,11 @@ fn canonicalize(path: &str) -> String {
     // holds, so it collapses before the per-segment pass runs over the head.
     if let Some((head, _)) = path.split_once("/files/") {
         return format!("{}/files/{{path}}", canonicalize(head));
+    }
+    // A Reflection's file routes take a wildcard after
+    // `reflection/assets/`; matched before the page routes below.
+    if let Some((head, _)) = path.split_once("/reflection/assets/") {
+        return format!("{}/reflection/assets/{{path}}", canonicalize(head));
     }
     // The reflection routes take a wildcard too: everything after
     // `reflections/` is the one `{path}` parameter.

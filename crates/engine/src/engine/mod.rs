@@ -6847,32 +6847,24 @@ fn unique_domain_name(canonical: &Path, cfg: &GlobalConfig) -> String {
     })
 }
 
-/// Every `.md` file under `root` as `(forward-slashed relative path, absolute
-/// path)`, skipping what `layout` calls hidden and the Reflection's folder
-/// (no engram lives there while it is in effect). Mirrors the sync engine's walk
-/// so `domain import` sees the same files a file-domain sync would.
-fn walk_markdown(root: &Path, layout: &DomainLayout) -> Vec<(String, PathBuf)> {
+/// Every file under `root` as `(forward-slashed relative path, absolute
+/// path, class)`, sorted by path, so a caller keeps what its own policy
+/// keeps. Hidden folders are not entered, except inside a Reflection the
+/// layout keeps in effect (its baseline lives in `.reflected/`). Mirrors the
+/// sync engine's walk so `domain import` and the export see the same files a
+/// file-domain sync would.
+fn walk_classified(root: &Path, layout: &DomainLayout) -> Vec<(String, PathBuf, PathClass)> {
     let mut out = Vec::new();
     let walker = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
-        e.depth() == 0
-            || !matches!(
-                layout.classify(&slash_rel(root, e.path())),
-                PathClass::Hidden | PathClass::Reflection(_)
-            )
+        e.depth() == 0 || layout.classify(&slash_rel(root, e.path())) != PathClass::Hidden
     });
     for entry in walker.filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {
             continue;
         }
         let rel = slash_rel(root, entry.path());
-        if matches!(
-            layout.classify(&rel),
-            PathClass::Hidden | PathClass::Reflection(_)
-        ) || !rel.to_lowercase().ends_with(".md")
-        {
-            continue;
-        }
-        out.push((rel, entry.path().to_path_buf()));
+        let class = layout.classify(&rel);
+        out.push((rel, entry.path().to_path_buf(), class));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
@@ -7956,6 +7948,13 @@ pub fn read_only_sentence(domain: &str) -> String {
 pub(crate) fn is_manifest_path(rel: &str) -> bool {
     rel == "MANIFEST.md"
 }
+
+/// Why an import leaves out a file under `reflections/` where a Reflection
+/// keeps that folder (the receiving domain's switch, or the switch the
+/// imported MANIFEST declares): its pages are no engrams, and a Reflection
+/// comes back from its backup branch. Public so the archive screen gives
+/// the same words.
+pub const REFLECTION_NOT_IMPORTED: &str = "under reflections/, which a Reflection keeps; a Reflection is restored from its backup branch, never imported as engrams";
 
 /// Whether `rel` names the MANIFEST in any letter case. The write and move
 /// checks use this: a case-insensitive file system (the macOS and Windows

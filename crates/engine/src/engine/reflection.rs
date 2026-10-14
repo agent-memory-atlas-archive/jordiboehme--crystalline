@@ -89,7 +89,8 @@ pub(crate) struct SwitchFacts {
     pub team_copy_unreadable: Option<String>,
 }
 
-fn declares_on(source: &str) -> bool {
+/// Whether a MANIFEST's text declares `reflection: on`.
+pub(crate) fn declares_on(source: &str) -> bool {
     crystalline_core::parse_engram(source)
         .map(|e| crystalline_core::Manifest::from_engram(&e, source).reflection())
         .unwrap_or_default()

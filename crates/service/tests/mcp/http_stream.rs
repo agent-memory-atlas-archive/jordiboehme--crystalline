@@ -562,8 +562,8 @@ async fn the_wire_format_baseline_the_conformance_tasks_measure_against() {
     let listed = templates["result"]["resourceTemplates"].as_array().unwrap();
     assert_eq!(
         listed.len(),
-        1,
-        "the one template: every attachment a domain carries. The endpoint also \
+        2,
+        "the two templates: every attachment a domain carries and every file of a Reflection. The endpoint also \
          has to be overridden rather than inherited because rmcp's default \
          answers one of the six cache-hint operations with no hints \
          (handler/server.rs:387-395)"

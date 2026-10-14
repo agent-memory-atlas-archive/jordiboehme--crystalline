@@ -210,6 +210,11 @@ use crate::scope::{DomainAccess, DomainRight};
         reflections::queue,
         reflections::review,
         reflections::search,
+        reflections::assets,
+        reflections::asset_read,
+        reflections::asset_write,
+        reflections::asset_remove,
+        reflections::asset_move,
         events::stream_events,
         users_api::list,
         users_api::create,
@@ -332,6 +337,9 @@ use crate::scope::{DomainAccess, DomainRight};
         reflections::MoveReflectionBody,
         reflections::OpenThreadBody,
         reflections::ThreadStepBody,
+        reflections::ReflectionAssetsResponse,
+        reflections::UploadedReflectionAsset,
+        reflections::MoveReflectionAssetBody,
         schemas::EngramChanged,
         schemas::DomainChanged,
         schemas::ChangeKind,
@@ -949,6 +957,23 @@ fn routes(state: RestState) -> Router {
             get(reflections::read)
                 .put(reflections::save)
                 .delete(reflections::remove),
+        )
+        // A Reflection's files: a static listing, a wildcard for the bytes
+        // and a static move, so the move never competes with the wildcard.
+        // Rights are the Reflection's own, decided in the engine.
+        .route(
+            "/domains/{domain}/reflection/assets",
+            get(reflections::assets),
+        )
+        .route(
+            "/domains/{domain}/reflection/assets/{*path}",
+            get(reflections::asset_read)
+                .put(reflections::asset_write)
+                .delete(reflections::asset_remove),
+        )
+        .route(
+            "/domains/{domain}/reflection/move-asset",
+            post(reflections::asset_move),
         )
         // Admin only, enforced inside the handlers: the guard below stops at
         // viewer. See [`users_api`] for the three rules these first mutating

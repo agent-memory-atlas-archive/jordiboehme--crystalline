@@ -251,20 +251,33 @@ pub async fn read(
         .attachment_read_as(&domain, &path, &identity.scope())
         .await
         .map_err(malformed_path_is_a_bad_request)?;
+    Ok(attachment_response(&headers, bytes, &row))
+}
+
+/// The answer for one stored file, the same for every route that serves one
+/// (an engram attachment and a Reflection's file): a strong `ETag` (304 on
+/// `If-None-Match`), `Cache-Control: no-cache`, `nosniff`, the sandbox CSP
+/// and the disposition the mime decides. One helper, so the two routes
+/// answer a file with the same headers by construction.
+pub(crate) fn attachment_response(
+    headers: &HeaderMap,
+    bytes: Vec<u8>,
+    row: &AttachmentRow,
+) -> Response {
     let etag = format!("\"{}\"", row.sha256);
-    if if_none_match_matches(&headers, &row.sha256) {
+    if if_none_match_matches(headers, &row.sha256) {
         // The validator and `Cache-Control`, no body: the shape is stated
         // once, on `if_none_match_matches`.
-        return Ok((
+        return (
             StatusCode::NOT_MODIFIED,
             [
                 (header::ETAG, etag),
                 (header::CACHE_CONTROL, REVALIDATE.to_string()),
             ],
         )
-            .into_response());
+            .into_response();
     }
-    Ok((
+    (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, row.mime.clone()),
@@ -272,11 +285,11 @@ pub async fn read(
             (header::CACHE_CONTROL, REVALIDATE.to_string()),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
             (header::CONTENT_SECURITY_POLICY, ATTACHMENT_CSP.to_string()),
-            (header::CONTENT_DISPOSITION, disposition(&row)),
+            (header::CONTENT_DISPOSITION, disposition(row)),
         ],
         bytes,
     )
-        .into_response())
+        .into_response()
 }
 
 /// `PUT /domains/{domain}/files/{*path}` - store an attachment, creating it or

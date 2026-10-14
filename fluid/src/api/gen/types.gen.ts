@@ -1051,6 +1051,20 @@ export type MoveBody = {
 };
 
 /**
+ * What `POST /domains/{domain}/reflection/move-asset` takes.
+ */
+export type MoveReflectionAssetBody = {
+    /**
+     * The file's path inside `reflections/`, `assets/...`.
+     */
+    from: string;
+    /**
+     * Its new path inside `reflections/`, `assets/...`.
+     */
+    to: string;
+};
+
+/**
  * What `POST /domains/{domain}/reflection/move` takes.
  */
 export type MoveReflectionBody = {
@@ -1373,6 +1387,17 @@ export type ProvisioningView = {
      * The bullets that did not parse, or lost to an earlier duplicate.
      */
     problems: Array<ManifestProblem>;
+};
+
+/**
+ * Every file of a domain's Reflection.
+ */
+export type ReflectionAssetsResponse = {
+    /**
+     * The rows, ordered by path; `path` is inside `reflections/`
+     * (`assets/...`).
+     */
+    assets: Array<AttachmentView>;
 };
 
 /**
@@ -1870,6 +1895,34 @@ export type UploadedAttachment = {
     path: string;
     /**
      * Lowercase hex SHA-256 of the stored bytes.
+     */
+    sha256: string;
+    /**
+     * Byte length as stored.
+     */
+    size: number;
+};
+
+/**
+ * What an upload into a Reflection answers.
+ */
+export type UploadedReflectionAsset = {
+    /**
+     * Whether the path held no file before.
+     */
+    created: boolean;
+    /**
+     * The mime it is served under, from the extension.
+     */
+    mime: string;
+    /**
+     * The path inside `reflections/`, `assets/...`: how a reflection in the
+     * folder root links it.
+     */
+    path: string;
+    /**
+     * Lowercase hex SHA-256 of the stored bytes, the token the read's
+     * `ETag` carries.
      */
     sha256: string;
     /**
@@ -4206,6 +4259,189 @@ export type GetReflectionStatusResponses = {
 
 export type GetReflectionStatusResponse = GetReflectionStatusResponses[keyof GetReflectionStatusResponses];
 
+export type ListReflectionAssetsData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflection/assets';
+};
+
+export type ListReflectionAssetsErrors = {
+    /**
+     * No such domain, or none this caller may see (the anonymous viewer included).
+     */
+    404: ProblemDetail;
+    /**
+     * The Reflection is not here (off, pending, homeless or elsewhere, then with `home_url`).
+     */
+    409: ProblemDetail;
+};
+
+export type ListReflectionAssetsError = ListReflectionAssetsErrors[keyof ListReflectionAssetsErrors];
+
+export type ListReflectionAssetsResponses = {
+    /**
+     * Every file under reflections/assets/, ordered by path; each `path` is inside `reflections/`.
+     */
+    200: ReflectionAssetsResponse;
+};
+
+export type ListReflectionAssetsResponse = ListReflectionAssetsResponses[keyof ListReflectionAssetsResponses];
+
+export type DeleteReflectionAssetData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+        /**
+         * The path under reflections/assets/; may contain slashes.
+         */
+        path: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflection/assets/{path}';
+};
+
+export type DeleteReflectionAssetErrors = {
+    /**
+     * The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.
+     */
+    401: ProblemDetail;
+    /**
+     * Below curate access, or this instance is read-only.
+     */
+    403: ProblemDetail;
+    /**
+     * No such file, or no such domain for this caller (the anonymous viewer included).
+     */
+    404: ProblemDetail;
+    /**
+     * The Reflection is not here (then possibly `home_url`).
+     */
+    409: ProblemDetail;
+    /**
+     * A path rule refused the path.
+     */
+    422: ProblemDetail;
+};
+
+export type DeleteReflectionAssetError = DeleteReflectionAssetErrors[keyof DeleteReflectionAssetErrors];
+
+export type DeleteReflectionAssetResponses = {
+    /**
+     * Removed. A reflection that still links it keeps the link; the reflect queue names it as missing.
+     */
+    204: void;
+};
+
+export type DeleteReflectionAssetResponse = DeleteReflectionAssetResponses[keyof DeleteReflectionAssetResponses];
+
+export type ReadReflectionAssetData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+        /**
+         * The path under reflections/assets/; may contain slashes.
+         */
+        path: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflection/assets/{path}';
+};
+
+export type ReadReflectionAssetErrors = {
+    /**
+     * No such file, or no such domain for this caller (the anonymous viewer included).
+     */
+    404: ProblemDetail;
+    /**
+     * The Reflection is not here (then possibly `home_url`).
+     */
+    409: ProblemDetail;
+    /**
+     * A path rule or the extension allowlist refused the path.
+     */
+    422: ProblemDetail;
+};
+
+export type ReadReflectionAssetError = ReadReflectionAssetErrors[keyof ReadReflectionAssetErrors];
+
+export type ReadReflectionAssetResponses = {
+    /**
+     * The bytes, under the mime the allowlist assigns.
+     */
+    200: Blob | File;
+};
+
+export type ReadReflectionAssetResponse = ReadReflectionAssetResponses[keyof ReadReflectionAssetResponses];
+
+export type WriteReflectionAssetData = {
+    /**
+     * The raw file bytes.
+     */
+    body: string;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+        /**
+         * Where to store it, under reflections/assets/; may contain slashes.
+         */
+        path: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflection/assets/{path}';
+};
+
+export type WriteReflectionAssetErrors = {
+    /**
+     * The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.
+     */
+    401: ProblemDetail;
+    /**
+     * Below edit access; a replace below curate access, with a detail naming the right held and curate (upload it under a new name instead); the domain is off the caller's write list; or this instance is read-only.
+     */
+    403: ProblemDetail;
+    /**
+     * No such domain, or none this caller may see (the anonymous viewer included).
+     */
+    404: ProblemDetail;
+    /**
+     * The Reflection is not here (then possibly `home_url`).
+     */
+    409: ProblemDetail;
+    /**
+     * Over the 10 MiB ceiling.
+     */
+    413: ProblemDetail;
+    /**
+     * A path rule or the extension allowlist refused it.
+     */
+    422: ProblemDetail;
+};
+
+export type WriteReflectionAssetError = WriteReflectionAssetErrors[keyof WriteReflectionAssetErrors];
+
+export type WriteReflectionAssetResponses = {
+    /**
+     * Stored. `path` is inside `reflections/`.
+     */
+    200: UploadedReflectionAsset;
+};
+
+export type WriteReflectionAssetResponse = WriteReflectionAssetResponses[keyof WriteReflectionAssetResponses];
+
 export type MoveReflectionData = {
     body: MoveReflectionBody;
     path: {
@@ -4254,6 +4490,54 @@ export type MoveReflectionResponses = {
 
 export type MoveReflectionResponse = MoveReflectionResponses[keyof MoveReflectionResponses];
 
+export type MoveReflectionAssetData = {
+    body: MoveReflectionAssetBody;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflection/move-asset';
+};
+
+export type MoveReflectionAssetErrors = {
+    /**
+     * The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.
+     */
+    401: ProblemDetail;
+    /**
+     * Below curate access, or this instance is read-only.
+     */
+    403: ProblemDetail;
+    /**
+     * No such file, or no such domain for this caller (the anonymous viewer included).
+     */
+    404: ProblemDetail;
+    /**
+     * The new path already holds a file, a page that links it is open in a co-editing room, or the Reflection is not here (then possibly `home_url`).
+     */
+    409: ProblemDetail;
+    /**
+     * A path rule refused a path, or both name the same file.
+     */
+    422: ProblemDetail;
+};
+
+export type MoveReflectionAssetError = MoveReflectionAssetErrors[keyof MoveReflectionAssetErrors];
+
+export type MoveReflectionAssetResponses = {
+    /**
+     * Moved: `{ domain, from, to, links_rewritten }`. Two keys appear only when needed: `links_failed`, `[{ path, reason }]` for each page whose link could not be rewritten after the file moved, and `note`, a sentence saying the file moved and its index row did not follow (the next sync brings it up to date).
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type MoveReflectionAssetResponse = MoveReflectionAssetResponses[keyof MoveReflectionAssetResponses];
+
 export type GetReflectQueueData = {
     body?: never;
     path: {
@@ -4290,7 +4574,7 @@ export type GetReflectQueueError = GetReflectQueueErrors[keyof GetReflectQueueEr
 
 export type GetReflectQueueResponses = {
     /**
-     * ReflectQueue. `kind` is `feedback` (`what`: `new`, `changed`, `removed`), `update` (`source_changed`, `source_retired`, `source_missing`, `unreflected`, `off_structure`, `pact_changed`) or `review` (`thread`). `sources`, and an `unreflected` item's `folder` and `engrams`, are absent for a caller who cannot read engrams. The MCP `reflect` tool answers the same shape with `scope: { domains, kinds }` in place of `domain` and a `domain` member on each row; its `scope` may carry `unreadable`, the names of the domains whose queue could not be read.
+     * ReflectQueue. `kind` is `feedback` (`what`: `new`, `changed`, `removed`), `update` (`source_changed`, `source_retired`, `source_missing`, `unreflected`, `off_structure`, `pact_changed`) or `review` (`thread`). `sources`, and an `unreflected` item's `folder` and `engrams`, are absent for a caller who cannot read engrams. The MCP `reflect` tool answers the same shape with `scope: { domains, kinds }` in place of `domain` and a `domain` member on each row; its `scope` may carry `unreadable`, the names of the domains whose queue could not be read, and `pending`, the names of the domains whose Reflection waits for engrams to leave `reflections/`. An update item's `what` may also be `asset_missing` (per section, with `assets`), `engram_attachment` (per section, with `targets`) or `asset_unreferenced` (`path` empty, with `asset`).
      */
     200: {
         [key: string]: unknown;
@@ -4702,7 +4986,7 @@ export type SaveReflectionError = SaveReflectionErrors[keyof SaveReflectionError
 
 export type SaveReflectionResponses = {
     /**
-     * Written: `{ domain, path, checksum, created, ids_assigned, curated }`. `curated` says whether this write advanced the baseline.
+     * Written: `{ domain, path, checksum, created, ids_assigned, curated }`. `curated` says whether this write advanced the baseline. While a co-editing room is open over the page the receipt also carries `present` (who is in it) and `landed`: `live` when the room took the write in, `file` when it is on disk only, and then `room` (`conflict` or `waiting`) with `room_note`, a sentence saying what the people in the room meet.
      */
     200: {
         [key: string]: unknown;
