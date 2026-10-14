@@ -1123,13 +1123,19 @@ impl Engine {
         Ok(())
     }
 
-    /// The reflection pages of every domain this rename may write whose
-    /// Reflection is in effect here: each link domain and `crystalline://`
-    /// domain spelled with one of the old names is written with the new one,
-    /// as the engrams are, under each page's lock. A page already respelled
-    /// spells none of the old names, so the step is safe to run twice. A page
-    /// that cannot be respelled is listed with its reason, like an engram,
-    /// rather than stopping the rename, which could otherwise never finish.
+    /// The reflection pages of every domain this caller can see whose
+    /// Reflection is in effect here, as the engrams: in a domain the caller
+    /// could write when the rename started, each link domain and
+    /// `crystalline://` domain spelled with one of the old names is written
+    /// with the new one, and anywhere else the page is listed and left alone.
+    /// The respell is a link rewrite, not a person's change: page and
+    /// baseline get the same rewrite and the `reflected` hash of every
+    /// section that was in sync is carried (`relink`), so a rename owes no
+    /// feedback. Each page is written under its lock. A page already
+    /// respelled spells none of the old names, so the step is safe to run
+    /// twice. A page or a domain that cannot be respelled is listed with its
+    /// reason rather than stopping the rename, which could otherwise never
+    /// finish.
     async fn respell_reflections(
         &self,
         journal: &RenameJournal,
@@ -1140,22 +1146,60 @@ impl Engine {
             return Ok(());
         }
         let new = journal.new.as_str();
-        for domain in &journal.writable {
-            if !self.reflection_effective(domain).await.unwrap_or(false) {
+        let hidden = self
+            .hidden_for(&caller_scope(journal.caller.as_ref()))
+            .await?;
+        let respell = |text: &str| respell_old(text, spellings, new, BodyGate::Split);
+        let mut domains: Vec<String> = self
+            .registered_domain_entries_now()
+            .await
+            .into_keys()
+            .collect();
+        domains.sort();
+        for domain in domains {
+            if hidden.contains(&domain)
+                || !self.reflection_effective(&domain).await.unwrap_or(false)
+            {
                 continue;
             }
-            let ContentSource::File { root } = self.read_source(domain) else {
+            let ContentSource::File { root } = self.read_source(&domain) else {
                 continue;
             };
-            let (domain_id, _) = self.domain_source(domain).await?;
-            let rows = self.store.lock().await.list_reflections(domain_id).await?;
+            let (domain_id, rows) = match self.reflection_rows(&domain).await {
+                Ok(found) => found,
+                Err(e) => {
+                    tracing::warn!(
+                        domain = domain.as_str(),
+                        "the rename to '{new}' could not read the reflections of this domain: {e}"
+                    );
+                    outcome.left_behind.push(LeftBehind {
+                        domain: domain.clone(),
+                        path: format!("{}/", crystalline_core::reflection::REFLECTIONS_DIR),
+                        references: 0,
+                        reason: Some(e.to_string()),
+                    });
+                    continue;
+                }
+            };
+            let writable = journal.writable.binary_search(&domain).is_ok();
+            let folder = super::reflection::reflection_dir(&root);
             for row in rows {
-                let references = respell_old(&row.content, spellings, new, BodyGate::Split).1;
+                let references = respell(&row.content).1;
                 if references == 0 {
                     continue;
                 }
+                let path = crystalline_core::reflection::domain_rel(&row.path);
+                if !writable {
+                    outcome.left_behind.push(LeftBehind {
+                        domain: domain.clone(),
+                        path,
+                        references,
+                        reason: None,
+                    });
+                    continue;
+                }
                 match self
-                    .respell_reflection(domain_id, &root, &row.path, spellings, new)
+                    .relink_page(domain_id, &folder, &row.path, &respell)
                     .await
                 {
                     Ok(0) => {}
@@ -1172,7 +1216,7 @@ impl Engine {
                         );
                         outcome.left_behind.push(LeftBehind {
                             domain: domain.clone(),
-                            path: crystalline_core::reflection::domain_rel(&row.path),
+                            path,
                             references,
                             reason: Some(e.to_string()),
                         });
@@ -1183,31 +1227,14 @@ impl Engine {
         Ok(())
     }
 
-    /// Respell one reflection page for [`Engine::respell_reflections`] under
-    /// its write lock, answering how many references changed; nothing is
-    /// written when none did.
-    async fn respell_reflection(
+    /// A domain's index id and its reflection rows.
+    async fn reflection_rows(
         &self,
-        domain_id: DomainId,
-        root: &Path,
-        inner: &str,
-        spellings: &[String],
-        new: &str,
-    ) -> Result<usize> {
-        let abs = super::reflection::reflection_abs(root, inner);
-        let _lock = self.lock_file(&abs).await;
-        let Some(page) = read_opt(&abs)? else {
-            return Ok(0);
-        };
-        let (respelled, references) = respell_old(&page, spellings, new, BodyGate::Split);
-        if references == 0 {
-            return Ok(0);
-        }
-        let respelled = crystalline_core::to_lf(&respelled).into_owned();
-        write_file(&abs, &respelled)?;
-        self.index_reflection(domain_id, inner, &respelled, &abs)
-            .await?;
-        Ok(references)
+        domain: &str,
+    ) -> Result<(DomainId, Vec<crystalline_index::ReflectionRow>)> {
+        let (domain_id, _) = self.domain_source(domain).await?;
+        let rows = self.store.lock().await.list_reflections(domain_id).await?;
+        Ok((domain_id, rows))
     }
 
     /// Respell one engram's links for the relink step, answering how many

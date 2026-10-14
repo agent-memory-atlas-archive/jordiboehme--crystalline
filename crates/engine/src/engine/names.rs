@@ -32,6 +32,39 @@ pub enum SpellingPushFault {
     FailAfterReplace,
 }
 
+/// Every domain spelling in `source` other than its canonical name, written
+/// with that name, unless it resolves to a domain in `hidden`. The rule of
+/// [`Engine::normalize_domain_spellings`].
+fn respell_canonical(
+    table: &NameTable,
+    hidden: &HashSet<String>,
+    source: &str,
+    gate: BodyGate,
+) -> (String, usize) {
+    crystalline_core::relink::respell_domains_with(source, gate, &|domain: &str| {
+        let local = table.resolve(domain)?;
+        if hidden.contains(local) {
+            return None;
+        }
+        table.normalize(domain).map(str::to_string)
+    })
+}
+
+/// The spelling funnel decided for one caller, as a plain function: see
+/// [`Engine::spelling_funnel`].
+pub(crate) struct SpellingFunnel {
+    table: Arc<NameTable>,
+    hidden: HashSet<String>,
+    gate: BodyGate,
+}
+
+impl SpellingFunnel {
+    /// `source` with its spellings written canonically, and how many were.
+    pub(crate) fn respell(&self, source: &str) -> (String, usize) {
+        respell_canonical(&self.table, &self.hidden, source, self.gate)
+    }
+}
+
 impl Engine {
     /// The current name table, rebuilt when stale. Never touches the store
     /// once the virtual names are loaded.
@@ -155,12 +188,35 @@ impl Engine {
         gate: BodyGate,
     ) -> (String, usize) {
         let table = self.name_table_now().await;
-        crystalline_core::relink::respell_domains_with(source, gate, &|domain: &str| {
-            let local = table.resolve(domain)?;
-            if hidden.contains(local) {
-                return None;
-            }
-            table.normalize(domain).map(str::to_string)
+        respell_canonical(&table, hidden, source, gate)
+    }
+
+    /// The spelling funnel of [`Engine::normalize_domain_spellings_in`] as a
+    /// plain function over `scope`, for a rewrite that cannot wait on the
+    /// engine (a reflection's stored page and baseline go through
+    /// `crystalline_core::reflection::relink`). The hidden set is worked out
+    /// only when one of `sources` holds a spelling to decide about, the same
+    /// probe rule.
+    pub(crate) async fn spelling_funnel(
+        &self,
+        scope: &crate::scope::Scope,
+        sources: &[&str],
+        gate: BodyGate,
+    ) -> Result<SpellingFunnel> {
+        let table = self.name_table_now().await;
+        let none = HashSet::new();
+        let hidden = if sources
+            .iter()
+            .any(|source| respell_canonical(&table, &none, source, gate).1 > 0)
+        {
+            self.hidden_for(scope).await?
+        } else {
+            none
+        };
+        Ok(SpellingFunnel {
+            table,
+            hidden,
+            gate,
         })
     }
 

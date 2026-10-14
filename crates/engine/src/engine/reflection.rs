@@ -14,9 +14,12 @@ use crate::scope::{ReflectionCaller, ReflectionRight, Scope, reflection_right_wo
 /// What the gate hands a reflection verb.
 #[derive(Debug, Clone)]
 pub(crate) struct ReflectionAccess {
-    /// The domain root (the Reflection is its `reflections` folder, in the
-    /// spelling [`reflection_dir`] finds).
+    /// The domain root.
+    #[allow(dead_code)] // Read by the threads, queue and room verbs (Tasks 13, 14, 18).
     pub root: PathBuf,
+    /// The Reflection's folder, in its spelling on disk
+    /// ([`reflection_dir`]), resolved once per verb.
+    pub folder: PathBuf,
     /// The domain's index id.
     pub domain_id: DomainId,
     /// The caller's reflection right.
@@ -28,6 +31,13 @@ pub(crate) struct ReflectionAccess {
     /// Where the Reflection lives.
     #[allow(dead_code)] // Read by the backup job (Task 19).
     pub home: ReflectionHome,
+}
+
+impl ReflectionAccess {
+    /// The absolute path of a file inside the Reflection's folder.
+    pub(crate) fn abs(&self, inner: &str) -> PathBuf {
+        join_rel(&self.folder, inner)
+    }
 }
 
 /// The facts the switch is screened against, gathered before any write lock.
@@ -421,6 +431,7 @@ impl Engine {
         };
         let (domain_id, _) = self.domain_source(domain).await?;
         Ok(ReflectionAccess {
+            folder: reflection_dir(&root),
             root,
             domain_id,
             right,
@@ -517,7 +528,10 @@ pub(crate) struct EngramFact {
 }
 
 /// The absolute path of a file inside a domain's `reflections/`, in the
-/// folder's spelling on disk (see [`reflection_dir`]).
+/// folder's spelling on disk (see [`reflection_dir`]). A verb that holds a
+/// [`ReflectionAccess`] uses [`ReflectionAccess::abs`], which resolves the
+/// folder once.
+#[allow(dead_code)] // Used by the threads, queue and room verbs (Tasks 13, 14, 18).
 pub(super) fn reflection_abs(root: &Path, inner: &str) -> PathBuf {
     join_rel(&reflection_dir(root), inner)
 }
@@ -649,6 +663,44 @@ pub(super) fn compose_reflection(
     Ok((text, minted, prov))
 }
 
+/// `text` with `prov` as its bookkeeping block, as LF, and each of `ids`
+/// still on the page stamped `reflected` with the hash of its section in
+/// that stored text. The top's text starts after the frontmatter the block
+/// brings, which `text` may not have had yet; only the block is rewritten,
+/// so a second pass leaves every section as it is. The write and the settle
+/// both end here.
+fn stamp_reflected(text: &str, prov: &mut r::Provenance, ids: &[String]) -> Result<String> {
+    let write =
+        |text: &str, prov: &r::Provenance| -> Result<String> {
+            Ok(crystalline_core::to_lf(
+                &r::write_provenance(text, prov).map_err(EngineError::Invalid)?,
+            )
+            .into_owned())
+        };
+    let stored = write(text, prov)?;
+    let sections = r::split_sections(&stored);
+    let mut rehashed = false;
+    for id in ids {
+        let Some(section) = sections
+            .iter()
+            .find(|s| s.id.as_deref() == Some(id.as_str()))
+        else {
+            continue;
+        };
+        let hash = r::section_hash(&section.text);
+        let record = prov.entry(id.clone()).or_default();
+        if record.reflected.as_deref() != Some(hash.as_str()) {
+            record.reflected = Some(hash);
+            rehashed = true;
+        }
+    }
+    if rehashed {
+        write(&stored, prov)
+    } else {
+        Ok(stored)
+    }
+}
+
 impl Engine {
     /// Every engram of a domain by permalink, with the checksum a section's
     /// sources are compared against.
@@ -773,8 +825,8 @@ impl Engine {
         } else {
             self.engram_facts(access.domain_id, &p.domain).await?
         };
-        let abs = reflection_abs(&access.root, &p.path);
-        let baseline_abs = reflection_abs(&access.root, &r::baseline_path(&p.path));
+        let abs = access.abs(&p.path);
+        let baseline_abs = access.abs(&r::baseline_path(&p.path));
         let _lock = self.lock_file(&abs).await;
 
         let current = read_opt(&abs)?;
@@ -824,13 +876,35 @@ impl Engine {
             }
         };
         // Rule 8: the canonical spellings, the funnel every engram write's text
-        // passes through, over the body after the frontmatter.
-        let (incoming, normalized) = self
-            .normalize_domain_spellings_in(&incoming, BodyGate::Split, &caller.scope)
+        // passes through, over the body after the frontmatter. The stored
+        // page and its baseline go through it too, as a link rewrite that is
+        // no person's change (`relink`): a section the writer left alone then
+        // matches the stored one, so a respelled alias in it records nobody
+        // and owes no feedback.
+        let stored_baseline = read_opt(&baseline_abs)?.unwrap_or_default();
+        let funnel = self
+            .spelling_funnel(
+                &caller.scope,
+                &[
+                    &incoming,
+                    current.as_deref().unwrap_or(""),
+                    &stored_baseline,
+                ],
+                BodyGate::Split,
+            )
             .await?;
-        let baseline = read_opt(&baseline_abs)?.unwrap_or_default();
+        let respell = |text: &str| funnel.respell(text);
+        let (incoming, normalized) = respell(&incoming);
+        let (stored, baseline) = match current.as_deref() {
+            Some(page) => {
+                let out =
+                    r::relink(page, &stored_baseline, &respell).map_err(EngineError::Invalid)?;
+                (Some(out.page), out.baseline)
+            }
+            None => (None, stored_baseline.clone()),
+        };
         let (text, minted, mut prov) = compose_reflection(
-            current.as_deref(),
+            stored.as_deref(),
             &baseline,
             &incoming,
             std::slice::from_ref(&caller.author.name),
@@ -871,40 +945,9 @@ impl Engine {
             record.answered_by = None;
             advanced.push(id);
         }
-        let mut final_text = crystalline_core::to_lf(
-            &r::write_provenance(&text, &prov).map_err(EngineError::Invalid)?,
-        )
-        .into_owned();
-        // A curated section's hash is the one of its text in the file as
-        // stored: the top's text starts after the frontmatter the block
-        // brings, which the composed text did not have yet. The block is the
-        // only thing rewritten, so a second pass leaves every section as it
-        // is.
-        let stored_sections = r::split_sections(&final_text);
-        let mut rehashed = false;
-        for id in &advanced {
-            let Some(section) = stored_sections
-                .iter()
-                .find(|s| s.id.as_deref() == Some(id.as_str()))
-            else {
-                continue;
-            };
-            let hash = r::section_hash(&section.text);
-            if let Some(record) = prov.get_mut(id)
-                && record.reflected.as_deref() != Some(hash.as_str())
-            {
-                record.reflected = Some(hash);
-                rehashed = true;
-            }
-        }
-        if rehashed {
-            final_text = crystalline_core::to_lf(
-                &r::write_provenance(&final_text, &prov).map_err(EngineError::Invalid)?,
-            )
-            .into_owned();
-        }
+        let final_text = stamp_reflected(&text, &mut prov, &advanced)?;
         write_file(&abs, &final_text)?;
-        if !advanced.is_empty() {
+        if !advanced.is_empty() || baseline != stored_baseline {
             write_file(
                 &baseline_abs,
                 &r::advance_baseline(&baseline, &final_text, &advanced),
@@ -946,7 +989,7 @@ impl Engine {
             .list_reflections(access.domain_id)
             .await?;
         let open_threads = |inner: &str| -> usize {
-            read_opt(&reflection_abs(&access.root, &r::threads_path(inner)))
+            read_opt(&access.abs(&r::threads_path(inner)))
                 .ok()
                 .flatten()
                 .map(|t| {
@@ -1029,7 +1072,7 @@ impl Engine {
             .require_reflection(domain, caller, ReflectionRight::Read)
             .await?;
         r::validate_reflection_path(inner).map_err(EngineError::Invalid)?;
-        let text = read_opt(&reflection_abs(&access.root, inner))?.ok_or_else(|| {
+        let text = read_opt(&access.abs(inner))?.ok_or_else(|| {
             EngineError::NotFound(format!("no reflection '{inner}' in domain '{domain}'"))
         })?;
         let prov = r::read_provenance(&text);
@@ -1071,7 +1114,7 @@ impl Engine {
                 row
             })
             .collect();
-        let threads = read_opt(&reflection_abs(&access.root, &r::threads_path(inner)))?
+        let threads = read_opt(&access.abs(&r::threads_path(inner)))?
             .map(|t| crystalline_core::threads::parse_threads(&t))
             .unwrap_or_default();
         let open: Vec<Value> = threads
@@ -1151,8 +1194,8 @@ impl Engine {
                 "PACT.md is the domain's agreement; edit it instead of moving it".into(),
             ));
         }
-        let src = reflection_abs(&access.root, from);
-        let dst = reflection_abs(&access.root, to);
+        let src = access.abs(from);
+        let dst = access.abs(to);
         // Both pages' locks, in byte order, so two crossing moves cannot wait
         // on each other. Held until the moved page is indexed.
         let (first, second) = if src <= dst {
@@ -1176,7 +1219,7 @@ impl Engine {
             (r::threads_path(to), "a threads file"),
             (r::baseline_path(to), "a baseline"),
         ] {
-            if reflection_abs(&access.root, &leftover).exists() {
+            if access.abs(&leftover).exists() {
                 return Err(EngineError::Conflict(format!(
                     "'{leftover}' already holds {what}; remove it or pick another path"
                 )));
@@ -1185,7 +1228,7 @@ impl Engine {
         // The page's own relative links follow the move, and its
         // baseline gets the same rewrite with the `reflected` hashes carried,
         // so a move owes no feedback.
-        let old_baseline = read_opt(&reflection_abs(&access.root, &r::baseline_path(from)))?;
+        let old_baseline = read_opt(&access.abs(&r::baseline_path(from)))?;
         let moved = r::relink(&text, old_baseline.as_deref().unwrap_or(""), &|s| {
             r::rebase_links(s, from, to)
         })
@@ -1195,16 +1238,13 @@ impl Engine {
         write_file(&dst, &page)?;
         remove_if_there(&src)?;
         if old_baseline.is_some() {
-            write_file(
-                &reflection_abs(&access.root, &r::baseline_path(to)),
-                &moved.baseline,
-            )?;
-            remove_if_there(&reflection_abs(&access.root, &r::baseline_path(from)))?;
+            write_file(&access.abs(&r::baseline_path(to)), &moved.baseline)?;
+            remove_if_there(&access.abs(&r::baseline_path(from)))?;
         }
         let mut threads_moved = false;
-        if let Some(body) = read_opt(&reflection_abs(&access.root, &r::threads_path(from)))? {
-            write_file(&reflection_abs(&access.root, &r::threads_path(to)), &body)?;
-            remove_if_there(&reflection_abs(&access.root, &r::threads_path(from)))?;
+        if let Some(body) = read_opt(&access.abs(&r::threads_path(from)))? {
+            write_file(&access.abs(&r::threads_path(to)), &body)?;
+            remove_if_there(&access.abs(&r::threads_path(from)))?;
             threads_moved = true;
         }
         self.store
@@ -1217,23 +1257,49 @@ impl Engine {
         drop((_first, _second));
         // Every other page that links the moved one, PACT.md included: a link
         // that follows a move is no change of the agreement, and a move needs
-        // only edit access. Each page under its own lock.
-        let rows = self
+        // only edit access. Each page under its own lock. The move has
+        // landed by now, so a page that cannot be relinked is named in the
+        // receipt (and the log) instead of failing a move that happened.
+        let mut failed: Vec<Value> = Vec::new();
+        let mut note_failure = |path: Option<&str>, e: EngineError| {
+            tracing::warn!(
+                domain,
+                from,
+                to,
+                page = path.unwrap_or(""),
+                "a link to the moved reflection could not be rewritten: {e}"
+            );
+            failed.push(json!({ "path": path, "reason": e.to_string() }));
+        };
+        let rows = match self
             .store
             .lock()
             .await
             .list_reflections(access.domain_id)
-            .await?;
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                note_failure(None, e.into());
+                Vec::new()
+            }
+        };
         let mut links = 0;
         for row in rows.iter().filter(|row| row.path != from && row.path != to) {
             let inner = row.path.as_str();
-            links += self
+            match self
                 .relink_reflection(&access, inner, &|s| r::rewrite_links_to(s, inner, from, to))
-                .await?;
+                .await
+            {
+                Ok(n) => links += n,
+                Err(e) => note_failure(Some(inner), e),
+            }
         }
-        Ok(
-            json!({ "from": from, "to": to, "links_rewritten": links, "threads_moved": threads_moved }),
-        )
+        let mut receipt = json!({ "from": from, "to": to, "links_rewritten": links, "threads_moved": threads_moved });
+        if !failed.is_empty() {
+            receipt["links_failed"] = json!(failed);
+        }
+        Ok(receipt)
     }
 
     /// Rewrite the links of one reflection and give its baseline the same
@@ -1248,8 +1314,22 @@ impl Engine {
         inner: &str,
         rewrite: &(dyn Fn(&str) -> (String, usize) + Sync),
     ) -> Result<usize> {
-        let abs = reflection_abs(&access.root, inner);
-        let baseline_abs = reflection_abs(&access.root, &r::baseline_path(inner));
+        self.relink_page(access.domain_id, &access.folder, inner, rewrite)
+            .await
+    }
+
+    /// [`Engine::relink_reflection`] for a page of the Reflection folder
+    /// `folder` of the domain `domain_id`, for a caller that holds no
+    /// [`ReflectionAccess`] (the domain rename's respell).
+    pub(super) async fn relink_page(
+        &self,
+        domain_id: DomainId,
+        folder: &Path,
+        inner: &str,
+        rewrite: &(dyn Fn(&str) -> (String, usize) + Sync),
+    ) -> Result<usize> {
+        let abs = join_rel(folder, inner);
+        let baseline_abs = join_rel(folder, &r::baseline_path(inner));
         let _lock = self.lock_file(&abs).await;
         let Some(page) = read_opt(&abs)? else {
             return Ok(0);
@@ -1265,8 +1345,7 @@ impl Engine {
         if baseline.is_some() {
             write_file(&baseline_abs, &out.baseline)?;
         }
-        self.index_reflection(access.domain_id, inner, &page, &abs)
-            .await?;
+        self.index_reflection(domain_id, inner, &page, &abs).await?;
         Ok(out.links)
     }
 
@@ -1290,15 +1369,15 @@ impl Engine {
                 "PACT.md is the domain's agreement; edit it instead of deleting it".into(),
             ));
         }
-        let abs = reflection_abs(&access.root, inner);
+        let abs = access.abs(inner);
         let _lock = self.lock_file(&abs).await;
         if !remove_if_there(&abs)? {
             return Err(EngineError::NotFound(format!(
                 "no reflection '{inner}' in domain '{domain}'"
             )));
         }
-        remove_if_there(&reflection_abs(&access.root, &r::threads_path(inner)))?;
-        remove_if_there(&reflection_abs(&access.root, &r::baseline_path(inner)))?;
+        remove_if_there(&access.abs(&r::threads_path(inner)))?;
+        remove_if_there(&access.abs(&r::baseline_path(inner)))?;
         self.store
             .lock()
             .await
@@ -1336,8 +1415,8 @@ impl Engine {
         // After the gate, so a caller without the right learns nothing about
         // the path; before any file is touched.
         r::validate_reflection_path(inner).map_err(EngineError::Invalid)?;
-        let abs = reflection_abs(&access.root, inner);
-        let baseline_abs = reflection_abs(&access.root, &r::baseline_path(inner));
+        let abs = access.abs(inner);
+        let baseline_abs = access.abs(&r::baseline_path(inner));
         let facts = if outcome == "taken_in" {
             self.engram_facts(access.domain_id, domain).await?
         } else {
@@ -1379,10 +1458,7 @@ impl Engine {
                 }
             }
         }
-        let final_text = crystalline_core::to_lf(
-            &r::write_provenance(&text, &prov).map_err(EngineError::Invalid)?,
-        )
-        .into_owned();
+        let final_text = stamp_reflected(&text, &mut prov, ids)?;
         write_file(&abs, &final_text)?;
         write_file(
             &baseline_abs,

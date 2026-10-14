@@ -685,37 +685,53 @@ async fn a_write_spells_other_domains_by_their_canonical_name() {
     );
 }
 
-/// Open point 2 (approved): a domain rename respells the reflection pages
-/// that name the old domain, as it respells engrams.
-#[tokio::test]
-async fn a_domain_rename_respells_the_reflection_pages() {
-    let fx = crate::fixture::fixture_with(
-        &[("MANIFEST.md", &manifest("reflection: on\n"))],
-        |cfg, base| {
+/// `eng` with Reflection on and a deploy runbook, and a second domain
+/// `ops` whose MANIFEST takes `ops_manifest_extra` (each line ending in `\n`)
+/// and whose files are `ops_files`.
+async fn with_ops(
+    eng_manifest_extra: &str,
+    ops_manifest_extra: &str,
+    ops_files: &[(&str, &str)],
+) -> Fx {
+    let ops_manifest = crystalline_core::manifest_template("ops", "2026-01-01").replacen(
+        "\n---\n",
+        &format!("\n{ops_manifest_extra}---\n"),
+        1,
+    );
+    let ops_files: Vec<(String, String)> = ops_files
+        .iter()
+        .map(|(p, t)| (p.to_string(), t.to_string()))
+        .collect();
+    crate::fixture::fixture_with(
+        &[
+            (
+                "MANIFEST.md",
+                &manifest(&format!("reflection: on\n{eng_manifest_extra}")),
+            ),
+            (
+                "runbooks/deploy.md",
+                &engram("Deploy", "runbooks/deploy", "- [fact] deploys run at night"),
+            ),
+        ],
+        move |cfg, base| {
             let ops = base.join("ops");
             std::fs::create_dir_all(&ops).unwrap();
-            std::fs::write(
-                ops.join("MANIFEST.md"),
-                crystalline_core::manifest_template("ops", "2026-01-01"),
-            )
-            .unwrap();
+            std::fs::write(ops.join("MANIFEST.md"), ops_manifest).unwrap();
+            for (rel, text) in ops_files {
+                let abs = ops.join(rel);
+                std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+                std::fs::write(abs, text).unwrap();
+            }
             cfg.domains.insert(
                 "ops".into(),
                 crystalline_core::config::DomainEntry::file(ops),
             );
         },
     )
-    .await;
-    fx.engine
-        .write_reflection(
-            &write(
-                "a.md",
-                "# A\n\nSee [[ops:runbook]] and crystalline://ops/runbook.\n",
-            ),
-            &person(),
-        )
-        .await
-        .unwrap();
+    .await
+}
+
+async fn rename_ops(fx: &Fx) -> serde_json::Value {
     fx.engine
         .rename_domain(
             "ops",
@@ -724,12 +740,96 @@ async fn a_domain_rename_respells_the_reflection_pages() {
             &crystalline_service::Scope::Unrestricted,
         )
         .await
-        .unwrap();
+        .unwrap()
+}
+
+/// Open point 2 (approved): a domain rename respells the reflection pages
+/// that name the old domain, as it respells engrams, the renamed domain's
+/// own pages included. The respell is a link rewrite, not a person's change:
+/// the baseline gets the same rewrite and a curated section keeps its
+/// `reflected` hash, so the rename owes no feedback.
+#[tokio::test]
+async fn a_domain_rename_respells_the_reflection_pages() {
+    use crystalline_core::reflection as r;
+    let own = "# B\n\n## Links\n<!-- r:bbbb2222 -->\n\nSee [[ops:runbook]].\n";
+    let fx = with_ops("", "reflection: on\n", &[("reflections/b.md", own)]).await;
+    let mut p = write(
+        "a.md",
+        "# A\n\nSee [[ops:runbook]] and crystalline://ops/runbook.\n\n## Night deploys\n\nAsk [[ops:pager]] first.\n",
+    );
+    p.sources = BTreeMap::from([
+        ("_top".to_string(), vec!["runbooks/deploy".to_string()]),
+        (
+            "Night deploys".to_string(),
+            vec!["runbooks/deploy".to_string()],
+        ),
+    ]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let owed_before = r::feedback_changes(&file(&fx, "a.md"), &file(&fx, ".reflected/a.md")).len();
+
+    let report = rename_ops(&fx).await;
+
     let text = file(&fx, "a.md");
+    let baseline = file(&fx, ".reflected/a.md");
     assert!(
         text.contains("[[platform:runbook]]") && text.contains("crystalline://platform/runbook"),
         "{text}"
     );
+    assert!(
+        baseline.contains("[[platform:pager]]") && !baseline.contains("[[ops:"),
+        "the baseline follows: {baseline}"
+    );
+    assert_eq!(
+        r::feedback_changes(&text, &baseline).len(),
+        owed_before,
+        "the rename owes no feedback"
+    );
+    let prov = r::read_provenance(&text);
+    for section in r::split_sections(&text) {
+        let id = section.id.clone().unwrap();
+        assert_eq!(
+            prov[&id].reflected,
+            Some(r::section_hash(&section.text)),
+            "{id}: the hash follows the respell"
+        );
+        assert!(prov[&id].changed_by.is_empty(), "{id}: nobody changed it");
+    }
+    let own = std::fs::read_to_string(fx.tmp.path().join("ops/reflections/b.md")).unwrap();
+    assert!(
+        own.contains("[[platform:runbook]]"),
+        "the renamed domain's own page: {own}"
+    );
+    let rewritten = report["rewritten"].as_array().unwrap();
+    assert!(
+        rewritten
+            .iter()
+            .any(|row| row["domain"] == "eng" && row["references"] == 3),
+        "{report}"
+    );
+    assert!(
+        rewritten.iter().any(|row| row["domain"] == "ops"),
+        "{report}"
+    );
+}
+
+/// A reflection page in a domain the rename may not write is listed under
+/// `left_behind` and left as it is, like an engram there.
+#[tokio::test]
+async fn a_page_in_a_read_only_domain_is_left_behind_by_a_rename() {
+    let page = "# A\n\n## Links\n<!-- r:aaaa1111 -->\n\nSee [[ops:runbook]] and crystalline://ops/runbook.\n";
+    let fx = with_ops("read_only: on\n", "", &[]).await;
+    std::fs::create_dir_all(fx.root.join("reflections")).unwrap();
+    std::fs::write(fx.root.join("reflections/a.md"), page).unwrap();
+    fx.engine.sync(None).await.unwrap();
+
+    let report = rename_ops(&fx).await;
+
+    assert_eq!(
+        report["left_behind"],
+        serde_json::json!([{ "domain": "eng", "path": "reflections/a.md", "references": 2 }]),
+        "{report}"
+    );
+    assert_eq!(file(&fx, "a.md"), page, "the page is untouched");
 }
 
 /// A reflection row carries the file's own stamp, so the next sync does
@@ -887,4 +987,151 @@ async fn a_verb_on_a_non_home_instance_names_the_home() {
         err,
         "this domain's Reflection lives at https://team.example.com"
     );
+}
+
+/// A settled top on a page with no frontmatter carries the hash of its text
+/// in the file as stored, after the frontmatter the bookkeeping block
+/// brings: the write and the settle stamp it the same way.
+#[tokio::test]
+async fn a_settled_top_is_reflected_as_stored() {
+    use crystalline_core::reflection as r;
+    let fx = reflecting().await;
+    std::fs::create_dir_all(fx.root.join("reflections")).unwrap();
+    std::fs::write(
+        fx.root.join("reflections/a.md"),
+        "# A\n\nIntro.\n\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n",
+    )
+    .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    fx.engine
+        .settle_reflection(
+            "eng",
+            "a.md",
+            &["_top".to_string(), "aaaa1111".to_string()],
+            "kept",
+            &agent(),
+        )
+        .await
+        .unwrap();
+    let text = file(&fx, "a.md");
+    let prov = r::read_provenance(&text);
+    for section in r::split_sections(&text) {
+        let id = section.id.clone().unwrap();
+        assert_eq!(
+            prov[&id].reflected,
+            Some(r::section_hash(&section.text)),
+            "{id}: {text}"
+        );
+    }
+}
+
+/// Rule 8 respells a section the writer did not touch as a link rewrite, not
+/// as the writer's change: a curated section whose stored text spells an
+/// alias is written canonically, its baseline follows, it records nobody
+/// and owes no feedback.
+#[tokio::test]
+async fn a_respelled_section_the_writer_left_alone_owes_no_feedback() {
+    use crystalline_core::reflection as r;
+    let fx = crate::fixture::fixture_with(
+        &[
+            ("MANIFEST.md", &manifest("reflection: on\n")),
+            (
+                "runbooks/deploy.md",
+                &engram("Deploy", "runbooks/deploy", "- [fact] deploys run at night"),
+            ),
+        ],
+        |cfg, _| {
+            cfg.domains.get_mut("eng").unwrap().aliases = vec!["engineering".to_string()];
+        },
+    )
+    .await;
+    let mut p = write(
+        "a.md",
+        "# A\n\n## Night deploys\n\nSee [[eng:runbooks/deploy]].\n\n## Rollback\n\nRun the script.\n",
+    );
+    p.sources = BTreeMap::from([(
+        "Night deploys".to_string(),
+        vec!["runbooks/deploy".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    // The stored page and its baseline spell the alias, in sync: the state a
+    // page curated before the alias was declared is in.
+    let aliased = r::relink(&file(&fx, "a.md"), &file(&fx, ".reflected/a.md"), &|s| {
+        (
+            s.replace("[[eng:", "[[engineering:"),
+            s.matches("[[eng:").count(),
+        )
+    })
+    .unwrap();
+    std::fs::write(fx.root.join("reflections/a.md"), &aliased.page).unwrap();
+    std::fs::write(
+        fx.root.join("reflections/.reflected/a.md"),
+        &aliased.baseline,
+    )
+    .unwrap();
+    let night = r::split_sections(&aliased.page)[1].id.clone().unwrap();
+    let owed_before = r::feedback_changes(&aliased.page, &aliased.baseline).len();
+
+    let op = WriteReflectionParams {
+        domain: "eng".into(),
+        path: "a.md".into(),
+        operation: Some("replace_section".into()),
+        section: Some("## Rollback".into()),
+        content: Some("Run the script, then check the queue.".into()),
+        ..Default::default()
+    };
+    fx.engine.write_reflection(&op, &person()).await.unwrap();
+
+    let text = file(&fx, "a.md");
+    let baseline = file(&fx, ".reflected/a.md");
+    assert!(
+        text.contains("[[eng:runbooks/deploy]]") && baseline.contains("[[eng:runbooks/deploy]]"),
+        "{text}\n{baseline}"
+    );
+    let changes = r::feedback_changes(&text, &baseline);
+    assert!(
+        changes
+            .iter()
+            .all(|c| c.id.as_deref() != Some(night.as_str())),
+        "{changes:?}"
+    );
+    assert_eq!(
+        changes.len(),
+        owed_before,
+        "the respell owes no feedback: {changes:?}"
+    );
+    let prov = r::read_provenance(&text);
+    assert!(
+        prov[&night].changed_by.is_empty(),
+        "nobody changed the untouched section"
+    );
+}
+
+/// After a move landed, a page whose links cannot be rewritten is named in
+/// the receipt, and the move is not reported as failed.
+#[tokio::test]
+async fn a_page_that_cannot_be_relinked_is_named_in_the_move_receipt() {
+    let fx = reflecting().await;
+    fx.engine
+        .write_reflection(&write("a.md", PAGE), &person())
+        .await
+        .unwrap();
+    fx.engine
+        .write_reflection(&write("home.md", "# Home\n\nSee [a](a.md).\n"), &person())
+        .await
+        .unwrap();
+    // Not UTF-8 any more: the relink cannot read it.
+    std::fs::write(
+        fx.root.join("reflections/home.md"),
+        b"# Home\n\xff\xfe [a](a.md)\n",
+    )
+    .unwrap();
+    let moved = fx
+        .engine
+        .move_reflection("eng", "a.md", "b.md", &person())
+        .await
+        .unwrap();
+    assert!(fx.root.join("reflections/b.md").exists(), "the move landed");
+    assert_eq!(moved["links_rewritten"], 0, "{moved}");
+    assert_eq!(moved["links_failed"][0]["path"], "home.md", "{moved}");
 }
