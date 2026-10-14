@@ -5730,7 +5730,7 @@ mod domain_lookup_tests {
 // lists them in the order they stood in the single engine.rs.
 mod adopt_names;
 mod asset_home;
-pub(crate) use asset_home::{AssetHome, ReplaceRule};
+pub(crate) use asset_home::{AssetHome, ReplaceRule, WrittenAsset};
 mod attachments;
 mod close_folders;
 pub use close_folders::FolderProbe;
@@ -5756,10 +5756,12 @@ mod read;
 mod reflect;
 pub use reflect::REFLECT_GUIDANCE;
 mod reflection;
+mod reflection_assets;
 pub use reflection::{
     ANONYMOUS_COMMENT, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_OFF_START,
     REFUSED_PENDING, REFUSED_PENDING_NAMED,
 };
+pub use reflection_assets::WrittenReflectionAsset;
 mod rename_domain;
 mod review_mode;
 mod schemas;

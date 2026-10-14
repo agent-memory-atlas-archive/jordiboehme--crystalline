@@ -589,11 +589,15 @@ pub struct WriteReflectionParams {
     /// The domain whose Reflection to change.
     pub domain: String,
     /// write (the default: create or replace a reflection or PACT.md, or
-    /// change one section of it with operation), move, delete, or settle
-    /// (mark people's changes to sections as taken in or kept).
+    /// change one section of it with operation), move, delete, settle (mark
+    /// people's changes to sections as taken in or kept), move_asset or
+    /// delete_asset (move or remove a file under reflections/assets/; both
+    /// need curate access).
     #[serde(default)]
     pub action: Option<String>,
-    /// The reflection's path inside reflections/, ending in .md.
+    /// The reflection's path inside reflections/, ending in .md; for
+    /// move_asset and delete_asset the file's path inside reflections/, for
+    /// example assets/flow.png.
     pub path: String,
     /// write: the whole markdown of the reflection. Section ids (the
     /// <!-- r:... --> lines) are kept as they are and added under new ##
@@ -624,7 +628,8 @@ pub struct WriteReflectionParams {
     /// it: its reflected text moves to what you wrote.
     #[serde(default, deserialize_with = "null_as_default")]
     pub sources: BTreeMap<String, Vec<String>>,
-    /// move: the new path inside reflections/.
+    /// move: the new path inside reflections/; move_asset: the file's new
+    /// path inside reflections/, assets/...
     #[serde(default)]
     pub to: Option<String>,
     /// settle: the section ids whose change you settle.

@@ -46,7 +46,6 @@ pub const ROOM_WAITING_NOTE: &str = "your write is on disk; the open room has an
 #[derive(Debug, Clone)]
 pub(crate) struct ReflectionAccess {
     /// The domain root.
-    #[allow(dead_code)] // Read by the file verbs (Task 23).
     pub root: PathBuf,
     /// The Reflection's folder, in its spelling on disk
     /// ([`reflection_dir`]), resolved once per verb.
@@ -54,7 +53,6 @@ pub(crate) struct ReflectionAccess {
     /// The domain's index id.
     pub domain_id: DomainId,
     /// The caller's reflection right.
-    #[allow(dead_code)] // Read by the file verbs (Task 23).
     pub right: ReflectionRight,
     /// Whether the caller may read engrams here; source engrams are stripped
     /// from every answer when not.
@@ -808,8 +806,23 @@ impl Engine {
                 self.settle_reflection(&p.domain, &p.path, &p.sections, outcome, caller)
                     .await
             }
+            "move_asset" => {
+                let to = p.to.as_deref().ok_or_else(|| {
+                    EngineError::Invalid(
+                        "move_asset needs `to`, the file's new path inside reflections/ (assets/...)"
+                            .into(),
+                    )
+                })?;
+                self.move_reflection_asset(&p.domain, &p.path, to, caller)
+                    .await
+            }
+            "delete_asset" => {
+                self.reflection_asset_delete(&p.domain, &p.path, caller)
+                    .await?;
+                Ok(json!({ "domain": p.domain, "path": p.path, "deleted": true }))
+            }
             other => Err(EngineError::Invalid(format!(
-                "`{other}` is not a write_reflection action; use write, move, delete or settle"
+                "`{other}` is not a write_reflection action; use write, move, delete, settle, move_asset or delete_asset"
             ))),
         }
     }
@@ -901,6 +914,9 @@ impl Engine {
                 (edit.text, edit.heading_stripped)
             }
         };
+        // An engram attachment is copied into reflections/assets/
+        // first; a page that embeds one is refused, nothing written.
+        r::refuse_engram_attachments(&incoming, &p.path).map_err(EngineError::Invalid)?;
         // Rule 8: the canonical spellings, the funnel every engram write's text
         // passes through, over the body after the frontmatter. The stored
         // page and its baseline go through it too, as a link rewrite that is
@@ -1431,6 +1447,22 @@ impl Engine {
         // page is open; before the page lock, which a room's save takes.
         self.refuse_under_live_rooms(domain, &[RoomDoc::Reflection(from.to_string())])
             .await?;
+        // Every other page whose links the move rewrites waits too: a
+        // rewrite under an open room would race its next save. Read before
+        // anything moves, and relinked from this list below.
+        let rows = self
+            .store
+            .lock()
+            .await
+            .list_reflections(access.domain_id)
+            .await?;
+        let linking: Vec<RoomDoc> = rows
+            .iter()
+            .filter(|row| row.path != from && row.path != to)
+            .filter(|row| r::rewrite_links_to(&row.content, &row.path, from, to).1 > 0)
+            .map(|row| RoomDoc::Reflection(row.path.clone()))
+            .collect();
+        self.refuse_under_live_rooms(domain, &linking).await?;
         for path in [from, to] {
             r::validate_reflection_path(path).map_err(EngineError::Invalid)?;
         }
@@ -1506,28 +1538,15 @@ impl Engine {
         // landed by now, so a page that cannot be relinked is named in the
         // receipt (and the log) instead of failing a move that happened.
         let mut failed: Vec<Value> = Vec::new();
-        let mut note_failure = |path: Option<&str>, e: EngineError| {
+        let mut note_failure = |path: &str, e: EngineError| {
             tracing::warn!(
                 domain,
                 from,
                 to,
-                page = path.unwrap_or(""),
+                page = path,
                 "a link to the moved reflection could not be rewritten: {e}"
             );
             failed.push(json!({ "path": path, "reason": e.to_string() }));
-        };
-        let rows = match self
-            .store
-            .lock()
-            .await
-            .list_reflections(access.domain_id)
-            .await
-        {
-            Ok(rows) => rows,
-            Err(e) => {
-                note_failure(None, e.into());
-                Vec::new()
-            }
         };
         let mut links = 0;
         for row in rows.iter().filter(|row| row.path != from && row.path != to) {
@@ -1537,7 +1556,7 @@ impl Engine {
                 .await
             {
                 Ok(n) => links += n,
-                Err(e) => note_failure(Some(inner), e),
+                Err(e) => note_failure(inner, e),
             }
         }
         // The move and every page it relinked.

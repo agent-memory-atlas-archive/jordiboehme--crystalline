@@ -1599,6 +1599,44 @@ async fn an_agent_write_composes_into_an_open_reflection_room_and_a_move_waits()
     );
 }
 
+/// A rewrite never races a room: a file or a page cannot move while a page
+/// that links it is open, and a refused move changes nothing.
+#[tokio::test]
+async fn a_file_or_page_move_waits_while_a_page_that_links_it_is_open() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let dir = tmp.path().join("eng/reflections");
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("assets/a.png"), "png").unwrap();
+    std::fs::write(
+        dir.join("b.md"),
+        "# B\n\n![a](assets/a.png) and [page](guides/a.md)\n",
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join_reflection("eng", "b.md").await.unwrap();
+    let _doc = sync_client(&joined).await;
+    let owner = crystalline_service::ReflectionCaller::owner();
+    let err = engine
+        .move_reflection_asset("eng", "assets/a.png", "assets/c.png", &owner)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("somebody is editing 'b.md'"), "{err}");
+    assert!(
+        dir.join("assets/a.png").is_file(),
+        "a refused move changes nothing"
+    );
+    let err = engine
+        .move_reflection("eng", "guides/a.md", "c.md", &owner)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("somebody is editing 'b.md'"), "{err}");
+    assert!(dir.join("guides/a.md").is_file());
+}
+
 /// A page whose only frontmatter key is the bookkeeping block naming an
 /// engram: the riskiest round trip, since cutting the block drops the fences.
 const WITH_SOURCES: &str = "---\nreflection:\n  aaaa1111:\n    sources:\n      - engram: runbooks/deploy\n        checksum: 00ff\n    reflected: 11ee\n---\n\n# A\n\n## One\n<!-- r:aaaa1111 -->\n\nFirst.\n\n## Two\n<!-- r:bbbb2222 -->\n\nSecond.\n";

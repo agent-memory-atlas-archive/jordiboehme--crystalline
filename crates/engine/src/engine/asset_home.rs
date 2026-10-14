@@ -14,6 +14,10 @@ use crystalline_index::AssetTable;
 pub(crate) enum AssetHome {
     /// `assets/` at the domain root: the engram attachments.
     Engram,
+    /// `reflections/assets/`: a Reflection's files. Rows in
+    /// `reflection_asset`, a change marks the backup branch, never the evolve
+    /// sweep, and a virtual domain has none (a Reflection needs files).
+    Reflection,
 }
 
 impl AssetHome {
@@ -21,6 +25,7 @@ impl AssetHome {
     pub(crate) fn table(self) -> AssetTable {
         match self {
             AssetHome::Engram => AssetTable::Engram,
+            AssetHome::Reflection => AssetTable::Reflection,
         }
     }
 
@@ -28,6 +33,7 @@ impl AssetHome {
     pub(crate) fn kind(self) -> ContentKind {
         match self {
             AssetHome::Engram => ContentKind::Engram,
+            AssetHome::Reflection => ContentKind::Reflection,
         }
     }
 
@@ -40,16 +46,34 @@ impl AssetHome {
     fn missing(self, domain: &str, path: &str) -> String {
         match self {
             AssetHome::Engram => missing_attachment(domain, path),
+            AssetHome::Reflection => {
+                format!("no file '{path}' in the Reflection of '{domain}'")
+            }
         }
+    }
+
+    /// What one file of the home is called in a log line.
+    fn noun(self) -> &'static str {
+        match self {
+            AssetHome::Engram => "attachment",
+            AssetHome::Reflection => "Reflection file",
+        }
+    }
+
+    /// The answer for a virtual domain, which keeps no Reflection.
+    fn no_virtual(self) -> EngineError {
+        EngineError::Invalid(
+            "a Reflection lives in a file domain; a virtual domain has no reflections/".into(),
+        )
     }
 }
 
 /// Whether a write may replace a file that is already there.
+#[derive(Debug)]
 pub(crate) enum ReplaceRule {
     /// It may.
     Allow,
     /// It may not, and the caller is told this sentence (`Forbidden`).
-    #[allow(dead_code)] // Task 23 uses it (the Reflection file replace), and removes this line
     Refuse(String),
 }
 
@@ -59,7 +83,6 @@ pub(crate) struct WrittenAsset {
     /// The row that now describes the file.
     pub row: AttachmentRow,
     /// Whether the path held no file before.
-    #[allow(dead_code)] // Task 23 uses it (the Reflection file write), and removes this line
     pub created: bool,
 }
 
@@ -98,7 +121,7 @@ impl Engine {
         validate_attachment_path(path)?;
         let (domain_id, source) = self.domain_source(domain).await?;
         match (home, &source) {
-            (AssetHome::Engram, ContentSource::File { root }) => {
+            (AssetHome::Engram | AssetHome::Reflection, ContentSource::File { root }) => {
                 let abs = contained_asset_path(root, &home.domain_rel(path))?;
                 // The stat comes first so an over-cap file is refused without
                 // ever being read: the ceiling is enforced by the walker (which
@@ -165,6 +188,7 @@ impl Engine {
                     .ok_or_else(|| EngineError::NotFound(home.missing(domain, path)))?;
                 Ok((bytes, row))
             }
+            (AssetHome::Reflection, ContentSource::Virtual) => Err(home.no_virtual()),
         }
     }
 
@@ -211,13 +235,18 @@ impl Engine {
         }
         let (domain_id, source) = self.domain_source(domain).await?;
         let written = match (home, &source) {
-            (AssetHome::Engram, ContentSource::File { root }) => {
+            (AssetHome::Engram | AssetHome::Reflection, ContentSource::File { root }) => {
                 let abs = contained_asset_path(root, &home.domain_rel(path))?;
                 // Held across the write and the row upsert, the file lock
                 // before the store lock like every other writer here. See
                 // `Engine::write_lock`.
                 let lock = self.write_lock(&abs);
                 let _guard = lock.lock().await;
+                // The disk decides whether the path holds a file, not the
+                // row: a file that arrived with no sync yet has none, and a
+                // refused replace must still see it. The atomic write's rename
+                // cannot report what it replaced, so this one stat stays, under
+                // the lock so no racing write can slip in after it.
                 let existed = abs.is_file();
                 if existed && let ReplaceRule::Refuse(sentence) = &replace {
                     return Err(EngineError::Forbidden(sentence.clone()));
@@ -274,7 +303,8 @@ impl Engine {
                     };
                     if let Some(failed) = undone {
                         tracing::warn!(
-                            "attachment '{path}' in '{domain}' could not be rolled back after a failed blob write: {failed}"
+                            "{} '{path}' in '{domain}' could not be rolled back after a failed blob write: {failed}",
+                            home.noun()
                         );
                     }
                     return Err(e.into());
@@ -284,6 +314,7 @@ impl Engine {
                     created: previous.is_none(),
                 }
             }
+            (AssetHome::Reflection, ContentSource::Virtual) => return Err(home.no_virtual()),
         };
         self.after_asset_change(home, domain);
         Ok(written)
@@ -310,7 +341,7 @@ impl Engine {
         let (domain_id, source) = self.domain_source(domain).await?;
         let mut file_removed = false;
         match (home, &source) {
-            (AssetHome::Engram, ContentSource::File { root }) => {
+            (AssetHome::Engram | AssetHome::Reflection, ContentSource::File { root }) => {
                 let abs = contained_asset_path(root, &home.domain_rel(path))?;
                 let lock = self.write_lock(&abs);
                 let _guard = lock.lock().await;
@@ -326,6 +357,7 @@ impl Engine {
                 }
             }
             (AssetHome::Engram, ContentSource::Virtual) => {}
+            (AssetHome::Reflection, ContentSource::Virtual) => return Err(home.no_virtual()),
         }
         let row_removed = {
             let store = self.store.lock().await;
@@ -338,12 +370,101 @@ impl Engine {
         Ok(())
     }
 
+    /// Move a file of `home` from `from` to `to` (paths inside the home's
+    /// root), and its row with it. Refuses a destination that holds a file,
+    /// so a move never overwrites. Both file locks are taken in byte order,
+    /// so two crossing moves cannot wait on each other. Links to the file
+    /// are the caller's: the substrate moves bytes and rows only.
+    pub(crate) async fn asset_move_in(
+        &self,
+        home: AssetHome,
+        domain: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<AttachmentRow> {
+        if self.read_only {
+            return Err(EngineError::ReadOnly);
+        }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
+        validate_attachment_path(from)?;
+        validate_attachment_path(to)?;
+        let (domain_id, source) = self.domain_source(domain).await?;
+        let ContentSource::File { root } = &source else {
+            return Err(match home {
+                AssetHome::Reflection => home.no_virtual(),
+                AssetHome::Engram => {
+                    EngineError::Invalid(format!("a move of '{from}' needs a file domain"))
+                }
+            });
+        };
+        let src = contained_asset_path(root, &home.domain_rel(from))?;
+        let dst = contained_asset_path(root, &home.domain_rel(to))?;
+        if src == dst {
+            return Err(EngineError::Invalid(format!(
+                "'{from}' already is at '{to}'"
+            )));
+        }
+        let row = {
+            let (first, second) = if src < dst {
+                (&src, &dst)
+            } else {
+                (&dst, &src)
+            };
+            let first = self.write_lock(first);
+            let second = self.write_lock(second);
+            let _first = first.lock().await;
+            // Two spellings of one file (a letter-case rename on a
+            // case-insensitive disk) share one lock: taken once, never twice.
+            let _second = if Arc::ptr_eq(&first, &second) {
+                None
+            } else {
+                Some(second.lock().await)
+            };
+            if !src.is_file() {
+                return Err(EngineError::NotFound(home.missing(domain, from)));
+            }
+            if dst.exists() {
+                return Err(EngineError::Conflict(format!(
+                    "'{to}' already holds a file; remove it first or pick another name"
+                )));
+            }
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent).map_err(|source| EngineError::Io {
+                    path: parent.display().to_string(),
+                    source,
+                })?;
+            }
+            std::fs::rename(&src, &dst).map_err(|source| EngineError::Io {
+                path: dst.display().to_string(),
+                source,
+            })?;
+            let bytes = std::fs::read(&dst).map_err(|source| EngineError::Io {
+                path: dst.display().to_string(),
+                source,
+            })?;
+            attachment_row(to, &bytes, asset_modified(&dst))?
+        };
+        {
+            let store = self.store.lock().await;
+            store.delete_asset(home.table(), domain_id, from).await?;
+            store.upsert_asset(home.table(), domain_id, &row).await?;
+        }
+        self.after_asset_change(home, domain);
+        Ok(row)
+    }
+
     /// What a change to a file of `home` owes afterwards.
     fn after_asset_change(&self, home: AssetHome, domain: &str) {
         match home {
             // A human just added something the agent has not read yet, which
             // is exactly what a consolidation sweep is for.
             AssetHome::Engram => crate::maintenance::record_pending(domain),
+            // A Reflection's file is the backup branch's business, never the
+            // evolve sweep's (D4).
+            AssetHome::Reflection => {
+                self.mark_reflection_dirty(domain, crate::reflection_backup::BackupCause::Settled)
+            }
         }
     }
 }
@@ -360,5 +481,15 @@ mod tests {
             "assets/flow.png"
         );
         assert_eq!(AssetHome::Engram.kind(), ContentKind::Engram);
+    }
+
+    #[test]
+    fn the_reflection_home_is_assets_under_reflections() {
+        assert_eq!(AssetHome::Reflection.table(), AssetTable::Reflection);
+        assert_eq!(
+            AssetHome::Reflection.domain_rel("assets/flow.png"),
+            "reflections/assets/flow.png"
+        );
+        assert_eq!(AssetHome::Reflection.kind(), ContentKind::Reflection);
     }
 }

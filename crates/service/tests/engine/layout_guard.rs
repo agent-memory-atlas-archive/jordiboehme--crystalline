@@ -150,6 +150,7 @@ fn reflection_variants_stay_in_their_modules() {
                 "index/src/sync.rs",
                 "engine/src/engine/reflect.rs",
                 "engine/src/engine/reflection.rs",
+                "engine/src/engine/reflection_assets.rs",
                 "engine/src/engine/rename_domain.rs",
                 "engine/src/engine/threads.rs",
             ],
@@ -161,6 +162,7 @@ fn reflection_variants_stay_in_their_modules() {
                 "index/src/turso/mod.rs",
                 "index/src/postgres/mod.rs",
                 "index/src/sync.rs",
+                "engine/src/engine/asset_home.rs",
             ],
         ),
         (
@@ -168,7 +170,16 @@ fn reflection_variants_stay_in_their_modules() {
             &[
                 "engine/src/collab/session.rs",
                 "engine/src/engine/reflection.rs",
+                "engine/src/engine/reflection_assets.rs",
                 "engine/src/engine/move_.rs",
+            ],
+        ),
+        (
+            "AssetHome::Reflection",
+            &[
+                "engine/src/engine/asset_home.rs",
+                "engine/src/engine/reflection_assets.rs",
+                "engine/src/engine/reflect.rs",
             ],
         ),
     ];

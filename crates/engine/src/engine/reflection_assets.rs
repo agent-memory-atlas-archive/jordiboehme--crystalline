@@ -1,0 +1,159 @@
+//! A Reflection's files: `reflections/assets/`, under the Reflection's own
+//! rights. A reader reads them, a contributor adds a new one, a
+//! curator replaces, moves and removes. Knowledge rights play no part.
+//!
+//! The byte rules, the write, the read and its row heal are the asset
+//! substrate's, the engram attachments' own code, with the Reflection's
+//! home: its folder, its table, and a change that marks the backup branch.
+
+use crystalline_core::reflection as r;
+
+use super::*;
+use crate::collab::session::RoomDoc;
+use crate::scope::{ReflectionCaller, ReflectionRight, reflection_right_word};
+
+/// What an upload into a Reflection landed as.
+#[derive(Debug, Clone)]
+pub struct WrittenReflectionAsset {
+    /// The row that now describes the file.
+    pub row: AttachmentRow,
+    /// Whether the path held no file before.
+    pub created: bool,
+}
+
+impl Engine {
+    /// Every file of a domain's Reflection, metadata only, ordered by path.
+    pub async fn reflection_asset_list(
+        &self,
+        domain: &str,
+        caller: &ReflectionCaller,
+    ) -> Result<Vec<AttachmentRow>> {
+        self.require_reflection(domain, caller, ReflectionRight::Read)
+            .await?;
+        self.asset_list_in(AssetHome::Reflection, domain).await
+    }
+
+    /// One file's bytes and its row, the row healed from the file when they
+    /// disagree (into the Reflection's own table).
+    pub async fn reflection_asset_read(
+        &self,
+        domain: &str,
+        path: &str,
+        caller: &ReflectionCaller,
+    ) -> Result<(Vec<u8>, AttachmentRow)> {
+        self.require_reflection(domain, caller, ReflectionRight::Read)
+            .await?;
+        self.asset_read_in(AssetHome::Reflection, domain, path)
+            .await
+    }
+
+    /// Add a file, or replace one (replacing destroys the old bytes,
+    /// so it needs curate; the check runs under the file's lock).
+    pub async fn reflection_asset_write(
+        &self,
+        domain: &str,
+        path: &str,
+        bytes: Vec<u8>,
+        caller: &ReflectionCaller,
+    ) -> Result<WrittenReflectionAsset> {
+        let access = self
+            .require_reflection(domain, caller, ReflectionRight::Edit)
+            .await?;
+        let replace = if access.right >= ReflectionRight::Curate {
+            ReplaceRule::Allow
+        } else {
+            ReplaceRule::Refuse(format!(
+                "'{path}' already holds a file, and replacing it removes that file: your access to the Reflection of '{domain}' is {}, and curate is needed; upload it under a new name instead",
+                reflection_right_word(access.right)
+            ))
+        };
+        let written: WrittenAsset = self
+            .asset_write_in(AssetHome::Reflection, domain, path, bytes, replace)
+            .await?;
+        Ok(WrittenReflectionAsset {
+            row: written.row,
+            created: written.created,
+        })
+    }
+
+    /// Remove a file and its row. A reflection that still links it keeps
+    /// the link; the reflect queue names it as missing.
+    pub async fn reflection_asset_delete(
+        &self,
+        domain: &str,
+        path: &str,
+        caller: &ReflectionCaller,
+    ) -> Result<()> {
+        self.require_reflection(domain, caller, ReflectionRight::Curate)
+            .await?;
+        self.asset_delete_in(AssetHome::Reflection, domain, path)
+            .await
+    }
+
+    /// Move or rename a file inside `reflections/assets/` and rewrite every
+    /// reflection (PACT.md included) that links it. The rewrite is not a
+    /// person's change, so it owes no feedback.
+    pub async fn move_reflection_asset(
+        &self,
+        domain: &str,
+        from: &str,
+        to: &str,
+        caller: &ReflectionCaller,
+    ) -> Result<Value> {
+        let access = self
+            .require_reflection(domain, caller, ReflectionRight::Curate)
+            .await?;
+        // Every page the move will rewrite, checked against open rooms before
+        // anything moves: a refused move changes nothing.
+        let pages = self
+            .store
+            .lock()
+            .await
+            .list_reflections(access.domain_id)
+            .await?;
+        let linking: Vec<RoomDoc> = pages
+            .iter()
+            .filter(|page| r::rewrite_asset_links(&page.content, &page.path, from, to).1 > 0)
+            .map(|page| RoomDoc::Reflection(page.path.clone()))
+            .collect();
+        self.refuse_under_live_rooms(domain, &linking).await?;
+        self.asset_move_in(AssetHome::Reflection, domain, from, to)
+            .await?;
+        // The file has moved by now, so a page that cannot be relinked is
+        // named in the receipt (and the log) instead of failing a move that
+        // happened, as a page move does.
+        let mut links = 0;
+        let mut failed: Vec<Value> = Vec::new();
+        for page in &pages {
+            let inner = page.path.as_str();
+            match self
+                .relink_reflection(&access, inner, &|s| {
+                    r::rewrite_asset_links(s, inner, from, to)
+                })
+                .await
+            {
+                Ok(n) => links += n,
+                Err(e) => {
+                    tracing::warn!(
+                        domain,
+                        from,
+                        to,
+                        page = inner,
+                        "a link to the moved file could not be rewritten: {e}"
+                    );
+                    failed.push(json!({ "path": inner, "reason": e.to_string() }));
+                }
+            }
+        }
+        if links > 0 {
+            // The pages the move relinked, after the file's own mark.
+            self.mark_reflection_dirty(domain, crate::reflection_backup::BackupCause::Settled);
+        }
+        let mut receipt =
+            json!({ "domain": domain, "from": from, "to": to, "links_rewritten": links });
+        if !failed.is_empty() {
+            receipt["links_failed"] = json!(failed);
+        }
+        Ok(receipt)
+    }
+}

@@ -6,12 +6,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crystalline_core::reflection::{self as r, ReflectionState, Structure};
 use crystalline_core::threads::{self as th, SectionRef, ThreadStatus, Waiting};
 
-use super::reflection::{EngramFact, ReflectionAccess, source_state, source_view, thread_view};
+use super::reflection::{
+    EngramFact, ReflectionAccess, reflection_abs, source_state, source_view, thread_view,
+};
 use super::*;
 use crate::scope::{ReflectionCaller, ReflectionRight};
 
 /// How an agent works the queue, returned with every page.
-pub const REFLECT_GUIDANCE: &str = "Work feedback items first: read what the person changed and decide - take it into the engrams (change them, then write_reflection the section with its sources), keep it as their text (write_reflection action=settle outcome=kept), or answer it in a thread (discuss with answers_feedback). Then update items: bring changed engrams into their sections and write them with sources; cover unreflected engrams with a new section or reflection; move pages the pact's structure does not fit; apply a changed pact to the pages it affects. Answer review threads in plain words - the people reading them may not see engrams.";
+pub const REFLECT_GUIDANCE: &str = "Work feedback items first: read what the person changed and decide - take it into the engrams (change them, then write_reflection the section with its sources), keep it as their text (write_reflection action=settle outcome=kept), or answer it in a thread (discuss with answers_feedback). Then update items: bring changed engrams into their sections and write them with sources; cover unreflected engrams with a new section or reflection; move pages the pact's structure does not fit; apply a changed pact to the pages it affects. Files under reflections/assets/: link an unreferenced file from the section it belongs to, or remove it with write_reflection action=delete_asset (ask first: removing is irreversible); for a missing file, ask a person to add it or correct the link; an engram attachment cannot be embedded, so ask a person to copy the file into reflections/assets/ and point the link there. Answer review threads in plain words - the people reading them may not see engrams.";
 
 const DEFAULT_LIMIT: usize = 10;
 const MAX_LIMIT: usize = 100;
@@ -277,6 +279,65 @@ impl Engine {
                     extra: json!({ "structure": pact_globs }),
                 });
             }
+        }
+        // A Reflection's files: a reference to a file that is not
+        // there, an engram attachment embedded outside Crystalline (a plain
+        // editor, a room), and a file no page links. Reflections and
+        // PACT.md are the pages that count; threads and the baseline never do.
+        let assets = self.asset_list_in(AssetHome::Reflection, domain).await?;
+        let stored: HashSet<&str> = assets.iter().map(|a| a.path.as_str()).collect();
+        let mut referenced: HashSet<String> = HashSet::new();
+        for row in &rows {
+            let row_age = secs_since_rfc3339(Some(&row.modified)).unwrap_or(0);
+            for section in r::split_sections(&row.content) {
+                let mut missing: Vec<String> = Vec::new();
+                for asset in r::reflection_asset_refs(&section.text, &row.path) {
+                    // The disk too, so a file the walker has not indexed yet
+                    // is not reported.
+                    let there = stored.contains(asset.as_str())
+                        || reflection_abs(&access.root, &asset).is_file();
+                    if !there {
+                        missing.push(asset.clone());
+                    }
+                    referenced.insert(asset);
+                }
+                let embedded = r::engram_attachment_embeds(&section.text, &row.path);
+                for (what, key, list) in [
+                    ("asset_missing", "assets", missing),
+                    ("engram_attachment", "targets", embedded),
+                ] {
+                    if list.is_empty() {
+                        continue;
+                    }
+                    let mut extra = serde_json::Map::new();
+                    extra.insert(key.to_string(), json!(list));
+                    items.push(Item {
+                        kind: "update",
+                        what,
+                        domain: domain.to_string(),
+                        path: row.path.clone(),
+                        section: section.id.clone(),
+                        heading: section.heading.clone(),
+                        age_secs: row_age,
+                        extra: Value::Object(extra),
+                    });
+                }
+            }
+        }
+        for asset in &assets {
+            if referenced.contains(&asset.path) {
+                continue;
+            }
+            items.push(Item {
+                kind: "update",
+                what: "asset_unreferenced",
+                domain: domain.to_string(),
+                path: String::new(),
+                section: None,
+                heading: String::new(),
+                age_secs: secs_since_rfc3339(Some(&asset.modified)).unwrap_or(0),
+                extra: json!({ "asset": asset.path }),
+            });
         }
         let mut loose: BTreeMap<String, Vec<&EngramFact>> = BTreeMap::new();
         for fact in facts.values() {
