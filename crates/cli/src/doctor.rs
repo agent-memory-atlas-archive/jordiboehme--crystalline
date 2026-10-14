@@ -2983,12 +2983,10 @@ fn markdown_rel_paths(root: &Path, layout: &DomainLayout) -> Vec<String> {
         let rel = relative_slash_path(root, entry.path());
         // The OKF reserved names are never indexed (the sync walk skips them),
         // so counting them would report every generated index file as
-        // unindexed. Markdown under assets/ is still counted here, as it
-        // always was.
-        let markdown = rel.to_lowercase().ends_with(".md");
+        // unindexed. Markdown under assets/ is an attachment, never an
+        // engram, so it is left out too.
         match layout.classify(&rel) {
             PathClass::Engram => out.push(rel),
-            PathClass::EngramAsset if markdown => out.push(rel),
             PathClass::Artifact
             | PathClass::EngramAsset
             | PathClass::Reserved
@@ -7841,6 +7839,23 @@ mod tests {
 
     const OLDER: &str = "2026-09-01T10:00:00+00:00";
     const NEWER: &str = "2026-09-20T10:00:00+00:00";
+
+    #[tokio::test]
+    async fn markdown_under_assets_is_not_listed_as_an_unindexed_engram() {
+        // The sync keeps `assets/` for attachments: a Markdown file there is
+        // never an engram, so it must not show up as one waiting to be synced.
+        let files = vec![
+            (S_PATH, review_standards("The rule.", NEWER)),
+            (
+                "assets/notes.md",
+                "# Attached notes\n\nNot an engram.\n".to_string(),
+            ),
+        ];
+        let (_dir, d) = stray_doctor(&files, None, |_| {}, false, false).await;
+        assert!(d.index_checked);
+        assert!(d.unindexed.is_empty(), "{:?}", d.unindexed);
+        assert!(d.orphans.is_empty(), "{:?}", d.orphans);
+    }
 
     #[tokio::test]
     async fn a_stray_copy_is_found_and_split_out_of_unindexed() {
