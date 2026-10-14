@@ -302,6 +302,10 @@ const WRITE_TOOLS: [&str; 7] = [
 /// `refuse_unwritable`.
 const REFLECTION_WRITE_TOOLS: [&str; 3] = ["reflect", "write_reflection", "discuss"];
 
+/// The four Reflection tools, whose engine refusals MCP answers as
+/// call-time refusals (`McpServer::reflection_refused`).
+const REFLECTION_TOOLS: [&str; 4] = ["reflect", "read_reflection", "write_reflection", "discuss"];
+
 /// Whether a tool name is one of the write-gated tools (hidden in read-only
 /// mode).
 fn is_write_tool(name: &str) -> bool {
@@ -1932,12 +1936,15 @@ impl McpServer {
     }
 
     /// A reflection verb's error as MCP answers it: the gate's refusals (the
-    /// Reflection is off, pending, homeless or lives elsewhere, and a right
-    /// too low) are call-time refusals the agent reads (V1); every other
-    /// error maps as `to_error` maps it.
+    /// Reflection is off, pending, homeless or lives elsewhere, a right too
+    /// low or capped by the write list) and a read-only domain are call-time
+    /// refusals the agent reads (V1); every other error maps as `to_error`
+    /// maps it.
     fn reflection_refused(e: EngineError) -> Result<CallToolResult, ErrorData> {
         match e {
-            EngineError::Refused(text) | EngineError::Forbidden(text) => refuse(text),
+            EngineError::Refused(text)
+            | EngineError::Forbidden(text)
+            | EngineError::DomainReadOnly(text) => refuse(text),
             other => Err(to_error(other)),
         }
     }
@@ -2105,10 +2112,13 @@ impl McpServer {
             Ok(value) => self.render_routed(tool, value),
             // The local part of a sweep failed, or this machine refused: the
             // shape a local call gets.
-            Err(crate::route::RouteError::Local(e)) => Err(match e.downcast::<EngineError>() {
-                Ok(engine) => to_error(engine),
-                Err(e) => ErrorData::internal_error(format!("{e:#}"), None),
-            }),
+            Err(crate::route::RouteError::Local(e)) => match e.downcast::<EngineError>() {
+                // A Reflection tool's local refusal reads as its local
+                // handler answers it: a call-time refusal.
+                Ok(engine) if REFLECTION_TOOLS.contains(&tool) => Self::reflection_refused(engine),
+                Ok(engine) => Err(to_error(engine)),
+                Err(e) => Err(ErrorData::internal_error(format!("{e:#}"), None)),
+            },
             Err(other) => refuse(other.to_string()),
         })
     }
@@ -2635,7 +2645,9 @@ fn remote_reflection_caller(caller: &Caller) -> ReflectionCaller {
 /// its own words, everything else as `to_error` maps it.
 fn remote_engine(e: EngineError) -> RemoteToolError {
     match e {
-        EngineError::Refused(text) | EngineError::Forbidden(text) => RemoteToolError::Refused(text),
+        EngineError::Refused(text)
+        | EngineError::Forbidden(text)
+        | EngineError::DomainReadOnly(text) => RemoteToolError::Refused(text),
         other => remote_failed(to_error(other)),
     }
 }
@@ -3188,7 +3200,7 @@ impl McpServer {
     #[tool(
         name = "discuss",
         title = "Discuss",
-        description = "Discuss a passage of a reflection with the people who read it, the way comments work on a shared document. The Reflection is a domain's documents for people under reflections/, where its MANIFEST says reflection: on. open a thread on a section (by id or heading) or on an exact quoted passage, answer it, resolve it with a short outcome, reopen it, or list threads. Use it to ask about or disagree with a person's change instead of overwriting it (answers_feedback marks their feedback item as answered while the thread is open), and to answer the review items reflect returns. Write for people in plain words: contributors cannot see engrams, so engram links in your text are refused. Write each comment as a conventional comment: a first line `<label> [decorations]: <subject>`, then an optional discussion, with the label one of praise, nitpick, suggestion, issue, todo, question, thought, chore or note and the decorations blocking, non-blocking or if-minor (for example `question (non-blocking): is this still true after the migration?`). A resolved thread's history never changes; a reopen is a new entry. Anyone who can read the Reflection may discuss. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
+        description = "Discuss a passage of a reflection with the people who read it, the way comments work on a shared document. The Reflection is a domain's documents for people under reflections/, where its MANIFEST says reflection: on. open a thread on a section (by id or heading) or on an exact quoted passage, answer it, resolve it with a short outcome, reopen it, or list threads. Use it to ask about or disagree with a person's change instead of overwriting it (answers_feedback marks their feedback item as answered while the thread is open), and to answer the review items reflect returns. Write for people in plain words: contributors cannot see engrams, so engram links in your text are refused. Write each comment as a conventional comment: a first line `<label> [decorations]: <subject>`, then an optional discussion, with the label one of praise, nitpick, suggestion, issue, todo, question, thought, chore or note and the decorations blocking, non-blocking or if-minor (for example `question (non-blocking): is this still true after the migration?`). A thread opened on a heading that has no id yet keeps that heading text as its anchor section, so a thread's section is an id or a heading. A resolved thread's history never changes; a reopen is a new entry. Anyone who can read the Reflection may discuss. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

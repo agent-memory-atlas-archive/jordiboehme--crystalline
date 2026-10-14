@@ -695,3 +695,31 @@ async fn the_reflection_tools_reach_a_mounted_domain_over_stdio_with_the_account
         "the server's refusal word for word: {refused}"
     );
 }
+
+/// A `reflect` that names a local domain and a mounted one fans out, and a
+/// refusal of the local part reads as the local handler answers it: a
+/// call-time refusal with the sentence, never a protocol error.
+#[tokio::test]
+async fn a_routed_reflect_refuses_its_local_part_at_call_time() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    let mut params = CallToolRequestParams::new("reflect");
+    if let Value::Object(map) = json!({ "domains": ["notes", "open"] }) {
+        params = params.with_arguments(map);
+    }
+    let result = client
+        .peer()
+        .call_tool(params)
+        .await
+        .expect("a refusal, not a protocol error");
+    let result = serde_json::to_value(&result).unwrap();
+    assert_eq!(result["isError"], true, "{result}");
+    let text = result
+        .pointer("/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(text.contains("Reflection is off for 'notes'"), "{text}");
+}

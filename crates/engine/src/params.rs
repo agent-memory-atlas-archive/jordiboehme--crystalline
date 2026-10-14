@@ -703,6 +703,15 @@ pub struct ReflectParams {
     /// One-based page number. Defaults to 1.
     #[serde(default)]
     pub page: Option<usize>,
+    /// Treat the named `domains` the way an unnamed queue treats every
+    /// domain: one the caller cannot work, or whose Reflection is not in
+    /// effect, is left out instead of refused. Set only by a connected
+    /// machine asking a server for exactly the domains it mounts from it, so
+    /// the server's counts and pages cover the rows shown there; never in
+    /// the MCP schema.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schemars(skip)]
+    pub skip_unavailable: bool,
 }
 
 /// Parameters for `configure`. Omit everything to see the current settings,

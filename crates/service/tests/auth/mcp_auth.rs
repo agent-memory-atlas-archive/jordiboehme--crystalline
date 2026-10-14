@@ -1907,6 +1907,60 @@ async fn an_instance_account_with_knowledge_none_gets_nothing_from_engram_tools_
     assert!(refused.contains("is read, and edit is needed"), "{refused}");
 }
 
+/// **R18: the write list caps the Reflection.** An editor whose write list
+/// leaves a shared domain out reads and comments on its Reflection, and an
+/// edit comes back as a call-time refusal naming the list and its fix.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_write_list_caps_the_reflection_at_call_time() {
+    let ctx = mcp_ctx(true).await;
+    ctx.store
+        .set_write_list("mem", &["second".to_string()])
+        .await
+        .unwrap();
+    ctx.switch_reflection_on("open").await;
+    ctx.engine
+        .write_reflection(
+            &crystalline_service::params::WriteReflectionParams {
+                domain: "open".into(),
+                path: "a.md".into(),
+                markdown: Some("# A\n\n## One\n\nText for people.\n".into()),
+                ..Default::default()
+            },
+            &crystalline_service::ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+    let token = ctx.token_for("mem").await;
+    let session = McpTestSession::open(&ctx.addr, Some(&token)).await;
+    let refused = session
+        .call_tool(
+            "write_reflection",
+            serde_json::json!({ "domain": "open", "path": "a.md", "markdown": "# A\n" }),
+        )
+        .await;
+    assert_eq!(
+        payload_of(&refused)["result"]["isError"],
+        true,
+        "a call-time refusal:\n{refused}"
+    );
+    let refused = answer_of(&refused).expect_err("an off-list editor does not edit");
+    assert!(
+        refused.contains("'open' is not on the write list of 'mem'"),
+        "{refused}"
+    );
+    let opened = session
+        .call_tool(
+            "discuss",
+            serde_json::json!({ "domain": "open", "path": "a.md", "section": "One", "text": "question: may I change this?" }),
+        )
+        .await;
+    let thread = answer_of(&opened).unwrap_or_else(|e| panic!("an off-list editor comments: {e}"));
+    assert!(
+        thread["id"].as_str().is_some_and(|id| id.starts_with("t-")),
+        "{thread}"
+    );
+}
+
 /// **The legacy open tier keeps working**: with `auth.mcp` off an agent
 /// with no account curates the Reflection of every domain it can see, and a
 /// private domain's Reflection stays as invisible to it as its engrams.

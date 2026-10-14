@@ -454,7 +454,9 @@ impl Engine {
                 )));
             }
         }
-        let named = !p.domains.is_empty();
+        // A named domain that cannot be worked is refused, unless the caller
+        // asked for the unnamed queue's leniency over its names.
+        let named = !p.domains.is_empty() && !p.skip_unavailable;
         let mut items = Vec::new();
         let mut swept = Vec::new();
         let mut visible_everywhere = true;

@@ -8755,3 +8755,128 @@ async fn an_agent_edits_one_section_of_a_reflection_over_mcp() {
         "the other section is untouched: {after}"
     );
 }
+
+/// The refusal text a reflection tool call comes back with, asserting it is
+/// a call-time refusal (`isError`), never a protocol error.
+async fn reflection_refusal(peer: &Peer<RoleClient>, tool: &str, args: Value) -> String {
+    let result = serde_json::to_value(call_result(peer, tool, args).await).unwrap();
+    assert_eq!(result["isError"], true, "{tool}: {result}");
+    result
+        .pointer("/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// A domain with `read_only: on` keeps its Reflection readable, and a write
+/// or a thread comes back as a call-time refusal naming the switch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_only_domain_refuses_reflection_writes_at_call_time() {
+    let h = Harness::new(&["eng"]).await;
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    call(
+        peer,
+        "write_reflection",
+        json!({ "domain": "eng", "path": "a.md", "markdown": "# A\n\n## One\n\nText.\n" }),
+    )
+    .await
+    .unwrap();
+    let path = h.root.join("eng/MANIFEST.md");
+    let manifest = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("reflection: on\n", "reflection: on\nread_only: on\n");
+    std::fs::write(&path, manifest).unwrap();
+    h.engine.sync(None).await.unwrap();
+    for (tool, args) in [
+        (
+            "write_reflection",
+            json!({ "domain": "eng", "path": "a.md", "markdown": "# A\n\n## One\n\nOther.\n" }),
+        ),
+        (
+            "discuss",
+            json!({ "domain": "eng", "path": "a.md", "section": "One", "text": "question: still true?" }),
+        ),
+    ] {
+        let text = reflection_refusal(peer, tool, args).await;
+        assert!(
+            text.contains("'eng' is read-only; its owner switches read_only off"),
+            "{tool}: {text}"
+        );
+    }
+    let page = call(
+        peer,
+        "read_reflection",
+        json!({ "domain": "eng", "path": "a.md" }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        page["markdown"]
+            .as_str()
+            .is_some_and(|m| m.contains("Text.")),
+        "{page}"
+    );
+}
+
+/// Every state the Reflection gate refuses in reaches the agent as a
+/// call-time refusal with its own sentence: an engram still waiting in
+/// reflections/, a GitHub domain with no home, a home on another server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_reflection_gate_states_are_call_time_refusals() {
+    // Pending: an engram lives in reflections/ when the switch goes on.
+    let h = Harness::new(&["eng"]).await;
+    std::fs::create_dir_all(h.root.join("eng/reflections")).unwrap();
+    std::fs::write(
+        h.root.join("eng/reflections/old.md"),
+        "---\ntype: engram\ntitle: Old\npermalink: reflections/old\nstatus: current\nrecorded_at: 2026-01-01\n---\n\n# Old\n\n- [fact] old\n",
+    )
+    .unwrap();
+    // Indexed as an engram first, then the switch goes on.
+    h.engine.sync(None).await.unwrap();
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let text =
+        reflection_refusal(client.peer(), "read_reflection", json!({ "domain": "eng" })).await;
+    assert!(
+        text.contains("Reflection for 'eng' waits until these engrams leave reflections/"),
+        "{text}"
+    );
+
+    // Homeless: a GitHub team domain whose Reflection has no home yet.
+    let h = Harness::build_tweaked(&["eng"], false, true, |cfg, _| {
+        cfg.domains.get_mut("eng").unwrap().origin = Some(crystalline_core::config::OriginConfig {
+            repo: "acme/kb".into(),
+            path: None,
+            branch: None,
+            poll_secs: None,
+        });
+    })
+    .await;
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let text = reflection_refusal(client.peer(), "reflect", json!({ "domains": ["eng"] })).await;
+    assert!(text.contains("its Reflection has no home yet"), "{text}");
+
+    // Elsewhere: the MANIFEST names another server as the home.
+    let h = Harness::new(&["eng"]).await;
+    let path = h.root.join("eng/MANIFEST.md");
+    let manifest = std::fs::read_to_string(&path).unwrap().replace(
+        "status: current\n",
+        "status: current\nreflection: on\nreflection_home: https://team.example.com\n",
+    );
+    std::fs::write(&path, manifest).unwrap();
+    h.engine.sync(None).await.unwrap();
+    let (client, _server) = h.connect().await;
+    let text = reflection_refusal(
+        client.peer(),
+        "discuss",
+        json!({ "domain": "eng", "path": "a.md", "section": "x", "text": "hi" }),
+    )
+    .await;
+    assert!(
+        text.contains("this domain's Reflection lives at https://team.example.com"),
+        "{text}"
+    );
+}

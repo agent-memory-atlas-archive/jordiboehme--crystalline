@@ -542,12 +542,19 @@ async fn fan_out(
     for source in asked {
         let names = table.names(&source);
         // A part names its source's domains: the ones the filter asked for,
-        // or every one this source mounts here. `list_domains` has no filter
-        // to name them in, and an unnamed `reflect` must stay unnamed (a
-        // named domain whose Reflection is off is refused, an unnamed one is
-        // skipped); both are narrowed below instead.
-        let whole_source = tool != "list_domains" && tool != "reflect";
-        let forwarded = part_args(forwarded_args(args, &names, whole_source));
+        // or every one this source mounts here, so the source's counts and
+        // pages cover exactly the rows shown here. `list_domains` has no
+        // filter to name them in; its rows are narrowed below instead.
+        let mut forwarded = part_args(forwarded_args(args, &names, tool != "list_domains"));
+        // An unnamed `reflect` names the mounted domains only to scope the
+        // part: one whose Reflection is off there is left out, as an unnamed
+        // queue leaves it out, never refused.
+        if tool == "reflect"
+            && !named_filter
+            && let Some(obj) = forwarded.as_object_mut()
+        {
+            obj.insert("skip_unavailable".into(), json!(true));
+        }
         let set = set.clone();
         let tool = tool.to_string();
         let agent = agent.clone();
@@ -574,7 +581,7 @@ async fn fan_out(
             obj.insert("domains".into(), Value::Array(kept));
         }
         let local_args = localized_local(engine, tool, local_args).await?;
-        let mut value = local_part(engine, tool, local_args)
+        let mut value = run_local_part(engine, tool, local_args)
             .await
             .map_err(RouteError::Local)?;
         crate::web_url::attach_template(&mut value, &engine.local_web_base());
@@ -625,22 +632,6 @@ async fn fan_out(
                         row["path"] = Value::Null;
                     }
                 }
-                if tool == "reflect" {
-                    // Only the Reflections this machine mounts from this
-                    // source: a domain another source keeps is not worked
-                    // under its server name.
-                    let mounted =
-                        |d: &Value| d.as_str().is_some_and(|d| names.to_local.contains_key(d));
-                    if let Some(rows) = value.get_mut("queue").and_then(Value::as_array_mut) {
-                        rows.retain(|row| row.get("domain").is_some_and(mounted));
-                    }
-                    for list in ["/scope/domains", "/scope/unreadable"] {
-                        if let Some(domains) = value.pointer_mut(list).and_then(Value::as_array_mut)
-                        {
-                            domains.retain(mounted);
-                        }
-                    }
-                }
                 translate_answer(&mut value, &names);
                 answered.push((
                     source.clone(),
@@ -680,7 +671,7 @@ async fn fan_out(
 /// fifteen engine verbs, and the engine's own `reflect` for the machine
 /// owner (only owner sessions route, decision D8; `dispatch_engine` serves
 /// no Reflection tool, and no CLI verb or hook calls one).
-async fn local_part(engine: &Arc<Engine>, tool: &str, args: Value) -> anyhow::Result<Value> {
+async fn run_local_part(engine: &Arc<Engine>, tool: &str, args: Value) -> anyhow::Result<Value> {
     if tool == "reflect" {
         let p: ReflectParams =
             serde_json::from_value(args).map_err(|e| anyhow::anyhow!("invalid arguments: {e}"))?;

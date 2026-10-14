@@ -1539,3 +1539,75 @@ async fn a_mounted_reflection_is_worked_under_its_local_name_on_its_own_server()
         assert!(leaks.is_empty(), "beta's own name in {leaks:?}\n{answer}");
     }
 }
+
+/// An unscoped `reflect` asks a source only for the domains this machine
+/// mounts from it, so the server's total, counts and pages cover exactly
+/// the rows shown here: a domain the machine did not take never counts.
+#[tokio::test]
+async fn an_unscoped_reflect_counts_only_the_domains_mounted_from_a_source() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    for domain in ["open", "lab"] {
+        let manifest = server.file(domain, "MANIFEST.md");
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        std::fs::write(
+            &manifest,
+            text.replace("status: stable\n", "status: stable\nreflection: on\n"),
+        )
+        .unwrap();
+    }
+    server.engine.sync(None).await.unwrap();
+    // keeper works both Reflections on the server.
+    let both = server
+        .engine
+        .reflect(
+            &serde_json::from_value(json!({ "domains": ["open", "lab"] })).unwrap(),
+            &crystalline_service::ReflectionCaller::agent(
+                crystalline_service::Scope::User {
+                    account: "keeper".into(),
+                    admin: false,
+                },
+                "keeper",
+                false,
+            ),
+        )
+        .await
+        .unwrap();
+    let lab_rows = both["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["domain"] == "lab")
+        .count();
+    assert!(lab_rows > 0, "lab has items on the server: {both}");
+
+    let machine = LocalMachine::start(false).await;
+    machine
+        .connect_choosing(
+            &server,
+            "acme",
+            "keeper",
+            DomainChoice::Only(vec!["open".into()]),
+        )
+        .await;
+    machine.mount();
+    let all = call(&machine, "reflect", json!({ "limit": 100 }))
+        .await
+        .unwrap();
+    let rows = all["queue"].as_array().unwrap();
+    assert!(!rows.is_empty(), "open's items are shown: {all}");
+    assert!(rows.iter().all(|r| r["domain"] == "open"), "{all}");
+    assert_eq!(
+        all["total"].as_u64(),
+        Some(rows.len() as u64),
+        "the total counts the rows shown here: {all}"
+    );
+    let counted: u64 = all["kinds"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter_map(Value::as_u64)
+        .sum();
+    assert_eq!(counted, rows.len() as u64, "{all}");
+    assert_eq!(all["scope"]["domains"], json!(["open"]), "{all}");
+    assert!(all.get("missing").is_none(), "{all}");
+}
