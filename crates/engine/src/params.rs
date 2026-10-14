@@ -571,6 +571,81 @@ pub struct EvolveParams {
     pub include_acknowledged: bool,
 }
 
+/// Parameters for `read_reflection`.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct ReadReflectionParams {
+    /// The domain whose Reflection to read.
+    pub domain: String,
+    /// A reflection's path inside reflections/, for example guides/deploying.md
+    /// or PACT.md. Omit for the tree of every reflection with titles and open
+    /// thread counts.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// Parameters for `write_reflection`.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct WriteReflectionParams {
+    /// The domain whose Reflection to change.
+    pub domain: String,
+    /// write (the default: create or replace a reflection or PACT.md, or
+    /// change one section of it with operation), move, delete, or settle
+    /// (mark people's changes to sections as taken in or kept).
+    #[serde(default)]
+    pub action: Option<String>,
+    /// The reflection's path inside reflections/, ending in .md.
+    pub path: String,
+    /// write: the whole markdown of the reflection. Section ids (the
+    /// <!-- r:... --> lines) are kept as they are and added under new ##
+    /// headings; the reflection: frontmatter block is Crystalline's own and is
+    /// ignored. Leave it out when you pass operation.
+    #[serde(default)]
+    pub markdown: Option<String>,
+    /// write: change one section instead of the whole page, the way
+    /// edit_engram does: replace_section, insert_before_section or
+    /// insert_after_section, with section and content. The section's id line
+    /// stays where it is.
+    #[serde(default)]
+    pub operation: Option<String>,
+    /// write with operation: the section's heading path, for example
+    /// `## Night deploys` (or `## API > ### Auth`).
+    #[serde(default)]
+    pub section: Option<String>,
+    /// write with operation: the section body (never repeat the heading; a
+    /// repeat is dropped), or for insert_before_section the text to put above
+    /// the heading.
+    #[serde(default)]
+    pub content: Option<String>,
+    /// write with replace_section: replace deeper subsections too.
+    #[serde(default)]
+    pub include_subsections: bool,
+    /// write: the engrams each section was built from, by section id or
+    /// heading, as permalinks in this domain. Naming a section here curates
+    /// it: its reflected text moves to what you wrote.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub sources: BTreeMap<String, Vec<String>>,
+    /// move: the new path inside reflections/.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// settle: the section ids whose change you settle.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub sections: Vec<String>,
+    /// settle: kept (the person's text stands and the sources stay) or
+    /// taken_in (you changed the engrams to match; their checksums are
+    /// refreshed).
+    #[serde(default)]
+    pub outcome: Option<String>,
+    /// write: the checksum read_reflection returned; a reflection that changed
+    /// since is refused rather than overwritten.
+    #[serde(default)]
+    pub expected_checksum: Option<String>,
+    /// Only create: refuse when a reflection already lives at `path`. Set by
+    /// the REST `PUT` with `"create": true`; never deserialized, so
+    /// the MCP schema does not show it (schemars honours `serde(skip)`).
+    #[serde(skip)]
+    pub create_only: bool,
+}
+
 /// Parameters for `configure`. Omit everything to see the current settings,
 /// and with `github.enabled` on the GitHub connection too; with it off the
 /// snapshot reports that the feature is off and how to turn it on, leaving

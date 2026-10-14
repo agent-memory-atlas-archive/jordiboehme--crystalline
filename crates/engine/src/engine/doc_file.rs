@@ -9,7 +9,7 @@ use tokio::sync::OwnedMutexGuard;
 use super::*;
 
 /// What a write compares the file against before it writes.
-#[allow(dead_code)] // `Absent` and `Any` are used by Task 12 (the reflection write), which removes this line
+#[derive(Debug)]
 pub(super) enum Swap<'a> {
     /// The file must be there and hash to this checksum.
     Expect(&'a str),
@@ -84,7 +84,6 @@ pub(super) fn read_stamped(abs: &Path) -> Result<(Vec<u8>, FileStamp)> {
 }
 
 /// Remove the file; `false` when it was not there.
-#[allow(dead_code)] // used by Task 12 (the reflection move and delete), which removes this line
 pub(super) fn remove_if_there(abs: &Path) -> Result<bool> {
     match std::fs::remove_file(abs) {
         Ok(()) => Ok(true),

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crystalline_service::params::SearchParams;
 use crystalline_service::rest::{AuthStore, MemberLevel, ReflectionLevel, Role};
-use crystalline_service::{DomainAccess, ReflectionRight, Scope};
+use crystalline_service::{DomainAccess, ReflectionCaller, ReflectionRight, Scope};
 
 use crate::fixture::{engram, fixture};
 
@@ -136,4 +136,92 @@ async fn an_instance_account_with_knowledge_none_sees_no_shared_domain_and_edits
             "{name}"
         );
     }
+}
+
+/// R18: a write list caps the Reflection like it caps the engrams (0.25.0
+/// B-2, "a reader there and nothing more"). An instance editor whose list
+/// leaves `eng` out reads its Reflection, and a write is refused with the
+/// sentence that names the list and its fix.
+#[tokio::test]
+async fn an_off_list_editor_reads_the_reflection_and_the_refusal_names_the_list() {
+    let fx = crate::docs::reflecting().await;
+    let auth = Arc::new(
+        AuthStore::open(&fx.tmp.path().join("web-auth.db"))
+            .await
+            .unwrap(),
+    );
+    auth.add_user("ed", "ed", None, Role::Editor, "pw12345678")
+        .await
+        .unwrap();
+    auth.set_write_list("ed", &["agents-*".to_string()])
+        .await
+        .unwrap();
+    fx.engine
+        .set_domain_access(Arc::new(DomainAccess::new(auth.clone())));
+    let ed = Scope::User {
+        account: "ed".into(),
+        admin: false,
+    };
+    assert_eq!(
+        fx.engine.reflection_right(&ed, "eng").await.unwrap(),
+        ReflectionRight::Read
+    );
+    let caller = ReflectionCaller::agent(ed, "ed", false);
+    fx.engine
+        .read_reflection_tree("eng", &caller)
+        .await
+        .unwrap();
+    let err = fx
+        .engine
+        .write_reflection(&crate::docs::write("guides/a.md", "# A\n"), &caller)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, crystalline_service::EngineError::Forbidden(_)),
+        "{err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        crystalline_service::WriteBlock::WriteList {
+            account: "ed".into()
+        }
+        .sentence("eng")
+    );
+    assert!(!fx.root.join("reflections/guides/a.md").exists());
+
+    // The cap is on the whole account: a knowledge-`none` contributor whose
+    // list leaves `eng` out reads, and its edit is refused with the same
+    // sentence.
+    auth.add_user("nora", "nora", None, Role::None, "pw12345678")
+        .await
+        .unwrap();
+    auth.set_reflection_level("nora", ReflectionLevel::Contributor)
+        .await
+        .unwrap();
+    auth.set_write_list("nora", &["agents-*".to_string()])
+        .await
+        .unwrap();
+    let nora = Scope::User {
+        account: "nora".into(),
+        admin: false,
+    };
+    assert_eq!(
+        fx.engine.reflection_right(&nora, "eng").await.unwrap(),
+        ReflectionRight::Read
+    );
+    let err = fx
+        .engine
+        .write_reflection(
+            &crate::docs::write("guides/b.md", "# B\n"),
+            &ReflectionCaller::person(nora, "nora"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        crystalline_service::WriteBlock::WriteList {
+            account: "nora".into()
+        }
+        .sentence("eng")
+    );
 }

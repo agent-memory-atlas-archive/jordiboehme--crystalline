@@ -72,10 +72,14 @@ fn entry_text((id, mut lines): (String, Vec<&str>)) -> (String, String) {
 }
 
 /// A baseline file for these sections: the top block first when present,
-/// then each section as heading, id line, body, one blank line between.
+/// then each section as heading, id line, body, one blank line between. The
+/// top block goes first wherever `entries` hold it, because only a first
+/// line opens it when the file is read back.
 pub fn render_baseline(entries: &[(String, String)]) -> String {
     let mut out = String::new();
-    for (id, text) in entries {
+    let top = entries.iter().filter(|(id, _)| id == TOP_SECTION);
+    let rest = entries.iter().filter(|(id, _)| id != TOP_SECTION);
+    for (id, text) in top.chain(rest) {
         let text = text.trim_end_matches('\n');
         if id == TOP_SECTION {
             out.push_str(&top_marker());
@@ -296,6 +300,22 @@ mod tests {
             ("bbbb2222".into(), "## Edited\n\nOld wording.\n".into()),
             ("dddd4444".into(), "## Gone\n\nRemoved later.\n".into()),
         ])
+    }
+
+    /// A top entry handed over after the sections still opens the file, so
+    /// it reads back as the top and not as part of the last section.
+    #[test]
+    fn the_top_block_is_written_first_wherever_it_is_handed_over() {
+        let text = render_baseline(&[
+            ("aaaa1111".into(), "## Kept\n\nSame text.\n".into()),
+            ("_top".into(), "# T\n\nIntro.\n".into()),
+        ]);
+        assert!(text.starts_with("<!-- r:_top -->\n# T\n"), "{text}");
+        let ids: Vec<String> = parse_baseline(&text)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids, ["_top", "aaaa1111"]);
     }
 
     #[test]

@@ -5,6 +5,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod docs;
 mod fixture;
 mod guards;
 mod rights;
