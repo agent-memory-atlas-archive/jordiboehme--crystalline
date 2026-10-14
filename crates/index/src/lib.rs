@@ -25,6 +25,7 @@ mod hub;
 pub mod nli;
 #[cfg(feature = "postgres")]
 pub mod postgres;
+pub mod rank;
 pub mod reflection;
 mod snippet;
 mod store;

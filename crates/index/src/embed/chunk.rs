@@ -89,15 +89,34 @@ pub fn chunk_engram_with(
     params: &ChunkParams,
     count: &dyn Fn(&str) -> usize,
 ) -> Vec<NewChunk> {
+    chunk_texts(&build_header(title, description), body, params, count)
+        .into_iter()
+        .enumerate()
+        .map(|(seq, text)| NewChunk {
+            seq: seq as i64,
+            text_hash: fingerprint(&params.model_id, &text),
+            text,
+        })
+        .collect()
+}
+
+/// Split a body into chunk texts: paragraphs packed up to the token budget,
+/// the header leading the first text; a body with nothing in it still yields
+/// the header alone (a header that is empty too yields no text at all).
+pub(crate) fn chunk_texts(
+    header: &str,
+    body: &str,
+    params: &ChunkParams,
+    count: &dyn Fn(&str) -> usize,
+) -> Vec<String> {
     let paragraphs = split_paragraphs(body);
     let packed = pack(&paragraphs, params.max_tokens, count);
 
-    let header = build_header(title, description);
     let mut finals: Vec<String> = Vec::new();
     for (i, body_text) in packed.iter().enumerate() {
         let text = if i == 0 && !header.is_empty() {
             if body_text.is_empty() {
-                header.clone()
+                header.to_string()
             } else {
                 format!("{header}\n\n{body_text}")
             }
@@ -112,18 +131,9 @@ pub fn chunk_engram_with(
     // An engram with only a title and description (no body) still yields one
     // chunk so it can be found semantically.
     if finals.is_empty() && !header.is_empty() {
-        finals.push(header);
+        finals.push(header.to_string());
     }
-
     finals
-        .into_iter()
-        .enumerate()
-        .map(|(seq, text)| NewChunk {
-            seq: seq as i64,
-            text_hash: fingerprint(&params.model_id, &text),
-            text,
-        })
-        .collect()
 }
 
 /// The fingerprint of a chunk: `sha256(model_id + ":" + text)`, lowercase hex.

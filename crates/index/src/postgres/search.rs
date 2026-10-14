@@ -28,31 +28,16 @@ use super::{
     Param, cell_i64, cell_real, cell_text, like_escape, path_prefix_like, query_all, query_first,
     scalar_i64,
 };
+use crate::rank::{self, SEMANTIC_TOPK, count_occ, like_pattern, terms_of};
 use crate::snippet::{lead, make_snippet};
 
 use sqlx::postgres::PgRow;
 
-/// The default minimum cosine similarity for a semantic hit. Re-derived for
-/// `granite-embedding-97m-multilingual-r2` in
-/// `research/2026-09-22-granite-thresholds.md`: the old bge-small-en-v1.5
-/// floor of `0.55` sat at quantile 0.8726 of bge's query-to-chunk cosines on
-/// the scale index and 0.7930 on Jordi's domains; granite reads 0.7802 and
-/// 0.7458 at those same quantiles, and the higher, rounded to two decimals,
-/// is this value. All eighteen known-answer queries of the German spot check
-/// clear it, the weakest (E1) at 0.8194. Must stay equal to
-/// `crate::turso::search::DEFAULT_MIN_SIMILARITY`; parity is pinned by
-/// `both_backends_default_the_same_minimum_similarity` in
+/// The default minimum cosine similarity for a semantic hit; the value and its
+/// derivation live in [`crate::rank::DEFAULT_MIN_SIMILARITY`]. Pinned equal across
+/// the backends by `both_backends_default_the_same_minimum_similarity` in
 /// `crates/index/tests/it/store.rs`.
-pub const DEFAULT_MIN_SIMILARITY: f32 = 0.78;
-/// How many nearest chunks the vector scan considers before the cutoff and paging.
-const SEMANTIC_TOPK: usize = 100;
-/// Hybrid blend weights: the semantic signal leads, the lexical signal supports.
-const HYBRID_TEXT_WEIGHT: f64 = 0.4;
-const HYBRID_SEMANTIC_WEIGHT: f64 = 0.6;
-/// A hit found by only one of the two signals keeps its normalized score scaled
-/// by this factor, so an equally strong hit corroborated by both signals ranks
-/// above it (a both-signal hit can reach 1.0, a single-signal hit at most 0.85).
-const SINGLE_SOURCE_PENALTY: f64 = 0.85;
+pub const DEFAULT_MIN_SIMILARITY: f32 = crate::rank::DEFAULT_MIN_SIMILARITY;
 
 /// Run a search and return one page of hits plus the total match count. The
 /// `coverage` snapshot is supplied by the store for the semantic and hybrid modes
@@ -433,7 +418,7 @@ async fn run_semantic(
     let min_sim = query.min_similarity.unwrap_or(DEFAULT_MIN_SIMILARITY) as f64;
     let retired_weight = query.retired_weight.unwrap_or(DEFAULT_RETIRED_WEIGHT);
 
-    check_staleness(coverage, active, dims)?;
+    rank::check_staleness(coverage, active, dims)?;
 
     let mut hits = semantic_candidates(conn, query, qvec, active, dims, aliases).await?;
     // The min_similarity gate applies to the raw cosine similarity; the
@@ -490,7 +475,7 @@ async fn run_hybrid(
     let salience_weight = query.salience_weight.unwrap_or(DEFAULT_SALIENCE_WEIGHT);
     let retired_weight = query.retired_weight.unwrap_or(DEFAULT_RETIRED_WEIGHT);
 
-    check_staleness(coverage, active, dims)?;
+    rank::check_staleness(coverage, active, dims)?;
 
     let terms: Vec<String> = query.text.as_deref().map(terms_of).unwrap_or_default();
     let text_scored = if terms.is_empty() {
@@ -512,11 +497,7 @@ async fn run_hybrid(
         std::collections::HashMap::new();
 
     for (score, cand) in text_scored {
-        let norm = if max_text > 0.0 {
-            score / max_text
-        } else {
-            0.0
-        };
+        let norm = rank::normalized(score, max_text);
         let key = (cand.domain.clone(), cand.permalink.clone());
         merged
             .entry(key)
@@ -543,12 +524,7 @@ async fn run_hybrid(
     let mut ranked: Vec<(f64, Merged)> = merged
         .into_values()
         .map(|m| {
-            let relevance = match (m.text, m.sem) {
-                (Some(t), Some(s)) => HYBRID_TEXT_WEIGHT * t + HYBRID_SEMANTIC_WEIGHT * s,
-                (Some(t), None) => t * SINGLE_SOURCE_PENALTY,
-                (None, Some(s)) => s * SINGLE_SOURCE_PENALTY,
-                (None, None) => 0.0,
-            };
+            let relevance = rank::blend(m.text, m.sem);
             let score = (relevance + salience_prior(m.cand.salience, salience_weight))
                 * retired_factor(&m.cand.status, retired_weight);
             (score, m)
@@ -794,42 +770,6 @@ async fn semantic_candidates(
         }
     }
     Ok(out)
-}
-
-/// Refuse semantic search when the stored embeddings cannot be compared against
-/// the active provider's vector space. Ported verbatim from the Turso backend;
-/// see [`crate::turso::search`] for the byte-identical-fields reasoning. Consumes
-/// the shared coverage snapshot rather than issuing its own aggregate scan.
-fn check_staleness(coverage: &EmbeddingCoverage, active_model: &str, dims: usize) -> Result<()> {
-    let mut active_embedded = 0usize;
-    let mut foreign_dims = false;
-    let mut other: Option<(&str, usize)> = None;
-    for m in &coverage.models {
-        if m.model == active_model && m.dims == dims {
-            active_embedded += m.count;
-            continue;
-        }
-        if m.dims != dims {
-            foreign_dims = true;
-        }
-        if other.as_ref().map(|(_, oc)| m.count > *oc).unwrap_or(true) {
-            other = Some((m.model.as_str(), m.count));
-        }
-    }
-
-    let stale = coverage.embedded_chunks > 0 && (foreign_dims || active_embedded == 0);
-    if stale {
-        let stored_model = other
-            .map(|(m, _)| m.to_string())
-            .unwrap_or_else(|| active_model.to_string());
-        return Err(IndexError::StaleEmbeddings {
-            stored_model,
-            active_model: active_model.to_string(),
-            embedded: active_embedded,
-            total: coverage.total_chunks,
-        });
-    }
-    Ok(())
 }
 
 fn build_scalar_filters(
@@ -1535,41 +1475,6 @@ fn push_edge(
 }
 
 // --- text utilities ----------------------------------------------------------
-
-fn terms_of(text: &str) -> Vec<String> {
-    let mut seen = HashSet::new();
-    text.split_whitespace()
-        .map(|t| t.to_lowercase())
-        .filter(|t| !t.is_empty())
-        .filter(|t| seen.insert(t.clone()))
-        .collect()
-}
-
-fn like_pattern(term: &str) -> String {
-    let mut s = String::with_capacity(term.len() + 2);
-    s.push('%');
-    for c in term.chars() {
-        if c == '%' || c == '_' || c == '\\' {
-            s.push('\\');
-        }
-        s.extend(c.to_lowercase());
-    }
-    s.push('%');
-    s
-}
-
-fn count_occ(haystack_lower: &str, needle_lower: &str) -> usize {
-    if needle_lower.is_empty() {
-        return 0;
-    }
-    let mut count = 0;
-    let mut start = 0;
-    while let Some(pos) = haystack_lower[start..].find(needle_lower) {
-        count += 1;
-        start += pos + needle_lower.len();
-    }
-    count
-}
 
 #[cfg(test)]
 mod tests {
