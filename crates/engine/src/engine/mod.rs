@@ -2748,7 +2748,8 @@ impl Engine {
     /// the sync never disagree; a domain the index holds no row of takes its
     /// disk fallback. The MANIFEST is read first, so a domain without a
     /// Reflection costs no store read, and the store lock is held for the
-    /// two reads only, never for the file reads that follow.
+    /// two reads only, never for the file reads that follow, which run on
+    /// the blocking pool.
     pub async fn reflection_mode(&self, domain: &str) -> Result<crystalline_core::ReflectionMode> {
         let ContentSource::File { root } = self.read_source(domain) else {
             return Ok(crystalline_core::ReflectionMode::Off);
@@ -2763,7 +2764,17 @@ impl Engine {
                 None => Vec::new(),
             }
         };
-        Ok(crystalline_index::reflection_mode(&root, recorded.iter()))
+        // The predicate reads the recorded files (or walks the folder on an
+        // empty index): blocking IO, so off the runtime's workers.
+        tokio::task::spawn_blocking(move || {
+            crystalline_index::reflection_mode(&root, recorded.iter())
+        })
+        .await
+        .map_err(|e| {
+            EngineError::Internal(format!(
+                "the Reflection mode of '{domain}' could not be read: {e}"
+            ))
+        })
     }
 
     /// Whether the domain's Reflection is in effect.
@@ -2771,10 +2782,14 @@ impl Engine {
         Ok(self.reflection_mode(domain).await? == crystalline_core::ReflectionMode::Effective)
     }
 
-    /// Answer an identifier the Reflection holds with the teaching refusal
-    /// while the Reflection is in effect, where it could only ever miss.
-    /// While pending, the engrams still there resolve as usual. The cheap
-    /// path test runs first; only a path under the folder costs the mode.
+    /// Answer a resolve miss on an identifier the Reflection holds with the
+    /// teaching refusal while the Reflection is in effect, instead of a bare
+    /// "not found". Asked on the miss only, never before the lookup: an
+    /// engram moved out of the folder may keep a custom permalink that still
+    /// starts with `reflections/`, and it must stay reachable by it. While
+    /// pending, the engrams still there resolve and never get here. The
+    /// cheap path test runs first; only a path under the folder costs the
+    /// mode.
     pub(crate) async fn refuse_reflection_identifier(
         &self,
         domain: &str,

@@ -322,13 +322,21 @@ pub(crate) fn status_report_json(
 /// That is the price of the decision recorded at [`unshared_work`]: the
 /// aggregate report carries counts, and a change list is fetched by asking
 /// rather than threaded through every reader who did not.
-pub(crate) fn local_change_detail(domain_root: &Path, state_dir: &Path) -> Option<Value> {
+///
+/// `reflection` is the domain's Reflection mode in effect, the one the
+/// status count beside it and the change list use, so all three agree while
+/// a switch is pending.
+pub(crate) fn local_change_detail(
+    domain_root: &Path,
+    state_dir: &Path,
+    reflection: crystalline_core::ReflectionMode,
+) -> Option<Value> {
     let state = OriginState::load(state_dir).ok().flatten()?;
     let detected = crystalline_remote::changes::detect_local_changes_against(
         domain_root,
         &crystalline_remote::ops::unshared_base(&state),
         state_dir,
-        crystalline_core::ReflectionMode::declared(crystalline_core::reflection_at(domain_root)),
+        reflection,
     )
     .ok()?;
     let mut added: Vec<&str> = Vec::new();
@@ -1332,7 +1340,8 @@ mod tests {
         }
         state.save(&state_dir).unwrap();
 
-        let detail = local_change_detail(&root, &state_dir).expect("the domain has origin state");
+        let detail = local_change_detail(&root, &state_dir, crystalline_core::ReflectionMode::Off)
+            .expect("the domain has origin state");
         assert_eq!(detail["added"], json!(["added.md"]));
         assert_eq!(detail["modified"], json!(["modified.md"]));
         assert_eq!(
@@ -1408,7 +1417,8 @@ mod tests {
             "the layer's own file is proposed, not unshared"
         );
 
-        let detail = local_change_detail(&root, &state_dir).expect("the domain has origin state");
+        let detail = local_change_detail(&root, &state_dir, crystalline_core::ReflectionMode::Off)
+            .expect("the domain has origin state");
         assert_eq!(detail["added"], json!(["fresh.md"]));
         assert_eq!(detail["modified"], json!([]));
         assert_eq!(detail["deleted"], json!([]));
@@ -1439,7 +1449,8 @@ mod tests {
         let work = unshared_work(&root, &state_dir).expect("the domain has origin state");
         assert_eq!(work.paths, vec!["alpha.md".to_string()]);
 
-        let detail = local_change_detail(&root, &state_dir).expect("the domain has origin state");
+        let detail = local_change_detail(&root, &state_dir, crystalline_core::ReflectionMode::Off)
+            .expect("the domain has origin state");
         assert_eq!(detail["added"], json!(["alpha.md"]));
         assert_eq!(detail["generated_indexes"], json!(0));
     }
@@ -1451,14 +1462,19 @@ mod tests {
     #[test]
     fn local_change_detail_tells_an_empty_delta_from_an_unmeasurable_one() {
         let (dir, root, state_dir) = tracked_domain();
-        let detail = local_change_detail(&root, &state_dir).expect("a tracked domain measures");
+        let detail = local_change_detail(&root, &state_dir, crystalline_core::ReflectionMode::Off)
+            .expect("a tracked domain measures");
         assert_eq!(detail["added"], json!([]));
         assert_eq!(detail["modified"], json!([]));
         assert_eq!(detail["deleted"], json!([]));
         assert_eq!(detail["generated_indexes"], json!(0));
 
         assert_eq!(
-            local_change_detail(&root, &dir.path().join("no-state")),
+            local_change_detail(
+                &root,
+                &dir.path().join("no-state"),
+                crystalline_core::ReflectionMode::Off,
+            ),
             None,
             "a domain with no origin state is not a domain with nothing unshared"
         );

@@ -1400,12 +1400,17 @@ async fn rebased_head(
 /// credential a forge WRITE may go out on. Where it is not (a read verb
 /// probing with an instance credential while shares run on somebody's personal
 /// one), the layer above passes `false` and the debt waits for a write.
+///
+/// `reflection` is the domain's Reflection mode in effect, the one share
+/// changes detect with, so the count here agrees with the change list while
+/// a switch is pending.
 pub async fn status(
     spec: &OriginSpec,
     domain_root: &Path,
     state_dir: &Path,
     probe: Option<&dyn Provider>,
     settle_owed_link: bool,
+    reflection: crystalline_core::ReflectionMode,
 ) -> Result<OriginStatusReport, RemoteError> {
     let mut state = OriginState::load(state_dir)?.ok_or_else(|| {
         RemoteError::Refused(
@@ -1528,12 +1533,8 @@ pub async fn status(
 
     // After the probe, not before: a layer the forge just reported declined
     // hands its files back to this count.
-    let local = detect_local_changes_against(
-        domain_root,
-        &unshared_base(&state),
-        state_dir,
-        crystalline_core::ReflectionMode::declared(crystalline_core::reflection_at(domain_root)),
-    )?;
+    let local =
+        detect_local_changes_against(domain_root, &unshared_base(&state), state_dir, reflection)?;
 
     let open_proposals = state
         .proposals

@@ -70,9 +70,15 @@ impl Engine {
         let p = &self.localized(p, &hidden).await;
         let view = DomainView::for_write(self, &p.domain, scope).await?;
         let overlay = view.actor();
-        self.refuse_reflection_identifier(&p.domain, &p.identifier)
-            .await?;
-        let (src, src_source) = view.resolve(&p.identifier).await?;
+        let (src, src_source) = match view.resolve(&p.identifier).await {
+            Ok(resolved) => resolved,
+            Err(EngineError::NotFound(missing)) => {
+                self.refuse_reflection_identifier(&p.domain, &p.identifier)
+                    .await?;
+                return Err(EngineError::NotFound(missing));
+            }
+            Err(e) => return Err(e),
+        };
         let dest_domain = p
             .destination_domain
             .clone()

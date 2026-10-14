@@ -303,15 +303,29 @@ async fn subscribing_a_crlf_repository_writes_lf_and_reports_no_local_change() {
         "the base keeps the origin's bytes"
     );
 
-    let st = status(&spec(), &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let st = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(st.local_changes, 0, "line endings alone are not a change");
 
     write(&sub.domain_root.join("notes/a.md"), b"alpha\nedited\n");
-    let st = status(&spec(), &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let st = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(st.local_changes, 1, "a real edit still is");
 }
 
@@ -1033,9 +1047,16 @@ async fn scenario_10_declined_proposal_without_movement() {
     assert!(st.history.is_empty());
 
     // Status surfaces it as a declined proposal.
-    let status_report = status(&spec(), &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let status_report = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(status_report.declined_proposals.len(), 1);
     assert!(status_report.open_proposals.is_empty());
 }
@@ -1157,9 +1178,16 @@ async fn scenario_11_missing_base_commit_re_baselines() {
     );
 
     // Subsequent status reports a.md as a local change against the new base.
-    let status_report = status(&spec(), &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let status_report = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(status_report.local_changes, 1);
 }
 
@@ -1283,9 +1311,16 @@ async fn scenario_13_status_offline_and_online() {
     let (sub, _) = subscribe_at(&mock, &c1).await;
 
     // Offline: no probe, behind is unknown.
-    let offline = status(&spec(), &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let offline = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(offline.behind, None);
     assert_eq!(offline.repo, "team/knowledge");
     assert_eq!(offline.branch, "main");
@@ -1298,6 +1333,7 @@ async fn scenario_13_status_offline_and_online() {
         &sub.state_dir,
         Some(&mock),
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -1319,6 +1355,7 @@ async fn scenario_13_status_offline_and_online() {
         &sub.state_dir,
         Some(&mock),
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -4186,9 +4223,16 @@ async fn scenario_24_hidden_upstream_paths_never_extract_status_or_share_clean()
 
     // Status: the hidden paths this domain never tracked cannot show up as
     // local changes, since the base snapshot never claimed them either.
-    let status_report = status(&spec(), &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let status_report = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         status_report.local_changes, 0,
         "{:?}",
@@ -5531,6 +5575,7 @@ async fn scenario_37_status_flips_a_merged_elsewhere_proposal_without_consuming(
         &sub.state_dir,
         Some(&mock),
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -5571,6 +5616,7 @@ async fn scenario_37_status_flags_an_amended_branch() {
         &sub.state_dir,
         Some(&mock),
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -5598,6 +5644,7 @@ async fn scenario_37_status_list_failure_degrades_to_local_state() {
         &sub.state_dir,
         Some(&mock),
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .expect("a list failure never fails status");
@@ -8129,9 +8176,16 @@ async fn withdraw_settles_an_owed_stack_link_before_closing() {
 
 /// A status against the stack-serving mock: online, with stacking allowed.
 async fn stacked_status(mock: &MockProvider, sub: &Subscribed) -> OriginStatusReport {
-    status(&spec(), &sub.domain_root, &sub.state_dir, Some(mock), true)
-        .await
-        .expect("a status should succeed")
+    status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        Some(mock),
+        true,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .expect("a status should succeed")
 }
 
 /// Marks `layer` merged on the mock forge, moves the trunk onto a commit
@@ -8378,9 +8432,16 @@ async fn status_reports_link_pending_and_heals_it_with_a_probe() {
     );
 
     // Offline the debt can only be reported, never settled.
-    let offline = status(&spec(), &sub.domain_root, &sub.state_dir, None, true)
-        .await
-        .unwrap();
+    let offline = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        true,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert!(offline.stack_link_pending);
     assert_eq!(offline.stack_number, None);
 
@@ -8432,6 +8493,7 @@ async fn a_status_refused_the_permission_reports_the_owed_link_and_writes_nothin
         &sub.state_dir,
         Some(&mock),
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .expect("a status should succeed");
@@ -9832,9 +9894,16 @@ async fn an_upgraded_repository_proposes_nothing_about_the_indexes_it_already_ca
     std::fs::remove_file(sub.domain_root.join("index.md")).unwrap();
     write(&sub.domain_root.join("notes/b.md"), b"beta\n");
 
-    let standing = status(&spec(), &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let standing = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(standing.local_changes, 1, "the engram is the only work");
 
     let report = proposed(
@@ -9988,9 +10057,16 @@ async fn a_pull_stamps_the_origins_index_without_writing_it_to_disk() {
     );
 
     // Which is exactly what makes the listing the next thing to share.
-    let after = status(&spec(), &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let after = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         after.local_changes, 0,
         "a listing on its own is not work to share"
@@ -10057,9 +10133,16 @@ async fn an_index_only_share_still_opens_a_proposal() {
 
     // Nothing a status would call work to share, and an explicit share still
     // proceeds: somebody asked for the repository to be browsable.
-    let standing = status(&spec, &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let standing = status(
+        &spec,
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(standing.local_changes, 0);
 
     let plan = propose_preview(
@@ -10159,9 +10242,16 @@ async fn a_status_counts_real_work_and_leaves_index_refreshes_out() {
     write(&sub.domain_root.join("notes/index.md"), b"# Contents\n");
     write(&sub.domain_root.join("notes/b.md"), b"beta\n");
 
-    let report = status(&spec(), &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let report = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         report.local_changes, 1,
         "one engram is the work; two listings are not"
@@ -10212,9 +10302,16 @@ async fn a_status_on_a_stacked_chain_counts_only_the_work_above_the_tip() {
 
     write(&sub.domain_root.join("notes/a.md"), b"alpha v2\n");
     write(&sub.domain_root.join("notes/b.md"), b"beta\n");
-    let before = status(&spec(), &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let before = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(before.local_changes, 2, "nothing is proposed yet");
 
     let outcome = propose(
@@ -10234,9 +10331,16 @@ async fn a_status_on_a_stacked_chain_counts_only_the_work_above_the_tip() {
     let layer = open_numbers(&sub.state_dir)[0];
 
     // Both changes stand in the open layer: not unshared, and the plan agrees.
-    let shared = status(&spec(), &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let shared = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         shared.local_changes, 0,
         "work an open proposal carries is not unshared"
@@ -10259,9 +10363,16 @@ async fn a_status_on_a_stacked_chain_counts_only_the_work_above_the_tip() {
 
     // New work above the tip counts, and only it.
     write(&sub.domain_root.join("notes/c.md"), b"gamma\n");
-    let more = status(&spec(), &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let more = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(more.local_changes, 1, "one engram above the tip");
     let plan = propose_preview(
         &mock,
@@ -10283,9 +10394,16 @@ async fn a_status_on_a_stacked_chain_counts_only_the_work_above_the_tip() {
     // A declined layer hands its work back: the probe learns the decline and
     // the count taken after it says three again.
     mock.set_proposal_state(layer, ProposalState::Declined);
-    let declined = status(&spec(), &sub.domain_root, &sub.state_dir, Some(&mock), true)
-        .await
-        .unwrap();
+    let declined = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        Some(&mock),
+        true,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         declined.local_changes, 3,
         "a declined layer's files are unshared again"
@@ -10319,16 +10437,30 @@ async fn a_merged_layer_nobody_pulled_yet_is_carried_not_unshared() {
     // so the record stands here merged and unconsumed, and the trunk snapshot
     // this machine holds still predates the merge.
     merge_the_bottom(&mock, &sub, first.number).await;
-    let learned = status(&spec(), &sub.domain_root, &sub.state_dir, Some(&mock), true)
-        .await
-        .unwrap();
+    let learned = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        Some(&mock),
+        true,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(learned.merged_unconsumed, vec![first.number]);
 
     // The tree is what the merged layer carries, so there is nothing unshared
     // about it - offline, with no probe and no pull.
-    let quiet = status(&spec(), &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let quiet = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         quiet.local_changes, 0,
         "a merged layer's own files are upstream already"
@@ -10337,9 +10469,16 @@ async fn a_merged_layer_nobody_pulled_yet_is_carried_not_unshared() {
     // Editing one of those files is work again: the count is against the
     // layer's recorded digest, not a blanket exemption for its paths.
     write(&sub.domain_root.join("notes/a.md"), b"alpha v3\n");
-    let edited = status(&spec(), &sub.domain_root, &sub.state_dir, None, false)
-        .await
-        .unwrap();
+    let edited = status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        None,
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         edited.local_changes, 1,
         "editing a merged layer's file is unshared work"
@@ -11126,6 +11265,7 @@ async fn a_failed_retarget_keeps_the_branch_and_the_next_sync_finishes_it() {
         &sub.state_dir,
         Some(&mock),
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -11154,6 +11294,7 @@ async fn a_failed_retarget_keeps_the_branch_and_the_next_sync_finishes_it() {
         &sub.state_dir,
         Some(&mock),
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -11436,6 +11577,7 @@ async fn a_kept_branch_follows_its_target_when_that_branch_is_retired() {
         &sub.state_dir,
         Some(&mock),
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -11501,13 +11643,20 @@ async fn sync(mock: &MockProvider, sub: &Subscribed) {
 }
 
 async fn kept_messages(mock: &MockProvider, sub: &Subscribed) -> Vec<String> {
-    status(&spec(), &sub.domain_root, &sub.state_dir, Some(mock), false)
-        .await
-        .unwrap()
-        .kept_branches
-        .iter()
-        .filter_map(QueuedBranch::kept_message)
-        .collect()
+    status(
+        &spec(),
+        &sub.domain_root,
+        &sub.state_dir,
+        Some(mock),
+        false,
+        crystalline_core::ReflectionMode::Off,
+    )
+    .await
+    .unwrap()
+    .kept_branches
+    .iter()
+    .filter_map(QueuedBranch::kept_message)
+    .collect()
 }
 
 #[tokio::test]

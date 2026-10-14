@@ -66,9 +66,15 @@ impl Engine {
             }
             return Ok(receipt);
         }
-        self.refuse_reflection_identifier(&p.domain, &p.identifier)
-            .await?;
-        let (desc, source) = view.resolve(&p.identifier).await?;
+        let (desc, source) = match view.resolve(&p.identifier).await {
+            Ok(resolved) => resolved,
+            Err(EngineError::NotFound(missing)) => {
+                self.refuse_reflection_identifier(&p.domain, &p.identifier)
+                    .await?;
+                return Err(EngineError::NotFound(missing));
+            }
+            Err(e) => return Err(e),
+        };
         // **The open document outranks both substrates, and the probe is above
         // the lock.** A caller's `expected_checksum` came from a read, and a
         // read of a page somebody has open answers the live text and its

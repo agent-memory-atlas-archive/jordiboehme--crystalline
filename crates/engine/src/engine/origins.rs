@@ -1065,6 +1065,9 @@ impl Engine {
         let lock = self.origin_lock(name);
         let _guard = lock.lock().await;
         let (spec, root, state_dir) = self.origin_spec_for(name, entry)?;
+        // The mode in effect, as share changes use it: the count and the
+        // detail below agree with the change list while a switch is pending.
+        let reflection = self.reflection_mode(name).await?;
         // A probe is best-effort: no connection, or a provider that fails to
         // build, must never turn a status call into a hard failure.
         let probe = self.resolve_origin_provider().ok();
@@ -1074,7 +1077,7 @@ impl Engine {
         };
         let change_detail = || {
             let mut block = detail
-                .then(|| origin::local_change_detail(&root, &state_dir))
+                .then(|| origin::local_change_detail(&root, &state_dir, reflection))
                 .flatten();
             // Both sides ride inside the same block the paths do, so a caller
             // that asked for them reads one thing rather than two. In a
@@ -1142,7 +1145,16 @@ impl Engine {
             }
             value
         };
-        match ops::status(&spec, &root, &state_dir, probe.as_deref(), settle_owed_link).await {
+        match ops::status(
+            &spec,
+            &root,
+            &state_dir,
+            probe.as_deref(),
+            settle_owed_link,
+            reflection,
+        )
+        .await
+        {
             Ok(report) => Ok(with_out_of_band(origin::status_report_json(
                 name,
                 &report,
@@ -1157,7 +1169,9 @@ impl Engine {
                 // credential here too; the retry below runs probe-free, so
                 // status still comes back offline.
                 self.drop_github_credential_on_auth(&e);
-                let report = ops::status(&spec, &root, &state_dir, None, settle_owed_link).await?;
+                let report =
+                    ops::status(&spec, &root, &state_dir, None, settle_owed_link, reflection)
+                        .await?;
                 Ok(with_out_of_band(origin::status_report_json(
                     name,
                     &report,
@@ -1376,10 +1390,12 @@ impl Engine {
             let Ok((spec, root, state_dir)) = self.origin_spec_for(&name, &entry) else {
                 continue;
             };
+            let reflection = self.reflection_mode(&name).await.unwrap_or_default();
             // No provider, so nothing here could settle an owed stack link
             // anyway; withholding the permission says so at the call rather
             // than leaving it to be inferred from the `None` beside it.
-            let Ok(report) = ops::status(&spec, &root, &state_dir, None, false).await else {
+            let Ok(report) = ops::status(&spec, &root, &state_dir, None, false, reflection).await
+            else {
                 continue;
             };
             let next_due = self.origin_poller.next_due_at(&name);

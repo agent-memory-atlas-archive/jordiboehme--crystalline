@@ -146,6 +146,46 @@ async fn a_pending_switch_lets_the_engrams_move_out_and_nothing_move_in() {
     );
 }
 
+/// The identifier screen answers a miss only: an engram moved out of the
+/// folder keeps a custom permalink that still starts with `reflections/`,
+/// and it stays reachable by it once the Reflection is in effect.
+#[tokio::test]
+async fn an_engram_moved_out_keeps_answering_to_its_custom_permalink() {
+    let fx = fixture(&[(
+        "reflections/a.md",
+        &engram("A", "reflections/guide-a", "- [fact] a"),
+    )])
+    .await;
+    std::fs::write(fx.root.join("MANIFEST.md"), manifest("reflection: on\n")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let moved = fx
+        .engine
+        .move_engram(
+            &move_params("reflections/guide-a", "notes/a.md"),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(moved["to"]["permalink"], "reflections/guide-a", "{moved}");
+    assert!(
+        fx.engine.reflection_effective("eng").await.unwrap(),
+        "in effect"
+    );
+    let edit = EditParams {
+        domain: "eng".into(),
+        identifier: "reflections/guide-a".into(),
+        operation: "append".into(),
+        content: Some("- [fact] more".into()),
+        ..Default::default()
+    };
+    fx.engine.edit_engram(&edit).await.unwrap();
+    fx.engine
+        .delete_engram(&delete_params("reflections/guide-a"))
+        .await
+        .unwrap();
+    assert!(!fx.root.join("notes/a.md").exists());
+}
+
 #[tokio::test]
 async fn index_files_skip_the_reflection_folder() {
     // The fixture's sync generates the folder listings (`index.files` is on
@@ -259,6 +299,25 @@ async fn a_pending_switch_still_offers_its_engrams_for_a_share() {
     assert!(
         pending.contains(&"reflections/kept.md".to_string()),
         "{pending:?}"
+    );
+    // The status count and its detail agree with the change list.
+    let status = eng
+        .origin_status(Some("eng"), true, false, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let entry = &status["domains"][0];
+    assert_eq!(
+        entry["local_changes"].as_u64().unwrap() as usize,
+        pending.len(),
+        "{status}"
+    );
+    assert!(
+        entry["detail"]["modified"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p == "reflections/kept.md"),
+        "{status}"
     );
 
     // The share carries it, and withdrawing that share with a revert puts

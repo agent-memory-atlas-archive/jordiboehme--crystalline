@@ -105,8 +105,6 @@ impl Engine {
             self.refuse_granted_name(&p.domain, &p.identifier, scope)
                 .await?;
         }
-        self.refuse_reflection_identifier(&p.domain, &p.identifier)
-            .await?;
         let (desc, source) = match view.resolve(&p.identifier).await {
             Ok(resolved) => resolved,
             // A name this caller's own view cannot resolve, when they hold a
@@ -115,6 +113,8 @@ impl Engine {
             // read they make. So the refusal teaches instead, in the same
             // words a save at that name gets.
             Err(EngineError::NotFound(missing)) => {
+                self.refuse_reflection_identifier(&p.domain, &p.identifier)
+                    .await?;
                 return match self
                     .teach_granted_miss(&p.domain, &p.identifier, scope)
                     .await?
