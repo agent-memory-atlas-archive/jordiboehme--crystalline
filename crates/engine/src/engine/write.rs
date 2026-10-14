@@ -232,9 +232,10 @@ impl Engine {
             if crystalline_core::is_reserved_path(&path) {
                 return Err(EngineError::Invalid(reserved_name_error(&path)));
             }
-            if is_assets_reserved(&path) {
-                return Err(EngineError::Invalid(assets_reserved_error(&path)));
-            }
+            refuse_reserved_destination(
+                &path,
+                ReflectionMode::declared(self.reflection_switch(domain)),
+            )?;
             if names_the_manifest(&path) && matches!(source, ContentSource::File { .. }) {
                 return Err(EngineError::Invalid(MANIFEST_CAPTURE_REFUSAL.into()));
             }
@@ -366,6 +367,13 @@ impl Engine {
         let tags = p.tags.clone();
 
         let (rel, permalink) = Self::engram_destination(p.folder.as_deref(), &p.title)?;
+        // `engram_destination` refused `assets/` already, so only the
+        // Reflection's folder can answer here. The declared switch: no new
+        // engram lands there while a switch waits for the folder to empty.
+        refuse_reserved_destination(
+            &rel,
+            ReflectionMode::declared(self.reflection_switch(&p.domain)),
+        )?;
 
         // A file domain's MANIFEST is never a capture's destination, in any
         // letter case. `slugify` lowercases, so a title of "MANIFEST" lands at
@@ -935,6 +943,8 @@ impl Engine {
             self.refuse_granted_name(&p.domain, &p.identifier, scope)
                 .await?;
         }
+        self.refuse_reflection_identifier(&p.domain, &p.identifier)
+            .await?;
         let (desc, source) = match view.resolve(&p.identifier).await {
             Ok(resolved) => resolved,
             // A name this caller's own view cannot resolve, when they are
@@ -1176,9 +1186,10 @@ impl Engine {
         if crystalline_core::is_reserved_path(&desc.path) {
             return Err(EngineError::Invalid(reserved_name_error(&desc.path)));
         }
-        if is_assets_reserved(&desc.path) {
-            return Err(EngineError::Invalid(assets_reserved_error(&desc.path)));
-        }
+        // The mode in effect: once the Reflection is in effect a room lands no
+        // engram in its folder, while a pending switch leaves the engrams
+        // still there editable, as every other verb does.
+        refuse_reserved_destination(&desc.path, self.reflection_mode(view.domain()).await?)?;
         // No caller-carried scope reaches a room: this is the machine's own
         // save of a document somebody has open, the same account every room
         // writes as before there was anything else to be (see
@@ -1352,9 +1363,12 @@ impl Engine {
         if crystalline_core::is_reserved_path(path) {
             return Err(EngineError::Invalid(reserved_name_error(path)));
         }
-        if is_assets_reserved(path) {
-            return Err(EngineError::Invalid(assets_reserved_error(path)));
-        }
+        // A restore can create a file, so it is screened as a destination,
+        // with the declared switch like every other one.
+        refuse_reserved_destination(
+            path,
+            ReflectionMode::declared(self.reflection_switch(domain)),
+        )?;
         let (domain_id, source) = self.domain_source(domain).await?;
         // The third place a restore can land: in review mode the recovered
         // document is this actor's draft of the path, never a file written

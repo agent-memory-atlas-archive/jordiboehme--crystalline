@@ -2730,6 +2730,71 @@ impl Engine {
         })
     }
 
+    /// The `reflection` switch a domain's MANIFEST declares on disk. A
+    /// virtual domain has no folder to hold a Reflection, so it is always
+    /// off (switching it on is refused). In a review-mode domain the
+    /// folder's MANIFEST decides, never a draft of it.
+    pub fn reflection_switch(&self, domain: &str) -> crystalline_core::ReflectionSwitch {
+        match self.read_source(domain) {
+            ContentSource::File { root } => crystalline_core::reflection_at(&root),
+            ContentSource::Virtual => crystalline_core::ReflectionSwitch::Off,
+        }
+    }
+
+    /// The domain's Reflection mode in effect: `Effective` when switched on
+    /// and no engram is left under `reflections/`, `Off` otherwise (pending
+    /// included). Decided by [`crystalline_index::reflection_mode`] over the
+    /// paths the index records, the call the sync makes, so the engine and
+    /// the sync never disagree; a domain the index holds no row of takes its
+    /// disk fallback. The MANIFEST is read first, so a domain without a
+    /// Reflection costs no store read, and the store lock is held for the
+    /// two reads only, never for the file reads that follow.
+    pub async fn reflection_mode(&self, domain: &str) -> Result<crystalline_core::ReflectionMode> {
+        let ContentSource::File { root } = self.read_source(domain) else {
+            return Ok(crystalline_core::ReflectionMode::Off);
+        };
+        if crystalline_core::reflection_at(&root) == crystalline_core::ReflectionSwitch::Off {
+            return Ok(crystalline_core::ReflectionMode::Off);
+        }
+        let recorded: Vec<String> = {
+            let store = self.store.lock().await;
+            match store.domain_id(domain).await? {
+                Some(id) => store.file_stamps(id).await?.into_keys().collect(),
+                None => Vec::new(),
+            }
+        };
+        Ok(crystalline_index::reflection_mode(&root, recorded.iter()))
+    }
+
+    /// Whether the domain's Reflection is in effect.
+    pub async fn reflection_effective(&self, domain: &str) -> Result<bool> {
+        Ok(self.reflection_mode(domain).await? == crystalline_core::ReflectionMode::Effective)
+    }
+
+    /// Answer an identifier the Reflection holds with the teaching refusal
+    /// while the Reflection is in effect, where it could only ever miss.
+    /// While pending, the engrams still there resolve as usual. The cheap
+    /// path test runs first; only a path under the folder costs the mode.
+    pub(crate) async fn refuse_reflection_identifier(
+        &self,
+        domain: &str,
+        identifier: &str,
+    ) -> Result<()> {
+        let bare = identifier
+            .strip_prefix(crystalline_core::address::SCHEME)
+            .and_then(|rest| rest.split_once('/').map(|(_, p)| p))
+            .unwrap_or(identifier)
+            .trim_start_matches("./");
+        if !crystalline_core::reflection::is_under_reflections(bare) {
+            return Ok(());
+        }
+        let layout = crystalline_core::DomainLayout::bare(self.reflection_mode(domain).await?);
+        if let PathClass::Reflection(_) = layout.classify(bare) {
+            return Err(EngineError::Invalid(reflection_reserved_error(bare)));
+        }
+        Ok(())
+    }
+
     /// What `scope` may do with `domain`'s Reflection. An engine with no
     /// access resolver installed (the stdio stack, every CLI engine) curates
     /// everything, like [`Engine::write_right`] answers `Own`.
@@ -7605,6 +7670,30 @@ fn assets_reserved_error(rel: &str) -> String {
     )
 }
 
+/// The refusal an engram verb earns by aiming into a domain's Reflection.
+fn reflection_reserved_error(rel: &str) -> String {
+    format!(
+        "'{rel}' sits in this domain's Reflection (reflections/): it holds documents for people, not engrams. Work on it with read_reflection and write_reflection, or pick another folder for the engram."
+    )
+}
+
+/// The one destination refusal of an engram verb: the attachment folder, as
+/// it always was, and the Reflection folder under `mode`. A destination
+/// screen passes the declared switch (`ReflectionMode::declared`), so no new
+/// engram lands in the folder while a switch waits for it to empty.
+fn refuse_reserved_destination(rel: &str, mode: ReflectionMode) -> Result<()> {
+    if is_assets_reserved(rel) {
+        return Err(EngineError::Invalid(assets_reserved_error(rel)));
+    }
+    let normalized = rel.trim_start_matches("./").trim_matches('/');
+    if let PathClass::Reflection(_) =
+        crystalline_core::DomainLayout::bare(mode).classify(normalized)
+    {
+        return Err(EngineError::Invalid(reflection_reserved_error(rel)));
+    }
+    Ok(())
+}
+
 /// Put a mirror's failure on a draft's receipt, when there was one.
 ///
 /// One field on every routed verb, so a caller learns the same thing the same
@@ -8287,7 +8376,8 @@ impl ReindexHooks for DaemonReindexHooks<'_> {
     }
 
     /// Files changed under us, so the generated index files follow. Runs with
-    /// no store lock held, and takes none of its own.
+    /// no store lock held; the refresh takes it once, briefly, to read the
+    /// Reflection mode in effect.
     async fn after_apply(&self, name: &str, report: &SyncReport) {
         if changed_anything(report) {
             self.engine.refresh_index_files(name).await;

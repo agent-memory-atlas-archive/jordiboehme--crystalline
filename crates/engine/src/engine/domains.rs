@@ -714,10 +714,15 @@ impl Engine {
         if self.domain_is_read_only(domain).await {
             return;
         }
+        // The switch in effect, so the listings follow what the index holds:
+        // an engram still waiting under a pending switch keeps its entry. A
+        // mode that cannot be read lists the folder, as with the switch off.
+        let mode = self.reflection_mode(domain).await.unwrap_or_default();
         let name = domain.to_string();
         // A full walk plus one read per engram is blocking IO, so it runs on the
         // blocking pool rather than on a runtime worker.
-        let joined = tokio::task::spawn_blocking(move || crate::index_files::refresh(&root)).await;
+        let joined =
+            tokio::task::spawn_blocking(move || crate::index_files::refresh(&root, mode)).await;
         match joined {
             Ok(report) if report.written > 0 || report.removed > 0 => {
                 tracing::debug!(

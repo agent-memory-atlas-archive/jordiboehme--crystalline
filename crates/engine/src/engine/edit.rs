@@ -105,6 +105,8 @@ impl Engine {
             self.refuse_granted_name(&p.domain, &p.identifier, scope)
                 .await?;
         }
+        self.refuse_reflection_identifier(&p.domain, &p.identifier)
+            .await?;
         let (desc, source) = match view.resolve(&p.identifier).await {
             Ok(resolved) => resolved,
             // A name this caller's own view cannot resolve, when they hold a

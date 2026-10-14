@@ -6,5 +6,6 @@
 mod support;
 
 mod fixture;
+mod guards;
 mod rights;
 mod switch;

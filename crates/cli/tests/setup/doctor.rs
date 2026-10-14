@@ -269,6 +269,54 @@ fn detects_unindexed_files_without_fixing_them() {
     );
 }
 
+/// A Reflection's pages and threads files are no engrams to index: doctor
+/// never lists them as unindexed.
+#[test]
+fn a_reflection_page_is_never_an_unindexed_engram() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let db = work.path().join("index.db");
+    let domain_dir = setup_domain(work.path(), "eng", &config);
+    let manifest = std::fs::read_to_string(domain_dir.join("MANIFEST.md")).unwrap();
+    std::fs::write(
+        domain_dir.join("MANIFEST.md"),
+        manifest.replacen("---\n", "---\nreflection: on\n", 1),
+    )
+    .unwrap();
+    // A section id line marks the page as the Reflection's (and its threads
+    // file with it); an unmarked one would be an engram waiting to move out.
+    write(
+        &domain_dir,
+        "reflections/guides/a.md",
+        "# A page for people\n\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n",
+    );
+    write(
+        &domain_dir,
+        "reflections/guides/a.threads.md",
+        "# Threads\n",
+    );
+    bin()
+        .args(["sync", "--config"])
+        .arg(&config)
+        .args(["--db"])
+        .arg(&db)
+        .assert()
+        .success();
+    let out = bin()
+        .args(["--json", "doctor", "--config"])
+        .arg(&config)
+        .args(["--db"])
+        .arg(&db)
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        report["domains"][0]["unindexed"],
+        serde_json::json!([]),
+        "{report}"
+    );
+}
+
 /// Reproduces a colleague's real-world report: a file whose frontmatter
 /// does not parse never becomes indexed no matter how many times `sync`
 /// runs, so `doctor` must tell it apart from a file that is merely unsynced.

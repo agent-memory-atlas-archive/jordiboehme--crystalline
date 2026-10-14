@@ -1649,9 +1649,9 @@ impl Engine {
                 author_login: login.as_deref(),
                 files,
                 sharing,
-                reflection: crystalline_core::ReflectionMode::declared(
-                    crystalline_core::reflection_at(&root),
-                ),
+                // The mode in effect: a pending switch keeps sharing the
+                // engrams still under `reflections/` until they move out.
+                reflection: self.reflection_mode(domain).await?,
             },
         )
         .await
@@ -1959,9 +1959,9 @@ impl Engine {
                 author_login: login.as_deref(),
                 files,
                 sharing,
-                reflection: crystalline_core::ReflectionMode::declared(
-                    crystalline_core::reflection_at(&root),
-                ),
+                // The mode in effect: a pending switch keeps sharing the
+                // engrams still under `reflections/` until they move out.
+                reflection: self.reflection_mode(domain).await?,
             },
         )
         .await
@@ -2046,6 +2046,9 @@ impl Engine {
             // on disk is what the team reviewed and nobody withdrew.
             revert && drafting.is_none(),
             stacks_allowed,
+            // The mode in effect, the one the share that is withdrawn used: a
+            // layer shared while a switch was pending is reverted in full.
+            self.reflection_mode(domain).await?,
         )
         .await
         .inspect_err(|e| self.drop_github_credential_on_auth(e))
@@ -2251,7 +2254,13 @@ impl Engine {
     /// The team-domain walk every method below shares: the origin state, the
     /// base it detects against and the detected delta. Under no lock; a read
     /// a beat stale is the promise every offline read here makes.
-    pub(super) fn team_local_changes(&self, domain: &str) -> Result<TeamChanges> {
+    /// `reflection` is the domain's Reflection mode in effect
+    /// ([`Engine::reflection_mode`]), which a plain `fn` cannot read itself.
+    pub(super) fn team_local_changes(
+        &self,
+        domain: &str,
+        reflection: crystalline_core::ReflectionMode,
+    ) -> Result<TeamChanges> {
         #[cfg(any(test, feature = "testing"))]
         self.detection_walks
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2261,10 +2270,7 @@ impl Engine {
         })?;
         let base = ops::unshared_base(&state);
         let local = crystalline_remote::changes::detect_local_changes_against(
-            &root,
-            &base,
-            &state_dir,
-            crystalline_core::ReflectionMode::declared(crystalline_core::reflection_at(&root)),
+            &root, &base, &state_dir, reflection,
         )?;
         Ok((root, state_dir, base, local))
     }
@@ -2344,7 +2350,8 @@ impl Engine {
                 json!({ "domain": domain, "mode": "review", "changes": changes, "skipped_large": [] }),
             );
         }
-        let (root, state_dir, _, local) = self.team_local_changes(domain)?;
+        let (root, state_dir, _, local) =
+            self.team_local_changes(domain, self.reflection_mode(domain).await?)?;
         let mut changes = Vec::new();
         for change in local.substantive() {
             let Some(found) = ops::local_change_sides(&root, &state_dir, &local, change.path())?
@@ -2413,7 +2420,8 @@ impl Engine {
             value["domain"] = json!(domain);
             return Ok(value);
         }
-        let (root, state_dir, _, local) = self.team_local_changes(domain)?;
+        let (root, state_dir, _, local) =
+            self.team_local_changes(domain, self.reflection_mode(domain).await?)?;
         let sides =
             ops::local_change_sides(&root, &state_dir, &local, path)?.ok_or_else(not_a_change)?;
         let mut value = origin::change_detail_json(
@@ -2454,7 +2462,8 @@ impl Engine {
         if let Some(who) = drafting {
             return self.discard_into_overlay(domain, &who, targets).await;
         }
-        let (root, state_dir, base, local) = self.team_local_changes(domain)?;
+        let (root, state_dir, base, local) =
+            self.team_local_changes(domain, self.reflection_mode(domain).await?)?;
         let targets = fill_unguarded(targets, &local);
         let report = ops::discard_local_files(&root, &state_dir, &base, &local, &targets)?;
         let touched: Vec<String> = report

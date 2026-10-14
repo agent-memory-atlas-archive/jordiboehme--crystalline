@@ -2600,7 +2600,11 @@ async fn check_domain_checks(
     };
     if let Some(stamps) = stamps {
         d.index_checked = true;
-        let on_disk = markdown_rel_paths(&path);
+        // The mode in effect, from the stamps just read: an engram still
+        // waiting under a pending switch is an engram, and a page of an
+        // effective Reflection never is.
+        let reflection = crystalline_index::reflection_mode(&path, stamps.keys());
+        let on_disk = markdown_rel_paths(&path, &DomainLayout::at(&path, reflection));
         let disk_set: HashSet<&str> = on_disk.iter().map(String::as_str).collect();
         let db_set: HashSet<&str> = stamps.keys().map(String::as_str).collect();
 
@@ -2770,7 +2774,13 @@ struct StrayPair {
 /// the permalink slugifies it. Neither side's index state is assumed.
 fn stray_pairs(root: &Path) -> Vec<StrayPair> {
     let mut by_key: BTreeMap<(String, String), Vec<StrayFile>> = BTreeMap::new();
-    for rel in markdown_rel_paths(root) {
+    // No index has been read yet, so the declared switch: while a switch is
+    // pending the engrams still under `reflections/` are skipped here.
+    let layout = DomainLayout::at(
+        root,
+        ReflectionMode::declared(crystalline_core::reflection_at(root)),
+    );
+    for rel in markdown_rel_paths(root, &layout) {
         let file = root.join(&rel);
         // The time is read before and after the text. A write in between
         // would pair one text with the other's time, so then the time counts
@@ -2955,17 +2965,20 @@ fn settle_stray(
 
 /// Every `.md` file under `root`, relative and forward-slashed, skipping
 /// dot-directories, dot-files, the OKF reserved filenames and the Reflection's
-/// folder while it is in effect. Mirrors the sync engine's own walk so orphan
-/// and unindexed detection line up with what a sync would compute.
-fn markdown_rel_paths(root: &Path) -> Vec<String> {
-    let layout = DomainLayout::at(root, ReflectionMode::Off);
+/// folder while `layout` has it in effect. Mirrors the sync engine's own walk
+/// so orphan and unindexed detection line up with what a sync would compute.
+/// The caller builds `layout` with the Reflection mode it can know: the mode
+/// in effect where it has read the index, the declared switch where not.
+fn markdown_rel_paths(root: &Path, layout: &DomainLayout) -> Vec<String> {
     let mut out = Vec::new();
     let walker = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
-        e.depth() == 0
-            || !matches!(
-                layout.classify(&slash_rel(root, e.path())),
-                PathClass::Hidden | PathClass::Reflection(_)
-            )
+        if e.depth() == 0 {
+            return true;
+        }
+        let rel = slash_rel(root, e.path());
+        !(layout.classify(&rel) == PathClass::Hidden
+            || (layout.reflection() == ReflectionMode::Effective
+                && crystalline_core::reflection::is_under_reflections(&rel)))
     });
     for entry in walker.filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {

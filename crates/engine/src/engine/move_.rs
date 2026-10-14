@@ -70,6 +70,8 @@ impl Engine {
         let p = &self.localized(p, &hidden).await;
         let view = DomainView::for_write(self, &p.domain, scope).await?;
         let overlay = view.actor();
+        self.refuse_reflection_identifier(&p.domain, &p.identifier)
+            .await?;
         let (src, src_source) = view.resolve(&p.identifier).await?;
         let dest_domain = p
             .destination_domain
@@ -97,9 +99,12 @@ impl Engine {
         if crystalline_core::is_reserved_path(&dest_rel) {
             return Err(EngineError::Invalid(reserved_name_error(&dest_rel)));
         }
-        if is_assets_reserved(&dest_rel) {
-            return Err(EngineError::Invalid(assets_reserved_error(&dest_rel)));
-        }
+        // The declared switch of the destination domain: an engram may move
+        // out of a folder whose switch waits for it, never into one.
+        refuse_reserved_destination(
+            &dest_rel,
+            ReflectionMode::declared(self.reflection_switch(&dest_domain)),
+        )?;
         let cross = dest_domain != p.domain;
         // A move into another domain writes there too, so it is counted there
         // for the whole move: a rename of the destination waits for it, and a

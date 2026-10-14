@@ -190,9 +190,15 @@ fn domain_name(root: &Path) -> String {
 fn collect_markdown_files(root: &Path) -> Result<Vec<PathBuf>, ScanError> {
     // Folders the MANIFEST provisions from inside this root hold deployable
     // artifacts, not engrams to verify, so the layout prunes them with the
-    // hidden ones. No artifact folder is known when the MANIFEST is absent
-    // or unparseable.
-    let layout = DomainLayout::at(root, ReflectionMode::Off);
+    // hidden ones and, while the domain keeps a Reflection, `reflections/`.
+    // No artifact folder is known when the MANIFEST is absent or
+    // unparseable. Verify runs without an index, so it only knows the
+    // declared switch: while a switch is pending it skips the engrams still
+    // under `reflections/`, which have to move out anyway.
+    let layout = DomainLayout::at(
+        root,
+        ReflectionMode::declared(crate::manifest::reflection_at(root)),
+    );
     let mut out = Vec::new();
     let walker = WalkDir::new(root)
         .into_iter()
@@ -266,6 +272,30 @@ mod tests {
         assert_eq!(
             domains[1].name, "b",
             "the folder name is still the fallback when the MANIFEST declares no domain_name"
+        );
+    }
+
+    #[test]
+    fn the_reflection_folder_is_not_verified_while_the_switch_is_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("MANIFEST.md"),
+            "---\ntype: manifest\ntitle: eng\nreflection: on\n---\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("reflections")).unwrap();
+        std::fs::write(
+            root.join("reflections/page.md"),
+            "# A page with no frontmatter\n",
+        )
+        .unwrap();
+        let files = collect_markdown_files(root).unwrap();
+        assert!(
+            files
+                .iter()
+                .all(|f| !f.starts_with(root.join("reflections"))),
+            "{files:?}"
         );
     }
 }

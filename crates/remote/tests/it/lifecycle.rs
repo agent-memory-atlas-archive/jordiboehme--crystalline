@@ -3242,6 +3242,7 @@ async fn scenario_20_withdraw_open_closes_the_pr_and_keeps_files() {
         None,
         false,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -3310,6 +3311,7 @@ async fn scenario_20_withdraw_revert_restores_undiverged_files() {
         Some(report.number),
         true,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -3380,6 +3382,7 @@ async fn scenario_20_withdraw_revert_writes_no_duplicate_at_a_recased_path() {
         Some(report.number),
         true,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -3427,6 +3430,7 @@ async fn scenario_20_withdraw_declined_skips_the_close() {
         Some(first.number),
         false,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -3462,6 +3466,7 @@ async fn scenario_20_withdraw_refuses_a_merged_proposal() {
         Some(first.number),
         false,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap_err();
@@ -3496,6 +3501,7 @@ async fn scenario_20_withdraw_close_failure_aborts_untouched() {
         None,
         true,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap_err();
@@ -3534,6 +3540,7 @@ async fn scenario_20_withdraw_targeting_names_candidates() {
         None,
         false,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap_err();
@@ -3553,6 +3560,7 @@ async fn scenario_20_withdraw_targeting_names_candidates() {
         Some(99),
         false,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap_err();
@@ -3648,6 +3656,7 @@ async fn scenario_21_withdraw_restores_verbatim_deletes_added_skips_diverged() {
         Some(9),
         true,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -7306,6 +7315,7 @@ async fn stacked_withdraw(
         number,
         revert,
         true,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .expect("a stacked withdraw should succeed")
@@ -7550,6 +7560,7 @@ async fn a_repair_finished_later_still_retires_the_withdrawn_branch_once() {
         Some(layers[1].number),
         false,
         true,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .expect_err("the retarget fails");
@@ -7892,6 +7903,7 @@ async fn a_merged_layer_mid_chain_refuses_the_repair_until_it_is_pulled() {
         Some(layers[2].number),
         false,
         true,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .expect_err("a chain with a merged layer cannot be repaired yet");
@@ -8064,6 +8076,7 @@ async fn legacy_multi_open_withdraw_still_names_its_candidates() {
         None,
         false,
         true,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .expect_err("a legacy multi-open state has no default target");
@@ -8693,6 +8706,7 @@ async fn assert_living_proposal_lifecycle(mock: &MockProvider, allowed: bool) ->
         None,
         false,
         allowed,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .expect("withdrawing the one open proposal");
@@ -9327,6 +9341,7 @@ async fn a_withdrawal_on_a_merge_wedged_chain_still_refuses_pull_first() {
         Some(layers[2].number),
         false,
         true,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .expect_err("the merge has to be pulled in before this chain is rebuilt");
@@ -11562,6 +11577,7 @@ async fn a_withdrawn_share_keeps_its_branch_while_a_pull_request_is_based_on_it(
         Some(first.number),
         false,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -11667,6 +11683,7 @@ async fn a_withdraw_whose_revert_fails_has_queued_its_branch_and_a_retry_queues_
         Some(first.number),
         true,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await;
     mode(&notes, 0o755);
@@ -11686,6 +11703,7 @@ async fn a_withdraw_whose_revert_fails_has_queued_its_branch_and_a_retry_queues_
         Some(first.number),
         false,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -11728,6 +11746,7 @@ async fn a_stacked_withdraw_whose_revert_fails_has_queued_its_branch() {
         Some(layers[1].number),
         true,
         true,
+        crystalline_core::ReflectionMode::Off,
     )
     .await;
     mode(&notes, 0o755);
@@ -12093,6 +12112,7 @@ async fn a_withdrawn_target_is_kept_while_a_move_waits_for_it() {
         Some(first.number),
         false,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -12152,6 +12172,7 @@ async fn a_kept_entry_never_follows_a_withdrawn_target_it_was_bound_for() {
         Some(first.number),
         false,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -12313,6 +12334,7 @@ async fn a_refused_merged_entry_does_not_keep_a_withdrawn_target() {
         Some(first.number),
         false,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -12363,6 +12385,7 @@ async fn a_withdrawn_target_is_kept_while_a_head_kept_entry_still_has_a_move_to_
         Some(first.number),
         false,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();
@@ -12493,6 +12516,7 @@ async fn a_withdrawn_share_s_own_pull_request_listed_as_open_does_not_keep_its_b
         Some(first.number),
         false,
         false,
+        crystalline_core::ReflectionMode::Off,
     )
     .await
     .unwrap();

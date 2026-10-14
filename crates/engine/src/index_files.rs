@@ -38,16 +38,18 @@ pub(crate) struct IndexRefresh {
 }
 
 /// Regenerate every `index.md` under `root`, the filesystem root of a file
-/// domain.
+/// domain whose Reflection is in `mode` (the mode in effect, so a pending
+/// engram under `reflections/` is still listed and an effective Reflection's
+/// folder is left out).
 ///
 /// Blocking IO throughout: callers run it off the async runtime's worker
 /// threads. Nothing here is fatal. A file that cannot be read still gets an
 /// entry (titled by its filename stem), and a write or removal that fails is
 /// logged and skipped, so a locked or read-only path never fails the write,
 /// move, delete or sync that asked for the regeneration.
-pub(crate) fn refresh(root: &Path) -> IndexRefresh {
+pub(crate) fn refresh(root: &Path, mode: ReflectionMode) -> IndexRefresh {
     let mut refresh = IndexRefresh::default();
-    let folders = collect(root);
+    let folders = collect(root, mode);
 
     // Every folder that holds knowledge directly or anywhere below it gets an
     // index file; the rest must not keep a stale one.
@@ -132,13 +134,14 @@ impl Walked {
 }
 
 /// Walk the domain, reading each concept's title and description.
-fn collect(root: &Path) -> Walked {
+fn collect(root: &Path, mode: ReflectionMode) -> Walked {
     let mut walked = Walked::default();
 
     // The same layout the sync walk applies, so the index lists exactly the
-    // files Crystalline indexes: no hidden file or folder and none of the
-    // artifact folders the MANIFEST provisions from inside this root.
-    let layout = DomainLayout::at(root, ReflectionMode::Off);
+    // files Crystalline indexes: no hidden file or folder, none of the
+    // artifact folders the MANIFEST provisions from inside this root and,
+    // while the Reflection is in effect, nothing under `reflections/`.
+    let layout = DomainLayout::at(root, mode);
     let walker = WalkDir::new(root)
         .into_iter()
         .filter_entry(|e| e.depth() == 0 || !layout.prunes_dir(&slash_rel(root, e.path())));
@@ -282,7 +285,7 @@ mod tests {
             &engram("Rollback", Some("How to roll back")),
         );
 
-        let report = refresh(root);
+        let report = refresh(root, ReflectionMode::Off);
         assert_eq!(report.written, 3);
         assert_eq!(report.removed, 0);
 
@@ -310,8 +313,8 @@ mod tests {
         write(root, "a.md", &engram("A", None));
         write(root, "sub/b.md", &engram("B", None));
 
-        assert_eq!(refresh(root).written, 2);
-        let second = refresh(root);
+        assert_eq!(refresh(root, ReflectionMode::Off).written, 2);
+        let second = refresh(root, ReflectionMode::Off);
         assert_eq!(
             second.written, 0,
             "an unchanged index must not be rewritten"
@@ -326,11 +329,11 @@ mod tests {
         let root = dir.path();
         write(root, "a.md", &engram("A", None));
         write(root, "sub/b.md", &engram("B", None));
-        refresh(root);
+        refresh(root, ReflectionMode::Off);
         assert!(root.join("sub/index.md").is_file());
 
         std::fs::remove_file(root.join("sub/b.md")).unwrap();
-        let report = refresh(root);
+        let report = refresh(root, ReflectionMode::Off);
         assert_eq!(report.removed, 1);
         assert!(!root.join("sub/index.md").exists());
         assert_eq!(
@@ -345,7 +348,7 @@ mod tests {
         let root = dir.path();
         write(root, "top/mid/leaf.md", &engram("Leaf", None));
 
-        refresh(root);
+        refresh(root, ReflectionMode::Off);
         assert_eq!(
             read(root, "index.md"),
             "---\nokf_version: \"0.2\"\n---\n\n# Contents\n\n* [top/](top/)\n"
@@ -362,7 +365,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write(root, "sub/a.md", &engram("A", None));
-        refresh(root);
+        refresh(root, ReflectionMode::Off);
         assert!(read(root, "index.md").starts_with("---\nokf_version: \"0.2\"\n---\n"));
         assert!(!read(root, "sub/index.md").contains("okf_version"));
     }
@@ -376,7 +379,7 @@ mod tests {
         write(root, ".hidden/secret.md", &engram("Secret", None));
         write(root, "notes.txt", "not markdown\n");
 
-        refresh(root);
+        refresh(root, ReflectionMode::Off);
         let index = read(root, "index.md");
         assert_eq!(
             index,
@@ -390,7 +393,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write(root, "orphan-note.md", "no frontmatter at all\n");
-        refresh(root);
+        refresh(root, ReflectionMode::Off);
         assert_eq!(
             read(root, "index.md"),
             "---\nokf_version: \"0.2\"\n---\n\n# Contents\n\n* [orphan-note](orphan-note.md)\n"
@@ -401,7 +404,7 @@ mod tests {
     fn an_empty_domain_gets_no_index_at_all() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let report = refresh(root);
+        let report = refresh(root, ReflectionMode::Off);
         assert_eq!(report.written, 0);
         assert!(!root.join("index.md").exists());
     }

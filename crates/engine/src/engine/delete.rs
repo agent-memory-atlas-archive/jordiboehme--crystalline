@@ -66,6 +66,8 @@ impl Engine {
             }
             return Ok(receipt);
         }
+        self.refuse_reflection_identifier(&p.domain, &p.identifier)
+            .await?;
         let (desc, source) = view.resolve(&p.identifier).await?;
         // **The open document outranks both substrates, and the probe is above
         // the lock.** A caller's `expected_checksum` came from a read, and a

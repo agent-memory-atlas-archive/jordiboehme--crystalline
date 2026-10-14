@@ -5195,6 +5195,12 @@ async fn finish_pending_repair(
 ///
 /// `stacks_allowed` carries `github.stacks` through to the stack repair a
 /// withdrawal of a stacked layer needs; a fallback withdrawal ignores it.
+///
+/// `reflection` is the domain's Reflection mode in effect, the one a share
+/// detects with ([`ShareOptions::reflection`]): a layer shared while a
+/// switch was pending carries engrams under `reflections/`, and its revert
+/// reaches them as long as the switch is still pending.
+#[allow(clippy::too_many_arguments)]
 pub async fn withdraw(
     provider: &dyn Provider,
     spec: &OriginSpec,
@@ -5203,6 +5209,7 @@ pub async fn withdraw(
     proposal_number: Option<u64>,
     revert: bool,
     stacks_allowed: bool,
+    reflection: crystalline_core::ReflectionMode,
 ) -> Result<WithdrawReport, RemoteError> {
     let mut state = OriginState::load(state_dir)?.ok_or_else(|| {
         RemoteError::Refused(
@@ -5346,6 +5353,7 @@ pub async fn withdraw(
                 &state.files,
                 &proposal,
                 &below,
+                reflection,
                 &mut report,
             )
             .await?;
@@ -5375,6 +5383,7 @@ pub async fn withdraw(
             &state.files,
             &proposal,
             &below,
+            reflection,
             &mut report,
         )
         .await?;
@@ -5569,11 +5578,22 @@ async fn revert_layer_files(
     base: &BTreeMap<String, BaseStamp>,
     proposal: &Proposal,
     below: &[Proposal],
+    reflection: crystalline_core::ReflectionMode,
     report: &mut WithdrawReport,
 ) -> Result<(), RemoteError> {
     let layers: Vec<&Proposal> = below.iter().collect();
     let base = tip_files_over(base, &layers);
-    let local = detect_local_changes(domain_root, &base)?;
+    // The detection a share made, with the Reflection mode in effect: while a
+    // switch is pending, the engrams still under `reflections/` were shared
+    // and are reverted like any other file.
+    let local = crate::changes::detect_local_changes_with(
+        domain_root,
+        &base,
+        crystalline_core::generated_indexes_at(domain_root),
+        reflection,
+        None,
+        None,
+    )?;
     let targets: Vec<DiscardTarget> = proposal
         .files
         .iter()
