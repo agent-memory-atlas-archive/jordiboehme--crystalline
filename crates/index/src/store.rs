@@ -3492,13 +3492,22 @@ pub trait Store: Send + Sync {
         chunks: &[NewReflectionChunk],
     ) -> Result<()>;
 
+    /// Embedding coverage of one domain's reflection chunks: total chunks,
+    /// embedded chunks and a per-model breakdown, read fresh (never cached).
+    /// A reflection search reads it for its mode decision and its staleness
+    /// gate, so a domain whose pages are not embedded yet answers as text
+    /// while another domain's are. [`Store::embedding_coverage_of`] stays the
+    /// table-wide count that status, the backlog and engram search read.
+    async fn reflection_coverage(&self, domain: DomainId) -> Result<EmbeddingCoverage>;
+
     /// The vector half of a reflection search (R60): the closest chunk of
     /// each section of one domain's pages embedded by `model` at
     /// `query.len()` dims, at most [`crate::rank::SEMANTIC_TOPK`] sections,
     /// best first, ties on path then section order. Answers
     /// [`crate::IndexError::StaleEmbeddings`] when the stored reflection vectors
     /// cannot be compared with the query (`crate::rank::check_staleness`
-    /// over the reflection coverage), so a caller falls back to text.
+    /// over [`Store::reflection_coverage`] of `domain`), so a caller falls
+    /// back to text.
     async fn reflection_vector_hits(
         &self,
         domain: DomainId,

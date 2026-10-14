@@ -315,6 +315,65 @@ async fn hybrid_answers_as_text_until_the_pages_are_embedded() {
     assert_eq!(answer["mode"], "text", "no provider: text, never an error");
 }
 
+/// Coverage is per domain: `ops` has a page the worker has not embedded yet
+/// while `eng`'s pages are embedded, and a hybrid or semantic search of
+/// `ops` answers as text and finds the page, instead of running the vector
+/// half over nothing.
+#[tokio::test]
+async fn a_domain_whose_pages_wait_answers_as_text_while_another_is_embedded() {
+    let fx = fixture_with_provider_and(
+        &[("MANIFEST.md", &manifest("reflection: on\n"))],
+        |cfg, base| {
+            let ops = base.join("ops");
+            std::fs::create_dir_all(&ops).unwrap();
+            std::fs::write(
+                ops.join("MANIFEST.md"),
+                manifest("reflection: on\n").replace("title: eng", "title: ops"),
+            )
+            .unwrap();
+            cfg.domains.insert(
+                "ops".to_string(),
+                crystalline_core::config::DomainEntry::file(ops),
+            );
+        },
+    )
+    .await;
+    fx.engine
+        .write_reflection(
+            &write("a.md", "# A\n\n## Night\n\nNight deploys, night deploys.\n"),
+            &person(),
+        )
+        .await
+        .unwrap();
+    fx.engine.embed_pending().await.unwrap();
+    let mut ops_page = write("b.md", "# B\n\n## Night\n\nNight deploys, night deploys.\n");
+    ops_page.domain = "ops".into();
+    fx.engine
+        .write_reflection(&ops_page, &person())
+        .await
+        .unwrap();
+
+    let eng = fx
+        .engine
+        .search_reflection("eng", &search("night deploys", None), &person())
+        .await
+        .unwrap();
+    assert_eq!(eng["mode"], "hybrid", "{eng}");
+    for search_type in [None, Some("semantic")] {
+        let ops = fx
+            .engine
+            .search_reflection("ops", &search("night deploys", search_type), &person())
+            .await
+            .unwrap();
+        assert_eq!(
+            (ops["mode"].as_str(), ops["total"].as_u64()),
+            (Some("text"), Some(1)),
+            "{search_type:?}: {ops}"
+        );
+        assert_eq!(ops["hits"][0]["path"], "b.md", "{ops}");
+    }
+}
+
 #[tokio::test]
 async fn the_provenance_block_never_matches_in_any_mode() {
     let fx = fixture_with_provider(&[

@@ -493,3 +493,70 @@ parity!(
     no_snippet_repeats_the_heading_line_on_both_backends,
     no_snippet_repeats_the_heading_line
 );
+
+/// Coverage is counted per domain: one domain's embedded pages never make
+/// another domain's pages, not embedded yet, look searchable by vector, and
+/// a domain with nothing embedded answers the vector statement with nothing,
+/// never a refusal, whatever the query's width.
+async fn reflection_coverage_is_counted_per_domain(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "MANIFEST.md", &manifest_on());
+    write(
+        dir.path(),
+        "reflections/a.md",
+        "# A\n\n## Pager\n<!-- r:aaaa1111 -->\n\npager rings loudly\n",
+    );
+    sync_domain(store, "eng", dir.path()).await.unwrap();
+    run_embedding_pass(store, &FakeProvider::new("fake"), |_, _| {})
+        .await
+        .unwrap();
+    let other = tempfile::tempdir().unwrap();
+    write(other.path(), "MANIFEST.md", &manifest_on());
+    write(
+        other.path(),
+        "reflections/b.md",
+        "# B\n\n## Pager\n<!-- r:cccc3333 -->\n\npager rings loudly\n",
+    );
+    sync_domain(store, "ops", other.path()).await.unwrap();
+    let eng = store.domain_id("eng").await.unwrap().unwrap();
+    let ops = store.domain_id("ops").await.unwrap().unwrap();
+
+    assert!(
+        store
+            .embedding_coverage_of(ChunkTable::Reflection)
+            .await
+            .unwrap()
+            .has_active_embeddings("fake"),
+        "precondition: the table holds vectors of the active model"
+    );
+    let embedded = store.reflection_coverage(eng).await.unwrap();
+    assert!(
+        embedded.total_chunks > 0 && embedded.embedded_for("fake") == embedded.total_chunks,
+        "{embedded:?}"
+    );
+    assert_eq!(embedded.models.len(), 1, "{embedded:?}");
+    assert_eq!(
+        (embedded.models[0].model.as_str(), embedded.models[0].dims),
+        ("fake", 8)
+    );
+    let waiting = store.reflection_coverage(ops).await.unwrap();
+    assert!(
+        waiting.total_chunks > 0
+            && waiting.embedded_chunks == 0
+            && !waiting.has_active_embeddings("fake"),
+        "the ops pages wait, whatever eng holds: {waiting:?}"
+    );
+
+    for query in [embed_one("pager rings loudly"), vec![0.5; 4]] {
+        let hits = store.reflection_vector_hits(ops, &query, "fake").await;
+        assert!(
+            matches!(&hits, Ok(h) if h.is_empty()),
+            "nothing embedded in ops, nothing to compare ({} dims): {hits:?}",
+            query.len()
+        );
+    }
+}
+parity!(
+    reflection_coverage_is_counted_per_domain_on_both_backends,
+    reflection_coverage_is_counted_per_domain
+);

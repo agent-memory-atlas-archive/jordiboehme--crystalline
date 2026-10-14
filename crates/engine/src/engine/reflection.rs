@@ -1516,9 +1516,11 @@ impl Engine {
     /// Search a domain's Reflection (R57): text, semantic or hybrid over its
     /// sections. A section never holds the frontmatter (`split_sections`
     /// starts at the body) and neither do the chunks (R52), so no hit or
-    /// snippet comes out of a page's `reflection:` block, for any caller. Hybrid and semantic answer as text when there is
-    /// no provider, nothing embedded by the active model, or stale vectors;
-    /// `mode` says which ran. No hit carries a score.
+    /// snippet comes out of a page's `reflection:` block, for any caller.
+    /// Hybrid and semantic answer as text when there is no provider, nothing
+    /// of this domain's pages embedded by the active model (another domain's
+    /// vectors do not count), or stale vectors in this domain; `mode` says
+    /// which ran. No hit carries a score.
     pub async fn search_reflection(
         &self,
         domain: &str,
@@ -1547,7 +1549,7 @@ impl Engine {
             let ready = requested != SearchMode::Text
                 && provider.is_some()
                 && store
-                    .embedding_coverage_of(crystalline_index::ChunkTable::Reflection)
+                    .reflection_coverage(access.domain_id)
                     .await?
                     .has_active_embeddings(&self.model_id);
             (rows, if ready { requested } else { SearchMode::Text })

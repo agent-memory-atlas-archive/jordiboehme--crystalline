@@ -105,16 +105,25 @@ pub async fn fixture_wired(
 /// indexed is embedded before the fixture returns, so both backlogs start
 /// empty.
 pub async fn fixture_with_provider(files: &[(&str, &str)]) -> Fx {
+    fixture_with_provider_and(files, |_, _| {}).await
+}
+
+/// [`fixture_with_provider`] with a config tweak.
+pub async fn fixture_with_provider_and(
+    files: &[(&str, &str)],
+    tweak: impl FnOnce(&mut GlobalConfig, &std::path::Path),
+) -> Fx {
     let provider = Arc::new(BagOfWords::new("fake"));
     let fx = fixture_wired_with(
         files,
-        |cfg, _| {
+        |cfg, base| {
             cfg.embeddings = Some(EmbeddingsConfig {
                 provider: "openai-compatible".into(),
                 model: "fake".into(),
                 endpoint: None,
                 api_key_env: None,
             });
+            tweak(cfg, base);
         },
         Some(provider),
         None,

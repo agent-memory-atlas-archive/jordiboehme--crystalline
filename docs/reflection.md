@@ -121,7 +121,7 @@ On a machine connected to a server with `crystalline connect`, the server's doma
 
 `search_engrams` leaves Reflection pages out. To search them, call `read_reflection` with `query`. The search finds sections, not whole pages.
 
-- `search_type` is `hybrid` (the default), `text` or `semantic`. Hybrid and semantic search answer as text search when there is no embedding model, when no page is embedded by the active model yet, or when the stored vectors belong to another model. The answer's `mode` says which search ran.
+- `search_type` is `hybrid` (the default), `text` or `semantic`. Hybrid and semantic search answer as text search when there is no embedding model, when no page of this domain is embedded by the active model yet (another domain's vectors do not count), or when this domain's stored vectors belong to another model. The answer's `mode` says which search ran.
 - `limit` is 10 by default and at most 100. `page` pages through the hits.
 - `path` and `query` together are refused: pass `path` to read one page, or `query` to search them all.
 - Each hit names the page, its title, the section id and heading, and a short snippet. A hit never carries a score.

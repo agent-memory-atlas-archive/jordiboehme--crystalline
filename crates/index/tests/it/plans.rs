@@ -497,6 +497,22 @@ pub fn registry() -> Vec<HotStatement> {
             postgres_must_seek: &["idx_reflection_chunk_domain_model"],
         },
         HotStatement {
+            issued_by: "Store::reflection_coverage",
+            // The coverage a reflection search's mode decision and staleness
+            // gate read, one domain's chunks grouped by model and width. Both
+            // planners seek the domain in `idx_reflection_chunk_domain_model`,
+            // whose next two columns are the group keys; a table-wide pass
+            // here would cost every search every domain's chunks.
+            turso: || crystalline_index::turso::REFLECTION_COVERAGE_SQL.to_string(),
+            postgres: || crystalline_index::postgres::REFLECTION_COVERAGE_SQL.to_string(),
+            literals: &["1"],
+            literals_pg: None,
+            scan_expected: &[],
+            scan_expected_pg: None,
+            turso_must_seek: &["idx_reflection_chunk_domain_model"],
+            postgres_must_seek: &["idx_reflection_chunk_domain_model"],
+        },
+        HotStatement {
             issued_by: "search::semantic_hydrate_sql",
             turso: || crystalline_index::turso::semantic_hydrate_sql(BASE_SCREEN, "1,2,3"),
             postgres: || crystalline_index::postgres::semantic_hydrate_sql(BASE_SCREEN, "1,2,3"),

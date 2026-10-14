@@ -1426,6 +1426,15 @@ pub const REFLECTION_VECTOR_SQL: &str = "SELECT rc.path, rc.section_ord, min(rc.
      WHERE rc.domain_id=$2 AND rc.embedding IS NOT NULL AND rc.model=$3 AND rc.dims=$4 \
      GROUP BY rc.path, rc.section_ord ORDER BY dist ASC, rc.path COLLATE \"C\" ASC, rc.section_ord ASC LIMIT 100";
 
+/// The aggregate behind [`Store::reflection_coverage`]: one domain's reflection
+/// chunks grouped by model and width, each group with its row count and its
+/// embedded count. A chunk not embedded yet has no model and no width, so it
+/// lands in the one group whose embedded count is 0. The domain index serves
+/// the domain and hands the groups over in order.
+#[doc(hidden)]
+pub const REFLECTION_COVERAGE_SQL: &str = "SELECT rc.model, rc.dims, count(*), count(rc.embedding) \
+     FROM reflection_chunk rc WHERE rc.domain_id=$1 GROUP BY rc.model, rc.dims";
+
 /// The address lookup behind [`Store::find_engram`].
 ///
 /// A permalink hit wins over a title hit; among title hits the lowest path
@@ -4530,6 +4539,40 @@ impl Store for PostgresStore {
         Ok(rows.iter().map(reflection_from_row).collect())
     }
 
+    async fn reflection_coverage(&self, domain: DomainId) -> Result<EmbeddingCoverage> {
+        let mut conn = self.acquire().await?;
+        let rows = query_all(
+            conn.as_mut(),
+            REFLECTION_COVERAGE_SQL,
+            vec![Param::Int(domain.0)],
+        )
+        .await?;
+        let mut coverage = EmbeddingCoverage::default();
+        for r in &rows {
+            let total = cell_i64(r, 2).unwrap_or(0).max(0) as usize;
+            let embedded = cell_i64(r, 3).unwrap_or(0).max(0) as usize;
+            coverage.total_chunks += total;
+            coverage.embedded_chunks += embedded;
+            let model = cell_text(r, 0).unwrap_or_default();
+            if embedded == 0 || model.is_empty() {
+                continue;
+            }
+            coverage.models.push(ChunkModelCount {
+                model,
+                dims: cell_i64(r, 1).unwrap_or(0).max(0) as usize,
+                count: embedded,
+            });
+        }
+        // Most chunks first, as the table-wide count orders them.
+        coverage.models.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.model.cmp(&b.model))
+                .then(a.dims.cmp(&b.dims))
+        });
+        Ok(coverage)
+    }
+
     async fn reflection_vector_hits(
         &self,
         domain: DomainId,
@@ -4539,7 +4582,7 @@ impl Store for PostgresStore {
         // A width the column does not have is caught here, before the
         // statement runs, as the engram semantic scan relies on too: a read
         // never resizes the column.
-        let coverage = self.embedding_coverage_of(ChunkTable::Reflection).await?;
+        let coverage = self.reflection_coverage(domain).await?;
         crate::rank::check_staleness(&coverage, model, query.len())?;
         let mut conn = self.acquire().await?;
         let rows = query_all(
