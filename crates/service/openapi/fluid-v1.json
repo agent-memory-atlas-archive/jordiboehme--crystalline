@@ -5016,7 +5016,7 @@
         },
         "responses": {
           "200": {
-            "description": "Moved with its threads and baseline; links to it rewritten: `{ from, to, links_rewritten, threads_moved }`.",
+            "description": "Moved with its threads and baseline; links to it rewritten: `{ from, to, links_rewritten, threads_moved }`. `links_failed`, `[{ path, reason }]`, appears only when a page that links it could not be rewritten after the move.",
             "content": {
               "application/json": {
                 "schema": {

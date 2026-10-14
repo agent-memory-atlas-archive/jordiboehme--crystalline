@@ -5736,6 +5736,7 @@ mod domain_lookup_tests {
 // lists them in the order they stood in the single engine.rs.
 mod adopt_names;
 mod asset_home;
+pub use asset_home::MOVE_ONTO_A_FILE;
 pub(crate) use asset_home::{AssetHome, ReplaceRule, WrittenAsset};
 mod attachments;
 mod close_folders;
@@ -7950,11 +7951,8 @@ pub(crate) fn is_manifest_path(rel: &str) -> bool {
 }
 
 /// Why an import leaves out a file under `reflections/` where a Reflection
-/// keeps that folder (the receiving domain's switch, or the switch the
-/// imported MANIFEST declares): its pages are no engrams, and a Reflection
-/// comes back from its backup branch. Public so the archive screen gives
-/// the same words.
-pub const REFLECTION_NOT_IMPORTED: &str = "under reflections/, which a Reflection keeps; a Reflection is restored from its backup branch, never imported as engrams";
+/// keeps that folder; re-exported so the archive screen gives the same words.
+pub use crystalline_core::reflection::REFLECTION_NOT_IMPORTED;
 
 /// Whether `rel` names the MANIFEST in any letter case. The write and move
 /// checks use this: a case-insensitive file system (the macOS and Windows

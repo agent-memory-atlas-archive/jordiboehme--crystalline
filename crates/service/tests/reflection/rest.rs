@@ -1202,3 +1202,113 @@ async fn an_anonymous_visitor_reads_the_files_and_changes_none() {
     assert!(s.fx.root.join("reflections/assets/flow.png").exists());
     assert!(!s.fx.root.join("reflections/assets/new.png").exists());
 }
+
+/// The file writes meet the write list (R18) as the page writes do: an
+/// off-list editor reads the files and every write answers 403 naming the
+/// list. A move waits while a page that links the file is open in a room:
+/// 409, and nothing moves.
+#[tokio::test]
+async fn the_file_writes_meet_the_write_list_and_open_rooms() {
+    let s = serve().await;
+    let owner = crystalline_service::ReflectionCaller::owner();
+    s.fx.engine
+        .reflection_asset_write(
+            "eng",
+            "assets/flow.png",
+            crate::assets::PNG.to_vec(),
+            &owner,
+        )
+        .await
+        .unwrap();
+    s.fx.engine
+        .write_reflection(
+            &crate::docs::write("links.md", "# Links\n\n![flow](assets/flow.png)\n"),
+            &owner,
+        )
+        .await
+        .unwrap();
+
+    // A room over the page that links the file, opened the way Fluid opens
+    // it: the co-editing socket.
+    let ed = Session::login(s.addr, "ed").await;
+    let _room = open_room(s.addr, "/api/v1/collab-reflection/eng/links.md", &ed).await;
+    let (status, err) = ed
+        .send(
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/reflection/move-asset",
+            Some(json!({ "from": "assets/flow.png", "to": "assets/moved.png" })),
+        )
+        .await;
+    assert_eq!(status, 409, "{err}");
+    assert!(
+        err["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("somebody is editing 'links.md'"),
+        "{err}"
+    );
+    assert!(s.fx.root.join("reflections/assets/flow.png").is_file());
+
+    // Off the write list: reads stay, writes are 403 with the list's words.
+    s.auth
+        .set_write_list("ed", &["agents-*".to_string()])
+        .await
+        .unwrap();
+    let ed = Session::login(s.addr, "ed").await;
+    let (status, _, bytes) = ed
+        .get_raw("/api/v1/domains/eng/reflection/assets/flow.png")
+        .await;
+    assert_eq!((status, bytes.as_slice()), (200, crate::assets::PNG));
+    const OFF_LIST: &str = "'eng' is not on the write list of 'ed'; an instance admin changes it with crystalline users writes";
+    let (status, err) = ed
+        .put_bytes(
+            "/api/v1/domains/eng/reflection/assets/new.png",
+            crate::assets::PNG,
+        )
+        .await;
+    assert_eq!(
+        (status, err["detail"].as_str()),
+        (403, Some(OFF_LIST)),
+        "{err}"
+    );
+    for (method, path, body) in [
+        (
+            reqwest::Method::DELETE,
+            "/api/v1/domains/eng/reflection/assets/flow.png",
+            None,
+        ),
+        (
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/reflection/move-asset",
+            Some(json!({ "from": "assets/flow.png", "to": "assets/moved.png" })),
+        ),
+    ] {
+        let (status, err) = ed.send(method.clone(), path, body).await;
+        assert_eq!(status, 403, "{method} {path}: {err}");
+        assert_eq!(err["detail"], OFF_LIST, "{method} {path}");
+    }
+    assert!(!s.fx.root.join("reflections/assets/new.png").exists());
+    assert!(s.fx.root.join("reflections/assets/flow.png").is_file());
+}
+
+/// Open the co-editing socket at `path` as `session`, with a same-host
+/// Origin, and keep it open for as long as the answer is held.
+async fn open_room(
+    addr: std::net::SocketAddr,
+    path: &str,
+    session: &Session,
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
+    use tokio_tungstenite::tungstenite::handshake::client::{Request, generate_key};
+    let request = Request::builder()
+        .uri(format!("ws://{addr}{path}"))
+        .header("Host", addr.to_string())
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", generate_key())
+        .header("Origin", format!("http://{addr}"))
+        .header("Cookie", format!("fluid_session={}", session.cookie))
+        .body(())
+        .unwrap();
+    tokio_tungstenite::connect_async(request).await.unwrap().0
+}

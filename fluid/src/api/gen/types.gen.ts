@@ -4481,7 +4481,7 @@ export type MoveReflectionError = MoveReflectionErrors[keyof MoveReflectionError
 
 export type MoveReflectionResponses = {
     /**
-     * Moved with its threads and baseline; links to it rewritten: `{ from, to, links_rewritten, threads_moved }`.
+     * Moved with its threads and baseline; links to it rewritten: `{ from, to, links_rewritten, threads_moved }`. `links_failed`, `[{ path, reason }]`, appears only when a page that links it could not be rewritten after the move.
      */
     200: {
         [key: string]: unknown;

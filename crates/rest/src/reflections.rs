@@ -15,8 +15,8 @@ use utoipa::{IntoParams, ToSchema};
 use super::auth::Identity;
 use super::{ApiError, ApiJson, ApiPath, ApiQuery, ProblemDetail, RestState, refuse_read_only};
 use crate::engine::{
-    ANONYMOUS_COMMENT, EngineError, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_OFF_START,
-    REFUSED_PENDING, REFUSED_PENDING_NAMED,
+    ANONYMOUS_COMMENT, EngineError, MOVE_ONTO_A_FILE, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS,
+    REFUSED_OFF_START, REFUSED_PENDING, REFUSED_PENDING_NAMED,
 };
 use crate::files::{AttachmentView, attachment_response};
 use crate::params::{DiscussParams, WriteReflectionParams};
@@ -90,7 +90,7 @@ pub(crate) fn reflection_error(e: EngineError) -> ApiError {
             if text.starts_with("stale edit")
                 || text.starts_with("a reflection already lives at")
                 || text.starts_with("somebody is editing")
-                || text.contains("already holds a file") =>
+                || text.ends_with(MOVE_ONTO_A_FILE) =>
         {
             ApiError::conflict(text.clone())
         }
@@ -543,7 +543,10 @@ pub struct MoveReflectionBody {
         (
             status = 200,
             description = "Moved with its threads and baseline; links to it \
-                           rewritten: `{ from, to, links_rewritten, threads_moved }`.",
+                           rewritten: `{ from, to, links_rewritten, threads_moved }`. \
+                           `links_failed`, `[{ path, reason }]`, appears only \
+                           when a page that links it could not be rewritten \
+                           after the move.",
             body = Object,
             example = json!({ "from": "guides/a.md", "to": "howto/a.md",
                 "links_rewritten": 2, "threads_moved": true }),
@@ -1576,6 +1579,12 @@ mod tests {
         }
         let other = reflection_error(EngineError::Conflict("something else".into()));
         assert_eq!(other.status, StatusCode::UNPROCESSABLE_ENTITY);
+        // Only the file move's own sentence: another conflict that happens
+        // to say a path holds a file keeps the shared mapping.
+        let engram = reflection_error(EngineError::Conflict(
+            "'a.md' already holds a file that is not a readable engram".into(),
+        ));
+        assert_eq!(engram.status, StatusCode::UNPROCESSABLE_ENTITY);
         // A contributor's replace carries the same words and is no conflict:
         // the right is too low, which is 403.
         let replace = reflection_error(EngineError::Forbidden(

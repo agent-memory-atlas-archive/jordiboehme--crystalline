@@ -19,6 +19,13 @@ pub mod provenance;
 pub mod sections;
 pub mod state;
 
+/// Why an import leaves out a file under `reflections/` where a Reflection
+/// keeps that folder (the receiving domain's switch, or the switch the
+/// imported MANIFEST declares): its pages are no engrams, and a Reflection
+/// comes back from its backup branch. One sentence for every import road
+/// (the engine's two verbs, the archive screen and `crystalline import`).
+pub const REFLECTION_NOT_IMPORTED: &str = "under reflections/, which a Reflection keeps; a Reflection is restored from its backup branch, never imported as engrams";
+
 pub use anchors::anchor_state;
 pub use assets::{
     AssetTarget, classify_target, engram_attachment_embeds, reflection_asset_refs,

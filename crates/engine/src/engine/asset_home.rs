@@ -9,6 +9,11 @@ use super::*;
 use crystalline_core::ContentKind;
 use crystalline_index::AssetTable;
 
+/// The end of the sentence a file move onto an occupied path is refused
+/// with, after the quoted path. Public so a surface that answers this
+/// refusal with its own status matches exactly this one.
+pub const MOVE_ONTO_A_FILE: &str = "already holds a file; remove it first or pick another name";
+
 /// Where a domain keeps the files of one kind of document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AssetHome {
@@ -474,9 +479,7 @@ impl Engine {
             }
         };
         if dst.exists() {
-            return Err(EngineError::Conflict(format!(
-                "'{to}' already holds a file; remove it first or pick another name"
-            )));
+            return Err(EngineError::Conflict(format!("'{to}' {MOVE_ONTO_A_FILE}")));
         }
         // A rename keeps the modification instant, so a stored row that
         // matches the file's stat still describes the bytes at `to`.
