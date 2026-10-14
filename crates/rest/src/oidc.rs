@@ -726,6 +726,7 @@ impl DiscoveryFailure {
                 ),
                 token_required: None,
                 retry_after: None,
+                home_url: None,
             },
             DiscoveryFailure::Unavailable => provider_unavailable("discovery"),
         }
@@ -1131,6 +1132,7 @@ fn provider_unavailable(what: &str) -> ApiError {
         ),
         token_required: None,
         retry_after: None,
+        home_url: None,
     }
 }
 
@@ -1617,6 +1619,7 @@ async fn start_sign_on(
                 .to_string(),
             token_required: None,
             retry_after: None,
+            home_url: None,
         });
     }
     let cookie = Cookie::build((STATE_COOKIE, state_value))

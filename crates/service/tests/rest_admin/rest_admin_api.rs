@@ -5221,6 +5221,7 @@ async fn no_rest_response_carries_an_operator_setting() {
         "/api/v1/activity",
         "/api/v1/graph?anchor=crystalline://eng/alpha",
         "/api/v1/evolve",
+        "/api/v1/reflection/domains",
         "/api/v1/users",
         "/api/v1/settings/github",
         "/api/v1/github/domain-name?repo=acme/kb",

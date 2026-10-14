@@ -10,6 +10,7 @@ mod fixture;
 mod guards;
 mod nudges;
 mod queue;
+mod rest;
 mod rights;
 mod switch;
 mod threads;

@@ -272,9 +272,9 @@ pub struct EngramChanged {
 /// (a removal, and the old name of a rename; ruled 2026-09-27).
 ///
 /// `Everyone` when the domain is not private. `Accounts` when it is, naming
-/// every account that may read it: its owner, every member at any level and
-/// every instance admin by the role the accounts store records, disabled
-/// accounts left out. The names are the store's folded spelling (trimmed and
+/// every account that may read it: its owner, every member who reads engrams
+/// there (a member at knowledge `none` does not) and every instance admin by
+/// the role the accounts store records, disabled accounts left out. The names are the store's folded spelling (trimmed and
 /// lowercased), so a check folds `Scope::User.account` the same way, and a
 /// scope that carries `admin: true` reads too, since the surface's own admin
 /// flag outranks the stored role. The machine owner always reads, so it is

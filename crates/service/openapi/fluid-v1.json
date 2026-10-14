@@ -4192,7 +4192,7 @@
           "domains"
         ],
         "summary": "Remove a membership, or leave a domain.",
-        "description": "Needs manager access on the domain - its manager, its owner, or an instance admin - OR that the principal is the caller itself, which is how a member leaves.\n\nRefused on a shared domain (409), which has no membership to remove. The owner cannot be removed here: hand the domain on with `PUT /domains/{domain}/owner` first. A name that is not a member of this domain is a 404.",
+        "description": "Needs manager access on the domain - its manager, its owner, or an instance admin - OR that the principal is the caller itself, which is how a member leaves. A member at knowledge `none` (a Reflection reader or contributor) leaves this way too.\n\nRefused on a shared domain (409), which has no membership to remove. The owner cannot be removed here: hand the domain on with `PUT /domains/{domain}/owner` first. A name that is not a member of this domain is a 404.",
         "operationId": "remove_domain_member",
         "parameters": [
           {
@@ -4471,6 +4471,1064 @@
           },
           "422": {
             "description": "The owner names no enabled account.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/reflection": {
+      "get": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "The Reflection's status for this caller.",
+        "operationId": "get_reflection_status",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ReflectionStatus. `state` is `off`, `pending` (then `pending_engrams` lists the engrams still under `reflections/` for a caller with `engrams_visible`, and is empty for anyone else), `homeless`, `on` or `elsewhere` (then `home_url` is set). `member` is true when the caller holds a membership row it may leave.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "domain": "eng",
+                  "enabled": true,
+                  "engrams_visible": true,
+                  "home": "here",
+                  "home_url": null,
+                  "member": false,
+                  "pending_engrams": [],
+                  "right": "curate",
+                  "state": "on"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/reflection/move": {
+      "post": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "Move a reflection with its threads and baseline.",
+        "operationId": "move_reflection",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveReflectionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Moved with its threads and baseline; links to it rewritten: `{ from, to, links_rewritten, threads_moved }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "from": "guides/a.md",
+                  "links_rewritten": 2,
+                  "threads_moved": true,
+                  "to": "howto/a.md"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The anonymous viewer, which never writes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Below edit access, or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Somebody is editing it, or the Reflection is not here.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A bad path, or `PACT.md`, which is edited and never moved.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/reflection/queue": {
+      "get": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "What the domain's Reflection needs next. Read-only.",
+        "description": "The same detection the MCP `reflect` tool runs, and nothing recorded: opening the review screen never counts as a run.",
+        "operationId": "get_reflect_queue",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, default 10, at most 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "One-based page.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ReflectQueue. `kind` is `feedback` (`what`: `new`, `changed`, `removed`), `update` (`source_changed`, `source_retired`, `source_missing`, `unreflected`, `off_structure`, `pact_changed`) or `review` (`thread`). `sources`, and an `unreflected` item's `folder` and `engrams`, are absent for a caller who cannot read engrams. The MCP `reflect` tool answers the same shape with `scope: { domains, kinds }` in place of `domain` and a `domain` member on each row; its `scope` may carry `unreadable`, the names of the domains whose queue could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "count": 1,
+                  "domain": "eng",
+                  "guidance": "...",
+                  "kinds": {
+                    "feedback": 0,
+                    "review": 0,
+                    "update": 1
+                  },
+                  "limit": 10,
+                  "page": 1,
+                  "queue": [
+                    {
+                      "age_secs": 3600,
+                      "heading": "Night deploys",
+                      "kind": "update",
+                      "n": 1,
+                      "path": "guides/deploying.md",
+                      "section": "7f3a9c2e",
+                      "sources": [
+                        {
+                          "permalink": "runbooks/deploy",
+                          "state": "changed"
+                        }
+                      ],
+                      "what": "source_changed"
+                    }
+                  ],
+                  "total": 1
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Reflection is not here (then possibly `home_url`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/reflection/review": {
+      "get": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "The review screen: open threads by who they wait on, and the queue.",
+        "operationId": "get_reflection_review",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ReflectionReview: open threads only, grouped by reflection, groups and threads oldest first; `queue` is the ReflectQueue's page 1 at `limit` 50.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "domain": "eng",
+                  "queue": {
+                    "count": 0,
+                    "domain": "eng",
+                    "guidance": "...",
+                    "kinds": {
+                      "feedback": 0,
+                      "review": 0,
+                      "update": 0
+                    },
+                    "limit": 50,
+                    "page": 1,
+                    "queue": [],
+                    "total": 0
+                  },
+                  "waiting_for_people": [],
+                  "waiting_for_the_agent": [
+                    {
+                      "path": "guides/deploying.md",
+                      "threads": [],
+                      "title": "Deploying"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Reflection is not here (then possibly `home_url`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/reflection/search": {
+      "get": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "Text search over the domain's reflections.",
+        "description": "A hit is one section. A reflection's `reflection:` frontmatter block is taken off before it is searched, for every caller, so no hit or snippet comes out of it.",
+        "operationId": "search_reflections",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "The words to find. Required; a missing or empty `q` answers 422.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most this many hits, default 20, at most 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ query, hits: [{ path, title, section, heading, snippet }] }`, best first. `section` is the section id, `_top` for the text before the first heading, or `null` for a heading with no id yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "hits": [
+                    {
+                      "heading": "Night deploys",
+                      "path": "guides/deploying.md",
+                      "section": "7f3a9c2e",
+                      "snippet": "Deploys run at night.",
+                      "title": "Deploying"
+                    }
+                  ],
+                  "query": "night"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Reflection is not here (then possibly `home_url`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A missing or empty `q`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/reflection/threads": {
+      "get": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "The Reflection's threads, oldest first.",
+        "operationId": "list_reflection_threads",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "open (default), resolved or all.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Only this reflection's threads.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ threads: [ThreadView] }`, oldest first. A thread's `anchor.section` is the section's id, or its heading text for a heading with no id yet; `anchor.state` is `found`, `text_changed` or `section_gone`; `waiting_on` is `agent` when the last entry is a person's and `people` when it is an agent's; `age_secs` counts from the last entry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "threads": [
+                    {
+                      "age_secs": 3600,
+                      "anchor": {
+                        "occurrence": 1,
+                        "quote": "Deploys run at night",
+                        "section": "7f3a9c2e",
+                        "state": "found"
+                      },
+                      "entries": [
+                        {
+                          "at": "2026-09-30T10:00:00Z",
+                          "author": {
+                            "agent": false,
+                            "name": "jordi"
+                          },
+                          "kind": "comment",
+                          "text": "Still at night?"
+                        }
+                      ],
+                      "id": "t-3f9a2c1b",
+                      "opened_at": "2026-09-30T10:00:00Z",
+                      "path": "guides/deploying.md",
+                      "status": "open",
+                      "waiting_on": "agent"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Reflection is not here (then possibly `home_url`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "Open a thread on a reflection's section.",
+        "description": "Reading and commenting are one level: `read` is enough. The anonymous viewer reads threads and never writes one.",
+        "operationId": "open_reflection_thread",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenThreadBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new thread as a ThreadView; its `anchor.section` is the section's id, or its heading text for a heading with no id yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "age_secs": 0,
+                  "anchor": {
+                    "occurrence": 1,
+                    "quote": "at night",
+                    "section": "7f3a9c2e",
+                    "state": "found"
+                  },
+                  "entries": [
+                    {
+                      "at": "2026-09-30T10:00:00Z",
+                      "author": {
+                        "agent": false,
+                        "name": "jordi"
+                      },
+                      "kind": "comment",
+                      "text": "Still at night?"
+                    }
+                  ],
+                  "id": "t-3f9a2c1b",
+                  "opened_at": "2026-09-30T10:00:00Z",
+                  "path": "guides/deploying.md",
+                  "status": "open",
+                  "waiting_on": "agent"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The anonymous viewer: a comment needs somebody to sign it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "This instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Reflection is not here (then possibly `home_url`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "An unknown section, a quote the section does not hold, or an empty text.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/reflection/threads/{id}/{action}": {
+      "post": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "Answer, resolve or reopen a thread.",
+        "operationId": "step_reflection_thread",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The thread id (t-...).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "path",
+            "description": "answer, resolve or reopen; any other answers 404.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThreadStepBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The thread as a ThreadView after the step; its `anchor.section` is the section's id, or its heading text for a heading with no id yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "age_secs": 0,
+                  "anchor": {
+                    "occurrence": 1,
+                    "quote": "at night",
+                    "section": "7f3a9c2e",
+                    "state": "found"
+                  },
+                  "entries": [
+                    {
+                      "at": "2026-09-30T10:00:00Z",
+                      "author": {
+                        "agent": false,
+                        "name": "jordi"
+                      },
+                      "kind": "comment",
+                      "text": "Still at night?"
+                    },
+                    {
+                      "at": "2026-09-30T11:00:00Z",
+                      "author": {
+                        "agent": false,
+                        "name": "vera"
+                      },
+                      "kind": "resolve",
+                      "text": "Yes."
+                    }
+                  ],
+                  "id": "t-3f9a2c1b",
+                  "opened_at": "2026-09-30T10:00:00Z",
+                  "path": "guides/deploying.md",
+                  "status": "resolved",
+                  "waiting_on": "agent"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The anonymous viewer: an entry needs somebody to sign it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "This instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such thread, or an action other than answer, resolve or reopen.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Reflection is not here (then possibly `home_url`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "An answer with no text, or a resolve with no outcome (an empty one included).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/reflection/tree": {
+      "get": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "The Reflection's folders and reflections.",
+        "operationId": "get_reflection_tree",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ReflectionTree: folders first, then reflections, each level sorted by name in byte order. `PACT.md` is only under `pact`, never in `nodes`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "domain": "eng",
+                  "nodes": [
+                    {
+                      "children": [
+                        {
+                          "kind": "reflection",
+                          "name": "deploying.md",
+                          "open_threads": 2,
+                          "path": "guides/deploying.md",
+                          "sections": 4,
+                          "title": "Deploying"
+                        }
+                      ],
+                      "kind": "folder",
+                      "name": "guides",
+                      "path": "guides"
+                    }
+                  ],
+                  "pact": {
+                    "exists": true,
+                    "open_threads": 0,
+                    "path": "PACT.md",
+                    "title": "How we write about eng"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Reflection is off, pending, homeless or lives elsewhere (then the `home_url` member names where).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/reflections/{path}": {
+      "get": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "One reflection, or PACT.md.",
+        "operationId": "get_reflection",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "The reflection's path inside reflections/; may contain slashes.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ReflectionDoc. `markdown` is the whole file for a caller with `engrams_visible`, and the file without its `reflection:` frontmatter block for anyone else; `sections` (and their one-based `line`) are computed over the `markdown` answered; `checksum` is always the stored file's. `sections[].sources` is absent, not empty, without `engrams_visible`. `threads` holds the open threads; `live` is present while a co-editing room is open.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "checksum": "9f2c...",
+                  "domain": "eng",
+                  "markdown": "# Deploying\n...",
+                  "path": "guides/deploying.md",
+                  "sections": [
+                    {
+                      "changed": true,
+                      "heading": "Night deploys",
+                      "id": "7f3a9c2e",
+                      "line": 12,
+                      "sources": [
+                        {
+                          "permalink": "runbooks/deploy",
+                          "state": "current",
+                          "title": "Deploy runbook"
+                        }
+                      ]
+                    }
+                  ],
+                  "threads": [],
+                  "title": "Deploying"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain or reflection, or none this caller may see.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Reflection is not here (off, pending, homeless or elsewhere, then with `home_url`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "Create or replace a reflection, or PACT.md.",
+        "description": "Needs `edit`; `PACT.md` needs `curate`. While a co-editing room is open over the reflection the write composes into the room, and the answer carries `landed: live` and `present`.",
+        "operationId": "save_reflection",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "The reflection's path inside reflections/; may contain slashes.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveReflectionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Written: `{ domain, path, checksum, created, ids_assigned, curated }`. `curated` says whether this write advanced the baseline.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "checksum": "9f2c...",
+                  "created": false,
+                  "curated": false,
+                  "domain": "eng",
+                  "ids_assigned": [
+                    "7f3a9c2e"
+                  ],
+                  "path": "guides/deploying.md"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The anonymous viewer, which never writes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Below edit access (curate for PACT.md), with a detail naming the right held and the right needed; the domain is off the caller's write list; or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A stale `expected_checksum` (detail starting \"stale edit\"), a create over an existing page, or the Reflection is not here (then possibly `home_url`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A bad path or body.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "Delete a reflection with its threads and baseline.",
+        "operationId": "delete_reflection",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "The reflection's path inside reflections/; may contain slashes.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted with its threads and baseline."
+          },
+          "401": {
+            "description": "The anonymous viewer, which never writes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Below edit access, or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Somebody is editing it, or the Reflection is not here.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A bad path, or `PACT.md`, which is edited and never deleted.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -7830,6 +8888,41 @@
         }
       }
     },
+    "/api/v1/reflection/domains": {
+      "get": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "The domains whose Reflection this caller reaches.",
+        "description": "Every registered domain whose Reflection is not off and where the caller's reflection right is at least `read`, including domains the caller cannot see as engrams (knowledge `none` with a Reflection level): this is how Fluid finds them, since `GET /domains` leaves them out. The anonymous viewer gets the public domains, at `read`. Sorted by name.",
+        "operationId": "list_reflection_domains",
+        "responses": {
+          "200": {
+            "description": "ReflectionDomains: `{ domains: [{ domain, state, right, engrams_visible, home, home_url, open_threads }] }`. `state` is `on`, `pending`, `homeless` or `elsewhere`; `home` is `here`, `local`, `elsewhere` (then `home_url` is set) or `null` (`pending`, `homeless`); `open_threads` is 0 unless `state` is `on`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "domains": [
+                    {
+                      "domain": "eng",
+                      "engrams_visible": false,
+                      "home": "here",
+                      "home_url": null,
+                      "open_threads": 3,
+                      "right": "edit",
+                      "state": "on"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/search": {
       "get": {
         "tags": [
@@ -10340,6 +11433,24 @@
           }
         }
       },
+      "MoveReflectionBody": {
+        "type": "object",
+        "description": "What `POST /domains/{domain}/reflection/move` takes.",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "The reflection's current path inside reflections/."
+          },
+          "to": {
+            "type": "string",
+            "description": "Its new path inside reflections/."
+          }
+        }
+      },
       "MovedFrom": {
         "type": "object",
         "description": "Where a moved engram came from.",
@@ -10442,6 +11553,45 @@
             ],
             "description": "The label for the button, when enabled.",
             "example": "Contoso"
+          }
+        }
+      },
+      "OpenThreadBody": {
+        "type": "object",
+        "description": "What `POST /domains/{domain}/reflection/threads` takes.",
+        "required": [
+          "path",
+          "section",
+          "text"
+        ],
+        "properties": {
+          "occurrence": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Which occurrence of the quote, from 1.",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string",
+            "description": "The reflection, its path inside reflections/."
+          },
+          "quote": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact passage, when the thread is about one."
+          },
+          "section": {
+            "type": "string",
+            "description": "The section the thread is about: its id, or its heading text."
+          },
+          "text": {
+            "type": "string",
+            "description": "The first entry."
           }
         }
       },
@@ -10647,6 +11797,14 @@
             "type": "string",
             "description": "The specific occurrence, safe to show to the caller.",
             "example": "no engram 'ghost' in domain 'eng'"
+          },
+          "home_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An RFC 9457 extension member, present only on the `409` a reflection\nroute answers when this domain's Reflection lives on another instance:\nthat instance's address, where the reader is sent. Absent from every\nother problem document on this surface.",
+            "example": "https://team.example.com"
           },
           "status": {
             "type": "integer",
@@ -11056,6 +12214,30 @@
           }
         }
       },
+      "SaveReflectionBody": {
+        "type": "object",
+        "description": "What `PUT /domains/{domain}/reflections/{*path}` takes.",
+        "required": [
+          "markdown"
+        ],
+        "properties": {
+          "create": {
+            "type": "boolean",
+            "description": "Only create: refuse with 409 when a reflection already lives at this\npath, and leave it untouched. Default false: create or replace."
+          },
+          "expected_checksum": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The checksum `GET` answered; a reflection that changed since is 409."
+          },
+          "markdown": {
+            "type": "string",
+            "description": "The whole reflection. A body without the `<!-- r:... -->` id lines\nkeeps them: a heading that matches a stored section gets its id back.\nBelow curate, the stored `reflection:` block stays whatever this\ncarries."
+          }
+        }
+      },
       "SetPoliciesBody": {
         "type": "object",
         "description": "One or more MANIFEST policy keys to the value each should hold, for example {\"sharing\": \"direct\"}. Every key is validated before the first is written.",
@@ -11225,6 +12407,33 @@
               "$ref": "#/components/schemas/ManifestProblem"
             },
             "description": "The bullets flagged. A non-canonical target or a chained alias is in\nboth lists: kept, and flagged."
+          }
+        }
+      },
+      "ThreadStepBody": {
+        "type": "object",
+        "description": "What the three thread actions take.",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "resolve: the short outcome, required."
+          },
+          "path": {
+            "type": "string",
+            "description": "The reflection the thread is on."
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "answer: the text, required; reopen: optional."
           }
         }
       },
@@ -11609,6 +12818,10 @@
     {
       "name": "maintenance",
       "description": "The consolidation queue: what the knowledge needs next. Read-only."
+    },
+    {
+      "name": "reflection",
+      "description": "A domain's Reflection: documents for people, their threads and the reflect queue."
     },
     {
       "name": "events",

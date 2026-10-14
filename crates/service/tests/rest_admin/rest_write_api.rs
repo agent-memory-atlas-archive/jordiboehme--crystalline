@@ -3142,6 +3142,45 @@ fn write_ops() -> Vec<WriteOp> {
             min_role: Role::Editor,
             read_only_exempt: false,
         },
+        // The Reflection's five writes. The fixture's `eng` has Reflection
+        // off, so every signed-in role passes authorization and meets the
+        // engine's 409; the Reflection's own rights are pinned in
+        // `tests/reflection/rest.rs`.
+        WriteOp {
+            method: Method::PUT,
+            path: "/api/v1/domains/eng/reflections/guides/a.md",
+            body: Some(serde_json::json!({"markdown": "# A\n"})),
+            min_role: Role::Viewer,
+            read_only_exempt: false,
+        },
+        WriteOp {
+            method: Method::DELETE,
+            path: "/api/v1/domains/eng/reflections/guides/a.md",
+            body: None,
+            min_role: Role::Viewer,
+            read_only_exempt: false,
+        },
+        WriteOp {
+            method: Method::POST,
+            path: "/api/v1/domains/eng/reflection/move",
+            body: Some(serde_json::json!({"from": "guides/a.md", "to": "howto/a.md"})),
+            min_role: Role::Viewer,
+            read_only_exempt: false,
+        },
+        WriteOp {
+            method: Method::POST,
+            path: "/api/v1/domains/eng/reflection/threads",
+            body: Some(serde_json::json!({"path": "guides/a.md", "section": "A", "text": "Why?"})),
+            min_role: Role::Viewer,
+            read_only_exempt: false,
+        },
+        WriteOp {
+            method: Method::POST,
+            path: "/api/v1/domains/eng/reflection/threads/t-00000000/answer",
+            body: Some(serde_json::json!({"path": "guides/a.md", "text": "Because."})),
+            min_role: Role::Viewer,
+            read_only_exempt: false,
+        },
         // Last among the domain rows, and no later row targets `scrap`: this
         // one unregisters it.
         WriteOp {
@@ -3657,6 +3696,21 @@ fn canonicalize(path: &str) -> String {
     // holds, so it collapses before the per-segment pass runs over the head.
     if let Some((head, _)) = path.split_once("/files/") {
         return format!("{}/files/{{path}}", canonicalize(head));
+    }
+    // The reflection routes take a wildcard too: everything after
+    // `reflections/` is the one `{path}` parameter.
+    if let Some((head, _)) = path.split_once("/reflections/") {
+        return format!("{}/reflections/{{path}}", canonicalize(head));
+    }
+    // A thread step names its thread and its action in two segments the
+    // per-segment pass below has no name for.
+    if let Some((head, rest)) = path.split_once("/reflection/threads/")
+        && rest.split('/').count() == 2
+    {
+        return format!(
+            "{}/reflection/threads/{{id}}/{{action}}",
+            canonicalize(head)
+        );
     }
     // The MCP token routes take a numeric id, which the per-segment pass
     // below cannot tell apart from the share surface's proposal number, so

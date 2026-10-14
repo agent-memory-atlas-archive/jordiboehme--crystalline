@@ -1788,6 +1788,7 @@ fn gone() -> ApiError {
             .to_string(),
         token_required: None,
         retry_after: None,
+        home_url: None,
     }
 }
 

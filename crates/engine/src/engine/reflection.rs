@@ -1170,6 +1170,35 @@ pub(crate) fn thread_view(inner: &str, t: &crystalline_core::threads::Thread, te
 }
 
 impl Engine {
+    /// Reflection-mode search: text search over the reflection index. Every
+    /// page is searched without its `reflection:` block, for every caller: a
+    /// hit or a snippet out of the block would hand a contributor the source
+    /// engram names, and for anyone else a YAML line is no useful hit.
+    pub async fn search_reflection_text(
+        &self,
+        domain: &str,
+        query: &str,
+        limit: usize,
+        caller: &ReflectionCaller,
+    ) -> Result<Value> {
+        let access = self
+            .require_reflection(domain, caller, ReflectionRight::Read)
+            .await?;
+        let mut rows = self
+            .store
+            .lock()
+            .await
+            .list_reflections(access.domain_id)
+            .await?;
+        for row in &mut rows {
+            row.content = without_provenance(&row.content);
+        }
+        let hits = crystalline_index::reflection::search_reflections(&rows, query, limit);
+        Ok(json!({ "query": query, "hits": hits }))
+    }
+}
+
+impl Engine {
     pub async fn move_reflection(
         &self,
         domain: &str,

@@ -481,7 +481,9 @@ pub async fn set_member(
     summary = "Remove a membership, or leave a domain.",
     description = "Needs manager access on the domain - its manager, its \
                    owner, or an instance admin - OR that the principal is the \
-                   caller itself, which is how a member leaves.\n\nRefused on \
+                   caller itself, which is how a member leaves. A member at \
+                   knowledge `none` (a Reflection reader or contributor) \
+                   leaves this way too.\n\nRefused on \
                    a shared domain (409), which has no membership to remove. \
                    The owner cannot be removed here: hand the domain on with \
                    `PUT /domains/{domain}/owner` first. A name that is not a \
@@ -527,12 +529,9 @@ pub async fn remove_member(
     ApiPath((domain, principal)): ApiPath<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     // The account, the 404 and the read-only refusal, in that order, before
-    // anything decides whether this is a leave or an eviction: those three
-    // answers are the same either way, and the leave case must not be a way
-    // around them.
+    // anything else: those answers are the same for a leave and an eviction,
+    // and the leave case must not be a way around them.
     let actor = identity.require_account()?;
-    require_domain_read(&state, &identity, &domain).await?;
-    refuse_read_only(&state)?;
     // The store folds a login name; a path segment is whatever was typed.
     // Compare on the folded form, or `DELETE /members/ADA` by `ada` would be
     // read as an eviction and refused for a caller who is simply leaving - and
@@ -541,6 +540,22 @@ pub async fn remove_member(
     // name, and the owner's) are the store's.
     let principal = principal_key(&principal)?;
     let leaving = principal == actor.name;
+    // A leaver is gated on its own membership row rather than on engram read,
+    // so a member at knowledge `none` (a Reflection contributor or reader)
+    // can leave too. Only a member takes this branch, and a member already
+    // knows the domain exists, so nothing is revealed; everybody else meets
+    // the 404 an unregistered name answers. A name the store cannot read
+    // members for (not a domain name at all) falls through to that gate too.
+    let own_row = leaving
+        && state
+            .auth
+            .domain_members(&domain)
+            .await
+            .is_ok_and(|members| members.iter().any(|m| m.principal == actor.name));
+    if !own_row {
+        require_domain_read(&state, &identity, &domain).await?;
+    }
+    refuse_read_only(&state)?;
     if !leaving {
         refuse_below(&state, &identity, &domain, DomainRight::Manage, "manager").await?;
     }

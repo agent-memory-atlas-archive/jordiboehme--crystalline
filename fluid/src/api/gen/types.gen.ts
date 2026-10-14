@@ -1051,6 +1051,20 @@ export type MoveBody = {
 };
 
 /**
+ * What `POST /domains/{domain}/reflection/move` takes.
+ */
+export type MoveReflectionBody = {
+    /**
+     * The reflection's current path inside reflections/.
+     */
+    from: string;
+    /**
+     * Its new path inside reflections/.
+     */
+    to: string;
+};
+
+/**
  * Where a moved engram came from.
  */
 export type MovedFrom = {
@@ -1126,6 +1140,32 @@ export type OidcProviderView = {
      * The label for the button, when enabled.
      */
     name?: string | null;
+};
+
+/**
+ * What `POST /domains/{domain}/reflection/threads` takes.
+ */
+export type OpenThreadBody = {
+    /**
+     * Which occurrence of the quote, from 1.
+     */
+    occurrence?: number | null;
+    /**
+     * The reflection, its path inside reflections/.
+     */
+    path: string;
+    /**
+     * The exact passage, when the thread is about one.
+     */
+    quote?: string | null;
+    /**
+     * The section the thread is about: its id, or its heading text.
+     */
+    section: string;
+    /**
+     * The first entry.
+     */
+    text: string;
 };
 
 /**
@@ -1259,6 +1299,13 @@ export type ProblemDetail = {
      * The specific occurrence, safe to show to the caller.
      */
     detail: string;
+    /**
+     * An RFC 9457 extension member, present only on the `409` a reflection
+     * route answers when this domain's Reflection lives on another instance:
+     * that instance's address, where the reader is sent. Absent from every
+     * other problem document on this surface.
+     */
+    home_url?: string | null;
     /**
      * The HTTP status, mirrored into the body so a client that only has the
      * parsed payload can still branch on it.
@@ -1553,6 +1600,28 @@ export type SaveManifestBody = {
 };
 
 /**
+ * What `PUT /domains/{domain}/reflections/{*path}` takes.
+ */
+export type SaveReflectionBody = {
+    /**
+     * Only create: refuse with 409 when a reflection already lives at this
+     * path, and leave it untouched. Default false: create or replace.
+     */
+    create?: boolean;
+    /**
+     * The checksum `GET` answered; a reflection that changed since is 409.
+     */
+    expected_checksum?: string | null;
+    /**
+     * The whole reflection. A body without the `<!-- r:... -->` id lines
+     * keeps them: a heading that matches a stored section gets its id back.
+     * Below curate, the stored `reflection:` block stays whatever this
+     * carries.
+     */
+    markdown: string;
+};
+
+/**
  * One or more MANIFEST policy keys to the value each should hold, for example {"sharing": "direct"}. Every key is validated before the first is written.
  */
 export type SetPoliciesBody = {
@@ -1667,6 +1736,24 @@ export type TagAliasesView = {
      * both lists: kept, and flagged.
      */
     problems: Array<ManifestProblem>;
+};
+
+/**
+ * What the three thread actions take.
+ */
+export type ThreadStepBody = {
+    /**
+     * resolve: the short outcome, required.
+     */
+    outcome?: string | null;
+    /**
+     * The reflection the thread is on.
+     */
+    path: string;
+    /**
+     * answer: the text, required; reopen: optional.
+     */
+    text?: string | null;
 };
 
 /**
@@ -4042,6 +4129,511 @@ export type SetDomainOwnerResponses = {
 
 export type SetDomainOwnerResponse = SetDomainOwnerResponses[keyof SetDomainOwnerResponses];
 
+export type GetReflectionStatusData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflection';
+};
+
+export type GetReflectionStatusErrors = {
+    /**
+     * No such domain, or none this caller may see.
+     */
+    404: ProblemDetail;
+};
+
+export type GetReflectionStatusError = GetReflectionStatusErrors[keyof GetReflectionStatusErrors];
+
+export type GetReflectionStatusResponses = {
+    /**
+     * ReflectionStatus. `state` is `off`, `pending` (then `pending_engrams` lists the engrams still under `reflections/` for a caller with `engrams_visible`, and is empty for anyone else), `homeless`, `on` or `elsewhere` (then `home_url` is set). `member` is true when the caller holds a membership row it may leave.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetReflectionStatusResponse = GetReflectionStatusResponses[keyof GetReflectionStatusResponses];
+
+export type MoveReflectionData = {
+    body: MoveReflectionBody;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflection/move';
+};
+
+export type MoveReflectionErrors = {
+    /**
+     * The anonymous viewer, which never writes.
+     */
+    401: ProblemDetail;
+    /**
+     * Below edit access, or this instance is read-only.
+     */
+    403: ProblemDetail;
+    /**
+     * Somebody is editing it, or the Reflection is not here.
+     */
+    409: ProblemDetail;
+    /**
+     * A bad path, or `PACT.md`, which is edited and never moved.
+     */
+    422: ProblemDetail;
+};
+
+export type MoveReflectionError = MoveReflectionErrors[keyof MoveReflectionErrors];
+
+export type MoveReflectionResponses = {
+    /**
+     * Moved with its threads and baseline; links to it rewritten: `{ from, to, links_rewritten, threads_moved }`.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type MoveReflectionResponse = MoveReflectionResponses[keyof MoveReflectionResponses];
+
+export type GetReflectQueueData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: {
+        /**
+         * Page size, default 10, at most 100.
+         */
+        limit?: number;
+        /**
+         * One-based page.
+         */
+        page?: number;
+    };
+    url: '/api/v1/domains/{domain}/reflection/queue';
+};
+
+export type GetReflectQueueErrors = {
+    /**
+     * The Reflection is not here (then possibly `home_url`).
+     */
+    409: ProblemDetail;
+};
+
+export type GetReflectQueueError = GetReflectQueueErrors[keyof GetReflectQueueErrors];
+
+export type GetReflectQueueResponses = {
+    /**
+     * ReflectQueue. `kind` is `feedback` (`what`: `new`, `changed`, `removed`), `update` (`source_changed`, `source_retired`, `source_missing`, `unreflected`, `off_structure`, `pact_changed`) or `review` (`thread`). `sources`, and an `unreflected` item's `folder` and `engrams`, are absent for a caller who cannot read engrams. The MCP `reflect` tool answers the same shape with `scope: { domains, kinds }` in place of `domain` and a `domain` member on each row; its `scope` may carry `unreadable`, the names of the domains whose queue could not be read.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetReflectQueueResponse = GetReflectQueueResponses[keyof GetReflectQueueResponses];
+
+export type GetReflectionReviewData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflection/review';
+};
+
+export type GetReflectionReviewErrors = {
+    /**
+     * The Reflection is not here (then possibly `home_url`).
+     */
+    409: ProblemDetail;
+};
+
+export type GetReflectionReviewError = GetReflectionReviewErrors[keyof GetReflectionReviewErrors];
+
+export type GetReflectionReviewResponses = {
+    /**
+     * ReflectionReview: open threads only, grouped by reflection, groups and threads oldest first; `queue` is the ReflectQueue's page 1 at `limit` 50.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetReflectionReviewResponse = GetReflectionReviewResponses[keyof GetReflectionReviewResponses];
+
+export type SearchReflectionsData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: {
+        /**
+         * The words to find. Required; a missing or empty `q` answers 422.
+         */
+        q?: string;
+        /**
+         * At most this many hits, default 20, at most 100.
+         */
+        limit?: number;
+    };
+    url: '/api/v1/domains/{domain}/reflection/search';
+};
+
+export type SearchReflectionsErrors = {
+    /**
+     * The Reflection is not here (then possibly `home_url`).
+     */
+    409: ProblemDetail;
+    /**
+     * A missing or empty `q`.
+     */
+    422: ProblemDetail;
+};
+
+export type SearchReflectionsError = SearchReflectionsErrors[keyof SearchReflectionsErrors];
+
+export type SearchReflectionsResponses = {
+    /**
+     * `{ query, hits: [{ path, title, section, heading, snippet }] }`, best first. `section` is the section id, `_top` for the text before the first heading, or `null` for a heading with no id yet.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type SearchReflectionsResponse = SearchReflectionsResponses[keyof SearchReflectionsResponses];
+
+export type ListReflectionThreadsData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: {
+        /**
+         * open (default), resolved or all.
+         */
+        status?: string;
+        /**
+         * Only this reflection's threads.
+         */
+        path?: string;
+    };
+    url: '/api/v1/domains/{domain}/reflection/threads';
+};
+
+export type ListReflectionThreadsErrors = {
+    /**
+     * The Reflection is not here (then possibly `home_url`).
+     */
+    409: ProblemDetail;
+};
+
+export type ListReflectionThreadsError = ListReflectionThreadsErrors[keyof ListReflectionThreadsErrors];
+
+export type ListReflectionThreadsResponses = {
+    /**
+     * `{ threads: [ThreadView] }`, oldest first. A thread's `anchor.section` is the section's id, or its heading text for a heading with no id yet; `anchor.state` is `found`, `text_changed` or `section_gone`; `waiting_on` is `agent` when the last entry is a person's and `people` when it is an agent's; `age_secs` counts from the last entry.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type ListReflectionThreadsResponse = ListReflectionThreadsResponses[keyof ListReflectionThreadsResponses];
+
+export type OpenReflectionThreadData = {
+    body: OpenThreadBody;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflection/threads';
+};
+
+export type OpenReflectionThreadErrors = {
+    /**
+     * The anonymous viewer: a comment needs somebody to sign it.
+     */
+    401: ProblemDetail;
+    /**
+     * This instance is read-only.
+     */
+    403: ProblemDetail;
+    /**
+     * The Reflection is not here (then possibly `home_url`).
+     */
+    409: ProblemDetail;
+    /**
+     * An unknown section, a quote the section does not hold, or an empty text.
+     */
+    422: ProblemDetail;
+};
+
+export type OpenReflectionThreadError = OpenReflectionThreadErrors[keyof OpenReflectionThreadErrors];
+
+export type OpenReflectionThreadResponses = {
+    /**
+     * The new thread as a ThreadView; its `anchor.section` is the section's id, or its heading text for a heading with no id yet.
+     */
+    201: {
+        [key: string]: unknown;
+    };
+};
+
+export type OpenReflectionThreadResponse = OpenReflectionThreadResponses[keyof OpenReflectionThreadResponses];
+
+export type StepReflectionThreadData = {
+    body: ThreadStepBody;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+        /**
+         * The thread id (t-...).
+         */
+        id: string;
+        /**
+         * answer, resolve or reopen; any other answers 404.
+         */
+        action: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflection/threads/{id}/{action}';
+};
+
+export type StepReflectionThreadErrors = {
+    /**
+     * The anonymous viewer: an entry needs somebody to sign it.
+     */
+    401: ProblemDetail;
+    /**
+     * This instance is read-only.
+     */
+    403: ProblemDetail;
+    /**
+     * No such thread, or an action other than answer, resolve or reopen.
+     */
+    404: ProblemDetail;
+    /**
+     * The Reflection is not here (then possibly `home_url`).
+     */
+    409: ProblemDetail;
+    /**
+     * An answer with no text, or a resolve with no outcome (an empty one included).
+     */
+    422: ProblemDetail;
+};
+
+export type StepReflectionThreadError = StepReflectionThreadErrors[keyof StepReflectionThreadErrors];
+
+export type StepReflectionThreadResponses = {
+    /**
+     * The thread as a ThreadView after the step; its `anchor.section` is the section's id, or its heading text for a heading with no id yet.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type StepReflectionThreadResponse = StepReflectionThreadResponses[keyof StepReflectionThreadResponses];
+
+export type GetReflectionTreeData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflection/tree';
+};
+
+export type GetReflectionTreeErrors = {
+    /**
+     * No such domain, or none this caller may see.
+     */
+    404: ProblemDetail;
+    /**
+     * The Reflection is off, pending, homeless or lives elsewhere (then the `home_url` member names where).
+     */
+    409: ProblemDetail;
+};
+
+export type GetReflectionTreeError = GetReflectionTreeErrors[keyof GetReflectionTreeErrors];
+
+export type GetReflectionTreeResponses = {
+    /**
+     * ReflectionTree: folders first, then reflections, each level sorted by name in byte order. `PACT.md` is only under `pact`, never in `nodes`.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetReflectionTreeResponse = GetReflectionTreeResponses[keyof GetReflectionTreeResponses];
+
+export type DeleteReflectionData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+        /**
+         * The reflection's path inside reflections/; may contain slashes.
+         */
+        path: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflections/{path}';
+};
+
+export type DeleteReflectionErrors = {
+    /**
+     * The anonymous viewer, which never writes.
+     */
+    401: ProblemDetail;
+    /**
+     * Below edit access, or this instance is read-only.
+     */
+    403: ProblemDetail;
+    /**
+     * Somebody is editing it, or the Reflection is not here.
+     */
+    409: ProblemDetail;
+    /**
+     * A bad path, or `PACT.md`, which is edited and never deleted.
+     */
+    422: ProblemDetail;
+};
+
+export type DeleteReflectionError = DeleteReflectionErrors[keyof DeleteReflectionErrors];
+
+export type DeleteReflectionResponses = {
+    /**
+     * Deleted with its threads and baseline.
+     */
+    204: void;
+};
+
+export type DeleteReflectionResponse = DeleteReflectionResponses[keyof DeleteReflectionResponses];
+
+export type GetReflectionData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+        /**
+         * The reflection's path inside reflections/; may contain slashes.
+         */
+        path: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflections/{path}';
+};
+
+export type GetReflectionErrors = {
+    /**
+     * No such domain or reflection, or none this caller may see.
+     */
+    404: ProblemDetail;
+    /**
+     * The Reflection is not here (off, pending, homeless or elsewhere, then with `home_url`).
+     */
+    409: ProblemDetail;
+};
+
+export type GetReflectionError = GetReflectionErrors[keyof GetReflectionErrors];
+
+export type GetReflectionResponses = {
+    /**
+     * ReflectionDoc. `markdown` is the whole file for a caller with `engrams_visible`, and the file without its `reflection:` frontmatter block for anyone else; `sections` (and their one-based `line`) are computed over the `markdown` answered; `checksum` is always the stored file's. `sections[].sources` is absent, not empty, without `engrams_visible`. `threads` holds the open threads; `live` is present while a co-editing room is open.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetReflectionResponse = GetReflectionResponses[keyof GetReflectionResponses];
+
+export type SaveReflectionData = {
+    body: SaveReflectionBody;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+        /**
+         * The reflection's path inside reflections/; may contain slashes.
+         */
+        path: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflections/{path}';
+};
+
+export type SaveReflectionErrors = {
+    /**
+     * The anonymous viewer, which never writes.
+     */
+    401: ProblemDetail;
+    /**
+     * Below edit access (curate for PACT.md), with a detail naming the right held and the right needed; the domain is off the caller's write list; or this instance is read-only.
+     */
+    403: ProblemDetail;
+    /**
+     * A stale `expected_checksum` (detail starting "stale edit"), a create over an existing page, or the Reflection is not here (then possibly `home_url`).
+     */
+    409: ProblemDetail;
+    /**
+     * A bad path or body.
+     */
+    422: ProblemDetail;
+};
+
+export type SaveReflectionError = SaveReflectionErrors[keyof SaveReflectionErrors];
+
+export type SaveReflectionResponses = {
+    /**
+     * Written: `{ domain, path, checksum, created, ids_assigned, curated }`. `curated` says whether this write advanced the baseline.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type SaveReflectionResponse = SaveReflectionResponses[keyof SaveReflectionResponses];
+
 export type RenameDomainData = {
     body: RenameBody;
     path: {
@@ -5734,6 +6326,24 @@ export type GetOpenapiDocumentResponses = {
 };
 
 export type GetOpenapiDocumentResponse = GetOpenapiDocumentResponses[keyof GetOpenapiDocumentResponses];
+
+export type ListReflectionDomainsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/reflection/domains';
+};
+
+export type ListReflectionDomainsResponses = {
+    /**
+     * ReflectionDomains: `{ domains: [{ domain, state, right, engrams_visible, home, home_url, open_threads }] }`. `state` is `on`, `pending`, `homeless` or `elsewhere`; `home` is `here`, `local`, `elsewhere` (then `home_url` is set) or `null` (`pending`, `homeless`); `open_threads` is 0 unless `state` is `on`.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type ListReflectionDomainsResponse = ListReflectionDomainsResponses[keyof ListReflectionDomainsResponses];
 
 export type SearchData = {
     body?: never;
