@@ -1611,3 +1611,62 @@ async fn an_unscoped_reflect_counts_only_the_domains_mounted_from_a_source() {
     assert_eq!(all["scope"]["domains"], json!(["open"]), "{all}");
     assert!(all.get("missing").is_none(), "{all}");
 }
+
+/// The scoped request a connected machine sends screens its domains the way
+/// an unscoped queue does: a domain that is read-only on the server is left
+/// out, and one whose queue cannot be read is named in `scope.unreadable`
+/// under this machine's name, never dropped in silence.
+#[tokio::test]
+async fn a_forwarded_reflect_skips_a_read_only_domain_and_names_an_unreadable_one() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    for (domain, extra) in [
+        ("open", "reflection: on\nread_only: on\n"),
+        ("lab", "reflection: on\n"),
+    ] {
+        let manifest = server.file(domain, "MANIFEST.md");
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        std::fs::write(
+            &manifest,
+            text.replace("status: stable\n", &format!("status: stable\n{extra}")),
+        )
+        .unwrap();
+    }
+    server.engine.sync(None).await.unwrap();
+    server
+        .engine
+        .write_reflection(
+            &crystalline_service::params::WriteReflectionParams {
+                domain: "lab".into(),
+                path: "a.md".into(),
+                markdown: Some("# A\n\n## One\n\nText for people.\n".into()),
+                ..Default::default()
+            },
+            &crystalline_service::ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+    // A threads "file" that is a folder: lab's queue cannot be read.
+    std::fs::create_dir_all(server.file("lab", "reflections/a.threads.md")).unwrap();
+
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let all = call(&machine, "reflect", json!({})).await.unwrap();
+    let rows = all["queue"].as_array().unwrap();
+    assert!(
+        rows.iter()
+            .all(|r| r["domain"] != "open" && r["domain"] != "lab"),
+        "{all}"
+    );
+    let swept = all["scope"]["domains"].as_array().unwrap();
+    assert!(
+        !swept.contains(&json!("open")),
+        "a read-only domain is left out: {all}"
+    );
+    assert_eq!(
+        all["scope"]["unreadable"],
+        json!(["lab"]),
+        "an unreadable domain is named: {all}"
+    );
+    assert!(all.get("missing").is_none(), "{all}");
+}

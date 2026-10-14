@@ -703,12 +703,16 @@ pub struct ReflectParams {
     /// One-based page number. Defaults to 1.
     #[serde(default)]
     pub page: Option<usize>,
-    /// Treat the named `domains` the way an unnamed queue treats every
-    /// domain: one the caller cannot work, or whose Reflection is not in
-    /// effect, is left out instead of refused. Set only by a connected
-    /// machine asking a server for exactly the domains it mounts from it, so
-    /// the server's counts and pages cover the rows shown there; never in
-    /// the MCP schema.
+    /// Screen the named `domains` the way an unnamed queue screens every
+    /// domain: one that is read-only, replaced by a connected server, not
+    /// registered, or not in effect, or that the caller cannot work, is
+    /// left out instead of refused, and one whose state cannot be read is
+    /// named in `scope.unreadable`. Every domain is still checked with the
+    /// caller's own rights; the flag only turns a per-domain refusal into a
+    /// skip. Any caller may send it; a connected machine sends it to ask a
+    /// server for exactly the domains it mounts from it, so the server's
+    /// counts and pages cover the rows shown there. Kept out of the MCP
+    /// schema.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[schemars(skip)]
     pub skip_unavailable: bool,

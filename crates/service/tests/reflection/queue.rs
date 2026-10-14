@@ -645,6 +645,32 @@ async fn an_unreadable_domain_never_fails_the_unnamed_queue_or_the_counts() {
     );
 }
 
+/// `skip_unavailable` screens named domains as the unnamed queue screens
+/// every domain: an unreadable one is named, an unregistered name is left
+/// out, and neither fails the queue.
+#[tokio::test]
+async fn a_lenient_named_queue_names_an_unreadable_domain_and_skips_an_unknown_one() {
+    let fx = curated(&[]).await;
+    let text = edit_page(&fx, "Deploys run at night.", "Deploys run at dawn.");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &person())
+        .await
+        .unwrap();
+    std::fs::create_dir_all(fx.root.join("reflections/guides/deploying.threads.md")).unwrap();
+    let lenient = ReflectParams {
+        domains: vec!["eng".into(), "nowhere".into()],
+        skip_unavailable: true,
+        ..Default::default()
+    };
+    let queue = fx.engine.reflect(&lenient, &agent()).await.unwrap();
+    assert_eq!(queue["total"], 0, "{queue}");
+    assert_eq!(
+        queue["scope"]["unreadable"],
+        serde_json::json!(["eng"]),
+        "{queue}"
+    );
+}
+
 /// A whole queue carries no `unreadable` member.
 #[tokio::test]
 async fn a_readable_scope_names_nothing_unreadable() {

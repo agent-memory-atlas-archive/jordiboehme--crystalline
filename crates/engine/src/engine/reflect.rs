@@ -408,23 +408,37 @@ impl Engine {
     /// in the order first named), or every registered domain whose
     /// Reflection is in effect here. Beside them, the domains of an unnamed
     /// scope whose state could not be read: they are left out, not a
-    /// failure of the whole scope.
-    async fn reflect_scope(&self, named: &[String]) -> Result<(Vec<String>, Vec<String>)> {
-        if !named.is_empty() {
-            let mut out: Vec<String> = Vec::new();
-            for name in named {
-                if !out.contains(name) {
-                    out.push(name.clone());
-                }
+    /// failure of the whole scope. `lenient` screens the named ones the way
+    /// the unnamed scope screens every domain (see
+    /// `ReflectParams::skip_unavailable`).
+    async fn reflect_scope(
+        &self,
+        named: &[String],
+        lenient: bool,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        let mut once: Vec<String> = Vec::new();
+        for name in named {
+            if !once.contains(name) {
+                once.push(name.clone());
             }
-            return Ok((out, Vec::new()));
         }
+        if !named.is_empty() && !lenient {
+            return Ok((once, Vec::new()));
+        }
+        let names = if named.is_empty() {
+            let mut names = self.known_domain_names();
+            names.sort();
+            names.dedup();
+            names
+        } else {
+            // A name nobody registered is left out like any other domain
+            // the queue cannot work, never reported as unreadable.
+            let known = self.known_domain_names();
+            once.into_iter().filter(|n| known.contains(n)).collect()
+        };
         // An unnamed queue leaves out a read-only domain (like evolve) and a
         // local copy a connected server replaces (decision D19).
         let shadowed = self.shadowed_domains();
-        let mut names = self.known_domain_names();
-        names.sort();
-        names.dedup();
         let mut out = Vec::new();
         let mut unreadable = Vec::new();
         for name in names {
@@ -460,7 +474,7 @@ impl Engine {
         let mut items = Vec::new();
         let mut swept = Vec::new();
         let mut visible_everywhere = true;
-        let (scope, mut unreadable) = self.reflect_scope(&p.domains).await?;
+        let (scope, mut unreadable) = self.reflect_scope(&p.domains, p.skip_unavailable).await?;
         for domain in scope {
             let access = match self
                 .require_reflection(&domain, caller, ReflectionRight::Read)
@@ -589,7 +603,7 @@ impl Engine {
         caller: &ReflectionCaller,
     ) -> Result<Vec<(String, usize)>> {
         let mut out = Vec::new();
-        for domain in self.reflect_scope(domains).await?.0 {
+        for domain in self.reflect_scope(domains, false).await?.0 {
             let Ok(access) = self
                 .require_reflection(&domain, caller, ReflectionRight::Curate)
                 .await
