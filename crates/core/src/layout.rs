@@ -226,7 +226,7 @@ pub fn slash_rel(root: &Path, path: &Path) -> String {
 /// marker. A page marker is a section id line `<!-- r:<hex> -->`, the
 /// Reflection's provenance key in the frontmatter, or a baseline twin under
 /// `reflections/.reflected/`; a threads file (`<page>.threads.md`) is marked
-/// by its page on disk. Crystalline writes every page with id lines, so
+/// when its page is a marked page. Crystalline writes every page with id lines, so
 /// a domain switched off and on again finds no pending engram; a page a
 /// person wrote by hand with none of the markers reads as an engram, which
 /// only holds the switch pending (no file is ever dropped).
@@ -261,36 +261,55 @@ pub fn is_pending_engram(root: &Path, rel: &str) -> bool {
         return false;
     };
     let text = crate::to_lf(&text);
-    if crate::parse_engram(&text).is_err() || carries_page_marker(&text) {
+    if crate::parse_engram(&text).is_err() {
         return false;
     }
-    // A baseline twin marks a page, and the page beside it marks a threads
-    // file; a twin that cannot be stat'd is taken as absent, which keeps the
-    // file pending.
-    let twin = match crate::reflection::classify(inner) {
-        ReflectionFile::Threads { of } => of,
-        _ => crate::reflection::baseline_path(inner),
-    };
-    !root.join(folder).join(twin).try_exists().unwrap_or(false)
+    let folder = root.join(folder);
+    match crate::reflection::classify(inner) {
+        // A threads file is the page's when its page is a marked page; one
+        // beside an unmarked or unreadable file stays an engram.
+        ReflectionFile::Threads { of } => !page_marked(&folder, &of),
+        _ => !carries_page_marker(&text) && !has_baseline_twin(&folder, inner),
+    }
 }
 
-/// Whether `source` carries a page marker in its own text: a section id line
-/// in the body or the Reflection's provenance key in the frontmatter.
-fn carries_page_marker(source: &str) -> bool {
-    let body = match crate::frontmatter::split_frontmatter(source) {
-        Some(parts) => {
-            if let Ok(serde_yaml_ng::Value::Mapping(map)) =
-                serde_yaml_ng::from_str::<serde_yaml_ng::Value>(parts.yaml)
-                && map.contains_key(crate::reflection::PROVENANCE_KEY)
-            {
-                return true;
-            }
-            parts.body
-        }
-        None => source,
+/// Whether the page at `inner` in the Reflection's `folder` carries a page
+/// marker: in its own text, or as a baseline twin. A page that cannot be read
+/// is unmarked, which keeps its threads file pending.
+fn page_marked(folder: &Path, inner: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(folder.join(inner)) else {
+        return false;
     };
-    body.lines()
-        .any(|line| crate::reflection::parse_id_line(line).is_some())
+    carries_page_marker(&crate::to_lf(&text)) || has_baseline_twin(folder, inner)
+}
+
+/// Whether `inner` has a baseline twin under the folder's `.reflected/`. A
+/// twin that cannot be stat'd is taken as absent, which keeps the file
+/// pending.
+fn has_baseline_twin(folder: &Path, inner: &str) -> bool {
+    folder
+        .join(crate::reflection::baseline_path(inner))
+        .try_exists()
+        .unwrap_or(false)
+}
+
+/// Whether `source` carries a page marker in its own text: the Reflection's
+/// provenance key in the frontmatter, or a section id line, which is the line
+/// right under a `##` heading outside a fenced code block (the sections
+/// reader's rule), so an engram that shows the format in a fence is no page.
+fn carries_page_marker(source: &str) -> bool {
+    if let Some(parts) = crate::frontmatter::split_frontmatter(source)
+        && let Ok(serde_yaml_ng::Value::Mapping(map)) =
+            serde_yaml_ng::from_str::<serde_yaml_ng::Value>(parts.yaml)
+        && map.contains_key(crate::reflection::PROVENANCE_KEY)
+    {
+        return true;
+    }
+    // The first section is the top, which always answers its fixed id.
+    crate::reflection::split_sections(source)
+        .iter()
+        .skip(1)
+        .any(|section| section.id.is_some())
 }
 
 #[cfg(test)]
@@ -522,6 +541,73 @@ mod tests {
             if unreadable {
                 assert!(pending, "a file that cannot be read counts as pending");
             }
+        }
+    }
+
+    fn domain_with(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for (rel, text) in files {
+            let path = dir.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        dir
+    }
+
+    /// A threads file is the page's only when its page is a marked page: one
+    /// beside a file that does not parse, or beside an unmarked engram,
+    /// stays an engram.
+    #[test]
+    fn a_threads_file_is_marked_by_a_marked_page_only() {
+        let dir = domain_with(&[
+            ("reflections/broken.md", "---\n: [\n---\n"),
+            ("reflections/broken.threads.md", "# Threads\n\nMine.\n"),
+            ("reflections/note.md", "# Note\n"),
+            ("reflections/note.threads.md", "# Threads\n"),
+            (
+                "reflections/page.md",
+                "# Page\n\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n",
+            ),
+            ("reflections/page.threads.md", "# Threads\n"),
+            ("reflections/twin.md", "# Twin\n"),
+            ("reflections/.reflected/twin.md", "# Twin\n"),
+            ("reflections/twin.threads.md", "# Threads\n"),
+        ]);
+        for (rel, pending) in [
+            ("reflections/broken.threads.md", true),
+            ("reflections/note.threads.md", true),
+            ("reflections/page.threads.md", false),
+            ("reflections/twin.threads.md", false),
+        ] {
+            assert_eq!(is_pending_engram(dir.path(), rel), pending, "{rel}");
+        }
+    }
+
+    /// Only an id line right under a `##` heading outside a fence marks a
+    /// page: an engram that shows the format in a code block, or has an
+    /// id-shaped line in its prose, stays an engram.
+    #[test]
+    fn only_a_section_id_line_marks_a_page() {
+        let dir = domain_with(&[
+            (
+                "reflections/fenced.md",
+                "# Format\n\n```markdown\n## Part\n<!-- r:cafe1234 -->\n```\n",
+            ),
+            (
+                "reflections/loose.md",
+                "# Loose\n\nText.\n<!-- r:cafe1234 -->\n",
+            ),
+            (
+                "reflections/page.md",
+                "# Page\n\n## Part\n<!-- r:cafe1234 -->\n\nText.\n",
+            ),
+        ]);
+        for (rel, pending) in [
+            ("reflections/fenced.md", true),
+            ("reflections/loose.md", true),
+            ("reflections/page.md", false),
+        ] {
+            assert_eq!(is_pending_engram(dir.path(), rel), pending, "{rel}");
         }
     }
 }
