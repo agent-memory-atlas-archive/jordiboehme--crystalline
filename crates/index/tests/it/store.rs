@@ -8834,6 +8834,44 @@ parity!(
     odd_engrams_keep_the_switch_pending_across_a_wipe
 );
 
+/// An engram under `reflections/` whose frontmatter stops parsing keeps the
+/// row of its last good version (the walk fails on it and leaves the row),
+/// so it still counts as pending: the switch that arrives then stays
+/// pending, and the engram row stays in the index instead of the file being
+/// read as a page.
+async fn an_engram_whose_frontmatter_breaks_holds_the_switch(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", MANIFEST_OFF);
+    write(
+        root,
+        "reflections/old.md",
+        "---\ntype: note\nstatus: draft\ntitle: Old\n---\n\n# Old\n\nbrokenfrontterm\n",
+    );
+    sync_domain(store, "eng", root).await.unwrap();
+    write(
+        root,
+        "reflections/old.md",
+        "---\n: [\n---\n\n# Old\n\nbrokenfrontterm, edited\n",
+    );
+    write(root, "MANIFEST.md", &manifest_on());
+    let report = sync_domain(store, "eng", root).await.unwrap();
+    assert_eq!(report.failed.len(), 1, "{report:?}");
+    assert!(
+        reflection_paths(store, "eng").await.is_empty(),
+        "the switch is pending"
+    );
+    assert_eq!(
+        engram_rows_under_reflections(store, "eng").await,
+        ["reflections/old.md"],
+        "the last good version stays indexed"
+    );
+}
+parity!(
+    an_engram_whose_frontmatter_breaks_holds_the_switch_on_both_backends,
+    an_engram_whose_frontmatter_breaks_holds_the_switch
+);
+
 /// R48: switched off, the pages are indexed as engrams; switched on again,
 /// their id lines say they are pages, so the switch takes effect at once and
 /// the pages are reflection rows again, with no engram row left behind.

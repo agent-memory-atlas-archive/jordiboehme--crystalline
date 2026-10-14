@@ -229,9 +229,8 @@ pub fn slash_rel(root: &Path, path: &Path) -> String {
 
 /// Whether the file at `rel` (domain-relative, under `reflections/`) in the
 /// domain at `root` is an engram that waits to move out of the Reflection's
-/// folder: the walk would index it as an engram (the class with the
-/// Reflection off and the parse the sync applies) and it carries no page
-/// marker. A page marker is a section id line `<!-- r:<hex> -->`, the
+/// folder: the walk would take it for an engram (the class with the
+/// Reflection off) and it carries no page marker. A page marker is a section id line `<!-- r:<hex> -->`, the
 /// Reflection's provenance key in the frontmatter, or a baseline twin under
 /// `reflections/.reflected/`; a threads file (`<page>.threads.md`) is marked
 /// when its page is a marked page. Crystalline writes an id line under every
@@ -241,12 +240,14 @@ pub fn slash_rel(root: &Path, path: &Path) -> String {
 /// heading and no provenance, reads as an engram, which only holds the
 /// switch pending (no file is ever dropped).
 ///
-/// A file that cannot be read counts as pending (fail closed); a file that is
-/// gone, is not valid UTF-8 or does not parse is no engram, as the walk sees
-/// it. The class is taken from [`DomainLayout::bare`], which knows no artifact
-/// folder, so a markdown file in an in-root artifact folder under
-/// `reflections/` may be reported pending although the walk skips it: the
-/// safe direction.
+/// A file that cannot be read counts as pending (fail closed), and so does a
+/// file whose frontmatter does not parse and that carries no page marker:
+/// the walk fails on it and keeps the row of its last good version, which is
+/// an engram row the switch must not drop. A file that is gone or is not
+/// valid UTF-8 is no engram. The class is taken from
+/// [`DomainLayout::bare`], which knows no artifact folder, so a markdown file
+/// in an in-root artifact folder under `reflections/` may be reported
+/// pending although the walk skips it: the safe direction.
 ///
 /// This is the one predicate for "an engram under `reflections/`": the sync
 /// asks it to decide whether the switch is in effect, and the switch-on
@@ -271,9 +272,6 @@ pub fn is_pending_engram(root: &Path, rel: &str) -> bool {
         return false;
     };
     let text = crate::to_lf(&text);
-    if crate::parse_engram(&text).is_err() {
-        return false;
-    }
     let folder = root.join(folder);
     match crate::reflection::classify(inner) {
         // A threads file is the page's when its page is a marked page; one
@@ -538,7 +536,7 @@ mod tests {
             ("reflections/prov.md", false),
             ("reflections/twin.md", false),
             ("reflections/twin.threads.md", false),
-            ("reflections/broken.md", false),
+            ("reflections/broken.md", true),
             ("reflections/notes.txt", false),
             ("reflections/gone.md", false),
             ("notes/a.md", false),
