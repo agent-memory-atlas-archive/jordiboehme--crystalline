@@ -1459,7 +1459,7 @@ async fn a_reflection_room_saves_straight_to_the_file_and_assigns_ids_on_close()
     let sessions = CollabSessions::new(engine.clone());
     engine.set_collab_sessions(&sessions);
     let mut joined = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let doc = sync_client(&joined).await;
@@ -1495,11 +1495,11 @@ async fn two_people_in_one_reflection_room_merge_and_the_baseline_is_untouched()
     let before = std::fs::read(&baseline).unwrap();
     let sessions = CollabSessions::new(engine.clone());
     let mut first = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let second = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     assert!(
@@ -1537,7 +1537,7 @@ async fn an_agent_write_composes_into_an_open_reflection_room_and_a_move_waits()
     let sessions = CollabSessions::new(engine.clone());
     engine.set_collab_sessions(&sessions);
     let joined = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let _doc = sync_client(&joined).await;
@@ -1615,7 +1615,10 @@ async fn a_file_or_page_move_waits_while_a_page_that_links_it_is_open() {
     engine.sync(None).await.unwrap();
     let sessions = CollabSessions::new(engine.clone());
     engine.set_collab_sessions(&sessions);
-    let joined = sessions.join_reflection("eng", "b.md").await.unwrap();
+    let joined = sessions
+        .join_reflection("eng", "b.md", "ada")
+        .await
+        .unwrap();
     let _doc = sync_client(&joined).await;
     let owner = crystalline_service::ReflectionCaller::owner();
     let err = engine
@@ -1649,7 +1652,7 @@ async fn a_reflection_room_never_carries_the_provenance_block() {
     let sessions = CollabSessions::new(engine.clone());
     engine.set_collab_sessions(&sessions);
     let mut joined = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
 
@@ -1747,7 +1750,7 @@ async fn a_reflection_room_never_answers_an_engram_lookup() {
     let (_tmp, engine, _scratch) = reflection_fixture().await;
     let sessions = CollabSessions::new(engine.clone());
     let _joined = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     assert!(
@@ -1783,7 +1786,7 @@ async fn a_read_only_domain_refuses_a_reflection_room() {
     let sessions = CollabSessions::new(engine.clone());
     assert!(
         sessions
-            .join_reflection("eng", "guides/a.md")
+            .join_reflection("eng", "guides/a.md", "ada")
             .await
             .is_err()
     );
@@ -1800,7 +1803,7 @@ async fn a_reflection_room_save_spells_other_domains_by_their_canonical_name() {
     let (tmp, engine, _scratch) = reflection_fixture_with_alias("engineering").await;
     let sessions = CollabSessions::new(engine.clone());
     let mut joined = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let doc = sync_client(&joined).await;
@@ -1836,7 +1839,7 @@ async fn a_reflection_deleted_under_its_room_is_a_conflict_not_a_resurrection() 
     let path = tmp.path().join("eng/reflections/guides/a.md");
     let sessions = CollabSessions::new(engine.clone());
     let mut joined = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let doc = sync_client(&joined).await;
@@ -1880,7 +1883,7 @@ async fn a_reflection_room_closed_untouched_writes_nothing() {
         .unwrap();
     let sessions = CollabSessions::new(engine.clone());
     let joined = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let _doc = sync_client(&joined).await;
@@ -1902,7 +1905,7 @@ async fn a_reflection_room_kept_open_after_its_close_save_mints_no_ids() {
     let path = tmp.path().join("eng/reflections/guides/a.md");
     let sessions = CollabSessions::new(engine.clone());
     let mut joined = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let doc = sync_client(&joined).await;
@@ -1945,7 +1948,7 @@ async fn an_agent_write_into_an_open_room_keeps_a_persons_unsaved_typing() {
     let sessions = CollabSessions::new(engine.clone());
     engine.set_collab_sessions(&sessions);
     let mut joined = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let doc = sync_client(&joined).await;
@@ -1997,7 +2000,7 @@ async fn a_room_save_between_an_agent_write_and_its_merge_loses_nothing() {
     // file alone, as it does in the window before its live arm runs.
     let sessions = CollabSessions::new(engine.clone());
     let mut joined = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let doc = sync_client(&joined).await;
@@ -2059,7 +2062,7 @@ async fn a_room_save_respells_an_untouched_section_without_recording_anybody() {
     .unwrap();
     let sessions = CollabSessions::new(engine.clone());
     let mut joined = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let doc = sync_client(&joined).await;
@@ -2098,7 +2101,7 @@ async fn a_settle_under_an_open_room_survives_its_next_save() {
     let sessions = CollabSessions::new(engine.clone());
     engine.set_collab_sessions(&sessions);
     let mut joined = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let doc = sync_client(&joined).await;
@@ -2141,7 +2144,7 @@ async fn a_reflection_room_takes_only_a_reflection_path() {
     let sessions = CollabSessions::new(engine.clone());
     for path in ["../MANIFEST.md", ".reflected/guides/a.md", "guides/a.txt"] {
         assert!(
-            sessions.join_reflection("eng", path).await.is_err(),
+            sessions.join_reflection("eng", path, "ada").await.is_err(),
             "{path}"
         );
     }
@@ -2158,7 +2161,7 @@ async fn an_agent_write_that_collides_with_unsaved_typing_raises_the_rooms_confl
     let sessions = CollabSessions::new(engine.clone());
     engine.set_collab_sessions(&sessions);
     let mut joined = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let doc = sync_client(&joined).await;
@@ -2215,7 +2218,7 @@ async fn an_agent_write_into_a_room_in_conflict_is_reported_as_waiting() {
     let sessions = CollabSessions::new(engine.clone());
     engine.set_collab_sessions(&sessions);
     let mut joined = sessions
-        .join_reflection("eng", "guides/a.md")
+        .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let doc = sync_client(&joined).await;
@@ -2263,5 +2266,87 @@ async fn an_agent_write_into_a_room_in_conflict_is_reported_as_waiting() {
         std::fs::read_to_string(&path)
             .unwrap()
             .contains("Second, from the agent.")
+    );
+}
+
+/// Publish a display name in awareness, as a browser's provider does.
+async fn publish_name(joined: &Joined, doc: &Doc, name: &str) {
+    let mut awareness = yrs::sync::Awareness::new(doc.clone());
+    awareness.set_local_state_raw(format!("{{\"user\":{{\"name\":\"{name}\"}}}}"));
+    let update = awareness.update().unwrap();
+    joined
+        .session
+        .handle_frame(joined.conn, &Message::Awareness(update).encode_v1())
+        .await;
+}
+
+/// A room save names the signed-in account of each connection that sent an
+/// edit: a name a client puts into awareness is not recorded, and a
+/// participant who is there and types nothing is not either, even when its
+/// provider sends the room's whole state back.
+#[tokio::test]
+async fn a_reflection_room_names_the_accounts_that_typed_and_nobody_else() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    let mut typist = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let silent = sessions
+        .join_reflection("eng", "guides/a.md", "bob")
+        .await
+        .unwrap();
+    let doc = sync_client(&typist).await;
+    let _silent_doc = sync_client(&silent).await;
+    publish_name(&typist, &doc, "keeper").await;
+    publish_name(&silent, &_silent_doc, "bob").await;
+    append_line(&typist, &doc, "Typed by ada.").await;
+    // bob's provider answers with everything it holds, ada's edit included:
+    // it applies, and it is no edit of bob's.
+    let echo = doc
+        .transact()
+        .encode_state_as_update_v1(&Default::default());
+    silent
+        .session
+        .handle_frame(
+            silent.conn,
+            &Message::Sync(SyncMessage::SyncStep2(echo)).encode_v1(),
+        )
+        .await;
+    typist
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    until_saved(&mut typist.rx).await;
+    let saved = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    let prov = crystalline_core::reflection::provenance::read_provenance(&saved);
+    assert_eq!(
+        prov["bbbb2222"].changed_by,
+        vec!["ada".to_string()],
+        "{saved}"
+    );
+}
+
+/// The person who typed and left before the room's last save is still the
+/// one it names: the account is kept past the disconnect.
+#[tokio::test]
+async fn the_final_save_names_the_typist_who_already_left() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    let joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed before leaving.").await;
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    let saved = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    assert!(saved.contains("Typed before leaving."), "{saved}");
+    let prov = crystalline_core::reflection::provenance::read_provenance(&saved);
+    assert_eq!(
+        prov["bbbb2222"].changed_by,
+        vec!["ada".to_string()],
+        "{saved}"
     );
 }

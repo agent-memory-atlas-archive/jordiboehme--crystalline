@@ -751,7 +751,7 @@
           "reflection"
         ],
         "summary": "Upgrade to a real-time co-editing session on one reflection.",
-        "description": "WebSocket upgrade for the same y-sync + awareness protocol the engram room speaks, over a reflection page. The Reflection's edit right is required (curate for `PACT.md`), not engram access, plus a live session cookie and a same-host Origin header; a read-only instance or domain refuses. There is no draft overlay: every save lands in the file. The room text is the page without its `reflection:` frontmatter block, for every participant, and the checksum in `hello` and `save_state` is the file's. Section ids are added when the room closes. Refusals are problem+json.",
+        "description": "WebSocket upgrade for the same y-sync + awareness protocol the engram room speaks, over a reflection page. The Reflection's edit right is required (curate for `PACT.md`), not engram access, plus a live session cookie and a same-host Origin header; a read-only instance or domain refuses. There is no draft overlay: every save lands in the file. The room text is the page without its `reflection:` frontmatter block, for every participant, and the checksum in `hello` and `save_state` is the file's. Section ids are added when the room closes. A save records as the author of a changed section the signed-in account of each connection that sent an edit since the save before; the names in awareness are for display only. Refusals are problem+json.",
         "operationId": "join_reflection_room",
         "parameters": [
           {

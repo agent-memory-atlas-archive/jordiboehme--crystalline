@@ -208,8 +208,11 @@ pub async fn join(
                    lands in the file. The room text is the page without its \
                    `reflection:` frontmatter block, for every participant, and \
                    the checksum in `hello` and `save_state` is the file's. \
-                   Section ids are added when the room closes. Refusals are \
-                   problem+json.",
+                   Section ids are added when the room closes. A save \
+                   records as the author of a changed section the signed-in \
+                   account of each connection that sent an edit since the \
+                   save before; the names in awareness are for display \
+                   only. Refusals are problem+json.",
     params(
         ("domain" = String, Path, description = "The domain."),
         ("path" = String, Path, description = "The reflection's path inside reflections/; may contain slashes."),
@@ -241,9 +244,10 @@ pub async fn join_reflection(
     )
     .await?;
     // The gate before anything that could tell a caller about the page.
+    let caller = crate::reflections::caller(&identity);
     state
         .engine
-        .require_reflection_edit(&domain, &path, &crate::reflections::caller(&identity))
+        .require_reflection_edit(&domain, &path, &caller)
         .await
         .map_err(crate::reflections::reflection_error)?;
     state
@@ -262,7 +266,13 @@ pub async fn join_reflection(
     // Under the join pass, for the reason `join` gives.
     let joined = {
         let _pass = state.join_pass().await;
-        state.collab.join_reflection(&domain, &path).await
+        // The signed-in account, the name a REST write of the page records
+        // too: a save names it when this connection edited, never a name
+        // the client put into awareness.
+        state
+            .collab
+            .join_reflection(&domain, &path, &caller.author.name)
+            .await
     }
     .map_err(join_error)?;
     let sessions = state.collab.clone();

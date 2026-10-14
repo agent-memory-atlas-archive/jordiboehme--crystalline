@@ -1023,6 +1023,104 @@ async fn the_reflection_room_takes_edit_access_not_engram_access() {
     assert!(socket.is_ok(), "an editor curates and opens PACT.md");
 }
 
+/// A display name in awareness, as a browser's provider publishes it.
+fn awareness_frame(doc: &Doc, name: &str) -> Vec<u8> {
+    let mut awareness = yrs::sync::Awareness::new(doc.clone());
+    awareness.set_local_state_raw(format!("{{\"user\":{{\"name\":\"{name}\"}}}}"));
+    Message::Awareness(awareness.update().unwrap()).encode_v1()
+}
+
+/// Read frames until an awareness state naming `name` arrives.
+async fn wait_for_awareness(socket: &mut Socket, name: &str) {
+    let read = async {
+        loop {
+            let frame = next_binary(socket).await;
+            for message in messages_of(&frame) {
+                if let Message::Awareness(update) = message
+                    && update
+                        .clients
+                        .values()
+                        .any(|entry| entry.json.contains(name))
+                {
+                    return;
+                }
+            }
+        }
+    };
+    tokio::time::timeout(FRAME_TIMEOUT, read)
+        .await
+        .unwrap_or_else(|_| panic!("no awareness naming {name} arrived"));
+}
+
+/// A reflection room records who changed a section from the signed-in
+/// account of the connection that sent the edit: a name the client puts into
+/// awareness is not recorded, and neither is a participant who typed nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reflection_room_records_the_signed_in_typist_and_nobody_else() {
+    let (addr, _scratch, tmp) = serve_reflection().await;
+    let ed = login(addr, "ed", "pw12345678").await;
+    let ann = login(addr, "ann", "pw12345678").await;
+    let page = "/api/v1/collab-reflection/eng/guides/a.md";
+
+    // ed joins and calls himself keeper in awareness.
+    let mut typist = connect(addr, page, Some(&ed.0), same_host(addr))
+        .await
+        .unwrap();
+    let doc = client_doc();
+    typist.send(binary(step1(&doc))).await.unwrap();
+    apply(&doc, &next_sync_step2(&mut typist).await);
+    typist
+        .send(binary(awareness_frame(&doc, "keeper")))
+        .await
+        .unwrap();
+
+    // ann joins and types nothing.
+    let mut silent = connect(addr, page, Some(&ann.0), same_host(addr))
+        .await
+        .unwrap();
+    let silent_doc = client_doc();
+    silent.send(binary(step1(&silent_doc))).await.unwrap();
+    apply(&silent_doc, &next_sync_step2(&mut silent).await);
+
+    typist
+        .send(binary(update_frame(&append_line(&doc, "Typed by ed."))))
+        .await
+        .unwrap();
+    // ann's provider takes the edit in and answers with its whole state, as
+    // a provider's SyncStep2 does: it applies, and it changes nothing.
+    apply(&silent_doc, &next_sync_update(&mut silent).await);
+    let echo = silent_doc
+        .transact()
+        .encode_state_as_update_v1(&Default::default());
+    silent
+        .send(binary(
+            Message::Sync(SyncMessage::SyncStep2(echo)).encode_v1(),
+        ))
+        .await
+        .unwrap();
+    silent
+        .send(binary(awareness_frame(&silent_doc, "ann-in-the-room")))
+        .await
+        .unwrap();
+    // Her frames are handled in order, so once her awareness reaches ed the
+    // echo has been taken in.
+    wait_for_awareness(&mut typist, "ann-in-the-room").await;
+
+    typist
+        .send(binary(control_frame(&Control::Flush)))
+        .await
+        .unwrap();
+    wait_for_control(&mut typist, "saved").await;
+    let saved = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    assert!(saved.contains("Typed by ed."), "{saved}");
+    let prov = crystalline_core::reflection::provenance::read_provenance(&saved);
+    assert_eq!(
+        prov["aaaa1111"].changed_by,
+        vec!["ed".to_string()],
+        "the signed-in typist only: {saved}"
+    );
+}
+
 // --- a room over somebody else's draft ---------------------------------------
 
 /// The instance the overlay tests run against: one file domain `team` that

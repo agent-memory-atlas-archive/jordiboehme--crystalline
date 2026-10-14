@@ -1149,8 +1149,10 @@ impl Engine {
         })
     }
 
-    /// A room's save. `authors` are the names in the room; the stored
-    /// bookkeeping wins over whatever the room text carries. Section ids are
+    /// A room's save. `authors` are the names each changed section records,
+    /// as the room decided them (the signed-in accounts that edited since
+    /// its last save); an empty list records nobody. The stored bookkeeping
+    /// wins over whatever the room text carries. Section ids are
     /// assigned on the `final_save` only. Answers the receipt a room reads
     /// (`checksum`, `permalink`, `path`); `permalink` is `inner`, so a
     /// reflection room is never re-keyed.
@@ -1216,16 +1218,11 @@ impl Engine {
             }
             None => (None, stored_baseline.clone()),
         };
-        let authors: Vec<String> = if authors.is_empty() {
-            vec!["someone".to_string()]
-        } else {
-            authors.to_vec()
-        };
         let (composed, _, prov) = compose_reflection(
             stored.as_deref(),
             &baseline,
             &incoming,
-            &authors,
+            authors,
             final_save,
             &now(),
         )?;

@@ -346,17 +346,28 @@ impl CollabSessions {
         permalink: &str,
         overlay: Option<&str>,
     ) -> Result<Joined, JoinError> {
-        self.join_doc(domain, RoomDoc::Engram(permalink.to_string()), overlay)
-            .await
+        self.join_doc(
+            domain,
+            RoomDoc::Engram(permalink.to_string()),
+            overlay,
+            None,
+        )
+        .await
     }
 
     /// Join the room over a reflection page, opening it from the file on the
     /// first join. A read-only domain opens none. The caller decided that
     /// the caller may edit the page (`super::ws::join_reflection`).
+    ///
+    /// `author` is the signed-in account the connection belongs to, as the
+    /// surface that opened it authenticated it. A save records it in the
+    /// page's bookkeeping when this connection sent an edit since the save
+    /// before; what a client puts into awareness is for display only.
     pub async fn join_reflection(
         self: &Arc<Self>,
         domain: &str,
         path: &str,
+        author: &str,
     ) -> Result<Joined, JoinError> {
         crystalline_core::reflection::validate_reflection_path(path)
             .map_err(|e| JoinError::Engine(EngineError::Invalid(e)))?;
@@ -364,16 +375,24 @@ impl CollabSessions {
             .refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await
             .map_err(JoinError::Engine)?;
-        self.join_doc(domain, RoomDoc::Reflection(path.to_string()), None)
-            .await
+        self.join_doc(
+            domain,
+            RoomDoc::Reflection(path.to_string()),
+            None,
+            Some(author),
+        )
+        .await
     }
 
     /// [`CollabSessions::join`] for a room over any kind of document.
+    /// `author` is the account the connection belongs to, where the room
+    /// records who changed what (a reflection room); `None` elsewhere.
     pub async fn join_doc(
         self: &Arc<Self>,
         domain: &str,
         doc: RoomDoc,
         overlay: Option<&str>,
+        author: Option<&str>,
     ) -> Result<Joined, JoinError> {
         let key = (domain.to_string(), doc, overlay.map(str::to_string));
         // The registry lock is held across open AND the membership check, so a
@@ -408,7 +427,7 @@ impl CollabSessions {
             }
         };
         let conn = self.next_conn.fetch_add(1, Ordering::Relaxed);
-        match session.add_conn(conn).await {
+        match session.add_conn(conn, author).await {
             Ok((rx, greeting)) => Ok(Joined {
                 session,
                 conn,
@@ -921,6 +940,15 @@ struct SessionState {
     last_saved_text: String,
     /// Awareness client ids seen per connection, nulled on its disconnect.
     conns: HashMap<ConnId, HashSet<ClientID>>,
+    /// The signed-in account each connection of a reflection room belongs
+    /// to, as the surface that opened it authenticated it. Never read from
+    /// awareness, which is whatever a client sends.
+    authors: HashMap<ConnId, String>,
+    /// The accounts whose connections sent an edit since the last save
+    /// landed: the names that save records. Kept past a disconnect, so the
+    /// last person to leave is still named by the final save, and cleared
+    /// only when a save lands, so a refused save keeps them for its retry.
+    editors: std::collections::BTreeSet<String>,
     /// The agents standing in this room, keyed by (account, label).
     ///
     /// Beside `conns` and never in it, which is the whole shape of the
@@ -1090,6 +1118,8 @@ impl CollabSession {
                 checksum: loaded.checksum,
                 last_saved_text: lf_content,
                 conns: HashMap::new(),
+                authors: HashMap::new(),
+                editors: std::collections::BTreeSet::new(),
                 agents: HashMap::new(),
                 guests: HashMap::new(),
                 dirty: false,
@@ -1117,12 +1147,16 @@ impl CollabSession {
     async fn add_conn(
         &self,
         conn: ConnId,
+        author: Option<&str>,
     ) -> Result<(broadcast::Receiver<Frame>, Vec<u8>), JoinError> {
         let mut state = self.state.lock().await;
         if state.conns.len() >= MAX_PARTICIPANTS {
             return Err(JoinError::SessionFull);
         }
         state.conns.insert(conn, HashSet::new());
+        if let Some(author) = author {
+            state.authors.insert(conn, author.to_string());
+        }
         // The greeting: hello, then the server's SyncStep1, then the full
         // awareness picture - the DefaultProtocol::start choreography with our
         // control message in front. One buffer; concatenation is legal.
@@ -1186,11 +1220,21 @@ impl CollabSession {
                         tracing::debug!(conn, "dropping an undecodable collab update");
                         continue;
                     };
-                    let applied = {
+                    // Whether the update changed the document: a provider's
+                    // answer to the greeting is a SyncStep2 that applies
+                    // cleanly and carries nothing new, and its sender has
+                    // edited nothing.
+                    let (applied, edited) = {
                         let mut txn = state.awareness.doc().transact_mut();
-                        txn.apply_update(decoded)
+                        let before = txn.state_vector();
+                        let applied = txn.apply_update(decoded);
+                        let edited = txn.state_vector() != before || !txn.delete_set().is_empty();
+                        (applied, edited)
                     };
                     if applied.is_ok() {
+                        if edited && let Some(author) = state.authors.get(&conn).cloned() {
+                            state.editors.insert(author);
+                        }
                         let now = Instant::now();
                         state.dirty = true;
                         state.last_edit = Some(now);
@@ -1462,6 +1506,7 @@ impl CollabSession {
     pub async fn remove_conn(&self, conn: ConnId) -> bool {
         let mut state = self.state.lock().await;
         state.guests.remove(&conn);
+        state.authors.remove(&conn);
         self.has_guests
             .store(!state.guests.is_empty(), Ordering::Relaxed);
         let ids = state.conns.remove(&conn).unwrap_or_default();
@@ -1848,6 +1893,7 @@ impl CollabSession {
                 if let Some(path) = receipt["path"].as_str() {
                     state.path = path.to_string();
                 }
+                state.editors.clear();
                 state.dirty = false;
                 state.oldest_unsaved = None;
                 state.save_state = SaveStateTag::Ok;
@@ -2186,6 +2232,7 @@ impl CollabSession {
                 if let Some(path) = receipt["path"].as_str() {
                     state.path = path.to_string();
                 }
+                state.editors.clear();
                 state.dirty = false;
                 state.oldest_unsaved = None;
                 state.save_state = SaveStateTag::Ok;
@@ -2577,9 +2624,7 @@ impl CollabSession {
             // No `record_pending`: a Reflection edit owes no consolidation
             // sweep.
             RoomDoc::Reflection(path) => {
-                // Each name in the room is a `changed_by` entry; the existing
-                // participant reader, not a copy of it.
-                let authors = Self::participants_locked(state, None);
+                let authors = Self::reflection_authors_locked(state);
                 self.engine
                     .save_reflection_room(
                         &self.domain,
@@ -2592,6 +2637,20 @@ impl CollabSession {
                     .await
             }
         }
+    }
+
+    /// Who a reflection room's save records as having changed a section:
+    /// the signed-in accounts whose connections sent an edit since the last
+    /// save landed. Nobody else in the room, and no name a client put into
+    /// awareness. "someone" only for a save with nobody named and nobody
+    /// connected, such as the close of a room whose edits all landed
+    /// before; a save with people connected and no edit since the last one
+    /// names nobody.
+    fn reflection_authors_locked(state: &SessionState) -> Vec<String> {
+        if state.editors.is_empty() && state.conns.is_empty() {
+            return vec!["someone".to_string()];
+        }
+        state.editors.iter().cloned().collect()
     }
 
     /// The restore of a deleted document from the room's text.
@@ -2639,8 +2698,9 @@ impl CollabSession {
                     Err(EngineError::NotFound(_)) => String::new(),
                     Err(err) => return Err(err),
                 };
+                let authors = Self::reflection_authors_locked(state);
                 self.engine
-                    .save_reflection_room(&self.domain, &path, file, &expected, &[], false)
+                    .save_reflection_room(&self.domain, &path, file, &expected, &authors, false)
                     .await
             }
         }
