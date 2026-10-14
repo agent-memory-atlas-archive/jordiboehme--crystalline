@@ -42,6 +42,10 @@ pub(crate) struct SwitchFacts {
     /// Paths under `reflections/` the team's copy still holds (the origin
     /// base snapshot), sorted. Empty for a domain with no origin.
     pub team_copy: Vec<String>,
+    /// The origin base snapshot that exists but cannot be read, with why:
+    /// it may hold files under `reflections/`, so the switch-on is refused
+    /// (fail closed, as the pending check fails).
+    pub team_copy_unreadable: Option<String>,
 }
 
 fn declares_on(source: &str) -> bool {
@@ -89,6 +93,11 @@ pub(crate) fn screen_switch(before: &str, after: &str, facts: &SwitchFacts) -> R
             facts.engrams.join(", ")
         )));
     }
+    if let Some(snapshot) = &facts.team_copy_unreadable {
+        return Err(EngineError::Invalid(format!(
+            "the record of the team's copy of this domain cannot be read ({snapshot}), so it is unknown whether the team's copy still holds files in reflections/. Repair or remove that record (the next pull writes it again), then switch Reflection on"
+        )));
+    }
     if !facts.team_copy.is_empty() {
         return Err(EngineError::Invalid(format!(
             "the team's copy of this domain still holds these files in reflections/: {}. Share the change that moves them out first (share_changes), then switch Reflection on",
@@ -96,6 +105,18 @@ pub(crate) fn screen_switch(before: &str, after: &str, facts: &SwitchFacts) -> R
         )));
     }
     screen_home(after, facts)
+}
+
+/// Refuse a MANIFEST edit that switches Reflection on although the facts
+/// were not gathered for it, because the switch was on when the edit began
+/// and went off before it landed. Sending the edit again screens it.
+pub(crate) fn refuse_unscreened_switch_on(before: &str, after: &str) -> Result<()> {
+    if declares_on(before) || !declares_on(after) {
+        return Ok(());
+    }
+    Err(EngineError::Conflict(
+        "the MANIFEST's reflection switch changed while this edit ran; read it again and send the edit again".to_string(),
+    ))
 }
 
 /// The home half of [`screen_switch`]: a domain connected to GitHub needs
@@ -141,6 +162,16 @@ pub(crate) fn pact_starter(domain: &str) -> String {
     with_ids
 }
 
+/// Whether the recorded engram paths leave room for a pending engram: one
+/// of them lies under `reflections/`, or none is recorded at all (the index
+/// holds no row of the domain, so the files on disk decide).
+fn may_be_pending(recorded: &[String]) -> bool {
+    recorded.is_empty()
+        || recorded
+            .iter()
+            .any(|p| crystalline_core::reflection::is_under_reflections(p))
+}
+
 /// The folders directly under `root` whose name is `reflections` in any
 /// letter case, sorted. A root that cannot be read has none.
 fn reflection_folders(root: &Path) -> Vec<String> {
@@ -177,6 +208,12 @@ impl Engine {
             return Ok(Vec::new());
         };
         let recorded = self.recorded_paths(domain).await?;
+        // Every gate asks this. With rows recorded and none under the folder
+        // (a Reflection in effect keeps its pages out of the engram rows),
+        // nothing can be pending and no file is read.
+        if !may_be_pending(&recorded) {
+            return Ok(Vec::new());
+        }
         tokio::task::spawn_blocking(move || {
             crystalline_index::pending_engrams(&root, recorded.iter())
         })
@@ -208,17 +245,22 @@ impl Engine {
         // The base snapshot is read for a domain with an origin only, and a
         // missing or unreadable one holds nothing.
         let mut team_copy: Vec<String> = Vec::new();
-        if origin
-            && let Ok(dir) = self.origin_state_dir(domain)
-            && let Ok(Some(state)) = crystalline_remote::state::OriginState::load(&dir)
-        {
-            team_copy = state
-                .files
-                .keys()
-                .filter(|p| crystalline_core::reflection::is_under_reflections(p))
-                .cloned()
-                .collect();
-            team_copy.sort();
+        let mut team_copy_unreadable = None;
+        if origin && let Ok(dir) = self.origin_state_dir(domain) {
+            match crystalline_remote::state::OriginState::load(&dir) {
+                Ok(Some(state)) => {
+                    team_copy = state
+                        .files
+                        .keys()
+                        .filter(|p| crystalline_core::reflection::is_under_reflections(p))
+                        .cloned()
+                        .collect();
+                    team_copy.sort();
+                }
+                // No snapshot yet: the team's copy was never pulled here.
+                Ok(None) => {}
+                Err(e) => team_copy_unreadable = Some(format!("{}: {e}", dir.display())),
+            }
         }
         Ok(SwitchFacts {
             virtual_domain: false,
@@ -227,6 +269,7 @@ impl Engine {
             origin,
             own_url,
             team_copy,
+            team_copy_unreadable,
         })
     }
 
@@ -490,6 +533,21 @@ mod tests {
         screen_switch(OFF, ON, &one).unwrap();
         // A switch-off is never screened.
         screen_switch(ON, OFF, &facts).unwrap();
+    }
+
+    /// The gate's fast path: only rows under the folder, or no rows at all,
+    /// send the pending check to the disk.
+    #[test]
+    fn only_rows_under_the_folder_or_none_may_be_pending() {
+        assert!(may_be_pending(&[]));
+        assert!(!may_be_pending(&[
+            "MANIFEST.md".into(),
+            "notes/a.md".into()
+        ]));
+        assert!(may_be_pending(&[
+            "MANIFEST.md".into(),
+            "Reflections/a.md".into()
+        ]));
     }
 
     /// The seeded pact carries a section id line under every heading, so an

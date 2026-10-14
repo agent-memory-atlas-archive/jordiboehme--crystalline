@@ -233,6 +233,12 @@ impl Engine {
         let overlay = view.actor().map(str::to_string);
         let actor = self.actor_for(None, overlay.as_deref());
         let (desc, source) = view.resolve("manifest").await?;
+        // The pact is seeded before the switch is written: a seed that fails
+        // leaves the switch off, so sending the switch again seeds it. A
+        // draft seeds nothing, since the switch is not in effect yet.
+        if switching_on && overlay.is_none() {
+            self.seed_pact(domain).await?;
+        }
         self.apply_source_edit(
             &desc,
             &source,
@@ -245,9 +251,6 @@ impl Engine {
         )
         .await?;
         self.refresh_routing_cache().await;
-        if switching_on && overlay.is_none() {
-            self.seed_pact(domain).await?;
-        }
         let markdown = match overlay.as_deref() {
             None => self.manifest_markdown(domain).await?,
             Some(who) => {

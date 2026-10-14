@@ -516,6 +516,9 @@ async fn two_spellings_of_the_reflection_folder_refuse_the_switch() {
         .filter(|e| e.file_name().eq_ignore_ascii_case("reflections"))
         .count();
     if spellings < 2 {
+        eprintln!(
+            "skipped: this filesystem folds letter case, so reflections/ and Reflections/ cannot both exist; the engine unit test pins the refusal"
+        );
         return;
     }
     let err = fx
@@ -531,5 +534,96 @@ async fn two_spellings_of_the_reflection_folder_refuse_the_switch() {
     assert_eq!(
         fx.engine.reflection_switch("eng"),
         crystalline_core::ReflectionSwitch::Off
+    );
+}
+
+/// A move onto a missing MANIFEST.md writes the moved text as the MANIFEST,
+/// so a text that says `reflection: on` meets the switch-on screen.
+#[tokio::test]
+async fn a_move_onto_a_missing_manifest_that_switches_on_is_screened() {
+    let fx = fixture(&[
+        (
+            "reflections/old.md",
+            &engram("Old", "reflections/old", "- [fact] old"),
+        ),
+        (
+            "drafts/next.md",
+            &manifest("reflection: on\n").replace("permalink: manifest", "permalink: drafts/next"),
+        ),
+    ])
+    .await;
+    std::fs::remove_file(fx.root.join("MANIFEST.md")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let err = fx
+        .engine
+        .move_engram(
+            &crate::fixture::move_params("drafts/next", "MANIFEST.md"),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("reflections/old.md"), "{err}");
+    assert!(!fx.root.join("MANIFEST.md").exists(), "nothing was moved");
+    assert!(fx.root.join("drafts/next.md").exists());
+}
+
+/// R14 fails closed: a record of the team's copy that exists and cannot be
+/// read may hold files under reflections/, so the switch-on is refused and
+/// the record is named.
+#[tokio::test]
+async fn an_unreadable_team_copy_record_refuses_the_switch() {
+    let fx = fixture_with(&[], |cfg, _| {
+        with_origin(cfg, Some("https://kb.example.com"))
+    })
+    .await;
+    let dir = fx.tmp.path().join("origins").join("eng");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("state.json"), "{ not json").unwrap();
+    let err = fx
+        .engine
+        .set_manifest_policies("eng", &on(), &Scope::Unrestricted)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("cannot be read") && err.contains(&dir.display().to_string()),
+        "{err}"
+    );
+    assert_eq!(
+        fx.engine.reflection_switch("eng"),
+        crystalline_core::ReflectionSwitch::Off,
+        "nothing was written"
+    );
+}
+
+/// A pact that cannot be seeded leaves the switch off, so the error the
+/// caller gets is true and sending the switch again seeds the pact.
+#[tokio::test]
+async fn a_pact_that_cannot_be_seeded_leaves_the_switch_off_for_a_retry() {
+    let fx = fixture(&[]).await;
+    // A file where the folder would go: the seed cannot create it.
+    std::fs::write(fx.root.join("reflections"), "in the way").unwrap();
+    fx.engine
+        .set_manifest_policies("eng", &on(), &Scope::Unrestricted)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        fx.engine.reflection_switch("eng"),
+        crystalline_core::ReflectionSwitch::Off,
+        "the switch is not written when the pact is not"
+    );
+    std::fs::remove_file(fx.root.join("reflections")).unwrap();
+    fx.engine
+        .set_manifest_policies("eng", &on(), &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert!(
+        fx.root.join("reflections/PACT.md").exists(),
+        "the retry seeds it"
+    );
+    assert_eq!(
+        fx.engine.reflection_switch("eng"),
+        crystalline_core::ReflectionSwitch::On
     );
 }

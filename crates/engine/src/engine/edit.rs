@@ -220,8 +220,13 @@ impl Engine {
         let is_manifest = is_manifest_path(&desc.path);
         // A MANIFEST edit may switch Reflection on, which meets the screens
         // the domain policies meet. The facts are gathered here, before any
-        // lock, because the closure below cannot await.
-        let switch_facts = if is_manifest {
+        // lock, because the closure below cannot await, and only while the
+        // switch is off: an edit of a MANIFEST that says on cannot switch it
+        // on, and gathering would read the pending check from disk for
+        // nothing.
+        let switch_facts = if is_manifest
+            && self.reflection_switch(&desc.domain) == crystalline_core::ReflectionSwitch::Off
+        {
             Some(self.switch_facts(&desc.domain).await?)
         } else {
             None
@@ -258,6 +263,10 @@ impl Engine {
                     heading_stripped = stripped;
                     if let Some(facts) = &switch_facts {
                         super::reflection::screen_switch(current, &text, facts)?;
+                    } else if is_manifest {
+                        // The switch was on when this edit began; one that
+                        // went off meanwhile is not switched on unscreened.
+                        super::reflection::refuse_unscreened_switch_on(current, &text)?;
                     }
                     if is_manifest {
                         manifest_text = Some(text.clone());
