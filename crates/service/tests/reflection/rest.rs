@@ -1312,3 +1312,41 @@ async fn open_room(
         .unwrap();
     tokio_tungstenite::connect_async(request).await.unwrap().0
 }
+
+#[tokio::test]
+async fn the_search_route_takes_search_type_and_page_and_answers_the_mcp_shape() {
+    let s = serve().await;
+    let ed = Session::login(s.addr, "ed").await;
+    let (status, found) = ed
+        .get("/api/v1/domains/eng/reflection/search?q=night&search_type=text&limit=1&page=1")
+        .await;
+    assert_eq!(status, 200, "{found}");
+    assert_eq!(found["mode"], "text", "{found}");
+    assert_eq!(found["domain"], "eng");
+    assert_eq!(
+        (
+            found["page"].as_u64(),
+            found["limit"].as_u64(),
+            found["count"].as_u64()
+        ),
+        (Some(1), Some(1), Some(1)),
+        "{found}"
+    );
+    assert!(found["total"].as_u64().unwrap() >= 1, "{found}");
+    let hit = &found["hits"][0];
+    for key in ["path", "title", "section", "heading", "snippet"] {
+        assert!(hit.get(key).is_some(), "{key}: {hit}");
+    }
+    assert!(hit.get("score").is_none(), "no score on REST: {hit}");
+    let (status, refused) = ed
+        .get("/api/v1/domains/eng/reflection/search?q=night&search_type=title")
+        .await;
+    assert_eq!(status, 422, "{refused}");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap()
+            .contains("hybrid, text or semantic"),
+        "{refused}"
+    );
+}

@@ -194,6 +194,9 @@ fn reflection_variants_stay_in_their_modules() {
                 "engine/src/engine/sync.rs",
                 "cli/src/cmd.rs",
                 "cli/src/doctor.rs",
+                // The search verb reads the reflection coverage to pick its
+                // mode (R57).
+                "engine/src/engine/reflection.rs",
             ],
         ),
         // R53's funnel: a reflection row written anywhere else would have no

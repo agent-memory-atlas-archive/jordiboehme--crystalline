@@ -1473,32 +1473,115 @@ pub(crate) fn thread_view(inner: &str, t: &crystalline_core::threads::Thread, te
     })
 }
 
+/// One reflection search (R57).
+pub struct ReflectionSearch<'a> {
+    /// The words to find.
+    pub query: &'a str,
+    /// `hybrid` (the default), `text` or `semantic`.
+    pub search_type: Option<&'a str>,
+    /// Hits per page, clamped to 1..=[`MAX_PAGE_LIMIT`].
+    pub limit: usize,
+    /// One-based page.
+    pub page: usize,
+}
+
+/// A reflection search's mode. `title` and `permalink` are engram modes and
+/// are refused with the three a Reflection takes named.
+fn parse_reflection_mode(s: Option<&str>) -> Result<SearchMode> {
+    Ok(match s.unwrap_or("hybrid") {
+        "hybrid" => SearchMode::Hybrid,
+        "text" => SearchMode::Text,
+        "semantic" => SearchMode::Semantic,
+        other => {
+            return Err(EngineError::Invalid(format!(
+                "unknown search_type '{other}' for a Reflection; expected hybrid, text or semantic"
+            )));
+        }
+    })
+}
+
 impl Engine {
-    /// Reflection-mode search: text search over the reflection index. Every
-    /// page is searched without its `reflection:` block, for every caller: a
-    /// hit or a snippet out of the block would hand a contributor the source
-    /// engram names, and for anyone else a YAML line is no useful hit.
-    pub async fn search_reflection_text(
+    /// Search a domain's Reflection (R57): text, semantic or hybrid over its
+    /// sections. Every page is ranked without its `reflection:` block, for
+    /// every caller, and the chunks never held it (R52), so no hit or snippet
+    /// names a source engram. Hybrid and semantic answer as text when there is
+    /// no provider, nothing embedded by the active model, or stale vectors;
+    /// `mode` says which ran. No hit carries a score.
+    pub async fn search_reflection(
         &self,
         domain: &str,
-        query: &str,
-        limit: usize,
+        s: &ReflectionSearch<'_>,
         caller: &ReflectionCaller,
     ) -> Result<Value> {
+        let requested = parse_reflection_mode(s.search_type)?;
+        let query = s.query.trim();
+        if query.is_empty() {
+            return Err(EngineError::Invalid(
+                "a search needs `query`, the words to find".into(),
+            ));
+        }
         let access = self
             .require_reflection(domain, caller, ReflectionRight::Read)
             .await?;
-        let mut rows = self
-            .store
-            .lock()
-            .await
-            .list_reflections(access.domain_id)
-            .await?;
+        let limit = s.limit.clamp(1, MAX_PAGE_LIMIT);
+        let page = s.page.max(1);
+        let provider = self.provider();
+        // The store lock is held to read the rows and the coverage, dropped
+        // across the embed call, and taken again for the vector statement,
+        // as in `search_engrams_under`.
+        let (mut rows, mut mode) = {
+            let store = self.store.lock().await;
+            let rows = store.list_reflections(access.domain_id).await?;
+            let ready = requested != SearchMode::Text
+                && provider.is_some()
+                && store
+                    .embedding_coverage_of(crystalline_index::ChunkTable::Reflection)
+                    .await?
+                    .has_active_embeddings(&self.model_id);
+            (rows, if ready { requested } else { SearchMode::Text })
+        };
         for row in &mut rows {
             row.content = without_provenance(&row.content);
         }
-        let hits = crystalline_index::reflection::search_reflections(&rows, query, limit);
-        Ok(json!({ "query": query, "hits": hits }))
+        let mut vectors = Vec::new();
+        if mode != SearchMode::Text
+            && let Some(provider) = &provider
+        {
+            let qvec = provider
+                .embed_queries(&[query.to_string()])
+                .await
+                .map_err(|e| EngineError::Internal(e.to_string()))?
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            let store = self.store.lock().await;
+            match store
+                .reflection_vector_hits(access.domain_id, &qvec, &self.model_id)
+                .await
+            {
+                Ok(v) => vectors = v,
+                // Vectors of another model or width: text until the worker
+                // has re-embedded the pages (R57).
+                Err(crystalline_index::IndexError::StaleEmbeddings { .. }) => {
+                    mode = SearchMode::Text
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let floor = f64::from(crystalline_index::rank::DEFAULT_MIN_SIMILARITY);
+        let hits = crystalline_index::reflection::rank_sections(
+            &rows, query, mode, &vectors, floor, limit, page,
+        );
+        Ok(json!({
+            "domain": domain,
+            "query": query,
+            "mode": mode_str(mode),
+            "total": hits.total,
+            "page": hits.page,
+            "limit": hits.limit,
+            "count": hits.items.len(),
+            "hits": hits.items,
+        }))
     }
 }
 

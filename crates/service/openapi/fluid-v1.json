@@ -5368,7 +5368,7 @@
         "tags": [
           "reflection"
         ],
-        "summary": "Text search over the domain's reflections.",
+        "summary": "Search the domain's reflections by words, by meaning or both.",
         "description": "A hit is one section. A reflection's `reflection:` frontmatter block is taken off before it is searched, for every caller, so no hit or snippet comes out of it.",
         "operationId": "search_reflections",
         "parameters": [
@@ -5391,9 +5391,28 @@
             }
           },
           {
+            "name": "search_type",
+            "in": "query",
+            "description": "hybrid (default), text or semantic. hybrid and semantic answer as\ntext while the pages are not embedded yet; the answer's mode says\nwhich ran.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "description": "At most this many hits, default 20, at most 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "One-based page, default 1.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -5403,13 +5422,15 @@
         ],
         "responses": {
           "200": {
-            "description": "`{ query, hits: [{ path, title, section, heading, snippet }] }`, best first. `section` is the section id, `_top` for the text before the first heading, or `null` for a heading with no id yet.",
+            "description": "`{ domain, query, mode, total, page, limit, count, hits: [{ path, title, section, heading, snippet }] }`, best first. `mode` is the search that ran (hybrid, text or semantic), not a score; no hit carries one. `total` counts every hit, `count` this page's. `section` is the section id, `_top` for the text before the first heading, or `null` for a heading with no id yet.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object"
                 },
                 "example": {
+                  "count": 1,
+                  "domain": "eng",
                   "hits": [
                     {
                       "heading": "Night deploys",
@@ -5419,7 +5440,11 @@
                       "title": "Deploying"
                     }
                   ],
-                  "query": "night"
+                  "limit": 20,
+                  "mode": "hybrid",
+                  "page": 1,
+                  "query": "night",
+                  "total": 1
                 }
               }
             }
@@ -5445,7 +5470,7 @@
             }
           },
           "422": {
-            "description": "A missing or empty `q`.",
+            "description": "A missing or empty `q`, or a `search_type` other than hybrid, text or semantic.",
             "content": {
               "application/problem+json": {
                 "schema": {

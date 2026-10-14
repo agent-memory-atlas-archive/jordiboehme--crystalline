@@ -1,10 +1,14 @@
-//! Reflection search: the backlog, the tick and the nudge (Task 29).
+//! Reflection search: the backlog, the tick and the nudge (Task 29), and the
+//! search verb with its mode fallback and paging (Task 30).
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use crystalline_core::config::EvolveConfig;
 use crystalline_index::embed::DEFAULT_MODEL_ID;
+use crystalline_index::{ChunkTable, EmbeddingRow};
+use crystalline_service::ReflectionCaller;
+use crystalline_service::engine::ReflectionSearch;
 
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -185,4 +189,217 @@ async fn a_reflection_backlog_never_holds_back_the_contradiction_pass() {
     );
     shutdown_tx.send(true).unwrap();
     let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+}
+
+fn search<'a>(query: &'a str, search_type: Option<&'a str>) -> ReflectionSearch<'a> {
+    ReflectionSearch {
+        query,
+        search_type,
+        limit: 10,
+        page: 1,
+    }
+}
+
+#[tokio::test]
+async fn hybrid_is_the_default_and_answers_sections_best_first() {
+    let fx = fixture_with_provider(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;
+    // Bag-of-words vectors: the night section is made of the query's words,
+    // so its cosine clears the 0.78 floor and the rollback section's does not.
+    fx.engine
+        .write_reflection(
+            &write(
+                "guides/deploying.md",
+                "# Deploying\n\n## Night deploys\n\nNight deploys, night deploys.\n\n## Rollback\n\nRoll back with the script.\n",
+            ),
+            &person(),
+        )
+        .await
+        .unwrap();
+    fx.engine.embed_pending().await.unwrap();
+    let answer = fx
+        .engine
+        .search_reflection("eng", &search("night deploys", None), &person())
+        .await
+        .unwrap();
+    assert_eq!(answer["mode"], "hybrid", "{answer}");
+    assert_eq!(answer["hits"][0]["heading"], "Night deploys");
+    assert!(
+        answer["hits"][0].get("score").is_none(),
+        "no score leaves the engine"
+    );
+    let semantic = fx
+        .engine
+        .search_reflection("eng", &search("night deploys", Some("semantic")), &person())
+        .await
+        .unwrap();
+    assert_eq!(semantic["mode"], "semantic");
+    assert_eq!(
+        semantic["hits"][0]["heading"], "Night deploys",
+        "{semantic}"
+    );
+}
+
+#[tokio::test]
+async fn hybrid_answers_as_text_until_the_pages_are_embedded() {
+    let fx = fixture_with_provider(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;
+    fx.engine
+        .write_reflection(
+            &write("a.md", "# A\n\n## Night\n\nDeploys run at night.\n"),
+            &person(),
+        )
+        .await
+        .unwrap();
+    let answer = fx
+        .engine
+        .search_reflection("eng", &search("night", None), &person())
+        .await
+        .unwrap();
+    assert_eq!(
+        (answer["mode"].as_str(), answer["total"].as_u64()),
+        (Some("text"), Some(1)),
+        "{answer}"
+    );
+    // Stale: the first page is embedded by the active model, a second page's
+    // chunks carry vectors of another width, so the store refuses to compare
+    // and the search answers as text instead of failing.
+    fx.engine.embed_pending().await.unwrap();
+    fx.engine
+        .write_reflection(
+            &write("b.md", "# B\n\n## Day\n\nDeploys run by day.\n"),
+            &person(),
+        )
+        .await
+        .unwrap();
+    {
+        let store = fx.engine.store();
+        let store = store.lock().await;
+        let jobs = store
+            .chunks_needing_embedding_in(ChunkTable::Reflection, "fake", None, 100, None)
+            .await
+            .unwrap();
+        assert!(!jobs.is_empty(), "precondition: the second page waits");
+        let batch: Vec<EmbeddingRow> = jobs
+            .iter()
+            .map(|j| EmbeddingRow {
+                chunk_id: j.chunk_id,
+                embedding: vec![0.5; 4],
+                dims: 4,
+            })
+            .collect();
+        store
+            .store_embeddings_in(ChunkTable::Reflection, &batch, "fake")
+            .await
+            .unwrap();
+    }
+    let answer = fx
+        .engine
+        .search_reflection("eng", &search("night", None), &person())
+        .await
+        .unwrap();
+    assert_eq!(
+        answer["mode"], "text",
+        "stale vectors: text, never an error"
+    );
+    assert_eq!(answer["hits"][0]["path"], "a.md", "{answer}");
+    let no_provider = fixture(&[
+        ("MANIFEST.md", &manifest("reflection: on\n")),
+        ("reflections/a.md", &page("A")),
+    ])
+    .await;
+    let answer = no_provider
+        .engine
+        .search_reflection("eng", &search("text", Some("semantic")), &person())
+        .await
+        .unwrap();
+    assert_eq!(answer["mode"], "text", "no provider: text, never an error");
+}
+
+#[tokio::test]
+async fn the_provenance_block_never_matches_in_any_mode() {
+    let fx = fixture_with_provider(&[
+        ("MANIFEST.md", &manifest("reflection: on\n")),
+        (
+            "runbooks/deploy.md",
+            &engram("Deploy runbook", "runbooks/deploy", "Night deploys."),
+        ),
+    ])
+    .await;
+    // A curated write names the source engram in the page's reflection: block.
+    let mut p = write("a.md", "# A\n\n## Night\n\nDeploys run at night.\n");
+    p.sources = std::collections::BTreeMap::from([
+        ("_top".to_string(), Vec::new()),
+        ("Night".to_string(), vec!["runbooks/deploy".to_string()]),
+    ]);
+    fx.engine
+        .write_reflection(&p, &ReflectionCaller::owner())
+        .await
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(fx.root.join("reflections/a.md"))
+            .unwrap()
+            .contains("runbooks/deploy"),
+        "precondition: the block is on disk"
+    );
+    fx.engine.embed_pending().await.unwrap();
+    for mode in ["text", "hybrid", "semantic"] {
+        let answer = fx
+            .engine
+            .search_reflection(
+                "eng",
+                &search("runbooks", Some(mode)),
+                &ReflectionCaller::owner(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !answer.to_string().contains("runbooks/deploy"),
+            "{mode}: {answer}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_search_takes_the_read_right_and_refuses_engram_only_modes() {
+    let fx = fixture_with_provider(&[
+        ("MANIFEST.md", &manifest("reflection: on\n")),
+        ("reflections/a.md", &page("A")),
+    ])
+    .await;
+    let err = fx
+        .engine
+        .search_reflection("eng", &search("text", Some("title")), &person())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("hybrid, text or semantic"), "{err}");
+    let err = fx
+        .engine
+        .search_reflection("eng", &search("   ", None), &person())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("query"), "{err}");
+    let paged = fx
+        .engine
+        .search_reflection(
+            "eng",
+            &ReflectionSearch {
+                query: "text",
+                search_type: Some("text"),
+                limit: 1,
+                page: 2,
+            },
+            &person(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            paged["page"].as_u64(),
+            paged["limit"].as_u64(),
+            paged["count"].as_u64()
+        ),
+        (Some(2), Some(1), Some(0)),
+        "{paged}"
+    );
 }

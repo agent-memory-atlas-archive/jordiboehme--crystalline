@@ -16,7 +16,7 @@ use super::auth::Identity;
 use super::{ApiError, ApiJson, ApiPath, ApiQuery, ProblemDetail, RestState, refuse_read_only};
 use crate::engine::{
     ANONYMOUS_COMMENT, EngineError, MOVE_ONTO_A_FILE, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS,
-    REFUSED_OFF_START, REFUSED_PENDING, REFUSED_PENDING_NAMED,
+    REFUSED_OFF_START, REFUSED_PENDING, REFUSED_PENDING_NAMED, ReflectionSearch,
 };
 use crate::files::{AttachmentView, attachment_response};
 use crate::params::{DiscussParams, WriteReflectionParams};
@@ -1033,9 +1033,17 @@ pub struct SearchQuery {
     /// The words to find. Required; a missing or empty `q` answers 422.
     #[serde(default)]
     q: Option<String>,
+    /// hybrid (default), text or semantic. hybrid and semantic answer as
+    /// text while the pages are not embedded yet; the answer's mode says
+    /// which ran.
+    #[serde(default)]
+    search_type: Option<String>,
     /// At most this many hits, default 20, at most 100.
     #[serde(default)]
     limit: Option<usize>,
+    /// One-based page, default 1.
+    #[serde(default)]
+    page: Option<usize>,
 }
 
 /// `GET /domains/{domain}/reflection/search`
@@ -1044,7 +1052,7 @@ pub struct SearchQuery {
     path = "/api/v1/domains/{domain}/reflection/search",
     tag = "reflection",
     operation_id = "search_reflections",
-    summary = "Text search over the domain's reflections.",
+    summary = "Search the domain's reflections by words, by meaning or both.",
     description = "A hit is one section. A reflection's `reflection:` \
                    frontmatter block is taken off before it is searched, for \
                    every caller, so no hit or snippet comes out of it.",
@@ -1052,12 +1060,17 @@ pub struct SearchQuery {
     responses(
         (
             status = 200,
-            description = "`{ query, hits: [{ path, title, section, heading, \
-                           snippet }] }`, best first. `section` is the section \
-                           id, `_top` for the text before the first heading, or \
-                           `null` for a heading with no id yet.",
+            description = "`{ domain, query, mode, total, page, limit, count, \
+                           hits: [{ path, title, section, heading, snippet }] }`, \
+                           best first. `mode` is the search that ran (hybrid, \
+                           text or semantic), not a score; no hit carries one. \
+                           `total` counts every hit, `count` this page's. \
+                           `section` is the section id, `_top` for the text \
+                           before the first heading, or `null` for a heading \
+                           with no id yet.",
             body = Object,
-            example = json!({ "query": "night", "hits": [ {
+            example = json!({ "domain": "eng", "query": "night", "mode": "hybrid",
+                "total": 1, "page": 1, "limit": 20, "count": 1, "hits": [ {
                 "path": "guides/deploying.md", "title": "Deploying",
                 "section": "7f3a9c2e", "heading": "Night deploys",
                 "snippet": "Deploys run at night." } ] }),
@@ -1077,7 +1090,8 @@ pub struct SearchQuery {
         ),
         (
             status = 422,
-            description = "A missing or empty `q`.",
+            description = "A missing or empty `q`, or a `search_type` other \
+                           than hybrid, text or semantic.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -1096,10 +1110,14 @@ pub async fn search(
     };
     state
         .engine
-        .search_reflection_text(
+        .search_reflection(
             &domain,
-            words,
-            q.limit.unwrap_or(20).clamp(1, 100),
+            &ReflectionSearch {
+                query: words,
+                search_type: q.search_type.as_deref(),
+                limit: q.limit.unwrap_or(20).clamp(1, 100),
+                page: q.page.unwrap_or(1),
+            },
             &caller(&identity),
         )
         .await

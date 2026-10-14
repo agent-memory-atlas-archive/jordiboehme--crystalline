@@ -4633,9 +4633,19 @@ export type SearchReflectionsData = {
          */
         q?: string;
         /**
+         * hybrid (default), text or semantic. hybrid and semantic answer as
+         * text while the pages are not embedded yet; the answer's mode says
+         * which ran.
+         */
+        search_type?: string;
+        /**
          * At most this many hits, default 20, at most 100.
          */
         limit?: number;
+        /**
+         * One-based page, default 1.
+         */
+        page?: number;
     };
     url: '/api/v1/domains/{domain}/reflection/search';
 };
@@ -4650,7 +4660,7 @@ export type SearchReflectionsErrors = {
      */
     409: ProblemDetail;
     /**
-     * A missing or empty `q`.
+     * A missing or empty `q`, or a `search_type` other than hybrid, text or semantic.
      */
     422: ProblemDetail;
 };
@@ -4659,7 +4669,7 @@ export type SearchReflectionsError = SearchReflectionsErrors[keyof SearchReflect
 
 export type SearchReflectionsResponses = {
     /**
-     * `{ query, hits: [{ path, title, section, heading, snippet }] }`, best first. `section` is the section id, `_top` for the text before the first heading, or `null` for a heading with no id yet.
+     * `{ domain, query, mode, total, page, limit, count, hits: [{ path, title, section, heading, snippet }] }`, best first. `mode` is the search that ran (hybrid, text or semantic), not a score; no hit carries one. `total` counts every hit, `count` this page's. `section` is the section id, `_top` for the text before the first heading, or `null` for a heading with no id yet.
      */
     200: {
         [key: string]: unknown;
