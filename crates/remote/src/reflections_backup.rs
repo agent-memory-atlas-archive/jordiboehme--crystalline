@@ -133,6 +133,45 @@ fn save(state_dir: &Path, state: &BackupState) -> Result<(), RemoteError> {
     Ok(())
 }
 
+/// The origin's subpath, trimmed, or `None` for the repository root.
+fn prefix(spec: &OriginSpec) -> Option<&str> {
+    spec.subpath
+        .as_deref()
+        .map(|s| s.trim_matches('/'))
+        .filter(|s| !s.is_empty())
+}
+
+/// Whether the repo path `path` is inside the Reflection of the domain at
+/// `prefix`: its first segment below the prefix folds to `reflections`.
+fn is_ours(path: &str, prefix: Option<&str>) -> bool {
+    let rest = match prefix {
+        Some(sub) => path.strip_prefix(sub).and_then(|r| r.strip_prefix('/')),
+        None => Some(path),
+    };
+    rest.and_then(|r| r.split('/').next()).is_some_and(|first| {
+        first.eq_ignore_ascii_case(crystalline_core::reflection::REFLECTIONS_DIR)
+    })
+}
+
+/// Whether the branch went from `saved` to `remote` without touching this
+/// domain's Reflection. A comparison that fails or is cut short answers no,
+/// so the caller rewrites every file rather than trusting a stale state.
+async fn moved_by_others_only(
+    provider: &dyn Provider,
+    spec: &OriginSpec,
+    saved: &str,
+    remote: &str,
+    prefix: Option<&str>,
+) -> bool {
+    match provider.compare(spec, saved, remote).await {
+        Ok(cmp) if !cmp.truncated => !cmp.files.iter().any(|change| {
+            is_ours(&change.path, prefix)
+                || matches!(&change.kind, crate::provider::ChangeKind::Renamed { previous } if is_ours(previous, prefix))
+        }),
+        _ => false,
+    }
+}
+
 /// Commit what changed under `domain_root/reflections` since the last
 /// backup to [`BACKUP_BRANCH`]. The state is saved only after the branch
 /// moved, so a failure anywhere before leaves the next attempt to commit the
@@ -159,10 +198,20 @@ pub async fn backup_reflections(
     if files.is_empty() && remote_head.is_none() {
         return Ok(BackupOutcome::NothingToBackUp);
     }
-    // A head this instance did not write (the state file was lost, or the
-    // branch moved under it) says nothing about what the branch holds, so
-    // every file is written, not the difference against a stale state.
-    let lost = remote_head.is_some() && remote_head != state.head;
+    // A head this instance did not write (the state file was lost, a crash
+    // came between the branch move and the state save, or the branch moved
+    // under it) says nothing about what the branch holds, so every file is
+    // written, not the difference against a stale state. A head that moved
+    // only through another domain of the same repository (another subpath
+    // shares the branch) left this domain's files as the state says, so the
+    // difference is enough.
+    let lost = match (&remote_head, &state.head) {
+        (Some(remote), Some(saved)) if remote != saved => {
+            !moved_by_others_only(provider, spec, saved, remote, prefix(spec)).await
+        }
+        (Some(_), None) => true,
+        _ => false,
+    };
     let mut writes = Vec::new();
     for (path, bytes) in &files {
         let fresh = remote_head.is_none() || lost || state.files.get(path) != hashes.get(path);
@@ -185,6 +234,13 @@ pub async fn backup_reflections(
         }
         Some(head) => {
             for path in state.files.keys().filter(|p| !hashes.contains_key(*p)) {
+                // A head this instance did not write may no longer hold the
+                // path (the commit a crash kept from the state removed it
+                // already): a delete goes out only for a path the head holds,
+                // never a delete of nothing.
+                if lost && provider.read_file(spec, &head, path).await?.is_none() {
+                    continue;
+                }
                 writes.push(TreeWrite {
                     path: path.clone(),
                     blob_sha: None,
@@ -254,6 +310,31 @@ mod tests {
             root_files.keys().all(|p| p.starts_with("reflections/")),
             "never an engram"
         );
+    }
+
+    #[test]
+    fn a_folder_spelled_with_capitals_is_backed_up_in_its_own_spelling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("Reflections/.reflected")).unwrap();
+        std::fs::write(root.join("Reflections/a.md"), "# A\n").unwrap();
+        std::fs::write(root.join("Reflections/.reflected/a.md"), "# A\n").unwrap();
+        std::fs::create_dir_all(root.join("reflectionsx")).unwrap();
+        std::fs::write(root.join("reflectionsx/b.md"), "# B\n").unwrap();
+        let files = collect(root, None).unwrap();
+        let paths: Vec<&str> = files.keys().map(String::as_str).collect();
+        assert_eq!(paths, ["Reflections/.reflected/a.md", "Reflections/a.md"]);
+    }
+
+    #[test]
+    fn only_paths_inside_the_domains_reflection_are_its_own() {
+        assert!(is_ours("reflections/a.md", None));
+        assert!(is_ours("Reflections/a.md", None));
+        assert!(is_ours("kb/eng/reflections/a.md", Some("kb/eng")));
+        assert!(!is_ours("kb/ops/reflections/a.md", Some("kb/eng")));
+        assert!(!is_ours("kb/eng/notes/a.md", Some("kb/eng")));
+        assert!(!is_ours("kb/engx/reflections/a.md", Some("kb/eng")));
+        assert!(!is_ours("kb/eng/reflections/a.md", None));
     }
 
     #[cfg(unix)]

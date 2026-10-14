@@ -3246,13 +3246,30 @@ impl Engine {
             .mark(domain, cause, std::time::Instant::now());
     }
 
+    /// Mark every domain whose Reflection is switched on, once, when the
+    /// daemon starts: the marks live in memory, so a change made before a
+    /// restart (or while GitHub collaboration was off) is backed up without
+    /// waiting for the next change. A domain that is not a home here loses
+    /// the mark in the first tick, with no forge call.
+    pub fn mark_every_reflection_for_backup(&self) {
+        for domain in self.registered_domain_entries().keys() {
+            if self.reflection_switch(domain) != crystalline_core::ReflectionSwitch::Off {
+                self.mark_reflection_dirty(domain, crate::reflection_backup::BackupCause::Settled);
+            }
+        }
+    }
+
     /// One backup pass: every marked domain that is due and is this
     /// instance's home Reflection is committed to its backup branch with the
     /// instance's own credential. A domain that is not such a home here (a
     /// local Reflection, one without an origin, a read-only domain) loses its
-    /// mark and makes no forge call. With GitHub collaboration off nothing
-    /// is attempted and the marks wait. A failed backup keeps its mark and
-    /// waits a minute before the next attempt.
+    /// mark and makes no forge call. Like the origin poller, the pass does
+    /// nothing and keeps the marks while GitHub collaboration is off, while
+    /// the shared rate-limit pause runs, and while no GitHub connection is
+    /// on file (a debug line says so at most once an hour). A rate limit
+    /// starts the shared pause and ends the pass. Any other failure keeps
+    /// the mark and waits a minute, twice as long after each further failure
+    /// in a row (up to an hour); only the first of a row is logged at warn.
     pub async fn reflection_backup_tick(
         &self,
         now: std::time::Instant,
@@ -3260,43 +3277,87 @@ impl Engine {
         String,
         std::result::Result<crystalline_remote::reflections_backup::BackupOutcome, String>,
     )> {
+        use crystalline_remote::RemoteError;
         let mut out = Vec::new();
         if !self.config.read().unwrap().github_enabled() {
             return out;
         }
-        for domain in self.backup_marks.due_domains(now) {
+        let wall_now = chrono::Utc::now();
+        if self
+            .origin_poller
+            .rate_limited_until()
+            .is_some_and(|until| wall_now < until)
+        {
+            return out;
+        }
+        let due = self.backup_marks.due_domains(now);
+        if due.is_empty() {
+            return out;
+        }
+        let provider = match self.resolve_origin_provider() {
+            Ok(provider) => provider,
+            Err(e) => {
+                if self.backup_marks.should_log_waiting(now) {
+                    match e {
+                        EngineError::Remote(RemoteError::NotConnected) => tracing::debug!(
+                            "reflection backup: no GitHub connection yet; waiting for connect"
+                        ),
+                        e => tracing::warn!(
+                            "reflection backup: the GitHub connection cannot be read, waiting: {e}"
+                        ),
+                    }
+                }
+                return out;
+            }
+        };
+        for domain in due {
             if !self.backs_up_reflection_here(&domain).await {
                 self.backup_marks.clear(&domain);
                 continue;
             }
-            let attempt = async {
-                let provider = self.resolve_origin_provider().map_err(|e| e.to_string())?;
-                let (spec, root, state_dir) = self
-                    .origin_spec_for_domain(&domain)
-                    .map_err(|e| e.to_string())?;
-                crystalline_remote::reflections_backup::backup_reflections(
+            let attempt: Result<crystalline_remote::reflections_backup::BackupOutcome> = async {
+                let (spec, root, state_dir) = self.origin_spec_for_domain(&domain)?;
+                Ok(crystalline_remote::reflections_backup::backup_reflections(
                     provider.as_ref(),
                     &spec,
                     &root,
                     &state_dir,
                     &format!("Back up the Reflection of {domain}"),
                 )
-                .await
-                .map_err(|e| e.to_string())
+                .await?)
             }
             .await;
+            let mut paused = false;
             match &attempt {
                 Ok(_) => self.backup_marks.clear_if_unchanged(&domain, now),
-                Err(e) => {
-                    // At warn, so an operator sees a backup that keeps failing.
+                Err(EngineError::Remote(RemoteError::RateLimited { reset })) => {
+                    // GitHub limits the token, not the repository: every
+                    // domain waits, the origin poller's pulls included.
+                    let until = reset.unwrap_or_else(|| wall_now + chrono::Duration::hours(1));
                     tracing::warn!(
-                        domain = %domain,
-                        "reflection backup failed, retrying in a minute: {e}"
+                        "reflection backup: GitHub is rate limiting this machine; pausing until {until}"
                     );
+                    self.origin_poller.set_rate_limited_until(Some(until));
                     self.backup_marks.failed(&domain, now);
+                    paused = true;
+                }
+                Err(e) => {
+                    if self.backup_marks.failed(&domain, now) == 1 {
+                        // At warn once, so an operator sees a backup that
+                        // fails; the retries that follow stay at debug.
+                        tracing::warn!(
+                            domain = %domain,
+                            "reflection backup failed, retrying with a growing wait: {e}"
+                        );
+                    } else {
+                        tracing::debug!(domain = %domain, "reflection backup failed again: {e}");
+                    }
                 }
             }
-            out.push((domain, attempt));
+            out.push((domain, attempt.map_err(|e| e.to_string())));
+            if paused {
+                break;
+            }
         }
         out
     }

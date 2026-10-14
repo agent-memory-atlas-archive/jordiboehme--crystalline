@@ -2812,6 +2812,9 @@ const REFLECTION_BACKUP_HEARTBEAT: Duration = Duration::from_secs(5);
 
 /// Run the Reflection backup tick until shutdown.
 async fn run_reflection_backup(engine: Arc<Engine>, mut shutdown: watch::Receiver<bool>) {
+    // The marks live in memory: a change made before this start is looked
+    // at once, so a restart never leaves it waiting for the next change.
+    engine.mark_every_reflection_for_backup();
     let mut ticker = tokio::time::interval(REFLECTION_BACKUP_HEARTBEAT);
     loop {
         tokio::select! {

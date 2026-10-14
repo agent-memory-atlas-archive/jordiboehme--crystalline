@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use crystalline_core::config::{GitHubConfig, OriginConfig, ServiceConfig};
 use crystalline_remote::reflections_backup::{BACKUP_BRANCH, BackupOutcome};
+use crystalline_service::engine::ConfigureAction;
 use crystalline_service::reflection_backup::BackupCause;
 
 use crate::docs::{agent, write};
@@ -14,28 +15,39 @@ use crate::support::MockProvider;
 
 const HOME: &str = "https://kb.example.com";
 
-/// How the home fixture is set up.
+/// How the fixture is set up.
 struct Home {
     /// Whether `eng` is connected to `acme/kb`.
     origin: bool,
+    /// The `reflection_home` the MANIFEST declares, if any.
+    home: Option<&'static str>,
     /// Extra MANIFEST lines.
     extra: &'static str,
+    /// Whether `github.enabled` is on.
+    github: bool,
+    /// Whether the mock is injected as the origin provider; without it the
+    /// engine reads an empty token store in the temp dir.
+    inject: bool,
 }
 
 const CONNECTED: Home = Home {
     origin: true,
+    home: Some(HOME),
     extra: "",
+    github: true,
+    inject: true,
 };
 
 async fn home_with(mock: Arc<MockProvider>, home: Home) -> Fx {
+    let home_line = home
+        .home
+        .map(|url| format!("reflection_home: {url}\n"))
+        .unwrap_or_default();
     let fx = fixture_with(
         &[
             (
                 "MANIFEST.md",
-                &manifest(&format!(
-                    "reflection: on\nreflection_home: {HOME}\n{}",
-                    home.extra
-                )),
+                &manifest(&format!("reflection: on\n{home_line}{}", home.extra)),
             ),
             (
                 "runbooks/deploy.md",
@@ -55,16 +67,25 @@ async fn home_with(mock: Arc<MockProvider>, home: Home) -> Fx {
                 public_url: Some(HOME.into()),
                 ..Default::default()
             });
-            cfg.github = Some(GitHubConfig {
-                enabled: Some(true),
-                ..Default::default()
-            });
+            if home.github {
+                cfg.github = Some(GitHubConfig {
+                    enabled: Some(true),
+                    ..Default::default()
+                });
+            }
         },
     )
     .await;
     let engine = Arc::try_unwrap(fx.engine).ok().expect("one handle");
-    let engine = Arc::new(engine.with_origin_provider(mock));
-    Fx { engine, ..fx }
+    let engine = if home.inject {
+        engine.with_origin_provider(mock)
+    } else {
+        engine.with_token_store_dir(fx.tmp.path().join("tokens"))
+    };
+    Fx {
+        engine: Arc::new(engine),
+        ..fx
+    }
 }
 
 async fn home(mock: Arc<MockProvider>) -> Fx {
@@ -252,9 +273,20 @@ async fn an_offline_forge_keeps_the_change_marked_and_the_next_tick_commits_it_o
     );
 }
 
+/// A local Reflection (no origin, no home) is never backed up, with GitHub
+/// collaboration on and a forge at hand.
 #[tokio::test]
 async fn a_local_reflection_has_no_backup() {
-    let fx = crate::docs::reflecting().await;
+    let mock = Arc::new(MockProvider::new());
+    let fx = home_with(
+        mock.clone(),
+        Home {
+            origin: false,
+            home: None,
+            ..CONNECTED
+        },
+    )
+    .await;
     fx.engine
         .write_reflection(&write("a.md", "# A\n"), &agent())
         .await
@@ -264,7 +296,304 @@ async fn a_local_reflection_has_no_backup() {
             .reflection_backup_tick(Instant::now())
             .await
             .is_empty(),
-        "no origin, no backup and no forge call"
+        "no origin, no backup"
+    );
+    assert!(
+        mock.calls().is_empty(),
+        "and no forge call: {:?}",
+        mock.calls()
+    );
+}
+
+/// Only the home instance backs up: a domain connected to a repository
+/// whose Reflection lives on another instance makes no forge call here.
+#[tokio::test]
+async fn a_reflection_homed_elsewhere_is_not_backed_up() {
+    let mock = Arc::new(MockProvider::new());
+    main_commit(&mock);
+    let fx = home_with(
+        mock.clone(),
+        Home {
+            home: Some("https://other.example.com"),
+            ..CONNECTED
+        },
+    )
+    .await;
+    std::fs::create_dir_all(fx.root.join("reflections")).unwrap();
+    std::fs::write(fx.root.join("reflections/a.md"), "# A\n").unwrap();
+    let calls = mock.calls().len();
+    fx.engine.mark_reflection_dirty("eng", BackupCause::Settled);
+    assert!(
+        fx.engine
+            .reflection_backup_tick(Instant::now())
+            .await
+            .is_empty()
+    );
+    assert_eq!(mock.calls().len(), calls, "no forge call");
+    assert!(mock.branch_commit(BACKUP_BRANCH).is_none());
+}
+
+/// With GitHub collaboration off nothing goes out and the marks wait: the
+/// first tick after it is switched on commits what was marked before.
+#[tokio::test]
+async fn with_github_off_the_backup_waits_until_it_is_on() {
+    let mock = Arc::new(MockProvider::new());
+    main_commit(&mock);
+    let fx = home_with(
+        mock.clone(),
+        Home {
+            github: false,
+            ..CONNECTED
+        },
+    )
+    .await;
+    fx.engine
+        .write_reflection(&write("a.md", "# A\n"), &agent())
+        .await
+        .unwrap();
+    let calls = mock.calls().len();
+    assert!(
+        fx.engine
+            .reflection_backup_tick(Instant::now())
+            .await
+            .is_empty()
+    );
+    assert_eq!(mock.calls().len(), calls, "no forge call while it is off");
+    fx.engine
+        .configure(&ConfigureAction::Set {
+            key: "github.enabled".into(),
+            value: "true".into(),
+        })
+        .await
+        .unwrap();
+    let done = fx.engine.reflection_backup_tick(Instant::now()).await;
+    assert!(
+        matches!(done[..], [(_, Ok(BackupOutcome::Committed { .. }))]),
+        "{done:?}"
+    );
+}
+
+/// Without a GitHub connection the backup waits quietly, like the origin
+/// poller: no failed attempt, no forge call, the mark kept.
+#[tokio::test]
+async fn without_a_github_connection_the_backup_waits_quietly() {
+    let mock = Arc::new(MockProvider::new());
+    let fx = home_with(
+        mock.clone(),
+        Home {
+            inject: false,
+            ..CONNECTED
+        },
+    )
+    .await;
+    fx.engine
+        .write_reflection(&write("a.md", "# A\n"), &agent())
+        .await
+        .unwrap();
+    let t0 = Instant::now();
+    assert!(fx.engine.reflection_backup_tick(t0).await.is_empty());
+    assert!(
+        fx.engine
+            .reflection_backup_tick(t0 + Duration::from_secs(3600))
+            .await
+            .is_empty()
+    );
+}
+
+/// A rate limit starts the pause the origin poller shares (GitHub limits
+/// the token, not the repository): the backup asks nothing until it ends.
+#[tokio::test]
+async fn a_rate_limit_pauses_the_backup() {
+    let mock = Arc::new(MockProvider::new());
+    main_commit(&mock);
+    let fx = home(mock.clone()).await;
+    mock.rate_limit_branch_ref(Some(chrono::Utc::now() + chrono::Duration::hours(1)));
+    fx.engine
+        .write_reflection(&write("a.md", "# A\n"), &agent())
+        .await
+        .unwrap();
+    let t0 = Instant::now();
+    let limited = fx.engine.reflection_backup_tick(t0).await;
+    assert!(limited[0].1.is_err(), "{limited:?}");
+    mock.rate_limit_branch_ref(None);
+    let calls = mock.calls().len();
+    assert!(
+        fx.engine
+            .reflection_backup_tick(t0 + Duration::from_secs(600))
+            .await
+            .is_empty(),
+        "paused"
+    );
+    assert_eq!(mock.calls().len(), calls, "no forge call during the pause");
+    assert!(mock.branch_commit(BACKUP_BRANCH).is_none());
+}
+
+/// The state file of `eng`'s backup.
+fn state_file(fx: &Fx) -> std::path::PathBuf {
+    fx.tmp.path().join("origins/eng/reflections-backup.json")
+}
+
+/// A crash between the branch move and the state save: the next backup
+/// sees a head it did not write and rewrites every file on it, but sends
+/// no delete for a path that head no longer holds.
+#[tokio::test]
+async fn a_crash_before_the_state_save_sends_no_delete_of_nothing() {
+    let mock = Arc::new(MockProvider::new());
+    main_commit(&mock);
+    mock.refuse_deletes_of_nothing();
+    let fx = home(mock.clone()).await;
+    for page in ["a.md", "b.md"] {
+        fx.engine
+            .write_reflection(&write(page, "# Page\n"), &agent())
+            .await
+            .unwrap();
+    }
+    assert!(
+        fx.engine.reflection_backup_tick(Instant::now()).await[0]
+            .1
+            .is_ok()
+    );
+    let before = std::fs::read(state_file(&fx)).unwrap();
+    fx.engine
+        .write_reflection(
+            &crystalline_service::params::WriteReflectionParams {
+                action: Some("delete".into()),
+                ..write("b.md", "")
+            },
+            &agent(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        fx.engine.reflection_backup_tick(Instant::now()).await[0]
+            .1
+            .is_ok()
+    );
+    // The crash: the branch moved, the state still names the commit before.
+    std::fs::write(state_file(&fx), before).unwrap();
+    fx.engine.mark_reflection_dirty("eng", BackupCause::Settled);
+    let after = fx.engine.reflection_backup_tick(Instant::now()).await;
+    assert!(after[0].1.is_ok(), "{after:?}");
+    let head = mock.branch_commit(BACKUP_BRANCH).unwrap();
+    let paths = mock.commit_paths(&head);
+    assert!(paths.contains(&"reflections/a.md".to_string()), "{paths:?}");
+    assert!(
+        !paths.contains(&"reflections/b.md".to_string()),
+        "{paths:?}"
+    );
+    fx.engine.mark_reflection_dirty("eng", BackupCause::Settled);
+    assert!(
+        matches!(
+            fx.engine.reflection_backup_tick(Instant::now()).await[0].1,
+            Ok(BackupOutcome::NothingToBackUp)
+        ),
+        "and the state caught up"
+    );
+}
+
+/// Two domains of one repository (two subpaths) share the backup branch.
+/// A head the other domain moved does not make a domain upload every file
+/// again: only what changed in its own Reflection goes out.
+#[tokio::test]
+async fn two_subpaths_on_one_branch_upload_only_their_own_changes() {
+    let mock = Arc::new(MockProvider::new());
+    main_commit(&mock);
+    let fx = fixture_with(
+        &[(
+            "MANIFEST.md",
+            &manifest(&format!("reflection: on\nreflection_home: {HOME}\n")),
+        )],
+        |cfg, base| {
+            let ops = base.join("ops");
+            std::fs::create_dir_all(&ops).unwrap();
+            std::fs::write(
+                ops.join("MANIFEST.md"),
+                manifest(&format!("reflection: on\nreflection_home: {HOME}\n"))
+                    .replace("title: eng", "title: ops"),
+            )
+            .unwrap();
+            cfg.domains.insert(
+                "ops".into(),
+                crystalline_core::config::DomainEntry::file(ops),
+            );
+            for (name, path) in [("eng", "eng"), ("ops", "ops")] {
+                cfg.domains.get_mut(name).unwrap().origin = Some(OriginConfig {
+                    repo: "acme/kb".into(),
+                    path: Some(path.into()),
+                    branch: Some("main".into()),
+                    poll_secs: None,
+                });
+            }
+            cfg.service = Some(ServiceConfig {
+                public_url: Some(HOME.into()),
+                ..Default::default()
+            });
+            cfg.github = Some(GitHubConfig {
+                enabled: Some(true),
+                ..Default::default()
+            });
+        },
+    )
+    .await;
+    let engine = Arc::try_unwrap(fx.engine).ok().expect("one handle");
+    let fx = Fx {
+        engine: Arc::new(engine.with_origin_provider(mock.clone())),
+        ..fx
+    };
+    let in_domain = |domain: &str, page: &str, text: &str| {
+        let mut p = write(page, text);
+        p.domain = domain.into();
+        p
+    };
+    for domain in ["eng", "ops"] {
+        for page in ["one.md", "two.md", "three.md"] {
+            fx.engine
+                .write_reflection(&in_domain(domain, page, "# Page\n"), &agent())
+                .await
+                .unwrap();
+        }
+    }
+    let first = fx.engine.reflection_backup_tick(Instant::now()).await;
+    assert_eq!(first.len(), 2, "{first:?}");
+    assert!(first.iter().all(|(_, r)| r.is_ok()), "{first:?}");
+    let blobs = |mock: &MockProvider| {
+        mock.calls()
+            .iter()
+            .filter(|c| c.starts_with("create_blob:"))
+            .count()
+    };
+    // `ops` moved the branch after `eng`'s backup; `eng` changes one page.
+    let before = blobs(&mock);
+    fx.engine
+        .write_reflection(&in_domain("eng", "one.md", "# Changed\n"), &agent())
+        .await
+        .unwrap();
+    let again = fx.engine.reflection_backup_tick(Instant::now()).await;
+    assert!(
+        matches!(
+            again[..],
+            [(_, Ok(BackupOutcome::Committed { files: 1, .. }))]
+        ),
+        "{again:?}"
+    );
+    assert_eq!(blobs(&mock), before + 1, "the changed page alone");
+    // And `ops`, whose head `eng` just moved, has nothing to send.
+    fx.engine.mark_reflection_dirty("ops", BackupCause::Settled);
+    let ops = fx.engine.reflection_backup_tick(Instant::now()).await;
+    assert!(
+        matches!(ops[..], [(_, Ok(BackupOutcome::NothingToBackUp))]),
+        "{ops:?}"
+    );
+    assert_eq!(blobs(&mock), before + 1, "no upload for ops");
+    let head = mock.branch_commit(BACKUP_BRANCH).unwrap();
+    let paths = mock.commit_paths(&head);
+    assert!(
+        paths.contains(&"eng/reflections/one.md".to_string()),
+        "{paths:?}"
+    );
+    assert!(
+        paths.contains(&"ops/reflections/one.md".to_string()),
+        "{paths:?}"
     );
 }
 
@@ -277,7 +606,7 @@ async fn a_home_without_an_origin_makes_no_forge_call() {
         mock.clone(),
         Home {
             origin: false,
-            extra: "",
+            ..CONNECTED
         },
     )
     .await;
@@ -300,8 +629,8 @@ async fn a_read_only_domain_is_not_backed_up() {
     let fx = home_with(
         mock.clone(),
         Home {
-            origin: true,
             extra: "read_only: on\n",
+            ..CONNECTED
         },
     )
     .await;
@@ -359,4 +688,62 @@ async fn a_failed_move_of_the_branch_loses_nothing() {
         "nothing was lost"
     );
     assert_eq!(mock.commit_parents(&head).unwrap(), vec![first]);
+    assert!(
+        fx.engine
+            .reflection_backup_tick(t1 + Duration::from_secs(200))
+            .await
+            .is_empty(),
+        "and it is committed once"
+    );
+}
+
+/// A backup still pending when its domain is renamed goes along under the
+/// new name, with the backup state that moved with the domain.
+#[tokio::test]
+async fn a_pending_backup_follows_a_domain_rename() {
+    let mock = Arc::new(MockProvider::new());
+    main_commit(&mock);
+    let fx = home(mock.clone()).await;
+    fx.engine
+        .write_reflection(&write("a.md", "# A\n"), &agent())
+        .await
+        .unwrap();
+    fx.engine
+        .rename_domain(
+            "eng",
+            "platform",
+            false,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let done = fx.engine.reflection_backup_tick(Instant::now()).await;
+    assert!(
+        matches!(&done[..], [(name, Ok(BackupOutcome::Committed { .. }))] if name == "platform"),
+        "{done:?}"
+    );
+}
+
+/// The daemon's start marks every Reflection once, so a change the marks
+/// lost in a restart is backed up without waiting for the next one.
+#[tokio::test]
+async fn the_start_marks_every_reflection_once() {
+    let mock = Arc::new(MockProvider::new());
+    main_commit(&mock);
+    let fx = home(mock.clone()).await;
+    std::fs::create_dir_all(fx.root.join("reflections")).unwrap();
+    std::fs::write(fx.root.join("reflections/before.md"), "# Before\n").unwrap();
+    assert!(
+        fx.engine
+            .reflection_backup_tick(Instant::now())
+            .await
+            .is_empty(),
+        "nothing marked yet"
+    );
+    fx.engine.mark_every_reflection_for_backup();
+    let done = fx.engine.reflection_backup_tick(Instant::now()).await;
+    assert!(
+        matches!(done[..], [(_, Ok(BackupOutcome::Committed { .. }))]),
+        "{done:?}"
+    );
 }

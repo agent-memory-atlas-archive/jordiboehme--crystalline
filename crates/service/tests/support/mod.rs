@@ -232,6 +232,13 @@ struct Inner {
     /// with `RemoteError::Offline`. Set through
     /// `MockProvider::set_offline_writes`.
     offline_writes: bool,
+    /// Whether `create_tree` refuses a delete (`sha: null`) of a path its
+    /// base does not hold, with a 422, instead of ignoring it. Set through
+    /// `MockProvider::refuse_deletes_of_nothing`.
+    refuse_missing_deletes: bool,
+    /// When set, `branch_ref` answers `RemoteError::RateLimited` with this
+    /// reset. Set through `MockProvider::rate_limit_branch_ref`.
+    branch_ref_rate_limited: Option<chrono::DateTime<chrono::Utc>>,
     proposal_counter: u64,
     /// How many times `branch_head` has been called, for the daemon poller
     /// tests: it is always the first call any `origin_update`/`origin_status`
@@ -621,6 +628,18 @@ impl MockProvider {
         self.inner.lock().unwrap().offline_writes = offline;
     }
 
+    /// Makes `create_tree` answer a delete of a path its base does not hold
+    /// with a 422, so a test proves no such delete is ever sent.
+    pub fn refuse_deletes_of_nothing(&self) {
+        self.inner.lock().unwrap().refuse_missing_deletes = true;
+    }
+
+    /// Makes `branch_ref` answer a rate limit that resets at `reset`, or
+    /// answer normally again with `None`.
+    pub fn rate_limit_branch_ref(&self, reset: Option<chrono::DateTime<chrono::Utc>>) {
+        self.inner.lock().unwrap().branch_ref_rate_limited = reset;
+    }
+
     /// Every path a commit's tree holds, sorted.
     pub fn commit_paths(&self, commit: &str) -> Vec<String> {
         self.inner
@@ -957,7 +976,12 @@ impl Provider for MockProvider {
                     files.insert(write.path.clone(), content);
                 }
                 None => {
-                    files.remove(&write.path);
+                    if files.remove(&write.path).is_none() && inner.refuse_missing_deletes {
+                        return Err(RemoteError::Api {
+                            status: 422,
+                            message: format!("cannot delete {}: not in the tree", write.path),
+                        });
+                    }
                 }
             }
         }
@@ -1057,6 +1081,9 @@ impl Provider for MockProvider {
     ) -> Result<Option<String>, RemoteError> {
         let mut inner = self.inner.lock().unwrap();
         inner.calls.push(format!("branch_ref:{name}"));
+        if let Some(reset) = inner.branch_ref_rate_limited {
+            return Err(RemoteError::RateLimited { reset: Some(reset) });
+        }
         Ok(inner.branches.get(name).cloned())
     }
 

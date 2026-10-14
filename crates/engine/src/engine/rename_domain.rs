@@ -1489,6 +1489,9 @@ impl Engine {
             }
             RenameStep::OriginsDir => {
                 move_state_dir(&self.rename_origins_root()?, old, new).map_err(io_error)?;
+                // The backup state moved with the folder; a backup still
+                // pending goes along under the new name.
+                self.backup_marks.rename(old, new);
             }
             RenameStep::OverlaysDir => {
                 move_state_dir(
