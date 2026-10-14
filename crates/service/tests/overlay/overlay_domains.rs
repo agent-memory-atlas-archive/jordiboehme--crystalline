@@ -1760,6 +1760,7 @@ async fn folding_a_draft_that_switches_reflection_on_seeds_the_pact() {
     let f = review_fixture().await;
     let on = MANIFEST.replace("status: stable\n", "status: stable\nreflection: on\n");
     f.draft("team", "alice", "MANIFEST.md", &on).await;
+    let mut rx = f.engine.changes().subscribe();
     f.engine
         .set_review_mode(
             "team",
@@ -1769,6 +1770,21 @@ async fn folding_a_draft_that_switches_reflection_on_seeds_the_pact() {
         )
         .await
         .unwrap();
+    // The fold is where the switch lands, so it is announced there, once.
+    let mut switched = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if let crystalline_service::changes::Change::Reflection(change) = envelope.change {
+            switched.push((change.domain, change.path, change.kind));
+        }
+    }
+    assert_eq!(
+        switched,
+        vec![(
+            "team".to_string(),
+            String::new(),
+            crystalline_service::changes::ReflectionChangeKind::Switched
+        )]
+    );
     let root = f.root.join("team");
     assert_eq!(
         std::fs::read_to_string(root.join("MANIFEST.md")).unwrap(),

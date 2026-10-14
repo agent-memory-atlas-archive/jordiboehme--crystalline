@@ -1340,7 +1340,7 @@ impl Engine {
         if is_manifest_path(&normalize_rel(path)) {
             self.screen_manifest_write(domain, None, content).await?;
         }
-        self.restore_engram_in_view(&view, domain, path, content)
+        self.restore_engram_in_view(&view, domain, path, content, change_label(scope))
             .await
     }
 
@@ -1350,13 +1350,15 @@ impl Engine {
     /// the overlay document it is a room over, or the one a direct domain
     /// keeps - and no scope to derive one from. A request reaches it through
     /// the verb above, with the view its scope routed to; both write exactly
-    /// what they always wrote.
+    /// what they always wrote. `actor` is the label the change events carry:
+    /// the verb's account, and nobody for a room.
     pub(crate) async fn restore_engram_in_view(
         &self,
         view: &DomainView<'_>,
         domain: &str,
         path: &str,
         content: &str,
+        actor: Option<String>,
     ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
@@ -1427,8 +1429,7 @@ impl Engine {
         }
         self.after_source_write(&source, path).await;
         if let Some(before) = switch_before {
-            // The function takes a view and no scope, so nobody is named.
-            self.announce_switch_if_moved(domain, before, None);
+            self.announce_switch_if_moved(domain, before, actor.clone());
         }
         self.refresh_index_files(domain).await;
 
@@ -1451,7 +1452,6 @@ impl Engine {
                 });
             receipt_permalink(found, path.trim_end_matches(".md").to_string())
         };
-        // The function takes a view and no scope, so nobody is named.
         self.announce(Change::Engram(EngramChanged {
             domain: domain.to_string(),
             permalink: permalink.clone(),
@@ -1459,7 +1459,7 @@ impl Engine {
             kind: ChangeKind::Added,
             from: None,
             checksum: Some(sha256_hex(content.as_bytes())),
-            actor: None,
+            actor,
             draft_of: None,
             audience: None,
         }));

@@ -875,3 +875,103 @@ async fn every_switch_through_crystalline_announces_switched_with_an_empty_path(
     }
     assert_eq!(switched, vec![(String::new(), None); 3]);
 }
+
+/// The actors of the `switched` events the bus holds, in order.
+fn switched(
+    rx: &mut tokio::sync::broadcast::Receiver<crystalline_service::changes::Envelope>,
+) -> Vec<Option<String>> {
+    use crystalline_service::changes::{Change, ReflectionChangeKind};
+    let mut heard = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if let Change::Reflection(change) = envelope.change
+            && change.kind == ReflectionChangeKind::Switched
+        {
+            assert_eq!((change.path.as_str(), change.from), ("", None));
+            heard.push(change.actor);
+        }
+    }
+    heard
+}
+
+fn ada() -> Scope {
+    Scope::User {
+        account: "ada".into(),
+        admin: true,
+    }
+}
+
+/// The MANIFEST editor's save announces the switch it moves.
+#[tokio::test]
+async fn a_manifest_editor_save_announces_the_switch() {
+    let fx = fixture(&[]).await;
+    let source = std::fs::read_to_string(fx.root.join("MANIFEST.md")).unwrap();
+    let mut rx = fx.engine.changes().subscribe();
+    fx.engine
+        .save_manifest(
+            "eng",
+            &manifest("reflection: on\n"),
+            &crate::support::sha256_hex(source.as_bytes()),
+            &ada(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(switched(&mut rx), vec![Some("ada".to_string())]);
+}
+
+/// A restored MANIFEST announces the switch it moves, under the account
+/// that restored it.
+#[tokio::test]
+async fn a_restored_manifest_announces_the_switch_under_its_account() {
+    let fx = fixture(&[]).await;
+    let mut rx = fx.engine.changes().subscribe();
+    fx.engine
+        .restore_engram("eng", "MANIFEST.md", &manifest("reflection: on\n"), &ada())
+        .await
+        .unwrap();
+    assert_eq!(switched(&mut rx), vec![Some("ada".to_string())]);
+}
+
+/// A move onto a missing MANIFEST.md announces the switch the moved text
+/// sets.
+#[tokio::test]
+async fn a_move_onto_the_manifest_announces_the_switch() {
+    let fx = fixture(&[(
+        "drafts/next.md",
+        &manifest("reflection: on\n").replace("permalink: manifest", "permalink: drafts/next"),
+    )])
+    .await;
+    std::fs::remove_file(fx.root.join("MANIFEST.md")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let mut rx = fx.engine.changes().subscribe();
+    fx.engine
+        .move_engram(
+            &crate::fixture::move_params("drafts/next", "MANIFEST.md"),
+            &ada(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(switched(&mut rx), vec![Some("ada".to_string())]);
+}
+
+/// An edit of the MANIFEST that moves the switch announces it.
+#[tokio::test]
+async fn a_manifest_edit_that_moves_the_switch_announces_it() {
+    let fx = fixture(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;
+    let mut rx = fx.engine.changes().subscribe();
+    fx.engine
+        .edit_engram_as(
+            &EditParams {
+                identifier: "manifest".into(),
+                domain: "eng".into(),
+                operation: "find_replace".into(),
+                find_text: Some("reflection: on".into()),
+                content: Some("reflection: off".into()),
+                ..Default::default()
+            },
+            None,
+            &ada(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(switched(&mut rx), vec![Some("ada".to_string())]);
+}

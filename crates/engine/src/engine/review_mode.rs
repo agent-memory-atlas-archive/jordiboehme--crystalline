@@ -433,7 +433,7 @@ impl Engine {
             Some(crystalline_core::config::ReviewMode::Overlay) => {
                 self.enable_review_mode(domain, &entry, previewing).await
             }
-            None => self.leave_review_mode(domain, &entry, confirm).await,
+            None => self.leave_review_mode(domain, &entry, confirm, scope).await,
         }
     }
 
@@ -515,6 +515,7 @@ impl Engine {
         domain: &str,
         entry: &DomainEntry,
         confirm: ReviewModeConfirm,
+        scope: &crate::scope::Scope,
     ) -> Result<Value> {
         let root = entry.file_path();
         let domain_id = {
@@ -748,7 +749,7 @@ impl Engine {
         // daemon restarted.
         let synced = self.sync(Some(domain)).await;
         self.refresh_routing_cache().await;
-        self.announce_switch_if_moved(domain, switch_before, None);
+        self.announce_switch_if_moved(domain, switch_before, change_label(scope));
         self.nudge_embed();
         synced?;
 

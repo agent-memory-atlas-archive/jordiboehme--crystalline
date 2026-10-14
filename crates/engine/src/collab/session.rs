@@ -2674,7 +2674,7 @@ impl CollabSession {
                 match view.actor() {
                     Some(_) => {
                         self.engine
-                            .restore_engram_in_view(view, &self.domain, &state.path, file)
+                            .restore_engram_in_view(view, &self.domain, &state.path, file, None)
                             .await
                     }
                     None => {
