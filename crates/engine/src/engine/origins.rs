@@ -2046,8 +2046,10 @@ impl Engine {
             // on disk is what the team reviewed and nobody withdrew.
             revert && drafting.is_none(),
             stacks_allowed,
-            // The mode in effect, the one the share that is withdrawn used: a
-            // layer shared while a switch was pending is reverted in full.
+            // The mode in effect now, at the withdrawal: a layer shared while
+            // a switch was pending is reverted in full as long as the switch
+            // is still pending. Once it is in effect, the revert leaves the
+            // files under `reflections/` alone.
             self.reflection_mode(domain).await?,
         )
         .await
