@@ -1819,6 +1819,8 @@ impl Store for TursoStore {
     }
 
     async fn drop_empty_domain_row(&self, name: &str) -> Result<bool> {
+        // May delete stray chunk rows, so the coverage snapshot may be stale.
+        self.invalidate_coverage();
         in_transaction(self, async {
             // -- actor: all - one actor's draft is content too, so any row of
             // any actor keeps the domain row.
@@ -1840,6 +1842,9 @@ impl Store for TursoStore {
             // the row is cleared by hand before the row itself.
             for sql in [
                 "DELETE FROM domain_spelling WHERE domain_id=?1",
+                // A chunk is not content, so it does not keep the row; it
+                // goes with it (the funnel never leaves one without its page).
+                "DELETE FROM reflection_chunk WHERE domain_id=?1",
                 "DELETE FROM tag_alias WHERE domain_id=?1",
                 "DELETE FROM domain_lock WHERE domain_id=?1",
                 "DELETE FROM relation WHERE domain_id=?1",

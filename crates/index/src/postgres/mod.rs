@@ -44,11 +44,12 @@
 //!   still cached raises Postgres's "cached plan must not change result type" on
 //!   its next use. Three statements in this module return that raw column and
 //!   are therefore the ones exposed to the hazard: `replace_chunks`' and
-//!   `replace_reflection_chunks`' carry SELECTs and `lead_vectors`' SELECT. Nothing in `search` is - an expression over
-//!   the column (the `<=>` distance operator, which yields `float8`) or a
-//!   statement that only binds a vector parameter is unaffected and stays
-//!   cached. Any statement added later that selects `chunk.embedding` itself
-//!   joins that list and needs the same treatment.
+//!   `replace_reflection_chunks`' carry SELECTs and `lead_vectors`' SELECT.
+//!   Nothing in `search` is - an expression over the column (the `<=>`
+//!   distance operator, which yields `float8`) or a statement that only binds
+//!   a vector parameter is unaffected and stays cached. Any statement added
+//!   later that selects a raw `embedding` column joins that list and needs the
+//!   same treatment.
 //!
 //!   Two fixes were tried and rejected before landing on the one below.
 //!   `.persistent(false)` (never cache the statement) looked right but breaks on
@@ -1789,6 +1790,8 @@ impl Store for PostgresStore {
     }
 
     async fn drop_empty_domain_row(&self, name: &str) -> Result<bool> {
+        // May delete stray chunk rows, so the coverage snapshot may be stale.
+        self.invalidate_coverage();
         in_transaction(self, async {
             let mut conn = self.acquire().await?;
             let c = conn.as_mut();
@@ -1815,6 +1818,9 @@ impl Store for PostgresStore {
             // each is cleared before the row itself.
             for sql in [
                 "DELETE FROM domain_spelling WHERE domain_id=$1",
+                // A chunk is not content, so it does not keep the row; it
+                // goes with it (the funnel never leaves one without its page).
+                "DELETE FROM reflection_chunk WHERE domain_id=$1",
                 "DELETE FROM tag_alias WHERE domain_id=$1",
                 "DELETE FROM domain_lock WHERE domain_id=$1",
                 "DELETE FROM relation WHERE domain_id=$1",

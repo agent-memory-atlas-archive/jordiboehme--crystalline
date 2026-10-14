@@ -1139,6 +1139,9 @@ pub struct Engine {
     // what its undo meets.
     #[cfg(any(test, feature = "testing"))]
     asset_move_fault: std::sync::Mutex<Option<asset_home::AssetMoveFault>>,
+    // A failure of the next reflection index write, inside its transaction.
+    #[cfg(any(test, feature = "testing"))]
+    reflection_index_fault: std::sync::atomic::AtomicBool,
     // And a hold on the next write right after it is counted.
     #[cfg(any(test, feature = "testing"))]
     write_hold: std::sync::Mutex<Option<Arc<crate::rename::RenameHold>>>,
@@ -2190,6 +2193,8 @@ impl Engine {
             rename_fail_after: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             asset_move_fault: std::sync::Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            reflection_index_fault: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "testing"))]
             write_hold: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]

@@ -9295,6 +9295,44 @@ parity!(
     a_forced_rebuild_rechunks_reflections
 );
 
+/// A stray chunk row is not content: an otherwise empty domain row still
+/// goes, and takes the chunk with it (on postgres the foreign key would
+/// refuse the domain delete otherwise).
+async fn a_stray_reflection_chunk_never_holds_a_domain_row(store: &dyn Store) {
+    let did = store
+        .upsert_domain("eng", Some("/k/eng"), DomainKind::File)
+        .await
+        .unwrap();
+    let chunk = crystalline_index::NewReflectionChunk {
+        section_ord: 0,
+        section: Some("_top".into()),
+        heading: String::new(),
+        chunk: NewChunk {
+            seq: 0,
+            text: "stray".into(),
+            text_hash: "h".into(),
+        },
+    };
+    store
+        .replace_reflection_chunks(did, "gone.md", &[chunk])
+        .await
+        .unwrap();
+    assert!(store.drop_empty_domain_row("eng").await.unwrap());
+    assert_eq!(
+        store
+            .embedding_coverage_of(ChunkTable::Reflection)
+            .await
+            .unwrap()
+            .total_chunks,
+        0,
+        "the chunk went with the row"
+    );
+}
+parity!(
+    a_stray_reflection_chunk_never_holds_a_domain_row_on_both_backends,
+    a_stray_reflection_chunk_never_holds_a_domain_row
+);
+
 // --- the registration stamp --------------------------------------------------
 
 /// The `last_registered` stamp: a domain the configuration still names is

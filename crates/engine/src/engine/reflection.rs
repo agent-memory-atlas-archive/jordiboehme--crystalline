@@ -789,15 +789,53 @@ impl Engine {
             size: text.len() as u64,
             modified: asset_modified(abs),
         };
+        // The row and its chunks commit together, as an engram row and its
+        // chunks do (`commit_overlay_row`): a row left stamped over missing
+        // chunks would be skipped by the sync's prefilter until a full
+        // reindex. The funnel opens no transaction of its own, because the
+        // sync calls it inside its apply's. No caller holds one here: it
+        // would hold the store lock this takes.
         let store = self.store.lock().await;
-        crystalline_index::reflection::index_reflection_row(
-            &*store,
-            domain_id,
-            &row,
-            &self.chunk_params,
-        )
-        .await?;
-        Ok(())
+        store.begin().await?;
+        let written = async {
+            crystalline_index::reflection::index_reflection_row(
+                &*store,
+                domain_id,
+                &row,
+                &self.chunk_params,
+            )
+            .await?;
+            #[cfg(any(test, feature = "testing"))]
+            if self
+                .reflection_index_fault
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(EngineError::Invalid(
+                    "injected failure after the reflection row and its chunks".into(),
+                ));
+            }
+            Ok::<(), EngineError>(())
+        }
+        .await;
+        match written {
+            Ok(()) => {
+                store.commit().await?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = store.rollback().await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Arm a failure of the next reflection index write, after its row and
+    /// chunks were written and before the commit. Disarmed by the write it
+    /// hits.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn fail_next_reflection_index(&self) {
+        self.reflection_index_fault
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

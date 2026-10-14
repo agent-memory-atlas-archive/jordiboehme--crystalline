@@ -1135,3 +1135,71 @@ async fn a_page_that_cannot_be_relinked_is_named_in_the_move_receipt() {
     assert_eq!(moved["links_rewritten"], 0, "{moved}");
     assert_eq!(moved["links_failed"][0]["path"], "home.md", "{moved}");
 }
+
+/// A reflection's row and its chunks commit together: a write whose index
+/// step fails after the row is in leaves the row as it was, so the page's
+/// new text is unstamped and the next walk reads and chunks it.
+#[tokio::test]
+async fn a_failed_reflection_index_leaves_the_page_for_the_next_walk() {
+    let fx = reflecting().await;
+    fx.engine
+        .write_reflection(&write("a.md", "# A\n\nfirst text\n"), &person())
+        .await
+        .unwrap();
+    let store = fx.engine.store();
+    let did = store.lock().await.domain_id("eng").await.unwrap().unwrap();
+    let before = store
+        .lock()
+        .await
+        .get_reflection(did, "a.md")
+        .await
+        .unwrap()
+        .unwrap();
+
+    fx.engine.fail_next_reflection_index();
+    let err = fx
+        .engine
+        .write_reflection(
+            &write("a.md", "# A\n\nthe second, longer text\n"),
+            &person(),
+        )
+        .await;
+    assert!(err.is_err(), "{err:?}");
+    let after = store
+        .lock()
+        .await
+        .get_reflection(did, "a.md")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "the failed write left the row as it was, stamp included"
+    );
+
+    fx.engine.sync(None).await.unwrap();
+    let healed = store
+        .lock()
+        .await
+        .get_reflection(did, "a.md")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(healed.content.contains("second, longer"), "{healed:?}");
+    let chunks = store
+        .lock()
+        .await
+        .chunks_needing_embedding_in(
+            crystalline_index::ChunkTable::Reflection,
+            "m",
+            None,
+            10,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        chunks.iter().any(|c| c.text.contains("second, longer")),
+        "the walk chunked the new text: {chunks:?}"
+    );
+}

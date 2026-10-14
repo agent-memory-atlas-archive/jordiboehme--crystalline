@@ -240,12 +240,8 @@ async fn a_reflection_chunk_never_reaches_engram_search(store: &dyn Store) {
     let leads = store.lead_vectors(did, "fake", None).await.unwrap();
     assert_eq!(
         leads.len(),
-        store
-            .embedding_coverage()
-            .await
-            .unwrap()
-            .embedded_for("fake"),
-        "one lead vector per engram chunk embedded, none for the page: {leads:?}"
+        2,
+        "one lead vector per engram (the MANIFEST and notes/n), none for the page: {leads:?}"
     );
 }
 parity!(
