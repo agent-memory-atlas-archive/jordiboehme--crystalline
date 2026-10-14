@@ -127,6 +127,27 @@ async fn reflection_fixture_with_aliases(
     Arc<Engine>,
     crate::support::ScratchStateDir,
 ) {
+    reflection_fixture_at(aliases, false).await
+}
+
+/// [`reflection_fixture`] whose engine knows its state directory
+/// (`<scratch home>/state`), so a room can keep a text it could not save.
+async fn reflection_fixture_keeping() -> (
+    tempfile::TempDir,
+    Arc<Engine>,
+    crate::support::ScratchStateDir,
+) {
+    reflection_fixture_at(&[], true).await
+}
+
+async fn reflection_fixture_at(
+    aliases: &[&str],
+    with_state_dir: bool,
+) -> (
+    tempfile::TempDir,
+    Arc<Engine>,
+    crate::support::ScratchStateDir,
+) {
     let scratch = crate::support::ScratchStateDir::acquire();
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("eng");
@@ -152,7 +173,11 @@ async fn reflection_fixture_with_aliases(
     entry.aliases = aliases.iter().map(|a| a.to_string()).collect();
     cfg.domains.insert("eng".into(), entry);
     let store = TursoStore::open_in_memory().await.unwrap();
-    let engine = Arc::new(Engine::new(Arc::new(Mutex::new(store)), cfg, None, None));
+    let mut engine = Engine::new(Arc::new(Mutex::new(store)), cfg, None, None);
+    if with_state_dir {
+        engine = engine.with_state_dir(scratch.home().join("state"));
+    }
+    let engine = Arc::new(engine);
     engine.sync(None).await.unwrap();
     (tmp, engine, scratch)
 }
@@ -2510,5 +2535,230 @@ async fn a_room_open_across_a_switch_off_saves_nothing() {
         std::fs::read(&path).unwrap(),
         before,
         "the close writes nothing"
+    );
+}
+
+/// A switch-off through Crystalline saves the domain's reflection rooms
+/// first, while the Reflection is still on, and then closes them, so no
+/// typed text is left in a room that can no longer save.
+#[tokio::test]
+async fn a_switch_off_saves_and_closes_the_reflection_rooms_first() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed just before the switch.").await;
+    engine
+        .set_manifest_policies(
+            "eng",
+            &[("reflection".to_string(), "off".to_string())],
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("Typed just before the switch.")
+    );
+    let mut closed = None;
+    while closed.is_none() {
+        if let Control::Closed { reason } = next_control(&mut joined.rx).await {
+            closed = Some(reason);
+        }
+    }
+    assert_eq!(closed.as_deref(), Some("switched_off"));
+    assert_eq!(sessions.session_count().await, 0);
+}
+
+/// A switch-off that is refused closes nobody's room: the rooms close only
+/// once every check that can still refuse the edit has passed.
+#[tokio::test]
+async fn a_refused_switch_off_closes_no_room() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let auth = Arc::new(
+        crystalline_service::rest::AuthStore::open(&tmp.path().join("web-auth.db"))
+            .await
+            .unwrap(),
+    );
+    auth.add_user(
+        "ed",
+        "ed",
+        None,
+        crystalline_service::rest::Role::Editor,
+        "pw12345678",
+    )
+    .await
+    .unwrap();
+    auth.set_write_list("ed", &["agents-*".to_string()])
+        .await
+        .unwrap();
+    engine.set_domain_access(Arc::new(crystalline_service::DomainAccess::new(auth)));
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed while ed tried the switch.").await;
+    let ed = crystalline_service::Scope::User {
+        account: "ed".into(),
+        admin: false,
+    };
+    let refused = engine
+        .set_manifest_policies("eng", &[("reflection".to_string(), "off".to_string())], &ed)
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(sessions.session_count().await, 1);
+    assert!(!joined.session.is_disposed(), "the room stays open");
+}
+
+/// A room whose last save is refused (the switch went off outside
+/// Crystalline, so nothing closed it first) keeps its text on the server:
+/// one file under `<state>/kept/` holds it, and the page is not touched.
+#[tokio::test]
+async fn a_refused_close_keeps_the_rooms_text_on_the_server() {
+    let (tmp, engine, scratch) = reflection_fixture_keeping().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed while it was switched off.").await;
+    // A plain editor switches it off: no Crystalline writer runs.
+    let manifest = tmp.path().join("eng/MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap().replacen(
+        "reflection: on\n",
+        "reflection: off\n",
+        1,
+    );
+    std::fs::write(&manifest, text).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    let Control::SaveFailed { detail } = next_control(&mut joined.rx).await else {
+        panic!("the save is refused");
+    };
+    assert!(
+        detail.contains("not on here") && detail.contains("the server keeps one too"),
+        "{detail}"
+    );
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "the close writes nothing"
+    );
+    let kept_dir = scratch.home().join("state/kept/eng/reflection/guides");
+    let kept: Vec<_> = std::fs::read_dir(&kept_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    let name = kept[0].file_name().unwrap().to_string_lossy().to_string();
+    assert!(
+        name.starts_with("a.md.") && name.ends_with("Z.md"),
+        "{name}"
+    );
+    let held = std::fs::read_to_string(&kept[0]).unwrap();
+    assert!(held.contains("Typed while it was switched off."), "{held}");
+}
+
+/// A room nobody typed in loses nothing when its last save is refused (a
+/// reflection room's last pass runs anyway, for its ids), so it keeps no
+/// file either.
+#[tokio::test]
+async fn an_untouched_room_refused_on_close_keeps_nothing() {
+    let (tmp, engine, scratch) = reflection_fixture_keeping().await;
+    let sessions = CollabSessions::new(engine.clone());
+    let joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let _doc = sync_client(&joined).await;
+    let manifest = tmp.path().join("eng/MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap().replacen(
+        "reflection: on\n",
+        "reflection: off\n",
+        1,
+    );
+    std::fs::write(&manifest, text).unwrap();
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    assert!(
+        !scratch.home().join("state/kept").exists(),
+        "nothing to keep"
+    );
+}
+
+/// A change typed and taken back again before the save names nobody: the
+/// next save, of somebody else's edit, records only that person.
+#[tokio::test]
+async fn an_undone_edit_names_nobody_on_the_next_save() {
+    undone_edit_names_nobody(false).await;
+}
+
+/// [`an_undone_edit_names_nobody_on_the_next_save`] with the Save button
+/// pressed over the undone edit: the flush reaches the save itself, which
+/// finds nothing to write.
+#[tokio::test]
+async fn an_undone_edit_flushed_names_nobody_on_the_next_save() {
+    undone_edit_names_nobody(true).await;
+}
+
+async fn undone_edit_names_nobody(flush: bool) {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    let ada = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc_a = sync_client(&ada).await;
+    let original = {
+        let text = doc_a.get_or_insert_text("content");
+        let txn = doc_a.transact();
+        text.get_string(&txn)
+    };
+    append_line(&ada, &doc_a, "Typed and taken back.").await;
+    replace_all(&ada, &doc_a, &original).await;
+    if flush {
+        ada.session
+            .handle_frame(ada.conn, &control::encode(&Control::Flush))
+            .await;
+    }
+    let before = std::fs::read(&path).unwrap();
+    ada.session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    assert_eq!(std::fs::read(&path).unwrap(), before, "nothing written");
+    let mut bob = sessions
+        .join_reflection("eng", "guides/a.md", "bob")
+        .await
+        .unwrap();
+    let doc_b = sync_client(&bob).await;
+    append_line(&bob, &doc_b, "Typed by bob.").await;
+    bob.session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    until_saved(&mut bob.rx).await;
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("Typed by bob."), "{saved}");
+    let prov = crystalline_core::reflection::provenance::read_provenance(&saved);
+    assert_eq!(
+        prov["bbbb2222"].changed_by,
+        vec!["bob".to_string()],
+        "{saved}"
     );
 }

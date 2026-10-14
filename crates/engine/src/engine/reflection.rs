@@ -1393,7 +1393,7 @@ impl Engine {
             ReflectionState::On { .. }
         ) {
             return Err(EngineError::Refused(format!(
-                "the Reflection of '{domain}' is not on here any more, so this room's text is not saved; copy it before you leave the page"
+                "the Reflection of '{domain}' is not on here any more, so this room's text is not saved; this tab keeps a copy, and if the page closes the server keeps one too"
             )));
         }
         let not_found =

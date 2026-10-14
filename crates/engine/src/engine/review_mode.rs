@@ -591,6 +591,23 @@ impl Engine {
             )));
         }
 
+        // A folded MANIFEST draft can switch the Reflection off. Its rooms
+        // are saved and closed first, while the folder still says on, the
+        // way the policy edit closes them: the sweep below would save them
+        // too, but it tells their sockets `internal`, not why they closed.
+        if let Some(root) = &root
+            && folds_switch_off(root, &folding)
+            && let Some(rooms) = self.collab_rooms()
+        {
+            rooms
+                .close_docs(
+                    domain,
+                    crystalline_core::ContentKind::Reflection,
+                    "switched_off",
+                )
+                .await;
+        }
+
         // The key comes off first, and then the rooms go, and that pair is the
         // whole of step 2: see the ordering on [`Engine::set_review_mode`].
         //
@@ -1497,6 +1514,23 @@ impl Engine {
         }
         Ok(report)
     }
+}
+
+/// Whether folding `folding` (in fold order, the last MANIFEST draft wins)
+/// switches the Reflection of the domain at `root` off: the MANIFEST in the
+/// folder says `reflection: on` and the one the fold leaves does not (a
+/// deleted MANIFEST says nothing, so it is off too).
+fn folds_switch_off(root: &Path, folding: &[&ActorDrafts]) -> bool {
+    let landing = folding
+        .iter()
+        .flat_map(|held| held.entries.iter())
+        .rfind(|draft| draft.path == "MANIFEST.md");
+    let Some(draft) = landing else {
+        return false;
+    };
+    let before = std::fs::read_to_string(root.join("MANIFEST.md")).unwrap_or_default();
+    (draft.tombstone || !super::reflection::declares_on(&draft.content))
+        && super::reflection::declares_on(&before)
 }
 
 /// Whether folding `folding` (in fold order, the last MANIFEST draft wins)

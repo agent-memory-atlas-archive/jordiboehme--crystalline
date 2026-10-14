@@ -16,6 +16,8 @@ Set the MANIFEST key `reflection: on`. Do it in the domain policies card in Flui
 
 On a domain connected to GitHub, switching it off has one more effect. The folder `reflections/` is then ordinary engram content, so "share changes" offers its pages, their threads and `PACT.md`. Threads can hold comments from people who may not see engrams. So do not share changes while the switch is off. Once these files are in the team's copy, switching on again is refused until the team's copy no longer holds them. The answer to the switch-off says this too.
 
+If the Reflection is switched off while a page is open, Crystalline saves the page first and closes the editor. If the switch changes outside Crystalline (a plain editor, a pull), a page that is still open cannot be saved: the editor keeps its text, and when the last person leaves, the server writes it to `kept/` in its state folder and logs the file name.
+
 Switching it on is refused in these cases, and the refusal says why:
 
 - Engrams already live in `reflections/`. The refusal names them. Move them to another folder first (`move_engram`), then switch it on.

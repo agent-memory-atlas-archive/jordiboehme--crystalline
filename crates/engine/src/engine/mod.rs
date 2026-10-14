@@ -2311,6 +2311,15 @@ impl Engine {
         self.collab.get().and_then(std::sync::Weak::upgrade)
     }
 
+    /// Where a closing co-editing room keeps a text it could not save:
+    /// `<state dir>/kept`. `None` when this process knows no state
+    /// directory; under the test seam that is any engine built without
+    /// [`Engine::with_state_dir`], so a test never writes into the
+    /// developer's own state folder.
+    pub(crate) fn kept_dir(&self) -> Option<PathBuf> {
+        self.journal_state_dir().ok().map(|dir| dir.join("kept"))
+    }
+
     /// Hold the domain-admin lock for the whole of a registration or a removal.
     ///
     /// One lock on the engine rather than one per surface: REST's create takes

@@ -250,6 +250,24 @@ impl Engine {
             self.seed_pact(domain).await?;
         }
         let switch_before = self.reflection_switch(domain);
+        // A switch-off saves and closes the domain's reflection rooms first,
+        // after every check that can still refuse this edit and while the
+        // state is still on, so each room's last save lands in its page. A
+        // refused switch-off never gets here and closes nobody's room. If the
+        // write below fails after this, the rooms' text is in the pages
+        // already; their editors reopen them.
+        if switching_off
+            && overlay.is_none()
+            && let Some(rooms) = self.collab_rooms()
+        {
+            rooms
+                .close_docs(
+                    domain,
+                    crystalline_core::ContentKind::Reflection,
+                    "switched_off",
+                )
+                .await;
+        }
         self.apply_source_edit(
             &desc,
             &source,

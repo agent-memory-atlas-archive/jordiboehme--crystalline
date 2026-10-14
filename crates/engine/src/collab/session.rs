@@ -291,6 +291,14 @@ pub enum RoomDoc {
 }
 
 impl RoomDoc {
+    /// The kind of document the room is over.
+    pub fn kind(&self) -> crystalline_core::ContentKind {
+        match self {
+            RoomDoc::Engram(_) => crystalline_core::ContentKind::Engram,
+            RoomDoc::Reflection(_) => crystalline_core::ContentKind::Reflection,
+        }
+    }
+
     /// The name the room's controls carry: an engram's permalink, or a
     /// reflection's path inside `reflections/`.
     pub fn name(&self) -> &str {
@@ -512,9 +520,9 @@ impl CollabSessions {
     /// by the fence - no join is in flight across the sweep. If that lock is
     /// ever released around the open, this argument silently breaks.
     ///
-    /// Note that `poison` broadcasts `Closed { reason: "internal" }`, so a room
-    /// closed by an unregistration reads as an internal error on the client
-    /// side; the visible behavior (the editor closes, the room is unusable) is
+    /// Note that the sweep closes each room with `Closed { reason: "internal" }`,
+    /// so a room closed by an unregistration reads as an internal error on the
+    /// client side; the visible behavior (the editor closes, the room is unusable) is
     /// right either way.
     pub async fn dispose_domain(&self, domain: &str) -> usize {
         self.dispose_domain_discarding(domain, &HashSet::new())
@@ -545,6 +553,39 @@ impl CollabSessions {
         domain: &str,
         discarded: &HashSet<String>,
     ) -> usize {
+        self.sweep_domain(domain, None, discarded, "internal").await
+    }
+
+    /// Final-save every room over a document of `kind` in `domain`, then
+    /// close it, telling each socket `Closed { reason }`. Answers how many
+    /// rooms it closed.
+    ///
+    /// The switch-off of a Reflection calls this BEFORE the switch takes
+    /// effect, with `reason` `switched_off`: the state is still on, so each
+    /// room's last save lands in the page instead of being refused into a
+    /// room nobody can save any more. Rooms over other kinds of document
+    /// stay open.
+    pub async fn close_docs(
+        &self,
+        domain: &str,
+        kind: crystalline_core::ContentKind,
+        reason: &str,
+    ) -> usize {
+        self.sweep_domain(domain, Some(kind), &HashSet::new(), reason)
+            .await
+    }
+
+    /// The save-then-close sweep behind [`CollabSessions::dispose_domain`],
+    /// [`CollabSessions::dispose_domain_discarding`] and
+    /// [`CollabSessions::close_docs`]: every room of `domain`, or only those
+    /// over a document of `kind` when one is named.
+    async fn sweep_domain(
+        &self,
+        domain: &str,
+        kind: Option<crystalline_core::ContentKind>,
+        discarded: &HashSet<String>,
+        reason: &str,
+    ) -> usize {
         let victims: Vec<Arc<CollabSession>> = {
             let mut sessions = self.sessions.lock().await;
             // The DOMAIN component alone, whatever document each room is a
@@ -552,10 +593,11 @@ impl CollabSessions {
             // so a room over any of them is a room over nothing a moment
             // later. `rooms_closed` counts exactly what it always counted -
             // the rooms this domain had open - and the owner component neither
-            // hides one from the sweep nor adds one to it.
+            // hides one from the sweep nor adds one to it. `close_docs` narrows
+            // the sweep by the KIND of document only, never by owner.
             let keys: Vec<RoomKey> = sessions
                 .keys()
-                .filter(|key| key.0 == domain)
+                .filter(|key| key.0 == domain && kind.is_none_or(|kind| key.1.kind() == kind))
                 .cloned()
                 .collect();
             keys.iter().filter_map(|key| sessions.remove(key)).collect()
@@ -572,7 +614,7 @@ impl CollabSessions {
             if !discarding {
                 session.final_save().await;
             }
-            session.poison().await;
+            session.close(reason).await;
         }
         closed
     }
@@ -1672,6 +1714,8 @@ impl CollabSession {
             // Nothing effective is pending: disarm what a no-op update set, so
             // the next real edit starts both timers from scratch.
             state.dirty = false;
+            // The document is the saved text again: nobody's change is pending.
+            state.editors.clear();
             state.last_edit = None;
             state.oldest_unsaved = None;
             if matches!(state.save_state, SaveStateTag::Ok) {
@@ -1720,7 +1764,60 @@ impl CollabSession {
         self.final_pass.store(true, Ordering::Relaxed);
         let renamed = self.save_locked(&mut state, Instant::now()).await;
         self.final_pass.store(false, Ordering::Relaxed);
+        // The last chance was refused: nothing will ever save this text
+        // again, so the server keeps it rather than drop it. A reflection
+        // room's last pass runs even with nothing typed (for its ids), and
+        // a refusal of THAT loses nothing, so it keeps nothing.
+        if matches!(state.save_state, SaveStateTag::Failed)
+            && Self::file_text_locked(&state) != state.last_saved_text
+        {
+            self.keep_refused_text(&state);
+        }
         renamed
+    }
+
+    /// Write a closing room's text that could not be saved to
+    /// `<state dir>/kept/<domain>/<engram|reflection>/<path>.<UTC time>.md`
+    /// and log where. Best effort: a failure to write it is a second
+    /// warning, never a panic.
+    fn keep_refused_text(&self, state: &SessionState) {
+        let (folder, path) = match self.doc() {
+            RoomDoc::Engram(_) => ("engram", state.path.clone()),
+            RoomDoc::Reflection(path) => ("reflection", path),
+        };
+        let text = Self::file_text_locked(state);
+        let Some(kept) = self.engine.kept_dir() else {
+            tracing::warn!(
+                domain = %self.domain,
+                path = %path,
+                "a closing room's text could not be saved, and this process knows no state folder to keep it in"
+            );
+            return;
+        };
+        let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+        let file = kept
+            .join(&self.domain)
+            .join(folder)
+            .join(format!("{path}.{stamp}.md"));
+        let written = file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&file, text.as_bytes()));
+        match written {
+            Ok(()) => tracing::warn!(
+                domain = %self.domain,
+                path = %path,
+                kept = %file.display(),
+                "a closing room's text could not be saved and is kept here"
+            ),
+            Err(err) => tracing::warn!(
+                domain = %self.domain,
+                path = %path,
+                kept = %file.display(),
+                %err,
+                "a closing room's text could not be saved, and keeping it failed too"
+            ),
+        }
     }
 
     /// Move the registry entry after a rename, holding no session guard.
@@ -1739,12 +1836,19 @@ impl CollabSession {
     /// `Closed { reason: "internal" }` and closes with the permanent code, the
     /// session never saves again, and participants' drafts hold their text.
     pub async fn poison(&self) {
+        self.close("internal").await;
+    }
+
+    /// End the room and tell every socket why: `Closed { reason }`, after
+    /// which each socket closes with the permanent code and the room never
+    /// saves again.
+    pub async fn close(&self, reason: &str) {
         self.dispose();
         let _ = self.tx.send(Frame {
             from: None,
             to: None,
             bytes: Bytes::from(control::encode(&Control::Closed {
-                reason: "internal".to_string(),
+                reason: reason.to_string(),
             })),
         });
     }
@@ -1816,6 +1920,8 @@ impl CollabSession {
         if file == state.last_saved_text && !closing_reflection {
             // Nothing effective changed: never write, never touch the mtime.
             state.dirty = false;
+            // The document is the saved text again: nobody's change is pending.
+            state.editors.clear();
             state.oldest_unsaved = None;
             if !matches!(state.save_state, SaveStateTag::Ok) {
                 // The document matches the file again, so the standing save
