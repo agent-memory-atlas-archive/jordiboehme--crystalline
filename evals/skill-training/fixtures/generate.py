@@ -1216,16 +1216,19 @@ WORKSPACES: dict[str, dict] = {
         },
     },
     # The reflect benchmark's workspace: one domain that keeps a
-    # Reflection. The page says the lamp is lit "at sunset" and the engram
-    # says thirty minutes before, so the queue holds an update item, and
-    # `guides/lamp.md` has no baseline, so its sections are feedback items
-    # too.
+    # Reflection. No section cites the "Lamp lighting" engram, so the queue
+    # holds an `unreflected` update item for it, and `guides/lamp.md` has no
+    # baseline, so its section is a feedback item too. The page says the
+    # lamp is lit "at sunset" and the engram says thirty minutes before:
+    # the agent has to notice that itself, nothing compares the texts. Each
+    # `##` heading carries its hidden id line, the page marker: a page
+    # without one reads as an engram and holds the switch pending.
     "lantern": {
         "options": {
             "reflection": {
                 "lighthouse": {
-                    "PACT.md": "# How we write about the lighthouse\n\n## Audience\n\n- New keepers on their first week.\n\n## Structure\n\n- guides/*.md\n",
-                    "guides/lamp.md": "# The lamp\n\n## Lighting up\n\nThe lamp is lit at sunset by the keeper on watch, and the log is signed.\n",
+                    "PACT.md": "# How we write about the lighthouse\n\n## Audience\n<!-- r:a1b2c3d4 -->\n\n- New keepers on their first week.\n\n## Structure\n<!-- r:b2c3d4e5 -->\n\n- guides/*.md\n",
+                    "guides/lamp.md": "# The lamp\n\n## Lighting up\n<!-- r:c3d4e5f6 -->\n\nThe lamp is lit at sunset by the keeper on watch, and the log is signed.\n",
                 },
             },
         },

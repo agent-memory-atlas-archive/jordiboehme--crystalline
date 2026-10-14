@@ -22,7 +22,7 @@ Switching it on is refused in these cases, and the refusal says why:
 - The domain is connected to GitHub and the team's copy still holds files in `reflections/`. Share the change that moves them out first.
 - The domain has two folders that differ only in letter case, for example `reflections/` and `Reflections/`.
 
-A plain editor or a pull can still write `reflection: on` into the MANIFEST. If engrams still live in `reflections/` then, the switch is pending: the folder stays engram content until the last engram has left it, and the Reflection tools answer that they wait for that. A `reflect` call over all domains names such a domain under `scope.pending`.
+A plain editor or a pull can still write `reflection: on` into the MANIFEST. If engrams still live in `reflections/` then, the switch is pending: the folder stays engram content until the last engram has left it, and the Reflection tools answer that they wait for that. A `reflect` call over all domains names such a domain under `scope.pending`. A page written by hand with no hidden section id counts as such an engram too (see the next sections).
 
 ## The pact
 
@@ -37,6 +37,8 @@ The agent reads the pact before it writes. A page that fits none of the `## Stru
 ## Sections and their hidden ids
 
 Every `##` heading of a reflection gets a hidden id on the next line, for example `<!-- r:7f3a9c2e -->`. The id ties a section to its threads and to the engrams it was built from, so a section keeps them when its heading changes. Leave the line alone. A heading added in another editor gets its id on the next write through Crystalline.
+
+The id lines also mark a file as a page. A new page written outside Crystalline needs at least one: an id line under one of its `##` headings (4 to 16 lowercase hex digits, for example `<!-- r:c3d4e5f6 -->`). Without any, Crystalline reads the file as an engram, and the Reflection waits until it is moved out or marked. A page written through Crystalline always has its id lines.
 
 The frontmatter block `reflection:` is Crystalline's own. For each section it records the engrams the section was built from (with their checksum at that time), a hash of the text at the last reflect, and who changed the text since then. A person who cannot read the engrams gets the page without this block, so engram names stay hidden from them. Do not edit the block by hand.
 

@@ -7,7 +7,7 @@ tags:
 - lamp
 status: stable
 recorded_at: 2026-10-14
-generated: { by: process:crystalline-cli, at: 2026-10-14T13:41:47.866581+00:00 }
+generated: { by: process:crystalline-cli, at: 2026-10-14T13:55:49.677776+00:00 }
 ---
 
 When and how the lamp is lit.

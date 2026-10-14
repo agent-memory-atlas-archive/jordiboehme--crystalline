@@ -20,8 +20,8 @@ The fixture workspace is ``derelict``, which plants exactly one instance
 of each of the fourteen V rules; ``observatory`` carries all of them and
 ``outreach`` is the tidy control domain a sweep must find nothing in.
 The ``lantern`` workspace keeps a Reflection for the ``reflect`` items:
-its one page says the lamp is lit at sunset while the engram says thirty
-minutes before.
+its one page says the lamp is lit at sunset while the engram, which no
+section cites yet, says thirty minutes before.
 
 Supported ``expect`` keys, in three groups.
 
