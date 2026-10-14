@@ -219,6 +219,80 @@ pub fn slash_rel(root: &Path, path: &Path) -> String {
         .join("/")
 }
 
+/// Whether the file at `rel` (domain-relative, under `reflections/`) in the
+/// domain at `root` is an engram that waits to move out of the Reflection's
+/// folder: the walk would index it as an engram (the class with the
+/// Reflection off and the parse the sync applies) and it carries no page
+/// marker. A page marker is a section id line `<!-- r:<hex> -->`, the
+/// Reflection's provenance key in the frontmatter, or a baseline twin under
+/// `reflections/.reflected/`; a threads file (`<page>.threads.md`) is marked
+/// by its page on disk. Crystalline writes every page with id lines, so
+/// a domain switched off and on again finds no pending engram; a page a
+/// person wrote by hand with none of the markers reads as an engram, which
+/// only holds the switch pending (no file is ever dropped).
+///
+/// A file that cannot be read counts as pending (fail closed); a file that is
+/// gone, is not valid UTF-8 or does not parse is no engram, as the walk sees
+/// it. The class is taken from [`DomainLayout::bare`], which knows no artifact
+/// folder, so a markdown file in an in-root artifact folder under
+/// `reflections/` may be reported pending although the walk skips it: the
+/// safe direction.
+///
+/// This is the one predicate for "an engram under `reflections/`": the sync
+/// asks it to decide whether the switch is in effect, and the switch-on
+/// screen names exactly the files it calls pending.
+pub fn is_pending_engram(root: &Path, rel: &str) -> bool {
+    let rel = rel.trim_start_matches("./");
+    let Some((folder, inner)) = rel.split_once('/') else {
+        return false;
+    };
+    if !folder.eq_ignore_ascii_case(crate::reflection::REFLECTIONS_DIR) {
+        return false;
+    }
+    if DomainLayout::bare(ReflectionMode::Off).classify(rel) != PathClass::Engram {
+        return false;
+    }
+    let bytes = match std::fs::read(root.join(rel)) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
+        return false;
+    };
+    let text = crate::to_lf(&text);
+    if crate::parse_engram(&text).is_err() || carries_page_marker(&text) {
+        return false;
+    }
+    // A baseline twin marks a page, and the page beside it marks a threads
+    // file; a twin that cannot be stat'd is taken as absent, which keeps the
+    // file pending.
+    let twin = match crate::reflection::classify(inner) {
+        ReflectionFile::Threads { of } => of,
+        _ => crate::reflection::baseline_path(inner),
+    };
+    !root.join(folder).join(twin).try_exists().unwrap_or(false)
+}
+
+/// Whether `source` carries a page marker in its own text: a section id line
+/// in the body or the Reflection's provenance key in the frontmatter.
+fn carries_page_marker(source: &str) -> bool {
+    let body = match crate::frontmatter::split_frontmatter(source) {
+        Some(parts) => {
+            if let Ok(serde_yaml_ng::Value::Mapping(map)) =
+                serde_yaml_ng::from_str::<serde_yaml_ng::Value>(parts.yaml)
+                && map.contains_key(crate::reflection::PROVENANCE_KEY)
+            {
+                return true;
+            }
+            parts.body
+        }
+        None => source,
+    };
+    body.lines()
+        .any(|line| crate::reflection::parse_id_line(line).is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,5 +459,69 @@ mod tests {
             ReflectionMode::declared(crate::manifest::ReflectionSwitch::Off),
             ReflectionMode::Off
         );
+    }
+
+    /// R48: what counts as an engram waiting to move out of `reflections/`.
+    #[test]
+    fn a_pending_engram_is_an_engram_without_a_page_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let put = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        put("reflections/plain.md", "# Plain\n\nA note.\n");
+        put(
+            "reflections/flow.md",
+            "---\n{type: engram, status: draft}\n---\n\n# Flow\n",
+        );
+        put(
+            "reflections/ids.md",
+            "# Page\n\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n",
+        );
+        put(
+            "reflections/prov.md",
+            "---\ntype: guide\nstatus: draft\nreflection: {}\n---\n\n# Prov\n",
+        );
+        put("reflections/twin.md", "# Twin\n");
+        put("reflections/.reflected/twin.md", "# Twin\n");
+        put("reflections/twin.threads.md", "# Threads\n");
+        put("reflections/lone.threads.md", "# Threads\n");
+        put("reflections/broken.md", "---\n: [\n---\n");
+        put("reflections/notes.txt", "text");
+        put("notes/a.md", "# A\n");
+        for (rel, pending) in [
+            ("reflections/plain.md", true),
+            ("Reflections/plain.md", true),
+            ("reflections/flow.md", true),
+            ("reflections/lone.threads.md", true),
+            ("reflections/ids.md", false),
+            ("reflections/prov.md", false),
+            ("reflections/twin.md", false),
+            ("reflections/twin.threads.md", false),
+            ("reflections/broken.md", false),
+            ("reflections/notes.txt", false),
+            ("reflections/gone.md", false),
+            ("notes/a.md", false),
+        ] {
+            // `Reflections/plain.md` only resolves on a case-folding filesystem.
+            if rel.starts_with('R') && !root.join(rel).exists() {
+                continue;
+            }
+            assert_eq!(is_pending_engram(root, rel), pending, "{rel}");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = root.join("reflections/ids.md");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let unreadable = std::fs::read(&path).is_err();
+            let pending = is_pending_engram(root, "reflections/ids.md");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            if unreadable {
+                assert!(pending, "a file that cannot be read counts as pending");
+            }
+        }
     }
 }

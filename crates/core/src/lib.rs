@@ -77,7 +77,7 @@ pub use index::{
     is_reserved_path, render_index,
 };
 pub use kind::ContentKind;
-pub use layout::{DomainLayout, PathClass, ReflectionMode, slash_rel};
+pub use layout::{DomainLayout, PathClass, ReflectionMode, is_pending_engram, slash_rel};
 pub use line_endings::{NotUtf8, to_lf, utf8_to_lf};
 pub use manifest::{
     ArtifactType, DOMAIN_NAME_KEY, GENERATED_INDEXES_KEY, GeneratedIndexes, Manifest, PolicyKey,

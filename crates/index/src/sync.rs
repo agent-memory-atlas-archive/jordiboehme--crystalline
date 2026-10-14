@@ -318,9 +318,12 @@ impl FileRows {
             (FileRows::Reflections, FileRow::Reflection(row)) => {
                 store.upsert_reflection(domain, row).await
             }
-            // `build` answers the row of its own table; the pairing cannot cross.
+            // `build` answers the row of its own table, so the pairing never
+            // crosses; an arm that made it cross is a bug, not a skip.
             (FileRows::Assets(_), FileRow::Reflection(_))
-            | (FileRows::Reflections, FileRow::Asset(_)) => Ok(()),
+            | (FileRows::Reflections, FileRow::Asset(_)) => {
+                unreachable!("a file row reached another table's upsert")
+            }
         }
     }
 
@@ -351,11 +354,14 @@ impl FileRows {
 /// stays pending, and pending reads as `Off`, so no sync ever drops an
 /// engram from the index because of it.
 ///
-/// The engrams are the `recorded` engram paths. A domain the index has
+/// What an engram under `reflections/` is, is decided by one predicate,
+/// [`crystalline_core::is_pending_engram`] (R48): a file the walk would index
+/// as an engram that carries no page marker. It is asked of the `recorded`
+/// engram paths under the folder, read from disk. A domain the index has
 /// synced always records its `MANIFEST.md`, so no recorded path at all means
 /// the index holds no row of the domain (a wipe and rebuild, a new machine's
-/// first sync, a schema rebuild): then the files under `reflections/` are
-/// read from disk instead, so a rebuild keeps a pending switch pending (R1).
+/// first sync, a schema rebuild): then it is asked of every file under
+/// `reflections/` instead, so a rebuild keeps a pending switch pending (R1).
 pub fn reflection_mode(
     root: &Path,
     recorded: impl Iterator<Item = impl AsRef<str>>,
@@ -367,7 +373,11 @@ pub fn reflection_mode(
     let pending = if recorded.peek().is_none() {
         pending_engram_on_disk(root)
     } else {
-        recorded.any(|p| crystalline_core::reflection::is_under_reflections(p.as_ref()))
+        recorded.any(|p| {
+            let p = p.as_ref();
+            crystalline_core::reflection::is_under_reflections(p)
+                && crystalline_core::is_pending_engram(root, p)
+        })
     };
     if pending {
         ReflectionMode::Off
@@ -376,60 +386,44 @@ pub fn reflection_mode(
     }
 }
 
-/// Whether a file under `reflections/` reads as an engram that waits to move
-/// out: a `.md` the walk would index as an engram while the switch is off,
-/// whose frontmatter carries the required engram keys (`type` and `status`)
-/// and no Reflection provenance key (`PROVENANCE_KEY`, which only a
-/// reflection page carries). Only asked when the index holds no row of the
-/// domain; the first match answers.
+/// Whether any file under `reflections/` is a pending engram
+/// ([`crystalline_core::is_pending_engram`]). Only asked when the index holds
+/// no row of the domain; the first match answers. A folder the walk cannot
+/// read counts as pending (fail closed), since it may hold one.
 fn pending_engram_on_disk(root: &Path) -> bool {
-    let off = DomainLayout::bare(ReflectionMode::Off);
     let Ok(entries) = std::fs::read_dir(root) else {
-        return false;
+        return true;
     };
-    // The classifier's case rule: `Reflections/` is the Reflection's folder too.
-    let folders = entries
-        .flatten()
-        .filter(|e| {
-            e.file_name().to_str().is_some_and(|n| {
-                n.eq_ignore_ascii_case(crystalline_core::reflection::REFLECTIONS_DIR)
-            })
-        })
-        .map(|e| e.path());
-    for folder in folders {
-        let walk = WalkDir::new(&folder).into_iter().filter_entry(|e| {
-            e.depth() == 0 || !e.file_name().to_str().is_some_and(|n| n.starts_with('.'))
-        });
-        for entry in walk.flatten() {
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let rel = slash_rel(root, entry.path());
-            if off.classify(&rel) != PathClass::Engram {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(entry.path()) else {
-                continue;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return true;
+        };
+        // The classifier's case rule: `Reflections/` is the Reflection's folder too.
+        let is_folder = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.eq_ignore_ascii_case(crystalline_core::reflection::REFLECTIONS_DIR));
+        if !is_folder {
+            continue;
+        }
+        // The walk enters what the engram walk enters (no hidden folder, so
+        // never the baseline); the predicate classifies each file.
+        let off = DomainLayout::bare(ReflectionMode::Off);
+        let walk = WalkDir::new(entry.path())
+            .into_iter()
+            .filter_entry(|e| e.depth() == 0 || off.enters_dir(&slash_rel(root, e.path())));
+        for item in walk {
+            let Ok(item) = item else {
+                return true;
             };
-            if reads_as_engram(&text) {
+            if item.file_type().is_file()
+                && crystalline_core::is_pending_engram(root, &slash_rel(root, item.path()))
+            {
                 return true;
             }
         }
     }
     false
-}
-
-/// Whether `text`'s frontmatter carries `type` and `status` and no
-/// Reflection provenance key.
-fn reads_as_engram(text: &str) -> bool {
-    let Some(parts) = crystalline_core::frontmatter::split_frontmatter(text) else {
-        return false;
-    };
-    let Some(blocks) = crystalline_core::frontmatter::key_blocks(parts.yaml) else {
-        return false;
-    };
-    let has = |key: &str| blocks.blocks.iter().any(|b| b.key == key);
-    has("type") && has("status") && !has(crystalline_core::reflection::PROVENANCE_KEY)
 }
 
 /// Whether the domain at `root` has a Reflection in effect.
@@ -678,6 +672,10 @@ pub struct DomainScan {
     /// row it did not see - which is also how a switch turned off (or
     /// pending) clears the table.
     reflections_complete: bool,
+    /// The Reflection mode the scan classified with. While it is in effect,
+    /// an engram row under `reflections/` the walk no longer saw is deleted
+    /// even though its file is on disk: the file is the Reflection's now.
+    reflection: ReflectionMode,
     /// Whether this scan is the disk half of a forced rebuild, so the apply's
     /// transaction also clears the domain's rebuild marker and stamps the
     /// current [`PARSE_GENERATION`]: a forced walk re-parsed every file, so the
@@ -723,7 +721,8 @@ pub async fn scan_domain(
     // absent or unparseable), the reserved `assets/` folder is routed to its
     // rows, and only markdown is an engram. While the Reflection is in
     // effect, `reflections/` is routed to its own rows.
-    let layout = DomainLayout::at(root, reflection_mode(root, stamps.keys()));
+    let reflection = reflection_mode(root, stamps.keys());
+    let layout = DomainLayout::at(root, reflection);
 
     // Walk the folder, skipping dot-directories, dot-files and non-markdown.
     let mut current: HashMap<String, Scanned> = HashMap::new();
@@ -874,6 +873,7 @@ pub async fn scan_domain(
     // pending switch, leave no row behind.
     scan.reflections = reflections;
     scan.reflections_complete = !unread_reflections;
+    scan.reflection = reflection;
     scan.report.unread += unread;
     Ok(scan)
 }
@@ -915,7 +915,8 @@ pub async fn scan_paths(
 
     // The same layout the full walk asks: a targeted scan must index exactly
     // what a full scan would, never a file the walk would have skipped.
-    let layout = DomainLayout::at(root, reflection_mode(root, stamps.keys()));
+    let reflection = reflection_mode(root, stamps.keys());
+    let layout = DomainLayout::at(root, reflection);
 
     let mut current: HashMap<String, Scanned> = HashMap::new();
     let mut deleted_paths: Vec<String> = Vec::new();
@@ -1058,6 +1059,7 @@ pub async fn scan_paths(
     scan.asset_deletes = asset_deletes;
     scan.reflections = reflections;
     scan.reflection_deletes = reflection_deletes;
+    scan.reflection = reflection;
     scan
 }
 
@@ -1188,6 +1190,7 @@ async fn classify_changes(
         reflections: Vec::new(),
         reflection_deletes: Vec::new(),
         reflections_complete: false,
+        reflection: ReflectionMode::Off,
         // The caller decides: only a forced full scan ends a rebuild.
         ends_rebuild: false,
         report,
@@ -1241,6 +1244,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         reflections,
         reflection_deletes,
         reflections_complete,
+        reflection,
         ends_rebuild,
         mut report,
         started,
@@ -1256,6 +1260,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         &chunk_params,
         &snapshot,
         &root,
+        reflection,
         &mut report,
         slab_files.max(1),
     )
@@ -1736,6 +1741,7 @@ async fn apply_changes<S: Store + ?Sized>(
     chunk_params: &ChunkParams,
     snapshot: &HashMap<String, FileStamp>,
     root: &Path,
+    reflection: ReflectionMode,
     report: &mut SyncReport,
     slab_files: usize,
 ) -> Result<()> {
@@ -1799,8 +1805,13 @@ async fn apply_changes<S: Store + ?Sized>(
         // event for that recreation is already queued, so leave the row for it.
         // A reserved name is the exception: a file called `index.md` or `log.md`
         // is never an engram, so its presence on disk must not resurrect a row
-        // recorded before the exclusion existed.
-        if !crystalline_core::is_reserved_path(&path) && root.join(&path).exists() {
+        // recorded before the exclusion existed. Nor is a file under
+        // `reflections/` while the Reflection is in effect: a page indexed as
+        // an engram while the switch was off goes when the switch takes effect.
+        let never_engram = crystalline_core::is_reserved_path(&path)
+            || (reflection == ReflectionMode::Effective
+                && crystalline_core::reflection::is_under_reflections(&path));
+        if !never_engram && root.join(&path).exists() {
             report.deferred += 1;
             tracing::debug!(path = %path, "sync: deferring a delete whose file reappeared on disk");
             continue;

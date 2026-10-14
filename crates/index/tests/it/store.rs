@@ -8762,6 +8762,163 @@ parity!(
     a_targeted_pass_updates_and_deletes_reflection_rows
 );
 
+/// R48: an engram under `reflections/` with no frontmatter, or with
+/// frontmatter that is one flow mapping, is still an engram the walk indexes,
+/// so it keeps the switch pending across a wipe.
+async fn odd_engrams_keep_the_switch_pending_across_a_wipe(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", MANIFEST_OFF);
+    write(
+        root,
+        "reflections/journal.md",
+        "# Journal\n\nplainnoteterm\n",
+    );
+    sync_domain(store, "eng", root).await.unwrap();
+    write(root, "MANIFEST.md", &manifest_on());
+    store.wipe().await.unwrap();
+    sync_domain(store, "eng", root).await.unwrap();
+    assert_eq!(
+        store
+            .search(&SearchQuery::text("plainnoteterm"))
+            .await
+            .unwrap()
+            .total,
+        1,
+        "a note without frontmatter is still an engram after the rebuild"
+    );
+    assert!(reflection_paths(store, "eng").await.is_empty());
+    std::fs::remove_file(root.join("reflections/journal.md")).unwrap();
+    write(
+        root,
+        "reflections/flow.md",
+        "---\n{type: engram, title: Flow, permalink: flow, status: draft}\n---\n\n# Flow\n\nflowmapterm\n",
+    );
+    store.wipe().await.unwrap();
+    sync_domain(store, "eng", root).await.unwrap();
+    assert_eq!(
+        store
+            .search(&SearchQuery::text("flowmapterm"))
+            .await
+            .unwrap()
+            .total,
+        1,
+        "an engram whose frontmatter is a flow mapping is still an engram after the rebuild"
+    );
+    assert!(reflection_paths(store, "eng").await.is_empty());
+}
+parity!(
+    engrams_of_any_frontmatter_shape_keep_the_switch_pending,
+    odd_engrams_keep_the_switch_pending_across_a_wipe
+);
+
+/// R48: switched off, the pages are indexed as engrams; switched on again,
+/// their id lines say they are pages, so the switch takes effect at once and
+/// the pages are reflection rows again, with no engram row left behind.
+async fn off_and_on_again_takes_effect_at_once(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", &manifest_on());
+    write(root, "reflections/a.md", &page("A", "x"));
+    write(root, "reflections/PACT.md", &page("Pact", "y"));
+    write(root, "reflections/guides/b.md", &page("B", "z"));
+    write(root, "reflections/guides/b.threads.md", "# Threads\n");
+    sync_domain(store, "eng", root).await.unwrap();
+    let pages = ["PACT.md", "a.md", "guides/b.md"];
+    let sorted = |mut v: Vec<String>| {
+        v.sort();
+        v
+    };
+    assert_eq!(sorted(reflection_paths(store, "eng").await), pages);
+    write(root, "MANIFEST.md", MANIFEST_OFF);
+    sync_domain(store, "eng", root).await.unwrap();
+    assert!(reflection_paths(store, "eng").await.is_empty());
+    assert_eq!(
+        engram_rows_under_reflections(store, "eng").await.len(),
+        4,
+        "with the switch off every page and the threads file are engrams"
+    );
+    write(root, "MANIFEST.md", &manifest_on());
+    let report = sync_domain(store, "eng", root).await.unwrap();
+    assert_eq!(
+        sorted(reflection_paths(store, "eng").await),
+        pages,
+        "switched on again, the pages are reflection rows at once"
+    );
+    assert_eq!(report.reflections_changed, 3, "{report:?}");
+    assert!(
+        engram_rows_under_reflections(store, "eng").await.is_empty(),
+        "no page stays behind as an engram row"
+    );
+}
+parity!(
+    a_switch_turned_off_and_on_again_takes_effect_at_once,
+    off_and_on_again_takes_effect_at_once
+);
+
+/// R48's documented cost: a page written by hand with no id line, no
+/// provenance and no baseline reads as an engram, so it holds the switch
+/// pending and stays in the engram index (the safe direction).
+async fn a_hand_made_page_without_ids_holds_the_switch_pending(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", &manifest_on());
+    write(
+        root,
+        "reflections/hand.md",
+        "---\ntitle: Hand\n---\n\n# Hand\n\n## Part\n\nhandmadeterm\n",
+    );
+    sync_domain(store, "eng", root).await.unwrap();
+    assert_eq!(
+        store
+            .search(&SearchQuery::text("handmadeterm"))
+            .await
+            .unwrap()
+            .total,
+        1,
+        "the unmarked page is indexed as an engram"
+    );
+    assert!(
+        reflection_paths(store, "eng").await.is_empty(),
+        "the switch is pending"
+    );
+}
+parity!(
+    an_unmarked_page_holds_the_switch_pending,
+    a_hand_made_page_without_ids_holds_the_switch_pending
+);
+
+/// SD24: a folder under `reflections/` the walk cannot read keeps the rows
+/// of the pages inside it.
+#[cfg(unix)]
+async fn an_unreadable_reflection_folder_keeps_its_rows(store: &dyn Store) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", &manifest_on());
+    write(root, "reflections/a.md", &page("A", "x"));
+    write(root, "reflections/sub/b.md", &page("B", "y"));
+    sync_domain(store, "eng", root).await.unwrap();
+    assert_eq!(reflection_paths(store, "eng").await, ["a.md", "sub/b.md"]);
+    let sub = root.join("reflections/sub");
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let report = sync_domain(store, "eng", root).await;
+    // Restore before any assertion can unwind past the tempdir drop.
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let report = report.unwrap();
+    assert_eq!(report.reflections_changed, 0, "{report:?}");
+    assert_eq!(
+        reflection_paths(store, "eng").await,
+        ["a.md", "sub/b.md"],
+        "an unreadable folder deletes no row"
+    );
+}
+#[cfg(unix)]
+parity!(
+    an_unreadable_reflection_folder_deletes_no_row,
+    an_unreadable_reflection_folder_keeps_its_rows
+);
+
 // --- the registration stamp --------------------------------------------------
 
 /// The `last_registered` stamp: a domain the configuration still names is
