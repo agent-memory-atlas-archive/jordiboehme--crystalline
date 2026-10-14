@@ -13,11 +13,11 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crystalline_index::{
-    AttachmentRow, DomainId, DomainKind, EMBED_PAGE_SIZE, EdgeKind, EmbeddingCoverage,
+    AttachmentRow, ChunkParams, DomainId, DomainKind, EMBED_PAGE_SIZE, EdgeKind, EmbeddingCoverage,
     EmbeddingRow, EngramId, EngramRecord, FileStamp, FilterOp, HostClaim, InboundPage,
     InboundQuery, IndexError, MetadataFilter, NamedCount, NewChunk, RecentFilter, ReflectionRow,
-    SearchMode, SearchOrder, SearchQuery, Store, TursoStore, Vocabulary, resolve_forward_refs,
-    sync_domain,
+    SearchMode, SearchOrder, SearchQuery, Store, TursoStore, Vocabulary, apply_scan,
+    resolve_forward_refs, scan_paths, sync_domain,
 };
 
 fn write(dir: &Path, rel: &str, content: &str) {
@@ -8437,6 +8437,329 @@ async fn reflection_rows_roundtrip(store: &dyn Store) {
 parity!(
     reflection_rows_roundtrip_on_both_backends,
     reflection_rows_roundtrip
+);
+
+// --- the sync routes `reflections/` (reflection core, Task 9) ----------------
+
+const MANIFEST_OFF: &str = "---\ntype: manifest\ntitle: eng\npermalink: manifest\ntags: [manifest]\nstatus: stable\n---\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n";
+
+fn manifest_on() -> String {
+    MANIFEST_OFF.replace("status: stable\n", "status: stable\nreflection: on\n")
+}
+
+fn page(title: &str, word: &str) -> String {
+    format!(
+        "---\ntitle: {title}\n---\n\n# {title}\n\n## Part\n<!-- r:aaaa1111 -->\n\nText with {word}.\n"
+    )
+}
+
+async fn reflection_paths(store: &dyn Store, domain: &str) -> Vec<String> {
+    let did = store.domain_id(domain).await.unwrap().unwrap();
+    store
+        .list_reflections(did)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.path)
+        .collect()
+}
+
+/// The engram rows of a domain under `reflections/`, by path.
+async fn engram_rows_under_reflections(store: &dyn Store, domain: &str) -> Vec<String> {
+    let did = store.domain_id(domain).await.unwrap().unwrap();
+    let mut paths: Vec<String> = store
+        .file_stamps(did)
+        .await
+        .unwrap()
+        .into_keys()
+        .filter(|p| crystalline_core::reflection::is_under_reflections(p))
+        .collect();
+    paths.sort();
+    paths
+}
+
+async fn with_the_switch_off_reflections_holds_engrams(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", MANIFEST_OFF);
+    write(
+        root,
+        "reflections/kept.md",
+        &engram(
+            "Kept",
+            "reflections/kept",
+            "engram",
+            "",
+            "an engram keptoffterm\n",
+        ),
+    );
+    sync_domain(store, "eng", root).await.unwrap();
+    assert_eq!(
+        store
+            .search(&SearchQuery::text("keptoffterm"))
+            .await
+            .unwrap()
+            .total,
+        1
+    );
+    assert_eq!(
+        engram_rows_under_reflections(store, "eng").await,
+        ["reflections/kept.md"]
+    );
+    assert!(reflection_paths(store, "eng").await.is_empty());
+}
+parity!(
+    reflections_is_ordinary_while_the_switch_is_off,
+    with_the_switch_off_reflections_holds_engrams
+);
+
+async fn with_the_switch_on_the_folder_has_its_own_index(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", &manifest_on());
+    write(
+        root,
+        "notes/n.md",
+        &engram("N", "notes/n", "engram", "", "an ordinary engram\n"),
+    );
+    write(
+        root,
+        "reflections/guides/deploying.md",
+        &page("Deploying", "reflectiononterm"),
+    );
+    write(root, "Reflections/cased.md", &page("Cased", "casedterm"));
+    write(root, "reflections/PACT.md", &page("Pact", "pactterm"));
+    write(
+        root,
+        "reflections/guides/deploying.threads.md",
+        "# Threads\n\nthreadterm\n",
+    );
+    write(
+        root,
+        "reflections/.reflected/guides/deploying.md",
+        "baselineterm\n",
+    );
+    let report = sync_domain(store, "eng", root).await.unwrap();
+    let mut rows = reflection_paths(store, "eng").await;
+    rows.sort();
+    // On a case-folding filesystem `Reflections/` is the same folder as
+    // `reflections/`; on a case-sensitive one it is a second folder the
+    // classifier still calls the Reflection's. Either way the page is a row
+    // keyed by its path inside the folder.
+    assert_eq!(rows, ["PACT.md", "cased.md", "guides/deploying.md"]);
+    assert_eq!(report.reflections_changed, 3, "{report:?}");
+    assert!(
+        engram_rows_under_reflections(store, "eng").await.is_empty(),
+        "nothing in the folder is an engram row"
+    );
+    assert_eq!(
+        store
+            .search(&SearchQuery::text("reflectiononterm"))
+            .await
+            .unwrap()
+            .total,
+        0,
+        "a page never reaches engram search"
+    );
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    let row = store
+        .get_reflection(did, "guides/deploying.md")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.title, "Deploying", "the title is read off the page");
+    let again = sync_domain(store, "eng", root).await.unwrap();
+    assert_eq!(
+        again.reflections_changed, 0,
+        "an unchanged file is not re-read"
+    );
+    // Switched off again: the folder is ordinary engram content and the
+    // reflection rows go with the next full walk.
+    write(root, "MANIFEST.md", MANIFEST_OFF);
+    sync_domain(store, "eng", root).await.unwrap();
+    assert!(
+        reflection_paths(store, "eng").await.is_empty(),
+        "switching off clears the table"
+    );
+}
+parity!(
+    reflections_get_their_own_index_while_the_switch_is_on,
+    with_the_switch_on_the_folder_has_its_own_index
+);
+
+async fn a_switch_turned_on_outside_crystalline_keeps_the_engrams_under_reflections_indexed(
+    store: &dyn Store,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", MANIFEST_OFF);
+    write(
+        root,
+        "reflections/kept.md",
+        &engram(
+            "Kept",
+            "reflections/kept",
+            "engram",
+            "",
+            "an engram pendingterm\n",
+        ),
+    );
+    sync_domain(store, "eng", root).await.unwrap();
+    // A plain editor flips the switch; nothing screened it.
+    write(root, "MANIFEST.md", &manifest_on());
+    sync_domain(store, "eng", root).await.unwrap();
+    assert_eq!(
+        store
+            .search(&SearchQuery::text("pendingterm"))
+            .await
+            .unwrap()
+            .total,
+        1,
+        "the switch stays pending while an engram lives there"
+    );
+    assert!(reflection_paths(store, "eng").await.is_empty());
+    // The owner moves the engram out; the next sync makes the switch effective.
+    std::fs::rename(root.join("reflections/kept.md"), root.join("kept.md")).unwrap();
+    sync_domain(store, "eng", root).await.unwrap();
+    write(root, "reflections/page.md", &page("Page", "x"));
+    sync_domain(store, "eng", root).await.unwrap();
+    assert_eq!(reflection_paths(store, "eng").await, ["page.md"]);
+}
+parity!(
+    an_out_of_band_switch_never_drops_an_engram,
+    a_switch_turned_on_outside_crystalline_keeps_the_engrams_under_reflections_indexed
+);
+
+async fn a_pending_switch_survives_an_emptied_index(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", MANIFEST_OFF);
+    write(
+        root,
+        "reflections/kept.md",
+        &engram(
+            "Kept",
+            "reflections/kept",
+            "engram",
+            "",
+            "an engram rebuiltterm\n",
+        ),
+    );
+    sync_domain(store, "eng", root).await.unwrap();
+    write(root, "MANIFEST.md", &manifest_on());
+    sync_domain(store, "eng", root).await.unwrap();
+    // The index is emptied (a wipe, a new machine, a schema rebuild): no
+    // recorded path is left to say the switch is pending, so the files say it.
+    store.wipe().await.unwrap();
+    sync_domain(store, "eng", root).await.unwrap();
+    assert_eq!(
+        store
+            .search(&SearchQuery::text("rebuiltterm"))
+            .await
+            .unwrap()
+            .total,
+        1,
+        "still an engram after the rebuild"
+    );
+    assert_eq!(
+        engram_rows_under_reflections(store, "eng").await,
+        ["reflections/kept.md"]
+    );
+    assert!(
+        reflection_paths(store, "eng").await.is_empty(),
+        "the switch stays pending"
+    );
+    // A page that carries the Reflection's provenance key is no engram, even
+    // with `type` and `status`: once the engram moved out, a rebuild finds
+    // the switch in effect.
+    std::fs::rename(root.join("reflections/kept.md"), root.join("kept.md")).unwrap();
+    write(
+        root,
+        "reflections/curated.md",
+        "---\ntitle: Curated\ntype: guide\nstatus: draft\nreflection: {}\n---\n\n# Curated\n\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n",
+    );
+    store.wipe().await.unwrap();
+    sync_domain(store, "eng", root).await.unwrap();
+    assert_eq!(
+        reflection_paths(store, "eng").await,
+        ["curated.md"],
+        "a page with provenance never holds the switch pending"
+    );
+    assert!(engram_rows_under_reflections(store, "eng").await.is_empty());
+}
+parity!(
+    a_rebuilt_index_keeps_a_pending_switch_pending,
+    a_pending_switch_survives_an_emptied_index
+);
+
+async fn a_rebuild_keeps_reflections_searchable(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", &manifest_on());
+    write(root, "reflections/a.md", &page("A", "rebuildterm"));
+    write(
+        root,
+        "reflections/.reflected/a.md",
+        "## Part\n<!-- r:aaaa1111 -->\n\nold\n",
+    );
+    sync_domain(store, "eng", root).await.unwrap();
+    store.wipe().await.unwrap();
+    sync_domain(store, "eng", root).await.unwrap();
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    let rows = store.list_reflections(did).await.unwrap();
+    let hits = crystalline_index::reflection::search_reflections(&rows, "rebuildterm", 10);
+    assert_eq!(
+        hits.len(),
+        1,
+        "searchable in its own index after the rebuild"
+    );
+}
+parity!(
+    a_rebuild_of_the_index_keeps_reflections_searchable,
+    a_rebuild_keeps_reflections_searchable
+);
+
+async fn a_targeted_pass_updates_and_deletes_reflection_rows(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", &manifest_on());
+    sync_domain(store, "eng", root).await.unwrap();
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    write(root, "reflections/t.md", &page("T", "x"));
+    write(root, "reflections/t.threads.md", "# Threads\n");
+    let stamps = store.file_stamps(did).await.unwrap();
+    let scan = scan_paths(
+        "eng",
+        root,
+        stamps,
+        vec!["reflections/t.md".into(), "reflections/t.threads.md".into()],
+        &ChunkParams::default(),
+    )
+    .await;
+    apply_scan(store, did, scan).await.unwrap();
+    assert_eq!(
+        reflection_paths(store, "eng").await,
+        ["t.md"],
+        "a threads file is never a row"
+    );
+    assert!(engram_rows_under_reflections(store, "eng").await.is_empty());
+    std::fs::remove_file(root.join("reflections/t.md")).unwrap();
+    let stamps = store.file_stamps(did).await.unwrap();
+    let scan = scan_paths(
+        "eng",
+        root,
+        stamps,
+        vec!["reflections/t.md".into()],
+        &ChunkParams::default(),
+    )
+    .await;
+    let report = apply_scan(store, did, scan).await.unwrap();
+    assert_eq!(report.reflections_changed, 1);
+    assert!(reflection_paths(store, "eng").await.is_empty());
+}
+parity!(
+    a_targeted_pass_keeps_the_reflection_index_current,
+    a_targeted_pass_updates_and_deletes_reflection_rows
 );
 
 // --- the registration stamp --------------------------------------------------

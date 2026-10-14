@@ -91,6 +91,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use walkdir::WalkDir;
 
+use crystalline_core::reflection::ReflectionFile;
 use crystalline_core::{
     DomainLayout, MAX_ATTACHMENT_BYTES, PARSE_GENERATION, PathClass, ReflectionMode,
     attachment_mime, parse_engram, slash_rel, validate_asset_path,
@@ -100,7 +101,7 @@ use crate::embed::{ChunkParams, chunk_engram};
 use crate::error::{IndexError, Result};
 use crate::store::{
     AssetTable, AttachmentRow, DomainId, DomainKind, EngramRecord, FileStamp, NewChunk,
-    RebuildKind, Store,
+    RebuildKind, ReflectionRow, Store,
 };
 
 /// Maximum concurrent hashing or parsing tasks.
@@ -180,6 +181,9 @@ pub struct SyncReport {
     /// Prose wikilinks resolved in the same final cross-domain pass.
     #[serde(default)]
     pub links_resolved_late: u64,
+    /// Rows of the Reflection's tables this apply wrote or deleted.
+    #[serde(default)]
+    pub reflections_changed: usize,
     /// Wall-clock duration in milliseconds.
     pub duration_ms: u64,
     /// Every path this apply changed, in apply order. Skipped by serde on
@@ -213,15 +217,233 @@ struct PendingChange {
     previously_indexed: bool,
 }
 
-/// A file under the reserved `assets/` prefix that may be stored as an
-/// attachment: its stat and the mime the allowlist resolved, with no bytes read
-/// yet. The apply reads and hashes only the candidates whose stat moved.
-struct AssetCandidate {
+/// One file the walk found for a row table, stat'd but not read. `rel` is
+/// the row key: domain-relative for an engram attachment, the path inside
+/// `reflections/` for the Reflection's rows. The apply reads only the
+/// candidates whose stat moved.
+#[derive(Debug, Clone)]
+struct FileCandidate {
     rel: String,
     abs: PathBuf,
     mtime: i64,
     size: u64,
-    mime: &'static str,
+}
+
+/// A row of one of the file tables, built from a file just read.
+enum FileRow {
+    Asset(AttachmentRow),
+    Reflection(ReflectionRow),
+}
+
+/// The file tables the reconcile writes, as one closed set: the asset
+/// tables and the reflection table.
+#[derive(Debug, Clone, Copy)]
+enum FileRows {
+    Assets(AssetTable),
+    Reflections,
+}
+
+impl FileRows {
+    /// `(size, modified)` of every row of the domain, the stat prefilter's input.
+    async fn stamps<S: Store + ?Sized>(
+        self,
+        store: &S,
+        domain: DomainId,
+    ) -> Result<HashMap<String, (u64, String)>> {
+        Ok(match self {
+            FileRows::Assets(table) => store
+                .list_assets(table, domain)
+                .await?
+                .into_iter()
+                .map(|r| (r.path, (r.size, r.modified)))
+                .collect(),
+            FileRows::Reflections => store
+                .list_reflections(domain)
+                .await?
+                .into_iter()
+                .map(|r| (r.path, (r.size, r.modified)))
+                .collect(),
+        })
+    }
+
+    /// Read `c` and build its row, or `None` to skip it (a file grown past
+    /// the attachment ceiling between the stat and the read). Blocking.
+    fn build(self, c: &FileCandidate, modified: String) -> std::io::Result<Option<FileRow>> {
+        match self {
+            FileRows::Assets(_) => {
+                // The size is taken from the bytes that were actually read, so
+                // a file that grew past the cap between the stat and the read
+                // is caught here rather than stored over the ceiling.
+                let (sha256, size) = read_and_measure(&c.abs)?;
+                if size > MAX_ATTACHMENT_BYTES {
+                    tracing::debug!(path = %c.rel, size, "sync: skipping an attachment over the size cap");
+                    return Ok(None);
+                }
+                let name = c.rel.rsplit('/').next().unwrap_or(&c.rel);
+                let Some(mime) = attachment_mime(name) else {
+                    return Ok(None);
+                };
+                Ok(Some(FileRow::Asset(AttachmentRow {
+                    path: c.rel.clone(),
+                    sha256,
+                    mime: mime.to_string(),
+                    size,
+                    modified,
+                })))
+            }
+            FileRows::Reflections => {
+                let content = std::fs::read_to_string(&c.abs)?;
+                Ok(Some(FileRow::Reflection(ReflectionRow {
+                    title: crystalline_core::reflection::title_of(&content, &c.rel),
+                    sha256: sha256_hex(content.as_bytes()),
+                    size: content.len() as u64,
+                    modified,
+                    path: c.rel.clone(),
+                    content,
+                })))
+            }
+        }
+    }
+
+    async fn upsert<S: Store + ?Sized>(
+        self,
+        store: &S,
+        domain: DomainId,
+        row: &FileRow,
+    ) -> Result<()> {
+        match (self, row) {
+            (FileRows::Assets(table), FileRow::Asset(row)) => {
+                store.upsert_asset(table, domain, row).await
+            }
+            (FileRows::Reflections, FileRow::Reflection(row)) => {
+                store.upsert_reflection(domain, row).await
+            }
+            // `build` answers the row of its own table; the pairing cannot cross.
+            (FileRows::Assets(_), FileRow::Reflection(_))
+            | (FileRows::Reflections, FileRow::Asset(_)) => Ok(()),
+        }
+    }
+
+    async fn delete<S: Store + ?Sized>(
+        self,
+        store: &S,
+        domain: DomainId,
+        path: &str,
+    ) -> Result<bool> {
+        match self {
+            FileRows::Assets(table) => store.delete_asset(table, domain, path).await,
+            FileRows::Reflections => store.delete_reflection(domain, path).await,
+        }
+    }
+
+    /// The domain-relative path a failure is reported under.
+    fn report_path(self, rel: &str) -> String {
+        match self {
+            FileRows::Assets(AssetTable::Engram) => rel.to_string(),
+            FileRows::Reflections => crystalline_core::reflection::domain_rel(rel),
+        }
+    }
+}
+
+/// The Reflection mode of the domain at `root`: `Effective` when its MANIFEST
+/// says `reflection: on` and no engram sits under `reflections/`. A switch
+/// that arrived while engrams still live there (a plain editor, a pull)
+/// stays pending, and pending reads as `Off`, so no sync ever drops an
+/// engram from the index because of it.
+///
+/// The engrams are the `recorded` engram paths. A domain the index has
+/// synced always records its `MANIFEST.md`, so no recorded path at all means
+/// the index holds no row of the domain (a wipe and rebuild, a new machine's
+/// first sync, a schema rebuild): then the files under `reflections/` are
+/// read from disk instead, so a rebuild keeps a pending switch pending (R1).
+pub fn reflection_mode(
+    root: &Path,
+    recorded: impl Iterator<Item = impl AsRef<str>>,
+) -> ReflectionMode {
+    if crystalline_core::reflection_at(root) != crystalline_core::ReflectionSwitch::On {
+        return ReflectionMode::Off;
+    }
+    let mut recorded = recorded.peekable();
+    let pending = if recorded.peek().is_none() {
+        pending_engram_on_disk(root)
+    } else {
+        recorded.any(|p| crystalline_core::reflection::is_under_reflections(p.as_ref()))
+    };
+    if pending {
+        ReflectionMode::Off
+    } else {
+        ReflectionMode::Effective
+    }
+}
+
+/// Whether a file under `reflections/` reads as an engram that waits to move
+/// out: a `.md` the walk would index as an engram while the switch is off,
+/// whose frontmatter carries the required engram keys (`type` and `status`)
+/// and no Reflection provenance key (`PROVENANCE_KEY`, which only a
+/// reflection page carries). Only asked when the index holds no row of the
+/// domain; the first match answers.
+fn pending_engram_on_disk(root: &Path) -> bool {
+    let off = DomainLayout::bare(ReflectionMode::Off);
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    // The classifier's case rule: `Reflections/` is the Reflection's folder too.
+    let folders = entries
+        .flatten()
+        .filter(|e| {
+            e.file_name().to_str().is_some_and(|n| {
+                n.eq_ignore_ascii_case(crystalline_core::reflection::REFLECTIONS_DIR)
+            })
+        })
+        .map(|e| e.path());
+    for folder in folders {
+        let walk = WalkDir::new(&folder).into_iter().filter_entry(|e| {
+            e.depth() == 0 || !e.file_name().to_str().is_some_and(|n| n.starts_with('.'))
+        });
+        for entry in walk.flatten() {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let rel = slash_rel(root, entry.path());
+            if off.classify(&rel) != PathClass::Engram {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            if reads_as_engram(&text) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether `text`'s frontmatter carries `type` and `status` and no
+/// Reflection provenance key.
+fn reads_as_engram(text: &str) -> bool {
+    let Some(parts) = crystalline_core::frontmatter::split_frontmatter(text) else {
+        return false;
+    };
+    let Some(blocks) = crystalline_core::frontmatter::key_blocks(parts.yaml) else {
+        return false;
+    };
+    let has = |key: &str| blocks.blocks.iter().any(|b| b.key == key);
+    has("type") && has("status") && !has(crystalline_core::reflection::PROVENANCE_KEY)
+}
+
+/// Whether the domain at `root` has a Reflection in effect.
+pub fn reflection_effective(root: &Path, recorded: impl Iterator<Item = impl AsRef<str>>) -> bool {
+    reflection_mode(root, recorded) == ReflectionMode::Effective
+}
+
+/// The path inside `reflections/` of a domain-relative path under it, the
+/// key the Reflection's rows carry.
+fn inner_rel(rel: &str) -> String {
+    rel.split_once('/')
+        .map(|(_, rest)| rest)
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Sync one domain: walk `root`, reconcile the index and resolve forward refs.
@@ -440,13 +662,22 @@ pub struct DomainScan {
     /// The walk root, so the apply can re-stat a delete candidate on disk.
     root: PathBuf,
     /// Attachable files found under `assets/`, stat'd but not yet hashed.
-    assets: Vec<AssetCandidate>,
+    assets: Vec<FileCandidate>,
     /// Asset paths the scan looked for and did not find on disk. Only a
     /// targeted scan fills this; a full walk reconciles domain-wide instead.
     asset_deletes: Vec<String>,
     /// Whether `assets` is every attachable file in the domain (a full walk),
     /// so the apply may delete every row it did not see.
     assets_complete: bool,
+    /// Reflection pages (and the pact) found while the Reflection is in effect.
+    reflections: Vec<FileCandidate>,
+    /// Reflection paths a targeted scan looked for and did not find.
+    reflection_deletes: Vec<String>,
+    /// Whether `reflections` is every reflection of the domain (a full walk
+    /// that read everything under the folder), so the apply may delete every
+    /// row it did not see - which is also how a switch turned off (or
+    /// pending) clears the table.
+    reflections_complete: bool,
     /// Whether this scan is the disk half of a forced rebuild, so the apply's
     /// transaction also clears the domain's rebuild marker and stamps the
     /// current [`PARSE_GENERATION`]: a forced walk re-parsed every file, so the
@@ -490,15 +721,20 @@ pub async fn scan_domain(
     // What every path of this domain is: the MANIFEST's in-root artifact
     // folders are pruned with the hidden ones (none when the MANIFEST is
     // absent or unparseable), the reserved `assets/` folder is routed to its
-    // rows, and only markdown is an engram.
-    let layout = DomainLayout::at(root, ReflectionMode::Off);
+    // rows, and only markdown is an engram. While the Reflection is in
+    // effect, `reflections/` is routed to its own rows.
+    let layout = DomainLayout::at(root, reflection_mode(root, stamps.keys()));
 
     // Walk the folder, skipping dot-directories, dot-files and non-markdown.
     let mut current: HashMap<String, Scanned> = HashMap::new();
-    let mut assets: Vec<AssetCandidate> = Vec::new();
+    let mut assets: Vec<FileCandidate> = Vec::new();
+    let mut reflections: Vec<FileCandidate> = Vec::new();
     // Entries the walk could not read: a forced walk that skipped one has not
     // re-parsed the whole domain, so it must not stamp the parser generation.
     let mut unread = 0usize;
+    // An entry under `reflections/` the walk could not read: the reflection
+    // reconcile must not delete the rows of pages it did not see.
+    let mut unread_reflections = false;
     for entry in WalkDir::new(root)
         .into_iter()
         // Prune dot-directories and dot-files, but never the walk root itself
@@ -524,6 +760,11 @@ pub async fn scan_domain(
             }
             Err(err) => {
                 unread += 1;
+                if err.path().is_some_and(|p| {
+                    crystalline_core::reflection::is_under_reflections(&slash_rel(root, p))
+                }) {
+                    unread_reflections = true;
+                }
                 warn_unreadable_once(name, err.path(), &err.to_string());
                 continue;
             }
@@ -578,10 +819,28 @@ pub async fn scan_domain(
             // search hit, and a row left over from before this exclusion
             // disappears on the next scan (absent on disk means deleted).
             PathClass::Hidden | PathClass::Reserved | PathClass::Artifact | PathClass::Other => {}
-            // The Reflection's files are never engrams. Skipped until the
-            // sync routes them to the Reflection (reflection core plan,
-            // Task 9); with `ReflectionMode::Off` no path gets this class.
-            PathClass::Reflection(_) => {}
+            // A reflection page and the pact are rows of the Reflection's own
+            // index, keyed by their path inside the folder; never engrams.
+            PathClass::Reflection(ReflectionFile::Page(_) | ReflectionFile::Pact) => {
+                let Ok(meta) = entry.metadata() else {
+                    unread += 1;
+                    unread_reflections = true;
+                    continue;
+                };
+                reflections.push(FileCandidate {
+                    rel: inner_rel(&rel),
+                    abs: entry.path().to_path_buf(),
+                    mtime: file_mtime(&meta),
+                    size: meta.len(),
+                });
+            }
+            // Threads and the baseline are files, never rows; a temp or stray
+            // file is nobody's.
+            PathClass::Reflection(
+                ReflectionFile::Threads { .. }
+                | ReflectionFile::Baseline { .. }
+                | ReflectionFile::Other,
+            ) => {}
         }
     }
 
@@ -610,6 +869,11 @@ pub async fn scan_domain(
     scan.assets = assets;
     scan.assets_complete = true;
     scan.ends_rebuild = force;
+    // With the Reflection not in effect the walk finds no reflection, so a
+    // complete walk clears the table: that is how switching off, and a
+    // pending switch, leave no row behind.
+    scan.reflections = reflections;
+    scan.reflections_complete = !unread_reflections;
     scan.report.unread += unread;
     Ok(scan)
 }
@@ -651,13 +915,15 @@ pub async fn scan_paths(
 
     // The same layout the full walk asks: a targeted scan must index exactly
     // what a full scan would, never a file the walk would have skipped.
-    let layout = DomainLayout::at(root, ReflectionMode::Off);
+    let layout = DomainLayout::at(root, reflection_mode(root, stamps.keys()));
 
     let mut current: HashMap<String, Scanned> = HashMap::new();
     let mut deleted_paths: Vec<String> = Vec::new();
     let mut unreadable: Vec<(String, String)> = Vec::new();
-    let mut assets: Vec<AssetCandidate> = Vec::new();
+    let mut assets: Vec<FileCandidate> = Vec::new();
     let mut asset_deletes: Vec<String> = Vec::new();
+    let mut reflections: Vec<FileCandidate> = Vec::new();
+    let mut reflection_deletes: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for rel in paths {
         // The same path can arrive twice in one debounce batch; classify it once.
@@ -666,10 +932,28 @@ pub async fn scan_paths(
         }
         let abs = root.join(&rel);
         let class = layout.classify(&rel);
-        // The Reflection's files are never engrams or engram attachments:
-        // skipped until the sync routes them (reflection core plan, Task 9);
-        // with `ReflectionMode::Off` no path gets this class.
-        if matches!(class, PathClass::Reflection(_)) {
+        // The Reflection's files are never engrams or engram attachments. A
+        // page or the pact present on disk is an upsert of its reflection
+        // row, one that is gone a delete; threads, the baseline and stray
+        // files are never rows. `symlink_metadata` for the reason the asset
+        // branch below gives: the full walk never follows a link.
+        if let PathClass::Reflection(file) = &class {
+            if matches!(file, ReflectionFile::Page(_) | ReflectionFile::Pact) {
+                let inner = inner_rel(&rel);
+                match std::fs::symlink_metadata(&abs) {
+                    Ok(meta) if meta.is_file() => reflections.push(FileCandidate {
+                        rel: inner,
+                        abs: abs.clone(),
+                        mtime: file_mtime(&meta),
+                        size: meta.len(),
+                    }),
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        reflection_deletes.push(inner)
+                    }
+                    Err(e) => unreadable.push((rel, e.to_string())),
+                }
+            }
             continue;
         }
         // The reserved `assets/` prefix: an attachable file present on disk is
@@ -772,6 +1056,8 @@ pub async fn scan_paths(
     // those rows and never deletes an attachment it was not asked about.
     scan.assets = assets;
     scan.asset_deletes = asset_deletes;
+    scan.reflections = reflections;
+    scan.reflection_deletes = reflection_deletes;
     scan
 }
 
@@ -899,6 +1185,9 @@ async fn classify_changes(
         assets: Vec::new(),
         asset_deletes: Vec::new(),
         assets_complete: false,
+        reflections: Vec::new(),
+        reflection_deletes: Vec::new(),
+        reflections_complete: false,
         // The caller decides: only a forced full scan ends a rebuild.
         ends_rebuild: false,
         report,
@@ -949,6 +1238,9 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         assets,
         asset_deletes,
         assets_complete,
+        reflections,
+        reflection_deletes,
+        reflections_complete,
         ends_rebuild,
         mut report,
         started,
@@ -973,10 +1265,10 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         return Err(e);
     }
 
-    if let Err(e) = apply_attachments(
+    if let Err(e) = reconcile_rows(
         store,
         domain,
-        AssetTable::Engram,
+        FileRows::Assets(AssetTable::Engram),
         assets,
         asset_deletes,
         assets_complete,
@@ -986,6 +1278,24 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
     {
         let _ = store.rollback().await;
         return Err(e);
+    }
+
+    match reconcile_rows(
+        store,
+        domain,
+        FileRows::Reflections,
+        reflections,
+        reflection_deletes,
+        reflections_complete,
+        &mut report,
+    )
+    .await
+    {
+        Ok(changed) => report.reflections_changed += changed,
+        Err(e) => {
+            let _ = store.rollback().await;
+            return Err(e);
+        }
     }
 
     let resolved = match store.resolve_pending_relations(domain).await {
@@ -1326,99 +1636,80 @@ pub async fn resolve_forward_refs<S: Store + ?Sized>(
     Ok((total_relations, total_links))
 }
 
-/// Reconcile a domain's rows of `table` with the assets the scan found.
+/// Reconcile one file table with what the walk found: the stat prefilter
+/// skips a row whose size and modification instant match, a changed file is
+/// read and its row replaced, and the rows the walk did not see are deleted.
+/// Answers how many rows it wrote or deleted. One reconcile for every file
+/// table (the engram attachments and the Reflection's rows), so a fix to it
+/// reaches each.
 ///
-/// The rows are metadata only, so this is deliberately not the engram pipeline:
-/// there is no move detection (an asset carries no permalink, so a rename is a
-/// delete plus an add and costs one hash), no chunking and no embedding. What it
-/// does share is the stat prefilter: a candidate whose recorded row still
+/// The rows are not engrams, so this is deliberately not the engram pipeline:
+/// there is no move detection (a row carries no permalink, so a rename is a
+/// delete plus an add and costs one read), no chunking and no embedding. What
+/// it does share is the stat prefilter: a candidate whose recorded row still
 /// carries the same size and modification instant cannot have changed content
 /// without one of them moving, so it is skipped without reading a byte.
 ///
 /// A full walk (`complete`) reconciles domain-wide, deleting every row it did
 /// not see; a targeted pass deletes only the paths it was asked about and looked
 /// for in vain, so a one-file watcher event never touches another row.
-async fn apply_attachments<S: Store + ?Sized>(
+async fn reconcile_rows<S: Store + ?Sized>(
     store: &S,
     domain: DomainId,
-    table: AssetTable,
-    assets: Vec<AssetCandidate>,
+    rows: FileRows,
+    found: Vec<FileCandidate>,
     deletes: Vec<String>,
     complete: bool,
     report: &mut SyncReport,
-) -> Result<()> {
-    if !complete && assets.is_empty() && deletes.is_empty() {
-        return Ok(());
+) -> Result<usize> {
+    if !complete && found.is_empty() && deletes.is_empty() {
+        return Ok(0);
     }
-    let existing: HashMap<String, AttachmentRow> = store
-        .list_assets(table, domain)
-        .await?
-        .into_iter()
-        .map(|row| (row.path.clone(), row))
-        .collect();
-
+    let existing = rows.stamps(store, domain).await?;
     let mut seen: HashSet<String> = HashSet::new();
-    for asset in assets {
-        let AssetCandidate {
-            rel,
-            abs,
-            mtime,
-            size: stat_size,
-            mime,
-        } = asset;
-        let modified = rfc3339_from_mtime(mtime);
-        seen.insert(rel.clone());
-        if let Some(row) = existing.get(&rel)
-            && row.size == stat_size
-            && row.modified == modified
+    let mut changed = 0;
+    for candidate in found {
+        let modified = rfc3339_from_mtime(candidate.mtime);
+        seen.insert(candidate.rel.clone());
+        if existing
+            .get(&candidate.rel)
+            .is_some_and(|(size, at)| *size == candidate.size && *at == modified)
         {
             continue;
         }
-        let read = tokio::task::spawn_blocking(move || read_and_measure(&abs))
-            .await
-            .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
-        let (sha256, size) = match read {
-            Ok(measured) => measured,
+        let read = {
+            let candidate = candidate.clone();
+            tokio::task::spawn_blocking(move || rows.build(&candidate, modified))
+                .await
+                .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())))
+        };
+        match read {
+            Ok(Some(row)) => {
+                rows.upsert(store, domain, &row).await?;
+                changed += 1;
+            }
+            Ok(None) => {}
             // The file vanished between the scan and here; its removal has its
             // own pass queued, so leave the row for that one.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                tracing::debug!(path = %rel, "sync: skipping an attachment that vanished mid-sync");
-                continue;
+                tracing::debug!(path = %candidate.rel, "sync: skipping a file that vanished mid-sync");
             }
-            Err(e) => {
-                report.failed.push((rel, e.to_string()));
-                continue;
-            }
-        };
-        // The size is taken from the bytes that were actually read, so a file
-        // that grew past the cap between the stat and the read is caught here
-        // rather than stored over the ceiling.
-        if size > MAX_ATTACHMENT_BYTES {
-            tracing::debug!(path = %rel, size, "sync: skipping an attachment over the size cap");
-            continue;
+            Err(e) => report
+                .failed
+                .push((rows.report_path(&candidate.rel), e.to_string())),
         }
-        let row = AttachmentRow {
-            path: rel,
-            sha256,
-            mime: mime.to_string(),
-            size,
-            modified,
-        };
-        store.upsert_asset(table, domain, &row).await?;
     }
-
-    if complete {
-        for path in existing.keys() {
-            if !seen.contains(path) {
-                store.delete_asset(table, domain, path).await?;
-            }
-        }
+    let gone: Vec<String> = if complete {
+        existing.into_keys().filter(|p| !seen.contains(p)).collect()
     } else {
-        for path in deletes {
-            store.delete_asset(table, domain, &path).await?;
+        deletes
+    };
+    for path in gone {
+        if rows.delete(store, domain, &path).await? {
+            changed += 1;
         }
     }
-    Ok(())
+    Ok(changed)
 }
 
 /// Refresh a domain's derived tag-alias rows from its MANIFEST. Reads the stored
@@ -1777,6 +2068,13 @@ fn read_and_hash(path: &Path) -> std::io::Result<String> {
     Ok(crate::hex_lower(&hasher.finalize()))
 }
 
+/// SHA-256 hex of `bytes`, the digest `read_and_hash` computes for a file.
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    crate::hex_lower(&hasher.finalize())
+}
+
 /// Hash an attachment and report the length of the very bytes that were hashed,
 /// so the stored row can never describe a size the checksum does not cover.
 fn read_and_measure(path: &Path) -> std::io::Result<(String, u64)> {
@@ -1815,7 +2113,7 @@ fn asset_candidate(
     fname: &str,
     mtime: i64,
     size: u64,
-) -> Option<AssetCandidate> {
+) -> Option<FileCandidate> {
     // A folder whose name differs from `assets` only in case is one and the
     // same directory on APFS and NTFS, so the bytes an upload wrote as
     // `assets/x.png` are walked back as `Assets/x.png`. Keying the row by the
@@ -1845,19 +2143,18 @@ fn asset_candidate(
         tracing::debug!(path = %rel, reason = %e, "sync: skipping a file under assets/");
         return None;
     }
-    // Validation already refused an extension off the allowlist, so this only
-    // resolves the mime the row records.
-    let mime = attachment_mime(fname)?;
+    // Validation already refused an extension off the allowlist; the mime is
+    // resolved again from the name when the row is built.
+    attachment_mime(fname)?;
     if size > MAX_ATTACHMENT_BYTES {
         tracing::debug!(path = %rel, size, "sync: skipping an attachment over the size cap");
         return None;
     }
-    Some(AssetCandidate {
+    Some(FileCandidate {
         rel: rel.to_string(),
         abs: abs.to_path_buf(),
         mtime,
         size,
-        mime,
     })
 }
 
