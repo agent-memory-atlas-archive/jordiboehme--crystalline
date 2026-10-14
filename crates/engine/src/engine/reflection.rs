@@ -522,11 +522,13 @@ impl Engine {
             self.reflection_right(&caller.scope, domain).await?
         };
         if right == ReflectionRight::None && !engrams_visible {
-            return Err(self
-                .require_domain(domain, &caller.scope)
-                .await
-                .err()
-                .unwrap_or_else(|| EngineError::NotFound(format!("no domain '{domain}'"))));
+            // The domain became visible between the two reads (a race): the
+            // answer is still the one a hidden domain gets, with the
+            // registered list this caller may see.
+            self.require_domain(domain, &caller.scope).await?;
+            let mut hidden = self.hidden_for(&caller.scope).await?;
+            hidden.insert(domain.to_string());
+            return Err(self.unknown_domain(domain, &hidden));
         }
         Ok((right, engrams_visible))
     }
@@ -1159,7 +1161,8 @@ impl Engine {
     ///
     /// A page that is gone answers `NotFound` (the room's deletion conflict)
     /// unless `expected_checksum` is empty, which only the room's restore
-    /// passes, for a page it puts back.
+    /// passes, for a page it puts back. A domain whose Reflection is not on
+    /// here any more is refused, and nothing is written.
     pub async fn save_reflection_room(
         &self,
         domain: &str,
@@ -1171,6 +1174,18 @@ impl Engine {
     ) -> Result<Value> {
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;
+        // A room can outlive the state it was opened in: switched off, a
+        // pending switch or a home elsewhere make the folder engram content
+        // again, or another instance's. The save waits (a refusal the room
+        // shows and retries) instead of writing ids and bookkeeping into it.
+        if !matches!(
+            self.reflection_state(domain).await?,
+            ReflectionState::On { .. }
+        ) {
+            return Err(EngineError::Refused(format!(
+                "the Reflection of '{domain}' is not on here any more, so this room's text is not saved; copy it before you leave the page"
+            )));
+        }
         let not_found =
             || EngineError::NotFound(format!("no reflection '{inner}' in domain '{domain}'"));
         let ContentSource::File { root } = self.read_source(domain) else {

@@ -198,7 +198,7 @@ cat >"$manifest_path" <<JSON
     },
     {
       "name": "read_reflection",
-      "description": "Read a domain's Reflection: the tree of its documents for people, or one document with its sections, source engrams and open threads."
+      "description": "Read a domain's Reflection: the tree of its documents for people, one document with its sections, source engrams and open threads, or the sections that match a search query."
     },
     {
       "name": "write_reflection",

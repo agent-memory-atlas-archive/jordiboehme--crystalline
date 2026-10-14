@@ -69,9 +69,7 @@ use crystalline_core::config::{self, DatabaseBackend, DomainEntry, GlobalConfig,
 use crystalline_core::provision;
 use crystalline_core::text::plural;
 use crystalline_core::verify::{self, VerifyOptions};
-use crystalline_core::{
-    DomainLayout, HarnessKind, PathClass, ReflectionMode, harness_paths, slash_rel,
-};
+use crystalline_core::{DomainLayout, HarnessKind, PathClass, harness_paths, slash_rel};
 use crystalline_index::{
     FileStamp, LocalModel, SnapshotChoice, Store, TagCluster, cached_model_dirs, choose_snapshot,
     configured_model_id, local_model, tag_clusters_with_aliases,
@@ -2774,11 +2772,12 @@ struct StrayPair {
 /// the permalink slugifies it. Neither side's index state is assumed.
 fn stray_pairs(root: &Path) -> Vec<StrayPair> {
     let mut by_key: BTreeMap<(String, String), Vec<StrayFile>> = BTreeMap::new();
-    // No index has been read yet, so the declared switch: while a switch is
-    // pending the engrams still under `reflections/` are skipped here.
+    // The mode in effect, as a share takes it. No index has been read yet,
+    // so it is asked of the files on disk: while a switch is pending, the
+    // engrams still under `reflections/` are engrams here too.
     let layout = DomainLayout::at(
         root,
-        ReflectionMode::declared(crystalline_core::reflection_at(root)),
+        crystalline_index::reflection_mode(root, std::iter::empty::<&str>()),
     );
     for rel in markdown_rel_paths(root, &layout) {
         let file = root.join(&rel);
@@ -8166,9 +8165,40 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join(S_PATH)).unwrap(), stray);
     }
 
+    /// A pending switch keeps the engrams under `reflections/` engrams, as a
+    /// share takes them, so a stray pair there is found; once the switch is
+    /// in effect, the folder is the Reflection's and nothing there is.
+    #[test]
+    fn a_pending_switch_keeps_stray_copies_under_reflections_in_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("kb");
+        put(
+            &root,
+            "MANIFEST.md",
+            &MANIFEST_KB.replacen("---\n\n", "reflection: on\n---\n\n", 1),
+        );
+        let original = format!("reflections/{O_PATH}");
+        let stray = format!("reflections/{S_PATH}");
+        put(&root, &original, &review_standards("The old rule.", OLDER));
+        put(&root, &stray, &review_standards("The new rule.", NEWER));
+        let pairs = stray_pairs(&root);
+        assert_eq!(pairs.len(), 1, "{pairs:?}");
+        assert_eq!(pairs[0].stray.rel, stray);
+
+        // The engrams moved out and a page with an id line in their place:
+        // the switch is in effect, and the folder holds no engram.
+        std::fs::remove_dir_all(root.join("reflections")).unwrap();
+        put(
+            &root,
+            "reflections/guide.md",
+            "# Guide\n\n## One\n<!-- r:aaaa1111 -->\n\nText.\n",
+        );
+        assert!(stray_pairs(&root).is_empty());
+    }
+
     #[tokio::test]
     async fn fix_runs_in_a_team_domain_and_leaves_local_changes() {
-        use crystalline_remote::changes::{LocalChange, detect_local_changes};
+        use crystalline_remote::changes::{LocalChange, detect_local_changes_against};
         use crystalline_remote::state::BaseStamp;
         let newer = review_standards("The new rule.", NEWER);
         let older = review_standards("The old rule.", OLDER);
@@ -8200,16 +8230,20 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let mut changes: Vec<String> = detect_local_changes(&root, &base)
-            .unwrap()
-            .changes
-            .iter()
-            .map(|change| match change {
-                LocalChange::Modified { path, .. } => format!("modified {path}"),
-                LocalChange::Deleted { path } => format!("deleted {path}"),
-                LocalChange::Added { path, .. } => format!("added {path}"),
-            })
-            .collect();
+        // The mode in effect, as a share takes it.
+        let state = tempfile::tempdir().unwrap();
+        let mode = crystalline_index::reflection_mode(&root, std::iter::empty::<&str>());
+        let mut changes: Vec<String> =
+            detect_local_changes_against(&root, &base, state.path(), mode)
+                .unwrap()
+                .changes
+                .iter()
+                .map(|change| match change {
+                    LocalChange::Modified { path, .. } => format!("modified {path}"),
+                    LocalChange::Deleted { path } => format!("deleted {path}"),
+                    LocalChange::Added { path, .. } => format!("added {path}"),
+                })
+                .collect();
         changes.sort();
         assert_eq!(
             changes,

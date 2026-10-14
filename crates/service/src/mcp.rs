@@ -2137,7 +2137,11 @@ impl McpServer {
     /// A routed answer as the handler of `tool` renders its own. The page
     /// address stays the server's (the receipt already carries it, and
     /// nothing here attaches one of this machine's over it), and a mounted
-    /// read carries no attachment links (decision D24).
+    /// read carries no attachment links (decision D24). That holds for a
+    /// mounted `read_reflection` with `path` too: its files under
+    /// `reflections/assets/` live on the server, and this machine's
+    /// `resources/read` does not route a link to them, so the page's
+    /// markdown links are what the agent gets.
     fn render_routed(&self, tool: &str, value: Value) -> Result<CallToolResult, ErrorData> {
         match tool {
             "write_engram" | "edit_engram" => ok_written(value),

@@ -2350,3 +2350,48 @@ async fn the_final_save_names_the_typist_who_already_left() {
         "{saved}"
     );
 }
+
+/// A room open across a switch-off writes nothing into what is engram
+/// content now: the save is refused, the file stays as it was and the
+/// room keeps its text.
+#[tokio::test]
+async fn a_room_open_across_a_switch_off_saves_nothing() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed while it was switched off.").await;
+    engine
+        .set_manifest_policies(
+            "eng",
+            &[("reflection".to_string(), "off".to_string())],
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let before = std::fs::read(&path).unwrap();
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    let Control::SaveFailed { detail } = next_control(&mut joined.rx).await else {
+        panic!("the save is refused");
+    };
+    assert!(detail.contains("not on here"), "{detail}");
+    assert_eq!(std::fs::read(&path).unwrap(), before, "nothing written");
+    let (live, dirty) = joined.session.snapshot().await;
+    assert!(live.contains("Typed while it was switched off."), "{live}");
+    assert!(dirty, "the room keeps its text");
+    // Its close writes nothing either.
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "the close writes nothing"
+    );
+}

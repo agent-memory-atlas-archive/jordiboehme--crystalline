@@ -63,7 +63,7 @@ Some domains keep a Reflection: documents for people under `reflections/`, writt
 
 ## Write-result nudges
 
-A write result may end with a '[crystalline]' nudge line - treat it as the standing practice the Stop hook teaches: propose sharing or run maintenance, and wait for a yes. It reaches you only when a session works through MCP with no Stop hook of its own to ask at the end - so it is the one place that standing practice reaches you, not a new kind of instruction.
+A write result may end with a '[crystalline]' nudge line - treat it as the standing practice the Stop hook teaches: propose sharing or run maintenance, and wait for a yes. When it names a Reflection you curate, call `reflect` and work its queue. It reaches you only when a session works through MCP with no Stop hook of its own to ask at the end - so it is the one place that standing practice reaches you, not a new kind of instruction.
 
 ## Read-only deployments
 
