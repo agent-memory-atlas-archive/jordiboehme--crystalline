@@ -141,6 +141,22 @@ pub fn render_index(entries: &[IndexEntry], root: bool) -> String {
     out
 }
 
+/// Whether `text` reads as a folder index [`render_index`] wrote: the
+/// version frontmatter of a root index or none, the contents heading, then
+/// one `* [` entry line after another and nothing else. A file a person wrote
+/// in its place reads as theirs, so a pass that clears stale listings can
+/// tell the two apart.
+pub fn is_generated_index(text: &str) -> bool {
+    let root = format!("---\nokf_version: \"{OKF_VERSION}\"\n---\n\n");
+    let body = text.strip_prefix(root.as_str()).unwrap_or(text);
+    let Some(entries) = body.strip_prefix(&format!("{CONTENTS_HEADING}\n\n")) else {
+        return false;
+    };
+    !entries.is_empty()
+        && entries.ends_with('\n')
+        && entries.lines().all(|line| line.starts_with("* ["))
+}
+
 /// Flatten a description onto one line: newlines and tabs become spaces, runs
 /// of whitespace collapse and the ends are trimmed, so a multi-line
 /// description never breaks the one-entry-per-line shape.
@@ -157,7 +173,7 @@ fn escape_link_text(text: &str) -> String {
 
 /// Render a link target. A target holding a space or a parenthesis is wrapped
 /// in angle brackets, the markdown form that survives both.
-fn escape_link_url(url: &str) -> String {
+pub(crate) fn escape_link_url(url: &str) -> String {
     if url.contains([' ', '(', ')', '<', '>']) {
         format!("<{}>", url.replace('<', "%3C").replace('>', "%3E"))
     } else {
@@ -194,6 +210,20 @@ mod tests {
         assert!(is_index_path("a/b/index.md"));
         assert!(!is_index_path("runbooks/log.md"));
         assert!(!is_index_path("index.md/notes.md"));
+    }
+
+    #[test]
+    fn a_generated_index_reads_as_one_and_a_written_one_does_not() {
+        let entries = [
+            IndexEntry::file("a.md", "A", Some("first")),
+            IndexEntry::folder("sub"),
+        ];
+        assert!(is_generated_index(&render_index(&entries, false)));
+        assert!(is_generated_index(&render_index(&entries, true)));
+        assert!(!is_generated_index("# Contents\n\nOur own overview.\n"));
+        assert!(!is_generated_index("# Contents\n\n"));
+        assert!(!is_generated_index("# Guides\n\n* [A](a.md)\n"));
+        assert!(!is_generated_index(""));
     }
 
     #[test]

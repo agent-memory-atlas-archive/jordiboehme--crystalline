@@ -99,6 +99,64 @@ async fn fixture_with(
     (tmp, engine, scratch)
 }
 
+/// An engine over `eng` with Reflection on and one reflection, and a scratch
+/// state directory.
+async fn reflection_fixture() -> (
+    tempfile::TempDir,
+    Arc<Engine>,
+    crate::support::ScratchStateDir,
+) {
+    reflection_fixture_with_aliases(&[]).await
+}
+
+/// [`reflection_fixture`] with `eng` also known by `alias`.
+async fn reflection_fixture_with_alias(
+    alias: &str,
+) -> (
+    tempfile::TempDir,
+    Arc<Engine>,
+    crate::support::ScratchStateDir,
+) {
+    reflection_fixture_with_aliases(&[alias]).await
+}
+
+async fn reflection_fixture_with_aliases(
+    aliases: &[&str],
+) -> (
+    tempfile::TempDir,
+    Arc<Engine>,
+    crate::support::ScratchStateDir,
+) {
+    let scratch = crate::support::ScratchStateDir::acquire();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("eng");
+    std::fs::create_dir_all(dir.join("reflections/guides")).unwrap();
+    write_manifest(&dir, "eng");
+    let manifest = std::fs::read_to_string(dir.join("MANIFEST.md"))
+        .unwrap()
+        .replacen("---\n\n", "reflection: on\n---\n\n", 1);
+    std::fs::write(dir.join("MANIFEST.md"), manifest).unwrap();
+    std::fs::write(
+        dir.join("reflections/guides/a.md"),
+        "# A\n\n## One\n<!-- r:aaaa1111 -->\n\nFirst.\n\n## Two\n<!-- r:bbbb2222 -->\n\nSecond.\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join("reflections/.reflected/guides")).unwrap();
+    std::fs::write(
+        dir.join("reflections/.reflected/guides/a.md"),
+        "## One\n<!-- r:aaaa1111 -->\n\nFirst.\n\n",
+    )
+    .unwrap();
+    let mut cfg = GlobalConfig::default();
+    let mut entry = DomainEntry::file(dir);
+    entry.aliases = aliases.iter().map(|a| a.to_string()).collect();
+    cfg.domains.insert("eng".into(), entry);
+    let store = TursoStore::open_in_memory().await.unwrap();
+    let engine = Arc::new(Engine::new(Arc::new(Mutex::new(store)), cfg, None, None));
+    engine.sync(None).await.unwrap();
+    (tmp, engine, scratch)
+}
+
 /// Frame one client update the way the provider sends it.
 fn frame_update(update: Vec<u8>) -> Vec<u8> {
     Message::Sync(SyncMessage::Update(update)).encode_v1()
@@ -611,6 +669,45 @@ async fn a_rename_moves_the_registry_key_so_the_new_permalink_finds_the_same_roo
         "the rename followed the engram, so beta is the live room"
     );
     assert_eq!(sessions.session_count().await, 1, "one room, one file");
+}
+
+/// A permalink change under an open room is refused: the room saves back to
+/// the address it was opened under. A path-only move is not.
+#[tokio::test]
+async fn a_permalink_move_waits_while_the_engram_is_open_in_a_room() {
+    let (_tmp, engine, _scratch) = engine_fixture_with_state().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let _joined = sessions.join("eng", "alpha", None).await.unwrap();
+
+    let p = crystalline_service::params::MoveParams {
+        identifier: "alpha".into(),
+        domain: "eng".into(),
+        destination: "alpha.md".into(),
+        destination_domain: None,
+        permalink: Some("renamed".into()),
+        update_links: None,
+    };
+    let err = engine
+        .move_engram(&p, &crystalline_service::Scope::Unrestricted)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("open in the editor right now") && err.contains("alpha"),
+        "{err}"
+    );
+
+    // A path-only move keeps the address the room saves to.
+    let path_only = crystalline_service::params::MoveParams {
+        destination: "moved/alpha.md".into(),
+        permalink: Some("keep".into()),
+        ..p
+    };
+    engine
+        .move_engram(&path_only, &crystalline_service::Scope::Unrestricted)
+        .await
+        .expect("a path-only move is not refused under an open room");
 }
 
 #[tokio::test]
@@ -1301,7 +1398,7 @@ async fn a_room_saved_by_a_rename_or_a_removal_carries_the_captured_audience() {
             .await
             .unwrap();
     }
-    auth.upsert_domain_member("eng", "mem", MemberLevel::Viewer, "keeper")
+    auth.upsert_domain_member("eng", "mem", MemberLevel::Viewer, None, "keeper")
         .await
         .unwrap();
     engine.set_domain_access(Arc::new(crystalline_service::DomainAccess::new(auth)));
@@ -1354,4 +1451,960 @@ async fn a_room_saved_by_a_rename_or_a_removal_carries_the_captured_audience() {
     }
     let saved = room_save(&heard, "oak", "oak-note.md");
     assert_eq!(saved.audience(), Some(&readers(&["keeper"])));
+}
+
+#[tokio::test]
+async fn a_reflection_room_saves_straight_to_the_file_and_assigns_ids_on_close() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "\n## Three\n\nTyped in the room.").await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    assert!(matches!(
+        next_control(&mut joined.rx).await,
+        Control::Saved { .. }
+    ));
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("## Three\n\nTyped in the room."), "{saved}");
+    assert!(
+        !saved.contains("## Three\n<!-- r:"),
+        "no id under the cursor while the room is open"
+    );
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    let closed = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        closed.contains("## Three\n<!-- r:"),
+        "the id comes with the close: {closed}"
+    );
+}
+
+#[tokio::test]
+async fn two_people_in_one_reflection_room_merge_and_the_baseline_is_untouched() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let baseline = tmp.path().join("eng/reflections/.reflected/guides/a.md");
+    let before = std::fs::read(&baseline).unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    let mut first = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let second = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    assert!(
+        Arc::ptr_eq(&first.session, &second.session),
+        "one room per reflection"
+    );
+    let doc_a = sync_client(&first).await;
+    let doc_b = sync_client(&second).await;
+    append_line(&first, &doc_a, "Added by the first person.").await;
+    append_line(&second, &doc_b, "Added by the second person.").await;
+    first
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    assert!(matches!(
+        next_control(&mut first.rx).await,
+        Control::Saved { .. }
+    ));
+    let saved = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    assert!(
+        saved.contains("Added by the first person.")
+            && saved.contains("Added by the second person."),
+        "{saved}"
+    );
+    assert_eq!(
+        std::fs::read(&baseline).unwrap(),
+        before,
+        "people's edits never move the baseline"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_write_composes_into_an_open_reflection_room_and_a_move_waits() {
+    let (_tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let _doc = sync_client(&joined).await;
+    let current = engine
+        .read_reflection(
+            "eng",
+            "guides/a.md",
+            &crystalline_service::ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+    let markdown = current["markdown"]
+        .as_str()
+        .unwrap()
+        .replace("Second.", "Second, revised by an agent.");
+    let p = crystalline_service::params::WriteReflectionParams {
+        domain: "eng".into(),
+        path: "guides/a.md".into(),
+        markdown: Some(markdown),
+        ..Default::default()
+    };
+    let caller = crystalline_service::ReflectionCaller::agent(
+        crystalline_service::Scope::Unrestricted,
+        "claude-code",
+        false,
+    );
+    let written = engine.write_reflection(&p, &caller).await.unwrap();
+    assert_eq!(written["landed"], "live");
+    let (live, _) = joined.session.snapshot().await;
+    assert!(live.contains("Second, revised by an agent."));
+    let mut joined = joined;
+    assert!(
+        matches!(next_control(&mut joined.rx).await, Control::Merged),
+        "the room is told the agent's text is in"
+    );
+    let file = engine
+        .reflection_room_text("eng", "guides/a.md")
+        .await
+        .unwrap();
+    assert_eq!(
+        joined.session.live().await.checksum,
+        file.checksum,
+        "the room took the file in and holds its checksum"
+    );
+    let err = engine
+        .move_reflection("eng", "guides/a.md", "b.md", &caller)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("somebody is editing"), "{err}");
+    let err = engine
+        .delete_reflection("eng", "guides/a.md", &caller)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("somebody is editing"),
+        "a delete waits too: {err}"
+    );
+}
+
+/// A rewrite never races a room: a file or a page cannot move while a page
+/// that links it is open, and a refused move changes nothing.
+#[tokio::test]
+async fn a_file_or_page_move_waits_while_a_page_that_links_it_is_open() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let dir = tmp.path().join("eng/reflections");
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("assets/a.png"), "png").unwrap();
+    std::fs::write(
+        dir.join("b.md"),
+        "# B\n\n![a](assets/a.png) and [page](guides/a.md)\n",
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions
+        .join_reflection("eng", "b.md", "ada")
+        .await
+        .unwrap();
+    let _doc = sync_client(&joined).await;
+    let owner = crystalline_service::ReflectionCaller::owner();
+    let err = engine
+        .move_reflection_asset("eng", "assets/a.png", "assets/c.png", &owner)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("somebody is editing 'b.md'"), "{err}");
+    assert!(
+        dir.join("assets/a.png").is_file(),
+        "a refused move changes nothing"
+    );
+    let err = engine
+        .move_reflection("eng", "guides/a.md", "c.md", &owner)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("somebody is editing 'b.md'"), "{err}");
+    assert!(dir.join("guides/a.md").is_file());
+}
+
+/// A page whose only frontmatter key is the bookkeeping block naming an
+/// engram: the riskiest round trip, since cutting the block drops the fences.
+const WITH_SOURCES: &str = "---\nreflection:\n  aaaa1111:\n    sources:\n      - engram: runbooks/deploy\n        checksum: 00ff\n    reflected: 11ee\n---\n\n# A\n\n## One\n<!-- r:aaaa1111 -->\n\nFirst.\n\n## Two\n<!-- r:bbbb2222 -->\n\nSecond.\n";
+
+#[tokio::test]
+async fn a_reflection_room_never_carries_the_provenance_block() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    std::fs::write(&path, WITH_SOURCES).unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+
+    // What every socket receives: the page without the block.
+    let doc = sync_client(&joined).await;
+    let seen = doc
+        .get_or_insert_text("content")
+        .get_string(&doc.transact());
+    assert!(
+        !seen.contains("runbooks/deploy") && !seen.contains("reflection:"),
+        "{seen}"
+    );
+    assert!(
+        seen.starts_with("# A\n"),
+        "the fences go with their only key: {seen}"
+    );
+
+    // A person's save keeps the stored block in the file.
+    append_line(&joined, &doc, "Typed in the room.").await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    assert!(matches!(
+        next_control(&mut joined.rx).await,
+        Control::Saved { .. }
+    ));
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        saved.contains("engram: runbooks/deploy") && saved.contains("Typed in the room."),
+        "{saved}"
+    );
+
+    // An agent's write lands in the room without the block.
+    let markdown = saved.replace("Second.", "Second, from the agent.");
+    let p = crystalline_service::params::WriteReflectionParams {
+        domain: "eng".into(),
+        path: "guides/a.md".into(),
+        markdown: Some(markdown),
+        ..Default::default()
+    };
+    let caller = crystalline_service::ReflectionCaller::agent(
+        crystalline_service::Scope::Unrestricted,
+        "claude-code",
+        false,
+    );
+    assert_eq!(
+        engine.write_reflection(&p, &caller).await.unwrap()["landed"],
+        "live"
+    );
+    let (live, _) = joined.session.snapshot().await;
+    assert!(
+        live.contains("Second, from the agent.") && !live.contains("runbooks/deploy"),
+        "{live}"
+    );
+    assert!(
+        matches!(next_control(&mut joined.rx).await, Control::Merged),
+        "the room is told the agent's text is in"
+    );
+
+    // The room took the file in, and its next save is not stale: the
+    // checksum it holds is the file's, not the stripped text's.
+    let file = engine
+        .reflection_room_text("eng", "guides/a.md")
+        .await
+        .unwrap();
+    assert_eq!(joined.session.live().await.checksum, file.checksum);
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed after the agent.").await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 200))
+        .await;
+    assert!(
+        matches!(next_control(&mut joined.rx).await, Control::Saved { .. }),
+        "the next save is not stale"
+    );
+    let last = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        last.contains("engram: runbooks/deploy") && last.contains("Typed after the agent."),
+        "{last}"
+    );
+    assert_eq!(
+        last.matches("reflection:").count(),
+        1,
+        "the block is re-attached once, not stacked: {last}"
+    );
+}
+
+/// A reflection room is its own kind of key. An engram lookup under
+/// the same name never finds it, whatever the name.
+#[tokio::test]
+async fn a_reflection_room_never_answers_an_engram_lookup() {
+    use crystalline_service::collab::session::RoomDoc;
+    let (_tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    let _joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    assert!(
+        sessions
+            .has_live_doc("eng", &RoomDoc::Reflection("guides/a.md".into()), None)
+            .await
+    );
+    assert!(
+        !sessions.has_live_room("eng", "guides/a.md", None).await,
+        "no engram room by that name"
+    );
+    assert!(
+        !sessions
+            .has_live_doc("eng", &RoomDoc::Engram("guides/a.md".into()), None)
+            .await
+    );
+}
+
+/// The read-only freeze reaches the rooms: no reflection
+/// room opens on a read-only domain, and the file is untouched.
+#[tokio::test]
+async fn a_read_only_domain_refuses_a_reflection_room() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let manifest_path = tmp.path().join("eng/MANIFEST.md");
+    let manifest = std::fs::read_to_string(&manifest_path).unwrap().replacen(
+        "reflection: on\n",
+        "reflection: on\nread_only: on\n",
+        1,
+    );
+    std::fs::write(&manifest_path, manifest).unwrap();
+    engine.sync(None).await.unwrap();
+    let before = std::fs::read(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    assert!(
+        sessions
+            .join_reflection("eng", "guides/a.md", "ada")
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(tmp.path().join("eng/reflections/guides/a.md")).unwrap(),
+        before
+    );
+}
+
+/// Open point 2 (approved): a room's save spells other domains by their
+/// canonical name, and the room converges to the spelling that landed.
+#[tokio::test]
+async fn a_reflection_room_save_spells_other_domains_by_their_canonical_name() {
+    let (tmp, engine, _scratch) = reflection_fixture_with_alias("engineering").await;
+    let sessions = CollabSessions::new(engine.clone());
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "See [[engineering:runbooks/deploy]].").await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    // The respelling reaches the room before the save (as in an engram
+    // room), then the save lands.
+    assert!(matches!(
+        next_control(&mut joined.rx).await,
+        Control::Merged
+    ));
+    assert!(matches!(
+        next_control(&mut joined.rx).await,
+        Control::Saved { .. }
+    ));
+    let saved = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    assert!(saved.contains("[[eng:runbooks/deploy]]"), "{saved}");
+    let (live, _) = joined.session.snapshot().await;
+    assert!(
+        live.contains("[[eng:runbooks/deploy]]"),
+        "the room shows what landed: {live}"
+    );
+}
+
+/// A page deleted under an open room is the room's deletion conflict, as an
+/// engram's is: the room's next save never quietly puts it back.
+#[tokio::test]
+async fn a_reflection_deleted_under_its_room_is_a_conflict_not_a_resurrection() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed before the delete.").await;
+    std::fs::remove_file(&path).unwrap();
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    match next_control(&mut joined.rx).await {
+        Control::Conflict { conflict_kind, .. } => assert_eq!(conflict_kind, "deleted"),
+        other => panic!("a deletion conflict, not {other:?}"),
+    }
+    assert!(!path.exists(), "the save did not bring the page back");
+}
+
+/// A room opened and closed with nothing typed leaves a page Crystalline
+/// wrote as it was.
+#[tokio::test]
+async fn a_reflection_room_closed_untouched_writes_nothing() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let p = crystalline_service::params::WriteReflectionParams {
+        domain: "eng".into(),
+        path: "guides/a.md".into(),
+        markdown: Some(std::fs::read_to_string(&path).unwrap()),
+        ..Default::default()
+    };
+    engine
+        .write_reflection(&p, &crystalline_service::ReflectionCaller::owner())
+        .await
+        .unwrap();
+    let before = std::fs::read(&path).unwrap();
+    // An old modification time, so a rewrite of the same bytes shows.
+    let stamp = std::time::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(stamp)
+        .unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    let joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let _doc = sync_client(&joined).await;
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().modified().unwrap(),
+        stamp,
+        "the file was not written at all"
+    );
+}
+
+/// A room saved on close and kept open by somebody still in it mints no id
+/// under the next cursor: the final pass ends with that save.
+#[tokio::test]
+async fn a_reflection_room_kept_open_after_its_close_save_mints_no_ids() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    joined.session.final_save().await;
+    append_line(&joined, &doc, "\n## Four\n\nLater.").await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    loop {
+        if let Control::Saved { .. } = next_control(&mut joined.rx).await {
+            break;
+        }
+    }
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("## Four\n\nLater."), "{saved}");
+    assert!(
+        !saved.contains("## Four\n<!-- r:"),
+        "no id under the cursor of a room still open: {saved}"
+    );
+}
+
+/// Read controls until the room reports a landed save.
+async fn until_saved(rx: &mut tokio::sync::broadcast::Receiver<Frame>) {
+    loop {
+        match next_control(rx).await {
+            Control::Saved { .. } => return,
+            Control::Merged => {}
+            other => panic!("a save, not {other:?}"),
+        }
+    }
+}
+
+/// An agent's section write into a page somebody is typing in: the file
+/// is merged into the room's own text, so the unsaved typing stays and
+/// lands beside the agent's change.
+#[tokio::test]
+async fn an_agent_write_into_an_open_room_keeps_a_persons_unsaved_typing() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed by a person.").await;
+    let p = crystalline_service::params::WriteReflectionParams {
+        domain: "eng".into(),
+        path: "guides/a.md".into(),
+        operation: Some("replace_section".into()),
+        section: Some("## One".into()),
+        content: Some("First, from the agent.\n".into()),
+        ..Default::default()
+    };
+    let caller = crystalline_service::ReflectionCaller::agent(
+        crystalline_service::Scope::Unrestricted,
+        "claude-code",
+        false,
+    );
+    assert_eq!(
+        engine.write_reflection(&p, &caller).await.unwrap()["landed"],
+        "live"
+    );
+    let (live, _) = joined.session.snapshot().await;
+    assert!(
+        live.contains("First, from the agent.") && live.contains("Typed by a person."),
+        "both in the room: {live}"
+    );
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    until_saved(&mut joined.rx).await;
+    let saved = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    assert!(
+        saved.contains("First, from the agent.") && saved.contains("Typed by a person."),
+        "both on disk: {saved}"
+    );
+}
+
+/// The room saves between an agent's file write and the room taking it in
+/// (the write drops the page lock before it reaches the room): the room's
+/// save already merged the agent's change, so taking it in again changes
+/// nothing, and neither the typing nor the agent's text is lost.
+#[tokio::test]
+async fn a_room_save_between_an_agent_write_and_its_merge_loses_nothing() {
+    use crystalline_service::collab::session::RoomDoc;
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    // The rooms are not handed to the engine yet, so the write lands in the
+    // file alone, as it does in the window before its live arm runs.
+    let sessions = CollabSessions::new(engine.clone());
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed by a person.").await;
+    let markdown = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("First.", "First, from the agent.");
+    let p = crystalline_service::params::WriteReflectionParams {
+        domain: "eng".into(),
+        path: "guides/a.md".into(),
+        markdown: Some(markdown),
+        ..Default::default()
+    };
+    let caller = crystalline_service::ReflectionCaller::agent(
+        crystalline_service::Scope::Unrestricted,
+        "claude-code",
+        false,
+    );
+    engine.write_reflection(&p, &caller).await.unwrap();
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    until_saved(&mut joined.rx).await;
+    // The live arm's step, after the room's save.
+    sessions
+        .absorb_doc_change("eng", &RoomDoc::Reflection("guides/a.md".into()), None)
+        .await
+        .unwrap();
+    let (live, dirty) = joined.session.snapshot().await;
+    assert!(
+        live.contains("First, from the agent.") && live.contains("Typed by a person."),
+        "{live}"
+    );
+    assert!(!dirty, "nothing left to save");
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        saved.contains("First, from the agent.") && saved.contains("Typed by a person."),
+        "{saved}"
+    );
+}
+
+/// Departure 4: a room save respells a section nobody touched as a link
+/// rewrite, so that section records nobody, and the baseline follows.
+#[tokio::test]
+async fn a_room_save_respells_an_untouched_section_without_recording_anybody() {
+    let (tmp, engine, _scratch) = reflection_fixture_with_alias("engineering").await;
+    let page = tmp.path().join("eng/reflections/guides/a.md");
+    let baseline = tmp.path().join("eng/reflections/.reflected/guides/a.md");
+    std::fs::write(
+        &page,
+        "# A\n\n## One\n<!-- r:aaaa1111 -->\n\nSee [[engineering:runbooks/deploy]].\n\n## Two\n<!-- r:bbbb2222 -->\n\nSecond.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &baseline,
+        "## One\n<!-- r:aaaa1111 -->\n\nSee [[engineering:runbooks/deploy]].\n\n",
+    )
+    .unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed in Two.").await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    until_saved(&mut joined.rx).await;
+    let saved = std::fs::read_to_string(&page).unwrap();
+    assert!(saved.contains("See [[eng:runbooks/deploy]]."), "{saved}");
+    let prov = crystalline_core::reflection::provenance::read_provenance(&saved);
+    assert!(
+        prov.get("aaaa1111")
+            .is_none_or(|record| record.changed_by.is_empty()),
+        "the untouched section records nobody: {saved}"
+    );
+    assert!(
+        !prov["bbbb2222"].changed_by.is_empty(),
+        "the typed section records its author: {saved}"
+    );
+    assert!(
+        std::fs::read_to_string(&baseline)
+            .unwrap()
+            .contains("See [[eng:runbooks/deploy]]."),
+        "the baseline gets the same respelling"
+    );
+}
+
+/// A settle rewrites only the bookkeeping block while a room is open; the
+/// room's next save keeps what the settle stamped.
+#[tokio::test]
+async fn a_settle_under_an_open_room_survives_its_next_save() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    engine
+        .settle_reflection(
+            "eng",
+            "guides/a.md",
+            &["bbbb2222".to_string()],
+            "kept",
+            &crystalline_service::ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+    let settled = crystalline_core::reflection::provenance::read_provenance(
+        &std::fs::read_to_string(&path).unwrap(),
+    )["bbbb2222"]
+        .reflected
+        .clone();
+    assert!(settled.is_some());
+    append_line(&joined, &doc, "Typed after the settle.").await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    until_saved(&mut joined.rx).await;
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("Typed after the settle."), "{saved}");
+    assert_eq!(
+        crystalline_core::reflection::provenance::read_provenance(&saved)["bbbb2222"].reflected,
+        settled,
+        "the settle's stamp stays: {saved}"
+    );
+}
+
+/// The engine refuses a room over a path that names no reflection, whoever
+/// asks for it.
+#[tokio::test]
+async fn a_reflection_room_takes_only_a_reflection_path() {
+    let (_tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    for path in ["../MANIFEST.md", ".reflected/guides/a.md", "guides/a.txt"] {
+        assert!(
+            sessions.join_reflection("eng", path, "ada").await.is_err(),
+            "{path}"
+        );
+    }
+}
+
+/// The agent's section write collides with a person's unsaved change of
+/// the same line: the room raises its edit conflict with the agent's text
+/// as theirs, keeps the person's text, and the receipt says the write is
+/// on disk and the room is choosing, not that it landed live.
+#[tokio::test]
+async fn an_agent_write_that_collides_with_unsaved_typing_raises_the_rooms_conflict() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    let mine = doc
+        .get_or_insert_text("content")
+        .get_string(&doc.transact())
+        .replace("First.", "First, by a person.");
+    replace_all(&joined, &doc, &mine).await;
+    let p = crystalline_service::params::WriteReflectionParams {
+        domain: "eng".into(),
+        path: "guides/a.md".into(),
+        operation: Some("replace_section".into()),
+        section: Some("## One".into()),
+        content: Some("First, from the agent.\n".into()),
+        ..Default::default()
+    };
+    let caller = crystalline_service::ReflectionCaller::agent(
+        crystalline_service::Scope::Unrestricted,
+        "claude-code",
+        false,
+    );
+    let receipt = engine.write_reflection(&p, &caller).await.unwrap();
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    assert_eq!(receipt["room"], "conflict", "{receipt}");
+    assert!(receipt["room_note"].as_str().unwrap().contains("choosing"));
+    match next_control(&mut joined.rx).await {
+        Control::Conflict {
+            conflict_kind,
+            theirs,
+            ..
+        } => {
+            assert_eq!(conflict_kind, "edit");
+            assert!(theirs.unwrap().contains("First, from the agent."));
+        }
+        other => panic!("the room's edit conflict, not {other:?}"),
+    }
+    let (live, _) = joined.session.snapshot().await;
+    assert!(live.contains("First, by a person."), "not erased: {live}");
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("First, from the agent."),
+        "the agent's write is on disk"
+    );
+}
+
+/// A room with a conflict of its own takes nothing in: the agent's write is
+/// on disk, and the receipt says the room meets it when its conflict is
+/// resolved.
+#[tokio::test]
+async fn an_agent_write_into_a_room_in_conflict_is_reported_as_waiting() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    // A change outside Crystalline collides with unsaved typing on the same
+    // line: the room's save raises its edit conflict.
+    let mine = doc
+        .get_or_insert_text("content")
+        .get_string(&doc.transact())
+        .replace("First.", "First, by a person.");
+    replace_all(&joined, &doc, &mine).await;
+    let outside = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("First.", "First, from outside.");
+    std::fs::write(&path, outside).unwrap();
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    assert!(matches!(
+        next_control(&mut joined.rx).await,
+        Control::Conflict { .. }
+    ));
+    let p = crystalline_service::params::WriteReflectionParams {
+        domain: "eng".into(),
+        path: "guides/a.md".into(),
+        operation: Some("replace_section".into()),
+        section: Some("## Two".into()),
+        content: Some("Second, from the agent.\n".into()),
+        ..Default::default()
+    };
+    let caller = crystalline_service::ReflectionCaller::agent(
+        crystalline_service::Scope::Unrestricted,
+        "claude-code",
+        false,
+    );
+    let receipt = engine.write_reflection(&p, &caller).await.unwrap();
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    assert_eq!(receipt["room"], "waiting", "{receipt}");
+    let (live, _) = joined.session.snapshot().await;
+    assert!(
+        live.contains("First, by a person.") && !live.contains("Second, from the agent."),
+        "the room took nothing in: {live}"
+    );
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("Second, from the agent.")
+    );
+}
+
+/// Publish a display name in awareness, as a browser's provider does.
+async fn publish_name(joined: &Joined, doc: &Doc, name: &str) {
+    let mut awareness = yrs::sync::Awareness::new(doc.clone());
+    awareness.set_local_state_raw(format!("{{\"user\":{{\"name\":\"{name}\"}}}}"));
+    let update = awareness.update().unwrap();
+    joined
+        .session
+        .handle_frame(joined.conn, &Message::Awareness(update).encode_v1())
+        .await;
+}
+
+/// A room save names the signed-in account of each connection that sent an
+/// edit: a name a client puts into awareness is not recorded, and a
+/// participant who is there and types nothing is not either, even when its
+/// provider sends the room's whole state back.
+#[tokio::test]
+async fn a_reflection_room_names_the_accounts_that_typed_and_nobody_else() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    let mut typist = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let silent = sessions
+        .join_reflection("eng", "guides/a.md", "bob")
+        .await
+        .unwrap();
+    let doc = sync_client(&typist).await;
+    let _silent_doc = sync_client(&silent).await;
+    publish_name(&typist, &doc, "keeper").await;
+    publish_name(&silent, &_silent_doc, "bob").await;
+    // ada deletes a word as well, so the echo below carries a delete set.
+    let text = doc.get_or_insert_text("content");
+    let removal = {
+        let mut txn = doc.transact_mut();
+        let current = text.get_string(&txn);
+        let at = current.find("Second.").unwrap() as u32;
+        text.remove_range(&mut txn, at, "Second.".len() as u32);
+        txn.encode_update_v1()
+    };
+    typist
+        .session
+        .handle_frame(typist.conn, &frame_update(removal))
+        .await;
+    append_line(&typist, &doc, "Typed by ada.").await;
+    // bob's provider answers with everything it holds, ada's edit and her
+    // deletion included: it applies, and it is no edit of bob's.
+    let echo = doc
+        .transact()
+        .encode_state_as_update_v1(&Default::default());
+    silent
+        .session
+        .handle_frame(
+            silent.conn,
+            &Message::Sync(SyncMessage::SyncStep2(echo)).encode_v1(),
+        )
+        .await;
+    typist
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    until_saved(&mut typist.rx).await;
+    let saved = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    let prov = crystalline_core::reflection::provenance::read_provenance(&saved);
+    assert_eq!(
+        prov["bbbb2222"].changed_by,
+        vec!["ada".to_string()],
+        "{saved}"
+    );
+}
+
+/// The person who typed and left before the room's last save is still the
+/// one it names: the account is kept past the disconnect.
+#[tokio::test]
+async fn the_final_save_names_the_typist_who_already_left() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    let joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed before leaving.").await;
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    let saved = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    assert!(saved.contains("Typed before leaving."), "{saved}");
+    let prov = crystalline_core::reflection::provenance::read_provenance(&saved);
+    assert_eq!(
+        prov["bbbb2222"].changed_by,
+        vec!["ada".to_string()],
+        "{saved}"
+    );
+}
+
+/// A room open across a switch-off writes nothing into what is engram
+/// content now: the save is refused, the file stays as it was and the
+/// room keeps its text.
+#[tokio::test]
+async fn a_room_open_across_a_switch_off_saves_nothing() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed while it was switched off.").await;
+    engine
+        .set_manifest_policies(
+            "eng",
+            &[("reflection".to_string(), "off".to_string())],
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let before = std::fs::read(&path).unwrap();
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    let Control::SaveFailed { detail } = next_control(&mut joined.rx).await else {
+        panic!("the save is refused");
+    };
+    assert!(detail.contains("not on here"), "{detail}");
+    assert_eq!(std::fs::read(&path).unwrap(), before, "nothing written");
+    let (live, dirty) = joined.session.snapshot().await;
+    assert!(live.contains("Typed while it was switched off."), "{live}");
+    assert!(dirty, "the room keeps its text");
+    // Its close writes nothing either.
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "the close writes nothing"
+    );
 }

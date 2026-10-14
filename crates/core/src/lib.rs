@@ -24,9 +24,12 @@ pub mod engram;
 pub mod folders;
 pub mod frontmatter;
 pub mod harness;
+mod headings;
 pub mod import;
 pub mod index;
 pub mod jsonc_edit;
+pub mod kind;
+pub mod layout;
 pub mod line_endings;
 pub mod manifest;
 pub mod manifest_view;
@@ -35,6 +38,7 @@ pub mod parse;
 pub mod path;
 pub mod prompt;
 pub mod provision;
+pub mod reflection;
 pub mod relink;
 pub mod schema;
 pub mod secret_env;
@@ -43,6 +47,7 @@ pub mod skills;
 pub mod tags;
 pub mod temporal;
 pub mod text;
+pub mod threads;
 pub mod tree;
 pub mod verify;
 pub mod yaml;
@@ -68,18 +73,23 @@ pub use harness::profile::{
 };
 pub use harness::{HarnessKind, HarnessPaths, HarnessProfile, artifact_base, harness_paths};
 pub use index::{
-    INDEX_FILE, IndexEntry, LOG_FILE, OKF_VERSION, is_index_file, is_index_path, is_reserved_file,
-    is_reserved_path, render_index,
+    INDEX_FILE, IndexEntry, LOG_FILE, OKF_VERSION, is_generated_index, is_index_file,
+    is_index_path, is_reserved_file, is_reserved_path, render_index,
+};
+pub use kind::ContentKind;
+pub use layout::{
+    DomainLayout, EngramRow, PathClass, ReflectionMode, is_pending_engram, slash_rel,
 };
 pub use line_endings::{NotUtf8, to_lf, utf8_to_lf};
 pub use manifest::{
     ArtifactType, DOMAIN_NAME_KEY, GENERATED_INDEXES_KEY, GeneratedIndexes, Manifest, PolicyKey,
     PolicyKind, PolicyRole, ProblemKind, ProvisioningDecl, ProvisioningProblem,
-    ProvisioningSection, READ_ONLY_KEY, ReadOnly, SHARING_KEY, Sharing, StarterStanza,
-    TagAliasDecl, TagAliasProblem, TagAliasProblemKind, TagAliasSection, append_tag_alias,
-    domain_name_at, domain_name_of_source, generated_indexes_at, in_root_artifact_dirs,
-    manifest_template, policy_registry, read_only_at, read_only_of_source, sharing_at,
-    starter_stanzas, tag_alias_pairs,
+    ProvisioningSection, READ_ONLY_KEY, REFLECTION_HOME_KEY, REFLECTION_KEY, ReadOnly,
+    ReflectionSwitch, SHARING_KEY, Sharing, StarterStanza, TagAliasDecl, TagAliasProblem,
+    TagAliasProblemKind, TagAliasSection, append_tag_alias, domain_name_at, domain_name_of_source,
+    generated_indexes_at, in_root_artifact_dirs, manifest_template, policy_registry, read_only_at,
+    read_only_of_source, reflection_at, reflection_home_at, sharing_at, starter_stanzas,
+    tag_alias_pairs, validate_reflection_home,
 };
 pub use names::{NameInput, NameTable};
 pub use parse::{

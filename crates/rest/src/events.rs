@@ -2,8 +2,10 @@
 //! it is reading follows the knowledge.
 //!
 //! One subscriber per open response. Each is filtered by what its session
-//! may read - the same `hidden_domains` fold the domain listing goes through,
-//! re-resolved lazily so a revocation lands within ten seconds - except an
+//! may read - the same visibility fold the domain listing goes through, kept
+//! as a screen that fails closed (for an account at knowledge `none`, the
+//! private domains it reads and nothing else, so a shared domain registered
+//! after the screen was built stays out) and re-resolved lazily so a revocation lands within ten seconds - except an
 //! event that carries the audience the engine itself resolved eagerly, at the
 //! moment of the change (a domain's rename, under its old name, and its
 //! removal). That audience is checked directly against this session's
@@ -27,7 +29,7 @@
 //! and is tried again on the next one; it never delivers on an old answer.
 //! The number of open streams is capped per account and in total.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -46,7 +48,7 @@ use tokio::sync::watch;
 use super::auth::Identity;
 use super::{ApiError, ProblemDetail, RestState};
 use crate::changes::{ChangeBus, DomainAudience, Envelope, EventId, Replay};
-use crate::scope::{Scope, overlay_actor};
+use crate::scope::{DomainScreen, Scope, overlay_actor};
 
 /// The keep-alive comment's cadence. Shorter than any idle timeout a proxy
 /// ships with by default, so a quiet stream is never cut for silence.
@@ -156,7 +158,7 @@ pub async fn stream_events(
         )
         .retry_after(STREAMS_RETRY_AFTER_SECS)
     })?;
-    let hidden = state.engine.hidden_domains(&scope).await?;
+    let screen = state.engine.domain_screen(&scope).await?;
     // Subscribe BEFORE the ring is read, so an event that lands between the
     // two is in the channel rather than lost; `last_sent` below drops the
     // one that is then in both.
@@ -168,7 +170,7 @@ pub async fn stream_events(
             Replay::Events(events) => (false, events),
         },
     };
-    let mut subscriber = Subscriber::new(state, headers, &identity, hidden, receiver, slot);
+    let mut subscriber = Subscriber::new(state, headers, &identity, screen, receiver, slot);
     subscriber.backlog = backlog.into();
     subscriber.reset_pending = reset_pending;
     let events = stream::unfold(subscriber, |mut subscriber| async move {
@@ -317,8 +319,8 @@ struct Subscriber {
     scope: Scope,
     /// Whose drafts this session may hear about: its own overlay actor.
     overlay: Option<String>,
-    /// `None` for a scope that hides nothing; the hidden names otherwise.
-    hidden: Option<HashSet<String>>,
+    /// Which domains this session may hear about (`Engine::domain_screen`).
+    screen: DomainScreen,
     resolved_at: Instant,
     /// When the account behind the stream was last re-checked. An idle
     /// stream re-checks it every [`VISIBILITY_TTL`] on its own, so a logout
@@ -327,7 +329,7 @@ struct Subscriber {
     checked_at: Instant,
     /// Set by an event that carried a captured audience (the change it
     /// announced moved the privacy records), by a lag (such an event may be
-    /// among the ones lost) and by a failed re-resolution: `hidden` is
+    /// among the ones lost) and by a failed re-resolution: `screen` is
     /// re-resolved before the next ordinary check whatever its age.
     stale: bool,
     receiver: broadcast::Receiver<Envelope>,
@@ -392,7 +394,7 @@ impl Subscriber {
         state: RestState,
         headers: HeaderMap,
         identity: &Identity,
-        hidden: Option<HashSet<String>>,
+        screen: DomainScreen,
         receiver: broadcast::Receiver<Envelope>,
         slot: StreamSlot,
     ) -> Subscriber {
@@ -407,7 +409,7 @@ impl Subscriber {
                 .map(|user| user.name.trim().to_lowercase()),
             overlay: overlay_actor(&scope),
             scope,
-            hidden,
+            screen,
             resolved_at: Instant::now(),
             checked_at: Instant::now(),
             stale: false,
@@ -511,7 +513,7 @@ impl Subscriber {
     /// capture the bus holds for its domain right now, since it may have sat
     /// in the channel from before the capture began. A captured audience is
     /// checked directly, against this session's own identity, and neither
-    /// this subscriber's cache nor a fresh `hidden_domains` call is consulted
+    /// this subscriber's cache nor a fresh `domain_screen` call is consulted
     /// for it, since both could answer from a registry the change itself is
     /// emptying, or, symmetrically, still answer "member" a moment after that
     /// access was revoked. The same event marks the cache stale, because the
@@ -541,12 +543,14 @@ impl Subscriber {
         let admitted = match audience {
             Some(audience) => {
                 self.stale = true;
+                // `Everyone` is every reader of a shared domain, which an
+                // account at knowledge `none` is not: its screen says so,
+                // whatever the capture.
                 audience_admits(audience, &self.scope)
+                    && (self.screen.admits_shared()
+                        || !matches!(audience, DomainAudience::Everyone))
             }
-            None => match &self.hidden {
-                None => true,
-                Some(hidden) => !hidden.contains(domain),
-            },
+            None => self.screen.admits(domain),
         };
         if admitted { Seen::Yes } else { Seen::No }
     }
@@ -572,7 +576,7 @@ impl Subscriber {
     }
 
     /// Re-read who is listening, then what they may see. On success the
-    /// scope and the hidden set are current and the cache is fresh; on
+    /// scope and the screen are current and the cache is fresh; on
     /// failure the cache stays stale so the next event tries again.
     async fn refresh(&mut self) -> Refreshed {
         let refreshed = self.refresh_identity().await;
@@ -584,9 +588,9 @@ impl Subscriber {
                 return other;
             }
         };
-        match self.state.engine.hidden_domains(&scope).await {
-            Ok(hidden) => {
-                self.hidden = hidden;
+        match self.state.engine.domain_screen(&scope).await {
+            Ok(screen) => {
+                self.screen = screen;
                 self.scope = scope.clone();
                 self.stale = false;
                 self.resolved_at = Instant::now();
@@ -662,6 +666,8 @@ async fn closed(shutdown: &mut Option<watch::Receiver<bool>>) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
     use crate::changes::{Change, ChangeKind, EngramChanged};
     use crate::engine::Engine;
@@ -718,6 +724,7 @@ mod tests {
                 role: crate::Role::Viewer,
                 disabled: false,
                 last_seen: None,
+                reflection: crate::ReflectionLevel::Default,
             }),
             csrf: None,
             anonymous: false,
@@ -738,7 +745,10 @@ mod tests {
             state.clone(),
             HeaderMap::new(),
             identity,
-            hidden,
+            match hidden {
+                None => DomainScreen::All,
+                Some(hidden) => DomainScreen::Except(hidden),
+            },
             receiver,
             slot,
         );

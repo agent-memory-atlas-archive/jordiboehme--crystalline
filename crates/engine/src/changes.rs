@@ -99,9 +99,12 @@ pub struct EngramChanged {
 /// moment of a change that takes the domain's name out of the privacy records
 /// (a removal, and the old name of a rename; ruled 2026-09-27).
 ///
-/// `Everyone` when the domain is not private. `Accounts` when it is, naming
-/// every account that may read it: its owner, every member at any level and
-/// every instance admin by the role the accounts store records, disabled
+/// `Everyone` when the domain is not private: every scope that reads shared
+/// domains, which leaves out an account whose instance knowledge level is
+/// `none` (a listener applies its own `DomainScreen::admits_shared` beside
+/// this). `Accounts` when it is, naming every account that may read it: its
+/// owner, every member who reads engrams there (not a member at knowledge
+/// `none`) and every instance admin by the role the accounts store records, disabled
 /// accounts left out. The names are the store's folded spelling (trimmed and
 /// lowercased), so a check folds `Scope::User.account` the same way, and a
 /// scope that carries `admin: true` reads too, since the surface's own admin

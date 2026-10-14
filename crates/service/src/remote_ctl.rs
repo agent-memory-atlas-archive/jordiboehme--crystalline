@@ -84,11 +84,13 @@ fn conditional(request: &Value, data: Value) -> Value {
     envelope
 }
 
-/// The engine verbs a remote `tool` call may run: exactly the ones the control
-/// socket's `tool` command dispatches. Pinned exactly by
-/// `tests/remote/ctl.rs::the_remote_allow_lists_are_pinned`. Each has its arm
-/// in `McpServer::remote_tool`, which runs the same verb core the MCP handler
-/// of that name runs.
+/// The engine verbs and Reflection tools a remote `tool` call may run: the
+/// fifteen engine verbs the control socket's `tool` command dispatches, and
+/// the four Reflection tools (0.26.0), each with its arm in
+/// `McpServer::remote_tool`, which runs what the MCP handler of that name
+/// runs. Pinned exactly by
+/// `tests/remote/ctl.rs::the_remote_allow_lists_are_pinned`. A connected
+/// machine forwards exactly these (`route::FORWARDED_TOOLS` is this constant).
 pub const REMOTE_TOOLS: &[&str] = &[
     "write_engram",
     "read_engram",
@@ -105,6 +107,10 @@ pub const REMOTE_TOOLS: &[&str] = &[
     "infer_schema",
     "vocabulary",
     crate::EVOLVE_TOOL_NAME,
+    "reflect",
+    "read_reflection",
+    "write_reflection",
+    "discuss",
 ];
 
 /// The client half a remote write records when the connected machine named
@@ -229,34 +235,40 @@ async fn remote_status(
 /// The routing model for a connected machine: the whole block's content for
 /// this account, because the machine has no MANIFEST of these domains on
 /// disk, and each domain's origin identity, so it recognizes a domain it
-/// already holds (decision D3). `identity` is unused until 0.26.0, which
-/// reads it to count the Reflections this account curates. Each domain
-/// carries `domain_read_only`: whether this token cannot write there (the
+/// already holds (decision D3). Each domain carries `domain_read_only`: whether this token cannot write there (the
 /// domain lock, a viewer role, or a write list), taken from
 /// `PromptDomain.read_only`, which `routing_model_scoped` already computed for
 /// this token with the same `write_block` the write verbs ask, so no second
 /// rights question is asked per row; the top-level `read_only` is the
-/// instance's.
+/// instance's. Each row of a Reflection this account curates carries its open
+/// reflect items; a row with nothing open carries no `reflect_open`, so the
+/// answer, and its etag, is 0.25.0's until something is open.
 async fn routing_model(
     engine: &Arc<Engine>,
     identity: &McpIdentity,
     scope: &Scope,
 ) -> Result<Value, String> {
-    let _ = identity;
     let output = engine
         .routing_model_scoped(scope)
         .await
         .map_err(|e| e.to_string())?;
+    let curated = curated_for(engine, identity, scope).await;
+    let open = crate::maintenance::ReflectStatus::from_state(&crate::maintenance::load(), &curated)
+        .domains;
     let domains: Vec<Value> = output
         .domains
         .iter()
         .map(|d| {
-            json!({
+            let mut row = json!({
                 "name": d.name,
                 "bullets": d.bullets,
                 "origin": engine.origin_identity_of(&d.name),
                 "domain_read_only": d.read_only,
-            })
+            });
+            if let Some(n) = open.get(&d.name) {
+                row["reflect_open"] = json!(n);
+            }
+            row
         })
         .collect();
     Ok(json!({ "read_only": output.read_only, "domains": domains }))
@@ -287,20 +299,41 @@ async fn visible_names(
         .unwrap_or_default())
 }
 
+/// The Reflections this account curates here, for the reflect counts.
+/// Empty on any failure: a hook answer never fails on a Reflection.
+async fn curated_for(
+    engine: &Arc<Engine>,
+    identity: &McpIdentity,
+    scope: &Scope,
+) -> std::collections::BTreeSet<String> {
+    let caller = crate::ReflectionCaller::person(scope.clone(), &identity.name);
+    match engine.curated_reflections(&caller).await {
+        Ok(curated) => curated,
+        Err(e) => {
+            tracing::debug!("reflect counts left out, the curated Reflections are unreadable: {e}");
+            std::collections::BTreeSet::new()
+        }
+    }
+}
+
 /// What a connected machine's Stop hook reads: this server's maintenance
-/// record, narrowed to what the account may see. `identity` is unused until
-/// 0.26.0, which fills the `reflect` member from it. A read-only domain is left
-/// out of the backlog, as the local arms leave it out: nobody can sweep it.
+/// record, narrowed to what the account may see (evolve) and to the
+/// Reflections it curates (reflect). One read of the record, so the answer,
+/// and with it the etag, changes exactly when the record does. A read-only
+/// domain is left out of the backlog, as the local arms leave it out: nobody
+/// can sweep it.
 async fn hook_status(
     engine: &Arc<Engine>,
     identity: &McpIdentity,
     scope: &Scope,
 ) -> Result<Value, String> {
-    let _ = identity;
     let mut visible = visible_names(engine, scope).await?;
     let locked = engine.read_only_domain_names().await;
     visible.retain(|name| !locked.contains(name));
-    let status = crate::maintenance::HookStatus::from_state(&crate::maintenance::load(), &visible);
+    let curated = curated_for(engine, identity, scope).await;
+    let state = crate::maintenance::load();
+    let mut status = crate::maintenance::HookStatus::from_state(&state, &visible);
+    status.reflect = crate::maintenance::ReflectStatus::from_state(&state, &curated);
     serde_json::to_value(status).map_err(|e| e.to_string())
 }
 

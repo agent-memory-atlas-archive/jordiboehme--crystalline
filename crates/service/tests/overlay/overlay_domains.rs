@@ -765,6 +765,7 @@ async fn screened_origin_fixture() -> Fixture {
         "team",
         "mem",
         crystalline_service::rest::MemberLevel::Editor,
+        None,
         "keeper",
     )
     .await
@@ -1751,6 +1752,93 @@ async fn a_domain_that_reviews_nothing_can_still_fold_the_drafts_it_holds() {
     );
 }
 
+/// A draft of the MANIFEST that switches Reflection on was screened when it
+/// was written; folding it is the moment the switch lands, so the fold
+/// seeds the pact the way the policy edit does when it writes the switch.
+#[tokio::test]
+async fn folding_a_draft_that_switches_reflection_on_seeds_the_pact() {
+    let f = review_fixture().await;
+    let on = MANIFEST.replace("status: stable\n", "status: stable\nreflection: on\n");
+    f.draft("team", "alice", "MANIFEST.md", &on).await;
+    f.engine
+        .set_review_mode(
+            "team",
+            None,
+            folds(&[("alice", FoldChoice::Fold)]),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let root = f.root.join("team");
+    assert_eq!(
+        std::fs::read_to_string(root.join("MANIFEST.md")).unwrap(),
+        on
+    );
+    assert!(
+        root.join("reflections/PACT.md").is_file(),
+        "the pact is seeded"
+    );
+    assert_eq!(
+        f.engine.reflection_state("team").await.unwrap(),
+        crystalline_service::ReflectionState::On {
+            home: crystalline_service::ReflectionHome::Local
+        }
+    );
+}
+
+/// The fold seeds the pact before the switch lands, as the policy edit
+/// does: a pact that cannot be written refuses the fold, the domain goes on
+/// reviewing with the draft still held, and the same call works once the
+/// folder takes the pact.
+#[tokio::test]
+async fn a_pact_that_cannot_be_seeded_refuses_the_fold_for_a_retry() {
+    let f = review_fixture().await;
+    let on = MANIFEST.replace("status: stable\n", "status: stable\nreflection: on\n");
+    f.draft("team", "alice", "MANIFEST.md", &on).await;
+    let root = f.root.join("team");
+    // A file where the folder would go: the seed cannot create it.
+    std::fs::write(root.join("reflections"), "in the way").unwrap();
+    let err = f
+        .engine
+        .set_review_mode(
+            "team",
+            None,
+            folds(&[("alice", FoldChoice::Fold)]),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("PACT.md could not be written"), "{err}");
+    assert!(err.contains("still reviews changes"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(root.join("MANIFEST.md")).unwrap(),
+        MANIFEST,
+        "the switch did not land"
+    );
+    assert_eq!(review_key(&f, "team").as_deref(), Some("overlay"));
+    assert_eq!(f.held("team", "alice").await.len(), 1, "the draft is held");
+
+    std::fs::remove_file(root.join("reflections")).unwrap();
+    f.engine
+        .set_review_mode(
+            "team",
+            None,
+            folds(&[("alice", FoldChoice::Fold)]),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert!(
+        root.join("reflections/PACT.md").is_file(),
+        "the retry seeds it"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("MANIFEST.md")).unwrap(),
+        on
+    );
+}
+
 /// One draft, two writers, one lock.
 ///
 /// A draft has no file in the domain's folder, so the base file's lock - which
@@ -2594,6 +2682,7 @@ async fn screened_fixture() -> Fixture {
         "team",
         "alice",
         crystalline_service::rest::MemberLevel::Editor,
+        None,
         "keeper",
     )
     .await

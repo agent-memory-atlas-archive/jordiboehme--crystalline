@@ -49,6 +49,7 @@ mod members;
 mod oauth;
 mod oauth_grants;
 mod oidc;
+mod reflections;
 mod users_api;
 
 use std::sync::Arc;
@@ -128,6 +129,7 @@ use crate::scope::{DomainAccess, DomainRight};
         (name = "graph", description = "The neighborhood graph around an anchor."),
         (name = "attachments", description = "The files an engram carries: bytes in, bytes out, and what a domain holds."),
         (name = "maintenance", description = "The consolidation queue: what the knowledge needs next. Read-only."),
+        (name = "reflection", description = "A domain's Reflection: documents for people, their threads and the reflect queue."),
         (name = "events", description = "Live changes to the knowledge, as one server-sent event stream per tab."),
         (name = "users", description = "Account management. Admin only."),
         (name = "settings", description = "Instance settings. Admin only."),
@@ -186,6 +188,7 @@ use crate::scope::{DomainAccess, DomainRight};
         engrams::remove,
         engrams::validate,
         crate::collab::ws::join,
+        crate::collab::ws::join_reflection,
         discovery::search,
         discovery::vocabulary,
         discovery::context,
@@ -194,6 +197,24 @@ use crate::scope::{DomainAccess, DomainRight};
         evolve::queue,
         evolve::acknowledge,
         evolve::unacknowledge,
+        reflections::domains,
+        reflections::status,
+        reflections::tree,
+        reflections::read,
+        reflections::save,
+        reflections::remove,
+        reflections::move_to,
+        reflections::threads,
+        reflections::open,
+        reflections::step,
+        reflections::queue,
+        reflections::review,
+        reflections::search,
+        reflections::assets,
+        reflections::asset_read,
+        reflections::asset_write,
+        reflections::asset_remove,
+        reflections::asset_move,
         events::stream_events,
         users_api::list,
         users_api::create,
@@ -253,6 +274,7 @@ use crate::scope::{DomainAccess, DomainRight};
         domains_admin::ReviewModeArg,
         domains_admin::VisibilityBody,
         schemas::MemberLevel,
+        schemas::ReflectionLevel,
         schemas::DomainMember,
         members::MembersResponse,
         members::MemberBody,
@@ -311,6 +333,13 @@ use crate::scope::{DomainAccess, DomainRight};
         oauth::TokenForm,
         oauth::RevokeForm,
         oauth::TokenResponse,
+        reflections::SaveReflectionBody,
+        reflections::MoveReflectionBody,
+        reflections::OpenThreadBody,
+        reflections::ThreadStepBody,
+        reflections::ReflectionAssetsResponse,
+        reflections::UploadedReflectionAsset,
+        reflections::MoveReflectionAssetBody,
         schemas::EngramChanged,
         schemas::DomainChanged,
         schemas::ChangeKind,
@@ -864,6 +893,12 @@ fn routes(state: RestState) -> Router {
             "/collab/{domain}/{*permalink}",
             get(crate::collab::ws::join),
         )
+        // The reflection room: the same protocol, the Reflection's edit
+        // right, enforced in the handler before upgrade.
+        .route(
+            "/collab-reflection/{domain}/{*path}",
+            get(crate::collab::ws::join_reflection),
+        )
         .route("/domains/{domain}/retire", post(engrams::retire))
         .route("/domains/{domain}/move", post(engrams::move_action))
         // Not domain-scoped like the routes above it: the document being
@@ -887,6 +922,58 @@ fn routes(state: RestState) -> Router {
         .route(
             "/domains/{domain}/evolve/ack",
             post(evolve::acknowledge).delete(evolve::unacknowledge),
+        )
+        // The Reflection: a domain's documents for people. Rights are the
+        // Reflection's own, decided in the engine; see `reflections`.
+        .route("/reflection/domains", get(reflections::domains))
+        .route("/domains/{domain}/reflection", get(reflections::status))
+        .route("/domains/{domain}/reflection/tree", get(reflections::tree))
+        .route(
+            "/domains/{domain}/reflection/move",
+            post(reflections::move_to),
+        )
+        .route(
+            "/domains/{domain}/reflection/threads",
+            get(reflections::threads).post(reflections::open),
+        )
+        .route(
+            "/domains/{domain}/reflection/threads/{id}/{action}",
+            post(reflections::step),
+        )
+        .route(
+            "/domains/{domain}/reflection/queue",
+            get(reflections::queue),
+        )
+        .route(
+            "/domains/{domain}/reflection/review",
+            get(reflections::review),
+        )
+        .route(
+            "/domains/{domain}/reflection/search",
+            get(reflections::search),
+        )
+        .route(
+            "/domains/{domain}/reflections/{*path}",
+            get(reflections::read)
+                .put(reflections::save)
+                .delete(reflections::remove),
+        )
+        // A Reflection's files: a static listing, a wildcard for the bytes
+        // and a static move, so the move never competes with the wildcard.
+        // Rights are the Reflection's own, decided in the engine.
+        .route(
+            "/domains/{domain}/reflection/assets",
+            get(reflections::assets),
+        )
+        .route(
+            "/domains/{domain}/reflection/assets/{*path}",
+            get(reflections::asset_read)
+                .put(reflections::asset_write)
+                .delete(reflections::asset_remove),
+        )
+        .route(
+            "/domains/{domain}/reflection/move-asset",
+            post(reflections::asset_move),
         )
         // Admin only, enforced inside the handlers: the guard below stops at
         // viewer. See [`users_api`] for the three rules these first mutating

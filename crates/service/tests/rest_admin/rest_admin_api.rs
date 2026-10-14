@@ -1335,7 +1335,9 @@ async fn the_manifest_read_carries_the_policies_and_the_patch_writes_one() {
             { "key": "generated_indexes", "kind": "choice", "declared": null, "effective": "local", "values": ["local", "shared"], "default": "local", "meaning": "Whether the generated folder listings travel with a share.", "changed_by": "owner" },
             { "key": "sharing", "kind": "choice", "declared": null, "effective": "proposal", "values": ["proposal", "direct"], "default": "proposal", "meaning": "Whether a share opens a proposal for review or commits straight to the branch.", "changed_by": "owner" },
             { "key": "domain_name", "kind": "text", "declared": null, "effective": "kb", "values": [], "default": "", "meaning": "The name this domain is known by everywhere; links from other domains use it.", "changed_by": "owner" },
-            { "key": "read_only", "kind": "choice", "declared": null, "effective": "off", "values": ["off", "on"], "default": "off", "meaning": "Whether every change to this domain through Crystalline is refused; pulls from the team still apply.", "changed_by": "owner" }
+            { "key": "read_only", "kind": "choice", "declared": null, "effective": "off", "values": ["off", "on"], "default": "off", "meaning": "Whether every change to this domain through Crystalline is refused; pulls from the team still apply.", "changed_by": "owner" },
+            { "key": "reflection", "kind": "choice", "declared": null, "effective": "off", "values": ["off", "on"], "default": "off", "meaning": "Whether this domain keeps a Reflection: documents for people under reflections/.", "changed_by": "owner" },
+            { "key": "reflection_home", "kind": "text", "declared": null, "effective": "", "values": [], "default": "", "meaning": "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.", "changed_by": "owner" }
         ]),
         "{body}"
     );
@@ -4366,6 +4368,64 @@ async fn the_archive_round_trip_reproduces_the_files() {
     assert_eq!(detail["content"].as_str().unwrap(), ALPHA);
 }
 
+/// An archive whose own MANIFEST keeps a Reflection never hands that
+/// Reflection's pages or files to the engram import: the archive's
+/// MANIFEST is dropped before the engine sees the batch, so the screen
+/// applies it itself, even where the receiving domain keeps no Reflection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_archive_that_declares_a_reflection_imports_none_of_its_pages() {
+    let fx = serve(Options::default()).await;
+    let admin = login(fx.addr, "root", "rootpw").await;
+    let manifest = "---\ntype: manifest\ntitle: eng\npermalink: manifest\nstatus: stable\nreflection: on\n---\n\n# eng\n";
+    let page = "---\ntype: engram\ntitle: X\npermalink: reflections/x\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# X\n\nA rule about x.\n";
+    let other = "---\ntype: engram\ntitle: Ok\npermalink: ok\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Ok\n\nA rule about ok.\n";
+    let archive = zip_of(&[
+        ("MANIFEST.md", manifest),
+        ("reflections/x.md", page),
+        ("reflections/assets/flow.png", "png"),
+        ("ok.md", other),
+    ]);
+    let resp = post_zip(
+        fx.addr,
+        "/api/v1/domains/eng/archive/preview",
+        &admin,
+        archive,
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let report: serde_json::Value = resp.json().await.unwrap();
+    let entry = |path: &str| -> serde_json::Value {
+        report["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["path"] == path)
+            .unwrap_or_else(|| panic!("no entry for {path}: {report}"))
+            .clone()
+    };
+    for path in ["reflections/x.md", "reflections/assets/flow.png"] {
+        let e = entry(path);
+        assert_eq!(e["status"], "ignored", "{report}");
+        assert_eq!(
+            e["reason"],
+            crystalline_service::engine::REFLECTION_NOT_IMPORTED,
+            "{report}"
+        );
+    }
+    assert_eq!(entry("ok.md")["status"], "new", "{report}");
+    // Without that MANIFEST, reflections/ is an ordinary folder, as today.
+    let plain = zip_of(&[("reflections/x.md", page)]);
+    let resp = post_zip(
+        fx.addr,
+        "/api/v1/domains/eng/archive/preview",
+        &admin,
+        plain,
+    )
+    .await;
+    let report: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(report["entries"][0]["status"], "new", "{report}");
+}
+
 /// Upload hygiene: zip-slip refuses the WHOLE archive (both separators and
 /// the drive-colon shape), garbage bytes are 422, the entry-count cap holds,
 /// and only .md entries are considered.
@@ -5219,6 +5279,7 @@ async fn no_rest_response_carries_an_operator_setting() {
         "/api/v1/activity",
         "/api/v1/graph?anchor=crystalline://eng/alpha",
         "/api/v1/evolve",
+        "/api/v1/reflection/domains",
         "/api/v1/users",
         "/api/v1/settings/github",
         "/api/v1/github/domain-name?repo=acme/kb",

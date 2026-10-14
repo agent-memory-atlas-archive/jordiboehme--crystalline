@@ -969,6 +969,10 @@ fn add_with_mcp_token_creates_a_passwordless_account_and_prints_its_token() {
     let issued: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(issued["name"], "agent-build");
     assert_eq!(issued["role"], "editor");
+    assert_eq!(
+        issued["reflection"], "default",
+        "the same account fields as `users add --json`: {issued}"
+    );
     assert_eq!(issued["label"], "build");
     assert!(issued["id"].is_i64(), "{issued}");
     let token = issued["token"].as_str().unwrap();
@@ -1445,7 +1449,12 @@ fn users_writes_and_add_print_json() {
     .unwrap();
     assert_eq!(
         ada,
-        serde_json::json!({ "name": "ada", "role": "viewer", "writes": null })
+        serde_json::json!({
+            "name": "ada",
+            "role": "viewer",
+            "reflection": "default",
+            "writes": null
+        })
     );
 }
 
@@ -1460,4 +1469,120 @@ fn a_full_length_stem_with_a_star_is_accepted() {
     let long = "a".repeat(65);
     let refused = users_err(home.path(), &["writes", "bot", &format!("{long}*")], None);
     assert!(refused.contains("is not a domain name"), "{refused}");
+}
+
+/// Knowledge `none` and the Reflection level travel together: an account
+/// created at `none` with a Reflection level lists both, and a member at
+/// knowledge `none` with no Reflection level is refused, because it would
+/// hold nothing.
+#[test]
+fn a_knowledge_none_account_carries_its_reflection_level() {
+    let home = tempfile::tempdir().unwrap();
+    let added = users_ok(
+        home.path(),
+        &[
+            "add",
+            "nora",
+            "--role",
+            "none",
+            "--reflection",
+            "contributor",
+            "--password-stdin",
+        ],
+        Some("s3cret\n"),
+    );
+    assert!(
+        added.contains("Added user 'nora' with role none and Reflection contributor."),
+        "{added}"
+    );
+    let listed: serde_json::Value =
+        serde_json::from_str(&users_ok(home.path(), &["list", "--json"], None)).unwrap();
+    let row = &listed["users"][0];
+    assert_eq!(row["name"], "nora", "{listed}");
+    assert_eq!(row["role"], "none", "{listed}");
+    assert_eq!(row["reflection"], "contributor", "{listed}");
+
+    let changed = users_ok(home.path(), &["reflection", "nora", "reader"], None);
+    assert!(
+        changed.contains("'nora' now has Reflection reader."),
+        "{changed}"
+    );
+    let table = users_ok(home.path(), &["list"], None);
+    assert!(table.contains("REFLECTION"), "{table}");
+
+    // A private domain to invite nora into.
+    users_ok(
+        home.path(),
+        &["add", "ada", "--role", "editor", "--password-stdin"],
+        Some("s3cret\n"),
+    );
+    let config = home.path().join("config.yaml");
+    let config = config.to_str().unwrap();
+    let domain_dir = home.path().join("kb");
+    let domain = |args: &[&str]| {
+        let mut cmd = bin();
+        isolate(&mut cmd, home.path());
+        cmd.arg("domain").args(args).arg("--config").arg(config);
+        cmd.output().unwrap()
+    };
+    let mut init = bin();
+    isolate(&mut init, home.path());
+    let out = init
+        .args([
+            "domain",
+            "init",
+            domain_dir.to_str().unwrap(),
+            "--name",
+            "eng",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for args in [
+        &["add", "eng", domain_dir.to_str().unwrap(), "--no-sync"][..],
+        &["visibility", "eng", "private", "--owner", "ada"][..],
+    ] {
+        let out = domain(args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let refused = domain(&["members", "eng", "add", "nora", "--level", "none"]);
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("needs a Reflection level"), "{stderr}");
+
+    let invited = domain(&[
+        "members",
+        "eng",
+        "add",
+        "nora",
+        "--level",
+        "none",
+        "--reflection",
+        "contributor",
+    ]);
+    assert!(
+        invited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&invited.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&invited.stdout);
+    assert!(
+        stdout.contains("'nora' is a none on domain 'eng' with Reflection contributor."),
+        "{stdout}"
+    );
+    // Without --reflection the stored level stays.
+    let relevelled = domain(&["members", "eng", "add", "nora", "--level", "viewer"]);
+    let stdout = String::from_utf8_lossy(&relevelled.stdout);
+    assert!(stdout.contains("with Reflection contributor"), "{stdout}");
+    let listed = domain(&["members", "eng", "list"]);
+    let stdout = String::from_utf8_lossy(&listed.stdout);
+    assert!(stdout.contains("REFLECTION"), "{stdout}");
 }

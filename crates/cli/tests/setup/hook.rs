@@ -131,6 +131,52 @@ fn backdate(path: &Path) {
     file.set_modified(stale).unwrap();
 }
 
+/// The daemon's recorded reflect counts ride last, name only registered
+/// domains, and stamp their own cooldown in this machine's maintenance file.
+#[test]
+fn a_recorded_reflect_count_rides_last_and_stamps_its_own_cooldown() {
+    let work = tempfile::tempdir().unwrap();
+    let home = work.path().join("home");
+    let config = work.path().join("config.yaml");
+    write_domains_config(&config, &["playground"]);
+    let transcript = substantial_transcript(work.path());
+    write_maintenance(
+        &home,
+        serde_json::json!({
+            "v": 1,
+            "last_run_at": stamp(1),
+            "first_seen": stamp(60),
+            "reflect_open": { "playground": 2, "ghost": 5 },
+        }),
+    );
+
+    let mut cmd = bin();
+    isolate(&mut cmd, &home);
+    let out = cmd
+        .env("CRYSTALLINE_CONFIG", &config)
+        .args(["hook", "stop"])
+        .write_stdin(stop_payload("session-reflect", Some(&transcript)))
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let decision: serde_json::Value =
+        serde_json::from_str(String::from_utf8(out.stdout).unwrap().trim()).unwrap();
+    let reason = decision["reason"].as_str().unwrap();
+    assert!(reason.starts_with(NUDGE_REASON), "{reason}");
+    assert!(
+        reason.contains("Also open: the Reflection of playground has 2 items waiting."),
+        "{reason}"
+    );
+    assert!(!reason.contains("ghost"), "{reason}");
+    let state = read_maintenance(&home);
+    assert!(state["last_reflect_nudge_at"].is_string(), "{state}");
+    assert_eq!(
+        state["reflect_open"],
+        serde_json::json!({ "playground": 2, "ghost": 5 }),
+        "the hook never edits the record"
+    );
+}
+
 /// The clock behind the fresh-install quiet week starts on the first Stop
 /// hook this machine ever runs, including one that says nothing.
 #[test]

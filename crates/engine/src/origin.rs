@@ -322,12 +322,21 @@ pub(crate) fn status_report_json(
 /// That is the price of the decision recorded at [`unshared_work`]: the
 /// aggregate report carries counts, and a change list is fetched by asking
 /// rather than threaded through every reader who did not.
-pub(crate) fn local_change_detail(domain_root: &Path, state_dir: &Path) -> Option<Value> {
+///
+/// `reflection` is the domain's Reflection mode in effect, the one the
+/// status count beside it and the change list use, so all three agree while
+/// a switch is pending.
+pub(crate) fn local_change_detail(
+    domain_root: &Path,
+    state_dir: &Path,
+    reflection: crystalline_core::ReflectionMode,
+) -> Option<Value> {
     let state = OriginState::load(state_dir).ok().flatten()?;
     let detected = crystalline_remote::changes::detect_local_changes_against(
         domain_root,
         &crystalline_remote::ops::unshared_base(&state),
         state_dir,
+        reflection,
     )
     .ok()?;
     let mut added: Vec<&str> = Vec::new();
@@ -825,6 +834,7 @@ pub fn unshared_work(domain_root: &Path, state_dir: &Path) -> Option<UnsharedWor
         domain_root,
         &crystalline_remote::ops::unshared_base(&state),
         state_dir,
+        crystalline_core::ReflectionMode::declared(crystalline_core::reflection_at(domain_root)),
     )
     .ok()?;
     let paths: Vec<String> = detected
@@ -982,11 +992,13 @@ pub(crate) fn share_plan_json(plan: &ops::SharePlan, root: Option<&Path>) -> Val
 
 /// Shapes [`ops::withdraw`]'s report into `origin_withdraw`'s JSON: the
 /// proposal number, whether a live pull request was closed on the forge, the
-/// fixed `"withdrawn"` status the record now carries, and the four
+/// fixed `"withdrawn"` status the record now carries, and the five
 /// working-tree lists a revert produces (all empty without one).
-/// `skipped_reverts` is the fourth: paths a revert left alone because their
+/// `skipped_reverts` holds paths a revert left alone because their
 /// pre-share content is nowhere to be had, distinct from `skipped_diverged`,
-/// where the local file simply moved on.
+/// where the local file simply moved on. `skipped_reflection` holds paths in
+/// the Reflection's folder, which a revert never writes into once the
+/// Reflection is in effect.
 ///
 /// `repaired` says the chain around the withdrawn layer was rebuilt, and
 /// `restacked` names the NEW stack number that rebuild allocated - `null`
@@ -1002,6 +1014,7 @@ pub(crate) fn withdraw_report_json(report: &ops::WithdrawReport) -> Value {
         "deleted": report.deleted,
         "skipped_diverged": report.skipped_diverged,
         "skipped_reverts": report.skipped_reverts,
+        "skipped_reflection": report.skipped_reflection,
         "repaired": report.repaired,
         "restacked": report.restacked,
     })
@@ -1330,7 +1343,8 @@ mod tests {
         }
         state.save(&state_dir).unwrap();
 
-        let detail = local_change_detail(&root, &state_dir).expect("the domain has origin state");
+        let detail = local_change_detail(&root, &state_dir, crystalline_core::ReflectionMode::Off)
+            .expect("the domain has origin state");
         assert_eq!(detail["added"], json!(["added.md"]));
         assert_eq!(detail["modified"], json!(["modified.md"]));
         assert_eq!(
@@ -1406,7 +1420,8 @@ mod tests {
             "the layer's own file is proposed, not unshared"
         );
 
-        let detail = local_change_detail(&root, &state_dir).expect("the domain has origin state");
+        let detail = local_change_detail(&root, &state_dir, crystalline_core::ReflectionMode::Off)
+            .expect("the domain has origin state");
         assert_eq!(detail["added"], json!(["fresh.md"]));
         assert_eq!(detail["modified"], json!([]));
         assert_eq!(detail["deleted"], json!([]));
@@ -1437,7 +1452,8 @@ mod tests {
         let work = unshared_work(&root, &state_dir).expect("the domain has origin state");
         assert_eq!(work.paths, vec!["alpha.md".to_string()]);
 
-        let detail = local_change_detail(&root, &state_dir).expect("the domain has origin state");
+        let detail = local_change_detail(&root, &state_dir, crystalline_core::ReflectionMode::Off)
+            .expect("the domain has origin state");
         assert_eq!(detail["added"], json!(["alpha.md"]));
         assert_eq!(detail["generated_indexes"], json!(0));
     }
@@ -1449,14 +1465,19 @@ mod tests {
     #[test]
     fn local_change_detail_tells_an_empty_delta_from_an_unmeasurable_one() {
         let (dir, root, state_dir) = tracked_domain();
-        let detail = local_change_detail(&root, &state_dir).expect("a tracked domain measures");
+        let detail = local_change_detail(&root, &state_dir, crystalline_core::ReflectionMode::Off)
+            .expect("a tracked domain measures");
         assert_eq!(detail["added"], json!([]));
         assert_eq!(detail["modified"], json!([]));
         assert_eq!(detail["deleted"], json!([]));
         assert_eq!(detail["generated_indexes"], json!(0));
 
         assert_eq!(
-            local_change_detail(&root, &dir.path().join("no-state")),
+            local_change_detail(
+                &root,
+                &dir.path().join("no-state"),
+                crystalline_core::ReflectionMode::Off,
+            ),
             None,
             "a domain with no origin state is not a domain with nothing unshared"
         );
@@ -2648,6 +2669,7 @@ mod tests {
             restored: vec!["notes/a.md".to_string()],
             deleted: vec!["notes/b.md".to_string()],
             skipped_diverged: vec!["notes/c.md".to_string()],
+            skipped_reflection: vec!["reflections/d.md".to_string()],
             ..Default::default()
         };
         let v = withdraw_report_json(&report);
@@ -2657,6 +2679,7 @@ mod tests {
         assert_eq!(v["restored"][0], "notes/a.md");
         assert_eq!(v["deleted"][0], "notes/b.md");
         assert_eq!(v["skipped_diverged"][0], "notes/c.md");
+        assert_eq!(v["skipped_reflection"][0], "reflections/d.md");
     }
 
     #[test]

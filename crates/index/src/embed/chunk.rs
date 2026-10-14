@@ -11,7 +11,9 @@
 //! because a body with no blank line would otherwise become a single chunk of
 //! unbounded size and every consumer downstream, the tokenizer first, would
 //! pay for it. The first chunk gets the engram title and description prepended
-//! so a short engram still carries its heading into the vector space.
+//! so a short engram still carries its heading into the vector space. A
+//! reflection page is packed the same way one `##` section at a time
+//! ([`chunk_reflection`]).
 //!
 //! Each chunk carries a fingerprint `sha256(model_id + ":" + text)`. The sync
 //! engine hands the fingerprints to [`crate::Store::replace_chunks`], which
@@ -21,7 +23,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::store::NewChunk;
+use crate::store::{NewChunk, NewReflectionChunk};
 
 /// The default token budget per chunk. Below the tokenizer's 512-token cap,
 /// with headroom for the special tokens and the first chunk's title prepend.
@@ -89,15 +91,71 @@ pub fn chunk_engram_with(
     params: &ChunkParams,
     count: &dyn Fn(&str) -> usize,
 ) -> Vec<NewChunk> {
+    chunk_texts(&build_header(title, description), body, params, count)
+        .into_iter()
+        .enumerate()
+        .map(|(seq, text)| NewChunk {
+            seq: seq as i64,
+            text_hash: fingerprint(&params.model_id, &text),
+            text,
+        })
+        .collect()
+}
+
+/// Chunk a reflection page by section (R52): each `##` section, and the text
+/// before the first one, is packed on its own under the engram token budget,
+/// with the page title leading its first chunk. Built from
+/// [`crystalline_core::reflection::split_sections`], which starts after the
+/// frontmatter, so the `reflection:` block and the source engrams it names
+/// never reach a vector. `seq` counts through the page.
+pub fn chunk_reflection(
+    title: &str,
+    content: &str,
+    params: &ChunkParams,
+) -> Vec<NewReflectionChunk> {
+    let mut out = Vec::new();
+    let mut seq = 0i64;
+    for (ord, section) in crystalline_core::reflection::split_sections(content)
+        .into_iter()
+        .enumerate()
+    {
+        if section.text.trim().is_empty() {
+            continue;
+        }
+        for text in chunk_texts(title.trim(), &section.text, params, &estimate_tokens) {
+            out.push(NewReflectionChunk {
+                section_ord: ord as i64,
+                section: section.id.clone(),
+                heading: section.heading.clone(),
+                chunk: NewChunk {
+                    seq,
+                    text_hash: fingerprint(&params.model_id, &text),
+                    text,
+                },
+            });
+            seq += 1;
+        }
+    }
+    out
+}
+
+/// Split a body into chunk texts: paragraphs packed up to the token budget,
+/// the header leading the first text; a body with nothing in it still yields
+/// the header alone (a header that is empty too yields no text at all).
+pub(crate) fn chunk_texts(
+    header: &str,
+    body: &str,
+    params: &ChunkParams,
+    count: &dyn Fn(&str) -> usize,
+) -> Vec<String> {
     let paragraphs = split_paragraphs(body);
     let packed = pack(&paragraphs, params.max_tokens, count);
 
-    let header = build_header(title, description);
     let mut finals: Vec<String> = Vec::new();
     for (i, body_text) in packed.iter().enumerate() {
         let text = if i == 0 && !header.is_empty() {
             if body_text.is_empty() {
-                header.clone()
+                header.to_string()
             } else {
                 format!("{header}\n\n{body_text}")
             }
@@ -112,18 +170,9 @@ pub fn chunk_engram_with(
     // An engram with only a title and description (no body) still yields one
     // chunk so it can be found semantically.
     if finals.is_empty() && !header.is_empty() {
-        finals.push(header);
+        finals.push(header.to_string());
     }
-
     finals
-        .into_iter()
-        .enumerate()
-        .map(|(seq, text)| NewChunk {
-            seq: seq as i64,
-            text_hash: fingerprint(&params.model_id, &text),
-            text,
-        })
-        .collect()
 }
 
 /// The fingerprint of a chunk: `sha256(model_id + ":" + text)`, lowercase hex.
@@ -338,4 +387,63 @@ fn split_paragraphs(body: &str) -> Vec<String> {
     }
     flush(&mut current, &mut paras);
     paras
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reflection_is_chunked_by_section_and_its_frontmatter_never_is() {
+        let page = "---\ntitle: Deploying\nreflection:\n  aaaa1111:\n    sources:\n      - engram: runbooks/deploy\n---\n\n# Deploying\n\nShort intro.\n\n## Night deploys\n<!-- r:aaaa1111 -->\n\nDeploys run at night.\n\n## Rollback\n\nRoll back with the script.\n\n## Empty\n<!-- r:cccc3333 -->\n";
+        let chunks = chunk_reflection("Deploying", page, &ChunkParams::for_model("m"));
+        let got: Vec<(i64, Option<&str>, &str)> = chunks
+            .iter()
+            .map(|c| (c.section_ord, c.section.as_deref(), c.heading.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (0, Some("_top"), ""),
+                (1, Some("aaaa1111"), "Night deploys"),
+                (2, None, "Rollback"),
+                (3, Some("cccc3333"), "Empty")
+            ],
+            "one chunk per short section, a heading alone is still one"
+        );
+        assert_eq!(
+            chunks.iter().map(|c| c.chunk.seq).collect::<Vec<_>>(),
+            [0, 1, 2, 3],
+            "seq counts through the page"
+        );
+        assert!(
+            chunks[1]
+                .chunk
+                .text
+                .starts_with("Deploying\n\n## Night deploys"),
+            "{}",
+            chunks[1].chunk.text
+        );
+        for c in &chunks {
+            assert!(
+                !c.chunk.text.contains("runbooks/deploy") && !c.chunk.text.contains("reflection:"),
+                "{}",
+                c.chunk.text
+            );
+            assert!(
+                !c.chunk.text.contains("<!-- r:"),
+                "id lines are not embedded"
+            );
+            assert_eq!(c.chunk.text_hash, fingerprint("m", &c.chunk.text));
+        }
+        let long = format!("## Long\n<!-- r:dddd4444 -->\n\n{}", "word ".repeat(2000));
+        let pieces = chunk_reflection("T", &long, &ChunkParams::for_model("m"));
+        assert!(
+            pieces.len() > 2
+                && pieces
+                    .iter()
+                    .all(|c| c.section.as_deref() == Some("dddd4444")),
+            "a long section keeps its id on every piece"
+        );
+    }
 }

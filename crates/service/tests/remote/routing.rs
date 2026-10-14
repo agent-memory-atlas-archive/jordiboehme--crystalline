@@ -1440,3 +1440,256 @@ async fn a_write_to_a_mounted_read_only_domain_gets_the_servers_sentence_under_i
     );
     assert!(!acme.file("open", "nope.md").exists());
 }
+
+/// 0.26.0: a mounted domain's Reflection is read, written, discussed and
+/// queued under its local name, on its own server, and an unscoped reflect
+/// fans out without one server name in a structured field.
+#[tokio::test]
+async fn a_mounted_reflection_is_worked_under_its_local_name_on_its_own_server() {
+    let acme = RemoteServer::start(Options::TOKENS).await;
+    let beta = RemoteServer::start(Options::TOKENS).await;
+    let manifest = beta.file("open", "MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replace("status: stable\n", "status: stable\nreflection: on\n"),
+    )
+    .unwrap();
+    beta.engine.sync(None).await.unwrap();
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&acme, "acme", "keeper").await;
+    machine.connect(&beta, "beta", "keeper").await;
+    machine.mount();
+    assert_eq!(
+        machine
+            .engine
+            .sources()
+            .unwrap()
+            .table()
+            .mount("open-beta")
+            .unwrap()
+            .source,
+        "beta"
+    );
+
+    let page = "# A\n\n## One\n\nText for people.\n";
+    let written = call(
+        &machine,
+        "write_reflection",
+        json!({ "domain": "open-beta", "path": "guides/a.md", "markdown": page }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(written["created"], true, "{written}");
+    assert!(
+        beta.file("open", "reflections/guides/a.md").exists(),
+        "the page lands on its own server"
+    );
+    assert!(
+        !acme.file("open", "reflections/guides/a.md").exists(),
+        "acme's open was never asked"
+    );
+    assert!(
+        !machine.tmp.path().join("open-beta").exists(),
+        "nothing local"
+    );
+
+    let doc = call(
+        &machine,
+        "read_reflection",
+        json!({ "domain": "open-beta", "path": "guides/a.md" }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        doc["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("Text for people."),
+        "{doc}"
+    );
+    let found = call(
+        &machine,
+        "read_reflection",
+        json!({ "domain": "open-beta", "query": "people", "search_type": "text" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        found["hits"][0]["path"], "guides/a.md",
+        "the source searched its own page: {found}"
+    );
+    assert_eq!(
+        found["domain"], "open-beta",
+        "and the answer names the local name: {found}"
+    );
+    let both = call(
+        &machine,
+        "read_reflection",
+        json!({ "domain": "open-beta", "path": "guides/a.md", "query": "people" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(both.to_string().contains("not both"), "{both}");
+    let opened = call(
+        &machine,
+        "discuss",
+        json!({ "domain": "open-beta", "path": "guides/a.md", "section": "One", "text": "question: is this still true?" }),
+    )
+    .await
+    .unwrap();
+    assert!(opened["id"].as_str().unwrap().starts_with("t-"), "{opened}");
+
+    let named = call(&machine, "reflect", json!({ "domains": ["open-beta"] }))
+        .await
+        .unwrap();
+    assert_eq!(named["scope"]["domains"], json!(["open-beta"]), "{named}");
+    let all = call(&machine, "reflect", json!({})).await.unwrap();
+    assert!(
+        all["scope"]["domains"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("open-beta")),
+        "{all}"
+    );
+    assert!(
+        all.get("missing").is_none(),
+        "acme has no Reflection on and still answers: {all}"
+    );
+    for answer in [&written, &doc, &found, &opened, &named, &all] {
+        let mut leaks = Vec::new();
+        find_server_names(answer, None, &mut leaks);
+        assert!(leaks.is_empty(), "beta's own name in {leaks:?}\n{answer}");
+    }
+}
+
+/// An unscoped `reflect` asks a source only for the domains this machine
+/// mounts from it, so the server's total, counts and pages cover exactly
+/// the rows shown here: a domain the machine did not take never counts.
+#[tokio::test]
+async fn an_unscoped_reflect_counts_only_the_domains_mounted_from_a_source() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    for domain in ["open", "lab"] {
+        let manifest = server.file(domain, "MANIFEST.md");
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        std::fs::write(
+            &manifest,
+            text.replace("status: stable\n", "status: stable\nreflection: on\n"),
+        )
+        .unwrap();
+    }
+    server.engine.sync(None).await.unwrap();
+    // keeper works both Reflections on the server.
+    let both = server
+        .engine
+        .reflect(
+            &serde_json::from_value(json!({ "domains": ["open", "lab"] })).unwrap(),
+            &crystalline_service::ReflectionCaller::agent(
+                crystalline_service::Scope::User {
+                    account: "keeper".into(),
+                    admin: false,
+                },
+                "keeper",
+                false,
+            ),
+        )
+        .await
+        .unwrap();
+    let lab_rows = both["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["domain"] == "lab")
+        .count();
+    assert!(lab_rows > 0, "lab has items on the server: {both}");
+
+    let machine = LocalMachine::start(false).await;
+    machine
+        .connect_choosing(
+            &server,
+            "acme",
+            "keeper",
+            DomainChoice::Only(vec!["open".into()]),
+        )
+        .await;
+    machine.mount();
+    let all = call(&machine, "reflect", json!({ "limit": 100 }))
+        .await
+        .unwrap();
+    let rows = all["queue"].as_array().unwrap();
+    assert!(!rows.is_empty(), "open's items are shown: {all}");
+    assert!(rows.iter().all(|r| r["domain"] == "open"), "{all}");
+    assert_eq!(
+        all["total"].as_u64(),
+        Some(rows.len() as u64),
+        "the total counts the rows shown here: {all}"
+    );
+    let counted: u64 = all["kinds"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter_map(Value::as_u64)
+        .sum();
+    assert_eq!(counted, rows.len() as u64, "{all}");
+    assert_eq!(all["scope"]["domains"], json!(["open"]), "{all}");
+    assert!(all.get("missing").is_none(), "{all}");
+}
+
+/// The scoped request a connected machine sends screens its domains the way
+/// an unscoped queue does: a domain that is read-only on the server is left
+/// out, and one whose queue cannot be read is named in `scope.unreadable`
+/// under this machine's name, never dropped in silence.
+#[tokio::test]
+async fn a_forwarded_reflect_skips_a_read_only_domain_and_names_an_unreadable_one() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    for (domain, extra) in [
+        ("open", "reflection: on\nread_only: on\n"),
+        ("lab", "reflection: on\n"),
+    ] {
+        let manifest = server.file(domain, "MANIFEST.md");
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        std::fs::write(
+            &manifest,
+            text.replace("status: stable\n", &format!("status: stable\n{extra}")),
+        )
+        .unwrap();
+    }
+    server.engine.sync(None).await.unwrap();
+    server
+        .engine
+        .write_reflection(
+            &crystalline_service::params::WriteReflectionParams {
+                domain: "lab".into(),
+                path: "a.md".into(),
+                markdown: Some("# A\n\n## One\n\nText for people.\n".into()),
+                ..Default::default()
+            },
+            &crystalline_service::ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+    // A threads "file" that is a folder: lab's queue cannot be read.
+    std::fs::create_dir_all(server.file("lab", "reflections/a.threads.md")).unwrap();
+
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let all = call(&machine, "reflect", json!({})).await.unwrap();
+    let rows = all["queue"].as_array().unwrap();
+    assert!(
+        rows.iter()
+            .all(|r| r["domain"] != "open" && r["domain"] != "lab"),
+        "{all}"
+    );
+    let swept = all["scope"]["domains"].as_array().unwrap();
+    assert!(
+        !swept.contains(&json!("open")),
+        "a read-only domain is left out: {all}"
+    );
+    assert_eq!(
+        all["scope"]["unreadable"],
+        json!(["lab"]),
+        "an unreadable domain is named: {all}"
+    );
+    assert!(all.get("missing").is_none(), "{all}");
+}

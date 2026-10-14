@@ -29,16 +29,17 @@ use crystalline_core::config::{
     ResponseFormat, ShareIdentityMode, VerifyConfig,
 };
 use crystalline_core::emit::{
-    append_body, insert_after_section_reporting, insert_before_section, prepend_body,
-    remove_frontmatter_field, replace_section_reporting, set_evolve_ack, set_frontmatter_field,
-    set_frontmatter_number, set_stale_after, set_verified, touch_generated,
+    SectionOp, append_body, apply_section_op, prepend_body, remove_frontmatter_field,
+    set_evolve_ack, set_frontmatter_field, set_frontmatter_number, set_stale_after, set_verified,
+    touch_generated,
 };
 use crystalline_core::relink::Relink;
 use crystalline_core::schema::{self, Schema};
 use crystalline_core::{
-    CrystallineUrl, EVOLVE_ACK_KEY, Engram, EvolveAck, Frontmatter, HarnessKind, LinkTarget,
-    Manifest, YamlValue, domain_name_at, domain_name_of_source, is_lower_hyphen, parse_engram,
-    parse_engram_lossless, slugify,
+    CrystallineUrl, DomainLayout, EVOLVE_ACK_KEY, Engram, EvolveAck, Frontmatter, HarnessKind,
+    LinkTarget, Manifest, PathClass, ReflectionMode, YamlValue, domain_name_at,
+    domain_name_of_source, is_lower_hyphen, parse_engram, parse_engram_lossless, slash_rel,
+    slugify,
 };
 use crystalline_index::{
     AckCounts, AckEntry, AttachmentRow, ChunkParams, DEFAULT_RETIRED_WEIGHT,
@@ -924,6 +925,10 @@ pub struct Engine {
     // leaves it as - reads exactly as an instance whose credential names
     // nobody. Production code never sets this either.
     origin_provider_override_login: Option<String>,
+    // The Reflections marked for their backup commit, in memory: a restart
+    // before a due backup loses the mark, and the next change marks it again
+    // and commits both (the backup diffs the whole folder).
+    backup_marks: crate::reflection_backup::BackupMarks,
     // Overrides where per-domain origin state (the base snapshot, conflict
     // records, `state.json`) is read and written, for tests: `None` means the
     // real `crystalline_core::config::origin_state_dir`, a real machine path
@@ -1130,6 +1135,13 @@ pub struct Engine {
     // The rename test seams: a failure after one step, and a hold after one.
     #[cfg(any(test, feature = "testing"))]
     rename_fail_after: std::sync::Mutex<Option<crate::rename::RenameStep>>,
+    // A failure of the rows of the next asset move, after its rename, and
+    // what its undo meets.
+    #[cfg(any(test, feature = "testing"))]
+    asset_move_fault: std::sync::Mutex<Option<asset_home::AssetMoveFault>>,
+    // A failure of the next reflection index write, inside its transaction.
+    #[cfg(any(test, feature = "testing"))]
+    reflection_index_fault: std::sync::atomic::AtomicBool,
     // And a hold on the next write right after it is counted.
     #[cfg(any(test, feature = "testing"))]
     write_hold: std::sync::Mutex<Option<Arc<crate::rename::RenameHold>>>,
@@ -1143,7 +1155,8 @@ pub struct Engine {
     // gives up, when a test wants less than the real limit.
     #[cfg(any(test, feature = "testing"))]
     rename_drain_wait: std::sync::Mutex<Option<std::time::Duration>>,
-    // The event-stream seam: while armed, `hidden_domains` fails the way an
+    // The event-stream seam: while armed, `hidden_domains` and
+    // `domain_screen` fail the way an
     // accounts store that cannot answer does. See
     // `Engine::fail_hidden_domains`.
     #[cfg(any(test, feature = "testing"))]
@@ -1374,6 +1387,7 @@ pub enum PreviewCredential {
 pub use crate::rename::RenameHold;
 pub use crate::rename::RenameStep;
 pub use crate::scope::OWNER_IDENTITY_NAME;
+pub use crystalline_core::threads::ThreadTarget;
 pub use domain_settings::{DOMAIN_SETTINGS_HOW, PolicyEdit, VIRTUAL_NO_RULES};
 #[cfg(any(test, feature = "testing"))]
 pub use names::SpellingPushFault;
@@ -2135,6 +2149,7 @@ impl Engine {
             write_locks: std::sync::Mutex::new(HashMap::new()),
             origin_provider_override: None,
             origin_provider_override_login: None,
+            backup_marks: Default::default(),
             origins_dir_override: None,
             state_dir_override: None,
             connect_auth: Arc::new(RealConnectAuth),
@@ -2176,6 +2191,10 @@ impl Engine {
             machine_owner: None,
             #[cfg(any(test, feature = "testing"))]
             rename_fail_after: std::sync::Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            asset_move_fault: std::sync::Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            reflection_index_fault: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "testing"))]
             write_hold: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -2599,12 +2618,18 @@ impl Engine {
     /// [`Scope::Unrestricted`]. Everything else gets a set to subtract, empty
     /// on an installation where nobody has made a domain private.
     ///
+    /// An account whose instance knowledge level is `none` reads no shared
+    /// domain, so for it the set also holds every registered domain that is
+    /// not private ([`DomainVisibility::shared_hidden`], expanded here because
+    /// only the engine holds the registrations).
+    ///
     /// The privacy answer alone, and it is not the serving screen. A read that
     /// answers from the index takes [`Engine::hidden_for`], which adds the
     /// domains whose rows outlived their registration; this one is for a caller
     /// reasoning about who may see what rather than about what may be served.
     ///
     /// [`Scope::Unrestricted`]: crate::scope::Scope::Unrestricted
+    /// [`DomainVisibility::shared_hidden`]: crate::scope::DomainVisibility::shared_hidden
     pub async fn hidden_domains(
         &self,
         scope: &crate::scope::Scope,
@@ -2619,10 +2644,62 @@ impl Engine {
         let Some(access) = self.domain_access.get() else {
             return Ok(None);
         };
-        access
-            .hidden_domains(scope)
+        if matches!(scope, crate::scope::Scope::Unrestricted) {
+            return Ok(None);
+        }
+        let visibility = access
+            .visibility(scope)
             .await
-            .map_err(|e| EngineError::Internal(e.to_string()))
+            .map_err(|e| EngineError::Internal(e.to_string()))?;
+        let Some(mut hidden) = visibility.hidden else {
+            return Ok(None);
+        };
+        // Knowledge `none` on the instance: no shared domain is an engram
+        // answer for this account. The accounts store cannot list them; the
+        // registrations can.
+        if visibility.shared_hidden {
+            hidden.extend(
+                self.registered_domain_names()
+                    .into_iter()
+                    .filter(|name| !visibility.private.contains(name)),
+            );
+        }
+        Ok(Some(hidden))
+    }
+
+    /// Which domain names `scope` may hear about, as a filter that holds
+    /// without the registrations: a listener that keeps it for a while (the
+    /// event stream) asks this rather than [`Engine::hidden_domains`],
+    /// whose set is complete only for the domains registered when it was
+    /// built. For an account whose instance knowledge level is `none` it is
+    /// an allowlist of the private domains it reads, so a shared domain
+    /// registered later stays out.
+    ///
+    /// [`DomainScreen::All`](crate::scope::DomainScreen::All) when no
+    /// resolver is installed and for the machine owner. The same armed
+    /// failure seam as [`Engine::hidden_domains`].
+    pub async fn domain_screen(
+        &self,
+        scope: &crate::scope::Scope,
+    ) -> Result<crate::scope::DomainScreen> {
+        #[cfg(any(test, feature = "testing"))]
+        if self
+            .fail_hidden_domains
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(EngineError::Internal("armed".to_string()));
+        }
+        let Some(access) = self.domain_access.get() else {
+            return Ok(crate::scope::DomainScreen::All);
+        };
+        if matches!(scope, crate::scope::Scope::Unrestricted) {
+            return Ok(crate::scope::DomainScreen::All);
+        }
+        Ok(access
+            .visibility(scope)
+            .await
+            .map_err(|e| EngineError::Internal(e.to_string()))?
+            .screen())
     }
 
     /// What `scope` may do on one domain, for a surface that has to refuse a
@@ -2668,6 +2745,128 @@ impl Engine {
         access.write_right(scope, domain).await.map_err(|e| {
             EngineError::Internal(format!("this domain's membership is unreadable: {e:#}"))
         })
+    }
+
+    /// The `reflection` switch a domain's MANIFEST declares on disk. A
+    /// virtual domain has no folder to hold a Reflection, so it is always
+    /// off (switching it on is refused). In a review-mode domain the
+    /// folder's MANIFEST decides, never a draft of it.
+    pub fn reflection_switch(&self, domain: &str) -> crystalline_core::ReflectionSwitch {
+        match self.read_source(domain) {
+            ContentSource::File { root } => crystalline_core::reflection_at(&root),
+            ContentSource::Virtual => crystalline_core::ReflectionSwitch::Off,
+        }
+    }
+
+    /// The domain's Reflection mode in effect: `Effective` when switched on
+    /// and no engram is left under `reflections/`, `Off` otherwise (pending
+    /// included). Decided by [`crystalline_index::reflection_mode`] over the
+    /// paths the index records, the call the sync makes, so the engine and
+    /// the sync never disagree; a domain the index holds no row of takes its
+    /// disk fallback. The MANIFEST is read first, so a domain without a
+    /// Reflection costs no store read, and the store lock is held for the
+    /// two reads only, never for the file reads that follow, which run on
+    /// the blocking pool.
+    pub async fn reflection_mode(&self, domain: &str) -> Result<crystalline_core::ReflectionMode> {
+        let ContentSource::File { root } = self.read_source(domain) else {
+            return Ok(crystalline_core::ReflectionMode::Off);
+        };
+        if crystalline_core::reflection_at(&root) == crystalline_core::ReflectionSwitch::Off {
+            return Ok(crystalline_core::ReflectionMode::Off);
+        }
+        let recorded = self.recorded_paths(domain).await?;
+        // The predicate reads the recorded files (or walks the folder on an
+        // empty index): blocking IO, so off the runtime's workers.
+        tokio::task::spawn_blocking(move || {
+            crystalline_index::reflection_mode(&root, recorded.iter())
+        })
+        .await
+        .map_err(|e| {
+            EngineError::Internal(format!(
+                "the Reflection mode of '{domain}' could not be read: {e}"
+            ))
+        })
+    }
+
+    /// The domain-relative paths the index records for `domain`'s files,
+    /// empty when it holds no row of the domain. The store lock is held for
+    /// the two reads only.
+    pub(crate) async fn recorded_paths(&self, domain: &str) -> Result<Vec<String>> {
+        let store = self.store.lock().await;
+        Ok(match store.domain_id(domain).await? {
+            Some(id) => store.file_stamps(id).await?.into_keys().collect(),
+            None => Vec::new(),
+        })
+    }
+
+    /// Whether the domain's Reflection is in effect.
+    pub async fn reflection_effective(&self, domain: &str) -> Result<bool> {
+        Ok(self.reflection_mode(domain).await? == crystalline_core::ReflectionMode::Effective)
+    }
+
+    /// The teaching refusal for an identifier or a resolved path the
+    /// Reflection holds while it is in effect. Asked of the identifier on a
+    /// resolve miss, instead of a bare "not found", and of the resolved path
+    /// on a hit, never of the identifier before the lookup: an engram moved
+    /// out of the folder may keep a custom permalink that still starts with
+    /// `reflections/`, and it must stay reachable by it (its path is outside).
+    /// The hit check catches a stale row: a file that became a page since the
+    /// last sync. While pending, the engrams still there pass. The cheap path
+    /// test runs first; only a path under the folder costs the mode.
+    pub(crate) async fn refuse_reflection_identifier(
+        &self,
+        domain: &str,
+        identifier: &str,
+    ) -> Result<()> {
+        let bare = identifier
+            .strip_prefix(crystalline_core::address::SCHEME)
+            .and_then(|rest| rest.split_once('/').map(|(_, p)| p))
+            .unwrap_or(identifier)
+            .trim_start_matches("./");
+        if !crystalline_core::reflection::is_under_reflections(bare) {
+            return Ok(());
+        }
+        let layout = crystalline_core::DomainLayout::bare(self.reflection_mode(domain).await?);
+        if let PathClass::Reflection(_) = layout.classify(bare) {
+            return Err(EngineError::Invalid(reflection_reserved_error(bare)));
+        }
+        Ok(())
+    }
+
+    /// What `scope` may do with `domain`'s Reflection. An engine with no
+    /// access resolver installed (the stdio stack, every CLI engine) curates
+    /// everything, like [`Engine::write_right`] answers `Own`.
+    pub async fn reflection_right(
+        &self,
+        scope: &crate::scope::Scope,
+        domain: &str,
+    ) -> Result<crate::scope::ReflectionRight> {
+        let Some(access) = self.domain_access.get() else {
+            return Ok(crate::scope::ReflectionRight::Curate);
+        };
+        access.reflection_right(scope, domain).await.map_err(|e| {
+            EngineError::Internal(format!("this domain's membership is unreadable: {e:#}"))
+        })
+    }
+
+    /// The account whose write list is why `scope` lacks `need` on
+    /// `domain`'s Reflection, or `None`. `None` with no resolver
+    /// installed, like [`Engine::write_list_refusal`].
+    pub async fn reflection_list_refusal(
+        &self,
+        scope: &crate::scope::Scope,
+        domain: &str,
+        need: crate::scope::ReflectionRight,
+    ) -> Result<Option<String>> {
+        let Some(access) = self.domain_access.get() else {
+            return Ok(None);
+        };
+        access
+            .reflection_list_refuses(scope, domain, need)
+            .await
+            .map_err(|e| {
+                EngineError::Internal(format!("this domain's membership is unreadable: {e:#}"))
+            })
     }
 
     /// The account whose write list keeps `scope` from a step, when the list
@@ -2790,7 +2989,17 @@ impl Engine {
             .visibility(scope)
             .await
             .map_err(|e| EngineError::Internal(e.to_string()))?;
-        Ok((visibility.private, visibility.hidden.unwrap_or_default()))
+        let mut hidden = visibility.hidden.unwrap_or_default();
+        // Knowledge `none` on the instance hides every shared domain, as in
+        // [`Engine::hidden_domains`].
+        if visibility.shared_hidden {
+            hidden.extend(
+                self.registered_domain_names()
+                    .into_iter()
+                    .filter(|name| !visibility.private.contains(name)),
+            );
+        }
+        Ok((visibility.private, hidden))
     }
 
     /// The domain list a scoped store query is given: the caller's own filter
@@ -3034,6 +3243,151 @@ impl Engine {
     pub fn with_origin_provider(mut self, provider: Arc<dyn Provider>) -> Engine {
         self.origin_provider_override = Some(provider);
         self
+    }
+
+    /// Mark a domain's Reflection for its backup commit. Cheap and silent: a
+    /// domain that is not a home with an origin simply never becomes due in
+    /// the tick.
+    pub fn mark_reflection_dirty(
+        &self,
+        domain: &str,
+        cause: crate::reflection_backup::BackupCause,
+    ) {
+        self.backup_marks
+            .mark(domain, cause, std::time::Instant::now());
+    }
+
+    /// Mark every domain whose Reflection is switched on, once, when the
+    /// daemon starts: the marks live in memory, so a change made before a
+    /// restart (or while GitHub collaboration was off) is backed up without
+    /// waiting for the next change. A domain that is not a home here loses
+    /// the mark in the first tick, with no forge call.
+    pub fn mark_every_reflection_for_backup(&self) {
+        for domain in self.registered_domain_entries().keys() {
+            if self.reflection_switch(domain) != crystalline_core::ReflectionSwitch::Off {
+                self.mark_reflection_dirty(domain, crate::reflection_backup::BackupCause::Settled);
+            }
+        }
+    }
+
+    /// One backup pass: every marked domain that is due and is this
+    /// instance's home Reflection is committed to its backup branch with the
+    /// instance's own credential. A domain that is not such a home here (a
+    /// local Reflection, one without an origin, a read-only domain) loses its
+    /// mark and makes no forge call. Like the origin poller, the pass does
+    /// nothing and keeps the marks while GitHub collaboration is off, while
+    /// the shared rate-limit pause runs, and while no GitHub connection is
+    /// on file (a debug line says so at most once an hour). A rate limit
+    /// starts the shared pause and ends the pass. Any other failure keeps
+    /// the mark and waits a minute, twice as long after each further failure
+    /// in a row (up to an hour); only the first of a row is logged at warn.
+    pub async fn reflection_backup_tick(
+        &self,
+        now: std::time::Instant,
+    ) -> Vec<(
+        String,
+        std::result::Result<crystalline_remote::reflections_backup::BackupOutcome, String>,
+    )> {
+        use crystalline_remote::RemoteError;
+        let mut out = Vec::new();
+        if !self.config.read().unwrap().github_enabled() {
+            return out;
+        }
+        let wall_now = chrono::Utc::now();
+        if self
+            .origin_poller
+            .rate_limited_until()
+            .is_some_and(|until| wall_now < until)
+        {
+            return out;
+        }
+        let due = self.backup_marks.due_domains(now);
+        if due.is_empty() {
+            return out;
+        }
+        let provider = match self.resolve_origin_provider() {
+            Ok(provider) => provider,
+            Err(e) => {
+                if self.backup_marks.should_log_waiting(now) {
+                    match e {
+                        EngineError::Remote(RemoteError::NotConnected) => tracing::debug!(
+                            "reflection backup: no GitHub connection yet; waiting for connect"
+                        ),
+                        e => tracing::warn!(
+                            "reflection backup: the GitHub connection cannot be read, waiting: {e}"
+                        ),
+                    }
+                }
+                return out;
+            }
+        };
+        for domain in due {
+            if !self.backs_up_reflection_here(&domain).await {
+                self.backup_marks.clear(&domain);
+                continue;
+            }
+            let attempt: Result<crystalline_remote::reflections_backup::BackupOutcome> = async {
+                let (spec, root, state_dir) = self.origin_spec_for_domain(&domain)?;
+                Ok(crystalline_remote::reflections_backup::backup_reflections(
+                    provider.as_ref(),
+                    &spec,
+                    &root,
+                    &state_dir,
+                    &format!("Back up the Reflection of {domain}"),
+                )
+                .await?)
+            }
+            .await;
+            let mut paused = false;
+            match &attempt {
+                Ok(_) => self.backup_marks.clear_if_unchanged(&domain, now),
+                Err(EngineError::Remote(RemoteError::RateLimited { reset })) => {
+                    // GitHub limits the token, not the repository: every
+                    // domain waits, the origin poller's pulls included.
+                    let until = reset.unwrap_or_else(|| wall_now + chrono::Duration::hours(1));
+                    tracing::warn!(
+                        "reflection backup: GitHub is rate limiting this machine; pausing until {until}"
+                    );
+                    self.origin_poller.set_rate_limited_until(Some(until));
+                    self.backup_marks.failed(&domain, now);
+                    paused = true;
+                }
+                Err(e) => {
+                    if self.backup_marks.failed(&domain, now) == 1 {
+                        // At warn once, so an operator sees a backup that
+                        // fails; the retries that follow stay at debug.
+                        tracing::warn!(
+                            domain = %domain,
+                            "reflection backup failed, retrying with a growing wait: {e}"
+                        );
+                    } else {
+                        tracing::debug!(domain = %domain, "reflection backup failed again: {e}");
+                    }
+                }
+            }
+            out.push((domain, attempt.map_err(|e| e.to_string())));
+            if paused {
+                break;
+            }
+        }
+        out
+    }
+
+    /// Whether this instance backs up `domain`'s Reflection: it is its home
+    /// (`On { home: Here }`), the domain is connected to a repository, and
+    /// the domain is not read-only. A Reflection never goes to a repository
+    /// its domain is not connected to.
+    async fn backs_up_reflection_here(&self, domain: &str) -> bool {
+        let home = matches!(
+            self.reflection_state(domain).await,
+            Ok(crystalline_core::reflection::ReflectionState::On {
+                home: crystalline_core::reflection::ReflectionHome::Here
+            })
+        );
+        home && self
+            .domain_entry(domain)
+            .is_ok_and(|entry| entry.origin.is_some())
+            && !self.domain_is_read_only(domain).await
     }
 
     /// The GitHub login the injected provider acts as, for tests that need a
@@ -5271,19 +5625,7 @@ impl Engine {
         rel: &str,
     ) -> Result<EngramId> {
         let abs = join_rel(root, rel);
-        let bytes = std::fs::read(&abs).map_err(|source| EngineError::Io {
-            path: abs.display().to_string(),
-            source,
-        })?;
-        let meta = std::fs::metadata(&abs).map_err(|source| EngineError::Io {
-            path: abs.display().to_string(),
-            source,
-        })?;
-        let stamp = FileStamp {
-            mtime: mtime_secs(&meta),
-            size: meta.len(),
-            sha256: sha256_hex(&bytes),
-        };
+        let (bytes, stamp) = read_stamped(&abs)?;
         let text =
             String::from_utf8(bytes).map_err(|_| EngineError::Invalid(not_utf8_message(&abs)))?;
         // A file domain stores the body only; its source of truth is the file.
@@ -5398,6 +5740,9 @@ mod domain_lookup_tests {
 // The `impl Engine` sections, one file each; FILES in the split script
 // lists them in the order they stood in the single engine.rs.
 mod adopt_names;
+mod asset_home;
+pub use asset_home::MOVE_ONTO_A_FILE;
+pub(crate) use asset_home::{AssetHome, ReplaceRule, WrittenAsset};
 mod attachments;
 mod close_folders;
 pub use close_folders::FolderProbe;
@@ -5406,6 +5751,9 @@ mod context;
 mod contradictions;
 pub use contradictions::run_contradiction_worker;
 mod delete;
+mod doc_file;
+#[allow(unused_imports)] // the Reflection verbs (Task 12) use the rest
+use doc_file::{FileLock, Swap, SwapRefused, check_swap, read_opt, read_stamped, remove_if_there};
 mod domain_add;
 mod domain_settings;
 mod domains;
@@ -5417,11 +5765,22 @@ mod name_report;
 mod names;
 mod origins;
 mod read;
+mod reflect;
+pub use reflect::REFLECT_GUIDANCE;
+mod reflection;
+mod reflection_assets;
+pub use reflection::{
+    ANONYMOUS_COMMENT, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_OFF_START,
+    REFUSED_PENDING, REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED,
+    REFUSED_PENDING_UNREADABLE, ReflectionSearch,
+};
+pub use reflection_assets::WrittenReflectionAsset;
 mod rename_domain;
 mod review_mode;
 mod schemas;
 mod search;
 mod sync;
+mod threads;
 mod transfer;
 mod validate;
 mod write;
@@ -6495,38 +6854,27 @@ fn unique_domain_name(canonical: &Path, cfg: &GlobalConfig) -> String {
     })
 }
 
-/// Every `.md` file under `root` as `(forward-slashed relative path, absolute
-/// path)`, skipping dot-directories and dot-files. Mirrors the sync engine's
-/// walk so `domain import` sees the same files a file-domain sync would.
-fn walk_markdown(root: &Path) -> Vec<(String, PathBuf)> {
+/// Every file under `root` as `(forward-slashed relative path, absolute
+/// path, class)`, sorted by path, so a caller keeps what its own policy
+/// keeps. Hidden folders are not entered, except inside a Reflection the
+/// layout keeps in effect (its baseline lives in `.reflected/`). Mirrors the
+/// sync engine's walk so `domain import` and the export see the same files a
+/// file-domain sync would.
+fn walk_classified(root: &Path, layout: &DomainLayout) -> Vec<(String, PathBuf, PathClass)> {
     let mut out = Vec::new();
-    let walker = walkdir::WalkDir::new(root)
-        .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !is_hidden(&e.file_name().to_string_lossy()));
+    let walker = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
+        e.depth() == 0 || layout.classify(&slash_rel(root, e.path())) != PathClass::Hidden
+    });
     for entry in walker.filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {
             continue;
         }
-        let fname = entry.file_name().to_string_lossy();
-        if is_hidden(&fname) || !fname.to_lowercase().ends_with(".md") {
-            continue;
-        }
-        let rel = entry
-            .path()
-            .strip_prefix(root)
-            .unwrap_or(entry.path())
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("/");
-        out.push((rel, entry.path().to_path_buf()));
+        let rel = slash_rel(root, entry.path());
+        let class = layout.classify(&rel);
+        out.push((rel, entry.path().to_path_buf(), class));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
-}
-
-fn is_hidden(name: &str) -> bool {
-    name.starts_with('.') && name != "." && name != ".."
 }
 
 /// Whether a directory exists and contains at least one entry.
@@ -7509,6 +7857,30 @@ fn assets_reserved_error(rel: &str) -> String {
     )
 }
 
+/// The refusal an engram verb earns by aiming into a domain's Reflection.
+fn reflection_reserved_error(rel: &str) -> String {
+    format!(
+        "'{rel}' sits in this domain's Reflection (reflections/): it holds documents for people, not engrams. Work on it with read_reflection and write_reflection, or pick another folder for the engram."
+    )
+}
+
+/// The one destination refusal of an engram verb: the attachment folder, as
+/// it always was, and the Reflection folder under `mode`. A destination
+/// screen passes the declared switch (`ReflectionMode::declared`), so no new
+/// engram lands in the folder while a switch waits for it to empty.
+fn refuse_reserved_destination(rel: &str, mode: ReflectionMode) -> Result<()> {
+    if is_assets_reserved(rel) {
+        return Err(EngineError::Invalid(assets_reserved_error(rel)));
+    }
+    let normalized = rel.trim_start_matches("./").trim_matches('/');
+    if let PathClass::Reflection(_) =
+        crystalline_core::DomainLayout::bare(mode).classify(normalized)
+    {
+        return Err(EngineError::Invalid(reflection_reserved_error(rel)));
+    }
+    Ok(())
+}
+
 /// Put a mirror's failure on a draft's receipt, when there was one.
 ///
 /// One field on every routed verb, so a caller learns the same thing the same
@@ -7583,6 +7955,10 @@ pub fn read_only_sentence(domain: &str) -> String {
 pub(crate) fn is_manifest_path(rel: &str) -> bool {
     rel == "MANIFEST.md"
 }
+
+/// Why an import leaves out a file under `reflections/` where a Reflection
+/// keeps that folder; re-exported so the archive screen gives the same words.
+pub use crystalline_core::reflection::REFLECTION_NOT_IMPORTED;
 
 /// Whether `rel` names the MANIFEST in any letter case. The write and move
 /// checks use this: a case-insensitive file system (the macOS and Windows
@@ -8191,7 +8567,8 @@ impl ReindexHooks for DaemonReindexHooks<'_> {
     }
 
     /// Files changed under us, so the generated index files follow. Runs with
-    /// no store lock held, and takes none of its own.
+    /// no store lock held; the refresh takes it once, briefly, to read the
+    /// Reflection mode in effect.
     async fn after_apply(&self, name: &str, report: &SyncReport) {
         if changed_anything(report) {
             self.engine.refresh_index_files(name).await;

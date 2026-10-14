@@ -1116,7 +1116,7 @@ fn read_only_daemon_reports_hides_and_refuses() {
     // instance would list `update_domain` and `origin_status` (a pull is a
     // derived-truth update like sync, status is a pure read).
     let names = c1.list_tools();
-    assert_eq!(names.len(), 10, "read-only exposes 10 tools: {names:?}");
+    assert_eq!(names.len(), 11, "read-only exposes 11 tools: {names:?}");
     for hidden in [
         "write_engram",
         "edit_engram",
@@ -1125,6 +1125,9 @@ fn read_only_daemon_reports_hides_and_refuses() {
         "delete_engram",
         "remove_domain",
         "evolve_engrams",
+        "reflect",
+        "write_reflection",
+        "discuss",
     ] {
         assert!(
             !names.contains(&hidden.to_string()),
@@ -1132,6 +1135,8 @@ fn read_only_daemon_reports_hides_and_refuses() {
         );
     }
     assert!(names.contains(&"skills".to_string()), "{names:?}");
+    // Reading a Reflection is a read.
+    assert!(names.contains(&"read_reflection".to_string()), "{names:?}");
 
     // Calling a hidden tool by name returns the read-only error, not a panic.
     c1.send_call(
@@ -3354,7 +3359,7 @@ fn http_smoke_initialize_list_and_search() {
     // it, so the count here is the default one rather than every tool this
     // server implements (see crystalline-service's mcp_collab suite for the
     // full gating matrix).
-    assert_eq!(tools.len(), 20, "a default install's tools over HTTP");
+    assert_eq!(tools.len(), 24, "a default install's tools over HTTP");
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     assert!(names.contains(&"configure"), "{names:?}");
     assert!(names.contains(&"add_domain"), "{names:?}");

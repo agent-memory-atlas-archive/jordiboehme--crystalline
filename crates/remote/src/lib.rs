@@ -25,6 +25,7 @@ pub mod merge;
 pub mod mounts;
 pub mod ops;
 pub mod provider;
+pub mod reflections_backup;
 pub mod server_client;
 pub mod server_token;
 pub mod sign_in;
@@ -39,7 +40,8 @@ pub mod tree;
 pub use error::RemoteError;
 pub use fanout::{
     Missing, Part, RRF_K, attach_row_urls, merge_evolve, merge_list_domains, merge_recent,
-    merge_search, missing_from, missing_from_evolve, missing_note, part_request_limit,
+    merge_reflect, merge_search, missing_from, missing_from_evolve, missing_note,
+    part_request_limit,
 };
 pub use github::GitHubProvider;
 pub use github::auth::{DeviceFlowStart, DevicePoll, GITHUB_CLIENT_ID};

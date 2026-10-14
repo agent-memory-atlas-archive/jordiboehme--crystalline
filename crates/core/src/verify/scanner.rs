@@ -14,6 +14,7 @@ use walkdir::WalkDir;
 
 use crate::config::DomainConfig;
 use crate::engram::Engram;
+use crate::layout::{DomainLayout, PathClass, ReflectionMode, slash_rel};
 use crate::parse::{self, ParseError};
 
 use super::VerifyOptions;
@@ -188,13 +189,20 @@ fn domain_name(root: &Path) -> String {
 
 fn collect_markdown_files(root: &Path) -> Result<Vec<PathBuf>, ScanError> {
     // Folders the MANIFEST provisions from inside this root hold deployable
-    // artifacts, not engrams to verify, so they are pruned from the walk
-    // wholesale. Empty whenever the MANIFEST is absent or unparseable.
-    let excluded = crate::manifest::in_root_artifact_dirs(root);
+    // artifacts, not engrams to verify, so the layout prunes them with the
+    // hidden ones and, while the domain keeps a Reflection, `reflections/`.
+    // No artifact folder is known when the MANIFEST is absent or
+    // unparseable. Verify runs without an index, so it only knows the
+    // declared switch: while a switch is pending it skips the engrams still
+    // under `reflections/`, which have to move out anyway.
+    let layout = DomainLayout::at(
+        root,
+        ReflectionMode::declared(crate::manifest::reflection_at(root)),
+    );
     let mut out = Vec::new();
-    let walker = WalkDir::new(root).into_iter().filter_entry(|e| {
-        e.depth() == 0 || (!is_dotfile(e.file_name()) && !is_excluded(e.path(), &excluded))
-    });
+    let walker = WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| e.depth() == 0 || !layout.prunes_dir(&slash_rel(root, e.path())));
     for entry in walker {
         let entry = entry.map_err(|e| {
             let path = e
@@ -208,34 +216,23 @@ fn collect_markdown_files(root: &Path) -> Result<Vec<PathBuf>, ScanError> {
                     .unwrap_or_else(|| std::io::Error::other("directory walk failed")),
             }
         })?;
+        // The OKF reserved names are navigation surfaces, never concept
+        // documents: a spec-correct `index.md` carries no frontmatter, so
+        // verifying it would flag every frontmatter rule. The layout says
+        // which files are engrams (an attachment folder's markdown is read
+        // too, as it always was); the extension test is verify's own.
         if entry.file_type().is_file()
             && entry.path().extension().and_then(OsStr::to_str) == Some("md")
-            && !is_reserved(entry.file_name())
+            && matches!(
+                layout.classify(&slash_rel(root, entry.path())),
+                PathClass::Engram | PathClass::EngramAsset
+            )
         {
             out.push(entry.path().to_path_buf());
         }
     }
     out.sort();
     Ok(out)
-}
-
-/// Whether a directory entry carries one of the OKF reserved filenames. Those
-/// files are navigation surfaces, not concept documents: a spec-correct
-/// `index.md` carries no frontmatter at all, so verifying it would flag every
-/// missing-frontmatter rule against a perfectly valid file.
-fn is_reserved(name: &OsStr) -> bool {
-    name.to_str()
-        .map(crate::index::is_reserved_file)
-        .unwrap_or(false)
-}
-
-fn is_dotfile(name: &OsStr) -> bool {
-    name.to_str().map(|s| s.starts_with('.')).unwrap_or(false)
-}
-
-/// Whether `path` is one of the excluded artifact folders or lives inside one.
-fn is_excluded(path: &Path, excluded: &[PathBuf]) -> bool {
-    excluded.iter().any(|dir| path.starts_with(dir))
 }
 
 #[cfg(test)]
@@ -275,6 +272,30 @@ mod tests {
         assert_eq!(
             domains[1].name, "b",
             "the folder name is still the fallback when the MANIFEST declares no domain_name"
+        );
+    }
+
+    #[test]
+    fn the_reflection_folder_is_not_verified_while_the_switch_is_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("MANIFEST.md"),
+            "---\ntype: manifest\ntitle: eng\nreflection: on\n---\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("reflections")).unwrap();
+        std::fs::write(
+            root.join("reflections/page.md"),
+            "# A page with no frontmatter\n",
+        )
+        .unwrap();
+        let files = collect_markdown_files(root).unwrap();
+        assert!(
+            files
+                .iter()
+                .all(|f| !f.starts_with(root.join("reflections"))),
+            "{files:?}"
         );
     }
 }

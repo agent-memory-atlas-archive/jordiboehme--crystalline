@@ -455,7 +455,7 @@ async fn a_modern_client_is_served_with_no_handshake_at_all() {
         .unwrap_or_else(|| panic!("no tool list in {answer}"));
     assert_eq!(
         tools.len(),
-        20,
+        24,
         "a default install's list, unchanged by the era"
     );
     assert_hinted("tools/list", &answer["result"]);

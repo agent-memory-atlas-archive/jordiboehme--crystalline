@@ -3,10 +3,11 @@
 use crate::common::{fixtures_dir, read};
 use crystalline_core::manifest::{
     ArtifactType, DOMAIN_NAME_KEY, GeneratedIndexes, Manifest, PolicyKey, PolicyKind, PolicyRole,
-    ProblemKind, READ_ONLY_KEY, ReadOnly, SHARING_KEY, Sharing, TagAliasProblemKind,
-    append_tag_alias, domain_name_at, domain_name_of_source, generated_indexes_at,
-    in_root_artifact_dirs, manifest_template, policy_registry, read_only_at, read_only_of_source,
-    sharing_at, starter_stanzas, tag_alias_pairs,
+    ProblemKind, READ_ONLY_KEY, REFLECTION_HOME_KEY, REFLECTION_KEY, ReadOnly, ReflectionSwitch,
+    SHARING_KEY, Sharing, TagAliasProblemKind, append_tag_alias, domain_name_at,
+    domain_name_of_source, generated_indexes_at, in_root_artifact_dirs, manifest_template,
+    policy_registry, read_only_at, read_only_of_source, reflection_at, reflection_home_at,
+    sharing_at, starter_stanzas, tag_alias_pairs, validate_reflection_home,
 };
 use crystalline_core::manifest_view::{RoutingSection, manifest_facts, policy_rows, section_rows};
 use crystalline_core::parse_engram;
@@ -928,8 +929,8 @@ fn every_registry_key_answers_through_manifest_policy() {
     let silent = manifest_from_source(&manifest_declaring_sharing(None));
     assert_eq!(
         policy_registry().len(),
-        4,
-        "generated_indexes, sharing, domain_name and read_only"
+        6,
+        "generated_indexes, sharing, domain_name, read_only, reflection and reflection_home"
     );
     for spec in policy_registry() {
         if spec.kind == PolicyKind::Choice {
@@ -972,7 +973,7 @@ fn every_registry_key_answers_through_manifest_policy() {
     assert_eq!(typo.policy(SHARING_KEY), Some((Some("dirct"), "proposal")));
 }
 
-/// The four rows, as the card and the doctor read them.
+/// The first four rows, as the card and the doctor read them.
 #[test]
 fn the_registry_rows_say_who_changes_what_and_to_which_values() {
     let by_key = |key: &str| -> PolicyKey {
@@ -1009,9 +1010,183 @@ fn the_registry_rows_say_who_changes_what_and_to_which_values() {
     assert_eq!(locked.changed_by, PolicyRole::Owner);
     assert!(locked.accepts("on") && locked.accepts("off") && !locked.accepts("true"));
     assert_eq!(
-        policy_registry().last().map(|spec| spec.key),
-        Some(READ_ONLY_KEY),
+        policy_registry()[3].key,
+        READ_ONLY_KEY,
         "appended, so the rows that were there keep their places"
+    );
+    assert_eq!(
+        policy_registry().last().map(|spec| spec.key),
+        Some(REFLECTION_HOME_KEY)
+    );
+}
+
+fn manifest_declaring_reflection(lines: &str) -> String {
+    format!(
+        "---\ntype: manifest\ntitle: KB\n{lines}---\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n"
+    )
+}
+
+#[test]
+fn reflection_is_off_unless_the_manifest_says_on_exactly() {
+    let silent = manifest_from_source(&manifest_declaring_reflection(""));
+    assert_eq!(silent.reflection(), ReflectionSwitch::Off);
+    assert_eq!(silent.policy(REFLECTION_KEY), Some((None, "off")));
+    let on = manifest_from_source(&manifest_declaring_reflection("reflection: on\n"));
+    assert_eq!(on.reflection(), ReflectionSwitch::On);
+    assert_eq!(on.policy(REFLECTION_KEY), Some((Some("on"), "on")));
+    // YAML 1.1 would read a bare `on` as a boolean; the frontmatter parser keeps
+    // it as text, and a quoted spelling means the same.
+    let quoted = manifest_from_source(&manifest_declaring_reflection("reflection: \"on\"\n"));
+    assert_eq!(quoted.reflection(), ReflectionSwitch::On);
+    let typo = manifest_from_source(&manifest_declaring_reflection("reflection: One\n"));
+    assert_eq!(
+        typo.reflection(),
+        ReflectionSwitch::Off,
+        "a typo is the safe side"
+    );
+    assert_eq!(typo.policy(REFLECTION_KEY), Some((Some("One"), "off")));
+}
+
+#[test]
+fn reflection_home_is_a_url_or_nothing() {
+    let home = manifest_from_source(&manifest_declaring_reflection(
+        "reflection: on\nreflection_home: https://kb.example.com\n",
+    ));
+    assert_eq!(home.reflection_home(), Some("https://kb.example.com"));
+    assert_eq!(
+        home.policy(REFLECTION_HOME_KEY),
+        Some((Some("https://kb.example.com"), "https://kb.example.com"))
+    );
+    let junk = manifest_from_source(&manifest_declaring_reflection(
+        "reflection_home: somewhere\n",
+    ));
+    assert_eq!(junk.declared_reflection_home(), Some("somewhere"));
+    assert_eq!(junk.reflection_home(), None);
+    assert_eq!(
+        junk.policy(REFLECTION_HOME_KEY),
+        Some((Some("somewhere"), ""))
+    );
+
+    assert!(validate_reflection_home("https://kb.example.com").is_ok());
+    assert!(validate_reflection_home("http://localhost:8080").is_ok());
+    assert!(
+        validate_reflection_home("https://kb.example.com/").is_err(),
+        "no trailing slash"
+    );
+    assert!(
+        validate_reflection_home("https://kb.example.com/kb").is_ok(),
+        "a base path"
+    );
+    assert!(
+        validate_reflection_home("https://kb.example.com/kb/").is_err(),
+        "no trailing slash"
+    );
+    assert!(validate_reflection_home("https://kb.example.com/kb?x").is_err());
+    assert!(validate_reflection_home("https://kb.example.com//kb").is_err());
+    assert!(validate_reflection_home("ftp://kb.example.com").is_err());
+    assert!(validate_reflection_home("https://").is_err());
+    assert!(validate_reflection_home("https://a b").is_err());
+    // Spellings the server's own address never takes, so they would never
+    // compare equal with it.
+    assert!(
+        validate_reflection_home("https://:8080").is_err(),
+        "no host"
+    );
+    assert!(
+        validate_reflection_home("https://kb.example.com:443").is_err(),
+        "default port"
+    );
+    assert!(
+        validate_reflection_home("http://kb.example.com:80").is_err(),
+        "default port"
+    );
+    assert!(
+        validate_reflection_home("https://kb.example.com:8443").is_ok(),
+        "another port"
+    );
+    assert!(
+        validate_reflection_home("https://KB.example.com").is_err(),
+        "uppercase host"
+    );
+    assert!(
+        validate_reflection_home("HTTPS://kb.example.com").is_err(),
+        "uppercase scheme"
+    );
+    assert!(validate_reflection_home("https://kb.example.com:port").is_err());
+    assert!(validate_reflection_home("https://user@kb.example.com").is_err());
+    assert!(
+        validate_reflection_home(" https://kb.example.com").is_err(),
+        "whitespace"
+    );
+    let err = validate_reflection_home("https://KB.example.com:443").unwrap_err();
+    assert!(err.contains("`https://kb.example.com`"), "{err}");
+}
+
+#[test]
+fn the_two_reflection_rows() {
+    let by_key = |key: &str| -> PolicyKey {
+        *policy_registry()
+            .iter()
+            .find(|spec| spec.key == key)
+            .unwrap()
+    };
+    let switch = by_key(REFLECTION_KEY);
+    assert_eq!(switch.kind, PolicyKind::Choice);
+    assert_eq!(switch.values, &["off", "on"]);
+    assert_eq!(switch.default, "off");
+    assert_eq!(switch.changed_by, PolicyRole::Owner);
+    let home = by_key(REFLECTION_HOME_KEY);
+    assert_eq!(home.kind, PolicyKind::Text);
+    assert_eq!(home.changed_by, PolicyRole::Owner);
+    assert!(home.accepts("https://kb.example.com"));
+    assert!(!home.accepts("kb.example.com"));
+}
+
+#[test]
+fn an_unset_reflection_home_reads_empty_and_the_name_still_falls_back() {
+    let manifest = manifest_from_source(&manifest_declaring_reflection(""));
+    for rows in [
+        crystalline_core::manifest_view::policy_rows(Some(&manifest), "eng"),
+        crystalline_core::manifest_view::policy_rows(None, "eng"),
+    ] {
+        let row = |key: &str| {
+            rows.iter()
+                .find(|r| r.key == key)
+                .unwrap()
+                .effective
+                .clone()
+        };
+        assert_eq!(row("reflection_home"), "", "not the domain name");
+        assert_eq!(
+            row("domain_name"),
+            "eng",
+            "the one text key with a fallback"
+        );
+        assert_eq!(row("reflection"), "off");
+    }
+}
+
+#[test]
+fn reflection_at_reads_the_domain_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    assert_eq!(reflection_at(root), ReflectionSwitch::Off, "no MANIFEST");
+    // A null byte is refused by the format layer, so this MANIFEST does not parse.
+    let unparseable = "---\ntype: manifest\nreflection: on\n---\n\0\n";
+    assert!(parse_engram(unparseable).is_err());
+    std::fs::write(root.join("MANIFEST.md"), unparseable).unwrap();
+    assert_eq!(reflection_at(root), ReflectionSwitch::Off, "unparseable");
+    std::fs::write(root.join("MANIFEST.md"), manifest_declaring_reflection("")).unwrap();
+    assert_eq!(reflection_at(root), ReflectionSwitch::Off, "silent");
+    std::fs::write(
+        root.join("MANIFEST.md"),
+        manifest_declaring_reflection("reflection: on\nreflection_home: https://kb.example.com\n"),
+    )
+    .unwrap();
+    assert_eq!(reflection_at(root), ReflectionSwitch::On);
+    assert_eq!(
+        reflection_home_at(root).as_deref(),
+        Some("https://kb.example.com")
     );
 }
 
@@ -1244,7 +1419,14 @@ fn manifest_facts_reads_every_policy_and_section() {
     let keys: Vec<&str> = facts.policies.iter().map(|p| p.key.as_str()).collect();
     assert_eq!(
         keys,
-        ["generated_indexes", "sharing", "domain_name", "read_only"]
+        [
+            "generated_indexes",
+            "sharing",
+            "domain_name",
+            "read_only",
+            "reflection",
+            "reflection_home"
+        ]
     );
     assert_eq!(facts.policies[1].declared.as_deref(), Some("direct"));
     assert_eq!(facts.policies[1].effective, "direct");
@@ -1291,7 +1473,7 @@ fn a_manifest_that_does_not_parse_declares_nothing() {
 #[test]
 fn policy_rows_without_a_manifest_are_the_registry_defaults() {
     let rows = policy_rows(None, "eng");
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), 6);
     assert_eq!(rows[0].effective, "local");
     assert_eq!(rows[1].effective, "proposal");
     assert!(rows.iter().all(|r| r.declared.is_none()));

@@ -326,7 +326,7 @@ impl RestCtx {
 
     async fn add_member(&self, domain: &str, account: &str, level: MemberLevel) {
         self.auth
-            .upsert_domain_member(domain, account, level, "keeper")
+            .upsert_domain_member(domain, account, level, None, "keeper")
             .await
             .unwrap();
     }
@@ -1274,6 +1274,88 @@ async fn manager_invites_but_cannot_change_visibility() {
         .put_json("/api/v1/domains/lab/visibility", json!({"private": false}))
         .await;
     assert_eq!(opened.status(), 204, "{:?}", opened.text().await);
+}
+
+/// The two axes over the JSON API: a member set at knowledge `none` needs a
+/// Reflection level (the store's one sentence, 422), both levels are listed,
+/// a level change without `reflection` keeps the stored one, and such a
+/// member sees no engram of the domain. An instance account at `none` passes
+/// the instance gate and sees no shared domain.
+#[tokio::test]
+async fn knowledge_none_members_and_accounts_over_the_json_api() {
+    let ctx = RestCtx::two_domains().await;
+    ctx.make_private("lab", "keeper").await;
+    let owner = ctx.as_user("keeper").await;
+
+    let refused = owner
+        .put_json("/api/v1/domains/lab/members/mem", json!({"level": "none"}))
+        .await;
+    assert_eq!(refused.status(), 422);
+    let detail: serde_json::Value = refused.json().await.unwrap();
+    assert_eq!(
+        detail["detail"],
+        json!(
+            "a member with knowledge none needs a Reflection level (reader or contributor); \
+             remove 'mem' from domain 'lab' instead"
+        ),
+        "{detail}"
+    );
+    let set = owner
+        .put_json(
+            "/api/v1/domains/lab/members/mem",
+            json!({"level": "none", "reflection": "contributor"}),
+        )
+        .await;
+    assert_eq!(set.status(), 204, "{:?}", set.text().await);
+    let listed = owner.get_json("/api/v1/domains/lab/members").await;
+    assert_eq!(listed["members"][0]["level"], json!("none"), "{listed}");
+    assert_eq!(
+        listed["members"][0]["reflection"],
+        json!("contributor"),
+        "{listed}"
+    );
+
+    // The member sees no engram of the domain: answered as unknown.
+    let mem = ctx.as_user("mem").await;
+    mem.get_text("/api/v1/domains/lab/engrams/secret", 404)
+        .await;
+    let domains = mem.get_json("/api/v1/domains").await.to_string();
+    assert!(!domains.contains("\"lab\""), "{domains}");
+
+    // One axis at a time: no `reflection` keeps the stored one.
+    let relevelled = owner
+        .put_json(
+            "/api/v1/domains/lab/members/mem",
+            json!({"level": "viewer"}),
+        )
+        .await;
+    assert_eq!(relevelled.status(), 204);
+    let listed = owner.get_json("/api/v1/domains/lab/members").await;
+    assert_eq!(
+        (
+            &listed["members"][0]["level"],
+            &listed["members"][0]["reflection"]
+        ),
+        (&json!("viewer"), &json!("contributor")),
+        "{listed}"
+    );
+
+    // An instance account at `none` signs in, passes the instance gate and
+    // sees no shared domain.
+    ctx.auth.set_role("out", Role::None).await.unwrap();
+    let out = ctx.as_user("out").await;
+    let me = out.get_json("/api/v1/auth/me").await;
+    assert_eq!(me["user"]["role"], json!("none"), "{me}");
+    assert_eq!(me["user"]["reflection"], json!("default"), "{me}");
+    let domains = out.get_json("/api/v1/domains").await.to_string();
+    for name in ["open", "spare", "lab"] {
+        assert!(
+            !domains.contains(&format!("\"{name}\"")),
+            "{name}: {domains}"
+        );
+    }
+    out.get_text("/api/v1/domains/open/engrams/alpha", 404)
+        .await;
 }
 
 /// Who may read the member list: everybody who can see the domain, and nobody

@@ -132,6 +132,8 @@ enum Command {
         command: Option<ConnectCommand>,
         /// The Crystalline server to add, for example
         /// https://crystalline.acme.com. Signing in opens your browser.
+        // Help text, not rustdoc: clap prints it as written.
+        #[allow(rustdoc::bare_urls)]
         url: Option<String>,
         /// The source's short name on this machine, used in notes and in the
         /// names of its domains when one collides. Defaults to the most
@@ -1002,8 +1004,15 @@ enum UsersCommand {
         /// there. Change it later with `crystalline users writes`.
         #[arg(long, value_name = "DOMAINS")]
         writes: Option<String>,
+        /// The Reflection level beside the knowledge level. Only raises what
+        /// the knowledge level gives; editors and above always curate.
+        /// Without it a new account or member starts at default, and an
+        /// existing member keeps what it has.
+        #[arg(long, value_enum)]
+        reflection: Option<ReflectionArg>,
     },
-    /// List every account with its role and whether it is disabled.
+    /// List every account with its role, its Reflection level and whether it
+    /// is disabled.
     List,
     /// Replace an account's password.
     Passwd {
@@ -1021,6 +1030,15 @@ enum UsersCommand {
         /// The new role.
         #[arg(value_enum)]
         role: RoleArg,
+    },
+    /// Change an account's Reflection level on every shared domain: reader
+    /// reads and comments, contributor also edits, default follows the role.
+    Reflection {
+        /// The account to change.
+        name: String,
+        /// The new Reflection level.
+        #[arg(value_enum)]
+        level: ReflectionArg,
     },
     /// Turn an account off: it can neither sign in nor keep using a session it
     /// already holds. Its rows are kept, so `enable` brings it back. Disabling
@@ -1141,6 +1159,9 @@ enum UsersCommand {
 /// clap can validate the value and list it in `--help`.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum RoleArg {
+    /// Sees no engram on a shared domain; its Reflection level decides what
+    /// it works on.
+    None,
     /// Read only: search, read, browse.
     Viewer,
     /// Everything a viewer may do, plus writing and editing engrams.
@@ -1152,9 +1173,32 @@ enum RoleArg {
 impl From<RoleArg> for crystalline_service::rest::Role {
     fn from(arg: RoleArg) -> crystalline_service::rest::Role {
         match arg {
+            RoleArg::None => crystalline_service::rest::Role::None,
             RoleArg::Viewer => crystalline_service::rest::Role::Viewer,
             RoleArg::Editor => crystalline_service::rest::Role::Editor,
             RoleArg::Admin => crystalline_service::rest::Role::Admin,
+        }
+    }
+}
+
+/// The Reflection levels `users` and `domain members` accept, mirroring
+/// `crystalline_service::rest::ReflectionLevel`.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ReflectionArg {
+    /// As the knowledge level gives: a viewer reads and comments.
+    Default,
+    /// Reads the Reflection and comments on it.
+    Reader,
+    /// Also edits reflection text and creates, moves and deletes reflections.
+    Contributor,
+}
+
+impl From<ReflectionArg> for crystalline_service::rest::ReflectionLevel {
+    fn from(arg: ReflectionArg) -> crystalline_service::rest::ReflectionLevel {
+        match arg {
+            ReflectionArg::Default => crystalline_service::rest::ReflectionLevel::Default,
+            ReflectionArg::Reader => crystalline_service::rest::ReflectionLevel::Reader,
+            ReflectionArg::Contributor => crystalline_service::rest::ReflectionLevel::Contributor,
         }
     }
 }
@@ -1218,6 +1262,8 @@ enum DomainCommand {
         /// A lone argument on the command line is always the NAME: use
         /// `--path` instead of this position to point at a folder without
         /// naming it.
+        // Help text, not rustdoc: clap prints the placeholders as written.
+        #[allow(rustdoc::invalid_html_tags)]
         path: Option<PathBuf>,
         /// Point at the domain's folder instead of naming it positionally;
         /// the name then comes from the folder, as described above.
@@ -1430,6 +1476,12 @@ enum MembersCommand {
         /// What that account may do here. Defaults to viewer (read only).
         #[arg(long, value_enum, default_value_t = LevelArg::Viewer)]
         level: LevelArg,
+        /// The Reflection level beside the knowledge level. Only raises what
+        /// the knowledge level gives; editors and above always curate.
+        /// Without it a new account or member starts at default, and an
+        /// existing member keeps what it has.
+        #[arg(long, value_enum)]
+        reflection: Option<ReflectionArg>,
         /// Load the global config from this file instead of the default path.
         #[arg(long)]
         config: Option<PathBuf>,
@@ -1472,6 +1524,8 @@ enum VisibilityArg {
 /// lists it in `--help`.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum LevelArg {
+    /// Sees no engram of this domain; give it a Reflection level.
+    None,
     /// Read only: the domain is visible and searchable, nothing more.
     Viewer,
     /// Everything a viewer may do, plus writing and editing its engrams.
@@ -1483,6 +1537,7 @@ enum LevelArg {
 impl From<LevelArg> for crystalline_service::rest::MemberLevel {
     fn from(arg: LevelArg) -> crystalline_service::rest::MemberLevel {
         match arg {
+            LevelArg::None => crystalline_service::rest::MemberLevel::None,
             LevelArg::Viewer => crystalline_service::rest::MemberLevel::Viewer,
             LevelArg::Editor => crystalline_service::rest::MemberLevel::Editor,
             LevelArg::Manager => crystalline_service::rest::MemberLevel::Manager,
@@ -5112,6 +5167,16 @@ fn run_prompt(
             domain.read_only = true;
         }
     }
+    // A local Reflection with open items is named on its routing line, from
+    // the counts this machine's daemon recorded: one small file read, no
+    // socket. Before the mounted rows join, so the record only ever touches
+    // this machine's own rows (a mounted row carries its server's count). An
+    // explicit --config or --db names a registry the daemon did not count
+    // (and bypasses the mounted part too).
+    if config_path.is_none() && db.is_none() {
+        let counts = crystalline_service::maintenance::load().reflect_open;
+        crystalline_core::prompt::annotate_reflection(&mut output, &counts);
+    }
     // After the local rows, never sorted in among them (ruling F1): with
     // nothing mounted the block is byte-identical to one without sources.
     // `prompt.rules` names a lent domain by its local name like any other,
@@ -5225,11 +5290,13 @@ fn mounted_routing_request(cfg: &crystalline_core::config::GlobalConfig) -> serd
 /// [`crystalline_remote::ROUTING_BULLET_CHARS`], at most
 /// [`crystalline_remote::ROUTING_BULLETS_MAX`]); a name that could break the
 /// line is no row. `read_only` is the server's `domain_read_only` for this
-/// account; it only labels the row.
+/// account; it only labels the row. `reflect_open` is the server's count of
+/// open reflect items in a Reflection the account curates there.
 fn mounted_row(
     name: &str,
     bullets: &[String],
     read_only: bool,
+    reflect_open: u64,
 ) -> Option<crystalline_core::PromptDomain> {
     if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return None;
@@ -5239,6 +5306,7 @@ fn mounted_row(
         bullets: crystalline_remote::routing_bullets(bullets),
         preferred: false,
         read_only,
+        reflect_open,
     })
 }
 
@@ -5265,6 +5333,7 @@ fn mounted_rows_of(answer: &serde_json::Value) -> Vec<crystalline_core::PromptDo
                 d["name"].as_str()?,
                 &json_strings(&d["bullets"]),
                 d["domain_read_only"].as_bool().unwrap_or(false),
+                d["reflect_open"].as_u64().unwrap_or(0),
             )
         })
         .collect()
@@ -5338,7 +5407,7 @@ fn mounted_part(
         let rows = routing
             .domains
             .iter()
-            .filter_map(|m| mounted_row(&m.local, &m.bullets, m.domain_read_only))
+            .filter_map(|m| mounted_row(&m.local, &m.bullets, m.domain_read_only, m.reflect_open))
             .collect();
         (set.shadowed(), rows, routing.stale)
     };
@@ -5596,6 +5665,7 @@ mod tests {
                 " \n ".to_string(),
             ],
             false,
+            0,
         )
         .unwrap();
         assert_eq!(row.bullets.len(), 2);
@@ -5604,14 +5674,14 @@ mod tests {
             row.bullets[1].chars().count(),
             crystalline_remote::ROUTING_BULLET_CHARS + 4
         );
-        assert!(mounted_row("open\nBehavior:", &[], false).is_none());
+        assert!(mounted_row("open\nBehavior:", &[], false, 0).is_none());
         let many: Vec<String> = (0..50).map(|i| format!("b{i}")).collect();
         assert_eq!(
-            mounted_row("open", &many, false).unwrap().bullets.len(),
+            mounted_row("open", &many, false, 0).unwrap().bullets.len(),
             crystalline_remote::ROUTING_BULLETS_MAX
         );
-        assert!(mounted_row("open", &[], true).unwrap().read_only);
-        assert!(!mounted_row("open", &[], false).unwrap().read_only);
+        assert!(mounted_row("open", &[], true, 0).unwrap().read_only);
+        assert!(!mounted_row("open", &[], false, 0).unwrap().read_only);
     }
 
     /// Review M5: the stale array is added after the last field, and every

@@ -10,20 +10,26 @@
 //!
 //! The policy itself is one small synchronous function, `decide`. Both public
 //! answers - [`DomainAccess::right`] for a single domain and
-//! [`DomainAccess::hidden_domains`] for the whole set - are folds over it, so
+//! [`DomainAccess::visibility`] for the whole set - are folds over it, so
 //! the per-domain answer and the bulk filter cannot drift apart. They read the
 //! same records differently (one domain's row against one user's whole
 //! membership list) purely to keep the bulk path from being N queries, and that
 //! is the only difference between them. An account's write list (`crystalline
 //! users writes`) caps both answers at [`DomainRight::Read`] on every domain
 //! it does not name, in `resolved_right`; visibility is not affected.
+//!
+//! Beside the engram ladder sits the Reflection's: [`ReflectionRight`],
+//! decided by `decide_reflection` from the knowledge right and the
+//! Reflection level that applies (the account's on a shared domain, the
+//! membership row's on a private one). An explicit level only raises, every
+//! knowledge editor curates, and the write list caps it at Read as well.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::auth_store::{AuthStore, DomainAcl, MemberLevel, Role};
+use crate::auth_store::{AuthStore, DomainAcl, MemberLevel, ReflectionLevel, Role};
 
 /// The fixed identity name the machine owner's personal credential is stored
 /// under - the CLI and stdio MCP have no account to be, so they share one local
@@ -143,6 +149,37 @@ pub fn member_level_word(right: DomainRight) -> &'static str {
     }
 }
 
+/// What a scope may do with one domain's Reflection. Beside [`DomainRight`]
+/// rather than inside it, so the engram ladder stays untouched: a person with
+/// knowledge `none` and Reflection `contributor` holds `DomainRight::None`
+/// and `ReflectionRight::Edit`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ReflectionRight {
+    /// Nothing: the Reflection is not there for this caller.
+    None,
+    /// Read reflections and comment: open, answer, resolve and reopen
+    /// threads. Reading and commenting are one level; only the anonymous
+    /// visitor of a public domain reads without commenting
+    /// ([`ReflectionCaller::may_comment`]).
+    Read,
+    /// Also edit reflection text, create, move and delete reflections.
+    Edit,
+    /// Also write sections with their source engrams, settle feedback items and
+    /// edit PACT.md. Held by every knowledge editor and above, never granted
+    /// on its own.
+    Curate,
+}
+
+/// The wire word for a reflection right.
+pub fn reflection_right_word(right: ReflectionRight) -> &'static str {
+    match right {
+        ReflectionRight::None => "none",
+        ReflectionRight::Read => "read",
+        ReflectionRight::Edit => "edit",
+        ReflectionRight::Curate => "curate",
+    }
+}
+
 /// The scope resolved against the accounts table: what [`decide`] actually
 /// needs, with every question that requires a database read already answered.
 #[derive(Clone, Debug, PartialEq)]
@@ -159,6 +196,8 @@ enum Principal {
         /// so the surface that authenticated the caller stays the authority on
         /// that flag.
         role: Role,
+        /// The account's Reflection level on every shared domain.
+        reflection: ReflectionLevel,
     },
     /// Nobody in particular.
     Anonymous,
@@ -193,7 +232,7 @@ fn decide(
             Some(_) => DomainRight::None,
             None => DomainRight::Read,
         },
-        Principal::Account { name, role } => {
+        Principal::Account { name, role, .. } => {
             if *role == Role::Admin {
                 return DomainRight::Own;
             }
@@ -207,6 +246,7 @@ fn decide(
                 // one obvious place instead of silently dropping it to the
                 // wrong rung.
                 return match role {
+                    Role::None => DomainRight::None,
                     Role::Viewer => DomainRight::Read,
                     Role::Editor => DomainRight::Write,
                     Role::Admin => DomainRight::Own,
@@ -219,6 +259,9 @@ fn decide(
                 Some(MemberLevel::Manager) => DomainRight::Manage,
                 Some(MemberLevel::Editor) => DomainRight::Write,
                 Some(MemberLevel::Viewer) => DomainRight::Read,
+                // A knowledge-`none` member reads no engram here; its
+                // Reflection level is decided by `decide_reflection`.
+                Some(MemberLevel::None) => DomainRight::None,
                 None => DomainRight::None,
             }
         }
@@ -236,10 +279,135 @@ fn instance_cap(principal: &Principal) -> DomainRight {
         Principal::Unrestricted => DomainRight::Own,
         Principal::Anonymous => DomainRight::Read,
         Principal::Account { role, .. } => match role {
+            // It never writes an engram. `Read`, not `None`, so a write gate
+            // refuses it as forbidden on a private domain it reads instead of
+            // answering it as unknown.
+            Role::None => DomainRight::Read,
             Role::Viewer => DomainRight::Read,
             Role::Editor => DomainRight::Write,
             Role::Admin => DomainRight::Own,
         },
+    }
+}
+
+/// The Reflection half of the policy: the knowledge right first ([`decide`],
+/// before the instance cap), then the Reflection level that applies here.
+///
+/// * the machine owner curates; an anonymous caller reads what it may read
+///   as engrams (a public domain) and nothing else;
+/// * knowledge `Write` or more curates, whatever the explicit level says;
+/// * below that the right is the higher of the default (knowledge `Read`
+///   gives `Read`, `None` gives `None`) and the explicit level: it raises,
+///   never lowers;
+/// * the explicit level is the account's instance level on a shared domain
+///   and the membership row's level on a private one; an account with no
+///   membership row on a private domain has none;
+/// * `off_list`: the account's write list leaves this domain out. The
+///   answer is then at most `Read`, whatever the knowledge right and the
+///   explicit level say, and `None` stays `None` (a cap, never a grant).
+fn decide_reflection(
+    principal: &Principal,
+    acl: Option<&DomainAcl>,
+    level: Option<MemberLevel>,
+    member_reflection: ReflectionLevel,
+    off_list: bool,
+) -> ReflectionRight {
+    let knowledge = decide(principal, acl, level);
+    let reflection = match principal {
+        Principal::Unrestricted => return ReflectionRight::Curate,
+        Principal::Anonymous => {
+            return if knowledge >= DomainRight::Read {
+                ReflectionRight::Read
+            } else {
+                ReflectionRight::None
+            };
+        }
+        Principal::Account { reflection, .. } => match (acl, level) {
+            (None, _) => *reflection,
+            (Some(_), Some(_)) => member_reflection,
+            (Some(_), None) => ReflectionLevel::Default,
+        },
+    };
+    let right = if knowledge >= DomainRight::Write {
+        ReflectionRight::Curate
+    } else {
+        let default = if knowledge >= DomainRight::Read {
+            ReflectionRight::Read
+        } else {
+            ReflectionRight::None
+        };
+        let raised = match reflection {
+            ReflectionLevel::Default => ReflectionRight::None,
+            ReflectionLevel::Reader => ReflectionRight::Read,
+            ReflectionLevel::Contributor => ReflectionRight::Edit,
+        };
+        default.max(raised)
+    };
+    // 0.25.0's write list caps the whole account, the Reflection too.
+    if off_list {
+        right.min(ReflectionRight::Read)
+    } else {
+        right
+    }
+}
+
+/// Who calls a reflection verb. Every reflection verb takes one, because
+/// three things travel together: the scope the rights are decided for, the
+/// name a thread entry and the `changed_by` bookkeeping record, and whether
+/// the call is the MCP open tier (`auth.mcp` off), which keeps writing what
+/// it always wrote on every domain it can see.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReflectionCaller {
+    /// Who the rights are decided for.
+    pub scope: Scope,
+    /// Who shows up in threads and in the bookkeeping.
+    pub author: crystalline_core::threads::Author,
+    /// The MCP open tier: curate every domain the scope can see.
+    pub open_tier: bool,
+}
+
+impl ReflectionCaller {
+    /// The machine owner: the CLI, the control socket, a stdio session.
+    pub fn owner() -> ReflectionCaller {
+        ReflectionCaller {
+            scope: Scope::Unrestricted,
+            author: crystalline_core::threads::Author {
+                name: OWNER_IDENTITY_NAME.to_string(),
+                agent: false,
+            },
+            open_tier: false,
+        }
+    }
+
+    /// A person, through the JSON API.
+    pub fn person(scope: Scope, name: &str) -> ReflectionCaller {
+        ReflectionCaller {
+            scope,
+            author: crystalline_core::threads::Author {
+                name: crystalline_core::threads::sanitize_name(name),
+                agent: false,
+            },
+            open_tier: false,
+        }
+    }
+
+    /// An agent, through MCP.
+    pub fn agent(scope: Scope, name: &str, open_tier: bool) -> ReflectionCaller {
+        ReflectionCaller {
+            scope,
+            author: crystalline_core::threads::Author {
+                name: crystalline_core::threads::sanitize_name(name),
+                agent: true,
+            },
+            open_tier,
+        }
+    }
+
+    /// Whether this caller may open, answer, resolve or reopen a thread when
+    /// it holds `Read`. Everyone may, except the anonymous visitor of a
+    /// public domain: it reads, and a comment needs somebody to sign it.
+    pub fn may_comment(&self) -> bool {
+        self.open_tier || !matches!(self.scope, Scope::Anonymous)
     }
 }
 
@@ -347,10 +515,14 @@ pub struct DomainAccess {
 /// The two sets answer two different questions and only one of them is a
 /// secret. `private` is a property of the domain, true for every private
 /// domain on the instance whoever is asking; `hidden` is a property of the
-/// caller, and carries [`DomainAccess::hidden_domains`]' own meaning
-/// unchanged, `None` for the machine owner and otherwise the names to
+/// caller: `None` for the machine owner and otherwise the private names to
 /// subtract. A listing subtracts `hidden` first and marks what is left from
 /// `private`, so no row it keeps was ever a name this caller may not learn.
+///
+/// `hidden` alone is not the whole screen: for an account with
+/// `shared_hidden` every shared domain is hidden too, and this type cannot
+/// name them. [`DomainVisibility::screen`] folds the three fields into the
+/// one answer a filter can apply without the registrations.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DomainVisibility {
     /// Every private domain on the instance, by name.
@@ -358,6 +530,64 @@ pub struct DomainVisibility {
     /// The private domains this scope may not read, or `None` for no
     /// filtering at all.
     pub hidden: Option<HashSet<String>>,
+    /// Whether this scope reads no shared domain at all: an account whose
+    /// instance knowledge level is `none`. This type cannot list the shared
+    /// domains (it holds only the accounts store), so the engine, which holds
+    /// the registrations, adds them to `hidden` (`Engine::hidden_domains`).
+    pub shared_hidden: bool,
+}
+
+/// Which domain names one scope may hear about, as a filter that needs no
+/// list of the registered domains. Built by [`DomainVisibility::screen`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum DomainScreen {
+    /// Every domain: the machine owner.
+    All,
+    /// Every domain but these (private domains this scope may not read).
+    Except(HashSet<String>),
+    /// These domains and no other: an account whose instance knowledge level
+    /// is `none` reads no shared domain, so only the private domains it may
+    /// read are named. A domain registered after the screen was built is not
+    /// among them, so it stays out until the screen is built again: the
+    /// filter fails closed.
+    Only(HashSet<String>),
+}
+
+impl DomainScreen {
+    /// Whether `domain` passes the screen.
+    pub fn admits(&self, domain: &str) -> bool {
+        match self {
+            DomainScreen::All => true,
+            DomainScreen::Except(hidden) => !hidden.contains(domain),
+            DomainScreen::Only(readable) => readable.contains(domain),
+        }
+    }
+
+    /// Whether this scope reads the shared domains at all. `false` only for
+    /// [`DomainScreen::Only`]: a change whose audience is every reader of a
+    /// shared domain does not reach such a scope.
+    pub fn admits_shared(&self) -> bool {
+        !matches!(self, DomainScreen::Only(_))
+    }
+}
+
+impl DomainVisibility {
+    /// The one filter these records make: everything for no filtering at all,
+    /// the private domains this scope may read for an account with
+    /// `shared_hidden`, and every domain but `hidden` otherwise.
+    pub fn screen(&self) -> DomainScreen {
+        match &self.hidden {
+            None => DomainScreen::All,
+            Some(hidden) if self.shared_hidden => DomainScreen::Only(
+                self.private
+                    .iter()
+                    .filter(|name| !hidden.contains(*name))
+                    .cloned()
+                    .collect(),
+            ),
+            Some(hidden) => DomainScreen::Except(hidden.clone()),
+        }
+    }
 }
 
 impl DomainAccess {
@@ -493,6 +723,66 @@ impl DomainAccess {
         Ok(right)
     }
 
+    /// What `scope` may do with `domain`'s Reflection (the private
+    /// `decide_reflection`). One read of the visibility and, for an account
+    /// on a private domain, its membership level and its Reflection level;
+    /// for an account, its write list (off the list, at most Read).
+    pub async fn reflection_right(&self, scope: &Scope, domain: &str) -> Result<ReflectionRight> {
+        let principal = self.principal(scope).await?;
+        if matches!(principal, Principal::Unrestricted) {
+            return Ok(ReflectionRight::Curate);
+        }
+        let (acl, level, member_reflection) = self.reflection_inputs(&principal, domain).await?;
+        // `off_list_account` is `None` for an account with no list and
+        // for every principal that is not an account.
+        let off_list = self.off_list_account(&principal, domain).await?.is_some();
+        Ok(decide_reflection(
+            &principal,
+            acl.as_ref(),
+            level,
+            member_reflection,
+            off_list,
+        ))
+    }
+
+    /// The account whose write list keeps `scope` from a Reflection step that
+    /// needs `need` on `domain`, or `None` when the list is not the
+    /// reason: `Some` exactly when the account is off its list there and its
+    /// reflection right without the list would be `need` or more. The twin of
+    /// [`DomainAccess::write_list_refuses`] for the Reflection.
+    pub async fn reflection_list_refuses(
+        &self,
+        scope: &Scope,
+        domain: &str,
+        need: ReflectionRight,
+    ) -> Result<Option<String>> {
+        let principal = self.principal(scope).await?;
+        let Some(account) = self.off_list_account(&principal, domain).await? else {
+            return Ok(None);
+        };
+        let (acl, level, member_reflection) = self.reflection_inputs(&principal, domain).await?;
+        let uncapped = decide_reflection(&principal, acl.as_ref(), level, member_reflection, false);
+        Ok((uncapped >= need).then_some(account))
+    }
+
+    /// The domain's acl row and, for an account on a private domain, its
+    /// membership level and its Reflection level there.
+    async fn reflection_inputs(
+        &self,
+        principal: &Principal,
+        domain: &str,
+    ) -> Result<(Option<DomainAcl>, Option<MemberLevel>, ReflectionLevel)> {
+        let acl = self.auth.domain_visibility(domain).await?;
+        let (level, member_reflection) = match (&acl, principal) {
+            (Some(_), Principal::Account { name, .. }) => (
+                self.level_of(name, domain).await?,
+                self.auth.member_reflection(domain, name).await?,
+            ),
+            _ => (None, ReflectionLevel::Default),
+        };
+        Ok((acl, level, member_reflection))
+    }
+
     /// [`WriteRights`] for `scope`, read from the store once: the principal,
     /// every private domain, this account's memberships and its write list.
     /// A listing asks this once and every row from the answer.
@@ -599,7 +889,7 @@ impl DomainAccess {
     /// the instance cap first, then the list, read only when the capped right
     /// is still above Read, so a Viewer never waits on it. The cap only
     /// lowers - a domain the caller may not see stays [`DomainRight::None`] -
-    /// and visibility never comes through here ([`DomainAccess::hidden_domains`]
+    /// and visibility never comes through here ([`DomainAccess::visibility`]
     /// folds [`decide`] directly), so every read is unchanged. The machine
     /// owner and the anonymous tier have no list. One more read of the
     /// accounts table, and only when there is a right above Read to cap.
@@ -631,49 +921,21 @@ impl DomainAccess {
         Ok((principal, right))
     }
 
-    /// The private domains `scope` may not read.
-    ///
-    /// `None` means no filtering at all (the machine owner). `Some(set)` is the
-    /// set of domain names to *subtract*: every other domain, private or not,
-    /// is visible. An empty set is therefore the normal answer on an
-    /// installation with no private domains, and the answer an admin always
-    /// gets.
-    ///
-    /// The name says which side of the question this returns, because it is
-    /// the side callers need: filtering is a `contains` against a set that is
-    /// almost always empty, rather than an intersection with a set of every
-    /// domain on the instance. (An earlier draft of the plan called this
-    /// `visible_domains`; there is deliberately no such method. This type
-    /// holds only the accounts store, so it cannot enumerate the registered
-    /// domains, and a method named for the complement of what it returns is
-    /// how an inverted filter ships.)
-    ///
-    /// Half of [`DomainAccess::visibility`], and the half nearly every caller
-    /// wants. The machine owner is still answered without reading anything at
-    /// all: this is the filter on every scoped read, and the one scope that
-    /// filters nothing must not pay a query to be told so.
-    pub async fn hidden_domains(&self, scope: &Scope) -> Result<Option<HashSet<String>>> {
-        let principal = self.principal(scope).await?;
-        if matches!(principal, Principal::Unrestricted) {
-            return Ok(None);
-        }
-        Ok(self.resolve(&principal).await?.hidden)
-    }
-
     /// The accounts that may read `domain` right now, or `None` when the
     /// domain is not private and so every scope that reaches the instance
-    /// reads it.
+    /// reads it, except an account whose instance knowledge level is `none`
+    /// (a listener keeps those out with [`DomainScreen::admits_shared`]).
     ///
-    /// The other direction of [`DomainAccess::hidden_domains`]: from one
+    /// The other direction of [`DomainAccess::visibility`]: from one
     /// domain to the accounts, where that method goes from one scope to the
     /// domains. The engine asks it in the instant before a change takes the
     /// domain's name out of these records (a removal, the old name of a
     /// rename), so the change can carry who could read the domain a moment
     /// before it, rather than leaving a listener to ask a registry the change
     /// is emptying. Each account is decided by `decide`, the rule every
-    /// other answer here uses: the owner, every member at any level and every
-    /// instance admin; a disabled account reads nothing, as
-    /// `DomainAccess::principal` rules. Names are the store's own folded
+    /// other answer here uses: the owner, every member who reads engrams there
+    /// (a member at knowledge `none` does not) and every instance admin; a
+    /// disabled account reads nothing, as `DomainAccess::principal` rules. Names are the store's own folded
     /// spelling. The machine owner is never named: it reads every domain.
     pub async fn readers_of(&self, domain: &str) -> Result<Option<HashSet<String>>> {
         let Some(acl) = self.auth.domain_visibility(domain).await? else {
@@ -695,6 +957,7 @@ impl DomainAccess {
             let principal = Principal::Account {
                 name: user.name.clone(),
                 role: user.role,
+                reflection: user.reflection,
             };
             if decide(&principal, Some(&acl), level) >= DomainRight::Read {
                 readers.insert(user.name);
@@ -741,14 +1004,19 @@ impl DomainAccess {
     ///
     /// Both facts from one read of `domain_acl`, for the caller that needs
     /// them together: a domain listing marks each row it kept private or
-    /// shared and drops the hidden ones, and doing that through
-    /// [`DomainAccess::hidden_domains`] plus a second reader would be two
-    /// sweeps of the same table for one answer.
+    /// shared and drops the hidden ones, and reading the two separately would
+    /// be two sweeps of the same table for one answer.
     ///
-    /// `private` is filled for every scope, the machine owner included, and
-    /// that is the one thing this answers that `hidden_domains` does not:
+    /// `private` is filled for every scope, the machine owner included:
     /// whether a domain is private is not a secret from anybody who can see
-    /// the domain at all, and the machine owner sees all of them.
+    /// the domain at all, and the machine owner sees all of them. `hidden` is
+    /// `None` for the machine owner and otherwise the private names to
+    /// subtract; with `shared_hidden` the shared domains are hidden too
+    /// ([`DomainVisibility::screen`]).
+    ///
+    /// There is deliberately no public answer that carries `hidden` alone: it
+    /// would drop `shared_hidden`, and a filter built on it would show an
+    /// account at knowledge `none` every shared domain.
     pub async fn visibility(&self, scope: &Scope) -> Result<DomainVisibility> {
         let principal = self.principal(scope).await?;
         self.resolve(&principal).await
@@ -762,18 +1030,27 @@ impl DomainAccess {
     /// [`DomainAccess::right`] gives it, which is what keeps the bulk answer
     /// and the per-domain one from drifting apart.
     async fn resolve(&self, principal: &Principal) -> Result<DomainVisibility> {
+        let shared_hidden = matches!(
+            principal,
+            Principal::Account {
+                role: Role::None,
+                ..
+            }
+        );
         let acls = self.auth.private_domains().await?;
         let private: HashSet<String> = acls.iter().map(|acl| acl.domain.clone()).collect();
         if matches!(principal, Principal::Unrestricted) {
             return Ok(DomainVisibility {
                 private,
                 hidden: None,
+                shared_hidden: false,
             });
         }
         if acls.is_empty() {
             return Ok(DomainVisibility {
                 private,
                 hidden: Some(HashSet::new()),
+                shared_hidden,
             });
         }
         let levels: HashMap<String, MemberLevel> = match principal {
@@ -792,6 +1069,7 @@ impl DomainAccess {
         Ok(DomainVisibility {
             private,
             hidden: Some(hidden),
+            shared_hidden,
         })
     }
 
@@ -818,6 +1096,7 @@ impl DomainAccess {
                 Ok(Principal::Account {
                     name: user.name,
                     role,
+                    reflection: user.reflection,
                 })
             }
         }
@@ -826,7 +1105,7 @@ impl DomainAccess {
     /// One account's membership level on one domain, if it has one.
     ///
     /// Read out of the account's own membership list rather than through a
-    /// per-domain lookup, so this path and [`DomainAccess::hidden_domains`]
+    /// per-domain lookup, so this path and [`DomainAccess::visibility`]
     /// read the same rows the same way. A membership list is a handful of rows
     /// even for a heavy user.
     async fn level_of(&self, account: &str, domain: &str) -> Result<Option<MemberLevel>> {
@@ -844,6 +1123,15 @@ impl DomainAccess {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl DomainAccess {
+        /// The `hidden` half of [`DomainAccess::visibility`], which is what
+        /// most tests here compare against `right`. Test only: a caller that
+        /// filters on it alone drops `shared_hidden`.
+        async fn hidden_domains(&self, scope: &Scope) -> Result<Option<HashSet<String>>> {
+            Ok(self.visibility(scope).await?.hidden)
+        }
+    }
 
     async fn store(dir: &tempfile::TempDir) -> Arc<AuthStore> {
         Arc::new(
@@ -891,7 +1179,7 @@ mod tests {
             .await
             .unwrap();
         for member in ["mem", "gone"] {
-            auth.upsert_domain_member("lab", member, MemberLevel::Viewer, "keeper")
+            auth.upsert_domain_member("lab", member, MemberLevel::Viewer, None, "keeper")
                 .await
                 .unwrap();
         }
@@ -917,7 +1205,7 @@ mod tests {
         auth.set_domain_visibility("eng", true, "keeper")
             .await
             .unwrap();
-        auth.upsert_domain_member("eng", "mem", MemberLevel::Editor, "keeper")
+        auth.upsert_domain_member("eng", "mem", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
         let access = DomainAccess::new(auth);
@@ -952,7 +1240,7 @@ mod tests {
         auth.set_domain_visibility("lab", true, "keeper")
             .await
             .unwrap();
-        auth.upsert_domain_member("lab", "mem", MemberLevel::Editor, "keeper")
+        auth.upsert_domain_member("lab", "mem", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
         let access = DomainAccess::new(auth);
@@ -1045,10 +1333,10 @@ mod tests {
         auth.set_domain_visibility("lab", true, "keeper")
             .await
             .unwrap();
-        auth.upsert_domain_member("lab", "mem", MemberLevel::Viewer, "keeper")
+        auth.upsert_domain_member("lab", "mem", MemberLevel::Viewer, None, "keeper")
             .await
             .unwrap();
-        auth.upsert_domain_member("lab", "out", MemberLevel::Manager, "keeper")
+        auth.upsert_domain_member("lab", "out", MemberLevel::Manager, None, "keeper")
             .await
             .unwrap();
         let access = DomainAccess::new(auth);
@@ -1074,7 +1362,7 @@ mod tests {
         auth.set_domain_visibility("lab", true, "keeper")
             .await
             .unwrap();
-        auth.upsert_domain_member("lab", "mem", MemberLevel::Editor, "keeper")
+        auth.upsert_domain_member("lab", "mem", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
         auth.set_disabled("mem", true).await.unwrap();
@@ -1112,7 +1400,7 @@ mod tests {
         auth.set_domain_visibility("lab", true, "keeper")
             .await
             .unwrap();
-        auth.upsert_domain_member("lab", "mem", MemberLevel::Editor, "keeper")
+        auth.upsert_domain_member("lab", "mem", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
         auth.remove_user("keeper").await.unwrap();
@@ -1188,10 +1476,10 @@ mod tests {
                 .await
                 .unwrap();
         }
-        auth.upsert_domain_member("vault", "mem", MemberLevel::Viewer, "keeper")
+        auth.upsert_domain_member("vault", "mem", MemberLevel::Viewer, None, "keeper")
             .await
             .unwrap();
-        auth.upsert_domain_member("attic", "out", MemberLevel::Manager, "keeper")
+        auth.upsert_domain_member("attic", "out", MemberLevel::Manager, None, "keeper")
             .await
             .unwrap();
         auth.transfer_domain("attic", "mem").await.unwrap();
@@ -1254,7 +1542,7 @@ mod tests {
         auth.set_domain_visibility("lab", true, "keeper")
             .await
             .unwrap();
-        auth.upsert_domain_member("lab", "mem", MemberLevel::Editor, "keeper")
+        auth.upsert_domain_member("lab", "mem", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
         auth.set_domain_visibility("lab", false, "keeper")
@@ -1314,7 +1602,7 @@ mod tests {
         auth.set_domain_visibility("lab", true, "Keeper")
             .await
             .unwrap();
-        auth.upsert_domain_member("lab", "MEM", MemberLevel::Editor, "keeper")
+        auth.upsert_domain_member("lab", "MEM", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
         let access = DomainAccess::new(auth);
@@ -1569,7 +1857,7 @@ mod tests {
         auth.set_domain_visibility("lab", true, "keeper")
             .await
             .unwrap();
-        auth.upsert_domain_member("lab", "watcher", MemberLevel::Viewer, "keeper")
+        auth.upsert_domain_member("lab", "watcher", MemberLevel::Viewer, None, "keeper")
             .await
             .unwrap();
         auth.set_write_list("out", &list(&["second"]))
@@ -1712,16 +2000,16 @@ mod tests {
         auth.set_domain_visibility("lab", true, "keeper")
             .await
             .unwrap();
-        auth.upsert_domain_member("lab", "watcher", MemberLevel::Viewer, "keeper")
+        auth.upsert_domain_member("lab", "watcher", MemberLevel::Viewer, None, "keeper")
             .await
             .unwrap();
-        auth.upsert_domain_member("lab", "crew", MemberLevel::Editor, "keeper")
+        auth.upsert_domain_member("lab", "crew", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
-        auth.upsert_domain_member("lab", "lead", MemberLevel::Manager, "keeper")
+        auth.upsert_domain_member("lab", "lead", MemberLevel::Manager, None, "keeper")
             .await
             .unwrap();
-        auth.upsert_domain_member("lab", "mem", MemberLevel::Editor, "keeper")
+        auth.upsert_domain_member("lab", "mem", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
         auth.set_write_list("out", &list(&["second"]))
@@ -1768,5 +2056,461 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The whole two-axis table as a pure function: knowledge level x explicit
+    /// Reflection level x shared or private. Each row lists the reflection
+    /// right for the explicit levels `default`, `reader`, `contributor`, in
+    /// that order. An explicit level only raises; a knowledge editor always
+    /// curates; the instance level never reaches a private domain.
+    #[test]
+    fn the_reflection_rights_table() {
+        use ReflectionLevel as L;
+        use ReflectionRight as R;
+        let acl = DomainAcl {
+            domain: "lab".into(),
+            owner: "keeper".into(),
+        };
+        let acct = |name: &str, role: Role, reflection: L| Principal::Account {
+            name: name.into(),
+            role,
+            reflection,
+        };
+        let levels = [L::Default, L::Reader, L::Contributor];
+
+        // Shared: the instance role and the instance Reflection level decide.
+        let shared: Vec<(&str, Role, [R; 3])> = vec![
+            ("shared none", Role::None, [R::None, R::Read, R::Edit]),
+            ("shared viewer", Role::Viewer, [R::Read, R::Read, R::Edit]),
+            (
+                "shared editor",
+                Role::Editor,
+                [R::Curate, R::Curate, R::Curate],
+            ),
+            (
+                "shared admin",
+                Role::Admin,
+                [R::Curate, R::Curate, R::Curate],
+            ),
+        ];
+        for (name, role, want) in shared {
+            for (l, want) in levels.iter().zip(want) {
+                let p = acct("mem", role, *l);
+                assert_eq!(
+                    decide_reflection(&p, None, None, L::Default, false),
+                    want,
+                    "{name}, {l}"
+                );
+            }
+        }
+
+        // Private: the membership row and its Reflection level decide; the
+        // principal's instance level is `contributor` on purpose and must not
+        // count.
+        // (row name, account, instance role, membership level, expected).
+        type PrivateRow<'a> = (&'a str, &'a str, Role, Option<MemberLevel>, [R; 3]);
+        let private: Vec<PrivateRow> = vec![
+            (
+                "no membership",
+                "mem",
+                Role::Viewer,
+                None,
+                [R::None, R::None, R::None],
+            ),
+            (
+                "member none",
+                "mem",
+                Role::Viewer,
+                Some(MemberLevel::None),
+                [R::None, R::Read, R::Edit],
+            ),
+            (
+                "member viewer",
+                "mem",
+                Role::Viewer,
+                Some(MemberLevel::Viewer),
+                [R::Read, R::Read, R::Edit],
+            ),
+            (
+                "member viewer, instance none",
+                "mem",
+                Role::None,
+                Some(MemberLevel::Viewer),
+                [R::Read, R::Read, R::Edit],
+            ),
+            (
+                "member editor, instance viewer",
+                "mem",
+                Role::Viewer,
+                Some(MemberLevel::Editor),
+                [R::Curate, R::Curate, R::Curate],
+            ),
+            (
+                "member manager",
+                "mem",
+                Role::Editor,
+                Some(MemberLevel::Manager),
+                [R::Curate, R::Curate, R::Curate],
+            ),
+            (
+                "owner, instance viewer",
+                "keeper",
+                Role::Viewer,
+                None,
+                [R::Curate, R::Curate, R::Curate],
+            ),
+            (
+                "admin",
+                "boss",
+                Role::Admin,
+                None,
+                [R::Curate, R::Curate, R::Curate],
+            ),
+        ];
+        for (name, who, role, level, want) in private {
+            for (l, want) in levels.iter().zip(want) {
+                let p = acct(who, role, L::Contributor);
+                assert_eq!(
+                    decide_reflection(&p, Some(&acl), level, *l, false),
+                    want,
+                    "{name}, {l}"
+                );
+            }
+        }
+
+        // Nobody in particular, and the machine owner.
+        assert_eq!(
+            decide_reflection(&Principal::Anonymous, None, None, L::Default, false),
+            R::Read,
+            "anonymous reads a public domain"
+        );
+        assert_eq!(
+            decide_reflection(&Principal::Anonymous, Some(&acl), None, L::Default, false),
+            R::None
+        );
+        assert_eq!(
+            decide_reflection(
+                &Principal::Unrestricted,
+                Some(&acl),
+                None,
+                L::Default,
+                false
+            ),
+            R::Curate
+        );
+
+        // The write list caps the whole account (a cap, never a grant).
+        // Off the list, every right is at most Read, whatever the knowledge
+        // right and the explicit level say; None stays None.
+        for l in levels {
+            assert_eq!(
+                decide_reflection(&acct("mem", Role::Editor, l), None, None, L::Default, true),
+                R::Read,
+                "shared editor off its list, {l}"
+            );
+            assert_eq!(
+                decide_reflection(&acct("boss", Role::Admin, l), None, None, L::Default, true),
+                R::Read,
+                "admin with a list, shared, {l}"
+            );
+            assert_eq!(
+                decide_reflection(
+                    &acct("keeper", Role::Viewer, L::Default),
+                    Some(&acl),
+                    None,
+                    l,
+                    true
+                ),
+                R::Read,
+                "owner off its list, {l}"
+            );
+            assert_eq!(
+                decide_reflection(
+                    &acct("mem", Role::Viewer, L::Default),
+                    Some(&acl),
+                    Some(MemberLevel::Editor),
+                    l,
+                    true
+                ),
+                R::Read,
+                "private member editor off its list, {l}"
+            );
+        }
+        // The instance level never counts on a private domain, so this row is
+        // asserted once, not once per level.
+        assert_eq!(
+            decide_reflection(
+                &acct("boss", Role::Admin, L::Default),
+                Some(&acl),
+                None,
+                L::Default,
+                true
+            ),
+            R::Read,
+            "admin with a list, private"
+        );
+        assert_eq!(
+            decide_reflection(
+                &acct("mem", Role::Viewer, L::Default),
+                Some(&acl),
+                Some(MemberLevel::Viewer),
+                L::Contributor,
+                true
+            ),
+            R::Read,
+            "a private contributor member at knowledge viewer, off its list"
+        );
+        assert_eq!(
+            decide_reflection(
+                &acct("mem", Role::Viewer, L::Default),
+                Some(&acl),
+                Some(MemberLevel::None),
+                L::Contributor,
+                true
+            ),
+            R::Read,
+            "a private contributor member at knowledge none, off its list"
+        );
+        assert_eq!(
+            decide_reflection(
+                &acct("mem", Role::Viewer, L::Contributor),
+                None,
+                None,
+                L::Default,
+                true
+            ),
+            R::Read,
+            "shared viewer contributor, off its list"
+        );
+        assert_eq!(
+            decide_reflection(
+                &acct("mem", Role::None, L::Contributor),
+                None,
+                None,
+                L::Default,
+                true
+            ),
+            R::Read,
+            "shared none contributor, off its list"
+        );
+        assert_eq!(
+            decide_reflection(
+                &acct("mem", Role::None, L::Default),
+                None,
+                None,
+                L::Default,
+                true
+            ),
+            R::None,
+            "a cap never grants"
+        );
+        assert_eq!(
+            decide_reflection(
+                &acct("mem", Role::Viewer, L::Default),
+                Some(&acl),
+                None,
+                L::Contributor,
+                true
+            ),
+            R::None,
+            "no membership stays None"
+        );
+
+        // The knowledge axis: `none` reads no engram, and never writes one.
+        assert_eq!(
+            decide(&acct("mem", Role::None, L::Default), None, None),
+            DomainRight::None
+        );
+        assert_eq!(
+            decide(
+                &acct("mem", Role::Viewer, L::Default),
+                Some(&acl),
+                Some(MemberLevel::None)
+            ),
+            DomainRight::None
+        );
+        assert_eq!(
+            decide(
+                &acct("mem", Role::None, L::Default),
+                Some(&acl),
+                Some(MemberLevel::Viewer)
+            ),
+            DomainRight::Read
+        );
+        assert_eq!(
+            instance_cap(&acct("mem", Role::None, L::Default)),
+            DomainRight::Read
+        );
+
+        assert_eq!(reflection_right_word(R::Read), "read");
+        assert!(R::None < R::Read && R::Read < R::Edit && R::Edit < R::Curate);
+    }
+
+    /// Reading and commenting are one level; the anonymous visitor of a
+    /// public domain is the one reader who never comments.
+    #[test]
+    fn only_the_anonymous_visitor_reads_without_commenting() {
+        assert!(!ReflectionCaller::person(Scope::Anonymous, "anonymous").may_comment());
+        assert!(
+            ReflectionCaller::agent(Scope::Anonymous, "agent", true).may_comment(),
+            "the MCP open tier"
+        );
+        assert!(ReflectionCaller::person(user("mem", false), "mem").may_comment());
+        assert!(ReflectionCaller::owner().may_comment());
+    }
+
+    /// Through the store: a member with knowledge `none` is hidden from engram
+    /// listings and edits the Reflection; an instance-`none` account hides
+    /// every shared domain.
+    #[tokio::test]
+    async fn knowledge_none_is_hidden_as_engrams_and_reaches_the_reflection() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = store(&dir).await;
+        cast(&auth).await;
+        auth.set_domain_visibility("lab", true, "keeper")
+            .await
+            .unwrap();
+        auth.upsert_domain_member(
+            "lab",
+            "mem",
+            MemberLevel::None,
+            Some(ReflectionLevel::Contributor),
+            "keeper",
+        )
+        .await
+        .unwrap();
+        let access = DomainAccess::new(auth.clone());
+        let mem = user("mem", false);
+        assert_eq!(access.right(&mem, "lab").await.unwrap(), DomainRight::None);
+        assert!(
+            access
+                .hidden_domains(&mem)
+                .await
+                .unwrap()
+                .unwrap()
+                .contains("lab")
+        );
+        assert_eq!(
+            access.reflection_right(&mem, "lab").await.unwrap(),
+            ReflectionRight::Edit
+        );
+        assert_eq!(
+            access
+                .reflection_right(&Scope::Unrestricted, "lab")
+                .await
+                .unwrap(),
+            ReflectionRight::Curate
+        );
+
+        auth.set_role("out", Role::None).await.unwrap();
+        auth.set_reflection_level("out", ReflectionLevel::Reader)
+            .await
+            .unwrap();
+        let out = user("out", false);
+        assert_eq!(access.right(&out, "open").await.unwrap(), DomainRight::None);
+        assert!(access.visibility(&out).await.unwrap().shared_hidden);
+        assert!(!access.visibility(&mem).await.unwrap().shared_hidden);
+        // The screen a filter applies fails closed for out: no shared domain,
+        // known or registered later, and no private one it does not read.
+        let screen = access.visibility(&out).await.unwrap().screen();
+        assert_eq!(screen, DomainScreen::Only(HashSet::new()));
+        assert!(!screen.admits("open") && !screen.admits("lab") && !screen.admits("later"));
+        assert!(!screen.admits_shared());
+        let screen = access.visibility(&mem).await.unwrap().screen();
+        assert!(screen.admits("open") && !screen.admits("lab") && screen.admits_shared());
+        assert_eq!(
+            access
+                .visibility(&Scope::Unrestricted)
+                .await
+                .unwrap()
+                .screen(),
+            DomainScreen::All
+        );
+        assert_eq!(
+            access.reflection_right(&out, "open").await.unwrap(),
+            ReflectionRight::Read
+        );
+        assert_eq!(
+            access.reflection_right(&out, "lab").await.unwrap(),
+            ReflectionRight::None,
+            "the instance level stays off a private domain"
+        );
+
+        // Through the store: the write list caps the Reflection.
+        let keeper = user("keeper", false);
+        assert_eq!(
+            access.reflection_right(&keeper, "open").await.unwrap(),
+            ReflectionRight::Curate
+        );
+        auth.set_write_list("keeper", &["agents-*".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            access.reflection_right(&keeper, "open").await.unwrap(),
+            ReflectionRight::Read,
+            "a shared domain off the list"
+        );
+        assert_eq!(
+            access.reflection_right(&keeper, "lab").await.unwrap(),
+            ReflectionRight::Read,
+            "the owner off its list too"
+        );
+        assert_eq!(
+            access.reflection_right(&keeper, "agents-1").await.unwrap(),
+            ReflectionRight::Curate,
+            "a domain on the list"
+        );
+        // Below Write too: mem (member none, Reflection contributor on lab)
+        // and out (instance none, Reflection reader) are capped by their lists.
+        assert_eq!(
+            access.reflection_right(&mem, "lab").await.unwrap(),
+            ReflectionRight::Edit,
+            "no list, nothing changes"
+        );
+        auth.set_write_list("mem", &["agents-*".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            access.reflection_right(&mem, "lab").await.unwrap(),
+            ReflectionRight::Read,
+            "contributor capped at Read"
+        );
+        auth.set_write_list("out", &["agents-*".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            access.reflection_right(&out, "open").await.unwrap(),
+            ReflectionRight::Read
+        );
+        assert_eq!(
+            access.reflection_right(&out, "lab").await.unwrap(),
+            ReflectionRight::None,
+            "a cap never grants"
+        );
+        assert_eq!(
+            access
+                .reflection_list_refuses(&mem, "lab", ReflectionRight::Edit)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("mem"),
+            "the list is why mem may not edit"
+        );
+        assert_eq!(
+            access
+                .reflection_list_refuses(&mem, "lab", ReflectionRight::Curate)
+                .await
+                .unwrap(),
+            None,
+            "mem never curated"
+        );
+        assert_eq!(
+            access
+                .reflection_list_refuses(&keeper, "lab", ReflectionRight::Curate)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("keeper")
+        );
     }
 }

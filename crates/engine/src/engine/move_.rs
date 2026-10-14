@@ -1,4 +1,5 @@
 use super::*;
+use crate::collab::session::RoomDoc;
 
 impl Engine {
     // --- move ----------------------------------------------------------------
@@ -69,7 +70,19 @@ impl Engine {
         let p = &self.localized(p, &hidden).await;
         let view = DomainView::for_write(self, &p.domain, scope).await?;
         let overlay = view.actor();
-        let (src, src_source) = view.resolve(&p.identifier).await?;
+        let (src, src_source) = match view.resolve(&p.identifier).await {
+            Ok(resolved) => resolved,
+            Err(EngineError::NotFound(missing)) => {
+                self.refuse_reflection_identifier(&p.domain, &p.identifier)
+                    .await?;
+                return Err(EngineError::NotFound(missing));
+            }
+            Err(e) => return Err(e),
+        };
+        // A hit can be a stale row: a file that became the Reflection's page
+        // since the last sync still has its engram row until the next one.
+        self.refuse_reflection_identifier(&p.domain, &src.path)
+            .await?;
         let dest_domain = p
             .destination_domain
             .clone()
@@ -96,9 +109,12 @@ impl Engine {
         if crystalline_core::is_reserved_path(&dest_rel) {
             return Err(EngineError::Invalid(reserved_name_error(&dest_rel)));
         }
-        if is_assets_reserved(&dest_rel) {
-            return Err(EngineError::Invalid(assets_reserved_error(&dest_rel)));
-        }
+        // The declared switch of the destination domain: an engram may move
+        // out of a folder whose switch waits for it, never into one.
+        refuse_reserved_destination(
+            &dest_rel,
+            ReflectionMode::declared(self.reflection_switch(&dest_domain)),
+        )?;
         let cross = dest_domain != p.domain;
         // A move into another domain writes there too, so it is counted there
         // for the whole move: a rename of the destination waits for it, and a
@@ -152,6 +168,9 @@ impl Engine {
                 None => self.move_source_text(&src_source, &src, &p.domain).await?,
             };
             self.refuse_read_only_switch_on(&dest_domain, &text, scope)
+                .await?;
+            // No MANIFEST stands there before the move.
+            self.screen_manifest_write(&dest_domain, Some(""), &text)
                 .await?;
         }
 
@@ -227,7 +246,7 @@ impl Engine {
         if readdressed {
             self.refuse_permalink_held(&dest_domain, &new_permalink, &src, cross)
                 .await?;
-            self.refuse_readdress_under_live_room(&p.domain, &src.permalink)
+            self.refuse_under_live_rooms(&p.domain, &[RoomDoc::Engram(src.permalink.clone())])
                 .await?;
         }
 
@@ -673,25 +692,41 @@ impl Engine {
         }
     }
 
-    /// Refuse to change the address of an engram somebody has open in the
-    /// co-editing editor.
+    /// Refuse a move while somebody has one of `docs` open in the co-editing
+    /// editor: a room saves back to the document it was opened over, so a
+    /// change underneath it would turn the editor's next save into a write
+    /// to an address that no longer exists. Base rooms only: a move in review
+    /// mode never reaches this, since it moves a draft. Checked before
+    /// anything moves.
     ///
-    /// A room is keyed on the permalink it was opened under and saves back to
-    /// that permalink, so a move that changed it underneath would turn the
-    /// editor's next save into a write to an address that no longer exists -
-    /// shown to the person typing as the engram having been deleted - and a
-    /// later engram taking the old name would receive it. A path-only move
-    /// keeps the permalink and needs no refusal. Base rooms only: a move in
-    /// review mode never reaches this, since it moves a draft.
-    async fn refuse_readdress_under_live_room(&self, domain: &str, permalink: &str) -> Result<()> {
+    /// An engram room is keyed on the permalink it was opened under and saves
+    /// back to that permalink, so a move that changed it underneath would show
+    /// the person typing the engram as deleted, and a later engram taking the
+    /// old name would receive the save. A path-only move keeps the permalink
+    /// and needs no refusal, so the caller asks only on a permalink change.
+    pub(super) async fn refuse_under_live_rooms(
+        &self,
+        domain: &str,
+        docs: &[RoomDoc],
+    ) -> Result<()> {
         let Some(rooms) = self.collab_rooms() else {
             return Ok(());
         };
-        if rooms.has_live_room(domain, permalink, None).await {
-            return Err(EngineError::Conflict(format!(
-                "'{permalink}' is open in the editor right now, and moving it would change the \
-                 address the editor saves to; close the editor and move it again"
-            )));
+        for doc in docs {
+            if !rooms.has_live_doc(domain, doc, None).await {
+                continue;
+            }
+            return Err(EngineError::Conflict(match doc {
+                RoomDoc::Engram(permalink) => format!(
+                    "'{permalink}' is open in the editor right now, and moving it would change the \
+                     address the editor saves to; close the editor and move it again"
+                ),
+                // A reflection room saves straight to its file: a move or a
+                // delete, or a rewrite of its links, would race its next save.
+                RoomDoc::Reflection(path) => {
+                    format!("somebody is editing '{path}'; try again once the page is closed")
+                }
+            }));
         }
         Ok(())
     }

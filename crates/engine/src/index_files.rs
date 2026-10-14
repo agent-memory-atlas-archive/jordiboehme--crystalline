@@ -21,7 +21,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crystalline_core::{IndexEntry, render_index};
+use crystalline_core::{
+    DomainLayout, IndexEntry, PathClass, ReflectionMode, render_index, slash_rel,
+};
 use walkdir::WalkDir;
 
 /// What one regeneration pass did.
@@ -36,16 +38,18 @@ pub(crate) struct IndexRefresh {
 }
 
 /// Regenerate every `index.md` under `root`, the filesystem root of a file
-/// domain.
+/// domain whose Reflection is in `mode` (the mode in effect, so a pending
+/// engram under `reflections/` is still listed and an effective Reflection's
+/// folder is left out).
 ///
 /// Blocking IO throughout: callers run it off the async runtime's worker
 /// threads. Nothing here is fatal. A file that cannot be read still gets an
 /// entry (titled by its filename stem), and a write or removal that fails is
 /// logged and skipped, so a locked or read-only path never fails the write,
 /// move, delete or sync that asked for the regeneration.
-pub(crate) fn refresh(root: &Path) -> IndexRefresh {
+pub(crate) fn refresh(root: &Path, mode: ReflectionMode) -> IndexRefresh {
     let mut refresh = IndexRefresh::default();
-    let folders = collect(root);
+    let folders = collect(root, mode);
 
     // Every folder that holds knowledge directly or anywhere below it gets an
     // index file; the rest must not keep a stale one.
@@ -130,18 +134,17 @@ impl Walked {
 }
 
 /// Walk the domain, reading each concept's title and description.
-fn collect(root: &Path) -> Walked {
+fn collect(root: &Path, mode: ReflectionMode) -> Walked {
     let mut walked = Walked::default();
 
-    // The same exclusions the sync walk applies, so the index lists exactly the
-    // files Crystalline indexes: no dot-files, no dot-directories and none of
-    // the artifact folders the MANIFEST provisions from inside this root.
-    let excluded = crystalline_core::in_root_artifact_dirs(root);
-    let walker = WalkDir::new(root).into_iter().filter_entry(|e| {
-        e.depth() == 0
-            || (!is_hidden(e.file_name().to_string_lossy().as_ref())
-                && !excluded.iter().any(|dir| e.path().starts_with(dir)))
-    });
+    // The same layout the sync walk applies, so the index lists exactly the
+    // files Crystalline indexes: no hidden file or folder, none of the
+    // artifact folders the MANIFEST provisions from inside this root and,
+    // while the Reflection is in effect, nothing under `reflections/`.
+    let layout = DomainLayout::at(root, mode);
+    let walker = WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| e.depth() == 0 || !layout.prunes_dir(&slash_rel(root, e.path())));
 
     for entry in walker.filter_map(Result::ok) {
         let Some(rel) = rel_path(root, entry.path()) else {
@@ -151,16 +154,22 @@ fn collect(root: &Path) -> Walked {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
-        if crystalline_core::is_reserved_file(&name) {
-            if name == crystalline_core::INDEX_FILE {
-                walked
-                    .existing_indexes
-                    .insert(parent_of(&rel).unwrap_or_default());
+        match layout.classify(&rel) {
+            PathClass::Reserved => {
+                if name == crystalline_core::INDEX_FILE {
+                    walked
+                        .existing_indexes
+                        .insert(parent_of(&rel).unwrap_or_default());
+                }
+                continue;
             }
-            continue;
-        }
-        if is_hidden(&name) || !name.to_lowercase().ends_with(".md") {
-            continue;
+            PathClass::Engram | PathClass::EngramAsset if name.to_lowercase().ends_with(".md") => {}
+            PathClass::Engram
+            | PathClass::EngramAsset
+            | PathClass::Hidden
+            | PathClass::Artifact
+            | PathClass::Other
+            | PathClass::Reflection(_) => continue,
         }
         let folder = parent_of(&rel).unwrap_or_default();
         let (title, description) = title_and_description(entry.path());
@@ -171,7 +180,54 @@ fn collect(root: &Path) -> Walked {
             .push(IndexEntry::file(&name, &title, description.as_deref()));
     }
 
+    // The walk leaves an effective Reflection's folder out, so the listings a
+    // pending switch had written there are looked for on their own: each is
+    // an existing index of a folder that holds no knowledge, so it goes.
+    if mode == ReflectionMode::Effective {
+        walked
+            .existing_indexes
+            .extend(stale_reflection_listings(root));
+    }
+
     walked
+}
+
+/// The folders under the Reflection's folder (any letter case) that hold an
+/// `index.md` this pass generated, from the time the switch was pending and
+/// the folder held engrams. An `index.md` that does not read as generated is
+/// somebody's own file and is not named. Hidden folders (the baseline) are
+/// not entered.
+fn stale_reflection_listings(root: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let off = DomainLayout::bare(ReflectionMode::Off);
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let is_folder = entry.file_type().is_ok_and(|t| t.is_dir())
+            && entry.file_name().to_str().is_some_and(|n| {
+                n.eq_ignore_ascii_case(crystalline_core::reflection::REFLECTIONS_DIR)
+            });
+        if !is_folder {
+            continue;
+        }
+        let walk = WalkDir::new(entry.path())
+            .into_iter()
+            .filter_entry(|e| e.depth() == 0 || off.enters_dir(&slash_rel(root, e.path())));
+        for item in walk.filter_map(Result::ok) {
+            if !item.file_type().is_file()
+                || item.file_name() != std::ffi::OsStr::new(crystalline_core::INDEX_FILE)
+            {
+                continue;
+            }
+            let generated = std::fs::read_to_string(item.path())
+                .is_ok_and(|text| crystalline_core::is_generated_index(&text));
+            if generated && let Some(rel) = rel_path(root, item.path()) {
+                found.push(parent_of(&rel).unwrap_or_default());
+            }
+        }
+    }
+    found
 }
 
 /// One concept's `title` and `description` frontmatter. A file that cannot be
@@ -230,10 +286,6 @@ fn parent_of(rel: &str) -> Option<String> {
     }
 }
 
-fn is_hidden(name: &str) -> bool {
-    name.starts_with('.')
-}
-
 /// Write through a sibling temp file and rename, so a reader (or the watcher)
 /// never sees a partially written index.
 fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
@@ -280,7 +332,7 @@ mod tests {
             &engram("Rollback", Some("How to roll back")),
         );
 
-        let report = refresh(root);
+        let report = refresh(root, ReflectionMode::Off);
         assert_eq!(report.written, 3);
         assert_eq!(report.removed, 0);
 
@@ -308,8 +360,8 @@ mod tests {
         write(root, "a.md", &engram("A", None));
         write(root, "sub/b.md", &engram("B", None));
 
-        assert_eq!(refresh(root).written, 2);
-        let second = refresh(root);
+        assert_eq!(refresh(root, ReflectionMode::Off).written, 2);
+        let second = refresh(root, ReflectionMode::Off);
         assert_eq!(
             second.written, 0,
             "an unchanged index must not be rewritten"
@@ -324,11 +376,11 @@ mod tests {
         let root = dir.path();
         write(root, "a.md", &engram("A", None));
         write(root, "sub/b.md", &engram("B", None));
-        refresh(root);
+        refresh(root, ReflectionMode::Off);
         assert!(root.join("sub/index.md").is_file());
 
         std::fs::remove_file(root.join("sub/b.md")).unwrap();
-        let report = refresh(root);
+        let report = refresh(root, ReflectionMode::Off);
         assert_eq!(report.removed, 1);
         assert!(!root.join("sub/index.md").exists());
         assert_eq!(
@@ -337,13 +389,39 @@ mod tests {
         );
     }
 
+    /// The listings a pending switch left under `reflections/` go once the
+    /// Reflection is in effect; an `index.md` somebody wrote there stays.
+    #[test]
+    fn an_effective_reflection_loses_the_listings_it_had_while_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "notes/a.md", &engram("A", None));
+        write(root, "reflections/guides/old.md", &engram("Old", None));
+        refresh(root, ReflectionMode::Off);
+        assert!(root.join("reflections/index.md").is_file());
+        assert!(root.join("reflections/guides/index.md").is_file());
+        std::fs::remove_file(root.join("reflections/guides/old.md")).unwrap();
+        write(
+            root,
+            "reflections/own/index.md",
+            "# Our pages\n\nRead these first.\n",
+        );
+
+        let report = refresh(root, ReflectionMode::Effective);
+        assert_eq!(report.removed, 2);
+        assert!(!root.join("reflections/index.md").exists());
+        assert!(!root.join("reflections/guides/index.md").exists());
+        assert!(root.join("reflections/own/index.md").is_file());
+        assert_eq!(refresh(root, ReflectionMode::Effective).removed, 0);
+    }
+
     #[test]
     fn a_folder_holding_only_subfolders_still_gets_an_index() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write(root, "top/mid/leaf.md", &engram("Leaf", None));
 
-        refresh(root);
+        refresh(root, ReflectionMode::Off);
         assert_eq!(
             read(root, "index.md"),
             "---\nokf_version: \"0.2\"\n---\n\n# Contents\n\n* [top/](top/)\n"
@@ -360,7 +438,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write(root, "sub/a.md", &engram("A", None));
-        refresh(root);
+        refresh(root, ReflectionMode::Off);
         assert!(read(root, "index.md").starts_with("---\nokf_version: \"0.2\"\n---\n"));
         assert!(!read(root, "sub/index.md").contains("okf_version"));
     }
@@ -374,7 +452,7 @@ mod tests {
         write(root, ".hidden/secret.md", &engram("Secret", None));
         write(root, "notes.txt", "not markdown\n");
 
-        refresh(root);
+        refresh(root, ReflectionMode::Off);
         let index = read(root, "index.md");
         assert_eq!(
             index,
@@ -388,7 +466,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write(root, "orphan-note.md", "no frontmatter at all\n");
-        refresh(root);
+        refresh(root, ReflectionMode::Off);
         assert_eq!(
             read(root, "index.md"),
             "---\nokf_version: \"0.2\"\n---\n\n# Contents\n\n* [orphan-note](orphan-note.md)\n"
@@ -399,7 +477,7 @@ mod tests {
     fn an_empty_domain_gets_no_index_at_all() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let report = refresh(root);
+        let report = refresh(root, ReflectionMode::Off);
         assert_eq!(report.written, 0);
         assert!(!root.join("index.md").exists());
     }

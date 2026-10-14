@@ -541,7 +541,7 @@ async fn the_wire_format_baseline_the_conformance_tasks_measure_against() {
         .collect();
     assert_eq!(
         names.len(),
-        20,
+        24,
         "a default install's tools, the `skills` surface among them: {names:?}"
     );
     let mut sorted = names.clone();
@@ -562,8 +562,8 @@ async fn the_wire_format_baseline_the_conformance_tasks_measure_against() {
     let listed = templates["result"]["resourceTemplates"].as_array().unwrap();
     assert_eq!(
         listed.len(),
-        1,
-        "the one template: every attachment a domain carries. The endpoint also \
+        2,
+        "the two templates: every attachment a domain carries and every file of a Reflection. The endpoint also \
          has to be overridden rather than inherited because rmcp's default \
          answers one of the six cache-hint operations with no hints \
          (handler/server.rs:387-395)"
@@ -646,7 +646,7 @@ async fn the_wire_format_baseline_the_conformance_tasks_measure_against() {
             .as_array()
             .unwrap()
             .len(),
-        20
+        24
     );
 
     // **Task 9 moved this assertion, deliberately.** The same shape at
@@ -657,7 +657,7 @@ async fn the_wire_format_baseline_the_conformance_tasks_measure_against() {
     // revision matches, which
     // `a_version_we_do_not_serve_is_refused_at_the_http_handshake` pins in both
     // of its shapes. Here the era is served: statelessly, with its caching
-    // hints, and with the same 20 tools every other client of this instance is
+    // hints, and with the same 24 tools every other client of this instance is
     // served (GitHub is off here, so the six collaboration tools are withheld
     // from every era alike).
     // `tests/mcp/mcp_modern_era.rs` is where the rest of that surface lives.
@@ -680,7 +680,7 @@ async fn the_wire_format_baseline_the_conformance_tasks_measure_against() {
         head_of(&era)
     );
     let era_result = &payload(&era)["result"];
-    assert_eq!(era_result["tools"].as_array().unwrap().len(), 20);
+    assert_eq!(era_result["tools"].as_array().unwrap().len(), 24);
     assert_eq!(era_result["resultType"], "complete");
     assert_eq!(era_result["ttlMs"], 0);
     assert_eq!(era_result["cacheScope"], "public");

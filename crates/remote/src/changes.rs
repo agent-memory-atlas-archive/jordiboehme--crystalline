@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use crystalline_core::GeneratedIndexes;
+use crystalline_core::{DomainLayout, GeneratedIndexes, ReflectionMode};
 use walkdir::WalkDir;
 
 use crate::error::RemoteError;
@@ -205,6 +205,7 @@ pub fn detect_local_changes(
         domain_root,
         base,
         crystalline_core::generated_indexes_at(domain_root),
+        ReflectionMode::declared(crystalline_core::reflection_at(domain_root)),
         None,
         None,
     )
@@ -220,10 +221,15 @@ pub fn detect_local_changes(
 /// stamp, the base copy is read, and when that copy is what the stamp
 /// describes and both read the same as LF, the file counts as unchanged. The
 /// extra read is paid only on a mismatch.
+///
+/// `reflection` is the Reflection mode in effect, handed in by the caller and
+/// never read from the MANIFEST here: a pending switch arrives as `Off`, so
+/// the engrams still under `reflections/` keep being shared.
 pub fn detect_local_changes_against(
     domain_root: &Path,
     base: &BTreeMap<String, BaseStamp>,
     state_dir: &Path,
+    reflection: ReflectionMode,
 ) -> Result<LocalChanges, RemoteError> {
     // The LF digests recorded beside the stamps, read once for the whole walk.
     // A digest describes the stamp recorded next to it, so it is trusted only
@@ -246,6 +252,7 @@ pub fn detect_local_changes_against(
         domain_root,
         base,
         crystalline_core::generated_indexes_at(domain_root),
+        reflection,
         Some(state_dir),
         digests.as_ref(),
     )
@@ -284,8 +291,8 @@ pub fn matches_base_as_lf(state_dir: &Path, rel: &str, stamp: &BaseStamp, disk: 
     }
 }
 
-/// [`detect_local_changes`] with the domain's generated-index policy supplied
-/// rather than read: the pure half, whose only IO is reading the files it
+/// [`detect_local_changes`] with the domain's generated-index policy and
+/// Reflection mode supplied rather than read: the pure half, whose only IO is reading the files it
 /// walks. Crate-internal on purpose: a caller outside would be a caller
 /// choosing what a share contains, which is the domain's choice and not
 /// theirs.
@@ -293,9 +300,19 @@ pub(crate) fn detect_local_changes_with(
     domain_root: &Path,
     base: &BTreeMap<String, BaseStamp>,
     indexes: GeneratedIndexes,
+    reflection: ReflectionMode,
     base_copies: Option<&Path>,
     lf_digests: Option<&BTreeMap<String, String>>,
 ) -> Result<LocalChanges, RemoteError> {
+    // What each path of the domain is. Every class takes part in a share
+    // today; a class that never travels with the engrams says so here, on the
+    // base and on the walk alike, so it never turns into a proposed deletion.
+    // With a Reflection in effect nothing under `reflections/` is this
+    // share's business in either direction: the Reflection has its own home
+    // and its own backup branch, and a base that recorded files there must
+    // not turn them into proposed deletions, which is why the base is
+    // narrowed by the same test as the walk.
+    let layout = DomainLayout::bare(reflection);
     let mut changes = Vec::new();
     let mut skipped_large = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -324,7 +341,9 @@ pub(crate) fn detect_local_changes_with(
     // reach for by accident.
     let base: BTreeMap<&str, &BaseStamp> = base
         .iter()
-        .filter(|(rel, _)| participates_in_change_detection(rel, indexes))
+        .filter(|(rel, _)| {
+            participates_in_change_detection(rel, indexes) && layout.classify(rel).shares()
+        })
         .map(|(rel, stamp)| (rel.as_str(), stamp))
         .collect();
 
@@ -350,7 +369,7 @@ pub(crate) fn detect_local_changes_with(
             continue;
         }
         let rel = rel_path(domain_root, entry.path());
-        if !participates_in_change_detection(&rel, indexes) {
+        if !(participates_in_change_detection(&rel, indexes) && layout.classify(&rel).shares()) {
             continue;
         }
 
@@ -824,12 +843,150 @@ mod tests {
     /// Detection for a domain that keeps its generated indexes local: the
     /// default, and what every MANIFEST that declares nothing gets.
     fn local(dir: &Path, base: &BTreeMap<String, BaseStamp>) -> LocalChanges {
-        detect_local_changes_with(dir, base, GeneratedIndexes::Local, None, None).unwrap()
+        detect_local_changes_with(
+            dir,
+            base,
+            GeneratedIndexes::Local,
+            ReflectionMode::Off,
+            None,
+            None,
+        )
+        .unwrap()
     }
 
     /// Detection for a domain that lets them travel.
     fn shared(dir: &Path, base: &BTreeMap<String, BaseStamp>) -> LocalChanges {
-        detect_local_changes_with(dir, base, GeneratedIndexes::Shared, None, None).unwrap()
+        detect_local_changes_with(
+            dir,
+            base,
+            GeneratedIndexes::Shared,
+            ReflectionMode::Off,
+            None,
+            None,
+        )
+        .unwrap()
+    }
+
+    fn reflecting(dir: &Path, base: &BTreeMap<String, BaseStamp>) -> LocalChanges {
+        detect_local_changes_with(
+            dir,
+            base,
+            GeneratedIndexes::Local,
+            ReflectionMode::Effective,
+            None,
+            None,
+        )
+        .unwrap()
+    }
+
+    // --- the reflection mode -----------------------------------------------
+
+    #[test]
+    fn with_reflection_on_nothing_under_reflections_is_ever_shared() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes/a.md", b"alpha");
+        write(dir.path(), "reflections/guides/deploying.md", b"page");
+        write(
+            dir.path(),
+            "reflections/guides/deploying.threads.md",
+            b"threads",
+        );
+        write(dir.path(), "reflections/PACT.md", b"pact");
+        write(
+            dir.path(),
+            "Reflections/cased.md",
+            b"one folder on APFS and NTFS",
+        );
+        let result = reflecting(dir.path(), &BTreeMap::new());
+        let paths: Vec<&str> = result.changes.iter().map(|c| c.path()).collect();
+        assert_eq!(paths, ["notes/a.md"]);
+    }
+
+    #[test]
+    fn a_base_that_recorded_reflections_proposes_no_deletion() {
+        // The phantom-deletion class: the base snapshot recorded files under
+        // reflections/ from before the switch (or from a pull), the walk no
+        // longer reports them, and a filter on the walk alone would propose
+        // deleting every one of them upstream.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes/a.md", b"alpha");
+        let base = base_of(&[
+            ("notes/a.md", b"alpha"),
+            ("reflections/old.md", b"gone locally"),
+        ]);
+        assert!(reflecting(dir.path(), &base).changes.is_empty());
+    }
+
+    #[test]
+    fn with_reflection_off_the_folder_is_ordinary_knowledge() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "reflections/a.md",
+            b"an engram in an ordinary folder",
+        );
+        let paths: Vec<String> = local(dir.path(), &BTreeMap::new())
+            .changes
+            .iter()
+            .map(|c| c.path().to_string())
+            .collect();
+        assert_eq!(paths, ["reflections/a.md"]);
+    }
+
+    #[test]
+    fn detection_reads_the_switch_from_the_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest: &[u8] = b"---\ntype: manifest\ntitle: eng\nreflection: on\n---\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n";
+        write(dir.path(), "MANIFEST.md", manifest);
+        write(dir.path(), "reflections/a.md", b"page");
+        let base = base_of(&[("MANIFEST.md", manifest)]);
+        assert!(
+            detect_local_changes(dir.path(), &base)
+                .unwrap()
+                .changes
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_share_path_follows_the_mode_it_is_handed() {
+        // `_against` is what every share calls. It never reads the MANIFEST:
+        // a pending switch arrives as Off, so the engrams still under
+        // reflections/ keep being shared.
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "MANIFEST.md",
+            b"---\ntype: manifest\ntitle: eng\nreflection: on\n---\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n",
+        );
+        write(
+            dir.path(),
+            "reflections/a.md",
+            b"an engram that waits to move out",
+        );
+        let on = detect_local_changes_against(
+            dir.path(),
+            &BTreeMap::new(),
+            state.path(),
+            ReflectionMode::Effective,
+        )
+        .unwrap();
+        assert!(on.changes.iter().all(|c| c.path() != "reflections/a.md"));
+        let pending = detect_local_changes_against(
+            dir.path(),
+            &BTreeMap::new(),
+            state.path(),
+            ReflectionMode::Off,
+        )
+        .unwrap();
+        assert!(
+            pending
+                .changes
+                .iter()
+                .any(|c| c.path() == "reflections/a.md"),
+            "a pending switch still shares it"
+        );
     }
 
     /// A write the daemon was killed in the middle of leaves its temp file
@@ -1058,13 +1215,17 @@ mod tests {
         base.insert(rel.to_string(), stamp_for(crlf));
 
         write(dir.path(), rel, b"---\ntitle: One\n---\n\nBody.\n");
-        let result = detect_local_changes_against(dir.path(), &base, state.path()).unwrap();
+        let result =
+            detect_local_changes_against(dir.path(), &base, state.path(), ReflectionMode::Off)
+                .unwrap();
         assert!(result.changes.is_empty(), "{:?}", result.changes);
         let raw = detect_local_changes(dir.path(), &base).unwrap();
         assert_eq!(raw.changes.len(), 1, "without base copies it is raw bytes");
 
         write(dir.path(), rel, b"---\ntitle: One\n---\n\nEdited.\n");
-        let result = detect_local_changes_against(dir.path(), &base, state.path()).unwrap();
+        let result =
+            detect_local_changes_against(dir.path(), &base, state.path(), ReflectionMode::Off)
+                .unwrap();
         assert!(
             matches!(&result.changes[..], [LocalChange::Modified { path, .. }] if path == rel),
             "{:?}",
@@ -1088,6 +1249,7 @@ mod tests {
             dir.path(),
             &base,
             GeneratedIndexes::Local,
+            ReflectionMode::Off,
             Some(state.path()),
             None,
         )
@@ -1108,6 +1270,7 @@ mod tests {
             dir.path(),
             &base,
             GeneratedIndexes::Local,
+            ReflectionMode::Off,
             None,
             Some(&digests),
         )
@@ -1124,6 +1287,7 @@ mod tests {
             dir.path(),
             &base,
             GeneratedIndexes::Local,
+            ReflectionMode::Off,
             Some(state.path()),
             Some(&digests),
         )
@@ -1174,6 +1338,7 @@ mod tests {
             dir.path(),
             &base,
             GeneratedIndexes::Local,
+            ReflectionMode::Off,
             Some(state.path()),
             Some(&digests),
         )
@@ -1187,6 +1352,7 @@ mod tests {
             dir.path(),
             &base,
             GeneratedIndexes::Local,
+            ReflectionMode::Off,
             Some(state.path()),
             Some(&empty),
         )
@@ -1667,8 +1833,15 @@ mod tests {
         base.insert("notes/A.md".to_string(), stamp_for(b"alpha"));
         base.insert("notes/a.md".to_string(), stamp_for(b"other alpha"));
 
-        let err = detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None)
-            .expect_err("a case collision in the base must refuse the plan");
+        let err = detect_local_changes_with(
+            dir.path(),
+            &base,
+            GeneratedIndexes::Local,
+            ReflectionMode::Off,
+            None,
+            None,
+        )
+        .expect_err("a case collision in the base must refuse the plan");
         let text = err.to_string();
         assert!(
             text.contains("'notes/A.md' and 'notes/a.md'"),
@@ -1743,8 +1916,14 @@ mod tests {
             eprintln!("skipped: permissions are not enforced for this user");
             return;
         }
-        let result =
-            detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None);
+        let result = detect_local_changes_with(
+            dir.path(),
+            &base,
+            GeneratedIndexes::Local,
+            ReflectionMode::Off,
+            None,
+            None,
+        );
         restore(&locked);
         let err = result.expect_err("an unreadable folder must refuse the plan");
         assert!(err.to_string().contains("decisions"), "{err}");
@@ -1764,8 +1943,14 @@ mod tests {
             eprintln!("skipped: permissions are not enforced for this user");
             return;
         }
-        let result =
-            detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None);
+        let result = detect_local_changes_with(
+            dir.path(),
+            &base,
+            GeneratedIndexes::Local,
+            ReflectionMode::Off,
+            None,
+            None,
+        );
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
         let err = result.expect_err("an unreadable file must refuse the plan");
         assert!(err.to_string().contains("notes/b.md"), "{err}");
@@ -1782,8 +1967,15 @@ mod tests {
         std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("linked")).unwrap();
         write(dir.path(), "plain.md", b"plain");
         let base = base_of(&[("linked/a.md", b"alpha"), ("plain.md", b"plain")]);
-        let err = detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None)
-            .expect_err("a file behind a link must refuse the plan");
+        let err = detect_local_changes_with(
+            dir.path(),
+            &base,
+            GeneratedIndexes::Local,
+            ReflectionMode::Off,
+            None,
+            None,
+        )
+        .expect_err("a file behind a link must refuse the plan");
         let text = err.to_string();
         assert!(text.contains("linked/a.md"), "{text}");
         // Moving the file out of the domain would make the next share
@@ -1826,8 +2018,15 @@ mod tests {
             .unwrap();
         assert!(status.status.success(), "mklink failed");
         let base = base_of(&[("linked/a.md", b"alpha")]);
-        let err = detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None)
-            .expect_err("a junction must refuse the plan");
+        let err = detect_local_changes_with(
+            dir.path(),
+            &base,
+            GeneratedIndexes::Local,
+            ReflectionMode::Off,
+            None,
+            None,
+        )
+        .expect_err("a junction must refuse the plan");
         assert!(err.to_string().contains("linked"), "{err}");
     }
 
@@ -1853,8 +2052,15 @@ mod tests {
         write(dir.path(), "notes/Big.md", &big);
         let mut base = BTreeMap::new();
         base.insert("notes/big.md".to_string(), stamp_for(b"small"));
-        let err = detect_local_changes_with(dir.path(), &base, GeneratedIndexes::Local, None, None)
-            .expect_err("a large alias must be refused");
+        let err = detect_local_changes_with(
+            dir.path(),
+            &base,
+            GeneratedIndexes::Local,
+            ReflectionMode::Off,
+            None,
+            None,
+        )
+        .expect_err("a large alias must be refused");
         assert!(err.to_string().contains("notes/Big.md"), "{err}");
     }
 }

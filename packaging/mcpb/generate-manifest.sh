@@ -193,6 +193,22 @@ cat >"$manifest_path" <<JSON
       "description": "Sweep a domain for the maintenance the knowledge needs and return a ranked read-only work queue: lifecycle debt, structural gaps and near-duplicates, each with its evidence and the exact next action."
     },
     {
+      "name": "reflect",
+      "description": "Get the work queue of a domain's Reflection, its documents for people: what people changed, what changed in the engrams and threads waiting for an answer."
+    },
+    {
+      "name": "read_reflection",
+      "description": "Read a domain's Reflection: the tree of its documents for people, one document with its sections, source engrams and open threads, or the sections that match a search query. A page from a domain served by another machine carries its images as Markdown links only, no resource links."
+    },
+    {
+      "name": "write_reflection",
+      "description": "Create, change, move or delete a document of a domain's Reflection, or change one section of it, and record the engrams each section was built from."
+    },
+    {
+      "name": "discuss",
+      "description": "Open, answer, resolve or list threads on a passage of a Reflection document, written as conventional comments for the people who read it."
+    },
+    {
       "name": "configure",
       "description": "View and adjust Crystalline's settings, like connecting a GitHub account for team collaboration."
     },

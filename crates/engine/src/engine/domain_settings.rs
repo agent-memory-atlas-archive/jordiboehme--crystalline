@@ -5,6 +5,7 @@
 use super::*;
 
 use crystalline_core::manifest_view::{PolicyRow, manifest_facts, policy_rows};
+use crystalline_core::reflection::ReflectionState;
 use crystalline_core::verify::{
     ConfigEdit, DOMAIN_CONFIG_FILE, VERIFY_RULES, edit_domain_config, is_severity_word,
     load_domain_config, verify_rule,
@@ -92,9 +93,17 @@ fn checked_policy(domain: &str, edit: &PolicyEdit) -> Result<&'static crystallin
         )));
     };
     if spec.kind == crystalline_core::PolicyKind::Text {
-        return Err(EngineError::Invalid(format!(
-            "`{key}` changes through a rename, which also moves this machine's name and rewrites links: use Rename domain on the domain page or `crystalline domain rename {domain} <new>`"
-        )));
+        return Err(EngineError::Invalid(
+            if key == crystalline_core::REFLECTION_HOME_KEY {
+                format!(
+                    "`{key}` is filled in when Reflection is switched on for a domain connected to GitHub; it is not set by hand"
+                )
+            } else {
+                format!(
+                    "`{key}` changes through a rename, which also moves this machine's name and rewrites links: use Rename domain on the domain page or `crystalline domain rename {domain} <new>`"
+                )
+            },
+        ));
     }
     if let PolicyEdit::Set { value, .. } = edit
         && !spec.accepts(value)
@@ -176,6 +185,56 @@ impl Engine {
             self.require_domain(domain, scope).await?;
             return Err(EngineError::DomainReadOnly(read_only_sentence(domain)));
         }
+        // Reflection: a switch-on is screened against the text the edits
+        // would produce, so the policy PATCH, configure and a raw MANIFEST
+        // edit refuse with one sentence. A switch-off (`set reflection: off`,
+        // or `unset reflection`) is never screened.
+        let mut edits: Vec<PolicyEdit> = edits.to_vec();
+        let wants_on = edits.iter().any(|edit| {
+            matches!(edit, PolicyEdit::Set { key, value }
+                if key == crystalline_core::REFLECTION_KEY
+                    && value == crystalline_core::ReflectionSwitch::On.as_str())
+        });
+        let already_on =
+            wants_on && self.reflection_switch(domain) == crystalline_core::ReflectionSwitch::On;
+        // A switch-on of a domain that already says `on` but has no home
+        // (state Homeless) refills the home instead of doing nothing.
+        let refill =
+            already_on && self.reflection_state(domain).await? == ReflectionState::Homeless;
+        let switching_on = wants_on && (refill || !already_on);
+        // A switch-off of a Reflection that is on: on a domain shared
+        // through GitHub, its folder turns into engram content then.
+        let switching_off = edits.iter().any(|edit| match edit {
+            PolicyEdit::Set { key, value } => {
+                key == crystalline_core::REFLECTION_KEY
+                    && value == crystalline_core::ReflectionSwitch::Off.as_str()
+            }
+            PolicyEdit::Unset { key } => key == crystalline_core::REFLECTION_KEY,
+        }) && self.reflection_switch(domain)
+            == crystalline_core::ReflectionSwitch::On;
+        if switching_on {
+            let facts = self.switch_facts(domain).await?;
+            // Before the MANIFEST is read: a virtual domain has none on disk
+            // to read, and the refusal is the one `screen_switch` gives.
+            if facts.virtual_domain {
+                return Err(super::reflection::virtual_refusal());
+            }
+            if facts.origin
+                && let Some(own) = facts.own_url.clone()
+            {
+                edits.push(PolicyEdit::Set {
+                    key: crystalline_core::REFLECTION_HOME_KEY.to_string(),
+                    value: own,
+                });
+            }
+            let before = self.manifest_source(domain).await?.markdown;
+            let after = apply_policy_edits(&before, &edits);
+            if refill {
+                super::reflection::screen_home(&after, &facts)?;
+            } else {
+                super::reflection::screen_switch(&before, &after, &facts)?;
+            }
+        }
         let view = if unlocking {
             DomainView::for_unlock(self, domain).await?
         } else {
@@ -184,7 +243,12 @@ impl Engine {
         let overlay = view.actor().map(str::to_string);
         let actor = self.actor_for(None, overlay.as_deref());
         let (desc, source) = view.resolve("manifest").await?;
-        let edits: Vec<PolicyEdit> = edits.to_vec();
+        // The pact is seeded before the switch is written: a seed that fails
+        // leaves the switch off, so sending the switch again seeds it. A
+        // draft seeds nothing, since the switch is not in effect yet.
+        if switching_on && overlay.is_none() {
+            self.seed_pact(domain).await?;
+        }
         self.apply_source_edit(
             &desc,
             &source,
@@ -193,16 +257,7 @@ impl Engine {
             &actor,
             None,
             scope,
-            move |current| {
-                let mut out = current.to_string();
-                for edit in &edits {
-                    out = match edit {
-                        PolicyEdit::Set { key, value } => set_frontmatter_field(&out, key, value),
-                        PolicyEdit::Unset { key } => remove_frontmatter_field(&out, key),
-                    };
-                }
-                Ok(out)
-            },
+            move |current| Ok(apply_policy_edits(current, &edits)),
         )
         .await?;
         self.refresh_routing_cache().await;
@@ -221,13 +276,22 @@ impl Engine {
                     })?
             }
         };
-        Ok(json!({
+        let mut receipt = json!({
             "domain": domain,
             "markdown": markdown,
             "draft": overlay.is_some(),
-        }))
+        });
+        // Said only where it is true: the switch is off in the folder (not a
+        // draft) of a domain with a GitHub origin.
+        if switching_off && overlay.is_none() && self.domain_has_origin(domain)? {
+            receipt["note"] = json!(SWITCH_OFF_SHARED_NOTE);
+        }
+        Ok(receipt)
     }
 }
+
+/// What a switch-off of a Reflection on a domain shared through GitHub says.
+const SWITCH_OFF_SHARED_NOTE: &str = "Reflection is off now, so \"share changes\" offers the files in reflections/ as engram changes. Do not share changes while it is off. To move the Reflection's home, switch it on again here at once and share the MANIFEST change.";
 
 /// The line an answer carries when the YAML edit lost comments.
 const YAML_COMMENTS_DROPPED: &str =
@@ -405,8 +469,19 @@ impl Engine {
                     .find(|row| row.key == key)
                     .and_then(|row| row.declared.clone())
             };
+            // A switch-on of a Homeless domain is kept although the MANIFEST
+            // says `on` already: it refills the home (R22). The state is
+            // asked only when the call names the switch.
+            let names_switch = policy_edits.iter().any(|edit| {
+                matches!(edit, PolicyEdit::Set { key, .. } if key == crystalline_core::REFLECTION_KEY)
+            });
+            let homeless =
+                names_switch && self.reflection_state(domain).await? == ReflectionState::Homeless;
             policy_edits.retain(|edit| match edit {
-                PolicyEdit::Set { key, value } => declared(key).as_deref() != Some(value.as_str()),
+                PolicyEdit::Set { key, value } => {
+                    declared(key).as_deref() != Some(value.as_str())
+                        || (homeless && key == crystalline_core::REFLECTION_KEY)
+                }
                 PolicyEdit::Unset { key } => declared(key).is_some(),
             });
         }
@@ -479,11 +554,31 @@ impl Engine {
         if draft {
             view["draft"] = json!(true);
         }
-        if let Some(note) = note {
-            view["note"] = json!(note);
+        // The switch-off note first, then the YAML one, in one line.
+        let notes: Vec<&str> = written
+            .as_ref()
+            .and_then(|written| written["note"].as_str())
+            .into_iter()
+            .chain(note)
+            .collect();
+        if !notes.is_empty() {
+            view["note"] = json!(notes.join(" "));
         }
         Ok(view)
     }
+}
+
+/// A MANIFEST's text with the policy edits applied in order: the one fold
+/// the switch screen and the write share.
+fn apply_policy_edits(current: &str, edits: &[PolicyEdit]) -> String {
+    let mut out = current.to_string();
+    for edit in edits {
+        out = match edit {
+            PolicyEdit::Set { key, value } => set_frontmatter_field(&out, key, value),
+            PolicyEdit::Unset { key } => remove_frontmatter_field(&out, key),
+        };
+    }
+    out
 }
 
 /// The answer of a configure call whose policy keys landed and whose
@@ -714,10 +809,15 @@ fn policy_json(row: &PolicyRow, may_change: bool, domain: &str) -> Value {
     let text = row.kind == crystalline_core::PolicyKind::Text.as_str();
     let mut value = serde_json::to_value(row).expect("a policy row serializes");
     value["can_change"] = json!(may_change && !text);
-    value["how"] = json!(if text {
+    value["how"] = json!(if row.key == crystalline_core::REFLECTION_HOME_KEY {
+        "filled in when Reflection is switched on for a domain connected to GitHub; never set by hand"
+            .to_string()
+    } else if text {
         rename_how(domain)
     } else if row.key == crystalline_core::READ_ONLY_KEY {
         "switch on with configure; a person switches it off in the domain policies".to_string()
+    } else if row.key == crystalline_core::REFLECTION_KEY {
+        "set with configure; switching on refuses while engrams live in reflections/".to_string()
     } else {
         "set with configure".to_string()
     });

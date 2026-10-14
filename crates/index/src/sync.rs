@@ -91,14 +91,17 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use walkdir::WalkDir;
 
+use crystalline_core::reflection::ReflectionFile;
 use crystalline_core::{
-    MAX_ATTACHMENT_BYTES, PARSE_GENERATION, attachment_mime, parse_engram, validate_asset_path,
+    DomainLayout, MAX_ATTACHMENT_BYTES, PARSE_GENERATION, PathClass, ReflectionMode,
+    attachment_mime, parse_engram, slash_rel, validate_asset_path,
 };
 
 use crate::embed::{ChunkParams, chunk_engram};
 use crate::error::{IndexError, Result};
 use crate::store::{
-    AttachmentRow, DomainId, DomainKind, EngramRecord, FileStamp, NewChunk, RebuildKind, Store,
+    AssetTable, AttachmentRow, DomainId, DomainKind, EngramRecord, FileStamp, NewChunk,
+    RebuildKind, ReflectionRow, Store,
 };
 
 /// Maximum concurrent hashing or parsing tasks.
@@ -178,6 +181,9 @@ pub struct SyncReport {
     /// Prose wikilinks resolved in the same final cross-domain pass.
     #[serde(default)]
     pub links_resolved_late: u64,
+    /// Rows of the Reflection's tables this apply wrote or deleted.
+    #[serde(default)]
+    pub reflections_changed: usize,
     /// Wall-clock duration in milliseconds.
     pub duration_ms: u64,
     /// Every path this apply changed, in apply order. Skipped by serde on
@@ -211,15 +217,293 @@ struct PendingChange {
     previously_indexed: bool,
 }
 
-/// A file under the reserved `assets/` prefix that may be stored as an
-/// attachment: its stat and the mime the allowlist resolved, with no bytes read
-/// yet. The apply reads and hashes only the candidates whose stat moved.
-struct AssetCandidate {
+/// One file the walk found for a row table, stat'd but not read. `rel` is
+/// the row key: domain-relative for an engram attachment, the path inside
+/// `reflections/` for the Reflection's rows. The apply reads only the
+/// candidates whose stat moved.
+#[derive(Debug, Clone)]
+struct FileCandidate {
     rel: String,
     abs: PathBuf,
     mtime: i64,
     size: u64,
-    mime: &'static str,
+}
+
+/// A row of one of the file tables, built from a file just read.
+enum FileRow {
+    Asset(AttachmentRow),
+    Reflection(ReflectionRow),
+}
+
+/// The file tables the reconcile writes, as one closed set: the asset
+/// tables and the reflection table.
+#[derive(Debug, Clone, Copy)]
+enum FileRows {
+    Assets(AssetTable),
+    Reflections,
+}
+
+impl FileRows {
+    /// `(size, modified)` of every row of the domain, the stat prefilter's input.
+    async fn stamps<S: Store + ?Sized>(
+        self,
+        store: &S,
+        domain: DomainId,
+    ) -> Result<HashMap<String, (u64, String)>> {
+        Ok(match self {
+            FileRows::Assets(table) => store
+                .list_assets(table, domain)
+                .await?
+                .into_iter()
+                .map(|r| (r.path, (r.size, r.modified)))
+                .collect(),
+            FileRows::Reflections => store
+                .list_reflections(domain)
+                .await?
+                .into_iter()
+                .map(|r| (r.path, (r.size, r.modified)))
+                .collect(),
+        })
+    }
+
+    /// Read `c` and build its row, or `None` to skip it (a file grown past
+    /// the attachment ceiling between the stat and the read). Blocking.
+    fn build(self, c: &FileCandidate, modified: String) -> std::io::Result<Option<FileRow>> {
+        match self {
+            FileRows::Assets(_) => {
+                // The size is taken from the bytes that were actually read, so
+                // a file that grew past the cap between the stat and the read
+                // is caught here rather than stored over the ceiling.
+                let (sha256, size) = read_and_measure(&c.abs)?;
+                if size > MAX_ATTACHMENT_BYTES {
+                    tracing::debug!(path = %c.rel, size, "sync: skipping an attachment over the size cap");
+                    return Ok(None);
+                }
+                let name = c.rel.rsplit('/').next().unwrap_or(&c.rel);
+                let Some(mime) = attachment_mime(name) else {
+                    return Ok(None);
+                };
+                Ok(Some(FileRow::Asset(AttachmentRow {
+                    path: c.rel.clone(),
+                    sha256,
+                    mime: mime.to_string(),
+                    size,
+                    modified,
+                })))
+            }
+            FileRows::Reflections => {
+                let content = std::fs::read_to_string(&c.abs)?;
+                Ok(Some(FileRow::Reflection(ReflectionRow {
+                    title: crystalline_core::reflection::title_of(&content, &c.rel),
+                    sha256: sha256_hex(content.as_bytes()),
+                    size: content.len() as u64,
+                    modified,
+                    path: c.rel.clone(),
+                    content,
+                })))
+            }
+        }
+    }
+
+    async fn upsert<S: Store + ?Sized>(
+        self,
+        store: &S,
+        domain: DomainId,
+        row: &FileRow,
+        chunk_params: &ChunkParams,
+    ) -> Result<()> {
+        match (self, row) {
+            (FileRows::Assets(table), FileRow::Asset(row)) => {
+                store.upsert_asset(table, domain, row).await
+            }
+            // The row and its chunks, through the one funnel (R53).
+            (FileRows::Reflections, FileRow::Reflection(row)) => {
+                crate::reflection::index_reflection_row(store, domain, row, chunk_params).await
+            }
+            // `build` answers the row of its own table, so the pairing never
+            // crosses; an arm that made it cross is a bug, not a skip.
+            (FileRows::Assets(_), FileRow::Reflection(_))
+            | (FileRows::Reflections, FileRow::Asset(_)) => {
+                unreachable!("a file row reached another table's upsert")
+            }
+        }
+    }
+
+    async fn delete<S: Store + ?Sized>(
+        self,
+        store: &S,
+        domain: DomainId,
+        path: &str,
+    ) -> Result<bool> {
+        match self {
+            FileRows::Assets(table) => store.delete_asset(table, domain, path).await,
+            FileRows::Reflections => store.delete_reflection(domain, path).await,
+        }
+    }
+
+    /// The domain-relative path a failure is reported under.
+    fn report_path(self, rel: &str) -> String {
+        match self {
+            FileRows::Assets(AssetTable::Engram) => rel.to_string(),
+            FileRows::Assets(AssetTable::Reflection) | FileRows::Reflections => {
+                crystalline_core::reflection::domain_rel(rel)
+            }
+        }
+    }
+}
+
+/// The Reflection mode of the domain at `root`: `Effective` when its MANIFEST
+/// says `reflection: on` and no engram sits under `reflections/`. A switch
+/// that arrived while engrams still live there (a plain editor, a pull)
+/// stays pending, and pending reads as `Off`, so no sync ever drops an
+/// engram from the index because of it.
+///
+/// What an engram under `reflections/` is, is decided by one predicate,
+/// [`crystalline_core::is_pending_engram`] (R48): a file the walk would index
+/// as an engram that carries no page marker. It is asked of the `recorded`
+/// engram paths under the folder, read from disk; a recorded file that no
+/// longer reads as an engram (frontmatter that does not parse, bytes that
+/// are not UTF-8) keeps the row of its last good version, so it counts as
+/// pending ([`crystalline_core::EngramRow::Recorded`]). A domain the index has
+/// synced always records its `MANIFEST.md`, so no recorded path at all means
+/// the index holds no row of the domain (a wipe and rebuild, a new machine's
+/// first sync, a schema rebuild): then it is asked of every file under
+/// `reflections/` instead, so a rebuild keeps a pending switch pending (R1);
+/// there a file that does not read as an engram is none, since no row of
+/// it exists ([`crystalline_core::EngramRow::Unknown`]).
+pub fn reflection_mode(
+    root: &Path,
+    recorded: impl Iterator<Item = impl AsRef<str>>,
+) -> ReflectionMode {
+    if crystalline_core::reflection_at(root) != crystalline_core::ReflectionSwitch::On {
+        return ReflectionMode::Off;
+    }
+    if pending_engrams_up_to(root, recorded, Some(1)).is_empty() {
+        ReflectionMode::Effective
+    } else {
+        ReflectionMode::Off
+    }
+}
+
+/// The engrams under `reflections/` that wait to move out, sorted: every
+/// path [`crystalline_core::is_pending_engram`] calls pending, asked of the
+/// same files [`reflection_mode`] asks it of (the `recorded` paths, or the
+/// files on disk when nothing is recorded). The switch is not read, so the
+/// switch-on screen can ask before the switch is on. A folder or an entry the
+/// walk cannot read is named as it stands, since it may hold an engram
+/// (fail closed, as [`reflection_mode`] fails).
+pub fn pending_engrams(
+    root: &Path,
+    recorded: impl Iterator<Item = impl AsRef<str>>,
+) -> Vec<String> {
+    let mut pending = pending_engrams_up_to(root, recorded, None);
+    pending.sort();
+    pending
+}
+
+/// [`pending_engrams`] in the order found, stopping after `limit` when one
+/// is given. A Reflection folder spelled in two letter cases (a
+/// case-sensitive filesystem) holds the switch whatever its files are: the
+/// two would land on the same rows, so each spelling is named as a folder,
+/// the way a folder the walk cannot read is.
+fn pending_engrams_up_to(
+    root: &Path,
+    recorded: impl Iterator<Item = impl AsRef<str>>,
+    limit: Option<usize>,
+) -> Vec<String> {
+    let folders = crystalline_core::reflection::reflection_folders(root);
+    if folders.len() > 1 {
+        return folders
+            .into_iter()
+            .map(|folder| format!("{folder}/"))
+            .take(limit.unwrap_or(usize::MAX))
+            .collect();
+    }
+    let mut recorded = recorded.peekable();
+    if recorded.peek().is_none() {
+        return pending_engrams_on_disk(root, limit);
+    }
+    let pending = recorded.map(|p| p.as_ref().to_string()).filter(|p| {
+        crystalline_core::reflection::is_under_reflections(p)
+            && crystalline_core::is_pending_engram(root, p, crystalline_core::EngramRow::Recorded)
+    });
+    match limit {
+        Some(limit) => pending.take(limit).collect(),
+        None => pending.collect(),
+    }
+}
+
+/// The files under `reflections/` on disk that are pending engrams
+/// ([`crystalline_core::is_pending_engram`]), up to `limit`. A folder the
+/// walk cannot read is named instead of its files, since it may hold one.
+fn pending_engrams_on_disk(root: &Path, limit: Option<usize>) -> Vec<String> {
+    let mut found = Vec::new();
+    let full = |found: &Vec<String>| limit.is_some_and(|limit| found.len() >= limit);
+    let folder_rel = format!("{}/", crystalline_core::reflection::REFLECTIONS_DIR);
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return vec![folder_rel];
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            found.push(folder_rel.clone());
+            return found;
+        };
+        // The classifier's case rule: `Reflections/` is the Reflection's folder too.
+        let is_folder = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.eq_ignore_ascii_case(crystalline_core::reflection::REFLECTIONS_DIR));
+        if !is_folder {
+            continue;
+        }
+        // The walk enters what the engram walk enters (no hidden folder, so
+        // never the baseline); the predicate classifies each file.
+        let off = DomainLayout::bare(ReflectionMode::Off);
+        let walk = WalkDir::new(entry.path())
+            .into_iter()
+            .filter_entry(|e| e.depth() == 0 || off.enters_dir(&slash_rel(root, e.path())));
+        for item in walk {
+            let item = match item {
+                Ok(item) => item,
+                Err(e) => {
+                    let at = e.path().unwrap_or(&entry.path()).to_path_buf();
+                    found.push(slash_rel(root, &at));
+                    if full(&found) {
+                        return found;
+                    }
+                    continue;
+                }
+            };
+            let rel = slash_rel(root, item.path());
+            if item.file_type().is_file()
+                && crystalline_core::is_pending_engram(
+                    root,
+                    &rel,
+                    crystalline_core::EngramRow::Unknown,
+                )
+            {
+                found.push(rel);
+                if full(&found) {
+                    return found;
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Whether the domain at `root` has a Reflection in effect.
+pub fn reflection_effective(root: &Path, recorded: impl Iterator<Item = impl AsRef<str>>) -> bool {
+    reflection_mode(root, recorded) == ReflectionMode::Effective
+}
+
+/// The path inside `reflections/` of a domain-relative path under it, the
+/// key the Reflection's rows carry.
+fn inner_rel(rel: &str) -> String {
+    rel.split_once('/')
+        .map(|(_, rest)| rest)
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Sync one domain: walk `root`, reconcile the index and resolve forward refs.
@@ -438,13 +722,32 @@ pub struct DomainScan {
     /// The walk root, so the apply can re-stat a delete candidate on disk.
     root: PathBuf,
     /// Attachable files found under `assets/`, stat'd but not yet hashed.
-    assets: Vec<AssetCandidate>,
+    assets: Vec<FileCandidate>,
     /// Asset paths the scan looked for and did not find on disk. Only a
     /// targeted scan fills this; a full walk reconciles domain-wide instead.
     asset_deletes: Vec<String>,
     /// Whether `assets` is every attachable file in the domain (a full walk),
     /// so the apply may delete every row it did not see.
     assets_complete: bool,
+    /// Reflection pages (and the pact) found while the Reflection is in effect.
+    reflections: Vec<FileCandidate>,
+    /// Reflection paths a targeted scan looked for and did not find.
+    reflection_deletes: Vec<String>,
+    /// Allowlisted files under `reflections/assets/`, while the Reflection is
+    /// effective, keyed by their path inside `reflections/`. Their
+    /// completeness is `reflections_complete`.
+    reflection_assets: Vec<FileCandidate>,
+    /// Reflection file paths a targeted scan looked for and did not find.
+    reflection_asset_deletes: Vec<String>,
+    /// Whether `reflections` is every reflection of the domain (a full walk
+    /// that read everything under the folder), so the apply may delete every
+    /// row it did not see - which is also how a switch turned off (or
+    /// pending) clears the table.
+    reflections_complete: bool,
+    /// The Reflection mode the scan classified with. While it is in effect,
+    /// an engram row under `reflections/` the walk no longer saw is deleted
+    /// even though its file is on disk: the file is the Reflection's now.
+    reflection: ReflectionMode,
     /// Whether this scan is the disk half of a forced rebuild, so the apply's
     /// transaction also clears the domain's rebuild marker and stamps the
     /// current [`PARSE_GENERATION`]: a forced walk re-parsed every file, so the
@@ -485,27 +788,31 @@ pub async fn scan_domain(
 ) -> Result<DomainScan> {
     let started = Instant::now();
 
-    // Folders the MANIFEST provisions from inside this root hold deployable
-    // artifacts, not engrams, so they are pruned from the walk. Empty whenever
-    // the MANIFEST is absent or unparseable, so nothing is excluded then.
-    let excluded = crystalline_core::in_root_artifact_dirs(root);
+    // What every path of this domain is: the MANIFEST's in-root artifact
+    // folders are pruned with the hidden ones (none when the MANIFEST is
+    // absent or unparseable), the reserved `assets/` folder is routed to its
+    // rows, and only markdown is an engram. While the Reflection is in
+    // effect, `reflections/` is routed to its own rows.
+    let reflection = reflection_mode(root, stamps.keys());
+    let layout = DomainLayout::at(root, reflection);
 
     // Walk the folder, skipping dot-directories, dot-files and non-markdown.
     let mut current: HashMap<String, Scanned> = HashMap::new();
-    let mut assets: Vec<AssetCandidate> = Vec::new();
+    let mut assets: Vec<FileCandidate> = Vec::new();
+    let mut reflections: Vec<FileCandidate> = Vec::new();
+    let mut reflection_assets: Vec<FileCandidate> = Vec::new();
     // Entries the walk could not read: a forced walk that skipped one has not
     // re-parsed the whole domain, so it must not stamp the parser generation.
     let mut unread = 0usize;
+    // An entry under `reflections/` the walk could not read: the reflection
+    // reconcile must not delete the rows of pages it did not see.
+    let mut unread_reflections = false;
     for entry in WalkDir::new(root)
         .into_iter()
         // Prune dot-directories and dot-files, but never the walk root itself
         // (a temp or dotted root would otherwise prune the whole tree), and
         // prune the provisioned artifact folders wholesale.
-        .filter_entry(|e| {
-            e.depth() == 0
-                || (!is_hidden(e.file_name().to_string_lossy().as_ref())
-                    && !is_excluded(e.path(), &excluded))
-        })
+        .filter_entry(|e| e.depth() == 0 || layout.enters_dir(&slash_rel(root, e.path())))
     {
         let entry = match entry {
             Ok(e) => e,
@@ -525,6 +832,11 @@ pub async fn scan_domain(
             }
             Err(err) => {
                 unread += 1;
+                if err.path().is_some_and(|p| {
+                    crystalline_core::reflection::is_under_reflections(&slash_rel(root, p))
+                }) {
+                    unread_reflections = true;
+                }
                 warn_unreadable_once(name, err.path(), &err.to_string());
                 continue;
             }
@@ -533,53 +845,97 @@ pub async fn scan_domain(
             continue;
         }
         let fname = entry.file_name().to_string_lossy();
-        if is_hidden(&fname) {
-            continue;
-        }
-        let rel = rel_path(root, entry.path());
-        // The `assets/` folder is reserved for attachments: nothing under it is
-        // ever an engram, whatever its extension, so the branch always ends the
-        // iteration. A file that is not attachable is skipped outright. The
-        // folder is matched case-insensitively, the same question the engine's
-        // write refusals and the daemon's watcher ask, so a directory that
-        // differs only in case cannot smuggle an engram in on APFS or NTFS.
-        if crystalline_core::is_under_assets(&rel) {
-            let Ok(meta) = entry.metadata() else { continue };
-            let mtime = file_mtime(&meta);
-            if let Some(candidate) =
-                asset_candidate(root, &rel, entry.path(), &fname, mtime, meta.len())
-            {
-                assets.push(candidate);
+        let rel = slash_rel(root, entry.path());
+        match layout.classify(&rel) {
+            // The `assets/` folder is reserved for attachments: nothing under
+            // it is ever an engram, whatever its extension, so the branch
+            // always ends the iteration. A file that is not attachable is
+            // skipped outright. The folder is matched case-insensitively, the
+            // same question the engine's write refusals and the daemon's
+            // watcher ask, so a directory that differs only in case cannot
+            // smuggle an engram in on APFS or NTFS.
+            PathClass::EngramAsset => {
+                let Ok(meta) = entry.metadata() else { continue };
+                let mtime = file_mtime(&meta);
+                if let Some(candidate) =
+                    asset_candidate(root, &rel, entry.path(), &fname, mtime, meta.len())
+                {
+                    assets.push(candidate);
+                }
             }
-            continue;
-        }
-        // OKF reserves `index.md` and `log.md` at every level: they are
-        // navigation surfaces, never concept documents, so they are skipped
-        // here the way dot-files are. Nothing downstream needs a filter: they
-        // never reach a store row, an embedding or a search hit, and a row
-        // left over from before this exclusion disappears on the next scan
-        // (absent on disk means deleted).
-        if crystalline_core::is_reserved_file(&fname) || !fname.to_lowercase().ends_with(".md") {
-            continue;
-        }
-        let meta = match entry.metadata() {
-            Ok(meta) => meta,
-            Err(err) => {
-                unread += 1;
-                warn_unreadable_once(name, Some(entry.path()), &err.to_string());
-                continue;
+            PathClass::Engram => {
+                let meta = match entry.metadata() {
+                    Ok(meta) => meta,
+                    Err(err) => {
+                        unread += 1;
+                        warn_unreadable_once(name, Some(entry.path()), &err.to_string());
+                        continue;
+                    }
+                };
+                let mtime = file_mtime(&meta);
+                current.insert(
+                    rel.clone(),
+                    Scanned {
+                        rel,
+                        abs: entry.path().to_path_buf(),
+                        mtime,
+                        size: meta.len(),
+                    },
+                );
             }
-        };
-        let mtime = file_mtime(&meta);
-        current.insert(
-            rel.clone(),
-            Scanned {
-                rel,
-                abs: entry.path().to_path_buf(),
-                mtime,
-                size: meta.len(),
-            },
-        );
+            // Hidden files, artifact folders and files that are not markdown
+            // are never engrams. OKF reserves `index.md` and `log.md` at every
+            // level: they are navigation surfaces, never concept documents, so
+            // they are skipped here the way dot-files are. Nothing downstream
+            // needs a filter: they never reach a store row, an embedding or a
+            // search hit, and a row left over from before this exclusion
+            // disappears on the next scan (absent on disk means deleted).
+            PathClass::Hidden | PathClass::Reserved | PathClass::Artifact | PathClass::Other => {}
+            // A reflection page and the pact are rows of the Reflection's own
+            // index, keyed by their path inside the folder; never engrams.
+            PathClass::Reflection(ReflectionFile::Page(_) | ReflectionFile::Pact) => {
+                let Ok(meta) = entry.metadata() else {
+                    unread += 1;
+                    unread_reflections = true;
+                    continue;
+                };
+                reflections.push(FileCandidate {
+                    rel: inner_rel(&rel),
+                    abs: entry.path().to_path_buf(),
+                    mtime: file_mtime(&meta),
+                    size: meta.len(),
+                });
+            }
+            // A file under `reflections/assets/` goes through the engram
+            // side's own candidate builder, rooted at the Reflection folder as
+            // it is spelled on disk, so its canonical fold and its existence
+            // probe work as they do at the domain root.
+            PathClass::Reflection(ReflectionFile::Asset(_)) => {
+                let (folder, inner) = rel.split_once('/').unwrap_or((rel.as_str(), ""));
+                let Ok(meta) = entry.metadata() else {
+                    unread += 1;
+                    unread_reflections = true;
+                    continue;
+                };
+                if let Some(candidate) = asset_candidate(
+                    &root.join(folder),
+                    inner,
+                    entry.path(),
+                    &fname,
+                    file_mtime(&meta),
+                    meta.len(),
+                ) {
+                    reflection_assets.push(candidate);
+                }
+            }
+            // Threads and the baseline are files, never rows; a temp or stray
+            // file is nobody's.
+            PathClass::Reflection(
+                ReflectionFile::Threads { .. }
+                | ReflectionFile::Baseline { .. }
+                | ReflectionFile::Other,
+            ) => {}
+        }
     }
 
     // Deleted candidates: recorded files no longer present on disk. A full walk
@@ -607,6 +963,13 @@ pub async fn scan_domain(
     scan.assets = assets;
     scan.assets_complete = true;
     scan.ends_rebuild = force;
+    // With the Reflection not in effect the walk finds no reflection, so a
+    // complete walk clears the table: that is how switching off, and a
+    // pending switch, leave no row behind.
+    scan.reflections = reflections;
+    scan.reflection_assets = reflection_assets;
+    scan.reflections_complete = !unread_reflections;
+    scan.reflection = reflection;
     scan.report.unread += unread;
     Ok(scan)
 }
@@ -646,15 +1009,20 @@ pub async fn scan_paths(
 ) -> DomainScan {
     let started = Instant::now();
 
-    // The same artifact folders the full walk prunes: a targeted scan must index
-    // exactly what a full scan would, never a file the walk would have skipped.
-    let excluded = crystalline_core::in_root_artifact_dirs(root);
+    // The same layout the full walk asks: a targeted scan must index exactly
+    // what a full scan would, never a file the walk would have skipped.
+    let reflection = reflection_mode(root, stamps.keys());
+    let layout = DomainLayout::at(root, reflection);
 
     let mut current: HashMap<String, Scanned> = HashMap::new();
     let mut deleted_paths: Vec<String> = Vec::new();
     let mut unreadable: Vec<(String, String)> = Vec::new();
-    let mut assets: Vec<AssetCandidate> = Vec::new();
+    let mut assets: Vec<FileCandidate> = Vec::new();
     let mut asset_deletes: Vec<String> = Vec::new();
+    let mut reflections: Vec<FileCandidate> = Vec::new();
+    let mut reflection_deletes: Vec<String> = Vec::new();
+    let mut reflection_assets: Vec<FileCandidate> = Vec::new();
+    let mut reflection_asset_deletes: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for rel in paths {
         // The same path can arrive twice in one debounce batch; classify it once.
@@ -662,10 +1030,69 @@ pub async fn scan_paths(
             continue;
         }
         let abs = root.join(&rel);
-        let hidden = rel.split('/').any(is_hidden);
-        // The reserved `assets/` prefix, classified exactly as the walk does it:
-        // an attachable file present on disk is an upsert, a recorded path that
-        // is gone is a delete, and nothing under the prefix is ever an engram.
+        let class = layout.classify(&rel);
+        // The Reflection's files are never engrams or engram attachments. A
+        // page or the pact present on disk is an upsert of its reflection
+        // row, one that is gone a delete; threads, the baseline and stray
+        // files are never rows. `symlink_metadata` for the reason the asset
+        // branch below gives: the full walk never follows a link.
+        if let PathClass::Reflection(file) = &class {
+            // A Reflection file, the engram asset branch below rooted at the
+            // Reflection folder: rows carry the canonical spelling, and on a
+            // case-sensitive filesystem a canonical path that still resolves
+            // is a different file that is still there.
+            if let ReflectionFile::Asset(canonical) = file {
+                let (folder, inner) = rel.split_once('/').unwrap_or((rel.as_str(), ""));
+                let fname = inner.rsplit('/').next().unwrap_or(inner);
+                match std::fs::symlink_metadata(&abs) {
+                    Ok(meta) if meta.is_file() => {
+                        if let Some(candidate) = asset_candidate(
+                            &root.join(folder),
+                            inner,
+                            &abs,
+                            fname,
+                            file_mtime(&meta),
+                            meta.len(),
+                        ) {
+                            reflection_assets.push(candidate);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        if canonical.as_str() == inner
+                            || !root.join(folder).join(canonical).exists()
+                        {
+                            reflection_asset_deletes.push(canonical.clone());
+                        }
+                    }
+                    Err(e) => unreadable.push((rel.clone(), e.to_string())),
+                }
+                continue;
+            }
+            if matches!(file, ReflectionFile::Page(_) | ReflectionFile::Pact) {
+                let inner = inner_rel(&rel);
+                match std::fs::symlink_metadata(&abs) {
+                    Ok(meta) if meta.is_file() => reflections.push(FileCandidate {
+                        rel: inner,
+                        abs: abs.clone(),
+                        mtime: file_mtime(&meta),
+                        size: meta.len(),
+                    }),
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        reflection_deletes.push(inner)
+                    }
+                    Err(e) => unreadable.push((rel, e.to_string())),
+                }
+            }
+            continue;
+        }
+        // The reserved `assets/` prefix: an attachable file present on disk is
+        // an upsert when the layout calls it an attachment (the walk never
+        // indexes a hidden, reserved or artifact path), a path under the
+        // prefix that is gone is a delete whatever its class (a row indexed
+        // before the MANIFEST declared an artifact folder around it goes at
+        // once), and nothing under the prefix is ever an engram.
         if crystalline_core::is_under_assets(&rel) {
             // `symlink_metadata`, not `metadata`: the complete walk uses
             // `WalkDir`'s default `follow_links(false)` and indexes nothing
@@ -674,7 +1101,7 @@ pub async fn scan_paths(
             // link is neither a file nor a delete candidate, so it falls to the
             // `Ok(_)` arm and is left alone.
             match std::fs::symlink_metadata(&abs) {
-                Ok(meta) if meta.is_file() && !hidden && !is_excluded(&abs, &excluded) => {
+                Ok(meta) if meta.is_file() && class == PathClass::EngramAsset => {
                     let fname = rel.rsplit('/').next().unwrap_or(rel.as_str());
                     let mtime = file_mtime(&meta);
                     if let Some(candidate) =
@@ -702,20 +1129,12 @@ pub async fn scan_paths(
             }
             continue;
         }
-        // The OKF reserved names the full walk skips (see `scan_domain`), so a
-        // targeted pass indexes exactly what a full pass would.
-        let reserved = crystalline_core::is_reserved_path(&rel);
-        let is_md = rel.to_lowercase().ends_with(".md");
         match std::fs::metadata(&abs) {
-            // An existing markdown file, filtered exactly as the walk filters:
-            // a change candidate, prefiltered against the stamps downstream.
-            Ok(meta)
-                if meta.is_file()
-                    && is_md
-                    && !hidden
-                    && !reserved
-                    && !is_excluded(&abs, &excluded) =>
-            {
+            // An existing markdown file, filtered exactly as the walk filters
+            // (not hidden, not an OKF reserved name, not in an artifact
+            // folder): a change candidate, prefiltered against the stamps
+            // downstream.
+            Ok(meta) if meta.is_file() && class == PathClass::Engram => {
                 let mtime = meta
                     .modified()
                     .ok()
@@ -734,8 +1153,8 @@ pub async fn scan_paths(
                 );
             }
             // Exists but is not an indexable markdown file (a directory, a
-            // non-markdown file, a hidden or artifact path): ignore it, matching
-            // the walk which never indexes it either.
+            // non-markdown file, a hidden, reserved or artifact path): ignore
+            // it, matching the walk which never indexes it either.
             Ok(_) => {}
             // Not found on disk: a recorded path is a delete candidate (scoped
             // to the given paths, no walk), an unrecorded one is a no-op.
@@ -768,6 +1187,11 @@ pub async fn scan_paths(
     // those rows and never deletes an attachment it was not asked about.
     scan.assets = assets;
     scan.asset_deletes = asset_deletes;
+    scan.reflections = reflections;
+    scan.reflection_deletes = reflection_deletes;
+    scan.reflection_assets = reflection_assets;
+    scan.reflection_asset_deletes = reflection_asset_deletes;
+    scan.reflection = reflection;
     scan
 }
 
@@ -895,6 +1319,12 @@ async fn classify_changes(
         assets: Vec::new(),
         asset_deletes: Vec::new(),
         assets_complete: false,
+        reflections: Vec::new(),
+        reflection_deletes: Vec::new(),
+        reflection_assets: Vec::new(),
+        reflection_asset_deletes: Vec::new(),
+        reflections_complete: false,
+        reflection: ReflectionMode::Off,
         // The caller decides: only a forced full scan ends a rebuild.
         ends_rebuild: false,
         report,
@@ -945,6 +1375,12 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         assets,
         asset_deletes,
         assets_complete,
+        reflections,
+        reflection_deletes,
+        reflection_assets,
+        reflection_asset_deletes,
+        reflections_complete,
+        reflection,
         ends_rebuild,
         mut report,
         started,
@@ -960,6 +1396,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         &chunk_params,
         &snapshot,
         &root,
+        reflection,
         &mut report,
         slab_files.max(1),
     )
@@ -969,18 +1406,64 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         return Err(e);
     }
 
-    if let Err(e) = apply_attachments(
+    if let Err(e) = reconcile_rows(
         store,
         domain,
+        FileRows::Assets(AssetTable::Engram),
         assets,
         asset_deletes,
         assets_complete,
+        &chunk_params,
+        false,
         &mut report,
     )
     .await
     {
         let _ = store.rollback().await;
         return Err(e);
+    }
+
+    match reconcile_rows(
+        store,
+        domain,
+        FileRows::Reflections,
+        reflections,
+        reflection_deletes,
+        reflections_complete,
+        &chunk_params,
+        ends_rebuild,
+        &mut report,
+    )
+    .await
+    {
+        Ok(changed) => report.reflections_changed += changed,
+        Err(e) => {
+            let _ = store.rollback().await;
+            return Err(e);
+        }
+    }
+
+    // The Reflection's files, through the code the attachment rows use and
+    // counted with the pages, so a file a plain editor or a pull drops into
+    // `reflections/assets/` marks the backup like a page does.
+    match reconcile_rows(
+        store,
+        domain,
+        FileRows::Assets(AssetTable::Reflection),
+        reflection_assets,
+        reflection_asset_deletes,
+        reflections_complete,
+        &chunk_params,
+        false,
+        &mut report,
+    )
+    .await
+    {
+        Ok(changed) => report.reflections_changed += changed,
+        Err(e) => {
+            let _ = store.rollback().await;
+            return Err(e);
+        }
     }
 
     let resolved = match store.resolve_pending_relations(domain).await {
@@ -1321,98 +1804,88 @@ pub async fn resolve_forward_refs<S: Store + ?Sized>(
     Ok((total_relations, total_links))
 }
 
-/// Reconcile a domain's attachment rows with the assets the scan found.
+/// Reconcile one file table with what the walk found: the stat prefilter
+/// skips a row whose size and modification instant match, a changed file is
+/// read and its row replaced, and the rows the walk did not see are deleted.
+/// Answers how many rows it wrote or deleted. One reconcile for every file
+/// table (the engram attachments and the Reflection's rows), so a fix to it
+/// reaches each.
 ///
-/// The rows are metadata only, so this is deliberately not the engram pipeline:
-/// there is no move detection (an asset carries no permalink, so a rename is a
-/// delete plus an add and costs one hash), no chunking and no embedding. What it
-/// does share is the stat prefilter: a candidate whose recorded row still
-/// carries the same size and modification instant cannot have changed content
-/// without one of them moving, so it is skipped without reading a byte.
+/// The rows are not engrams, so this is deliberately not the engram pipeline:
+/// there is no move detection (a row carries no permalink, so a rename is a
+/// delete plus an add and costs one read). A reflection row is chunked with
+/// `chunk_params` as it is written (R53); an asset row is not. What it does
+/// share is the stat prefilter: a candidate whose recorded row still carries
+/// the same size and modification instant cannot have changed content without
+/// one of them moving, so it is skipped without reading a byte, unless `force`
+/// is set.
 ///
 /// A full walk (`complete`) reconciles domain-wide, deleting every row it did
 /// not see; a targeted pass deletes only the paths it was asked about and looked
 /// for in vain, so a one-file watcher event never touches another row.
-async fn apply_attachments<S: Store + ?Sized>(
+#[allow(clippy::too_many_arguments)]
+async fn reconcile_rows<S: Store + ?Sized>(
     store: &S,
     domain: DomainId,
-    assets: Vec<AssetCandidate>,
+    rows: FileRows,
+    found: Vec<FileCandidate>,
     deletes: Vec<String>,
     complete: bool,
+    chunk_params: &ChunkParams,
+    force: bool,
     report: &mut SyncReport,
-) -> Result<()> {
-    if !complete && assets.is_empty() && deletes.is_empty() {
-        return Ok(());
+) -> Result<usize> {
+    if !complete && found.is_empty() && deletes.is_empty() {
+        return Ok(0);
     }
-    let existing: HashMap<String, AttachmentRow> = store
-        .list_attachments(domain)
-        .await?
-        .into_iter()
-        .map(|row| (row.path.clone(), row))
-        .collect();
-
+    let existing = rows.stamps(store, domain).await?;
     let mut seen: HashSet<String> = HashSet::new();
-    for asset in assets {
-        let AssetCandidate {
-            rel,
-            abs,
-            mtime,
-            size: stat_size,
-            mime,
-        } = asset;
-        let modified = rfc3339_from_mtime(mtime);
-        seen.insert(rel.clone());
-        if let Some(row) = existing.get(&rel)
-            && row.size == stat_size
-            && row.modified == modified
+    let mut changed = 0;
+    for candidate in found {
+        let modified = rfc3339_from_mtime(candidate.mtime);
+        seen.insert(candidate.rel.clone());
+        // A forced walk re-reads pages, so `reindex --full` re-chunks them
+        // (R58); the asset arms are never forced.
+        if !force
+            && existing
+                .get(&candidate.rel)
+                .is_some_and(|(size, at)| *size == candidate.size && *at == modified)
         {
             continue;
         }
-        let read = tokio::task::spawn_blocking(move || read_and_measure(&abs))
-            .await
-            .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
-        let (sha256, size) = match read {
-            Ok(measured) => measured,
+        let read = {
+            let candidate = candidate.clone();
+            tokio::task::spawn_blocking(move || rows.build(&candidate, modified))
+                .await
+                .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())))
+        };
+        match read {
+            Ok(Some(row)) => {
+                rows.upsert(store, domain, &row, chunk_params).await?;
+                changed += 1;
+            }
+            Ok(None) => {}
             // The file vanished between the scan and here; its removal has its
             // own pass queued, so leave the row for that one.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                tracing::debug!(path = %rel, "sync: skipping an attachment that vanished mid-sync");
-                continue;
+                tracing::debug!(path = %candidate.rel, "sync: skipping a file that vanished mid-sync");
             }
-            Err(e) => {
-                report.failed.push((rel, e.to_string()));
-                continue;
-            }
-        };
-        // The size is taken from the bytes that were actually read, so a file
-        // that grew past the cap between the stat and the read is caught here
-        // rather than stored over the ceiling.
-        if size > MAX_ATTACHMENT_BYTES {
-            tracing::debug!(path = %rel, size, "sync: skipping an attachment over the size cap");
-            continue;
+            Err(e) => report
+                .failed
+                .push((rows.report_path(&candidate.rel), e.to_string())),
         }
-        let row = AttachmentRow {
-            path: rel,
-            sha256,
-            mime: mime.to_string(),
-            size,
-            modified,
-        };
-        store.upsert_attachment(domain, &row).await?;
     }
-
-    if complete {
-        for path in existing.keys() {
-            if !seen.contains(path) {
-                store.delete_attachment(domain, path).await?;
-            }
-        }
+    let gone: Vec<String> = if complete {
+        existing.into_keys().filter(|p| !seen.contains(p)).collect()
     } else {
-        for path in deletes {
-            store.delete_attachment(domain, &path).await?;
+        deletes
+    };
+    for path in gone {
+        if rows.delete(store, domain, &path).await? {
+            changed += 1;
         }
     }
-    Ok(())
+    Ok(changed)
 }
 
 /// Refresh a domain's derived tag-alias rows from its MANIFEST. Reads the stored
@@ -1439,6 +1912,7 @@ async fn apply_changes<S: Store + ?Sized>(
     chunk_params: &ChunkParams,
     snapshot: &HashMap<String, FileStamp>,
     root: &Path,
+    reflection: ReflectionMode,
     report: &mut SyncReport,
     slab_files: usize,
 ) -> Result<()> {
@@ -1502,8 +1976,13 @@ async fn apply_changes<S: Store + ?Sized>(
         // event for that recreation is already queued, so leave the row for it.
         // A reserved name is the exception: a file called `index.md` or `log.md`
         // is never an engram, so its presence on disk must not resurrect a row
-        // recorded before the exclusion existed.
-        if !crystalline_core::is_reserved_path(&path) && root.join(&path).exists() {
+        // recorded before the exclusion existed. Nor is a file under
+        // `reflections/` while the Reflection is in effect: a page indexed as
+        // an engram while the switch was off goes when the switch takes effect.
+        let never_engram = crystalline_core::is_reserved_path(&path)
+            || (reflection == ReflectionMode::Effective
+                && crystalline_core::reflection::is_under_reflections(&path));
+        if !never_engram && root.join(&path).exists() {
             report.deferred += 1;
             tracing::debug!(path = %path, "sync: deferring a delete whose file reappeared on disk");
             continue;
@@ -1771,6 +2250,13 @@ fn read_and_hash(path: &Path) -> std::io::Result<String> {
     Ok(crate::hex_lower(&hasher.finalize()))
 }
 
+/// SHA-256 hex of `bytes`, the digest `read_and_hash` computes for a file.
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    crate::hex_lower(&hasher.finalize())
+}
+
 /// Hash an attachment and report the length of the very bytes that were hashed,
 /// so the stored row can never describe a size the checksum does not cover.
 fn read_and_measure(path: &Path) -> std::io::Result<(String, u64)> {
@@ -1809,7 +2295,7 @@ fn asset_candidate(
     fname: &str,
     mtime: i64,
     size: u64,
-) -> Option<AssetCandidate> {
+) -> Option<FileCandidate> {
     // A folder whose name differs from `assets` only in case is one and the
     // same directory on APFS and NTFS, so the bytes an upload wrote as
     // `assets/x.png` are walked back as `Assets/x.png`. Keying the row by the
@@ -1839,19 +2325,18 @@ fn asset_candidate(
         tracing::debug!(path = %rel, reason = %e, "sync: skipping a file under assets/");
         return None;
     }
-    // Validation already refused an extension off the allowlist, so this only
-    // resolves the mime the row records.
-    let mime = attachment_mime(fname)?;
+    // Validation already refused an extension off the allowlist; the mime is
+    // resolved again from the name when the row is built.
+    attachment_mime(fname)?;
     if size > MAX_ATTACHMENT_BYTES {
         tracing::debug!(path = %rel, size, "sync: skipping an attachment over the size cap");
         return None;
     }
-    Some(AssetCandidate {
+    Some(FileCandidate {
         rel: rel.to_string(),
         abs: abs.to_path_buf(),
         mtime,
         size,
-        mime,
     })
 }
 
@@ -1893,24 +2378,6 @@ fn warn_unreadable_once(domain: &str, path: Option<&Path>, reason: &str) {
             path.display()
         );
     }
-}
-
-fn is_hidden(name: &str) -> bool {
-    name.starts_with('.') && name != "." && name != ".."
-}
-
-/// Whether `path` is one of the excluded artifact folders or lives inside one.
-fn is_excluded(path: &Path, excluded: &[PathBuf]) -> bool {
-    excluded.iter().any(|dir| path.starts_with(dir))
-}
-
-fn rel_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 fn duration_ms(d: Duration) -> u64 {

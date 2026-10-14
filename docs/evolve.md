@@ -7,14 +7,14 @@ Three checks ask three questions: does the format hold, is the machinery healthy
 `crystalline verify` statically checks one or more domains against the full rule catalog (malformed frontmatter, broken links, missing MANIFEST sections, schema drift) with no database, service or network connection involved. Its usual home is CI/CD on the GitHub repositories that hold a team's knowledge: every proposal is verified before the team merges it, so nothing malformed ever lands on the branch everyone pulls from. The bundled GitHub Action wires that up:
 
 ```yaml
-- uses: jordiboehme/crystalline/action@v0.25.2
+- uses: jordiboehme/crystalline/action@v0.26.0
   with:
     paths: knowledge/       # space-separated domain roots, default '.'
     strict: 'false'         # promote Warning rules to Error
-    version: v0.25.2        # crystalline binary tag to download, or 'latest'
+    version: v0.26.0        # crystalline binary tag to download, or 'latest'
 ```
 
-The action ref (`@v0.25.2`) pins the action's own code. `version` pins the crystalline binary it downloads, so pinning both gives a fully reproducible check. The binary is checksum-verified, then the action runs `crystalline verify`, annotates the run and, on a pull request, posts a single summary comment kept up to date in place.
+The action ref (`@v0.26.0`) pins the action's own code. `version` pins the crystalline binary it downloads, so pinning both gives a fully reproducible check. The binary is checksum-verified, then the action runs `crystalline verify`, annotates the run and, on a pull request, posts a single summary comment kept up to date in place.
 
 A domain can tune the rules in a `.crystalline.yaml` at its root: under `verify.rules`, each rule id takes `off`, `error`, `warning` or `info` (for example `Q002: off`). Verify never fails on a mistake in that file, but it no longer keeps quiet about one either: a value that is not one of those words, or a file that does not parse, is reported as `M108`, a warning against `.crystalline.yaml` that names the rule and the word. The rule it was meant for runs at its default. `--strict` turns `M108` into an error like any other warning, which is how a CI run catches an override that was silently lost.
 
@@ -57,6 +57,8 @@ stateDiagram-v2
 ```
 
 The values are guidance, not an enum: `stable` is the default and the word for knowledge that holds now (`current` is its older spelling). A fact that stopped holding is superseded, never overwritten: write the successor first, then flip the old engram to `superseded` with a `superseded_by` relation and close its window with the real `valid_to`, or leave the window open when the date is unknown. Not every retirement has a successor. When a practice is simply abandoned, flip the status, close the window when the date is known and carry any lesson worth keeping into a live engram; the retirement is the whole edit. Each retirement word means one thing: `deprecated` says do not do this again, `superseded` says a newer engram replaced this one, `archived` says retired but kept for the record and `legacy` says still deployed and true of old installations but not to be built on. `delete` is for mistakes, not history. The sweep flags the half-done moves: a successor that landed while the old engram still reads `stable`, a `valid_to` that elapsed under a live status, and a split that left a fact behind that should have moved.
+
+Evolve keeps the engrams honest. A domain with a Reflection has a second lifecycle beside it: `reflect` brings what the engrams learned into the domain's documents for people, and takes in what people changed there. See [The Reflection](reflection.md).
 
 ### Browse a domain without Crystalline
 

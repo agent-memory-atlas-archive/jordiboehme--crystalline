@@ -37,6 +37,19 @@ fn packs_paragraphs_up_to_the_budget() {
 }
 
 #[test]
+fn a_title_only_engram_still_yields_one_chunk() {
+    let chunks = chunk_engram(
+        "Only a title",
+        Some("and a note"),
+        "",
+        &ChunkParams::default(),
+    );
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].text, "Only a title\n\nand a note");
+    assert!(chunk_engram("", None, "", &ChunkParams::default()).is_empty());
+}
+
+#[test]
 fn code_fence_stays_one_unit() {
     // A fenced block with a blank line inside must not be split, even though the
     // blank line would otherwise be a paragraph boundary.

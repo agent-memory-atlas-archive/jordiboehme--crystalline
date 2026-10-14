@@ -129,7 +129,8 @@ pub const RECALL_HEADER: &str = "Knowledge that may apply, from your Crystalline
 /// place to surface what is no longer true. Spelled here rather than
 /// imported, because this crate does not depend on the index crate;
 /// `crystalline_index::store::RETIRED_STATUSES` is the original and
-/// [`the_retired_set_is_the_stores_own_four`] pins the two together.
+/// the unit test `the_retired_set_is_the_stores_own_four` pins the two
+/// together.
 pub const RETIRED: [&str; 4] = ["deprecated", "superseded", "archived", "legacy"];
 
 /// The stdin payload a `UserPromptSubmit` hook sends. Every field carries a

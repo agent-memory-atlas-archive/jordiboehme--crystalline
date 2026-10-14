@@ -1,11 +1,11 @@
 //! The hot statements and the plans they are entitled to.
 //!
-//! One place, fifty entries, each named by the function that issues it, so a
-//! rewrite that drops an index fails with the function's name rather than with
-//! a diff. Every entry obtains its SQL the way the code obtains it - a shared
-//! builder, a named constant or the same `format!` the method calls - because a
-//! registry holding a second copy of a statement is a registry that can be
-//! right about SQL nobody runs.
+//! One place, one entry per statement, each named by the function that
+//! issues it, so a rewrite that drops an index fails with the function's name
+//! rather than with a diff. Every entry obtains its SQL the way the code
+//! obtains it - a shared builder, a named constant or the same `format!` the
+//! method calls - because a registry holding a second copy of a statement is a
+//! registry that can be right about SQL nobody runs.
 //!
 //! The turso leg asserts `EXPLAIN QUERY PLAN`. The postgres leg asserts
 //! `EXPLAIN (FORMAT JSON)` with `enable_seqscan` off, behind
@@ -56,8 +56,8 @@
 
 use crystalline_index::SearchOrder;
 use crystalline_index::{
-    ContradictionRow, DomainId, DomainKind, EmbeddingRow, ObservationVector, ScoredPair, Store,
-    TursoStore, sync_domain,
+    ChunkParams, ChunkTable, ContradictionRow, DomainId, DomainKind, EmbeddingRow,
+    ObservationVector, ReflectionRow, ScoredPair, Store, TursoStore, sync_domain,
 };
 
 // --- the registry ------------------------------------------------------------
@@ -144,6 +144,7 @@ pub const GUARDED_TABLES: &[&str] = &[
     "contradiction",
     "contradiction_pair",
     "observation_vector",
+    "reflection_chunk",
 ];
 
 /// Which table each alias in these statements stands for.
@@ -159,6 +160,7 @@ const ALIASES: &[(&str, &str)] = &[
     ("dst", "engram"),
     ("tgt", "engram"),
     ("c", "chunk"),
+    ("rc", "reflection_chunk"),
     ("r", "relation"),
     ("l", "link"),
     ("d", "domain"),
@@ -471,6 +473,45 @@ pub fn registry() -> Vec<HotStatement> {
             )]),
             turso_must_seek: &[],
             postgres_must_seek: &["idx_chunk_model"],
+        },
+        HotStatement {
+            issued_by: "Store::reflection_vector_hits",
+            // The vector half of a reflection search, the exact distance scan
+            // over one domain's sections. Observed on this fixture, both
+            // planners seek `idx_reflection_chunk_domain_model` on the domain,
+            // the model and the width (turso: `SEARCH rc USING INDEX
+            // idx_reflection_chunk_domain_model (domain_id=? AND model=? AND
+            // dims=?)`, then the group and order sorters), so a search reads
+            // its own domain's chunks. Before v23 both reached the rows through
+            // `idx_reflection_chunk_model` and tested the domain on each row of
+            // the model, every domain's chunks for one domain's search (v23
+            // drops that index, which served nothing else). No full
+            // pass on either, so no permission; the domain index is named
+            // because it is what keeps the read to one domain.
+            turso: || crystalline_index::turso::REFLECTION_VECTOR_SQL.to_string(),
+            postgres: || crystalline_index::postgres::REFLECTION_VECTOR_SQL.to_string(),
+            literals: &[QVEC_TURSO, "1", "'fake'", "8"],
+            literals_pg: Some(&[QVEC_PG, "1", "'fake'", "8"]),
+            scan_expected: &[],
+            scan_expected_pg: None,
+            turso_must_seek: &["idx_reflection_chunk_domain_model"],
+            postgres_must_seek: &["idx_reflection_chunk_domain_model"],
+        },
+        HotStatement {
+            issued_by: "Store::reflection_coverage",
+            // The coverage a reflection search's mode decision and staleness
+            // gate read, one domain's chunks grouped by model and width. Both
+            // planners seek the domain in `idx_reflection_chunk_domain_model`,
+            // whose next two columns are the group keys; a table-wide pass
+            // here would cost every search every domain's chunks.
+            turso: || crystalline_index::turso::REFLECTION_COVERAGE_SQL.to_string(),
+            postgres: || crystalline_index::postgres::REFLECTION_COVERAGE_SQL.to_string(),
+            literals: &["1"],
+            literals_pg: None,
+            scan_expected: &[],
+            scan_expected_pg: None,
+            turso_must_seek: &["idx_reflection_chunk_domain_model"],
+            postgres_must_seek: &["idx_reflection_chunk_domain_model"],
         },
         HotStatement {
             issued_by: "search::semantic_hydrate_sql",
@@ -1198,6 +1239,9 @@ const FIXTURE_DIMS: usize = 8;
 /// the postgres leg is run three times.
 const FIXTURE_ENGRAMS: usize = 200;
 
+/// How many reflection pages each fixture domain holds, five chunks each.
+const FIXTURE_REFLECTION_PAGES: usize = 20;
+
 fn engram_file(i: usize, target: &str) -> String {
     format!(
         "---\ntype: engram\ntitle: Engram {i}\npermalink: p{i}\ntags:\n  - t\nstatus: stable\n\
@@ -1269,6 +1313,61 @@ async fn seed(store: &dyn Store) -> DomainId {
         })
         .collect();
     store.store_embeddings(&batch, "fake").await.unwrap();
+
+    // Reflection pages in both domains, chunked through the one funnel (R53)
+    // and embedded the same way, so the reflection vector read is planned over
+    // real rows of two domains.
+    for domain_name in ["d", "other"] {
+        let domain = store.domain_id(domain_name).await.unwrap().unwrap();
+        for page in 0..FIXTURE_REFLECTION_PAGES {
+            let content: String = (0..4)
+                .map(|s| format!("## Section {s}\n\nbody of section {s} on page {page}\n\n"))
+                .collect();
+            let row = ReflectionRow {
+                path: format!("page{page}.md"),
+                title: format!("Page {page}"),
+                content: format!("# Page {page}\n\n{content}"),
+                sha256: String::new(),
+                size: 0,
+                modified: String::new(),
+            };
+            crystalline_index::reflection::index_reflection_row(
+                store,
+                domain,
+                &row,
+                &ChunkParams::for_model("fake"),
+            )
+            .await
+            .unwrap();
+        }
+    }
+    let jobs = store
+        .chunks_needing_embedding_in(
+            ChunkTable::Reflection,
+            "fake",
+            None,
+            FIXTURE_REFLECTION_PAGES * 20,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !jobs.is_empty(),
+        "the fixture seeded no reflection chunks, so the reflection vector read would be \
+         planned over nothing"
+    );
+    let batch: Vec<EmbeddingRow> = jobs
+        .iter()
+        .map(|job| EmbeddingRow {
+            chunk_id: job.chunk_id,
+            embedding: vec![0.5f32; FIXTURE_DIMS],
+            dims: FIXTURE_DIMS,
+        })
+        .collect();
+    store
+        .store_embeddings_in(ChunkTable::Reflection, &batch, "fake")
+        .await
+        .unwrap();
 
     // Scored pairs in both domains under the model the literals name, so the
     // two contradiction reads are planned over real rows.
@@ -1539,6 +1638,34 @@ async fn a_dropped_index_is_caught_by_the_turso_plan_guard() {
         scanned,
         "with every engram index dropped the plan must be a bare scan, so the green run \
          means something: {plan:?}"
+    );
+}
+
+/// The turso guard reads the reflection vector statement as a read of
+/// `reflection_chunk`. Turso names the alias in a seek line (`SEARCH rc USING
+/// INDEX ...`), and the statement aliases the table `rc`, so the alias map must
+/// say so: an alias it does not know stands for itself, and one it maps to
+/// another table (`c` is `chunk`) would credit this read to that table, so a
+/// `scan_expected` written for `reflection_chunk` would never match and a
+/// failure would name the wrong table.
+#[tokio::test]
+async fn the_reflection_vector_read_is_credited_to_its_own_table() {
+    let store = turso_fixture().await;
+    let entry = registry()
+        .into_iter()
+        .find(|e| e.issued_by == "Store::reflection_vector_hits")
+        .expect("reflection_vector_hits is in the registry");
+    let sql = bind_literals(&(entry.turso)(), entry.literals);
+    let plan = store.explain_query_plan(&sql).await.unwrap();
+    let read: Vec<&str> = plan
+        .iter()
+        .filter_map(|line| read_of(line))
+        .map(|(name, _)| table_of(name))
+        .collect();
+    assert_eq!(
+        read,
+        ["reflection_chunk"],
+        "one read, credited to `reflection_chunk`: {plan:?}"
     );
 }
 

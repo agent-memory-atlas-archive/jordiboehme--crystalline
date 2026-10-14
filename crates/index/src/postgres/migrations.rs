@@ -121,6 +121,26 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "c-collated base path index",
         sql: SCHEMA_V19,
     },
+    Migration {
+        version: 20,
+        label: "reflection index",
+        sql: SCHEMA_V20,
+    },
+    Migration {
+        version: 21,
+        label: "reflection assets",
+        sql: SCHEMA_V21,
+    },
+    Migration {
+        version: 22,
+        label: "reflection chunks",
+        sql: SCHEMA_V22,
+    },
+    Migration {
+        version: 23,
+        label: "reflection chunks by domain",
+        sql: SCHEMA_V23,
+    },
 ];
 
 // The whole current schema in one step. The temporal columns stay TEXT ISO
@@ -629,6 +649,80 @@ const SCHEMA_V19: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_engram_base_path_c ON engram(domain_id, (path COLLATE "C")) WHERE actor = '';
 "#;
 
+// The Reflection's own index, the twin of Turso's v20: one row per reflection
+// (and PACT.md) under a domain's `reflections/`, beside the engram tables and
+// never joined to them. The unique index serves every statement.
+const SCHEMA_V20: &str = r#"
+CREATE TABLE IF NOT EXISTS reflection (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    domain_id BIGINT NOT NULL REFERENCES domain(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    size BIGINT NOT NULL,
+    modified TEXT NOT NULL,
+    UNIQUE(domain_id, path)
+);
+"#;
+
+// The Reflection's files, the twin of Turso's v21: one row per allowlisted
+// file under a domain's `reflections/assets/`, keyed by its path inside
+// `reflections/`, beside `attachment` and never joined to it. `IF NOT
+// EXISTS`, so a replay converges. The unique index serves every statement.
+const SCHEMA_V21: &str = r#"
+CREATE TABLE IF NOT EXISTS reflection_asset (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    domain_id BIGINT NOT NULL REFERENCES domain(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size BIGINT NOT NULL,
+    modified TEXT NOT NULL,
+    UNIQUE(domain_id, path)
+);
+"#;
+
+// The Reflection's embedding chunks, the twin of Turso's v22: one or more per
+// `##` section of a page under `reflections/`, beside the engram `chunk` table
+// and never joined to it, so no engram reader can meet one. Keyed by
+// `(domain_id, path, seq)` with no foreign key to `reflection`. The embedding
+// starts at `vector(384)` with its own HNSW cosine index, and
+// `ensure_embedding_width` resizes it on its own, as it does `chunk`'s. The
+// page stamps are blanked so the next walk reads every page once and chunks
+// it (R58). Every `CREATE` is `IF NOT EXISTS`, so a replay converges.
+const SCHEMA_V22: &str = r#"
+CREATE TABLE IF NOT EXISTS reflection_chunk (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    domain_id BIGINT NOT NULL REFERENCES domain(id),
+    path TEXT NOT NULL,
+    seq BIGINT NOT NULL DEFAULT 0,
+    section_ord BIGINT NOT NULL DEFAULT 0,
+    section TEXT,
+    heading TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL DEFAULT '',
+    text_hash TEXT NOT NULL DEFAULT '',
+    model TEXT,
+    dims BIGINT,
+    embedding vector(384)
+);
+CREATE INDEX IF NOT EXISTS idx_reflection_chunk_page ON reflection_chunk(domain_id, path, seq);
+CREATE INDEX IF NOT EXISTS idx_reflection_chunk_model ON reflection_chunk(model);
+CREATE INDEX IF NOT EXISTS idx_reflection_chunk_embedding ON reflection_chunk USING hnsw (embedding vector_cosine_ops);
+UPDATE reflection SET modified='';
+"#;
+
+// The twin of Turso's v23: one domain's reflection chunks of one model and
+// width, the rows a reflection search reads, so the vector statement and the
+// per-domain coverage seek one domain instead of filtering every domain's
+// chunks of the model row by row. The model index serves no statement any
+// more, so it goes, and a fresh install and an upgrade end with the same
+// indexes. Both statements are guarded, so a replay converges.
+const SCHEMA_V23: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_reflection_chunk_domain_model ON reflection_chunk(domain_id, model, dims);
+DROP INDEX IF EXISTS idx_reflection_chunk_model;
+"#;
+
 const SCHEMA_V8: &str = r#"
 CREATE TABLE attachment (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -656,6 +750,8 @@ CREATE TABLE attachment_blob (
 /// `contradiction` and `contradiction_pair` reference `engram` and `domain`,
 /// so they go first. `observation_vector` references nothing and leads the
 /// list. `engram_meta_value` references `engram`, so it goes before it.
+/// `reflection` and `reflection_asset` reference `domain(id)` too, and so does
+/// `reflection_chunk`, which goes before `reflection`.
 pub const WIPE_TABLES: &[&str] = &[
     "observation_vector",
     "contradiction",
@@ -673,6 +769,9 @@ pub const WIPE_TABLES: &[&str] = &[
     "tag_alias",
     "attachment_blob",
     "attachment",
+    "reflection_chunk",
+    "reflection",
+    "reflection_asset",
     "domain_lock",
     "domain_spelling",
     "domain",
@@ -802,6 +901,34 @@ mod tests {
     use super::*;
     use sqlx::Connection;
 
+    /// A clean schema for one test, with the search path set to it.
+    ///
+    /// The first migration runs `CREATE EXTENSION IF NOT EXISTS vector`, and
+    /// two sessions that run it at the same moment on a database that does not
+    /// have the extension yet make one of them fail with a duplicate key on
+    /// `pg_extension_name_index`. Every test is its own process, so the tests
+    /// do race on a fresh database. The extension is therefore created here
+    /// first, under an advisory lock, committed before the lock is released; the migration's own statement is then a
+    /// no-op.
+    async fn fresh_schema(conn: &mut sqlx::PgConnection, schema: &str) {
+        // One statement each: a multi-statement query is a single
+        // transaction, and the lock would be released before the extension
+        // row is committed.
+        for sql in [
+            "SELECT pg_advisory_lock(7301551)",
+            "CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public",
+            "SELECT pg_advisory_unlock(7301551)",
+        ] {
+            sqlx::raw_sql(sql).execute(&mut *conn).await.unwrap();
+        }
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
+        )))
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    }
+
     /// v16 against an index the old resolve pass wrote, the Turso v17 twin's
     /// fixture row for row: a prefix that spelled no domain had bound the bare
     /// target at home. The migration unbinds exactly those rows (and a row
@@ -822,12 +949,7 @@ mod tests {
         }
         let schema = format!("mig16_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
 
         let (before, v16) = (&MIGRATIONS[..15], &MIGRATIONS[15]);
         assert_eq!(v16.version, 16, "the sixteenth migration is v16");
@@ -959,12 +1081,7 @@ mod tests {
         }
         let schema = format!("mig_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
 
         // A database at v10: everything up to but not including the marker.
         for m in &MIGRATIONS[..10] {
@@ -1030,12 +1147,7 @@ mod tests {
         }
         let schema = format!("mig13_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
 
         // A database at v12: everything up to but not including the kind.
         for m in &MIGRATIONS[..12] {
@@ -1112,12 +1224,7 @@ mod tests {
         }
         let schema = format!("mig12_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
 
         // A database at v11: everything up to but not including the widening.
         for m in &MIGRATIONS[..11] {
@@ -1212,12 +1319,7 @@ mod tests {
         }
         let schema = format!("mig14_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
 
         // A database at v13: everything up to but not including the move.
         for m in &MIGRATIONS[..13] {
@@ -1334,12 +1436,7 @@ mod tests {
         }
         let schema = format!("mig15_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
 
         for m in &MIGRATIONS[..14] {
             sqlx::raw_sql(m.sql).execute(&mut conn).await.unwrap();
@@ -1408,12 +1505,7 @@ mod tests {
         }
         let schema = format!("mig_toonew_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
 
         apply(&mut conn).await.unwrap();
         let known = MIGRATIONS.last().unwrap().version;
@@ -1462,12 +1554,7 @@ mod tests {
         let root = tmp.path().join("d");
         let schema = format!("mig_reparse_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS schema_migration (version BIGINT PRIMARY KEY, applied_at TEXT NOT NULL)",
         )
@@ -1510,12 +1597,7 @@ mod tests {
         engrams: &[(&str, &str, &serde_json::Value)],
     ) -> Vec<i64> {
         let mut conn = sqlx::PgConnection::connect(url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, schema).await;
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS schema_migration (version BIGINT PRIMARY KEY, applied_at TEXT NOT NULL)",
         )
@@ -1660,12 +1742,7 @@ mod tests {
         }
         let schema = format!("mig_pathc_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS schema_migration (version BIGINT PRIMARY KEY, applied_at TEXT NOT NULL)",
         )
@@ -1894,5 +1971,209 @@ mod tests {
             ms as f64 * 1000.0 / ENGRAMS as f64
         );
         store.drop_schema().await.unwrap();
+    }
+
+    /// v21, the Reflection's files: it follows the reflection index, its
+    /// table takes a row once the store opens, a replay of the step converges
+    /// (a database another binary migrated may hold a step without its
+    /// stamp, as `apply` notes), and the wipe clears the rows before the
+    /// domains they point at.
+    #[tokio::test]
+    async fn v21_adds_the_reflection_asset_table_and_replays_cleanly() {
+        let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        let at_version = |v: i64| {
+            MIGRATIONS
+                .iter()
+                .position(|m| m.version == v)
+                .unwrap_or_else(|| panic!("no migration v{v}"))
+        };
+        let (v20, v21) = (at_version(20), at_version(21));
+        assert_eq!(MIGRATIONS[v21].label, "reflection assets");
+        assert_eq!(MIGRATIONS[v20].label, "reflection index");
+        assert_eq!(v21, v20 + 1, "nothing between the two");
+
+        let schema = format!("mig_refl_asset_{}", std::process::id());
+        let store = crate::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .unwrap();
+        let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "SET search_path TO {schema}, public"
+        )))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::raw_sql(MIGRATIONS[v21].sql)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO domain (id, name, path) OVERRIDING SYSTEM VALUE VALUES (1, 'd', NULL);
+             INSERT INTO reflection_asset (domain_id, path, sha256, mime, size, modified)
+             VALUES (1, 'assets/a.png', 's', 'image/png', 1, 't');",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let at = |t: &str| WIPE_TABLES.iter().position(|w| *w == t);
+        assert!(
+            at("reflection_asset").is_some() && at("reflection_asset") < at("domain"),
+            "the file rows are wiped before the domains they point at, or the foreign key refuses"
+        );
+        drop(conn);
+        store.drop_schema().await.unwrap();
+    }
+
+    /// v22, the Reflection's chunks: it follows the reflection asset table, a
+    /// replay of the step converges (every `CREATE` is `IF NOT EXISTS`), it
+    /// blanks the page stamps so the next walk re-reads every page, and the
+    /// wipe clears the chunks before the pages and the domains.
+    #[tokio::test]
+    async fn v22_adds_the_reflection_chunk_table_and_replays_cleanly() {
+        let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        let at_version = |v: i64| {
+            MIGRATIONS
+                .iter()
+                .position(|m| m.version == v)
+                .unwrap_or_else(|| panic!("no migration v{v}"))
+        };
+        let (v21, v22) = (at_version(21), at_version(22));
+        assert_eq!(MIGRATIONS[v22].label, "reflection chunks");
+        assert_eq!(v22, v21 + 1, "it follows the reflection asset table");
+
+        let schema = format!("mig_refl_chunk_{}", std::process::id());
+        let store = crate::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .unwrap();
+        let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "SET search_path TO {schema}, public"
+        )))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO domain (id, name, path) OVERRIDING SYSTEM VALUE VALUES (1, 'd', NULL);
+             INSERT INTO reflection (domain_id, path, title, content, sha256, size, modified)
+             VALUES (1, 'a.md', 'A', 'x', 's', 1, '2026-10-14T00:00:00+00:00');",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::raw_sql(MIGRATIONS[v22].sql)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let (modified,): (String,) = sqlx::query_as("SELECT modified FROM reflection")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            modified, "",
+            "the stamp is blank, so the next walk reads the page"
+        );
+        sqlx::raw_sql(
+            "INSERT INTO reflection_chunk (domain_id, path, seq, text, text_hash)
+             VALUES (1, 'a.md', 0, 't', 'h');",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let at = |t: &str| WIPE_TABLES.iter().position(|w| *w == t);
+        assert!(
+            at("reflection_chunk").is_some()
+                && at("reflection_chunk") < at("reflection")
+                && at("reflection") < at("domain"),
+            "the chunks are wiped before the pages and the domains, or the foreign key refuses"
+        );
+        drop(conn);
+        store.drop_schema().await.unwrap();
+    }
+
+    /// v23, the reflection chunks by domain, over a database at v22 with
+    /// chunk rows in it: the domain index is there afterwards, the model
+    /// index (which no statement seeks any more) is gone, the rows are kept,
+    /// and a replay of v23 changes nothing. Talks to sqlx directly, because
+    /// opening a store applies every migration at once.
+    #[tokio::test]
+    async fn v23_over_v22_swaps_the_model_index_for_the_domain_index() {
+        let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        let v23 = MIGRATIONS
+            .iter()
+            .position(|m| m.version == 23)
+            .expect("no migration v23");
+        assert_eq!(MIGRATIONS[v23 - 1].version, 22, "it follows v22");
+        let schema = format!("mig_refl_domain_{}", std::process::id());
+        let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
+        fresh_schema(&mut conn, &schema).await;
+        for m in &MIGRATIONS[..v23] {
+            sqlx::raw_sql(m.sql).execute(&mut conn).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO domain (id, name, path) OVERRIDING SYSTEM VALUE VALUES (1, 'd', NULL);
+             INSERT INTO reflection_chunk (domain_id, path, seq, text, text_hash, model, dims)
+             VALUES (1, 'a.md', 0, 't', 'h', 'm', 8), (1, 'a.md', 1, 'u', 'i', NULL, NULL);",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let indexes = |schema: String| async move {
+            let mut conn = sqlx::PgConnection::connect(&url_of()).await.unwrap();
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT indexname FROM pg_indexes \
+                 WHERE schemaname = $1 AND tablename = 'reflection_chunk' ORDER BY indexname",
+            )
+            .bind(schema)
+            .fetch_all(&mut conn)
+            .await
+            .unwrap();
+            rows.into_iter().map(|(n,)| n).collect::<Vec<String>>()
+        };
+        fn url_of() -> String {
+            std::env::var("CRYSTALLINE_TEST_POSTGRES_URL").unwrap()
+        }
+        assert!(
+            indexes(schema.clone())
+                .await
+                .contains(&"idx_reflection_chunk_model".to_string()),
+            "precondition: v22 has the model index"
+        );
+        let want = [
+            "idx_reflection_chunk_domain_model",
+            "idx_reflection_chunk_embedding",
+            "idx_reflection_chunk_page",
+            "reflection_chunk_pkey",
+        ];
+        for round in ["v23", "a replay of v23"] {
+            sqlx::raw_sql(MIGRATIONS[v23].sql)
+                .execute(&mut conn)
+                .await
+                .unwrap();
+            assert_eq!(indexes(schema.clone()).await, want, "after {round}");
+            let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM reflection_chunk")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
+            assert_eq!(n, 2, "after {round}: the rows stay");
+        }
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+            .execute(&mut conn)
+            .await
+            .unwrap();
     }
 }

@@ -1,10 +1,11 @@
-//! The two asks a write receipt carries: share what the team has not seen yet,
-//! and run the maintenance sweep when it is due.
+//! The three asks a write receipt carries: share what the team has not seen
+//! yet, run the maintenance sweep when it is due, and work a Reflection's
+//! queue when it has open items.
 //!
-//! The Stop hook already gives a person both of these at the end of a session
+//! The Stop hook already gives a person these at the end of a session
 //! (`crates/cli/src/hook.rs`). An agent working over MCP never sees a Stop
 //! hook - it may be talking to this daemon from another machine, another
-//! harness or no harness at all - so the same two asks ride along on the one
+//! harness or no harness at all - so the same asks ride along on the one
 //! surface every agent does meet: the receipt it gets back from a write.
 //!
 //! Three rules shape what is emitted, and all three exist so a trailer never
@@ -12,7 +13,8 @@
 //!
 //! - **at most one line per receipt.** Share first, because unshared work is
 //!   somebody else's problem until it is shared; the maintenance ask gets its
-//!   chance only on a receipt the share ask did not take;
+//!   chance only on a receipt the share ask did not take, and the Reflection
+//!   ask only on one neither of the two took;
 //! - **once per cooldown per identity** ([`crate::maintenance::mcp_nudge_due`]),
 //!   so an agent capturing twenty engrams in a row meets each ask once, and two
 //!   agents sharing one daemon each meet it on their own clock;
@@ -79,6 +81,10 @@ pub const MCP_EVOLVE_NUDGE: &str = "[crystalline] Knowledge maintenance is due: 
 /// the dependency direction forbids the import. Both arms below are the arms
 /// that hook reads, so the two surfaces ask on the same evidence.
 const EVOLVE_RUN_INTERVAL_DAYS: i64 = 7;
+
+/// The Reflection ask, whole. It opens with [`MCP_NUDGE_PREFIX`]'s five
+/// characters, written out like [`MCP_EVOLVE_NUDGE`] does.
+pub const MCP_REFLECT_NUDGE: &str = "[crystalline] A Reflection you curate has open items: call reflect and work the queue - what people changed first, then what the engrams changed.";
 
 /// What stands in for the identity when a call carries no account: a stdio
 /// session, or an HTTP instance that asks nobody to authenticate.
@@ -212,7 +218,9 @@ fn count_walk(key: &DomainKey) {
 #[cfg(not(any(test, feature = "testing")))]
 fn count_walk(_key: &DomainKey) {}
 
-/// The one line a write receipt carries, or `None` when nothing is due.
+/// The one line a write receipt carries, or `None` when nothing is due:
+/// share, then evolve, then reflect - the first that is due and has something
+/// to say.
 ///
 /// `scope` is the same caller as the access rules see it: the share ask leaves
 /// out every team domain [`Engine::hidden_for`] screens from it.
@@ -246,6 +254,12 @@ fn count_walk(_key: &DomainKey) {}
 /// tool calls, so the case is rare; the cost when it happens is one extra
 /// sentence; and the alternative is a lock on the path of every write, which is
 /// a real cost paid against a cosmetic one.
+///
+/// The reflect arm asks only when the daemon's record (`reflect_open`, one
+/// count tick old at most) names an open Reflection, and then counts live for
+/// this caller over the recorded domains alone, so a write while nothing is
+/// open costs no queue detection. A count that fails is logged and asks
+/// nothing; the write has already landed.
 pub async fn write_verb_trailer(
     engine: &Engine,
     identity: Option<&str>,
@@ -258,7 +272,9 @@ pub async fn write_verb_trailer(
 
     let share_open = mcp_nudge_due(&state, NudgeKind::Share, key, now);
     let evolve_open = mcp_nudge_due(&state, NudgeKind::Evolve, key, now);
-    if !share_open && !evolve_open {
+    let reflect_open =
+        !state.reflect_open.is_empty() && mcp_nudge_due(&state, NudgeKind::Reflect, key, now);
+    if !share_open && !evolve_open && !reflect_open {
         return None;
     }
     // One snapshot for whichever arms are still open, rather than one per arm:
@@ -292,6 +308,31 @@ pub async fn write_verb_trailer(
     if evolve_open && evolve_due(&config, &state, now, &locked) {
         record(&state_dir, NudgeKind::Evolve, key, now);
         return Some(MCP_EVOLVE_NUDGE.to_string());
+    }
+
+    if reflect_open {
+        // The write's own scope: the count is what this caller may curate.
+        // The open tier (an anonymous caller with auth.mcp off) sees what an
+        // anonymous caller sees, so it never reaches into a private domain.
+        // Only the domains the daemon's record names are counted live, so a
+        // write while nothing is open costs no queue detection at all.
+        let open_tier = matches!(scope, crate::scope::Scope::Anonymous) && !engine.auth_mcp();
+        let caller = crate::scope::ReflectionCaller::agent(
+            scope.clone(),
+            identity.unwrap_or("agent"),
+            open_tier,
+        );
+        let recorded: Vec<String> = state.reflect_open.keys().cloned().collect();
+        match engine.reflect_open_counts(&recorded, &caller).await {
+            Ok(counts) if !counts.is_empty() => {
+                record(&state_dir, NudgeKind::Reflect, key, now);
+                return Some(MCP_REFLECT_NUDGE.to_string());
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::debug!("reflect ask skipped, the open items could not be counted: {e}");
+            }
+        }
     }
 
     None

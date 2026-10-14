@@ -75,6 +75,9 @@ use turso::{Builder, Connection, Database, Row, Value};
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    /// Sees no engram on any shared domain. What it works on is its
+    /// Reflection level and the private domains it is invited into.
+    None,
     /// Read only: search, read, browse.
     Viewer,
     /// Everything a viewer may do, plus writing and editing engrams.
@@ -87,6 +90,7 @@ impl Role {
     /// The wire and database spelling, which is also what [`serde`] emits.
     pub fn as_str(self) -> &'static str {
         match self {
+            Role::None => "none",
             Role::Viewer => "viewer",
             Role::Editor => "editor",
             Role::Admin => "admin",
@@ -105,11 +109,12 @@ impl std::str::FromStr for Role {
 
     fn from_str(s: &str) -> Result<Role> {
         match s.trim().to_ascii_lowercase().as_str() {
+            "none" => Ok(Role::None),
             "viewer" => Ok(Role::Viewer),
             "editor" => Ok(Role::Editor),
             "admin" => Ok(Role::Admin),
             other => Err(anyhow!(
-                "unknown role '{other}': expected viewer, editor or admin"
+                "unknown role '{other}': expected none, viewer, editor or admin"
             )),
         }
     }
@@ -236,6 +241,8 @@ pub struct User {
     /// When this account last resolved a session or arrived through the
     /// trusted header, RFC 3339. Null for an account never seen.
     pub last_seen: Option<String>,
+    /// The Reflection level on every shared domain.
+    pub reflection: ReflectionLevel,
 }
 
 /// One identity an external provider asserts, tied to one account.
@@ -590,6 +597,9 @@ pub struct McpTokenInfo {
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MemberLevel {
+    /// Sees no engram of this domain; its Reflection level decides what it
+    /// works on.
+    None,
     /// Read only: this domain is visible and searchable, nothing more.
     Viewer,
     /// Everything a viewer may do, plus writing and editing its engrams.
@@ -602,6 +612,7 @@ impl MemberLevel {
     /// The wire and database spelling, which is also what [`serde`] emits.
     pub fn as_str(self) -> &'static str {
         match self {
+            MemberLevel::None => "none",
             MemberLevel::Viewer => "viewer",
             MemberLevel::Editor => "editor",
             MemberLevel::Manager => "manager",
@@ -620,11 +631,12 @@ impl std::str::FromStr for MemberLevel {
 
     fn from_str(s: &str) -> Result<MemberLevel> {
         match s.trim().to_ascii_lowercase().as_str() {
+            "none" => Ok(MemberLevel::None),
             "viewer" => Ok(MemberLevel::Viewer),
             "editor" => Ok(MemberLevel::Editor),
             "manager" => Ok(MemberLevel::Manager),
             other => Err(anyhow!(
-                "unknown membership level '{other}': expected viewer, editor or manager"
+                "unknown membership level '{other}': expected none, viewer, editor or manager"
             )),
         }
     }
@@ -636,6 +648,71 @@ impl std::str::FromStr for MemberLevel {
 /// failing the read. An unreadable row must never fail open.
 fn member_level_from_db(s: &str) -> MemberLevel {
     s.parse().unwrap_or(MemberLevel::Viewer)
+}
+
+/// The Reflection level an account holds on every shared domain, or a member
+/// on one private domain, beside its knowledge level. It only ever raises
+/// what the knowledge level gives: `Default` is "as knowledge",
+/// stored as SQL NULL so no sentinel value is written. There is no stored
+/// curator: curating follows from writing the engrams.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReflectionLevel {
+    /// As the knowledge level gives: a viewer reads and comments, `none`
+    /// sees nothing.
+    #[default]
+    Default,
+    /// Reads the Reflection and comments on it.
+    Reader,
+    /// Also edits reflection text and creates, moves and deletes reflections.
+    Contributor,
+}
+
+impl ReflectionLevel {
+    /// The wire spelling. `Default` is never written to the database.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReflectionLevel::Default => "default",
+            ReflectionLevel::Reader => "reader",
+            ReflectionLevel::Contributor => "contributor",
+        }
+    }
+
+    /// The column value: NULL for `Default`.
+    fn to_db(self) -> Value {
+        match self {
+            ReflectionLevel::Default => Value::Null,
+            other => Value::Text(other.as_str().to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for ReflectionLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ReflectionLevel {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<ReflectionLevel> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "default" => Ok(ReflectionLevel::Default),
+            "reader" => Ok(ReflectionLevel::Reader),
+            "contributor" => Ok(ReflectionLevel::Contributor),
+            other => Err(anyhow!(
+                "unknown Reflection level '{other}': expected default, reader or contributor"
+            )),
+        }
+    }
+}
+
+/// Read a Reflection level back out of a row. NULL is `Default`, and so is a
+/// value this build does not know: `Default` never raises anything, so an
+/// unreadable cell fails closed.
+fn reflection_level_from_db(cell: Option<String>) -> ReflectionLevel {
+    cell.and_then(|s| s.parse().ok()).unwrap_or_default()
 }
 
 /// The one value the `domain_acl.visibility` column is ever written with.
@@ -681,6 +758,9 @@ pub enum RefusalKind {
     /// The principal named owns the domain, and an owner holds no membership
     /// row: the row could only ever say less than the truth.
     OwnerIsNotAMember,
+    /// A membership with knowledge `none` and Reflection `default` would grant
+    /// nothing at all; removing the member says that.
+    EmptyMembership,
     /// The principal names no account, or names one that is disabled. ONE
     /// variant for both on purpose: a surface that cannot read the user list
     /// must not be handed a probe for which of the two it is. Also what the
@@ -818,6 +898,8 @@ pub struct DomainMember {
     pub principal: String,
     /// What this member may do here.
     pub level: MemberLevel,
+    /// The Reflection level on this domain.
+    pub reflection: ReflectionLevel,
     /// Who added or last changed this row. An audit field, stored as given:
     /// it is usually a login name but may name a non-account actor, the same
     /// latitude the identity-link plan gives `linked_by`.
@@ -891,6 +973,7 @@ CREATE TABLE IF NOT EXISTS users (
     display TEXT NOT NULL,
     email TEXT,
     role TEXT NOT NULL,
+    reflection TEXT,
     pass_hash TEXT,
     disabled INTEGER NOT NULL DEFAULT 0,
     last_seen_at TEXT,
@@ -924,6 +1007,7 @@ CREATE TABLE IF NOT EXISTS domain_member (
     principal_kind TEXT NOT NULL DEFAULT 'user',
     principal TEXT NOT NULL,
     level TEXT NOT NULL,
+    reflection TEXT,
     added_by TEXT NOT NULL,
     added_at TEXT NOT NULL,
     PRIMARY KEY (domain, principal_kind, principal)
@@ -1076,11 +1160,12 @@ const GONE_OAUTH_CLIENT: &str = "a client that is no longer registered";
 const NO_REDIRECT_HOST: &str = "an address with no host";
 
 /// The columns every user read selects, in the order [`user_from_row`] decodes.
-const USER_COLUMNS: &str = "name, display, email, role, disabled, last_seen_at";
+const USER_COLUMNS: &str = "name, display, email, role, disabled, last_seen_at, reflection";
 
 /// [`USER_COLUMNS`] qualified for the session join, where `users` is aliased
 /// `u`. Same columns in the same order, so [`user_from_row`] decodes both.
-const USER_COLUMNS_JOINED: &str = "u.name, u.display, u.email, u.role, u.disabled, u.last_seen_at";
+const USER_COLUMNS_JOINED: &str =
+    "u.name, u.display, u.email, u.role, u.disabled, u.last_seen_at, u.reflection";
 
 /// A `WHERE` fragment that is true unless the row it matches is the last
 /// *enabled* admin: either this account is not an enabled admin, or another
@@ -1267,6 +1352,11 @@ impl AuthStore {
             .await
             .context("creating the auth database schema")?;
         ensure_column(&conn, "users", "last_seen_at TEXT").await?;
+        // 0.26.0: the Reflection level beside the knowledge level, NULL for
+        // "as knowledge". Additive, so an older binary still opens the file
+        // (it names its columns and never reads these two).
+        ensure_column(&conn, "users", "reflection TEXT").await?;
+        ensure_column(&conn, "domain_member", "reflection TEXT").await?;
         Ok(AuthStore {
             _db: db,
             conn,
@@ -1286,14 +1376,38 @@ impl AuthStore {
         role: Role,
         password: &str,
     ) -> Result<()> {
+        self.add_user_with_reflection(
+            name,
+            display,
+            email,
+            role,
+            ReflectionLevel::Default,
+            password,
+        )
+        .await
+    }
+
+    /// [`AuthStore::add_user`] with the account's Reflection level on every
+    /// shared domain, written in the same statement as the account, so an
+    /// account never exists without the level it was created with.
+    pub async fn add_user_with_reflection(
+        &self,
+        name: &str,
+        display: &str,
+        email: Option<&str>,
+        role: Role,
+        reflection: ReflectionLevel,
+        password: &str,
+    ) -> Result<()> {
         let name = normalize_new_account_name(name)?;
         // Hash before taking the lock: argon2 is CPU, not database.
         let hash = hash_password(password).await?;
         let _guard = self.guard.lock().await;
         self.conn
             .execute(
-                "INSERT INTO users (name, display, email, role, pass_hash, disabled, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
+                "INSERT INTO users
+                     (name, display, email, role, reflection, pass_hash, disabled, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
                 vec![
                     Value::Text(name.clone()),
                     Value::Text(display.to_string()),
@@ -1302,6 +1416,7 @@ impl AuthStore {
                         None => Value::Null,
                     },
                     Value::Text(role.as_str().to_string()),
+                    reflection.to_db(),
                     Value::Text(hash),
                     Value::Text(chrono::Utc::now().to_rfc3339()),
                 ],
@@ -1414,7 +1529,7 @@ impl AuthStore {
         if user.disabled {
             return Ok(PasswordCheck::NoHash);
         }
-        let Some(hash) = cell_text(&row, 6) else {
+        let Some(hash) = cell_text(&row, 7) else {
             return Ok(PasswordCheck::NoHash);
         };
         if verify_hash(hash, password.to_string()).await? {
@@ -2427,7 +2542,7 @@ impl AuthStore {
         if user.disabled {
             return Ok(None);
         }
-        let csrf = cell_text(&row, 6).unwrap_or_default();
+        let csrf = cell_text(&row, 7).unwrap_or_default();
         self.conn
             .execute(
                 "UPDATE users SET last_seen_at = ?2 WHERE name = ?1",
@@ -2618,19 +2733,44 @@ impl AuthStore {
         role: Role,
         label: &str,
     ) -> Result<IssuedMcpToken> {
+        self.add_token_only_user_with_reflection(
+            name,
+            display,
+            email,
+            role,
+            ReflectionLevel::Default,
+            label,
+        )
+        .await
+    }
+
+    /// [`AuthStore::add_token_only_user`] with the account's Reflection level
+    /// on every shared domain, written in the same transaction as the account
+    /// and its token.
+    pub async fn add_token_only_user_with_reflection(
+        &self,
+        name: &str,
+        display: &str,
+        email: Option<&str>,
+        role: Role,
+        reflection: ReflectionLevel,
+        label: &str,
+    ) -> Result<IssuedMcpToken> {
         let token = format!("{MCP_TOKEN_PREFIX}{}", random_hex());
-        self.add_token_only_user_with(name, display, email, role, label, token)
+        self.add_token_only_user_with(name, display, email, role, reflection, label, token)
             .await
     }
 
     /// [`AuthStore::add_token_only_user`] with the token already minted, the
     /// seam a test uses to force the token insert to fail.
+    #[allow(clippy::too_many_arguments)]
     async fn add_token_only_user_with(
         &self,
         name: &str,
         display: &str,
         email: Option<&str>,
         role: Role,
+        reflection: ReflectionLevel,
         label: &str,
         token: String,
     ) -> Result<IssuedMcpToken> {
@@ -2644,8 +2784,9 @@ impl AuthStore {
         let result = async {
             self.conn
                 .execute(
-                    "INSERT INTO users (name, display, email, role, pass_hash, disabled, created_at)
-                     VALUES (?1, ?2, ?3, ?4, NULL, 0, ?5)",
+                    "INSERT INTO users
+                         (name, display, email, role, reflection, pass_hash, disabled, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, NULL, 0, ?6)",
                     vec![
                         Value::Text(name.clone()),
                         Value::Text(display.to_string()),
@@ -2654,6 +2795,7 @@ impl AuthStore {
                             None => Value::Null,
                         },
                         Value::Text(role.as_str().to_string()),
+                        reflection.to_db(),
                         Value::Text(created_at.clone()),
                     ],
                 )
@@ -2713,7 +2855,7 @@ impl AuthStore {
         if user.disabled {
             return Ok(None);
         }
-        if let Ok(Value::Integer(id)) = row.get_value(6) {
+        if let Ok(Value::Integer(id)) = row.get_value(7) {
             self.conn
                 .execute(
                     "UPDATE mcp_tokens SET last_used = ?2 WHERE id = ?1",
@@ -3777,7 +3919,7 @@ impl AuthStore {
         if user.disabled {
             return Ok(None);
         }
-        if let Ok(Value::Integer(id)) = row.get_value(6) {
+        if let Ok(Value::Integer(id)) = row.get_value(7) {
             self.conn
                 .execute(
                     "UPDATE oauth_grants SET last_used = ?2 WHERE id = ?1",
@@ -4296,7 +4438,7 @@ impl AuthStore {
         let mut rows = self
             .conn
             .query(
-                "SELECT principal, level, added_by, added_at FROM domain_member
+                "SELECT principal, level, added_by, added_at, reflection FROM domain_member
                  WHERE domain = ?1 AND principal_kind = ?2 ORDER BY principal",
                 vec![
                     Value::Text(domain.clone()),
@@ -4316,20 +4458,24 @@ impl AuthStore {
                 level: member_level_from_db(&cell_text(&row, 1).unwrap_or_default()),
                 added_by: cell_text(&row, 2).unwrap_or_default(),
                 added_at: cell_text(&row, 3).unwrap_or_default(),
+                reflection: reflection_level_from_db(cell_text(&row, 4)),
             });
         }
         Ok(out)
     }
 
     /// Invite `principal` to `domain` at `level`, or change the level it is
-    /// already there at. `added_by` is recorded as given (trimmed): it is an
+    /// already there at. `reflection` is the member's Reflection level there;
+    /// `None` keeps the stored one of an existing row and means
+    /// [`ReflectionLevel::Default`] for a new one, so changing one axis never
+    /// resets the other. `added_by` is recorded as given (trimmed): it is an
     /// audit field, usually the acting account's name, and it is not resolved
     /// against the users table because a non-account actor may legitimately
     /// grant membership. It may not be empty, though - a blank "invited by" is
     /// not an audit trail, and it is what a caller that forgot to pass one
     /// would write.
     ///
-    /// Three things are refused, all inside the one transaction that also does
+    /// Four things are refused, all inside the one transaction that also does
     /// the write so none of them can be raced past:
     ///
     /// * a domain that is not private, because a membership row there would
@@ -4339,12 +4485,15 @@ impl AuthStore {
     ///   reported instead of leaving a row waiting for someone to claim that
     ///   name later;
     /// * the domain's own owner, which is the one row that could only ever
-    ///   *reduce* what its holder may do.
+    ///   *reduce* what its holder may do;
+    /// * a membership with knowledge `none` and Reflection `default`, which
+    ///   would grant nothing at all ([`RefusalKind::EmptyMembership`]).
     pub async fn upsert_domain_member(
         &self,
         domain: &str,
         principal: &str,
         level: MemberLevel,
+        reflection: Option<ReflectionLevel>,
         added_by: &str,
     ) -> Result<()> {
         let domain = normalize_domain(domain)?;
@@ -4378,6 +4527,21 @@ impl AuthStore {
                 ));
             }
             self.require_live_user(&principal).await?;
+            // `None` keeps what the row holds, read before the row is
+            // replaced; a new member starts at `Default`.
+            let reflection = match reflection {
+                Some(r) => r,
+                None => self.member_reflection_in_tx(&domain, &principal).await?,
+            };
+            if level == MemberLevel::None && reflection == ReflectionLevel::Default {
+                return Err(refuse(
+                    RefusalKind::EmptyMembership,
+                    format!(
+                        "a member with knowledge none needs a Reflection level (reader or \
+                         contributor); remove '{principal}' from domain '{domain}' instead"
+                    ),
+                ));
+            }
             self.conn
                 .execute(
                     "DELETE FROM domain_member
@@ -4393,13 +4557,14 @@ impl AuthStore {
             self.conn
                 .execute(
                     "INSERT INTO domain_member
-                         (domain, principal_kind, principal, level, added_by, added_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                         (domain, principal_kind, principal, level, reflection, added_by, added_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     vec![
                         Value::Text(domain.clone()),
                         Value::Text(PRINCIPAL_USER.to_string()),
                         Value::Text(principal.clone()),
                         Value::Text(level.as_str().to_string()),
+                        reflection.to_db(),
                         Value::Text(added_by.clone()),
                         Value::Text(now.clone()),
                     ],
@@ -4432,6 +4597,60 @@ impl AuthStore {
             .await
             .with_context(|| format!("removing '{principal}' from domain '{domain}'"))?;
         Ok(changed > 0)
+    }
+
+    /// Set an account's Reflection level on every shared domain. `Default`
+    /// clears it back to "as knowledge".
+    pub async fn set_reflection_level(&self, name: &str, level: ReflectionLevel) -> Result<()> {
+        let name = normalize_account_name(name)?;
+        let _guard = self.guard.lock().await;
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE users SET reflection = ?1 WHERE name = ?2",
+                vec![level.to_db(), Value::Text(name.clone())],
+            )
+            .await
+            .with_context(|| format!("setting the Reflection level of '{name}'"))?;
+        if changed == 0 {
+            bail!("no such user: '{name}'");
+        }
+        Ok(())
+    }
+
+    /// One member's Reflection level on one private domain; `Default` when
+    /// the account has no membership row there.
+    pub async fn member_reflection(
+        &self,
+        domain: &str,
+        principal: &str,
+    ) -> Result<ReflectionLevel> {
+        let domain = normalize_domain(domain)?;
+        let principal = normalize_account_name(principal)?;
+        let _guard = self.guard.lock().await;
+        self.member_reflection_in_tx(&domain, &principal).await
+    }
+
+    /// [`AuthStore::member_reflection`] for an already folded domain and
+    /// principal, without taking the guard: the caller holds it (or runs
+    /// inside a transaction that does).
+    async fn member_reflection_in_tx(
+        &self,
+        domain: &str,
+        principal: &str,
+    ) -> Result<ReflectionLevel> {
+        let row = self
+            .query_first(
+                "SELECT reflection FROM domain_member
+                 WHERE domain = ?1 AND principal_kind = ?2 AND principal = ?3",
+                vec![
+                    Value::Text(domain.to_string()),
+                    Value::Text(PRINCIPAL_USER.to_string()),
+                    Value::Text(principal.to_string()),
+                ],
+            )
+            .await?;
+        Ok(reflection_level_from_db(row.and_then(|r| cell_text(&r, 0))))
     }
 
     /// Every private domain, by name. This is the whole input to the
@@ -5007,6 +5226,7 @@ fn user_from_row(row: &Row) -> User {
         role: role_from_db(&cell_text(row, 3).unwrap_or_default()),
         disabled: matches!(row.get_value(4), Ok(Value::Integer(i)) if i != 0),
         last_seen: cell_text(row, 5),
+        reflection: reflection_level_from_db(cell_text(row, 6)),
     }
 }
 
@@ -6857,6 +7077,143 @@ mod tests {
         assert_eq!(again.list_users().await.unwrap().len(), 1);
     }
 
+    /// The two Reflection columns: a file written before them opens, reads
+    /// every account and membership as `default`, and keeps what is set.
+    #[tokio::test]
+    async fn the_reflection_levels_are_stored_and_an_older_file_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("web-auth.db");
+        {
+            // The shape before 0.26.0: no `reflection` column anywhere.
+            let db = turso::Builder::new_local(path.to_str().unwrap())
+                .build()
+                .await
+                .unwrap();
+            let conn = db.connect().unwrap();
+            let old = SCHEMA.replace("    reflection TEXT,\n", "");
+            assert!(!old.contains("reflection"), "both columns are left out");
+            conn.execute_batch(&old).await.unwrap();
+        }
+        let auth = AuthStore::open(&path).await.unwrap();
+        auth.add_user("ann", "Ann", None, Role::None, "pw12345678")
+            .await
+            .unwrap();
+        auth.add_user("keeper", "Keeper", None, Role::Editor, "pw12345678")
+            .await
+            .unwrap();
+        assert_eq!(
+            auth.user("ann").await.unwrap().unwrap().reflection,
+            ReflectionLevel::Default
+        );
+        assert_eq!(auth.user("ann").await.unwrap().unwrap().role, Role::None);
+        auth.set_reflection_level("ann", ReflectionLevel::Contributor)
+            .await
+            .unwrap();
+        assert_eq!(
+            auth.user("ann").await.unwrap().unwrap().reflection,
+            ReflectionLevel::Contributor
+        );
+        auth.set_reflection_level("ann", ReflectionLevel::Default)
+            .await
+            .unwrap();
+        // Created with a level: one write, read back as given.
+        auth.add_user_with_reflection(
+            "bea",
+            "Bea",
+            None,
+            Role::None,
+            ReflectionLevel::Reader,
+            "pw12345678",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            auth.user("bea").await.unwrap().unwrap().reflection,
+            ReflectionLevel::Reader
+        );
+        auth.add_token_only_user_with_reflection(
+            "bot",
+            "bot",
+            None,
+            Role::None,
+            ReflectionLevel::Contributor,
+            "bot",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            auth.user("bot").await.unwrap().unwrap().reflection,
+            ReflectionLevel::Contributor
+        );
+        assert_eq!(
+            auth.user("ann").await.unwrap().unwrap().reflection,
+            ReflectionLevel::Default
+        );
+
+        auth.set_domain_visibility("lab", true, "keeper")
+            .await
+            .unwrap();
+        let err = auth
+            .upsert_domain_member("lab", "ann", MemberLevel::None, None, "keeper")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            StoreRefusal::kind_of(&err),
+            Some(RefusalKind::EmptyMembership),
+            "{err:#}"
+        );
+        auth.upsert_domain_member(
+            "lab",
+            "ann",
+            MemberLevel::None,
+            Some(ReflectionLevel::Reader),
+            "keeper",
+        )
+        .await
+        .unwrap();
+        let members = auth.domain_members("lab").await.unwrap();
+        assert_eq!(
+            (members[0].level, members[0].reflection),
+            (MemberLevel::None, ReflectionLevel::Reader)
+        );
+        // Changing one axis never resets the other: no Reflection level given
+        // keeps the stored one.
+        auth.upsert_domain_member("lab", "ann", MemberLevel::Viewer, None, "keeper")
+            .await
+            .unwrap();
+        let members = auth.domain_members("lab").await.unwrap();
+        assert_eq!(
+            (members[0].level, members[0].reflection),
+            (MemberLevel::Viewer, ReflectionLevel::Reader)
+        );
+        let err = auth
+            .upsert_domain_member(
+                "lab",
+                "ann",
+                MemberLevel::None,
+                Some(ReflectionLevel::Default),
+                "keeper",
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            StoreRefusal::kind_of(&err),
+            Some(RefusalKind::EmptyMembership),
+            "{err:#}"
+        );
+        assert_eq!(
+            auth.member_reflection("lab", "ann").await.unwrap(),
+            ReflectionLevel::Reader
+        );
+        assert_eq!(
+            auth.member_reflection("lab", "keeper").await.unwrap(),
+            ReflectionLevel::Default
+        );
+        drop(auth);
+        // Re-opening the migrated file does not fail on the duplicate columns.
+        AuthStore::open(&path).await.unwrap();
+    }
+
     fn entries(items: &[&str]) -> Vec<String> {
         items.iter().map(|e| e.to_string()).collect()
     }
@@ -7253,6 +7610,7 @@ mod tests {
                 "agent-build",
                 None,
                 Role::Editor,
+                ReflectionLevel::Default,
                 "build",
                 taken.token.clone(),
             )
@@ -7484,7 +7842,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .upsert_domain_member("lab", "mem", MemberLevel::Editor, "keeper")
+            .upsert_domain_member("lab", "mem", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
         assert_eq!(store.domain_members("lab").await.unwrap().len(), 1);
@@ -7519,11 +7877,11 @@ mod tests {
             .await
             .unwrap();
         store
-            .upsert_domain_member("eng", "mem", MemberLevel::Viewer, "keeper")
+            .upsert_domain_member("eng", "mem", MemberLevel::Viewer, None, "keeper")
             .await
             .unwrap();
         store
-            .upsert_domain_member("eng", "out", MemberLevel::Editor, "keeper")
+            .upsert_domain_member("eng", "out", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
         let grant = store
@@ -7594,7 +7952,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .upsert_domain_member("eng", "mem", MemberLevel::Editor, "keeper")
+            .upsert_domain_member("eng", "mem", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
         let live = store
@@ -7609,11 +7967,11 @@ mod tests {
             .await
             .unwrap();
         store
-            .upsert_domain_member("platform", "mem", MemberLevel::Viewer, "out")
+            .upsert_domain_member("platform", "mem", MemberLevel::Viewer, None, "out")
             .await
             .unwrap();
         store
-            .upsert_domain_member("platform", "keeper", MemberLevel::Manager, "out")
+            .upsert_domain_member("platform", "keeper", MemberLevel::Manager, None, "out")
             .await
             .unwrap();
         let stale = store
@@ -7697,7 +8055,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .upsert_domain_member("lab", "mem", MemberLevel::Viewer, "keeper")
+            .upsert_domain_member("lab", "mem", MemberLevel::Viewer, None, "keeper")
             .await
             .unwrap();
 
@@ -7754,11 +8112,11 @@ mod tests {
             .await
             .unwrap();
         store
-            .upsert_domain_member("lab", "mem", MemberLevel::Viewer, "keeper")
+            .upsert_domain_member("lab", "mem", MemberLevel::Viewer, None, "keeper")
             .await
             .unwrap();
         store
-            .upsert_domain_member("lab", "out", MemberLevel::Editor, "keeper")
+            .upsert_domain_member("lab", "out", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
         store.transfer_domain("lab", "mem").await.unwrap();
@@ -7814,11 +8172,11 @@ mod tests {
             .await
             .unwrap();
         store
-            .upsert_domain_member("lab", "MEM", MemberLevel::Viewer, "keeper")
+            .upsert_domain_member("lab", "MEM", MemberLevel::Viewer, None, "keeper")
             .await
             .unwrap();
         store
-            .upsert_domain_member("lab", "mem", MemberLevel::Manager, "keeper")
+            .upsert_domain_member("lab", "mem", MemberLevel::Manager, None, "keeper")
             .await
             .unwrap();
         let members = store.domain_members("lab").await.unwrap();
@@ -7848,7 +8206,7 @@ mod tests {
         let (_dir, store) = store().await;
         members_cast(&store).await;
         let err = store
-            .upsert_domain_member("lab", "mem", MemberLevel::Viewer, "keeper")
+            .upsert_domain_member("lab", "mem", MemberLevel::Viewer, None, "keeper")
             .await
             .unwrap_err()
             .to_string();
@@ -7858,26 +8216,26 @@ mod tests {
             .await
             .unwrap();
         let err = store
-            .upsert_domain_member("lab", "ghost", MemberLevel::Viewer, "keeper")
+            .upsert_domain_member("lab", "ghost", MemberLevel::Viewer, None, "keeper")
             .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("no such user"), "{err}");
         let err = store
-            .upsert_domain_member("lab", "keeper", MemberLevel::Viewer, "keeper")
+            .upsert_domain_member("lab", "keeper", MemberLevel::Viewer, None, "keeper")
             .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("already holds every level"), "{err}");
         store.set_disabled("mem", true).await.unwrap();
         let err = store
-            .upsert_domain_member("lab", "mem", MemberLevel::Viewer, "keeper")
+            .upsert_domain_member("lab", "mem", MemberLevel::Viewer, None, "keeper")
             .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("disabled"), "{err}");
         let err = store
-            .upsert_domain_member("lab", "out", MemberLevel::Viewer, "  ")
+            .upsert_domain_member("lab", "out", MemberLevel::Viewer, None, "  ")
             .await
             .unwrap_err()
             .to_string();
@@ -7898,11 +8256,11 @@ mod tests {
             .await
             .unwrap();
         store
-            .upsert_domain_member("lab", "mem", MemberLevel::Manager, "keeper")
+            .upsert_domain_member("lab", "mem", MemberLevel::Manager, None, "keeper")
             .await
             .unwrap();
         store
-            .upsert_domain_member("lab", "out", MemberLevel::Editor, "keeper")
+            .upsert_domain_member("lab", "out", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
         store.remove_user("mem").await.unwrap();
@@ -7922,7 +8280,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .upsert_domain_member("lab", "mem", MemberLevel::Editor, "keeper")
+            .upsert_domain_member("lab", "mem", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
         store.remove_user("keeper").await.unwrap();
@@ -7970,7 +8328,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .upsert_domain_member("lab", "mem", MemberLevel::Editor, "keeper")
+            .upsert_domain_member("lab", "mem", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap();
         store.remove_user_force("keeper").await.unwrap();
@@ -8004,7 +8362,7 @@ mod tests {
         members_cast(&store).await;
 
         let shared = store
-            .upsert_domain_member("lab", "mem", MemberLevel::Editor, "keeper")
+            .upsert_domain_member("lab", "mem", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap_err();
         assert_eq!(
@@ -8027,7 +8385,7 @@ mod tests {
             .await
             .unwrap();
         let owner = store
-            .upsert_domain_member("lab", "keeper", MemberLevel::Editor, "keeper")
+            .upsert_domain_member("lab", "keeper", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap_err();
         assert_eq!(
@@ -8037,7 +8395,7 @@ mod tests {
         assert!(format!("{owner:#}").contains("owns domain"), "{owner:#}");
 
         let ghost = store
-            .upsert_domain_member("lab", "ghost", MemberLevel::Editor, "keeper")
+            .upsert_domain_member("lab", "ghost", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap_err();
         assert_eq!(
@@ -8051,7 +8409,7 @@ mod tests {
         // and be sure it has no second branch.
         store.set_disabled("mem", true).await.unwrap();
         let disabled = store
-            .upsert_domain_member("lab", "mem", MemberLevel::Editor, "keeper")
+            .upsert_domain_member("lab", "mem", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap_err();
         assert_eq!(
@@ -8068,7 +8426,7 @@ mod tests {
         // which is what lets the one route taking a principal in the BODY
         // answer the 422 its documentation promises rather than a 500.
         let malformed = store
-            .upsert_domain_member("lab", "  ", MemberLevel::Editor, "keeper")
+            .upsert_domain_member("lab", "  ", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap_err();
         assert_eq!(
@@ -8080,7 +8438,7 @@ mod tests {
         // refuses as NotPrivate rather than as a fault. Named for what it
         // asserts: this leg is not the no-kind one.
         let unregistered = store
-            .upsert_domain_member("nosuchdomain", "mem", MemberLevel::Editor, "keeper")
+            .upsert_domain_member("nosuchdomain", "mem", MemberLevel::Editor, None, "keeper")
             .await
             .unwrap_err();
         assert_eq!(
@@ -8094,7 +8452,7 @@ mod tests {
         // arm `rest::members::store_error`'s `None` branch answers, and without
         // a leg here nothing in the workspace pins it.
         let no_actor = store
-            .upsert_domain_member("lab", "mem", MemberLevel::Editor, "  ")
+            .upsert_domain_member("lab", "mem", MemberLevel::Editor, None, "  ")
             .await
             .unwrap_err();
         assert_eq!(
@@ -8120,7 +8478,7 @@ mod tests {
                 .await
                 .unwrap();
             store
-                .upsert_domain_member("lab", "mem", MemberLevel::Manager, "keeper")
+                .upsert_domain_member("lab", "mem", MemberLevel::Manager, None, "keeper")
                 .await
                 .unwrap();
         }

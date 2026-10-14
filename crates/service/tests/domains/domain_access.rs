@@ -38,7 +38,7 @@ async fn auth(dir: &std::path::Path, file: &str) -> Arc<AuthStore> {
     auth.set_domain_visibility("lab", true, "keeper")
         .await
         .unwrap();
-    auth.upsert_domain_member("lab", "mem", MemberLevel::Viewer, "keeper")
+    auth.upsert_domain_member("lab", "mem", MemberLevel::Viewer, None, "keeper")
         .await
         .unwrap();
     auth

@@ -24,9 +24,7 @@ impl Engine {
     /// [`Engine::attachment_list_as`], which lays that caller's own drafted
     /// files over it.
     pub async fn attachment_list(&self, domain: &str) -> Result<Vec<AttachmentRow>> {
-        let (domain_id, _) = self.domain_source(domain).await?;
-        let store = self.store.lock().await;
-        Ok(store.list_attachments(domain_id).await?)
+        self.asset_list_in(AssetHome::Engram, domain).await
     }
 
     /// [`Engine::attachment_list`] as this caller sees it.
@@ -67,77 +65,7 @@ impl Engine {
         domain: &str,
         path: &str,
     ) -> Result<(Vec<u8>, AttachmentRow)> {
-        validate_attachment_path(path)?;
-        let (domain_id, source) = self.domain_source(domain).await?;
-        match &source {
-            ContentSource::File { root } => {
-                let abs = contained_asset_path(root, path)?;
-                // The stat comes first so an over-cap file is refused without
-                // ever being read: the ceiling is enforced by the walker (which
-                // skips such a file, so it has no row) and by the write, and a
-                // read that hashed one anyway would both spend the memory and
-                // mint a row the next full scan deletes again.
-                let meta = match std::fs::metadata(&abs) {
-                    Ok(meta) => meta,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        return Err(EngineError::NotFound(missing_attachment(domain, path)));
-                    }
-                    Err(source) => {
-                        return Err(EngineError::Io {
-                            path: abs.display().to_string(),
-                            source,
-                        });
-                    }
-                };
-                if meta.len() > crystalline_core::MAX_ATTACHMENT_BYTES {
-                    return Err(EngineError::Invalid(over_cap_error(path, meta.len())));
-                }
-                let bytes = match std::fs::read(&abs) {
-                    Ok(bytes) => bytes,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        return Err(EngineError::NotFound(missing_attachment(domain, path)));
-                    }
-                    Err(source) => {
-                        return Err(EngineError::Io {
-                            path: abs.display().to_string(),
-                            source,
-                        });
-                    }
-                };
-                // The bytes that were actually read decide, like the walker's
-                // post-read check: a file that grew past the ceiling between
-                // the stat and the read is caught here rather than served.
-                if bytes.len() as u64 > crystalline_core::MAX_ATTACHMENT_BYTES {
-                    return Err(EngineError::Invalid(over_cap_error(
-                        path,
-                        bytes.len() as u64,
-                    )));
-                }
-                let modified = asset_modified(&abs);
-                let store = self.store.lock().await;
-                if let Some(row) = store.get_attachment(domain_id, path).await?
-                    && row.size == bytes.len() as u64
-                    && row.modified == modified
-                {
-                    return Ok((bytes, row));
-                }
-                let row = attachment_row(path, &bytes, modified)?;
-                store.upsert_attachment(domain_id, &row).await?;
-                Ok((bytes, row))
-            }
-            ContentSource::Virtual => {
-                let store = self.store.lock().await;
-                let row = store
-                    .get_attachment(domain_id, path)
-                    .await?
-                    .ok_or_else(|| EngineError::NotFound(missing_attachment(domain, path)))?;
-                let bytes = store
-                    .read_attachment_blob(domain_id, path)
-                    .await?
-                    .ok_or_else(|| EngineError::NotFound(missing_attachment(domain, path)))?;
-                Ok((bytes, row))
-            }
-        }
+        self.asset_read_in(AssetHome::Engram, domain, path).await
     }
 
     /// [`Engine::attachment_read`] as this caller sees it: their own bytes
@@ -180,75 +108,10 @@ impl Engine {
         path: &str,
         bytes: Vec<u8>,
     ) -> Result<AttachmentRow> {
-        if self.read_only {
-            return Err(EngineError::ReadOnly);
-        }
-        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
-            .await?;
-        validate_attachment_path(path)?;
-        if bytes.len() as u64 > crystalline_core::MAX_ATTACHMENT_BYTES {
-            return Err(EngineError::Invalid(over_cap_error(
-                path,
-                bytes.len() as u64,
-            )));
-        }
-        let (domain_id, source) = self.domain_source(domain).await?;
-        let row = match &source {
-            ContentSource::File { root } => {
-                let abs = contained_asset_path(root, path)?;
-                // Held across the write and the row upsert, the file lock
-                // before the store lock like every other writer here. See
-                // `Engine::write_lock`.
-                let lock = self.write_lock(&abs);
-                let _guard = lock.lock().await;
-                write_bytes(&abs, &bytes)?;
-                // The modification instant is read back off the file rather
-                // than taken from the clock, so it is the same value the sync
-                // walker's stat prefilter compares against and an upload costs
-                // no re-hash on the next scan.
-                let row = attachment_row(path, &bytes, asset_modified(&abs))?;
-                let store = self.store.lock().await;
-                store.upsert_attachment(domain_id, &row).await?;
-                row
-            }
-            ContentSource::Virtual => {
-                let row = attachment_row(path, &bytes, Utc::now().to_rfc3339())?;
-                let store = self.store.lock().await;
-                // What was there before this write, so a failure can put it
-                // back rather than approximate it.
-                let previous = store.get_attachment(domain_id, path).await?;
-                store.upsert_attachment(domain_id, &row).await?;
-                // A failed blob write must leave the domain exactly as it found
-                // it, which is two different things depending on what was
-                // there. A replace: the upsert above moved the row's metadata
-                // only - the blob belongs to the row and still holds the older
-                // bytes - so restoring the recorded row restores the whole
-                // attachment, and deleting instead would destroy an attachment
-                // this write never got to replace. A create: nothing was there,
-                // so the row this write inserted goes with it, or a listing
-                // would advertise bytes that were never stored. Best effort
-                // either way (the next write, or a scan of the file domain's
-                // twin, reconciles), and the original error is what the caller
-                // sees. A file domain needs none of this: the temp file is
-                // renamed into place only on success, so a failed write leaves
-                // the old file untouched.
-                if let Err(e) = store.write_attachment_blob(domain_id, path, &bytes).await {
-                    let undone = match &previous {
-                        Some(prior) => store.upsert_attachment(domain_id, prior).await.err(),
-                        None => store.delete_attachment(domain_id, path).await.err(),
-                    };
-                    if let Some(failed) = undone {
-                        tracing::warn!(
-                            "attachment '{path}' in '{domain}' could not be rolled back after a failed blob write: {failed}"
-                        );
-                    }
-                    return Err(e.into());
-                }
-                row
-            }
-        };
-        crate::maintenance::record_pending(domain);
-        Ok(row)
+        Ok(self
+            .asset_write_in(AssetHome::Engram, domain, path, bytes, ReplaceRule::Allow)
+            .await?
+            .row)
     }
 
     /// Remove one attachment: the file or the blob, and the row.
@@ -258,38 +121,7 @@ impl Engine {
     /// a hand-edited domain) still counts as a delete: whichever half existed
     /// is removed and the pair ends up consistent.
     pub async fn attachment_delete(&self, domain: &str, path: &str) -> Result<()> {
-        if self.read_only {
-            return Err(EngineError::ReadOnly);
-        }
-        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
-            .await?;
-        validate_attachment_path(path)?;
-        let (domain_id, source) = self.domain_source(domain).await?;
-        let mut file_removed = false;
-        if let ContentSource::File { root } = &source {
-            let abs = contained_asset_path(root, path)?;
-            let lock = self.write_lock(&abs);
-            let _guard = lock.lock().await;
-            match std::fs::remove_file(&abs) {
-                Ok(()) => file_removed = true,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(source) => {
-                    return Err(EngineError::Io {
-                        path: abs.display().to_string(),
-                        source,
-                    });
-                }
-            }
-        }
-        let row_removed = {
-            let store = self.store.lock().await;
-            store.delete_attachment(domain_id, path).await?
-        };
-        if !file_removed && !row_removed {
-            return Err(EngineError::NotFound(missing_attachment(domain, path)));
-        }
-        crate::maintenance::record_pending(domain);
-        Ok(())
+        self.asset_delete_in(AssetHome::Engram, domain, path).await
     }
 
     /// What an attachment write landed as: the row that now describes it, and

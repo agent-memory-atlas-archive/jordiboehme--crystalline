@@ -90,7 +90,7 @@ pub struct WriteParams {
     /// the knowledge is due a re-check) must be plain ISO dates (YYYY-MM-DD);
     /// any other value fails the write, while an explicit null or a sentinel
     /// far-future date is dropped. A verification goes here too, as
-    /// verified: { by: <actor>, at: <RFC 3339 instant> } or a list of those.
+    /// verified: { by: `<actor>`, at: `<RFC 3339 instant>` } or a list of those.
     /// The write provenance keys generated and timestamp are engine-owned and
     /// are ignored when passed here, as are type, title, permalink, tags,
     /// status and recorded_at, which have their own parameters.
@@ -338,7 +338,7 @@ pub struct MoveParams {
     /// the engram's own current path to change only its permalink.
     pub destination: String,
     /// Move to a different domain. Bare links from the domain it leaves gain
-    /// the domain prefix, [[domain:Target]], so they still resolve.
+    /// the domain prefix, `[[domain:Target]]`, so they still resolve.
     #[serde(default)]
     pub destination_domain: Option<String>,
     /// The permalink the engram answers to after the move. Omit it and the
@@ -354,7 +354,7 @@ pub struct MoveParams {
     #[serde(default)]
     pub permalink: Option<String>,
     /// Rewrite every reference to the moved engram when its address changes:
-    /// [[old]] and [[domain:old]] links, relations and crystalline://domain/old
+    /// `[[old]]` and `[[domain:old]]` links, relations and `crystalline://domain/old`
     /// URLs (a #fragment is kept), in every domain you can see. Defaults to
     /// true; false leaves them dangling.
     #[serde(default)]
@@ -571,6 +571,174 @@ pub struct EvolveParams {
     pub include_acknowledged: bool,
 }
 
+/// Parameters for `read_reflection`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ReadReflectionParams {
+    /// The domain whose Reflection to read.
+    pub domain: String,
+    /// A reflection's path inside reflections/, for example guides/deploying.md
+    /// or PACT.md. Omit for the tree of every reflection with titles and open
+    /// thread counts.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Words to search the Reflection for, instead of reading one page or the
+    /// tree: the answer is the matching sections, best first, each with its
+    /// page, title, section id, heading and a snippet. Leave out path.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// With query: hybrid (default), text or semantic. hybrid and semantic
+    /// answer as text until the pages are embedded.
+    #[serde(default)]
+    pub search_type: Option<String>,
+    /// With query: hits per page, default 10, at most 100.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// With query: one-based page, default 1.
+    #[serde(default)]
+    pub page: Option<usize>,
+}
+
+/// Parameters for `write_reflection`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct WriteReflectionParams {
+    /// The domain whose Reflection to change.
+    pub domain: String,
+    /// write (the default: create or replace a reflection or PACT.md, or
+    /// change one section of it with operation), move, delete, settle (mark
+    /// people's changes to sections as taken in or kept), move_asset or
+    /// delete_asset (move or remove a file under reflections/assets/; both
+    /// need curate access).
+    #[serde(default)]
+    pub action: Option<String>,
+    /// The reflection's path inside reflections/, ending in .md; for
+    /// move_asset and delete_asset the file's path inside reflections/, for
+    /// example assets/flow.png.
+    pub path: String,
+    /// write: the whole markdown of the reflection. Section ids (the
+    /// <!-- r:... --> lines) are kept as they are and added under new ##
+    /// headings; the reflection: frontmatter block is Crystalline's own and is
+    /// ignored. Leave it out when you pass operation.
+    #[serde(default)]
+    pub markdown: Option<String>,
+    /// write: change one section instead of the whole page, the way
+    /// edit_engram does: replace_section, insert_before_section or
+    /// insert_after_section, with section and content. The section's id line
+    /// stays where it is.
+    #[serde(default)]
+    pub operation: Option<String>,
+    /// write with operation: the section's heading path, for example
+    /// `## Night deploys` (or `## API > ### Auth`).
+    #[serde(default)]
+    pub section: Option<String>,
+    /// write with operation: the section body (never repeat the heading; a
+    /// repeat is dropped), or for insert_before_section the text to put above
+    /// the heading.
+    #[serde(default)]
+    pub content: Option<String>,
+    /// write with replace_section: replace deeper subsections too.
+    #[serde(default)]
+    pub include_subsections: bool,
+    /// write: the engrams each section was built from, by section id or
+    /// heading, as permalinks in this domain. Naming a section here curates
+    /// it: its reflected text moves to what you wrote.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub sources: BTreeMap<String, Vec<String>>,
+    /// move: the new path inside reflections/; move_asset: the file's new
+    /// path inside reflections/, assets/...
+    #[serde(default)]
+    pub to: Option<String>,
+    /// settle: the section ids whose change you settle.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub sections: Vec<String>,
+    /// settle: kept (the person's text stands and the sources stay) or
+    /// taken_in (you changed the engrams to match; their checksums are
+    /// refreshed).
+    #[serde(default)]
+    pub outcome: Option<String>,
+    /// write: the checksum read_reflection returned; a reflection that changed
+    /// since is refused rather than overwritten.
+    #[serde(default)]
+    pub expected_checksum: Option<String>,
+    /// Only create: refuse when a reflection already lives at `path`. Set by
+    /// the REST `PUT` with `"create": true`; never deserialized, so
+    /// the MCP schema does not show it (schemars honours `serde(skip)`).
+    #[serde(skip)]
+    pub create_only: bool,
+}
+
+/// Parameters for `discuss`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct DiscussParams {
+    /// The domain whose Reflection holds the reflection.
+    pub domain: String,
+    /// open (the default), answer, resolve, reopen or list.
+    #[serde(default)]
+    pub action: Option<String>,
+    /// The reflection's path inside reflections/. For list, omit it to list
+    /// the threads of every reflection.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// open: the section the thread is about, by id or heading.
+    #[serde(default)]
+    pub section: Option<String>,
+    /// open: the exact passage the thread is about, quoted from the section.
+    /// Omit to discuss the whole section.
+    #[serde(default)]
+    pub quote: Option<String>,
+    /// open: which occurrence of the quote in the section, counting from 1.
+    #[serde(default)]
+    pub occurrence: Option<u32>,
+    /// answer, resolve, reopen: the thread id (t-...).
+    #[serde(default)]
+    pub thread: Option<String>,
+    /// What you say. For resolve it is the short outcome, and it is
+    /// required. Write it in plain words for people: no engram links.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// open: this thread answers a person's change to the section (a feedback
+    /// item from reflect) instead of settling it; the feedback item waits while
+    /// the thread is open. Needs curate access.
+    #[serde(default)]
+    pub answers_feedback: bool,
+    /// list: open (the default), resolved or all.
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// Parameters for `reflect`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ReflectParams {
+    /// The domains whose Reflection queue to return. Omit for every domain
+    /// with a Reflection you can work on here.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub domains: Vec<String>,
+    /// Restrict to these kinds: feedback (what people changed), update (what
+    /// changed in the engrams, or what the Reflection does not cover yet),
+    /// review (threads waiting for you). Omit for all three.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub kinds: Vec<String>,
+    /// Page size. Defaults to 10, capped at 100.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// One-based page number. Defaults to 1.
+    #[serde(default)]
+    pub page: Option<usize>,
+    /// Screen the named `domains` the way an unnamed queue screens every
+    /// domain: one that is read-only, replaced by a connected server, not
+    /// registered, or not in effect, or that the caller cannot work, is
+    /// left out instead of refused, and one whose state cannot be read is
+    /// named in `scope.unreadable` (one whose Reflection is pending in
+    /// `scope.pending`). Every domain is still checked with the
+    /// caller's own rights; the flag only turns a per-domain refusal into a
+    /// skip. Any caller may send it; a connected machine sends it to ask a
+    /// server for exactly the domains it mounts from it, so the server's
+    /// counts and pages cover the rows shown there. Kept out of the MCP
+    /// schema.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schemars(skip)]
+    pub skip_unavailable: bool,
+}
+
 /// Parameters for `configure`. Omit everything to see the current settings,
 /// and with `github.enabled` on the GitHub connection too; with it off the
 /// snapshot reports that the feature is off and how to turn it on, leaving
@@ -583,9 +751,10 @@ pub struct EvolveParams {
 pub struct ConfigureParams {
     /// A domain to see and change instead of the instance. configure then
     /// answers how that domain behaves: its MANIFEST policy keys (sharing,
-    /// generated_indexes, domain_name, read_only), what each MANIFEST section does and
-    /// its .crystalline.yaml rule overrides. set and unset then address that
-    /// domain: a policy key, rules.<rule id> (a verify rule's severity) or
+    /// generated_indexes, domain_name, read_only, reflection; reflection_home
+    /// is filled in when Reflection is switched on), what each MANIFEST
+    /// section does and its .crystalline.yaml rule overrides. set and unset then address that
+    /// domain: a policy key, `rules.<rule id>` (a verify rule's severity) or
     /// token_budget. Omit it for the instance settings.
     #[serde(default)]
     pub domain: Option<String>,
@@ -909,6 +1078,10 @@ domain_args!(ResolveConflictParams { one domain });
 domain_args!(WithdrawProposalParams { one domain });
 domain_args!(ProvisionParams { opt domain });
 domain_args!(ConfigureParams { opt domain });
+domain_args!(ReflectParams { all domains });
+domain_args!(ReadReflectionParams { one domain });
+domain_args!(WriteReflectionParams { one domain });
+domain_args!(DiscussParams { one domain });
 
 // Every text a tool parameter carries may arrive with CRLF line endings, and is
 // taken as the LF text it means: what Crystalline stores is LF only, and a
@@ -1091,5 +1264,33 @@ mod tests {
             back["type"], "decision",
             "renamed fields keep their wire name"
         );
+        let read: ReadReflectionParams = serde_json::from_value(serde_json::json!({
+            "domain": "eng",
+            "query": "night",
+            "search_type": "text",
+            "limit": 5,
+            "page": 2,
+        }))
+        .unwrap();
+        let again: ReadReflectionParams =
+            serde_json::from_value(serde_json::to_value(&read).unwrap()).unwrap();
+        assert_eq!(again.query.as_deref(), Some("night"));
+        assert_eq!(again.search_type.as_deref(), Some("text"));
+        assert_eq!((again.limit, again.page), (Some(5), Some(2)));
+        let write: WriteReflectionParams = serde_json::from_value(serde_json::json!({
+            "domain": "jordi-acme",
+            "path": "guides/a.md",
+            "markdown": "# A\n",
+            "sources": { "One": ["deploy"] },
+        }))
+        .unwrap();
+        let sent = serde_json::to_value(&write).unwrap();
+        assert!(
+            sent.get("create_only").is_none(),
+            "REST only, never forwarded: {sent}"
+        );
+        let again: WriteReflectionParams = serde_json::from_value(sent).unwrap();
+        assert_eq!(again.sources, write.sources);
+        assert_eq!(again.markdown.as_deref(), Some("# A\n"));
     }
 }

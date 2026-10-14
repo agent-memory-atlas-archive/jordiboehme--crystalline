@@ -80,6 +80,7 @@ export function userFixture(overrides: Partial<User> = {}): User {
     display: "Ada Lovelace",
     role: "editor",
     disabled: false,
+    reflection: "default",
     ...overrides,
   };
 }
@@ -180,6 +181,23 @@ export function defaultPolicyRows(): PolicyRowFixture[] {
       ["off", "on"],
       "off",
       "Whether every change to this domain through Crystalline is refused; pulls from the team still apply.",
+    ),
+    policyRow(
+      "reflection",
+      null,
+      "off",
+      ["off", "on"],
+      "off",
+      "Whether this domain keeps a Reflection: documents for people under reflections/.",
+    ),
+    policyRow(
+      "reflection_home",
+      null,
+      "",
+      [],
+      "",
+      "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.",
+      "text",
     ),
   ];
 }

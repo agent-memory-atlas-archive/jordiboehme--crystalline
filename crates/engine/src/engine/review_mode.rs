@@ -574,6 +574,22 @@ impl Engine {
             return Ok(review::left_json(domain, Vec::new(), Vec::new(), 0));
         }
 
+        // A folded MANIFEST draft can switch the Reflection on: the draft was
+        // screened when it was written, and the fold is where the switch
+        // lands. The pact is seeded first, the way the policy edit seeds it
+        // before it writes the switch, and before the key comes off and the
+        // rooms close: a seed that fails refuses the fold with nothing
+        // changed, so the same call works once the folder takes the pact. A
+        // pact without the switch is harmless, as the policy edit accepts.
+        if let Some(root) = &root
+            && folds_switch_on(root, &folding)
+            && let Err(e) = self.seed_pact(domain).await
+        {
+            return Err(EngineError::Conflict(format!(
+                "a draft of the MANIFEST switches Reflection on, and its PACT.md could not be written ({e}), so nothing was folded and the domain still reviews changes"
+            )));
+        }
+
         // The key comes off first, and then the rooms go, and that pair is the
         // whole of step 2: see the ordering on [`Engine::set_review_mode`].
         //
@@ -1477,4 +1493,21 @@ impl Engine {
         }
         Ok(report)
     }
+}
+
+/// Whether folding `folding` (in fold order, the last MANIFEST draft wins)
+/// switches the Reflection of the domain at `root` on: the MANIFEST in the
+/// folder does not say `reflection: on` and the one the fold writes does.
+fn folds_switch_on(root: &Path, folding: &[&ActorDrafts]) -> bool {
+    let landing = folding
+        .iter()
+        .flat_map(|held| held.entries.iter())
+        .rfind(|draft| draft.path == "MANIFEST.md");
+    let Some(draft) = landing else {
+        return false;
+    };
+    let before = std::fs::read_to_string(root.join("MANIFEST.md")).unwrap_or_default();
+    !draft.tombstone
+        && super::reflection::declares_on(&draft.content)
+        && !super::reflection::declares_on(&before)
 }

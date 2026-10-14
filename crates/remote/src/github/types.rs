@@ -69,7 +69,10 @@ pub(super) struct TreeRef {
 /// `POST .../git/trees` request body.
 #[derive(Debug, Serialize)]
 pub(super) struct CreateTreeRequest {
-    pub(super) base_tree: String,
+    /// The tree the writes apply to; `None` starts from an empty tree (a
+    /// root tree), and the key is then left out of the body.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) base_tree: Option<String>,
     pub(super) tree: Vec<TreeEntryRequest>,
 }
 

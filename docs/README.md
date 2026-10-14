@@ -18,6 +18,7 @@ The [Crystalline Handbook](https://jordiboehme.github.io/crystalline/) is the lo
 | [Fluid, the web UI](fluid.md) | What a person does in the browser |
 | [Teams](teams.md) | Team domains on GitHub, private domains and review mode |
 | [Verify, evolve and doctor](evolve.md) | The three checks, the GitHub Action, the importer and the generated listings |
+| [The Reflection](reflection.md) | Documents for people beside the engrams: the pact, threads, rights, the reflect queue, search, files, the home instance and its backup |
 | [Virtual domains](virtual-domains.md) | Engrams that live in the database, with no folder behind them |
 | [Architecture](architecture.md) | The crates, the daemon and the one source of truth |
 | [Deployment](deployment.md) | Every scenario with a diagram, the container image and the environment variables |

@@ -202,6 +202,33 @@ describe("the domain policies card", () => {
     ).toBeNull();
   });
 
+  it("draws reflection as a select and reflection_home as read-only text with no 'Change name'", async () => {
+    serve();
+
+    renderApp("/d/eng");
+    const card = await policiesCard();
+
+    const reflection = within(card).getByRole("combobox", {
+      name: "reflection",
+    });
+    expect(reflection).toHaveValue("off");
+    expect(
+      within(reflection).getByRole("option", { name: "off (default)" }),
+    ).toBeVisible();
+    expect(
+      within(reflection).getByRole("option", { name: "on" }),
+    ).toBeVisible();
+
+    // The server fills the home in when Reflection is switched on; nobody
+    // types it, and it is not a name to change through a rename.
+    const home = within(card).getByRole("row", { name: /^reflection_home/ });
+    expect(within(home).queryByRole("combobox")).toBeNull();
+    expect(
+      within(home).queryByRole("button", { name: "Change name" }),
+    ).toBeNull();
+    expect(within(home).getByText("not set")).toBeVisible();
+  });
+
   it("opens the rename dialog from a 'Change name' button beside domain_name, for the owner", async () => {
     serve();
 

@@ -15,6 +15,7 @@ use serde_yaml_ng::{Mapping, Value};
 use crate::engram::{
     EVOLVE_ACK_KEY, Engram, EvolveAck, Frontmatter, Generated, SchemaDef, Verified,
 };
+use crate::headings::{HeadingSpan, heading_spans};
 use crate::parse::{continues_bullet, locate, parse_heading};
 
 /// The stand-in scalar the `generated` key carries through YAML serialization,
@@ -791,72 +792,6 @@ fn line_sets_key(line: &str, key: &str) -> bool {
 
 // --- section editing ---------------------------------------------------------
 
-struct HeadingSpan {
-    level: u8,
-    text: String,
-    line_start: usize,
-    line_end: usize,
-}
-
-fn heading_spans(source: &str) -> Vec<HeadingSpan> {
-    let (_, _, body_start) = locate(source);
-    let mut spans = Vec::new();
-    let mut fence: Option<(char, usize)> = None;
-    let mut offset = body_start;
-    for raw in source[body_start..].split_inclusive('\n') {
-        let line = raw.strip_suffix('\n').unwrap_or(raw).trim_end_matches('\r');
-        let line_start = offset;
-        let line_end = offset + raw.len();
-        offset = line_end;
-
-        match fence {
-            None => {
-                if let Some((c, n)) = fence_open(line) {
-                    fence = Some((c, n));
-                    continue;
-                }
-                if let Some((level, text)) = parse_heading(line) {
-                    spans.push(HeadingSpan {
-                        level,
-                        text,
-                        line_start,
-                        line_end,
-                    });
-                }
-            }
-            Some((fc, fcount)) => {
-                if let Some((c, n)) = fence_open(line)
-                    && c == fc
-                    && n >= fcount
-                {
-                    let after = &line.trim_start()[n..];
-                    if after.trim().is_empty() {
-                        fence = None;
-                    }
-                }
-            }
-        }
-    }
-    spans
-}
-
-fn fence_open(line: &str) -> Option<(char, usize)> {
-    let indent = line.len() - line.trim_start_matches(' ').len();
-    if indent > 3 {
-        return None;
-    }
-    let rest = &line[indent..];
-    let first = rest.chars().next()?;
-    if first != '`' && first != '~' {
-        return None;
-    }
-    let count = rest.chars().take_while(|c| *c == first).count();
-    if count < 3 {
-        return None;
-    }
-    Some((first, count))
-}
-
 fn parse_segment(seg: &str) -> (Option<u8>, String) {
     let seg = seg.trim();
     let hashes = seg.chars().take_while(|c| *c == '#').count();
@@ -1146,6 +1081,59 @@ pub fn insert_after_section_reporting(
         text: format!("{}{}{}", &source[..at], block, &source[at..]),
         heading_stripped,
     })
+}
+
+/// One of the three edits that address a section by heading path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SectionOp {
+    /// Replace the body under the heading; deeper subsections stay unless
+    /// `include_subsections`.
+    Replace {
+        /// Replace the deeper subsections too.
+        include_subsections: bool,
+    },
+    /// Put the content right above the heading line.
+    InsertBefore,
+    /// Put the content right under the heading line.
+    InsertAfter,
+}
+
+impl SectionOp {
+    /// The operation an edit names (`replace_section`,
+    /// `insert_before_section`, `insert_after_section`), or `None`.
+    pub fn parse(operation: &str, include_subsections: bool) -> Option<SectionOp> {
+        match operation {
+            "replace_section" => Some(SectionOp::Replace {
+                include_subsections,
+            }),
+            "insert_before_section" => Some(SectionOp::InsertBefore),
+            "insert_after_section" => Some(SectionOp::InsertAfter),
+            _ => None,
+        }
+    }
+}
+
+/// Apply one section edit, reporting a dropped repeat of the heading the
+/// way the reporting variants do. One entry point, so every document kind
+/// that edits sections edits them the same way.
+pub fn apply_section_op(
+    source: &str,
+    op: SectionOp,
+    path: &str,
+    content: &str,
+) -> Result<SectionEdit, EditError> {
+    match op {
+        SectionOp::Replace {
+            include_subsections,
+        } => replace_section_reporting(source, path, content, include_subsections),
+        SectionOp::InsertBefore => {
+            insert_before_section(source, path, content).map(|text| SectionEdit {
+                text,
+                heading_stripped: None,
+            })
+        }
+        SectionOp::InsertAfter => insert_after_section_reporting(source, path, content),
+    }
 }
 
 /// Append content to the end of the body.
@@ -1538,5 +1526,42 @@ mod tests {
             at: None,
         });
         assert_eq!(line, "generated: { by: human:jordi }");
+    }
+
+    #[test]
+    fn apply_section_op_is_the_three_section_edits() {
+        let source = "# T\n\n## A\n\nOne.\n\n## B\n\nTwo.\n";
+        for (operation, expected) in [
+            (
+                "replace_section",
+                replace_section(source, "## A", "New.", false).unwrap(),
+            ),
+            (
+                "insert_before_section",
+                insert_before_section(source, "## A", "New.").unwrap(),
+            ),
+            (
+                "insert_after_section",
+                insert_after_section(source, "## A", "New.").unwrap(),
+            ),
+        ] {
+            let op = SectionOp::parse(operation, false).unwrap();
+            assert_eq!(
+                apply_section_op(source, op, "## A", "New.").unwrap().text,
+                expected,
+                "{operation}"
+            );
+        }
+        assert_eq!(SectionOp::parse("append", false), None);
+        let stripped = apply_section_op(
+            source,
+            SectionOp::Replace {
+                include_subsections: false,
+            },
+            "## A",
+            "## A\n\nNew.",
+        )
+        .unwrap();
+        assert_eq!(stripped.heading_stripped.as_deref(), Some("## A"));
     }
 }

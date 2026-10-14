@@ -191,6 +191,109 @@ pub async fn join(
         .on_upgrade(move |socket| run(socket, sessions, joined)))
 }
 
+/// `GET /collab-reflection/{domain}/{*path}` - co-edit a reflection. The
+/// Reflection's edit right, not the engram write gate; no draft overlay.
+#[utoipa::path(
+    get,
+    path = "/api/v1/collab-reflection/{domain}/{path}",
+    tag = "reflection",
+    operation_id = "join_reflection_room",
+    summary = "Upgrade to a real-time co-editing session on one reflection.",
+    description = "WebSocket upgrade for the same y-sync + awareness protocol \
+                   the engram room speaks, over a reflection page. The \
+                   Reflection's edit right is required (curate for \
+                   `PACT.md`), not engram access, plus a live session cookie \
+                   and a same-host Origin header; a read-only instance or \
+                   domain refuses. There is no draft overlay: every save \
+                   lands in the file. The room text is the page without its \
+                   `reflection:` frontmatter block, for every participant, and \
+                   the checksum in `hello` and `save_state` is the file's. \
+                   Section ids are added when the room closes. A save \
+                   records as the author of a changed section the signed-in \
+                   account of each connection that sent an edit since the \
+                   save before; the names in awareness are for display \
+                   only. Refusals are problem+json.",
+    params(
+        ("domain" = String, Path, description = "The domain."),
+        ("path" = String, Path, description = "The reflection's path inside reflections/; may contain slashes."),
+    ),
+    responses(
+        (status = 101, description = "Switching protocols: the session is joined."),
+        (status = 401, description = "The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.", body = ProblemDetail, content_type = "application/problem+json"),
+        (status = 403, description = "Below edit access (curate for PACT.md), a read-only instance or domain, or a missing/foreign Origin.", body = ProblemDetail, content_type = "application/problem+json"),
+        (status = 404, description = "No such reflection, or no such domain this caller may see.", body = ProblemDetail, content_type = "application/problem+json"),
+        (status = 409, description = "The Reflection is not here.", body = ProblemDetail, content_type = "application/problem+json"),
+        (status = 422, description = "Not a reflection path.", body = ProblemDetail, content_type = "application/problem+json"),
+        (status = 503, description = "Session or participant capacity reached.", body = ProblemDetail, content_type = "application/problem+json"),
+    ),
+)]
+pub async fn join_reflection(
+    State(state): State<RestState>,
+    identity: Identity,
+    ApiPath((domain, path)): ApiPath<(String, String)>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Result<Response, ApiError> {
+    // The anonymous viewer first, as on every Reflection write: a domain it
+    // may not read answers as unregistered, a public one with 401.
+    crate::reflections::refuse_anonymous(
+        &state,
+        &identity,
+        &domain,
+        crate::reflections::ANONYMOUS_EDIT,
+    )
+    .await?;
+    // The gate before anything that could tell a caller about the page.
+    let caller = crate::reflections::caller(&identity);
+    state
+        .engine
+        .require_reflection_edit(&domain, &path, &caller)
+        .await
+        .map_err(crate::reflections::reflection_error)?;
+    state
+        .engine
+        .refuse_read_only_domain(&domain, &crate::scope::Scope::Unrestricted)
+        .await
+        .map_err(crate::reflections::reflection_error)?;
+    if state.engine.read_only() {
+        return Err(ApiError::forbidden(
+            "this instance is read-only, so collaborative editing is disabled",
+        ));
+    }
+    crystalline_core::reflection::validate_reflection_path(&path)
+        .map_err(ApiError::unprocessable)?;
+    require_same_host_origin(&headers)?;
+    // Under the join pass, for the reason `join` gives.
+    let joined = {
+        let _pass = state.join_pass().await;
+        // The signed-in account, the name a REST write of the page records
+        // too: a save names it when this connection edited, never a name
+        // the client put into awareness.
+        state
+            .collab
+            .join_reflection(&domain, &path, &caller.author.name)
+            .await
+    }
+    .map_err(join_error)?;
+    let sessions = state.collab.clone();
+    // The failure twin of on_upgrade, as in `join`.
+    let failed = {
+        let sessions = sessions.clone();
+        let session = joined.session.clone();
+        let conn = joined.conn;
+        move |_err| {
+            tokio::spawn(async move {
+                finish(&sessions, &session, conn).await;
+            });
+        }
+    };
+    Ok(ws
+        .max_message_size(WS_MAX_MESSAGE_BYTES)
+        .max_frame_size(WS_MAX_MESSAGE_BYTES)
+        .on_failed_upgrade(failed)
+        .on_upgrade(move |socket| run(socket, sessions, joined)))
+}
+
 /// Which document the upgrade is for, and whether the caller is a guest in it.
 struct Room {
     /// Whose document: `None` for the one a direct domain keeps, `Some(actor)`
@@ -333,7 +436,7 @@ fn join_error(err: JoinError) -> ApiError {
     match err {
         JoinError::Engine(engine) => engine.into(),
         JoinError::ServerFull => busy("this server is at its concurrent session limit"),
-        JoinError::SessionFull => busy("this engram's session is at its participant limit"),
+        JoinError::SessionFull => busy("this document's session is at its participant limit"),
     }
 }
 
@@ -346,6 +449,7 @@ fn busy(detail: &str) -> ApiError {
         detail: detail.to_string(),
         token_required: None,
         retry_after: None,
+        home_url: None,
     }
 }
 

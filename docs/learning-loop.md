@@ -76,7 +76,7 @@ sequenceDiagram
 
 ## Teach and learn
 
-The MCP server exposes 20 tools on a default writable instance: 19 in a harness whose install already carries the skills as files, 10 serving read-only. The six collaboration tools appear beside them once `github.enabled` is turned on (see [Share knowledge with a team](teams.md#share-knowledge-with-a-team)). That takes a read-only instance to 12, not 16, since only `update_domain` and `origin_status` read without writing. The list is the same for every client connected at that moment. Capturing knowledge as a byproduct of work is the core loop:
+The MCP server exposes 24 tools on a default writable instance: 23 in a harness whose install already carries the skills as files, 11 serving read-only. The six collaboration tools appear beside them once `github.enabled` is turned on (see [Share knowledge with a team](teams.md#share-knowledge-with-a-team)). That takes a read-only instance to 13, not 17, since only `update_domain` and `origin_status` read without writing. The list is the same for every client connected at that moment. Capturing knowledge as a byproduct of work is the core loop:
 
 - **`write_engram`** - capture a new engram. `domain` is always required (there is no default domain for writes, so an agent never writes into the wrong place). `permalink`, `status` and `recorded_at` are filled in for you. The receipt may name the three existing engrams closest in meaning to what was written, so the write is also a search.
 - **`search_engrams`** - search before writing, and search to recall what is already known. Defaults to hybrid text-plus-semantic ranking across every domain; pass `domains` to narrow it, or filter by `type`, `tags`, `status` or arbitrary `metadata_filters` with no query text at all.

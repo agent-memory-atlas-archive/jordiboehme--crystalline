@@ -970,6 +970,7 @@ mod tests {
                     source: "acme".into(),
                     bullets: Vec::new(),
                     domain_read_only: false,
+                    reflect_open: 0,
                     replaces_local: true,
                 },
                 Mount {
@@ -978,6 +979,7 @@ mod tests {
                     source: "acme".into(),
                     bullets: Vec::new(),
                     domain_read_only: false,
+                    reflect_open: 0,
                     replaces_local: false,
                 },
                 Mount {
@@ -986,6 +988,7 @@ mod tests {
                     source: "beta".into(),
                     bullets: Vec::new(),
                     domain_read_only: false,
+                    reflect_open: 0,
                     replaces_local: false,
                 },
             ],

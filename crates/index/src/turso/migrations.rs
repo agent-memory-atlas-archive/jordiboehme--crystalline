@@ -117,6 +117,26 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "metadata values",
         sql: SCHEMA_V19,
     },
+    Migration {
+        version: 20,
+        label: "reflection index",
+        sql: SCHEMA_V20,
+    },
+    Migration {
+        version: 21,
+        label: "reflection assets",
+        sql: SCHEMA_V21,
+    },
+    Migration {
+        version: 22,
+        label: "reflection chunks",
+        sql: SCHEMA_V22,
+    },
+    Migration {
+        version: 23,
+        label: "reflection chunks by domain",
+        sql: SCHEMA_V23,
+    },
 ];
 
 const SCHEMA_V1: &str = r#"
@@ -718,6 +738,83 @@ CREATE TABLE engram_meta_value (
 CREATE INDEX idx_engram_meta_value_key_value ON engram_meta_value(key, value, engram_id);
 "#;
 
+// The Reflection's own index: one row per reflection (and PACT.md) under a
+// domain's `reflections/`, read by Reflection-mode search and the tree. Beside
+// the engram tables and never joined to them, so nothing that reads engrams -
+// search_engrams, evolve, the graph - can ever see a reflection. The unique
+// index serves every statement (`WHERE domain_id=?1 [AND path=?2]
+// ORDER BY path`).
+const SCHEMA_V20: &str = r#"
+CREATE TABLE reflection (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain_id INTEGER NOT NULL REFERENCES domain(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    modified TEXT NOT NULL,
+    UNIQUE(domain_id, path)
+);
+"#;
+
+// The Reflection's files: one row per allowlisted file under a domain's
+// `reflections/assets/`, keyed by its path inside `reflections/`. The same
+// columns as `attachment` and never joined to it, so no engram path can see
+// one. The unique index serves every statement.
+const SCHEMA_V21: &str = r#"
+CREATE TABLE reflection_asset (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain_id INTEGER NOT NULL REFERENCES domain(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    modified TEXT NOT NULL,
+    UNIQUE(domain_id, path)
+);
+"#;
+
+// The Reflection's embedding chunks: one or more per `##` section of a page
+// under `reflections/`, beside the engram `chunk` table and never joined to
+// it, so no engram reader (search_engrams, lead vectors, the contradiction
+// check, the graph) can meet one. Keyed by `(domain_id, path, seq)` with no
+// foreign key to `reflection`: turso enforces none here, and a page move is a
+// delete plus an upsert. The page stamps are blanked so the next walk reads
+// every page once and chunks it (R58).
+const SCHEMA_V22: &str = r#"
+CREATE TABLE reflection_chunk (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain_id INTEGER NOT NULL REFERENCES domain(id),
+    path TEXT NOT NULL,
+    seq INTEGER NOT NULL DEFAULT 0,
+    section_ord INTEGER NOT NULL DEFAULT 0,
+    section TEXT,
+    heading TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL DEFAULT '',
+    text_hash TEXT NOT NULL DEFAULT '',
+    model TEXT,
+    dims INTEGER,
+    embedding F32_BLOB(384)
+);
+CREATE INDEX idx_reflection_chunk_page ON reflection_chunk(domain_id, path, seq);
+CREATE INDEX idx_reflection_chunk_model ON reflection_chunk(model);
+UPDATE reflection SET modified='';
+"#;
+
+// One domain's reflection chunks of one model and width, the rows a reflection
+// search reads: the vector statement and the per-domain coverage seek it, so
+// a search reads its own domain's chunks and never every domain's chunks of
+// the model (`idx_reflection_chunk_model` alone, filtered per row). That model
+// index serves no statement any more (the backlog and the prune ask
+// `model != ?`, which no index answers), so it goes, and a fresh install and
+// an upgrade end with the same indexes. Both statements are guarded, so a
+// replay changes nothing.
+const SCHEMA_V23: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_reflection_chunk_domain_model ON reflection_chunk(domain_id, model, dims);
+DROP INDEX IF EXISTS idx_reflection_chunk_model;
+"#;
+
 const SCHEMA_V9: &str = r#"
 CREATE TABLE attachment (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -744,7 +841,8 @@ CREATE TABLE attachment_blob (
 /// before that. `contradiction` and `contradiction_pair` reference `engram`
 /// and `domain`, so they go first. `observation_vector` references nothing
 /// and leads the list. `engram_meta_value` references `engram`, so it goes
-/// before it.
+/// before it. `reflection` and `reflection_asset` reference `domain(id)` too,
+/// and so does `reflection_chunk`, which goes before `reflection`.
 pub const WIPE_TABLES: &[&str] = &[
     "observation_vector",
     "contradiction",
@@ -762,6 +860,9 @@ pub const WIPE_TABLES: &[&str] = &[
     "tag_alias",
     "attachment_blob",
     "attachment",
+    "reflection_chunk",
+    "reflection",
+    "reflection_asset",
     "domain_lock",
     "domain_spelling",
     "domain",
@@ -2310,7 +2411,7 @@ mod tests {
         let started = std::time::Instant::now();
         let store = crate::TursoStore::open(&db_path).await.unwrap();
         let ms = started.elapsed().as_millis();
-        assert_eq!(store.store_info().await.unwrap().schema_version, 19);
+        assert_eq!(store.store_info().await.unwrap().schema_version, 23);
         let rows = store.meta_values().await.unwrap().len();
         assert_eq!(rows, 5 * ENGRAMS as usize, "five rows an engram");
         eprintln!(
@@ -2379,7 +2480,7 @@ mod tests {
             }
         }
         let store = crate::TursoStore::open(&db_path).await.unwrap();
-        assert_eq!(store.store_info().await.unwrap().schema_version, 19);
+        assert_eq!(store.store_info().await.unwrap().schema_version, 23);
 
         let base_rows = meta_rows(store.conn.raw(), 7).await;
         assert_eq!(base_rows, crate::store::meta_value_rows(&base));
@@ -2511,6 +2612,200 @@ mod tests {
         assert!(
             stdout.contains("1 passed"),
             "the child ran the test rather than filtering it out:\n{stdout}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reflection_migration_is_v20_and_creates_its_table() {
+        let v20 = MIGRATIONS.iter().find(|m| m.version == 20).unwrap();
+        assert_eq!(v20.label, "reflection index");
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        apply_migrations(&conn, MIGRATIONS).await.unwrap();
+        conn.execute(
+            "INSERT INTO domain(id, name, path, kind) VALUES (1, 'd', '/tmp/d', 'file')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reflection(domain_id, path, title, content, sha256, size, modified) VALUES(1, 'a.md', 'A', 'x', 's', 1, 't')",
+            (),
+        )
+        .await
+        .unwrap();
+        let at = |name: &str| {
+            WIPE_TABLES
+                .iter()
+                .position(|t| *t == name)
+                .unwrap_or_else(|| panic!("{name} is not in WIPE_TABLES"))
+        };
+        assert!(
+            at("reflection") < at("domain"),
+            "the reflection rows go before their domain"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reflection_chunk_migration_is_v22_and_rereads_every_page() {
+        let at_version = |v: i64| {
+            MIGRATIONS
+                .iter()
+                .position(|m| m.version == v)
+                .unwrap_or_else(|| panic!("no migration v{v}"))
+        };
+        let v22 = at_version(22);
+        assert_eq!(MIGRATIONS[v22].label, "reflection chunks");
+        assert_eq!(
+            v22,
+            at_version(21) + 1,
+            "it follows the reflection asset table"
+        );
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        // Up to v21 first: a page indexed by a build before this migration.
+        apply_migrations(&conn, &MIGRATIONS[..v22]).await.unwrap();
+        conn.execute(
+            "INSERT INTO domain(id, name, path, kind) VALUES (1, 'd', '/tmp/d', 'file')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reflection(domain_id, path, title, content, sha256, size, modified) \
+             VALUES(1, 'a.md', 'A', 'x', 's', 1, '2026-10-14T00:00:00+00:00')",
+            (),
+        )
+        .await
+        .unwrap();
+        apply_migrations(&conn, MIGRATIONS).await.unwrap();
+        {
+            let mut rows = conn
+                .query("SELECT modified FROM reflection", ())
+                .await
+                .unwrap();
+            let row = rows.next().await.unwrap().unwrap();
+            assert_eq!(
+                row.get_value(0).unwrap(),
+                turso::Value::Text(String::new()),
+                "the stamp is blank, so the next walk reads the page"
+            );
+        }
+        assert_eq!(
+            scalar(&conn, "SELECT count(*) FROM reflection_chunk").await,
+            0
+        );
+        let at = |name: &str| {
+            WIPE_TABLES
+                .iter()
+                .position(|t| *t == name)
+                .unwrap_or_else(|| panic!("{name} is not in WIPE_TABLES"))
+        };
+        assert!(at("reflection_chunk") < at("reflection") && at("reflection") < at("domain"));
+    }
+
+    /// v23, the reflection chunks by domain, over a database at v22 with
+    /// chunk rows in it: the domain index is there afterwards, the model
+    /// index (which no statement seeks any more) is gone, the rows are kept,
+    /// and a replay of v23 changes nothing.
+    #[tokio::test]
+    async fn v23_over_v22_swaps_the_model_index_for_the_domain_index() {
+        let v23 = MIGRATIONS
+            .iter()
+            .position(|m| m.version == 23)
+            .expect("no migration v23");
+        assert_eq!(MIGRATIONS[v23 - 1].version, 22, "it follows v22");
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        apply_migrations(&conn, &MIGRATIONS[..v23]).await.unwrap();
+        conn.execute(
+            "INSERT INTO domain(id, name, path, kind) VALUES (1, 'd', '/tmp/d', 'file')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reflection_chunk(domain_id, path, seq, text, text_hash, model, dims) \
+             VALUES (1, 'a.md', 0, 't', 'h', 'm', 8), (1, 'a.md', 1, 'u', 'i', NULL, NULL)",
+            (),
+        )
+        .await
+        .unwrap();
+        let indexes = || async {
+            let mut rows = conn
+                .query(
+                    "SELECT name FROM sqlite_schema \
+                     WHERE type = 'index' AND tbl_name = 'reflection_chunk' ORDER BY name",
+                    (),
+                )
+                .await
+                .unwrap();
+            let mut names = Vec::new();
+            while let Some(row) = rows.next().await.unwrap() {
+                if let Ok(turso::Value::Text(n)) = row.get_value(0) {
+                    names.push(n);
+                }
+            }
+            names
+        };
+        assert!(
+            indexes()
+                .await
+                .contains(&"idx_reflection_chunk_model".to_string()),
+            "precondition: v22 has the model index"
+        );
+        for round in ["v23", "a replay of v23"] {
+            conn.execute_batch(MIGRATIONS[v23].sql).await.unwrap();
+            assert_eq!(
+                indexes().await,
+                [
+                    "idx_reflection_chunk_domain_model",
+                    "idx_reflection_chunk_page"
+                ],
+                "after {round}"
+            );
+            assert_eq!(
+                scalar(&conn, "SELECT count(*) FROM reflection_chunk").await,
+                2,
+                "after {round}: the rows stay"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_reflection_asset_migration_follows_the_reflection_index() {
+        let at_version = |v: i64| {
+            MIGRATIONS
+                .iter()
+                .position(|m| m.version == v)
+                .unwrap_or_else(|| panic!("no migration v{v}"))
+        };
+        let v21 = at_version(21);
+        let v20 = at_version(20);
+        assert_eq!(MIGRATIONS[v21].label, "reflection assets");
+        assert_eq!(
+            MIGRATIONS[v20].label, "reflection index",
+            "it follows the reflection table's migration"
+        );
+        assert_eq!(v21, v20 + 1, "nothing between the two");
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        apply_migrations(&conn, MIGRATIONS).await.unwrap();
+        conn.execute(
+            "INSERT INTO reflection_asset(domain_id, path, sha256, mime, size, modified) VALUES(1, 'assets/a.png', 's', 'image/png', 1, 't')",
+            (),
+        )
+        .await
+        .unwrap();
+        let at = |name: &str| {
+            WIPE_TABLES
+                .iter()
+                .position(|t| *t == name)
+                .unwrap_or_else(|| panic!("{name} is not in WIPE_TABLES"))
+        };
+        assert!(
+            at("reflection_asset") < at("domain"),
+            "the file rows go before their domain"
         );
     }
 }

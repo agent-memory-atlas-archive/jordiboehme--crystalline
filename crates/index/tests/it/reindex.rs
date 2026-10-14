@@ -401,6 +401,67 @@ parity!(
     a_completed_rebuild_rereads_what_a_sync_skips
 );
 
+/// `reindex --full` refreshes Reflection page rows too: a page whose text
+/// changed behind the stat prefilter keeps its stale row through a plain
+/// run and gets the new text from the forced one, through the driver's own
+/// wiring of `force` into the walk.
+async fn a_forced_rebuild_rereads_a_reflection_page(store: Arc<Mutex<dyn Store>>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("d");
+    write(
+        &root,
+        "MANIFEST.md",
+        "---\ntype: manifest\ntitle: d\npermalink: manifest\ntags: [manifest]\nstatus: stable\nreflection: on\n---\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n",
+    );
+    let page = |word: &str| {
+        format!("---\ntitle: P\n---\n\n# P\n\n## Part\n<!-- r:aaaa1111 -->\n\nText {word}.\n")
+    };
+    write(&root, "reflections/p.md", &page("aaaa"));
+    let targets = vec![("d".to_string(), root.clone())];
+    reindex_domains(&*store, &targets, &params(), None, &NoReindexHooks)
+        .await
+        .unwrap();
+    let domain = domain_id(&store, "d", &root).await;
+    let page_text = || async {
+        let store = store.lock().await;
+        store
+            .list_reflections(domain)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.path == "p.md")
+            .expect("the page has its row")
+            .content
+    };
+    assert!(page_text().await.contains("Text aaaa."));
+
+    rewrite_behind_the_prefilter(&root.join("reflections/p.md"), &page("bbbb"));
+    reindex_domains(&*store, &targets, &params(), None, &NoReindexHooks)
+        .await
+        .unwrap();
+    assert!(
+        page_text().await.contains("Text aaaa."),
+        "a plain run skips it"
+    );
+    reindex_domains(
+        &*store,
+        &targets,
+        &params(),
+        Some(RebuildKind::Full),
+        &NoReindexHooks,
+    )
+    .await
+    .unwrap();
+    assert!(
+        page_text().await.contains("Text bbbb."),
+        "the forced run re-read the page"
+    );
+}
+parity!(
+    a_forced_rebuild_rereads_a_reflection_page_on_both_backends,
+    a_forced_rebuild_rereads_a_reflection_page
+);
+
 /// A forced resync keeps every overlay row, and proposes no deletion.
 ///
 /// `--full` re-reads and re-upserts every file and prunes the rows disk no

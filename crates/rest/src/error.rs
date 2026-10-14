@@ -42,7 +42,7 @@ pub struct ApiError {
     pub title: &'static str,
     /// The specific occurrence, safe to show to the caller.
     pub detail: String,
-    /// The one RFC 9457 extension member this surface sends. See
+    /// An RFC 9457 extension member of the setup refusal. See
     /// [`ApiError::token_required`]; `None` on every other failure, and the
     /// member is then absent from the body entirely.
     pub token_required: Option<bool>,
@@ -54,6 +54,10 @@ pub struct ApiError {
     /// invites an immediate retry into the same refusal, which is the rule
     /// `super::oauth`'s registration limiter already states for its own 429.
     pub retry_after: Option<u64>,
+    /// Where a domain's Reflection lives, on the 409 a non-home instance
+    /// answers a reflection route with. `None` on every other failure, and
+    /// the member is then absent from the body.
+    pub home_url: Option<String>,
 }
 
 impl ApiError {
@@ -65,6 +69,7 @@ impl ApiError {
             detail: detail.into(),
             token_required: None,
             retry_after: None,
+            home_url: None,
         }
     }
 
@@ -77,6 +82,7 @@ impl ApiError {
             detail: detail.into(),
             token_required: None,
             retry_after: None,
+            home_url: None,
         }
     }
 
@@ -91,6 +97,7 @@ impl ApiError {
             detail: detail.into(),
             token_required: None,
             retry_after: None,
+            home_url: None,
         }
     }
 
@@ -107,6 +114,7 @@ impl ApiError {
             detail: detail.into(),
             token_required: None,
             retry_after: None,
+            home_url: None,
         }
     }
 
@@ -130,6 +138,7 @@ impl ApiError {
             detail: detail.into(),
             token_required: None,
             retry_after: None,
+            home_url: None,
         }
     }
 
@@ -144,6 +153,7 @@ impl ApiError {
             detail: detail.into(),
             token_required: None,
             retry_after: None,
+            home_url: None,
         }
     }
 
@@ -158,6 +168,7 @@ impl ApiError {
             detail: "this path does not serve that method".to_string(),
             token_required: None,
             retry_after: None,
+            home_url: None,
         }
     }
 
@@ -169,6 +180,7 @@ impl ApiError {
             detail: detail.into(),
             token_required: None,
             retry_after: None,
+            home_url: None,
         }
     }
 
@@ -182,6 +194,7 @@ impl ApiError {
             detail: detail.into(),
             token_required: None,
             retry_after: None,
+            home_url: None,
         }
     }
 
@@ -214,6 +227,14 @@ impl ApiError {
         self
     }
 
+    /// Mark this problem document with the `home_url` extension member: the
+    /// address of the instance that holds this domain's Reflection, so a
+    /// client can send the reader there instead of parsing the detail.
+    pub fn home_url(mut self, url: String) -> ApiError {
+        self.home_url = Some(url);
+        self
+    }
+
     /// Re-render an axum extractor rejection as a problem detail.
     ///
     /// The status axum chose is kept rather than folded into one of this
@@ -239,6 +260,7 @@ impl ApiError {
             detail,
             token_required: None,
             retry_after: None,
+            home_url: None,
         }
     }
 }
@@ -343,6 +365,13 @@ pub struct ProblemDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = true)]
     pub token_required: Option<bool>,
+    /// An RFC 9457 extension member, present only on the `409` a reflection
+    /// route answers when this domain's Reflection lives on another instance:
+    /// that instance's address, where the reader is sent. Absent from every
+    /// other problem document on this surface.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "https://team.example.com")]
+    pub home_url: Option<String>,
 }
 
 impl IntoResponse for ApiError {
@@ -355,6 +384,7 @@ impl IntoResponse for ApiError {
             title: self.title,
             detail: self.detail,
             token_required: self.token_required,
+            home_url: self.home_url,
         };
         let mut resp = (self.status, axum::Json(body)).into_response();
         // `axum::Json` writes `application/json`; RFC 9457 requires the
@@ -661,6 +691,7 @@ fn unprocessable_error(detail: String) -> ApiError {
         detail,
         token_required: None,
         retry_after: None,
+        home_url: None,
     }
 }
 
@@ -672,6 +703,7 @@ fn internal_error(detail: String) -> ApiError {
         detail,
         token_required: None,
         retry_after: None,
+        home_url: None,
     }
 }
 
@@ -935,7 +967,7 @@ mod tests {
         );
     }
 
-    /// The one extension member: present when a refusal was asked to carry it,
+    /// The setup extension member: present when a refusal was asked to carry it,
     /// and absent from the body entirely otherwise - not `null`, which a client
     /// checking for the key would have to special-case.
     #[tokio::test]
@@ -957,6 +989,30 @@ mod tests {
         assert_eq!(marked["token_required"], true);
         assert_eq!(marked["status"], 403, "and the rest of the shape is intact");
         assert_eq!(marked["title"], "forbidden");
+    }
+
+    /// The Reflection's extension member: present on the refusal that was
+    /// asked to carry it, and absent from the body entirely otherwise.
+    #[tokio::test]
+    async fn the_home_url_member_appears_only_when_it_is_set() {
+        let body = |error: ApiError| async {
+            let resp = error.into_response();
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+        };
+
+        let plain = body(ApiError::conflict("no")).await;
+        assert!(
+            plain.get("home_url").is_none(),
+            "an ordinary refusal carries no extension member: {plain}"
+        );
+        let marked =
+            body(ApiError::conflict("elsewhere").home_url("https://team.example.com".into())).await;
+        assert_eq!(marked["home_url"], "https://team.example.com");
+        assert_eq!(marked["status"], 409, "and the rest of the shape is intact");
+        assert_eq!(marked["detail"], "elsewhere");
     }
 
     /// An axum rejection keeps the status axum chose and gains a title from

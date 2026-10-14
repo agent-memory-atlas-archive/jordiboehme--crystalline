@@ -5,7 +5,7 @@
 use serde::Serialize;
 
 use crate::manifest::{
-    Manifest, PolicyKind, ProblemKind, TagAliasProblemKind, policy_registry, starter_stanzas,
+    Manifest, ProblemKind, TagAliasProblemKind, policy_registry, starter_stanzas,
 };
 use crate::parse::parse_engram;
 
@@ -205,8 +205,9 @@ pub fn manifest_facts(markdown: &str, domain: &str) -> ManifestFacts {
 }
 
 /// The registry rows joined with what `manifest` declares; `None` is a domain
-/// with no readable MANIFEST, every key at its default. A `text` key whose
-/// effective value is empty reads as `domain`.
+/// with no readable MANIFEST, every key at its default. `domain_name` alone
+/// reads as `domain` when its effective value is empty; any other text key
+/// stays empty.
 pub fn policy_rows(manifest: Option<&Manifest>, domain: &str) -> Vec<PolicyRow> {
     policy_registry()
         .iter()
@@ -214,7 +215,8 @@ pub fn policy_rows(manifest: Option<&Manifest>, domain: &str) -> Vec<PolicyRow> 
             let (declared, effective) = manifest
                 .and_then(|m| m.policy(spec.key))
                 .unwrap_or((None, spec.default));
-            let effective = if spec.kind == PolicyKind::Text && effective.is_empty() {
+            let effective = if spec.key == crate::manifest::DOMAIN_NAME_KEY && effective.is_empty()
+            {
                 domain.to_string()
             } else {
                 effective.to_string()

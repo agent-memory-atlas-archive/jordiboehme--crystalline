@@ -348,6 +348,11 @@ pub struct WithdrawReport {
     /// to fetch it back from, or the fetch itself failed. The path is left
     /// exactly as it stands rather than failing the withdrawal.
     pub skipped_reverts: Vec<String>,
+    /// Paths a revert left alone because they lie in the domain's Reflection
+    /// folder and the Reflection is in effect: the files there are pages now,
+    /// and a revert never writes into the Reflection. A share made while the
+    /// switch was still pending carried them as engrams.
+    pub skipped_reflection: Vec<String>,
     /// True when the chain around the withdrawn layer was repaired: the stack
     /// was dissolved and, where two layers survived, recreated, with every
     /// layer above the hole replayed onto the one below it.
@@ -402,11 +407,19 @@ struct UpstreamEdit {
 /// counterpart are materialized and no local file is ever overwritten or
 /// deleted, so an existing file that differs from the origin simply becomes
 /// an ordinary local change against the new base, ready to share or update.
+///
+/// `reflection` answers the domain's Reflection mode in effect at its root,
+/// asked once the tree is materialized, so the count of local changes an
+/// adoption reports agrees with the change list: while a switch is pending
+/// the engrams under `reflections/` are changes like any other. This crate
+/// cannot read the index the mode is decided from, so the caller hands in
+/// how ([`declared_reflection_mode`] when it has nothing better).
 pub async fn subscribe(
     provider: &dyn Provider,
     spec: &OriginSpec,
     domain_root: &Path,
     state_dir: &Path,
+    reflection: fn(&Path) -> crystalline_core::ReflectionMode,
 ) -> Result<SubscribeReport, RemoteError> {
     // An unconditional probe (no etag) must report a concrete head; only a
     // conditional probe can answer Unchanged, so an Unchanged here is a
@@ -501,7 +514,8 @@ pub async fn subscribe(
 
     let engrams = extracted.keys().filter(|p| p.ends_with(".md")).count();
     let local_changes = if adopted {
-        detect_local_changes_against(domain_root, &files, state_dir)?.substantive_count()
+        detect_local_changes_against(domain_root, &files, state_dir, reflection(domain_root))?
+            .substantive_count()
     } else {
         0
     };
@@ -522,6 +536,14 @@ pub async fn subscribe(
         adopted,
         local_changes,
     })
+}
+
+/// The Reflection mode the MANIFEST at `root` declares, read without the
+/// index: `reflection: on` reads as in effect even while engrams still wait
+/// under `reflections/`. For a caller of [`subscribe`] with no way to ask
+/// the pending check.
+pub fn declared_reflection_mode(root: &Path) -> crystalline_core::ReflectionMode {
+    crystalline_core::ReflectionMode::declared(crystalline_core::reflection_at(root))
 }
 
 /// Above this many candidates a `NotADomain` refusal stops listing and starts
@@ -1392,12 +1414,17 @@ async fn rebased_head(
 /// credential a forge WRITE may go out on. Where it is not (a read verb
 /// probing with an instance credential while shares run on somebody's personal
 /// one), the layer above passes `false` and the debt waits for a write.
+///
+/// `reflection` is the domain's Reflection mode in effect, the one share
+/// changes detect with, so the count here agrees with the change list while
+/// a switch is pending.
 pub async fn status(
     spec: &OriginSpec,
     domain_root: &Path,
     state_dir: &Path,
     probe: Option<&dyn Provider>,
     settle_owed_link: bool,
+    reflection: crystalline_core::ReflectionMode,
 ) -> Result<OriginStatusReport, RemoteError> {
     let mut state = OriginState::load(state_dir)?.ok_or_else(|| {
         RemoteError::Refused(
@@ -1520,7 +1547,8 @@ pub async fn status(
 
     // After the probe, not before: a layer the forge just reported declined
     // hands its files back to this count.
-    let local = detect_local_changes_against(domain_root, &unshared_base(&state), state_dir)?;
+    let local =
+        detect_local_changes_against(domain_root, &unshared_base(&state), state_dir, reflection)?;
 
     let open_proposals = state
         .proposals
@@ -1629,6 +1657,11 @@ pub struct ShareOptions<'a> {
     /// domain's MANIFEST at share time (`crystalline_core::sharing_at`); this
     /// crate never opens the MANIFEST for it.
     pub sharing: Sharing,
+    /// The Reflection mode in effect, which the caller reads (the engine knows
+    /// whether a switch is pending); this crate never decides it. `Off` while
+    /// a switch is pending, so the engrams still under `reflections/` keep
+    /// being shared.
+    pub reflection: crystalline_core::ReflectionMode,
     /// How a share on a `sharing: direct` domain goes: `Some(true)` opens a
     /// proposal with the stacking and amend rules of a proposal domain,
     /// `Some(false)` tries the direct commit only and never falls back, and
@@ -2350,7 +2383,7 @@ pub async fn propose(
                 title,
                 description,
                 author_login,
-                options.files,
+                options,
             )
             .await;
         }
@@ -2390,7 +2423,7 @@ pub async fn propose(
             None => state.files.clone(),
         };
         let local = select_share_files(
-            detect_local_changes_against(domain_root, &base, state_dir)?,
+            detect_local_changes_against(domain_root, &base, state_dir, options.reflection)?,
             options.files,
         )?;
         if local.changes.is_empty() {
@@ -2724,6 +2757,7 @@ pub async fn propose_preview(
                         domain_root,
                         &effective_tip_files(&state),
                         state_dir,
+                        options.reflection,
                     )?,
                     options.files,
                 )?,
@@ -2803,7 +2837,7 @@ async fn preview_as_proposal(
             state.files.clone()
         };
         let local = select_share_files(
-            detect_local_changes_against(domain_root, &base, state_dir)?,
+            detect_local_changes_against(domain_root, &base, state_dir, options.reflection)?,
             options.files,
         )?;
         if !state.conflicts.is_empty() {
@@ -2925,7 +2959,7 @@ async fn preview_as_proposal(
         state.files.clone()
     };
     let local = select_share_files(
-        detect_local_changes_against(domain_root, &base, state_dir)?,
+        detect_local_changes_against(domain_root, &base, state_dir, options.reflection)?,
         options.files,
     )?;
 
@@ -3118,7 +3152,12 @@ fn preview_direct(
 ) -> Result<SharePlan, RemoteError> {
     // Against the chain tip, as the commit does (see [`commit_direct`]).
     let local = select_share_files(
-        detect_local_changes_against(domain_root, &effective_tip_files(state), state_dir)?,
+        detect_local_changes_against(
+            domain_root,
+            &effective_tip_files(state),
+            state_dir,
+            options.reflection,
+        )?,
         options.files,
     )?;
     let plan = |action: PlannedAction, effective_title: String| SharePlan {
@@ -3289,7 +3328,12 @@ async fn commit_direct(
     // put them on the branch past their review. With nothing open the tip is
     // the trunk.
     let mut local = select_share_files(
-        detect_local_changes_against(domain_root, &effective_tip_files(&state), state_dir)?,
+        detect_local_changes_against(
+            domain_root,
+            &effective_tip_files(&state),
+            state_dir,
+            options.reflection,
+        )?,
         options.files,
     )?;
     if local.changes.is_empty() {
@@ -3387,6 +3431,7 @@ async fn commit_direct(
                         domain_root,
                         &effective_tip_files(&state),
                         state_dir,
+                        options.reflection,
                     )?,
                     options.files,
                 )?;
@@ -4236,8 +4281,11 @@ async fn amend_layer(
     title: Option<&str>,
     description: Option<&str>,
     author_login: Option<&str>,
-    files: Option<&[String]>,
+    // Only `files` and `reflection` are read: what the share carries and the
+    // Reflection mode its detection runs under.
+    options: ShareOptions<'_>,
 ) -> Result<ProposeOutcome, RemoteError> {
+    let files = options.files;
     // Nothing is written until every layer this cascade replays is known to be
     // replayable AND known to be ours: a chain re-based halfway is worse than
     // one never touched, and a reviewer's commits above are not this share's
@@ -4275,7 +4323,12 @@ async fn amend_layer(
     // This share's own work is what stands against the chain tip; the layer's
     // recorded files are already proposed and are not it.
     let fresh = select_share_files(
-        detect_local_changes_against(domain_root, &effective_tip_files(&state), state_dir)?,
+        detect_local_changes_against(
+            domain_root,
+            &effective_tip_files(&state),
+            state_dir,
+            options.reflection,
+        )?,
         files,
     )?;
     if fresh.changes.is_empty() {
@@ -5157,6 +5210,12 @@ async fn finish_pending_repair(
 ///
 /// `stacks_allowed` carries `github.stacks` through to the stack repair a
 /// withdrawal of a stacked layer needs; a fallback withdrawal ignores it.
+///
+/// `reflection` is the domain's Reflection mode in effect, the one a share
+/// detects with ([`ShareOptions::reflection`]): a layer shared while a
+/// switch was pending carries engrams under `reflections/`, and its revert
+/// reaches them as long as the switch is still pending.
+#[allow(clippy::too_many_arguments)]
 pub async fn withdraw(
     provider: &dyn Provider,
     spec: &OriginSpec,
@@ -5165,6 +5224,7 @@ pub async fn withdraw(
     proposal_number: Option<u64>,
     revert: bool,
     stacks_allowed: bool,
+    reflection: crystalline_core::ReflectionMode,
 ) -> Result<WithdrawReport, RemoteError> {
     let mut state = OriginState::load(state_dir)?.ok_or_else(|| {
         RemoteError::Refused(
@@ -5308,6 +5368,7 @@ pub async fn withdraw(
                 &state.files,
                 &proposal,
                 &below,
+                reflection,
                 &mut report,
             )
             .await?;
@@ -5337,6 +5398,7 @@ pub async fn withdraw(
             &state.files,
             &proposal,
             &below,
+            reflection,
             &mut report,
         )
         .await?;
@@ -5531,11 +5593,22 @@ async fn revert_layer_files(
     base: &BTreeMap<String, BaseStamp>,
     proposal: &Proposal,
     below: &[Proposal],
+    reflection: crystalline_core::ReflectionMode,
     report: &mut WithdrawReport,
 ) -> Result<(), RemoteError> {
     let layers: Vec<&Proposal> = below.iter().collect();
     let base = tip_files_over(base, &layers);
-    let local = detect_local_changes(domain_root, &base)?;
+    // The detection a share made, with the Reflection mode in effect: while a
+    // switch is pending, the engrams still under `reflections/` were shared
+    // and are reverted like any other file.
+    let local = crate::changes::detect_local_changes_with(
+        domain_root,
+        &base,
+        crystalline_core::generated_indexes_at(domain_root),
+        reflection,
+        None,
+        None,
+    )?;
     let targets: Vec<DiscardTarget> = proposal
         .files
         .iter()
@@ -5570,6 +5643,16 @@ async fn revert_layer_files(
             // standing rather than removed on a guess: both are the
             // "diverged" outcome the report has always used for a file it
             // did not touch.
+            // While the Reflection is in effect the detection leaves its
+            // folder out, so a path a pending share carried there is no
+            // change of the engrams any more: it is the Reflection's, not a
+            // file that moved on.
+            DiscardRefusal::NotAChange | DiscardRefusal::UnknownPath
+                if reflection == crystalline_core::ReflectionMode::Effective
+                    && crystalline_core::reflection::is_under_reflections(&path) =>
+            {
+                report.skipped_reflection.push(path)
+            }
             DiscardRefusal::NotAChange | DiscardRefusal::UnknownPath => {
                 report.skipped_diverged.push(path)
             }

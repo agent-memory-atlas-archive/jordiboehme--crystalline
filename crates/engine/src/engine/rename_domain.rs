@@ -4,6 +4,7 @@
 //! by the next engine before it serves.
 
 use crystalline_core::manifest::domain_name_at;
+use crystalline_core::relink::BodyGate;
 
 use super::*;
 use crate::rename::{
@@ -1054,6 +1055,10 @@ impl Engine {
         if spellings.is_empty() {
             return Ok(());
         }
+        // Before the engram query: the step returns early when no engram
+        // spells an old name, and a reflection page must be respelled then
+        // too.
+        self.respell_reflections(journal, outcome).await?;
         let found = {
             let store = self.store.lock().await;
             store.engrams_referencing_domains(spellings).await?
@@ -1069,7 +1074,9 @@ impl Engine {
             }
             if journal.writable.binary_search(&domain).is_err() {
                 let references = match self.base_text(&domain, &path).await {
-                    Ok(Some((_, _, text))) => respell_old(&text, spellings, new).1,
+                    Ok(Some((_, _, text))) => {
+                        respell_old(&text, spellings, new, BodyGate::Lossless).1
+                    }
                     _ => 0,
                 };
                 if references > 0 {
@@ -1099,7 +1106,9 @@ impl Engine {
                         "the rename to '{new}' could not respell the links in this engram: {e}"
                     );
                     let references = match self.base_text(&domain, &path).await {
-                        Ok(Some((_, _, text))) => respell_old(&text, spellings, new).1,
+                        Ok(Some((_, _, text))) => {
+                            respell_old(&text, spellings, new, BodyGate::Lossless).1
+                        }
                         _ => 0,
                     };
                     outcome.left_behind.push(LeftBehind {
@@ -1112,6 +1121,124 @@ impl Engine {
             }
         }
         Ok(())
+    }
+
+    /// The reflection pages of every domain this caller can see whose
+    /// Reflection is in effect here, as the engrams: in a domain the caller
+    /// could write when the rename started, each link domain and
+    /// `crystalline://` domain spelled with one of the old names is written
+    /// with the new one, and anywhere else the page is listed and left alone.
+    /// The respell is a link rewrite, not a person's change: page and
+    /// baseline get the same rewrite and the `reflected` hash of every
+    /// section that was in sync is carried (`relink`), so a rename owes no
+    /// feedback. Each page is written under its lock. A page already
+    /// respelled spells none of the old names, so the step is safe to run
+    /// twice. A page or a domain that cannot be respelled is listed with its
+    /// reason rather than stopping the rename, which could otherwise never
+    /// finish.
+    async fn respell_reflections(
+        &self,
+        journal: &RenameJournal,
+        outcome: &mut RenameOutcome,
+    ) -> Result<()> {
+        let spellings = journal.relink_spellings.as_slice();
+        if spellings.is_empty() {
+            return Ok(());
+        }
+        let new = journal.new.as_str();
+        let hidden = self
+            .hidden_for(&caller_scope(journal.caller.as_ref()))
+            .await?;
+        let respell = |text: &str| respell_old(text, spellings, new, BodyGate::Split);
+        let mut domains: Vec<String> = self
+            .registered_domain_entries_now()
+            .await
+            .into_keys()
+            .collect();
+        domains.sort();
+        for domain in domains {
+            if hidden.contains(&domain)
+                || !self.reflection_effective(&domain).await.unwrap_or(false)
+            {
+                continue;
+            }
+            let ContentSource::File { root } = self.read_source(&domain) else {
+                continue;
+            };
+            let (domain_id, rows) = match self.reflection_rows(&domain).await {
+                Ok(found) => found,
+                Err(e) => {
+                    tracing::warn!(
+                        domain = domain.as_str(),
+                        "the rename to '{new}' could not read the reflections of this domain: {e}"
+                    );
+                    outcome.left_behind.push(LeftBehind {
+                        domain: domain.clone(),
+                        path: format!("{}/", crystalline_core::reflection::REFLECTIONS_DIR),
+                        references: 0,
+                        reason: Some(e.to_string()),
+                    });
+                    continue;
+                }
+            };
+            let writable = journal.writable.binary_search(&domain).is_ok();
+            let folder = super::reflection::reflection_dir(&root);
+            for row in rows {
+                let references = respell(&row.content).1;
+                if references == 0 {
+                    continue;
+                }
+                let path = crystalline_core::reflection::domain_rel(&row.path);
+                if !writable {
+                    outcome.left_behind.push(LeftBehind {
+                        domain: domain.clone(),
+                        path,
+                        references,
+                        reason: None,
+                    });
+                    continue;
+                }
+                match self
+                    .relink_page(domain_id, &folder, &row.path, &respell)
+                    .await
+                {
+                    Ok(0) => {}
+                    Ok(references) => {
+                        self.mark_reflection_dirty(
+                            &domain,
+                            crate::reflection_backup::BackupCause::Settled,
+                        );
+                        let counts = outcome.rewritten.entry(domain.clone()).or_default();
+                        counts.0 += 1;
+                        counts.1 += references;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            domain = domain.as_str(),
+                            path = row.path.as_str(),
+                            "the rename to '{new}' could not respell the links in this reflection: {e}"
+                        );
+                        outcome.left_behind.push(LeftBehind {
+                            domain: domain.clone(),
+                            path,
+                            references,
+                            reason: Some(e.to_string()),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A domain's index id and its reflection rows.
+    async fn reflection_rows(
+        &self,
+        domain: &str,
+    ) -> Result<(DomainId, Vec<crystalline_index::ReflectionRow>)> {
+        let (domain_id, _) = self.domain_source(domain).await?;
+        let rows = self.store.lock().await.list_reflections(domain_id).await?;
+        Ok((domain_id, rows))
     }
 
     /// Respell one engram's links for the relink step, answering how many
@@ -1134,7 +1261,7 @@ impl Engine {
         let Some(text) = view.text_at(&source, &desc).await? else {
             return Ok(0);
         };
-        let references = respell_old(&text, spellings, new).1;
+        let references = respell_old(&text, spellings, new, BodyGate::Lossless).1;
         if references == 0 {
             return Ok(0);
         }
@@ -1147,7 +1274,7 @@ impl Engine {
             &actor,
             None,
             scope,
-            |current| Ok(respell_old(current, spellings, new).0),
+            |current| Ok(respell_old(current, spellings, new, BodyGate::Lossless).0),
         )
         .await?;
         Ok(references)
@@ -1362,6 +1489,9 @@ impl Engine {
             }
             RenameStep::OriginsDir => {
                 move_state_dir(&self.rename_origins_root()?, old, new).map_err(io_error)?;
+                // The backup state moved with the folder; a backup still
+                // pending goes along under the new name.
+                self.backup_marks.rename(old, new);
             }
             RenameStep::OverlaysDir => {
                 move_state_dir(
@@ -1732,9 +1862,11 @@ fn caller_scope(caller: Option<&RenameCaller>) -> crate::scope::Scope {
 }
 
 /// `text` with every link domain and `crystalline://` domain that is one of
-/// `spellings` respelled as `new`, and how many were.
-fn respell_old(text: &str, spellings: &[String], new: &str) -> (String, usize) {
-    crystalline_core::relink::respell_domains(text, &|domain: &str| {
+/// `spellings` respelled as `new`, and how many were, over the body `gate`
+/// names (`BodyGate::Lossless` for an engram, `BodyGate::Split` for a
+/// reflection page).
+fn respell_old(text: &str, spellings: &[String], new: &str, gate: BodyGate) -> (String, usize) {
+    crystalline_core::relink::respell_domains_with(text, gate, &|domain: &str| {
         spellings
             .iter()
             .any(|s| s == domain)

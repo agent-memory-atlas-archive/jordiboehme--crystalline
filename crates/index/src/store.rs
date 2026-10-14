@@ -1324,7 +1324,7 @@ pub struct GraphSlice {
 /// full prior; absent or non-positive salience adds nothing.
 const SALIENCE_SCALE: f64 = 10.0;
 /// The default salience-prior weight when a query does not override it: the
-/// maximum lift a fully-salient engram gets on the normalized [0,1] relevance
+/// maximum lift a fully-salient engram gets on the normalized `[0,1]` relevance
 /// score. Small on purpose so relevance dominates and the prior only reorders
 /// within a relevance band, never filters.
 pub const DEFAULT_SALIENCE_WEIGHT: f64 = 0.15;
@@ -1725,9 +1725,14 @@ pub struct OutboundRef {
 pub struct ChunkJob {
     /// The chunk row id.
     pub chunk_id: i64,
-    /// The owning engram id.
+    /// The owning engram id for [`ChunkTable::Engram`]. A reflection chunk
+    /// has no owning row id (R51), so for [`ChunkTable::Reflection`] this is
+    /// the chunk's own id: the keyset cursor `(engram_id, seq)` is then
+    /// `(id, seq)`, and since `id` is unique and increasing, paging never
+    /// skips or repeats a job.
     pub engram_id: i64,
-    /// The chunk sequence within the engram.
+    /// The chunk sequence within the engram (within the page for a reflection
+    /// chunk).
     pub seq: i64,
     /// The chunk text.
     pub text: String,
@@ -1941,6 +1946,51 @@ impl EmbeddingCoverage {
     }
 }
 
+/// Which table a chunk and its vector live in. Each table keeps its own rows;
+/// one body of code chunks, embeds, prunes and counts them all, the table
+/// chosen here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChunkTable {
+    /// `chunk`: the engram chunks.
+    Engram,
+    /// `reflection_chunk`: the Reflection's section chunks, never read by
+    /// engram search.
+    Reflection,
+}
+
+impl ChunkTable {
+    /// Every table, in the order the embed passes walk them: engrams first.
+    pub const ALL: &'static [ChunkTable] = &[ChunkTable::Engram, ChunkTable::Reflection];
+}
+
+/// A freshly computed chunk of one reflection page, handed to
+/// [`Store::replace_reflection_chunks`]. Produced by
+/// [`crate::embed::chunk_reflection`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewReflectionChunk {
+    /// The section's place on the page: 0 is the text before the first `##`.
+    pub section_ord: i64,
+    /// The section id, `_top` for the top, `None` for a heading with no id yet.
+    pub section: Option<String>,
+    /// The section heading, empty for the top.
+    pub heading: String,
+    /// The chunk itself; its `seq` counts through the whole page.
+    pub chunk: NewChunk,
+}
+
+/// The closest chunk of one section, as cosine similarity: one row of
+/// [`Store::reflection_vector_hits`], keyed `(path, section_ord)` the way
+/// [`crate::reflection::rank_sections`] merges the two halves (R60).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SectionVector {
+    /// The page's path inside `reflections/`.
+    pub path: String,
+    /// The section's place on the page: 0 is the text before the first `##`.
+    pub section_ord: usize,
+    /// `1 - cosine distance` of the section's closest chunk to the query.
+    pub similarity: f64,
+}
+
 /// Which full-text path the store is using.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -2104,6 +2154,39 @@ pub struct AttachmentRow {
     pub size: u64,
     /// Last modification instant, RFC 3339.
     pub modified: String,
+}
+
+/// One reflection as the index keeps it: the text Reflection-mode search
+/// reads and the title the tree shows. Never an engram row: reflections
+/// live in their own table and never reach search_engrams, evolve or the
+/// graph. `path` is inside `reflections/`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReflectionRow {
+    /// The path inside `reflections/`.
+    pub path: String,
+    /// The reflection's title.
+    pub title: String,
+    /// The whole file.
+    pub content: String,
+    /// Lowercase hex SHA-256 of the file.
+    pub sha256: String,
+    /// Byte length.
+    pub size: u64,
+    /// Last modification instant, RFC 3339.
+    pub modified: String,
+}
+
+/// Which table a domain's files are kept in. Each table keeps its own rows;
+/// one body of code reads and writes them all, the table chosen here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssetTable {
+    /// `attachment`: the engram attachments under `assets/`.
+    Engram,
+    /// `reflection_asset`: a Reflection's files under `reflections/assets/`,
+    /// keyed by their path inside `reflections/` (`assets/...`). No engram
+    /// path reads this table, and it has no blobs: a Reflection always lives
+    /// in a file domain.
+    Reflection,
 }
 
 /// One tag in use, with how many engrams and how many observations carry it.
@@ -2886,49 +2969,90 @@ pub trait Store: Send + Sync {
     /// after each upsert.
     async fn replace_chunks(&self, engram_id: EngramId, chunks: &[NewChunk]) -> Result<()>;
 
-    /// Return chunks that need an embedding for the given model: those with no
-    /// embedding yet, plus those embedded by a different model (a model swap).
-    /// `domains`, when `Some`, restricts the scan to those domains: the daemon
-    /// scopes each instance's embed pass to the file domains it hosts plus all
-    /// virtual domains, so a non-host does not wastefully re-embed a chunk
-    /// another instance owns. `None` scans every domain (the single-instance and
-    /// standalone default). Duplicate embedding across instances is always safe
-    /// (the chunk fingerprint folds in the model id, so two instances converge
-    /// on the same vector), just wasteful, and this filter avoids the waste.
+    /// Return chunks in `table` that need an embedding for the given model:
+    /// those with no embedding yet, plus those embedded by a different model (a
+    /// model swap). `domains`, when `Some`, restricts the scan to those domains:
+    /// the daemon scopes each instance's embed pass to the file domains it hosts
+    /// plus all virtual domains, so a non-host does not wastefully re-embed a
+    /// chunk another instance owns. `None` scans every domain (the
+    /// single-instance and standalone default). Duplicate embedding across
+    /// instances is always safe (the chunk fingerprint folds in the model id, so
+    /// two instances converge on the same vector), just wasteful, and this
+    /// filter avoids the waste.
     ///
     /// The result is one page: at most `limit` jobs ordered by
-    /// `(engram_id, seq)`, starting past the `after` key when it is given. A
+    /// `(owner, seq)`, starting past the `after` key when it is given. A
     /// caller pages the backlog with the last row of the previous page as the
     /// next cursor rather than holding every job's text at once, and stops when
     /// a page comes back short. Rows that gain an embedding mid-pass drop out of
     /// the predicate behind the cursor, so paging never skips or repeats a job.
-    async fn chunks_needing_embedding(
+    /// [`ChunkJob::engram_id`] is the owning row of the table: for
+    /// [`ChunkTable::Engram`] the engram id, for [`ChunkTable::Reflection`]
+    /// the chunk's own id (a reflection chunk has no owning row id).
+    async fn chunks_needing_embedding_in(
         &self,
+        table: ChunkTable,
         model: &str,
         domains: Option<&[DomainId]>,
         limit: usize,
         after: Option<(i64, i64)>,
     ) -> Result<Vec<ChunkJob>>;
 
-    /// Store a batch of embeddings against their chunks for the given model.
-    async fn store_embeddings(&self, batch: &[EmbeddingRow], model: &str) -> Result<()>;
+    /// Store a batch of embeddings against their chunks in `table` for the
+    /// given model.
+    async fn store_embeddings_in(
+        &self,
+        table: ChunkTable,
+        batch: &[EmbeddingRow],
+        model: &str,
+    ) -> Result<()>;
 
-    /// Clear the vectors of every model other than `model`, returning how many
-    /// chunks were cleared.
+    /// Clear the vectors in `table` of every model other than `model`,
+    /// returning how many chunks were cleared.
     ///
-    /// The embedding lives in columns on `chunk` (`embedding`, `dims`,
+    /// The embedding lives in columns on the chunk table (`embedding`, `dims`,
     /// `model`), so this nulls those three and never removes a chunk row: the
     /// text stays, and every cleared chunk is back in
-    /// [`Store::chunks_needing_embedding`] for the active model. Called once
-    /// by an embed pass that finds the active model covering every chunk, to
-    /// reclaim the space an install's previous model left behind. A user who
-    /// switches back simply re-embeds; nothing is kept for a return trip.
-    async fn prune_embeddings_except(&self, model: &str) -> Result<usize>;
+    /// [`Store::chunks_needing_embedding_in`] for the active model. Called once
+    /// per table by an embed pass that finds the active model covering every
+    /// chunk of that table, to reclaim the space an install's previous model
+    /// left behind. A user who switches back simply re-embeds; nothing is kept
+    /// for a return trip.
+    async fn prune_embeddings_except_in(&self, table: ChunkTable, model: &str) -> Result<usize>;
 
-    /// Embedding coverage across the index: total chunks, embedded chunks and a
-    /// per-model breakdown. Drives `status` reporting and the interactive
-    /// default search mode.
-    async fn embedding_coverage(&self) -> Result<EmbeddingCoverage>;
+    /// Embedding coverage of `table`: total chunks, embedded chunks and a
+    /// per-model breakdown.
+    async fn embedding_coverage_of(&self, table: ChunkTable) -> Result<EmbeddingCoverage>;
+
+    /// [`Store::chunks_needing_embedding_in`] on the engram chunks.
+    async fn chunks_needing_embedding(
+        &self,
+        model: &str,
+        domains: Option<&[DomainId]>,
+        limit: usize,
+        after: Option<(i64, i64)>,
+    ) -> Result<Vec<ChunkJob>> {
+        self.chunks_needing_embedding_in(ChunkTable::Engram, model, domains, limit, after)
+            .await
+    }
+
+    /// [`Store::store_embeddings_in`] on the engram chunks.
+    async fn store_embeddings(&self, batch: &[EmbeddingRow], model: &str) -> Result<()> {
+        self.store_embeddings_in(ChunkTable::Engram, batch, model)
+            .await
+    }
+
+    /// [`Store::prune_embeddings_except_in`] on the engram chunks.
+    async fn prune_embeddings_except(&self, model: &str) -> Result<usize> {
+        self.prune_embeddings_except_in(ChunkTable::Engram, model)
+            .await
+    }
+
+    /// [`Store::embedding_coverage_of`] the engram chunks: what engram search's
+    /// mode decision and staleness gate, `status` and the backlog read (R55).
+    async fn embedding_coverage(&self) -> Result<EmbeddingCoverage> {
+        self.embedding_coverage_of(ChunkTable::Engram).await
+    }
 
     /// Every engram in `domain` whose first chunk carries an embedding by
     /// `model`, with that vector, ordered by engram id. The maintenance
@@ -3282,21 +3406,53 @@ pub trait Store: Send + Sync {
     // the blob pair below is exercised by virtual domains and left untouched by
     // file domains, whose bytes stay on disk.
 
-    /// Insert or replace one attachment's metadata, keyed by `(domain, path)`.
-    /// The sync walker calls this on every scan, so a rewritten file refreshes
-    /// its row in place rather than adding a second one.
-    async fn upsert_attachment(&self, domain: DomainId, row: &AttachmentRow) -> Result<()>;
+    /// Insert or replace one file's metadata in `table`, keyed by
+    /// `(domain, path)`. The sync walker calls this on every scan, so a
+    /// rewritten file refreshes its row in place rather than adding a second
+    /// one.
+    async fn upsert_asset(
+        &self,
+        table: AssetTable,
+        domain: DomainId,
+        row: &AttachmentRow,
+    ) -> Result<()>;
 
-    /// Remove one attachment's metadata and any stored blob. Returns `false`
-    /// when no row was there, which lets a scan tell a delete from a no-op.
-    async fn delete_attachment(&self, domain: DomainId, path: &str) -> Result<bool>;
+    /// Remove one file's metadata from `table` and any stored blob. Returns
+    /// `false` when no row was there, which lets a scan tell a delete from a
+    /// no-op.
+    async fn delete_asset(&self, table: AssetTable, domain: DomainId, path: &str) -> Result<bool>;
 
-    /// One attachment's metadata by domain-relative path, or `None`.
-    async fn get_attachment(&self, domain: DomainId, path: &str) -> Result<Option<AttachmentRow>>;
+    /// One file's metadata in `table` by path, or `None`.
+    async fn get_asset(
+        &self,
+        table: AssetTable,
+        domain: DomainId,
+        path: &str,
+    ) -> Result<Option<AttachmentRow>>;
 
-    /// Every attachment in a domain, ordered by path in byte order (both
+    /// Every file of a domain in `table`, ordered by path in byte order (both
     /// backends pin the collation, so the listing is identical across them).
-    async fn list_attachments(&self, domain: DomainId) -> Result<Vec<AttachmentRow>>;
+    async fn list_assets(&self, table: AssetTable, domain: DomainId) -> Result<Vec<AttachmentRow>>;
+
+    /// [`Store::upsert_asset`] on the engram attachments.
+    async fn upsert_attachment(&self, domain: DomainId, row: &AttachmentRow) -> Result<()> {
+        self.upsert_asset(AssetTable::Engram, domain, row).await
+    }
+
+    /// [`Store::delete_asset`] on the engram attachments.
+    async fn delete_attachment(&self, domain: DomainId, path: &str) -> Result<bool> {
+        self.delete_asset(AssetTable::Engram, domain, path).await
+    }
+
+    /// [`Store::get_asset`] on the engram attachments.
+    async fn get_attachment(&self, domain: DomainId, path: &str) -> Result<Option<AttachmentRow>> {
+        self.get_asset(AssetTable::Engram, domain, path).await
+    }
+
+    /// [`Store::list_assets`] on the engram attachments.
+    async fn list_attachments(&self, domain: DomainId) -> Result<Vec<AttachmentRow>> {
+        self.list_assets(AssetTable::Engram, domain).await
+    }
 
     /// Store an attachment's bytes in the index. The metadata row must already
     /// exist, otherwise this is a [`crate::IndexError::Constraint`]: the row is
@@ -3309,6 +3465,55 @@ pub trait Store: Send + Sync {
     /// row has no blob (the normal case for a file domain, whose bytes are on
     /// disk).
     async fn read_attachment_blob(&self, domain: DomainId, path: &str) -> Result<Option<Vec<u8>>>;
+
+    // --- reflections ---------------------------------------------------------
+
+    /// Insert or replace one reflection's row, keyed by `(domain, path)`.
+    async fn upsert_reflection(&self, domain: DomainId, row: &ReflectionRow) -> Result<()>;
+
+    /// Remove one reflection's row and its chunks. `false` when there was no
+    /// row.
+    async fn delete_reflection(&self, domain: DomainId, path: &str) -> Result<bool>;
+
+    /// One reflection's row, or `None`.
+    async fn get_reflection(&self, domain: DomainId, path: &str) -> Result<Option<ReflectionRow>>;
+
+    /// Every reflection row of a domain, ordered by path in byte order.
+    async fn list_reflections(&self, domain: DomainId) -> Result<Vec<ReflectionRow>>;
+
+    /// Replace one page's chunk rows with a freshly computed set, carrying over
+    /// the vector of any chunk whose fingerprint is unchanged, so an edit
+    /// re-embeds only the sections that changed. Called by
+    /// [`crate::reflection::index_reflection_row`] only (R53).
+    async fn replace_reflection_chunks(
+        &self,
+        domain: DomainId,
+        path: &str,
+        chunks: &[NewReflectionChunk],
+    ) -> Result<()>;
+
+    /// Embedding coverage of one domain's reflection chunks: total chunks,
+    /// embedded chunks and a per-model breakdown, read fresh (never cached).
+    /// A reflection search reads it for its mode decision and its staleness
+    /// gate, so a domain whose pages are not embedded yet answers as text
+    /// while another domain's are. [`Store::embedding_coverage_of`] stays the
+    /// table-wide count that status, the backlog and engram search read.
+    async fn reflection_coverage(&self, domain: DomainId) -> Result<EmbeddingCoverage>;
+
+    /// The vector half of a reflection search (R60): the closest chunk of
+    /// each section of one domain's pages embedded by `model` at
+    /// `query.len()` dims, at most [`crate::rank::SEMANTIC_TOPK`] sections,
+    /// best first, ties on path then section order. Answers
+    /// [`crate::IndexError::StaleEmbeddings`] when the stored reflection vectors
+    /// cannot be compared with the query (`crate::rank::check_staleness`
+    /// over [`Store::reflection_coverage`] of `domain`), so a caller falls
+    /// back to text.
+    async fn reflection_vector_hits(
+        &self,
+        domain: DomainId,
+        query: &[f32],
+        model: &str,
+    ) -> Result<Vec<SectionVector>>;
 
     // --- host locks ----------------------------------------------------------
     // The single-writer-per-file-domain rule for shared-database collaboration.
@@ -3528,5 +3733,20 @@ mod meta_value_tests {
         );
         assert!(meta_value_rows(&json!(null)).is_empty());
         assert!(meta_value_rows(&json!({})).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChunkTable;
+
+    #[test]
+    fn the_embed_passes_walk_the_engram_table_first() {
+        assert_eq!(ChunkTable::ALL.first(), Some(&ChunkTable::Engram));
+        let mut seen = std::collections::HashSet::new();
+        assert!(
+            ChunkTable::ALL.iter().all(|t| seen.insert(*t)),
+            "each table once"
+        );
     }
 }

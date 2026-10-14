@@ -250,6 +250,7 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
                         "source": m.source,
                         "bullets": m.bullets,
                         "domain_read_only": m.domain_read_only,
+                        "reflect_open": m.reflect_open,
                     })
                 })
                 .collect();

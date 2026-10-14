@@ -63,7 +63,9 @@ impl Engine {
     /// Import already-well-formed engram `.md` files from `src` into a virtual
     /// domain verbatim. Refuses a file target (that would desync the DB from its
     /// files). Collisions on an existing path or permalink are skipped unless
-    /// `overwrite`; `dry_run` reports without writing.
+    /// `overwrite`; `dry_run` reports without writing. Where the source's own
+    /// MANIFEST declares `reflection: on`, nothing under `reflections/` is read
+    /// as an engram: each such file is named in `warnings` instead.
     pub async fn import_domain(
         &self,
         domain: &str,
@@ -89,7 +91,23 @@ impl Engine {
             )));
         }
 
-        let files = walk_markdown(src);
+        // The source's own MANIFEST decides what its `reflections/` folder is:
+        // where it keeps a Reflection, those pages are no engrams (R33).
+        let layout = DomainLayout::at(
+            src,
+            ReflectionMode::declared(crystalline_core::reflection_at(src)),
+        );
+        let mut warnings: Vec<String> = Vec::new();
+        let files: Vec<(String, PathBuf)> = walk_classified(src, &layout)
+            .into_iter()
+            .filter_map(|(rel, abs, class)| {
+                if matches!(class, PathClass::Reflection(_)) {
+                    warnings.push(format!("{rel}: {REFLECTION_NOT_IMPORTED}"));
+                    return None;
+                }
+                rel.to_lowercase().ends_with(".md").then_some((rel, abs))
+            })
+            .collect();
         // A MANIFEST in the batch that switches `read_only` on meets the owner
         // check (decision D10) once, before anything is written: asked inside
         // the loop, a refusal would land after every file that sorts before
@@ -114,7 +132,6 @@ impl Engine {
         let mut written = 0usize;
         let mut skipped = 0usize;
         let mut collisions: Vec<String> = Vec::new();
-        let mut warnings: Vec<String> = Vec::new();
         let mut changes: Vec<Value> = Vec::new();
         // What landed, announced once after the loop through the collapse rule.
         let mut announced: Vec<PathChange> = Vec::new();
@@ -212,7 +229,9 @@ impl Engine {
     /// domain is indexed directly because the row is its only source of truth.
     /// Two files must never claim one permalink, so a permalink already held at
     /// a different path is refused under both policies - `overwrite` decides
-    /// what happens at the SAME path, nothing more.
+    /// what happens at the SAME path, nothing more. Where a Reflection keeps
+    /// `reflections/` (the receiving domain's switch is on, or the batch's own
+    /// MANIFEST declares it), an entry there is `ignored`, never an engram.
     pub async fn import_domain_files(
         &self,
         domain: &str,
@@ -276,6 +295,19 @@ impl Engine {
         let mut changed_paths: Vec<String> = Vec::new();
         let mut pending = PendingAnnouncements::new(self);
 
+        // A Reflection keeps `reflections/` when the receiving domain switched
+        // it on (pending included, so no new engram lands in the folder the
+        // switch waits on) or the batch's own MANIFEST declares it (R33).
+        let held = self.reflection_switch(domain) == crystalline_core::ReflectionSwitch::On
+            || files.iter().any(|(path, text)| {
+                names_the_manifest(path) && super::reflection::declares_on(text)
+            });
+        let layout = DomainLayout::bare(if held {
+            ReflectionMode::Effective
+        } else {
+            ReflectionMode::Off
+        });
+
         // Delta 1: the files arrive in memory, already unpacked by the caller,
         // so there is no folder to walk and no source directory to validate.
         for (path, text) in files {
@@ -298,6 +330,18 @@ impl Engine {
                     "permalink": Value::Null,
                     "action": "ignored",
                     "reason": "a MANIFEST belongs to the domain, which keeps its own",
+                }));
+                ignored += 1;
+                continue;
+            }
+            // A Reflection's pages are no engrams: it is restored from its
+            // backup branch, never imported.
+            if matches!(layout.classify(path), PathClass::Reflection(_)) {
+                entries.push(json!({
+                    "path": path,
+                    "permalink": Value::Null,
+                    "action": "ignored",
+                    "reason": REFLECTION_NOT_IMPORTED,
                 }));
                 ignored += 1;
                 continue;
@@ -518,7 +562,9 @@ impl Engine {
 
     /// Every file of a domain as `(domain-relative path, bytes)`, MANIFEST and
     /// attachments included: the portable view an archive download is built
-    /// from, byte for byte as the domain holds it.
+    /// from, byte for byte as the domain holds it. A Reflection's pages,
+    /// threads, baseline and files come along while its switch is on or
+    /// pending.
     ///
     /// Bytes rather than text, and that is the whole reason for the type: an
     /// attachment is a PNG or a slide deck, and a collection of `String` could
@@ -546,16 +592,62 @@ impl Engine {
         let entry = self.domain_entry(domain)?;
         let mut files = match self.source_of(&entry) {
             ContentSource::File { root } => {
+                // The declared switch, so a Reflection that is on or pending
+                // travels; with it off, `reflections/` is an ordinary folder
+                // and its markdown is exported as engrams, as before.
+                let layout = DomainLayout::at(
+                    &root,
+                    ReflectionMode::declared(self.reflection_switch(domain)),
+                );
                 let mut files = Vec::new();
-                for (rel, abs) in walk_markdown(&root) {
-                    // The OKF reserved names are excluded, as everywhere else:
-                    // `index.md` is generated from the folder it sits in and
-                    // regenerates itself wherever this archive is restored,
-                    // and writing either name back is refused by design.
-                    if crystalline_core::is_reserved_path(&rel) {
+                for (rel, abs, class) in walk_classified(&root, &layout) {
+                    let markdown = rel.to_lowercase().ends_with(".md");
+                    let keep = match &class {
+                        PathClass::Engram => true,
+                        // Markdown only: an attachment travels through its
+                        // row, below.
+                        PathClass::Artifact | PathClass::EngramAsset => markdown,
+                        // A Reflection's own files while the switch is on or
+                        // pending: pages, the pact, threads, the baseline and
+                        // its files, never a temp or stray file. Markdown the
+                        // folder holds as no page (`assets/notes.md`) is an
+                        // engram that keeps the switch pending, so it travels
+                        // as it did before.
+                        PathClass::Reflection(_) => {
+                            class.backs_up()
+                                || DomainLayout::bare(ReflectionMode::Off).classify(&rel)
+                                    == PathClass::Engram
+                        }
+                        // The OKF reserved names are excluded, as everywhere
+                        // else: `index.md` is generated from the folder it
+                        // sits in and regenerates itself wherever this
+                        // archive is restored, and writing either name back
+                        // is refused by design.
+                        PathClass::Reserved | PathClass::Hidden | PathClass::Other => false,
+                    };
+                    if !keep {
                         continue;
                     }
                     match std::fs::read(&abs) {
+                        // A Reflection's file is passed on as its bytes, under
+                        // the attachment ceiling.
+                        Ok(bytes)
+                            if matches!(
+                                class,
+                                PathClass::Reflection(
+                                    crystalline_core::reflection::ReflectionFile::Asset(_)
+                                )
+                            ) =>
+                        {
+                            if bytes.len() as u64 <= crystalline_core::MAX_ATTACHMENT_BYTES {
+                                files.push((rel, bytes));
+                            } else {
+                                tracing::warn!(
+                                    "archive of '{domain}' skipped '{rel}': {} bytes, over the attachment ceiling",
+                                    bytes.len()
+                                );
+                            }
+                        }
                         // Handed over as LF, like every other read: markdown
                         // that is UTF-8 text is converted, anything else is
                         // passed on as its bytes.
@@ -617,7 +709,9 @@ impl Engine {
     /// re-serialization of the index: a file domain hands over its disk bytes
     /// (frontmatter included, MANIFEST included, markdown as LF), a virtual domain the
     /// full text of every row, both hand over their attachments under
-    /// `assets/`, and the OKF reserved names are excluded from both. Reading
+    /// `assets/`, and the OKF reserved names are excluded from both. A
+    /// Reflection's pages, threads, baseline and files come along while its
+    /// switch is on or pending. Reading
     /// the store directly instead - the shape this verb had - wrote
     /// frontmatter-less markdown for file domains, since their index rows keep
     /// only the body, and silently dropped MANIFEST.md.

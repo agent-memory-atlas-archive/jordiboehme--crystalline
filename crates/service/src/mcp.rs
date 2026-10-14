@@ -97,6 +97,16 @@
 //! stays registered like every other hidden tool, so a call by name still
 //! sweeps and answers.
 //!
+//! The four Reflection tools (`reflect`, `read_reflection`,
+//! `write_reflection`, `discuss`) are always listed on a writable instance
+//! and refuse at call time on a domain whose Reflection is off (V1). On a
+//! read-only instance `read_reflection` stays listed and the other three are
+//! hidden, `reflect` for the reason `evolve_engrams` is; their routes stay
+//! registered. Their rights are the Reflection's own, decided by the
+//! engine's reflection gate and never by `refuse_unwritable`, so a viewer's
+//! agent may discuss and a contributor's agent may edit. See
+//! `REFLECTION_WRITE_TOOLS`.
+//!
 //! One more tool, `provision`, is gated a fourth way, and it splits across
 //! the rule too: hidden read-only, since every action but `status` writes,
 //! and refusing while no registered domain's MANIFEST declares a
@@ -265,7 +275,7 @@ use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::{RoleServer, ServerHandler, prompt, prompt_router, tool, tool_handler, tool_router};
 use serde_json::{Value, json};
 
-use crystalline_core::{CrystallineUrl, SKILL_ASSETS};
+use crystalline_core::{ContentKind, CrystallineUrl, SKILL_ASSETS};
 use crystalline_remote::RemoteError;
 
 /// The tools hidden in read-only mode: the five content-mutating engram tools
@@ -283,6 +293,18 @@ const WRITE_TOOLS: [&str; 7] = [
     "add_domain",
     "remove_domain",
 ];
+
+/// The Reflection tools hidden in read-only mode: `reflect` for the reason
+/// `evolve_engrams` is (every item it returns prescribes a write), the other
+/// two because they write. `read_reflection` is a read and stays listed.
+/// None of them is one of the `WRITE_TOOLS`: their rights are the
+/// Reflection's own, decided by the engine's reflection gate, never by
+/// `refuse_unwritable`.
+const REFLECTION_WRITE_TOOLS: [&str; 3] = ["reflect", "write_reflection", "discuss"];
+
+/// The four Reflection tools, whose engine refusals MCP answers as
+/// call-time refusals (`McpServer::reflection_refused`).
+const REFLECTION_TOOLS: [&str; 4] = ["reflect", "read_reflection", "write_reflection", "discuss"];
 
 /// Whether a tool name is one of the write-gated tools (hidden in read-only
 /// mode).
@@ -722,6 +744,16 @@ const ATTACHMENT_TEMPLATE_NAME: &str = "attachment";
 /// fetch one.
 const ATTACHMENT_TEMPLATE_DESCRIPTION: &str = "A file attachment a human added to a domain: read it here when an engram's resource links or an evolve finding point at it.";
 
+/// The template every Reflection file is addressed by, the reserved
+/// expansion again so a nested path keeps its separators.
+const REFLECTION_ASSET_URI_TEMPLATE: &str = "crystalline://{domain}/reflections/assets/{+path}";
+
+/// Its programmatic name.
+const REFLECTION_ASSET_TEMPLATE_NAME: &str = "reflection_file";
+
+/// What it is for, in the words a model reads before fetching one.
+const REFLECTION_ASSET_TEMPLATE_DESCRIPTION: &str = "A file a person added to a domain's Reflection (reflections/assets/), an image or a document a reflection shows: read it here when read_reflection's resource links or a reflect item point at it. Needs read access to that Reflection; engram access plays no part.";
+
 /// Whether the whole skill-serving surface (the `skills` tool, the `skill://`
 /// resources and the two prompts) is hidden.
 ///
@@ -899,11 +931,13 @@ fn refused_collab_tool(name: &str, github_enabled: bool) -> bool {
 use crystalline_core::config::{ResponseFormat, SkillsServe};
 
 use crate::DiscardTarget;
+use crate::ReflectionCaller;
 use crate::collab::session::AgentPeer;
 use crate::domain_view::DomainView;
 use crate::engine::{
     ACTOR_MAX_CHARS, ConfigureAction, Engine, EngineError, LiveWriteTarget, OVERLAY_NEEDS_IDENTITY,
-    ProvisionAction, ShareActor, WriteBlock, sanitize_actor,
+    ProvisionAction, ReflectionSearch, SEARCH_DEFAULT_LIMIT, ShareActor, WriteBlock,
+    sanitize_actor,
 };
 /// The two facts the `crystalline mcp` process resolved about its harness,
 /// re-exported here because [`McpServer::with_harness_gate`] takes one.
@@ -1901,6 +1935,31 @@ impl McpServer {
         }
     }
 
+    /// Who a reflection tool call is: an agent under this connection's scope,
+    /// named the way a write's actor is, and the open tier (`auth.mcp` off,
+    /// no account) curating what it can see, as `refuse_unwritable` lets it
+    /// write engrams.
+    fn reflection_caller(&self, ctx: &RequestContext<RoleServer>) -> ReflectionCaller {
+        let caller = self.caller(ctx);
+        let open_tier = matches!(caller.scope, Scope::Anonymous) && !self.engine.auth_mcp();
+        let name = caller.actor().unwrap_or_else(|| "agent".to_string());
+        ReflectionCaller::agent(caller.scope, &name, open_tier)
+    }
+
+    /// A reflection verb's error as MCP answers it: the gate's refusals (the
+    /// Reflection is off, pending, homeless or lives elsewhere, a right too
+    /// low or capped by the write list) and a read-only domain are call-time
+    /// refusals the agent reads (V1); every other error maps as `to_error`
+    /// maps it.
+    fn reflection_refused(e: EngineError) -> Result<CallToolResult, ErrorData> {
+        match e {
+            EngineError::Refused(text)
+            | EngineError::Forbidden(text)
+            | EngineError::DomainReadOnly(text) => refuse(text),
+            other => Err(to_error(other)),
+        }
+    }
+
     /// The gate on changing what this instance IS: which domains are
     /// registered on it, how it is configured, and which of the artifacts its
     /// domains ship are installed into the harnesses on the machine it runs
@@ -2064,10 +2123,13 @@ impl McpServer {
             Ok(value) => self.render_routed(tool, value),
             // The local part of a sweep failed, or this machine refused: the
             // shape a local call gets.
-            Err(crate::route::RouteError::Local(e)) => Err(match e.downcast::<EngineError>() {
-                Ok(engine) => to_error(engine),
-                Err(e) => ErrorData::internal_error(format!("{e:#}"), None),
-            }),
+            Err(crate::route::RouteError::Local(e)) => match e.downcast::<EngineError>() {
+                // A Reflection tool's local refusal reads as its local
+                // handler answers it: a call-time refusal.
+                Ok(engine) if REFLECTION_TOOLS.contains(&tool) => Self::reflection_refused(engine),
+                Ok(engine) => Err(to_error(engine)),
+                Err(e) => Err(ErrorData::internal_error(format!("{e:#}"), None)),
+            },
             Err(other) => refuse(other.to_string()),
         })
     }
@@ -2075,7 +2137,11 @@ impl McpServer {
     /// A routed answer as the handler of `tool` renders its own. The page
     /// address stays the server's (the receipt already carries it, and
     /// nothing here attaches one of this machine's over it), and a mounted
-    /// read carries no attachment links (decision D24).
+    /// read carries no attachment links (decision D24). That holds for a
+    /// mounted `read_reflection` with `path` too: its files under
+    /// `reflections/assets/` live on the server, and this machine's
+    /// `resources/read` does not route a link to them, so the page's
+    /// markdown links are what the agent gets.
     fn render_routed(&self, tool: &str, value: Value) -> Result<CallToolResult, ErrorData> {
         match tool {
             "write_engram" | "edit_engram" => ok_written(value),
@@ -2083,6 +2149,12 @@ impl McpServer {
             "split_engram" => ok_split(value),
             "read_engram" | "delete_engram" | "infer_schema" => ok(value),
             "search_engrams" => self.ok_found(value),
+            // The Reflection tools render as their own handlers do: one page,
+            // a write and a thread as plain JSON; a queue, a tree and a thread
+            // list as a list.
+            "write_reflection" => ok(value),
+            "read_reflection" if value.get("markdown").is_some() => ok(value),
+            "discuss" if value.get("id").is_some() => ok(value),
             _ => self.ok_list(value),
         }
     }
@@ -2105,6 +2177,35 @@ impl McpServer {
 /// answered from this server's own domains (decision D8); a core that routed
 /// would let two servers connected to each other forward one call for ever.
 impl McpServer {
+    /// `read_reflection`'s body for both doors: the tree, one page or a
+    /// search. A call that names a path and a query is an argument error
+    /// (`Invalid`, like `write_reflection`'s "markdown or operation, not
+    /// both").
+    async fn read_reflection_core(
+        &self,
+        p: &ReadReflectionParams,
+        caller: &ReflectionCaller,
+    ) -> Result<Value, EngineError> {
+        match (p.query.as_deref(), p.path.as_deref()) {
+            (Some(_), Some(_)) => Err(EngineError::Invalid(
+                "pass path to read one reflection or query to search them, not both".into(),
+            )),
+            (Some(query), None) => {
+                let search = ReflectionSearch {
+                    query,
+                    search_type: p.search_type.as_deref(),
+                    limit: p.limit.unwrap_or(SEARCH_DEFAULT_LIMIT),
+                    page: p.page.unwrap_or(1),
+                };
+                self.engine
+                    .search_reflection(&p.domain, &search, caller)
+                    .await
+            }
+            (None, None) => self.engine.read_reflection_tree(&p.domain, caller).await,
+            (None, Some(path)) => self.engine.read_reflection(&p.domain, path, caller).await,
+        }
+    }
+
     /// `p` with every domain it names spelled as a local name, for `scope`.
     /// See [`McpServer::localized`].
     async fn localized_in<P: DomainArgs + Clone>(
@@ -2574,6 +2675,27 @@ fn remote_failed(error: ErrorData) -> RemoteToolError {
     RemoteToolError::Failed(error.message.to_string())
 }
 
+/// The Reflection caller of a remote `tool` call: the token's account under
+/// its own scope, named the way its writes are recorded (decision D11). Never
+/// the MCP open tier: a remote call always carries a token. None of the
+/// four arms goes through `refuse_unwritable`; the reflection gate decides,
+/// as it does for the MCP handlers.
+fn remote_reflection_caller(caller: &Caller) -> ReflectionCaller {
+    let name = caller.actor().unwrap_or_else(|| "agent".to_string());
+    ReflectionCaller::agent(caller.scope.clone(), &name, false)
+}
+
+/// An engine error of a Reflection arm as a remote answer: a refusal keeps
+/// its own words, everything else as `to_error` maps it.
+fn remote_engine(e: EngineError) -> RemoteToolError {
+    match e {
+        EngineError::Refused(text)
+        | EngineError::Forbidden(text)
+        | EngineError::DomainReadOnly(text) => RemoteToolError::Refused(text),
+        other => remote_failed(to_error(other)),
+    }
+}
+
 impl McpServer {
     /// One engine verb for a connected machine's `tool` command, through the
     /// verb core the MCP handler of the same name runs: localized for this
@@ -2585,6 +2707,10 @@ impl McpServer {
     /// refused, a permalink collision is the engine's error. The answer is raw
     /// engine JSON, as the control socket's `tool` answers, never the
     /// session's TOON.
+    ///
+    /// The four Reflection tools run the engine's Reflection verbs for the
+    /// token's account ([`remote_reflection_caller`]) and are gated by the
+    /// engine's reflection gate instead, as their MCP handlers are.
     ///
     /// `tool` is one of `remote_ctl::REMOTE_TOOLS`; the route has refused
     /// anything else, and so does the last arm here. This never reaches the
@@ -2642,6 +2768,54 @@ impl McpServer {
                 .evolve_engrams_core(remote_args(args)?, caller)
                 .await
                 .map_err(remote_failed),
+            "reflect" => {
+                let p: ReflectParams = remote_args(args)?;
+                let p = self
+                    .engine
+                    .localized_for(&p, &caller.scope)
+                    .await
+                    .map_err(remote_engine)?;
+                self.engine
+                    .reflect(&p, &remote_reflection_caller(caller))
+                    .await
+                    .map_err(remote_engine)
+            }
+            "read_reflection" => {
+                let p: ReadReflectionParams = remote_args(args)?;
+                let p = self
+                    .engine
+                    .localized_for(&p, &caller.scope)
+                    .await
+                    .map_err(remote_engine)?;
+                let reflection_caller = remote_reflection_caller(caller);
+                self.read_reflection_core(&p, &reflection_caller)
+                    .await
+                    .map_err(remote_engine)
+            }
+            "write_reflection" => {
+                let p: WriteReflectionParams = remote_args(args)?;
+                let p = self
+                    .engine
+                    .localized_for(&p, &caller.scope)
+                    .await
+                    .map_err(remote_engine)?;
+                self.engine
+                    .write_reflection(&p, &remote_reflection_caller(caller))
+                    .await
+                    .map_err(remote_engine)
+            }
+            "discuss" => {
+                let p: DiscussParams = remote_args(args)?;
+                let p = self
+                    .engine
+                    .localized_for(&p, &caller.scope)
+                    .await
+                    .map_err(remote_engine)?;
+                self.engine
+                    .discuss(&p, &remote_reflection_caller(caller))
+                    .await
+                    .map_err(remote_engine)
+            }
             other => Err(RemoteToolError::Refused(format!(
                 "the tool '{other}' {}",
                 crate::remote_ctl::NOT_REMOTE
@@ -2981,9 +3155,115 @@ impl McpServer {
     }
 
     #[tool(
+        name = "reflect",
+        title = "Reflect",
+        description = "Get the work queue of a domain's Reflection and work it. The Reflection is the domain's documents for people under reflections/, written at the level its PACT.md agrees on; it exists where the domain's MANIFEST says reflection: on. Three kinds of item, oldest first: feedback (a person changed a section - the diff, who changed it and the engrams the section was built from; judge it into the engrams, keep it as their text, or answer it in a thread), update (an engram behind a section changed, was retired or is gone; engrams no section covers yet; a page off the pact's structure; a changed pact; a file nobody links, a link to a missing file, an embedded engram attachment - bring the engrams into the reflections) and review (threads waiting for you). Within a section the feedback item comes before any update item, so you read a person's change before you rewrite it. Read-only: it changes nothing. Call it when a session-end reminder or the routing block names a domain's Reflection, when the user asks what the Reflection needs, and in a scheduled run on the home instance. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server. domains narrows the queue, kinds filters it, limit and page page through it. When the answer's scope carries unreadable, those domains were left out because their Reflection could not be read; the rest of the queue is complete. When it carries pending, those domains' Reflection waits until the engrams in their reflections/ folder are moved out: tell the person.",
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn reflect(
+        &self,
+        Parameters(p): Parameters<ReflectParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(answer) = self.mounted("reflect", &p, &ctx).await {
+            return answer;
+        }
+        let p = self.localized(p, &ctx).await?;
+        let caller = self.reflection_caller(&ctx);
+        match self.engine.reflect(&p, &caller).await {
+            Ok(v) => self.ok_list(v),
+            Err(e) => Self::reflection_refused(e),
+        }
+    }
+
+    #[tool(
+        name = "read_reflection",
+        title = "Read reflection",
+        description = "Read a domain's Reflection - its documents for people under reflections/, where the MANIFEST says reflection: on. Without path: the tree of reflections with titles, section counts and open thread counts, and PACT.md, the agreement on audience, level of detail and structure. With path: one reflection's markdown with every section's hidden id (the <!-- r:... --> line under its ## heading), whether its text changed since it was last reflected, the engrams it was built from and its open threads. With query: search the reflections by words and meaning (search_type hybrid by default, text or semantic) and get the matching sections, best first, each with its page, title, section id, heading and a snippet (at most 100 hits per page); pass path or query, not both. Files the reflection shows (under reflections/assets/) come back as resource links; fetch one with resources/read when the file itself matters. A page from a domain served by another machine carries its images as Markdown links only, no resource links. Read before write_reflection or discuss, and pass the checksum back as expected_checksum. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn read_reflection(
+        &self,
+        Parameters(p): Parameters<ReadReflectionParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(answer) = self.mounted("read_reflection", &p, &ctx).await {
+            return answer;
+        }
+        let p = self.localized(p, &ctx).await?;
+        let caller = self.reflection_caller(&ctx);
+        match self.read_reflection_core(&p, &caller).await {
+            Ok(value) if p.path.is_some() => {
+                let links = self.reflection_asset_links(&value, &caller).await;
+                let mut result = ok(value)?;
+                result.content.extend(links);
+                Ok(result)
+            }
+            Ok(value) => self.ok_list(value),
+            Err(e) => Self::reflection_refused(e),
+        }
+    }
+
+    #[tool(
+        name = "write_reflection",
+        title = "Write reflection",
+        description = "Create, change, move or delete a reflection - a document for people under reflections/, where the domain's MANIFEST says reflection: on - or edit PACT.md, the domain's agreement on audience, level of detail and structure (PACT.md and every write with sources need curate access, which everyone who edits the engrams holds; anyone else proposes a PACT.md change with discuss). Write at the level PACT.md describes. action write (the default) takes the whole markdown: keep each ## heading's <!-- r:... --> id line as it is; new headings get one. To change one section instead, pass operation replace_section, insert_before_section or insert_after_section with section (the heading path, for example ## Night deploys) and content, exactly as edit_engram does; the section keeps its id line. Pass sources (section id or heading to engram permalinks in this domain) for every section you built from engrams: that curates the section and records what it reflects. Without sources a write is an ordinary edit, and a person's change stays a feedback item in reflect. action settle with sections and outcome kept (the person's text stands, sources stay) or taken_in (you changed the engrams to match) settles feedback items. action move carries the reflection's threads and baseline and rewrites relative links to it, and its receipt carries links_failed when a page that links it could not be rewritten; delete takes both along. action move_asset (path and to) or delete_asset (path) moves or removes a file under reflections/assets/ and needs curate access; a move rewrites every link to the file, and its receipt carries links_failed (pages whose link could not be rewritten) or note (the file moved and its index row did not follow) when that happened. A page that embeds an engram attachment is refused (copy the file into reflections/assets/ first, which a person does). When a person has the page open in a co-editing room, the receipt says landed live (the room took your text in) or landed file with room (conflict or waiting) and room_note: tell the person what room_note says. Needs edit access; sources and settle need curate access. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn write_reflection(
+        &self,
+        Parameters(p): Parameters<WriteReflectionParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(answer) = self.mounted("write_reflection", &p, &ctx).await {
+            return answer;
+        }
+        let p = self.localized(p, &ctx).await?;
+        let caller = self.reflection_caller(&ctx);
+        match self.engine.write_reflection(&p, &caller).await {
+            Ok(v) => ok(v),
+            Err(e) => Self::reflection_refused(e),
+        }
+    }
+
+    #[tool(
+        name = "discuss",
+        title = "Discuss",
+        description = "Discuss a passage of a reflection with the people who read it, the way comments work on a shared document. The Reflection is a domain's documents for people under reflections/, where its MANIFEST says reflection: on. open a thread on a section (by id or heading) or on an exact quoted passage, answer it, resolve it with a short outcome, reopen it, or list threads. Use it to ask about or disagree with a person's change instead of overwriting it (answers_feedback marks their feedback item as answered while the thread is open), and to answer the review items reflect returns. Write for people in plain words: contributors cannot see engrams, so engram links in your text are refused. Write each comment as a conventional comment: a first line `<label> [decorations]: <subject>`, then an optional discussion, with the label one of praise, nitpick, suggestion, issue, todo, question, thought, chore or note and the decorations blocking, non-blocking or if-minor (for example `question (non-blocking): is this still true after the migration?`). A thread opened on a heading that has no id yet keeps that heading text as its anchor section, so a thread's section is an id or a heading. A resolved thread's history never changes; a reopen is a new entry. Anyone who can read the Reflection may discuss. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn discuss(
+        &self,
+        Parameters(p): Parameters<DiscussParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(answer) = self.mounted("discuss", &p, &ctx).await {
+            return answer;
+        }
+        let p = self.localized(p, &ctx).await?;
+        let caller = self.reflection_caller(&ctx);
+        let listing = p.action.as_deref() == Some("list");
+        match self.engine.discuss(&p, &caller).await {
+            Ok(value) if listing => self.ok_list(value),
+            Ok(value) => ok(value),
+            Err(e) => Self::reflection_refused(e),
+        }
+    }
+
+    #[tool(
         name = "configure",
         title = "Configure Crystalline",
-        description = "View and adjust Crystalline's settings, like an app's preferences page: call with no arguments to see them, set to change them (for example github.enabled to turn on team collaboration) and connect to link your GitHub account with a short code you confirm in the browser. With a token it accepts a personal access token instead. Connecting works before or after enabling; only team domains need github.enabled turned on. Call it with domain to see and change how one domain behaves: its domain policies (the MANIFEST keys sharing, direct or proposal, generated indexes, local or shared, and read_only, off or on), what each MANIFEST section does, and its rule overrides in .crystalline.yaml (a verify rule's severity, off, error, warning or info, and the token budget). With domain, set and unset change that domain, for example set { \"sharing\": \"direct\" } to allow direct commits or { \"rules.E007\": \"off\" } to turn a rule off. read_only: on refuses every write to the domain; switch it on when the user asks. Call it with domain whenever the user wants a domain to commit directly or open proposals, to share or keep its generated indexes, or to silence or raise a rule. With domain it refuses these: switching read_only off (only a person does that, in the domain policies), any other change on a read-only domain, a rule override in a domain that reviews changes (.crystalline.yaml is not an engram, so change the file in the domain), a rule override in a virtual domain (it has no .crystalline.yaml), and any call on a mounted domain (change it on the server it comes from). In a domain that reviews changes a policy change becomes your draft. The instance's network, database and sign-in are not listed here: the operator sets them with the crystalline CLI.",
+        description = "View and adjust Crystalline's settings, like an app's preferences page: call with no arguments to see them, set to change them (for example github.enabled to turn on team collaboration) and connect to link your GitHub account with a short code you confirm in the browser. With a token it accepts a personal access token instead. Connecting works before or after enabling; only team domains need github.enabled turned on. Call it with domain to see and change how one domain behaves: its domain policies (the MANIFEST keys sharing, direct or proposal, generated indexes, local or shared, and read_only, off or on, and reflection, off or on (on makes reflections/ the domain's Reflection and is refused while engrams live there; reflection_home is filled in, never set)), what each MANIFEST section does, and its rule overrides in .crystalline.yaml (a verify rule's severity, off, error, warning or info, and the token budget). With domain, set and unset change that domain, for example set { \"sharing\": \"direct\" } to allow direct commits or { \"rules.E007\": \"off\" } to turn a rule off. read_only: on refuses every write to the domain; switch it on when the user asks. Call it with domain whenever the user wants a domain to commit directly or open proposals, to share or keep its generated indexes, or to silence or raise a rule. With domain it refuses these: switching read_only off (only a person does that, in the domain policies), any other change on a read-only domain, a rule override in a domain that reviews changes (.crystalline.yaml is not an engram, so change the file in the domain), a rule override in a virtual domain (it has no .crystalline.yaml), and any call on a mounted domain (change it on the server it comes from). In a domain that reviews changes a policy change becomes your draft. The instance's network, database and sign-in are not listed here: the operator sets them with the crystalline CLI.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -3959,6 +4239,50 @@ impl McpServer {
             .collect()
     }
 
+    /// The resource links a `read_reflection` answer carries: one per
+    /// distinct file under `reflections/assets/` the page references and the
+    /// Reflection holds. Links, never bytes, as for an engram, and checked
+    /// against the Reflection right only. A listing that cannot be read
+    /// costs the links, never the read.
+    async fn reflection_asset_links(
+        &self,
+        value: &Value,
+        caller: &ReflectionCaller,
+    ) -> Vec<ContentBlock> {
+        let (Some(domain), Some(path), Some(markdown)) = (
+            value.get("domain").and_then(Value::as_str),
+            value.get("path").and_then(Value::as_str),
+            value.get("markdown").and_then(Value::as_str),
+        ) else {
+            return Vec::new();
+        };
+        let refs = crystalline_core::reflection::reflection_asset_refs(markdown, path);
+        if refs.is_empty() {
+            return Vec::new();
+        }
+        let Ok(rows) = self.engine.reflection_asset_list(domain, caller).await else {
+            return Vec::new();
+        };
+        refs.iter()
+            .filter_map(|target| rows.iter().find(|row| row.path == *target))
+            .map(|row| {
+                let name = row.path.rsplit('/').next().unwrap_or(row.path.as_str());
+                ContentBlock::resource_link(
+                    Resource::new(
+                        format!(
+                            "crystalline://{domain}/{}/{}",
+                            crystalline_core::reflection::REFLECTIONS_DIR,
+                            row.path
+                        ),
+                        name,
+                    )
+                    .with_mime_type(row.mime.clone())
+                    .with_size(row.size),
+                )
+            })
+            .collect()
+    }
+
     /// Wrap a list-shaped engine value as a successful tool result: TOON
     /// under the default `service.response_format`, byte-identical to [`ok`]
     /// under `json`. The format is read per response, so a runtime configure
@@ -4581,6 +4905,9 @@ impl ServerHandler for McpServer {
             if t.name == crate::EVOLVE_TOOL_NAME && hidden_evolve_tool(read_only) {
                 return false;
             }
+            if REFLECTION_WRITE_TOOLS.contains(&t.name.as_ref()) && read_only {
+                return false;
+            }
             if t.name == "provision" && hidden_provision_tool(read_only) {
                 return false;
             }
@@ -4607,6 +4934,9 @@ impl ServerHandler for McpServer {
             return None;
         }
         if name == crate::EVOLVE_TOOL_NAME && hidden_evolve_tool(read_only) {
+            return None;
+        }
+        if REFLECTION_WRITE_TOOLS.contains(&name) && read_only {
             return None;
         }
         if name == "provision" && hidden_provision_tool(read_only) {
@@ -4645,8 +4975,11 @@ impl ServerHandler for McpServer {
         Ok(ListResourcesResult::with_all_items(resources).with_cache_hints(&context))
     }
 
-    /// The one template this server serves: every attachment a domain carries,
-    /// addressed as `crystalline://<domain>/assets/<path>`.
+    /// The two templates this server serves: every attachment a domain
+    /// carries, addressed as `crystalline://<domain>/assets/<path>`, and
+    /// every file of a domain's Reflection, addressed as
+    /// `crystalline://<domain>/reflections/assets/<path>`. The attachment
+    /// template is listed first.
     ///
     /// A template rather than a listing because the set is open and per domain:
     /// enumerating every screenshot of every registered domain would spend a
@@ -4663,12 +4996,20 @@ impl ServerHandler for McpServer {
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
-        let template = ResourceTemplate::new(ATTACHMENT_URI_TEMPLATE, ATTACHMENT_TEMPLATE_NAME)
-            .with_description(ATTACHMENT_TEMPLATE_DESCRIPTION);
-        Ok(ListResourceTemplatesResult::with_all_items(vec![template]).with_cache_hints(&context))
+        let templates = vec![
+            ResourceTemplate::new(ATTACHMENT_URI_TEMPLATE, ATTACHMENT_TEMPLATE_NAME)
+                .with_description(ATTACHMENT_TEMPLATE_DESCRIPTION),
+            ResourceTemplate::new(
+                REFLECTION_ASSET_URI_TEMPLATE,
+                REFLECTION_ASSET_TEMPLATE_NAME,
+            )
+            .with_description(REFLECTION_ASSET_TEMPLATE_DESCRIPTION),
+        ];
+        Ok(ListResourceTemplatesResult::with_all_items(templates).with_cache_hints(&context))
     }
 
-    /// Read one shipped skill, or one attachment, by its resource uri.
+    /// Read one shipped skill, one attachment or one file of a Reflection, by
+    /// its resource uri.
     ///
     /// A skill answers even while `skills.serve` is off, like every hidden
     /// tool: the gate hides the surface from a listing rather than disabling
@@ -4676,11 +5017,14 @@ impl ServerHandler for McpServer {
     /// client holding a uri from an earlier listing gets the bytes rather than
     /// a puzzle.
     ///
-    /// An attachment uri is anything [`CrystallineUrl::asset_path`] recognizes
-    /// once its path has been percent-decoded (see `decoded_uri_path`), and
-    /// the bytes come back the way the file is read rather than the way it was
-    /// asked for: a text mime as `TextResourceContents`, everything else base64
-    /// in `BlobResourceContents`. This is the one place base64 is ever emitted
+    /// A file uri is anything [`CrystallineUrl::asset_ref`] recognizes once
+    /// its path has been percent-decoded (see `decoded_uri_path`): one branch
+    /// for both kinds, the right check following the kind (the caller's
+    /// engram view for an attachment, the Reflection right for a
+    /// Reflection's file, never the engram right), and the bytes come back
+    /// the way the file is read rather than the way it was asked for: a text
+    /// mime as `TextResourceContents`, everything else base64 in
+    /// `BlobResourceContents`. This is the one place base64 is ever emitted
     /// - a tool result carries links, never bytes - so a model spends the
     /// context on an image or a deck only when it decided to open it.
     async fn read_resource(
@@ -4700,26 +5044,42 @@ impl ServerHandler for McpServer {
                 permalink: decoded_uri_path(&url.permalink)?,
                 ..url
             };
-            if let Some(path) = url.asset_path() {
-                // An attachment uri names its domain outright, and nothing had
-                // to be read first to learn the name, so this is the one
-                // attachment path a caller can reach cold. A domain it may not
-                // see is refused exactly as an unregistered one - the same
-                // bytes, from the engine's own line - before the file is
-                // touched. The domain may be spelled by any of its names; one
-                // this caller may not see keeps the spelling they sent.
+            if let Some((kind, path)) = url.asset_ref() {
+                // A file uri names its domain outright, and nothing had to be
+                // read first to learn the name, so this is the one file path
+                // a caller can reach cold. The domain may be spelled by any
+                // of its names; one this caller may not see keeps the
+                // spelling they sent.
                 let scope = self.scope_of(&context);
                 let hidden = self.engine.hidden_for(&scope).await.map_err(to_error)?;
                 let domain = self.engine.localize_visible(&url.domain, &hidden).await;
-                self.engine
-                    .require_domain(&domain, &scope)
-                    .await
-                    .map_err(to_error)?;
-                let (bytes, row) = DomainView::for_read(&self.engine, &domain, &hidden, &scope)
-                    .map_err(to_error)?
-                    .attachment_bytes(path)
-                    .await
-                    .map_err(to_error)?;
+                let (bytes, row) = match kind {
+                    // A domain the caller may not see is refused exactly as
+                    // an unregistered one - the same bytes, from the engine's
+                    // own line - before the file is touched, and the bytes
+                    // come through the caller's own view (their drafts in a
+                    // reviewing domain).
+                    ContentKind::Engram => {
+                        self.engine
+                            .require_domain(&domain, &scope)
+                            .await
+                            .map_err(to_error)?;
+                        DomainView::for_read(&self.engine, &domain, &hidden, &scope)
+                            .map_err(to_error)?
+                            .attachment_bytes(path)
+                            .await
+                            .map_err(to_error)?
+                    }
+                    // A Reflection's file is read under the Reflection right,
+                    // never the engram right: a reader at knowledge `none`
+                    // reads every file of a Reflection it reads, and the
+                    // gate answers a domain it may not see as unregistered.
+                    ContentKind::Reflection => self
+                        .engine
+                        .reflection_asset_read(&domain, path, &self.reflection_caller(&context))
+                        .await
+                        .map_err(to_error)?,
+                };
                 return Ok(ReadResourceResult::new(vec![attachment_contents(
                     &request.uri,
                     bytes,
@@ -4733,7 +5093,7 @@ impl ServerHandler for McpServer {
         }
         Err(ErrorData::invalid_params(
             format!(
-                "unknown resource '{}'; this server serves {} and every attachment addressed as {ATTACHMENT_URI_TEMPLATE}",
+                "unknown resource '{}'; this server serves {} and every attachment addressed as {ATTACHMENT_URI_TEMPLATE} or {REFLECTION_ASSET_URI_TEMPLATE}",
                 request.uri,
                 skill_uris()
             ),

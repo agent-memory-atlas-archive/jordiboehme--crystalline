@@ -481,7 +481,7 @@ async fn a_members_revoked_access_is_captured_before_a_rename_so_they_do_not_hea
         .await
         .unwrap();
     fx.auth
-        .upsert_domain_member("lab", "ada", MemberLevel::Manager, "root")
+        .upsert_domain_member("lab", "ada", MemberLevel::Manager, None, "root")
         .await
         .unwrap();
     let ada = login(fx.addr, "ada", "adapw").await;
@@ -899,7 +899,7 @@ async fn a_plain_member_hears_a_private_domain_and_its_rename() {
         .await
         .unwrap();
     fx.auth
-        .upsert_domain_member("lab", "vera", MemberLevel::Viewer, "root")
+        .upsert_domain_member("lab", "vera", MemberLevel::Viewer, None, "root")
         .await
         .unwrap();
     let vera = login(fx.addr, "vera", "verapw").await;
@@ -975,4 +975,132 @@ async fn the_stream_ends_when_the_shutdown_watch_flips() {
     })
     .await;
     assert_eq!(ended, Ok(true), "the body closes on shutdown");
+}
+
+/// An account whose instance knowledge level is `none` hears no shared domain
+/// on the stream, whatever the frame: an engram edit, a shared domain's
+/// rename and removal (whose captured audience is `Everyone`), and a shared
+/// domain registered after the stream opened. It still hears the private
+/// domain it is a member of. A viewer, the control, hears the shared ones.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_knowledge_none_account_hears_no_shared_domain_on_the_stream() {
+    let fx = serve(false, false).await;
+    fx.auth
+        .set_domain_visibility("lab", true, "root")
+        .await
+        .unwrap();
+    fx.auth
+        .add_user_with_reflection(
+            "nora",
+            "Nora",
+            None,
+            Role::None,
+            crystalline_service::rest::ReflectionLevel::Contributor,
+            "norapw",
+        )
+        .await
+        .unwrap();
+    fx.auth
+        .upsert_domain_member("lab", "nora", MemberLevel::Viewer, None, "root")
+        .await
+        .unwrap();
+    let nora = login(fx.addr, "nora", "norapw").await;
+    let vera = login(fx.addr, "vera", "verapw").await;
+    let mut none = open(fx.addr, Some(&nora), None).await;
+    let mut viewer = open(fx.addr, Some(&vera), None).await;
+
+    // A shared domain registered after both streams opened.
+    let fresh = fx._tmp.path().join("fresh");
+    std::fs::create_dir_all(&fresh).unwrap();
+    std::fs::write(fresh.join("MANIFEST.md"), MANIFEST.replace("eng", "fresh")).unwrap();
+    std::fs::write(
+        fresh.join("news.md"),
+        ALPHA.replace("Alpha", "News").replace("alpha", "news"),
+    )
+    .unwrap();
+    fx.engine
+        .domain_add_local(Some("fresh"), Some(fresh.to_str().unwrap()))
+        .await
+        .unwrap();
+    fx.engine
+        .edit_engram(&edit("eng", "alpha", "a line"))
+        .await
+        .unwrap();
+    fx.engine
+        .edit_engram(&edit("lab", "secret", "a line"))
+        .await
+        .unwrap();
+    // A shared domain's rename and removal carry the `Everyone` audience.
+    fx.engine
+        .rename_domain(
+            "eng",
+            "eng-two",
+            true,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    fx.engine
+        .unregister_domain(
+            "eng-two",
+            &crystalline_service::Scope::Unrestricted,
+            false,
+            &[],
+        )
+        .await
+        .unwrap();
+    fx.engine
+        .edit_engram(&edit("lab", "secret", "a second line"))
+        .await
+        .unwrap();
+
+    let heard = read_until(&mut none, Duration::from_secs(4), |_| false).await;
+    let frames: Vec<&Frame> = heard.iter().filter(|f| f.event != "comment").collect();
+    for frame in &frames {
+        let data: serde_json::Value = serde_json::from_str(&frame.data).unwrap();
+        assert_eq!(
+            data["domain"], "lab",
+            "only the private domain it reads reaches it: {heard:?}"
+        );
+        for name in ["eng", "fresh", "alpha", "news"] {
+            assert!(
+                !frame.data.contains(&format!("\"{name}")),
+                "no shared name or path: {heard:?}"
+            );
+        }
+    }
+    assert!(
+        !frames.is_empty(),
+        "it hears its private domain, so the stream is live: {heard:?}"
+    );
+
+    let heard = read_until(&mut viewer, Duration::from_secs(4), |frames| {
+        let names = domains_of(
+            &frames
+                .iter()
+                .filter(|f| f.event != "comment")
+                .map(|f| Frame {
+                    id: f.id.clone(),
+                    event: f.event.clone(),
+                    data: f.data.clone(),
+                })
+                .collect::<Vec<_>>(),
+        );
+        ["fresh", "eng", "eng-two"]
+            .iter()
+            .all(|name| names.iter().any(|n| n == name))
+    })
+    .await;
+    let names = domains_of(
+        &heard
+            .into_iter()
+            .filter(|f| f.event != "comment")
+            .collect::<Vec<_>>(),
+    );
+    for name in ["fresh", "eng", "eng-two"] {
+        assert!(
+            names.iter().any(|n| n == name),
+            "the viewer hears the shared domain '{name}': {names:?}"
+        );
+    }
 }

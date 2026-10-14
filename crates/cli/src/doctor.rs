@@ -69,7 +69,7 @@ use crystalline_core::config::{self, DatabaseBackend, DomainEntry, GlobalConfig,
 use crystalline_core::provision;
 use crystalline_core::text::plural;
 use crystalline_core::verify::{self, VerifyOptions};
-use crystalline_core::{HarnessKind, harness_paths};
+use crystalline_core::{DomainLayout, HarnessKind, PathClass, harness_paths, slash_rel};
 use crystalline_index::{
     FileStamp, LocalModel, SnapshotChoice, Store, TagCluster, cached_model_dirs, choose_snapshot,
     configured_model_id, local_model, tag_clusters_with_aliases,
@@ -2369,27 +2369,37 @@ fn policy_values(key: &str) -> &'static [&'static str] {
         .unwrap_or(&[])
 }
 
+/// What a declared value has to become, as a sentence: the values a key
+/// takes, or for a text key what that key holds.
+fn policy_expected(key: &str) -> String {
+    match policy_values(key) {
+        [] if key == crystalline_core::REFLECTION_HOME_KEY => {
+            "an http or https address with no trailing slash".to_string()
+        }
+        [] => "a valid domain name".to_string(),
+        values => join_or(values),
+    }
+}
+
 /// `a`, `a or b`, `a, b or c`: the values a key takes, read as a sentence
-/// rather than as a list a reader has to parse. A [`PolicyKind::Text`] key
-/// (`values` empty) has no enumerable list to join, so it reads as "a valid
-/// domain name" instead - the only free-text key today, and what an invalid
-/// declaration of it actually needs to become.
+/// rather than as a list a reader has to parse.
 fn join_or(values: &[&str]) -> String {
     match values {
-        [] => "a valid domain name".to_string(),
+        // Never reached: `policy_expected` answers a key with no values first.
+        [] => String::new(),
         [one] => one.to_string(),
         [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
     }
 }
 
 /// What a domain reads a policy key as, for the printed line: the value
-/// itself, or - for a [`PolicyKind::Text`] key an invalid declaration leaves
-/// with nothing to fall back to - "ignored; the local name holds".
-fn policy_read_as(read_as: &str) -> &str {
-    if read_as.is_empty() {
-        "ignored; the local name holds"
-    } else {
-        read_as
+/// itself, or for a text key an invalid declaration leaves empty, what that
+/// means for the key.
+fn policy_read_as<'a>(key: &str, read_as: &'a str) -> &'a str {
+    match (read_as.is_empty(), key) {
+        (false, _) => read_as,
+        (true, crystalline_core::REFLECTION_HOME_KEY) => "ignored; the Reflection has no home",
+        (true, _) => "ignored; the local name holds",
     }
 }
 
@@ -2588,7 +2598,11 @@ async fn check_domain_checks(
     };
     if let Some(stamps) = stamps {
         d.index_checked = true;
-        let on_disk = markdown_rel_paths(&path);
+        // The mode in effect, from the stamps just read: an engram still
+        // waiting under a pending switch is an engram, and a page of an
+        // effective Reflection never is.
+        let reflection = crystalline_index::reflection_mode(&path, stamps.keys());
+        let on_disk = markdown_rel_paths(&path, &DomainLayout::at(&path, reflection));
         let disk_set: HashSet<&str> = on_disk.iter().map(String::as_str).collect();
         let db_set: HashSet<&str> = stamps.keys().map(String::as_str).collect();
 
@@ -2758,7 +2772,14 @@ struct StrayPair {
 /// the permalink slugifies it. Neither side's index state is assumed.
 fn stray_pairs(root: &Path) -> Vec<StrayPair> {
     let mut by_key: BTreeMap<(String, String), Vec<StrayFile>> = BTreeMap::new();
-    for rel in markdown_rel_paths(root) {
+    // The mode in effect, as a share takes it. No index has been read yet,
+    // so it is asked of the files on disk: while a switch is pending, the
+    // engrams still under `reflections/` are engrams here too.
+    let layout = DomainLayout::at(
+        root,
+        crystalline_index::reflection_mode(root, std::iter::empty::<&str>()),
+    );
+    for rel in markdown_rel_paths(root, &layout) {
         let file = root.join(&rel);
         // The time is read before and after the text. A write in between
         // would pair one text with the other's time, so then the time counts
@@ -2942,29 +2963,37 @@ fn settle_stray(
 }
 
 /// Every `.md` file under `root`, relative and forward-slashed, skipping
-/// dot-directories, dot-files and the OKF reserved filenames. Mirrors the sync
-/// engine's own walk so orphan and unindexed detection line up with what a sync
-/// would compute.
-fn markdown_rel_paths(root: &Path) -> Vec<String> {
+/// dot-directories, dot-files, the OKF reserved filenames, the artifact
+/// folders the MANIFEST provisions from inside the root and the Reflection's
+/// folder while `layout` has it in effect. Mirrors the sync engine's own walk
+/// so orphan and unindexed detection line up with what a sync would compute.
+/// The caller builds `layout` with the Reflection mode it can know: the mode
+/// in effect where it has read the index, the declared switch where not.
+fn markdown_rel_paths(root: &Path, layout: &DomainLayout) -> Vec<String> {
     let mut out = Vec::new();
+    // The prune the sync and verify apply: hidden folders, artifact folders
+    // and an effective Reflection's folder are never entered.
     let walker = walkdir::WalkDir::new(root)
         .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !is_hidden(&e.file_name().to_string_lossy()));
+        .filter_entry(|e| e.depth() == 0 || !layout.prunes_dir(&slash_rel(root, e.path())));
     for entry in walker.filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {
             continue;
         }
-        let fname = entry.file_name().to_string_lossy();
+        let rel = relative_slash_path(root, entry.path());
         // The OKF reserved names are never indexed (the sync walk skips them),
-        // so counting them here would report every generated index file as
-        // unindexed.
-        if is_hidden(&fname)
-            || crystalline_core::is_reserved_file(&fname)
-            || !fname.to_lowercase().ends_with(".md")
-        {
-            continue;
+        // so counting them would report every generated index file as
+        // unindexed. Markdown under assets/ is an attachment, never an
+        // engram, so it is left out too.
+        match layout.classify(&rel) {
+            PathClass::Engram => out.push(rel),
+            PathClass::Artifact
+            | PathClass::EngramAsset
+            | PathClass::Reserved
+            | PathClass::Hidden
+            | PathClass::Other
+            | PathClass::Reflection(_) => {}
         }
-        out.push(relative_slash_path(root, entry.path()));
     }
     out
 }
@@ -3025,17 +3054,7 @@ fn relative_slash_path(root: &Path, p: &Path) -> String {
 /// The literal, zero-cost half of [`relative_slash_path`]: `Some` only when
 /// `root` is exactly a component prefix of `p`.
 fn strip_to_slash(root: &Path, p: &Path) -> Option<String> {
-    let rel = p.strip_prefix(root).ok()?;
-    Some(
-        rel.components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("/"),
-    )
-}
-
-fn is_hidden(name: &str) -> bool {
-    name.starts_with('.') && name != "." && name != ".."
+    p.starts_with(root).then(|| slash_rel(root, p))
 }
 
 /// The report's words for who a stale lock used to belong to. A `lock_stale`
@@ -3843,6 +3862,10 @@ async fn embedding_summary(store: &dyn Store, cfg: &GlobalConfig) -> Result<serd
         .embedding_coverage()
         .await
         .map_err(|e| anyhow!("could not read embedding coverage: {e}"))?;
+    let reflection = store
+        .embedding_coverage_of(crystalline_index::ChunkTable::Reflection)
+        .await
+        .map_err(|e| anyhow!("could not read reflection embedding coverage: {e}"))?;
     let configured = configured_model_id(cfg.embeddings.as_ref());
     let embedded_with_configured = coverage.embedded_for(&configured);
     let stale_chunks: usize = coverage
@@ -3896,7 +3919,7 @@ async fn embedding_summary(store: &dyn Store, cfg: &GlobalConfig) -> Result<serd
         }
         _ => None,
     };
-    Ok(serde_json::json!({
+    let mut summary = serde_json::json!({
         "configured_model": configured,
         "configured_repo": configured_repo,
         "model_snapshot": model_snapshot,
@@ -3906,7 +3929,22 @@ async fn embedding_summary(store: &dyn Store, cfg: &GlobalConfig) -> Result<serd
         "stale_chunks": stale_chunks,
         "models": coverage.models,
         "cached_models": cached_models,
-    }))
+    });
+    // Reflection chunks, only while there are any, so a report without a
+    // Reflection stays as it was.
+    if reflection.total_chunks > 0
+        && let Some(map) = summary.as_object_mut()
+    {
+        map.insert(
+            "reflection_chunks".to_string(),
+            serde_json::json!(reflection.total_chunks),
+        );
+        map.insert(
+            "reflection_embedded".to_string(),
+            serde_json::json!(reflection.embedded_for(&configured)),
+        );
+    }
+    Ok(summary)
 }
 
 /// Whether a cached repository belongs in the embedding listing: anything but
@@ -4392,8 +4430,8 @@ pub fn render_human(report: &DoctorReport) -> String {
                 "  [problem] MANIFEST {}: {} is not {}; read as {}",
                 p.key,
                 p.declared,
-                join_or(policy_values(&p.key)),
-                policy_read_as(&p.read_as)
+                policy_expected(&p.key),
+                policy_read_as(&p.key, &p.read_as)
             );
         }
         // Said once per domain so an empty orphan and unindexed list is never
@@ -4904,9 +4942,17 @@ pub fn render_human(report: &DoctorReport) -> String {
             (Some(r), None) => format!(" ({r}, not downloaded)"),
             _ => String::new(),
         };
+        let reflection = match e["reflection_chunks"].as_u64().filter(|n| *n > 0) {
+            Some(n) => format!(
+                ", {} ({} embedded)",
+                plural(n as usize, "reflection chunk", "reflection chunks"),
+                e["reflection_embedded"].as_u64().unwrap_or(0)
+            ),
+            None => String::new(),
+        };
         let _ = writeln!(
             out,
-            "embeddings: {}/{} chunks embedded with '{}'{named} ({} from a different model)",
+            "embeddings: {}/{} chunks embedded with '{}'{named} ({} from a different model){reflection}",
             e["embedded_with_configured_model"],
             e["total_chunks"],
             e["configured_model"].as_str().unwrap_or_default(),
@@ -6299,6 +6345,36 @@ mod tests {
         let out = render_human(&report);
         assert!(out.contains("10/20 chunks embedded with 'm'"), "{out}");
         assert!(!out.contains("cached models:"), "{out}");
+    }
+
+    /// The embeddings line names reflection chunks only while there are any,
+    /// so a report without a Reflection reads as it always did.
+    #[test]
+    fn the_embeddings_line_names_reflection_chunks_only_when_there_are_some() {
+        let mut report = report_with_orphans(IndexAccess::Direct, &[]);
+        report.embeddings = Some(serde_json::json!({
+            "embedded_with_configured_model": 10,
+            "total_chunks": 20,
+            "configured_model": "m",
+            "stale_chunks": 0,
+        }));
+        let without = render_human(&report);
+        assert!(!without.contains("reflection chunk"), "{without}");
+        report.embeddings = Some(serde_json::json!({
+            "embedded_with_configured_model": 10,
+            "total_chunks": 20,
+            "configured_model": "m",
+            "stale_chunks": 0,
+            "reflection_chunks": 3,
+            "reflection_embedded": 1,
+        }));
+        let with = render_human(&report);
+        assert!(
+            with.contains(
+                "(0 stale chunks from a different model), 3 reflection chunks (1 embedded)\n"
+            ),
+            "{with}"
+        );
     }
 
     /// Over a daemon the doctor reads the index through a read verb, so
@@ -7765,6 +7841,23 @@ mod tests {
     const NEWER: &str = "2026-09-20T10:00:00+00:00";
 
     #[tokio::test]
+    async fn markdown_under_assets_is_not_listed_as_an_unindexed_engram() {
+        // The sync keeps `assets/` for attachments: a Markdown file there is
+        // never an engram, so it must not show up as one waiting to be synced.
+        let files = vec![
+            (S_PATH, review_standards("The rule.", NEWER)),
+            (
+                "assets/notes.md",
+                "# Attached notes\n\nNot an engram.\n".to_string(),
+            ),
+        ];
+        let (_dir, d) = stray_doctor(&files, None, |_| {}, false, false).await;
+        assert!(d.index_checked);
+        assert!(d.unindexed.is_empty(), "{:?}", d.unindexed);
+        assert!(d.orphans.is_empty(), "{:?}", d.orphans);
+    }
+
+    #[tokio::test]
     async fn a_stray_copy_is_found_and_split_out_of_unindexed() {
         let (_dir, d) = stray_doctor(
             &pair(
@@ -8087,9 +8180,40 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join(S_PATH)).unwrap(), stray);
     }
 
+    /// A pending switch keeps the engrams under `reflections/` engrams, as a
+    /// share takes them, so a stray pair there is found; once the switch is
+    /// in effect, the folder is the Reflection's and nothing there is.
+    #[test]
+    fn a_pending_switch_keeps_stray_copies_under_reflections_in_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("kb");
+        put(
+            &root,
+            "MANIFEST.md",
+            &MANIFEST_KB.replacen("---\n\n", "reflection: on\n---\n\n", 1),
+        );
+        let original = format!("reflections/{O_PATH}");
+        let stray = format!("reflections/{S_PATH}");
+        put(&root, &original, &review_standards("The old rule.", OLDER));
+        put(&root, &stray, &review_standards("The new rule.", NEWER));
+        let pairs = stray_pairs(&root);
+        assert_eq!(pairs.len(), 1, "{pairs:?}");
+        assert_eq!(pairs[0].stray.rel, stray);
+
+        // The engrams moved out and a page with an id line in their place:
+        // the switch is in effect, and the folder holds no engram.
+        std::fs::remove_dir_all(root.join("reflections")).unwrap();
+        put(
+            &root,
+            "reflections/guide.md",
+            "# Guide\n\n## One\n<!-- r:aaaa1111 -->\n\nText.\n",
+        );
+        assert!(stray_pairs(&root).is_empty());
+    }
+
     #[tokio::test]
     async fn fix_runs_in_a_team_domain_and_leaves_local_changes() {
-        use crystalline_remote::changes::{LocalChange, detect_local_changes};
+        use crystalline_remote::changes::{LocalChange, detect_local_changes_against};
         use crystalline_remote::state::BaseStamp;
         let newer = review_standards("The new rule.", NEWER);
         let older = review_standards("The old rule.", OLDER);
@@ -8121,16 +8245,20 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let mut changes: Vec<String> = detect_local_changes(&root, &base)
-            .unwrap()
-            .changes
-            .iter()
-            .map(|change| match change {
-                LocalChange::Modified { path, .. } => format!("modified {path}"),
-                LocalChange::Deleted { path } => format!("deleted {path}"),
-                LocalChange::Added { path, .. } => format!("added {path}"),
-            })
-            .collect();
+        // The mode in effect, as a share takes it.
+        let state = tempfile::tempdir().unwrap();
+        let mode = crystalline_index::reflection_mode(&root, std::iter::empty::<&str>());
+        let mut changes: Vec<String> =
+            detect_local_changes_against(&root, &base, state.path(), mode)
+                .unwrap()
+                .changes
+                .iter()
+                .map(|change| match change {
+                    LocalChange::Modified { path, .. } => format!("modified {path}"),
+                    LocalChange::Deleted { path } => format!("deleted {path}"),
+                    LocalChange::Added { path, .. } => format!("added {path}"),
+                })
+                .collect();
         changes.sort();
         assert_eq!(
             changes,

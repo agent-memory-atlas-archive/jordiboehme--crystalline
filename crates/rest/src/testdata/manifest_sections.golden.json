@@ -53,6 +53,29 @@
           "off",
           "on"
         ]
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "reflection",
+        "kind": "choice",
+        "meaning": "Whether this domain keeps a Reflection: documents for people under reflections/.",
+        "values": [
+          "off",
+          "on"
+        ]
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "",
+        "effective": "",
+        "key": "reflection_home",
+        "kind": "text",
+        "meaning": "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.",
+        "values": []
       }
     ],
     "provisioning": null,
@@ -137,6 +160,29 @@
           "off",
           "on"
         ]
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "reflection",
+        "kind": "choice",
+        "meaning": "Whether this domain keeps a Reflection: documents for people under reflections/.",
+        "values": [
+          "off",
+          "on"
+        ]
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "",
+        "effective": "",
+        "key": "reflection_home",
+        "kind": "text",
+        "meaning": "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.",
+        "values": []
       }
     ],
     "provisioning": {
@@ -278,6 +324,29 @@
           "off",
           "on"
         ]
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "reflection",
+        "kind": "choice",
+        "meaning": "Whether this domain keeps a Reflection: documents for people under reflections/.",
+        "values": [
+          "off",
+          "on"
+        ]
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "",
+        "effective": "",
+        "key": "reflection_home",
+        "kind": "text",
+        "meaning": "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.",
+        "values": []
       }
     ],
     "provisioning": {
@@ -399,6 +468,29 @@
           "off",
           "on"
         ]
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "reflection",
+        "kind": "choice",
+        "meaning": "Whether this domain keeps a Reflection: documents for people under reflections/.",
+        "values": [
+          "off",
+          "on"
+        ]
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "",
+        "effective": "",
+        "key": "reflection_home",
+        "kind": "text",
+        "meaning": "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.",
+        "values": []
       }
     ],
     "provisioning": null,

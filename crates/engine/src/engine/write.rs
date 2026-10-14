@@ -232,9 +232,10 @@ impl Engine {
             if crystalline_core::is_reserved_path(&path) {
                 return Err(EngineError::Invalid(reserved_name_error(&path)));
             }
-            if is_assets_reserved(&path) {
-                return Err(EngineError::Invalid(assets_reserved_error(&path)));
-            }
+            refuse_reserved_destination(
+                &path,
+                ReflectionMode::declared(self.reflection_switch(domain)),
+            )?;
             if names_the_manifest(&path) && matches!(source, ContentSource::File { .. }) {
                 return Err(EngineError::Invalid(MANIFEST_CAPTURE_REFUSAL.into()));
             }
@@ -366,6 +367,13 @@ impl Engine {
         let tags = p.tags.clone();
 
         let (rel, permalink) = Self::engram_destination(p.folder.as_deref(), &p.title)?;
+        // `engram_destination` refused `assets/` already, so only the
+        // Reflection's folder can answer here. The declared switch: no new
+        // engram lands there while a switch waits for the folder to empty.
+        refuse_reserved_destination(
+            &rel,
+            ReflectionMode::declared(self.reflection_switch(&p.domain)),
+        )?;
 
         // A file domain's MANIFEST is never a capture's destination, in any
         // letter case. `slugify` lowercases, so a title of "MANIFEST" lands at
@@ -946,6 +954,8 @@ impl Engine {
             // save at a path they CAN resolve gets. Nothing about the draft is
             // revealed that the link did not already hand over.
             Err(EngineError::NotFound(missing)) => {
+                self.refuse_reflection_identifier(&p.domain, &p.identifier)
+                    .await?;
                 return match self
                     .teach_granted_miss(&p.domain, &p.identifier, scope)
                     .await?
@@ -956,8 +966,14 @@ impl Engine {
             }
             Err(e) => return Err(e),
         };
+        // A hit can be a stale row: a file that became the Reflection's page
+        // since the last sync still has its engram row until the next one.
+        self.refuse_reflection_identifier(&p.domain, &desc.path)
+            .await?;
         if is_manifest_path(&desc.path) {
             self.refuse_read_only_switch_on(&p.domain, &p.content, scope)
+                .await?;
+            self.screen_manifest_write(&p.domain, None, &p.content)
                 .await?;
         }
         // A reserved name never resolves to an engram today (sync skips both),
@@ -999,19 +1015,27 @@ impl Engine {
         match &source {
             ContentSource::File { root } => {
                 let abs = join_rel(root, &desc.path);
-                // Held across the comparison and the write. See
+                // Held across the comparison, the write and the reindex. See
                 // `Engine::write_lock`.
-                let lock = self.write_lock(&abs);
-                let _guard = lock.lock().await;
-                let current = match std::fs::read_to_string(&abs) {
-                    Ok(text) => text,
+                let _lock = match self
+                    .write_checked(&abs, Swap::Expect(&p.expected_checksum), &content)
+                    .await?
+                {
+                    Ok(lock) => lock,
+                    Err(SwapRefused::Stale { found }) => {
+                        return Err(EngineError::Conflict(stale_edit_message(
+                            &p.expected_checksum,
+                            &found,
+                        )));
+                    }
                     // Indexed but absent from this machine's disk: the file was
                     // removed behind the index, or this instance is not the
                     // domain's host and only ever saw the database rows. Either
                     // way the engram the caller asked to save is not here to
                     // save, which is a miss rather than a server fault - the
                     // same reading `save_manifest` takes of its own file.
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // (`Swap::Expect` never answers `Exists`.)
+                    Err(SwapRefused::Missing | SwapRefused::Exists) => {
                         return Err(EngineError::NotFound(format!(
                             "engram '{}' in domain '{}' has no file at {}",
                             desc.permalink,
@@ -1019,16 +1043,7 @@ impl Engine {
                             abs.display()
                         )));
                     }
-                    Err(source) => return Err(text_read_error(&abs, source)),
                 };
-                let found = sha256_hex(current.as_bytes());
-                if found != p.expected_checksum {
-                    return Err(EngineError::Conflict(stale_edit_message(
-                        &p.expected_checksum,
-                        &found,
-                    )));
-                }
-                write_file(&abs, &content)?;
                 let store = self.store.lock().await;
                 self.reindex_file(&*store, desc.domain_id, root, &desc.path)
                     .await?;
@@ -1177,9 +1192,10 @@ impl Engine {
         if crystalline_core::is_reserved_path(&desc.path) {
             return Err(EngineError::Invalid(reserved_name_error(&desc.path)));
         }
-        if is_assets_reserved(&desc.path) {
-            return Err(EngineError::Invalid(assets_reserved_error(&desc.path)));
-        }
+        // The mode in effect: once the Reflection is in effect a room lands no
+        // engram in its folder, while a pending switch leaves the engrams
+        // still there editable, as every other verb does.
+        refuse_reserved_destination(&desc.path, self.reflection_mode(view.domain()).await?)?;
         // No caller-carried scope reaches a room: this is the machine's own
         // save of a document somebody has open, the same account every room
         // writes as before there was anything else to be (see
@@ -1314,6 +1330,11 @@ impl Engine {
                 .await?;
         }
         let view = DomainView::for_write(self, domain, scope).await?;
+        // After the scoped view, so a caller who may not see the domain learns
+        // nothing about its files from the Reflection screen.
+        if is_manifest_path(&normalize_rel(path)) {
+            self.screen_manifest_write(domain, None, content).await?;
+        }
         self.restore_engram_in_view(&view, domain, path, content)
             .await
     }
@@ -1353,9 +1374,12 @@ impl Engine {
         if crystalline_core::is_reserved_path(path) {
             return Err(EngineError::Invalid(reserved_name_error(path)));
         }
-        if is_assets_reserved(path) {
-            return Err(EngineError::Invalid(assets_reserved_error(path)));
-        }
+        // A restore can create a file, so it is screened as a destination,
+        // with the declared switch like every other one.
+        refuse_reserved_destination(
+            path,
+            ReflectionMode::declared(self.reflection_switch(domain)),
+        )?;
         let (domain_id, source) = self.domain_source(domain).await?;
         // The third place a restore can land: in review mode the recovered
         // document is this actor's draft of the path, never a file written

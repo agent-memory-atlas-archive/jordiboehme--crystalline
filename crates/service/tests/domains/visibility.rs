@@ -92,10 +92,10 @@ async fn fixture_with(reviewing: &[&str]) -> (tempfile::TempDir, Arc<Engine>) {
     auth.set_domain_visibility("lab", true, "keeper")
         .await
         .unwrap();
-    auth.upsert_domain_member("lab", "mem", MemberLevel::Viewer, "keeper")
+    auth.upsert_domain_member("lab", "mem", MemberLevel::Viewer, None, "keeper")
         .await
         .unwrap();
-    auth.upsert_domain_member("lab", "ed", MemberLevel::Editor, "keeper")
+    auth.upsert_domain_member("lab", "ed", MemberLevel::Editor, None, "keeper")
         .await
         .unwrap();
     engine.set_domain_access(Arc::new(DomainAccess::new(auth)));

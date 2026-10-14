@@ -837,6 +837,290 @@ async fn a_full_room_is_refused_before_the_upgrade_and_frees_its_slot() {
     );
 }
 
+// --- a room over a reflection ------------------------------------------------
+
+/// A served instance whose `eng` has Reflection on, is private to `keeper`,
+/// and holds `reflections/guides/a.md` and `reflections/PACT.md`: `ann` a
+/// member with knowledge `none` and Reflection `contributor`, `vera` a viewer
+/// member, `ed` an editor member, `out` an editor who is no member. Built
+/// like the Reflection suite's `serve`, which this test crate cannot import.
+async fn serve_reflection() -> (
+    std::net::SocketAddr,
+    support::ScratchStateDir,
+    tempfile::TempDir,
+) {
+    serve_reflection_with(false, true).await
+}
+
+/// [`serve_reflection`] with the anonymous viewer on or off, and `eng`
+/// private with its members or shared with every account.
+async fn serve_reflection_with(
+    anonymous: bool,
+    private: bool,
+) -> (
+    std::net::SocketAddr,
+    support::ScratchStateDir,
+    tempfile::TempDir,
+) {
+    use crystalline_service::rest::{MemberLevel, ReflectionLevel};
+    let scratch = support::ScratchStateDir::acquire();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("eng");
+    std::fs::create_dir_all(dir.join("reflections/guides")).unwrap();
+    std::fs::write(
+        dir.join("MANIFEST.md"),
+        "---\ntype: manifest\ntitle: eng\npermalink: manifest\ntags:\n  - manifest\nstatus: current\nrecorded_at: 2026-01-01\nreflection: on\n---\n\n# eng\n\n## Scope\n\n- Everything about eng\n\n## When to Use\n\n- Route here for eng questions\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("reflections/guides/a.md"),
+        "# A\n\n## One\n<!-- r:aaaa1111 -->\n\nFirst.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("reflections/PACT.md"),
+        "# Pact\n\n## How we work\n<!-- r:cccc3333 -->\n\nWe agree.\n",
+    )
+    .unwrap();
+    let mut cfg = GlobalConfig {
+        auth: Some(AuthConfig {
+            anonymous: Some(anonymous),
+            ..Default::default()
+        }),
+        ..GlobalConfig::default()
+    };
+    cfg.domains
+        .insert("eng".to_string(), DomainEntry::file(dir));
+    let config_path = tmp.path().join("config.yaml");
+    crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
+    let store = TursoStore::open_in_memory().await.unwrap();
+    let engine = Arc::new(Engine::new(
+        Arc::new(Mutex::new(store)),
+        cfg,
+        None,
+        Some(config_path),
+    ));
+    engine.sync(None).await.unwrap();
+    let auth = Arc::new(
+        AuthStore::open(&tmp.path().join("web-auth.db"))
+            .await
+            .unwrap(),
+    );
+    for (name, role) in [
+        ("keeper", Role::Editor),
+        ("ann", Role::Viewer),
+        ("vera", Role::Viewer),
+        ("ed", Role::Editor),
+        ("out", Role::Editor),
+    ] {
+        auth.add_user(name, name, None, role, "pw12345678")
+            .await
+            .unwrap();
+    }
+    if private {
+        auth.set_domain_visibility("eng", true, "keeper")
+            .await
+            .unwrap();
+        auth.upsert_domain_member(
+            "eng",
+            "ann",
+            MemberLevel::None,
+            Some(ReflectionLevel::Contributor),
+            "keeper",
+        )
+        .await
+        .unwrap();
+        auth.upsert_domain_member("eng", "vera", MemberLevel::Viewer, None, "keeper")
+            .await
+            .unwrap();
+        auth.upsert_domain_member("eng", "ed", MemberLevel::Editor, None, "keeper")
+            .await
+            .unwrap();
+    }
+    let router = http_router(engine, Arc::new(AtomicUsize::new(0)), &[], auth, None).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    (addr, scratch, tmp)
+}
+
+/// Who may not read the domain learns nothing on the room route: a
+/// signed-in stranger and the anonymous viewer of a private domain meet
+/// the 404 of an unregistered name. The anonymous viewer of a public domain
+/// reads the Reflection and is told to sign in (401).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_reflection_room_hides_a_private_domain_and_asks_the_anonymous_to_sign_in() {
+    let page = "/api/v1/collab-reflection/eng/guides/a.md";
+    let ghost = "/api/v1/collab-reflection/ghost/guides/a.md";
+
+    let (addr, _scratch, _tmp) = serve_reflection_with(true, true).await;
+    let out = login(addr, "out", "pw12345678").await;
+    for cookie in [Some(out.0.as_str()), None] {
+        let err = connect(addr, page, cookie, same_host(addr))
+            .await
+            .unwrap_err();
+        assert_eq!(refusal_status(&err), Some(404), "{cookie:?}");
+        assert_eq!(
+            refusal_detail(&err).replace("ghost", "eng"),
+            refusal_detail(
+                &connect(addr, ghost, cookie, same_host(addr))
+                    .await
+                    .unwrap_err()
+            )
+            .replace("ghost", "eng"),
+            "answered like an unregistered name"
+        );
+    }
+
+    let (addr, _scratch, _tmp) = serve_reflection_with(true, false).await;
+    let err = connect(addr, page, None, same_host(addr))
+        .await
+        .unwrap_err();
+    assert_eq!(refusal_status(&err), Some(401));
+}
+
+/// A reflection room takes the Reflection's edit right, not the engram write
+/// gate: a contributor with no engram access gets in and a viewer does not,
+/// and `PACT.md` takes curate, which an editor holds and a contributor not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_reflection_room_takes_edit_access_not_engram_access() {
+    let (addr, _scratch, _tmp) = serve_reflection().await;
+    let ann = login(addr, "ann", "pw12345678").await;
+    let vera = login(addr, "vera", "pw12345678").await;
+    let ed = login(addr, "ed", "pw12345678").await;
+    let page = "/api/v1/collab-reflection/eng/guides/a.md";
+    let pact = "/api/v1/collab-reflection/eng/PACT.md";
+
+    let socket = connect(addr, page, Some(&ann.0), same_host(addr)).await;
+    assert!(socket.is_ok(), "a contributor opens a reflection room");
+    let err = connect(addr, page, Some(&vera.0), same_host(addr))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refusal_status(&err),
+        Some(403),
+        "a viewer reads, never edits"
+    );
+
+    let err = connect(addr, pact, Some(&ann.0), same_host(addr))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refusal_status(&err),
+        Some(403),
+        "PACT.md takes curate, which a contributor lacks"
+    );
+    let socket = connect(addr, pact, Some(&ed.0), same_host(addr)).await;
+    assert!(socket.is_ok(), "an editor curates and opens PACT.md");
+}
+
+/// A display name in awareness, as a browser's provider publishes it.
+fn awareness_frame(doc: &Doc, name: &str) -> Vec<u8> {
+    let mut awareness = yrs::sync::Awareness::new(doc.clone());
+    awareness.set_local_state_raw(format!("{{\"user\":{{\"name\":\"{name}\"}}}}"));
+    Message::Awareness(awareness.update().unwrap()).encode_v1()
+}
+
+/// Read frames until an awareness state naming `name` arrives.
+async fn wait_for_awareness(socket: &mut Socket, name: &str) {
+    let read = async {
+        loop {
+            let frame = next_binary(socket).await;
+            for message in messages_of(&frame) {
+                if let Message::Awareness(update) = message
+                    && update
+                        .clients
+                        .values()
+                        .any(|entry| entry.json.contains(name))
+                {
+                    return;
+                }
+            }
+        }
+    };
+    tokio::time::timeout(FRAME_TIMEOUT, read)
+        .await
+        .unwrap_or_else(|_| panic!("no awareness naming {name} arrived"));
+}
+
+/// A reflection room records who changed a section from the signed-in
+/// account of the connection that sent the edit: a name the client puts into
+/// awareness is not recorded, and neither is a participant who typed nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reflection_room_records_the_signed_in_typist_and_nobody_else() {
+    let (addr, _scratch, tmp) = serve_reflection().await;
+    let ed = login(addr, "ed", "pw12345678").await;
+    let ann = login(addr, "ann", "pw12345678").await;
+    let page = "/api/v1/collab-reflection/eng/guides/a.md";
+
+    // ed joins and calls himself keeper in awareness.
+    let mut typist = connect(addr, page, Some(&ed.0), same_host(addr))
+        .await
+        .unwrap();
+    let doc = client_doc();
+    typist.send(binary(step1(&doc))).await.unwrap();
+    apply(&doc, &next_sync_step2(&mut typist).await);
+    typist
+        .send(binary(awareness_frame(&doc, "keeper")))
+        .await
+        .unwrap();
+
+    // ann joins and types nothing.
+    let mut silent = connect(addr, page, Some(&ann.0), same_host(addr))
+        .await
+        .unwrap();
+    let silent_doc = client_doc();
+    silent.send(binary(step1(&silent_doc))).await.unwrap();
+    apply(&silent_doc, &next_sync_step2(&mut silent).await);
+
+    typist
+        .send(binary(update_frame(&append_line(&doc, "Typed by ed."))))
+        .await
+        .unwrap();
+    // ann's provider takes the edit in and answers with its whole state, as
+    // a provider's SyncStep2 does: it applies, and it changes nothing.
+    apply(&silent_doc, &next_sync_update(&mut silent).await);
+    let echo = silent_doc
+        .transact()
+        .encode_state_as_update_v1(&Default::default());
+    silent
+        .send(binary(
+            Message::Sync(SyncMessage::SyncStep2(echo)).encode_v1(),
+        ))
+        .await
+        .unwrap();
+    silent
+        .send(binary(awareness_frame(&silent_doc, "ann-in-the-room")))
+        .await
+        .unwrap();
+    // Her frames are handled in order, so once her awareness reaches ed the
+    // echo has been taken in.
+    wait_for_awareness(&mut typist, "ann-in-the-room").await;
+
+    typist
+        .send(binary(control_frame(&Control::Flush)))
+        .await
+        .unwrap();
+    wait_for_control(&mut typist, "saved").await;
+    let saved = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    assert!(saved.contains("Typed by ed."), "{saved}");
+    let prov = crystalline_core::reflection::provenance::read_provenance(&saved);
+    assert_eq!(
+        prov["aaaa1111"].changed_by,
+        vec!["ed".to_string()],
+        "the signed-in typist only: {saved}"
+    );
+}
+
 // --- a room over somebody else's draft ---------------------------------------
 
 /// The instance the overlay tests run against: one file domain `team` that

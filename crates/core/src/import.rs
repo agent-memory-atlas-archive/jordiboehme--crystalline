@@ -182,6 +182,10 @@ fn io_err(path: &Path) -> impl Fn(std::io::Error) -> ImportError + '_ {
 }
 
 /// Import every file under `options.src_dir` into `options.domain_dir`.
+/// Where a Reflection keeps `reflections/` (the target domain's MANIFEST or
+/// the source tree's own declares `reflection: on`), every file there is
+/// skipped with [`crate::reflection::REFLECTION_NOT_IMPORTED`] as its
+/// warning.
 pub fn import_tree(options: &ImportOptions) -> Result<ImportReport, ImportError> {
     if !options.src_dir.is_dir() {
         return Err(ImportError::SourceNotFound(options.src_dir.clone()));
@@ -205,7 +209,39 @@ pub fn import_tree(options: &ImportOptions) -> Result<ImportReport, ImportError>
 
     let mut report = ImportReport::default();
 
+    // R33, as on every other import road: where a Reflection keeps
+    // `reflections/` (the target domain declares the switch on, pending
+    // included, or the source tree's own MANIFEST does), nothing there is
+    // converted into an engram or copied into the folder the Reflection
+    // owns. With both off it is an ordinary folder, as before.
+    let held = crate::manifest::reflection_at(&options.domain_dir)
+        == crate::manifest::ReflectionSwitch::On
+        || crate::manifest::reflection_at(&options.src_dir)
+            == crate::manifest::ReflectionSwitch::On;
+    let layout = crate::layout::DomainLayout::bare(if held {
+        crate::layout::ReflectionMode::Effective
+    } else {
+        crate::layout::ReflectionMode::Off
+    });
+
     for entry in &entries {
+        if matches!(
+            layout.classify(&entry.rel),
+            crate::layout::PathClass::Reflection(_)
+        ) {
+            report.files_skipped += 1;
+            report.warnings.push(format!(
+                "{}: {}",
+                entry.rel,
+                crate::reflection::REFLECTION_NOT_IMPORTED
+            ));
+            report.files.push(FileChange {
+                path: entry.rel.clone(),
+                action: FileAction::Skipped,
+                changes: Vec::new(),
+            });
+            continue;
+        }
         if !entry.is_md {
             copy_verbatim(entry, options, &mut report)?;
             continue;

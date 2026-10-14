@@ -92,6 +92,10 @@ pub struct RemoteDomain {
     /// either way.
     #[serde(default)]
     pub domain_read_only: bool,
+    /// Open reflect items of this domain's Reflection that the account
+    /// curates (0.26.0); 0 from an older server, which sends none.
+    #[serde(default)]
+    pub reflect_open: u64,
 }
 
 /// One domain registered on this machine.
@@ -119,6 +123,8 @@ pub struct Mount {
     /// Whether the server marks it read-only for this account, from the
     /// source's routing model. Only shown here: the server enforces it.
     pub domain_read_only: bool,
+    /// Its open reflect items, from the source's routing model.
+    pub reflect_open: u64,
     /// Whether it is the same domain as a local copy (same origin), which
     /// is hidden while this source is connected. True whatever name either
     /// of them has; the hidden copy is in [`MountTable::shadowed`] with
@@ -810,6 +816,7 @@ pub fn assign(
                 source: source.name.clone(),
                 bullets: domain.bullets,
                 domain_read_only: domain.domain_read_only,
+                reflect_open: domain.reflect_open,
             });
         }
         if let Some(list) = &source.domains {
@@ -840,6 +847,10 @@ const TEXT_KEYS: &[&str] = &[
     "counterpart_line_text",
     "markdown",
     "body",
+    // A reflection's own text (0.26.0): a feedback item's diff and a thread's
+    // quoted passage are what people wrote, like the page's markdown above.
+    "diff",
+    "quote",
 ];
 
 /// The keys whose subtree points at the server's own Fluid or carries the
@@ -861,6 +872,12 @@ const NAME_LIST_KEYS: &[&str] = &[
     "pending_domains",
     "read_only_left_out",
     "read_only_skipped",
+    // The domains a `reflect` queue left out because they could not be read.
+    "unreadable",
+    // The domains a `reflect` queue left out because their Reflection is
+    // pending (a list of strings only; other `pending` keys hold objects or
+    // a flag and are left alone by the string check below).
+    "pending",
 ];
 
 /// Rewrite every structured field of a source's answer from the source's
@@ -963,6 +980,36 @@ mod tests {
     use crate::sources::{MountRecord, SourceRecord, SourcesFile};
     use serde_json::json;
 
+    /// Decision D18 for the Reflection: a page, a feedback diff and a quoted
+    /// passage are people's text and keep every address as written; the
+    /// domain fields around them are translated.
+    #[test]
+    fn a_reflections_body_text_is_never_translated() {
+        let names = NameMap {
+            source: "beta".to_string(),
+            to_remote: BTreeMap::from([("open-beta".to_string(), "open".to_string())]),
+            to_local: BTreeMap::from([("open".to_string(), "open-beta".to_string())]),
+        };
+        let link = "see crystalline://open/runbooks/deploy";
+        let mut answer = json!({
+            "domain": "open",
+            "markdown": link,
+            "threads": [{ "anchor": { "section": "s1", "quote": link }, "entries": [{ "text": link }] }],
+            "queue": [{ "domain": "open", "diff": link }],
+            "scope": { "domains": ["open"], "unreadable": ["open"], "pending": ["open"] },
+        });
+        translate_answer(&mut answer, &names);
+        assert_eq!(answer["domain"], "open-beta");
+        assert_eq!(answer["queue"][0]["domain"], "open-beta");
+        assert_eq!(answer["scope"]["domains"], json!(["open-beta"]));
+        assert_eq!(answer["scope"]["unreadable"], json!(["open-beta"]));
+        assert_eq!(answer["scope"]["pending"], json!(["open-beta"]));
+        assert_eq!(answer["markdown"], link);
+        assert_eq!(answer["threads"][0]["anchor"]["quote"], link);
+        assert_eq!(answer["threads"][0]["entries"][0]["text"], link);
+        assert_eq!(answer["queue"][0]["diff"], link);
+    }
+
     #[test]
     fn the_read_only_name_lists_move_to_the_local_names() {
         let map = NameMap {
@@ -1009,6 +1056,7 @@ mod tests {
             bullets: vec![format!("Route here for {name} questions")],
             origin: repo.and_then(origin),
             domain_read_only: false,
+            reflect_open: 0,
         }
     }
 
@@ -2292,5 +2340,27 @@ mod tests {
             !said.iter().any(|a| matches!(a, Announcement::Moved { .. })),
             "{said:?}"
         );
+    }
+    /// The counts survive the cache, so a stale block still names them.
+    #[test]
+    fn a_routing_rows_reflect_count_reaches_its_mount() {
+        let offered = crate::remote_domains(&json!({ "read_only": false, "domains": [
+            { "name": "open", "bullets": ["shared questions"], "origin": null, "reflect_open": 2 },
+            { "name": "lab", "bullets": ["lab questions"], "origin": null },
+        ] }));
+        assert_eq!(offered[0].reflect_open, 2);
+        assert_eq!(
+            offered[1].reflect_open, 0,
+            "an older server says nothing: no count"
+        );
+        let mut sources = SourcesFile::default();
+        sources.sources.push(source("acme"));
+        let (table, _) = assign(
+            &mut sources,
+            &[],
+            &BTreeMap::from([("acme".to_string(), offered)]),
+        );
+        assert_eq!(table.mount("open").unwrap().reflect_open, 2);
+        assert_eq!(table.mount("lab").unwrap().reflect_open, 0);
     }
 }

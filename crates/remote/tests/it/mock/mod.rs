@@ -879,6 +879,33 @@ impl Provider for MockProvider {
         Ok(id)
     }
 
+    async fn create_root_tree(
+        &self,
+        _origin: &OriginSpec,
+        writes: &[TreeWrite],
+    ) -> Result<String, RemoteError> {
+        let mut inner = self.inner.lock().unwrap();
+        let mut files = BTreeMap::new();
+        for write in writes {
+            if let Some(sha) = &write.blob_sha {
+                let content = inner
+                    .blobs
+                    .get(sha)
+                    .cloned()
+                    .ok_or_else(|| RemoteError::Api {
+                        status: 404,
+                        message: format!("no blob {sha}"),
+                    })?;
+                files.insert(write.path.clone(), content);
+            }
+        }
+        inner.tree_counter += 1;
+        let id = format!("tree{}", inner.tree_counter);
+        inner.trees.insert(id.clone(), files);
+        inner.calls.push(format!("create_root_tree:{id}"));
+        Ok(id)
+    }
+
     async fn create_commit(
         &self,
         origin: &OriginSpec,

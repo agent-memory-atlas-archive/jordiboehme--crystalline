@@ -531,6 +531,139 @@ mod symlinked_asset {
     );
 }
 
+/// The engram rows and the attachment rows of domain `d`, each sorted.
+async fn rows(store: &dyn Store, root: &Path) -> (Vec<String>, Vec<String>) {
+    let domain = upsert_domain(store, "d", root).await;
+    let mut engrams: Vec<String> = store
+        .file_stamps(domain)
+        .await
+        .unwrap()
+        .into_keys()
+        .collect();
+    engrams.sort();
+    let mut assets: Vec<String> = store
+        .list_attachments(domain)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.path)
+        .collect();
+    assets.sort();
+    (engrams, assets)
+}
+
+/// The OKF reserved names under `assets/` are neither engrams nor attachments,
+/// for the full walk and for a targeted pass, present or vanished. The layout
+/// calls them reserved, not attachments; markdown was never attachable, so
+/// nothing about either pass moves.
+async fn reserved_names_under_assets_index_nothing(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "a.md", &engram("A", "a", "body token"));
+    write(root, "assets/index.md", "# Assets\n");
+    write(root, "assets/log.md", "# Log\n");
+    write_bytes(root, "assets/shot.png", PNG);
+    sync_domain_with(store, "d", root, &params()).await.unwrap();
+    let expected = (
+        vec!["a.md".to_string()],
+        vec!["assets/shot.png".to_string()],
+    );
+    assert_eq!(rows(store, root).await, expected, "the full walk");
+
+    let present = target(store, root, &["assets/index.md", "assets/log.md"]).await;
+    assert!(
+        present.changes.is_empty() && present.failed.is_empty(),
+        "present: {present:?}"
+    );
+    assert_eq!(
+        rows(store, root).await,
+        expected,
+        "a targeted pass, present"
+    );
+
+    std::fs::remove_file(root.join("assets/index.md")).unwrap();
+    std::fs::remove_file(root.join("assets/log.md")).unwrap();
+    let gone = target(store, root, &["assets/index.md", "assets/log.md"]).await;
+    assert!(
+        gone.changes.is_empty() && gone.failed.is_empty() && gone.deleted == 0,
+        "vanished: {gone:?}"
+    );
+    assert_eq!(
+        rows(store, root).await,
+        expected,
+        "a targeted pass, vanished"
+    );
+}
+parity!(
+    reserved_names_under_assets_index_nothing_on_either_pass,
+    reserved_names_under_assets_index_nothing
+);
+
+/// A vanished OKF reserved name outside `assets/` is a no-op for a targeted
+/// pass: it was never recorded, so it is no delete and no failure, and every
+/// row stays.
+async fn a_vanished_reserved_name_is_a_no_op(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "a.md", &engram("A", "a", "body token"));
+    write(root, "index.md", "# Index\n");
+    write(root, "sub/log.md", "# Log\n");
+    write(root, "sub/b.md", &engram("B", "sub/b", "body token"));
+    sync_domain_with(store, "d", root, &params()).await.unwrap();
+    let expected = (vec!["a.md".to_string(), "sub/b.md".to_string()], Vec::new());
+    assert_eq!(rows(store, root).await, expected, "the full walk");
+
+    std::fs::remove_file(root.join("index.md")).unwrap();
+    std::fs::remove_file(root.join("sub/log.md")).unwrap();
+    let report = target(store, root, &["index.md", "sub/log.md"]).await;
+    assert!(
+        report.changes.is_empty() && report.failed.is_empty() && report.deleted == 0,
+        "{report:?}"
+    );
+    assert_eq!(rows(store, root).await, expected, "every row stays");
+}
+parity!(
+    a_vanished_reserved_name_is_a_no_op_for_a_targeted_pass,
+    a_vanished_reserved_name_is_a_no_op
+);
+
+/// An attachment indexed before the MANIFEST declared an artifact folder around
+/// it keeps its row until the file goes; once it is gone, a targeted pass
+/// deletes the row at once, as it always did, rather than leaving it for the
+/// next full walk.
+async fn an_artifact_folder_under_assets_still_deletes(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "a.md", &engram("A", "a", "body token"));
+    write_bytes(root, "assets/deploy/x.png", PNG);
+    sync_domain_with(store, "d", root, &params()).await.unwrap();
+    assert_eq!(
+        rows(store, root).await.1,
+        ["assets/deploy/x.png"],
+        "indexed before the decl"
+    );
+
+    write(
+        root,
+        "MANIFEST.md",
+        "---\ntype: manifest\ntitle: KB\npermalink: manifest\ntags: [manifest]\nstatus: stable\n---\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n\n## Provisioning\n\n- skills: assets/deploy\n",
+    );
+    assert!(
+        !crystalline_core::in_root_artifact_dirs(root).is_empty(),
+        "the decl names an in-root artifact folder"
+    );
+    std::fs::remove_file(root.join("assets/deploy/x.png")).unwrap();
+    target(store, root, &["assets/deploy/x.png"]).await;
+    assert!(
+        rows(store, root).await.1.is_empty(),
+        "the vanished attachment's row is gone"
+    );
+}
+parity!(
+    a_vanished_attachment_in_an_artifact_folder_under_assets_is_deleted,
+    an_artifact_folder_under_assets_still_deletes
+);
+
 /// An unreadable targeted path is a reported failure, not a delete: a metadata
 /// error other than "not found" keeps the row in the index and surfaces the
 /// path in the report's `failed` list instead of dropping it.

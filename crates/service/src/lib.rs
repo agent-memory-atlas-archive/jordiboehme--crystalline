@@ -58,9 +58,10 @@ pub use client::{
     origin_resolve, origin_share, origin_status, origin_update, origin_withdraw, run_mcp, run_tool,
     scaffold_virtual_manifest, tags_retag, use_daemon, virtual_routing_bullets,
 };
+pub use crystalline_core::reflection::{ReflectionHome, ReflectionState};
 pub use crystalline_engine::engine::{
     ConvergenceReport, Engine, EngineError, OVERLAY_NEEDS_IDENTITY, REVIEW_NO_STACKING, RenameStep,
-    ShareActor, WriteBlock, WrittenAttachment,
+    ShareActor, WriteBlock, WrittenAttachment, WrittenReflectionAsset,
 };
 pub use crystalline_engine::harness_cli::{
     CliCapture, CliRun, SystemMcpRunner, run_harness_cli, run_harness_cli_capture,
@@ -69,12 +70,13 @@ pub use crystalline_engine::origin::{
     MAX_DIFF_TEXT_BYTES, UnsharedWork, default_domain_folder, parse_origin_spec, unshared_work,
 };
 pub use crystalline_engine::overlay::{EnvDomain, EnvOverlay, LoadedConfig};
+pub use crystalline_engine::reflection_backup;
 pub use crystalline_engine::review::{FoldChoice, ReviewModeConfirm};
 pub use crystalline_engine::similar::{SIMILAR_GUIDANCE, SimilarEngram, SimilarProbe};
 pub use crystalline_identity::join::{Holder, Join, Joins};
 pub use crystalline_identity::scope::{
-    DomainAccess, DomainRight, DomainVisibility, Scope, WriteRights, overlay_actor,
-    write_list_matches,
+    DomainAccess, DomainRight, DomainScreen, DomainVisibility, ReflectionCaller, ReflectionRight,
+    Scope, WriteRights, overlay_actor, reflection_right_word, write_list_matches,
 };
 pub use crystalline_remote::ops::DiscardTarget;
 pub use daemon::run_serve;

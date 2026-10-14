@@ -1544,6 +1544,7 @@ mod chain {
                 "deleted": [],
                 "skipped_diverged": [],
                 "skipped_reverts": ["notes/d.md"],
+                "skipped_reflection": ["reflections/e.md"],
                 "repaired": true,
                 "restacked": 43,
             }),
@@ -1553,6 +1554,10 @@ mod chain {
         assert!(out.contains("stack repaired; now stack #43"), "{out}");
         assert!(
             out.contains("could not restore (no reachable copy): notes/d.md"),
+            "{out}"
+        );
+        assert!(
+            out.contains("left alone (in the Reflection folder): reflections/e.md"),
             "{out}"
         );
     }

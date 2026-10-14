@@ -1,0 +1,464 @@
+//! Relative markdown links between reflections, rewritten when one moves.
+//!
+//! The reflection dialect over the shared body walker
+//! ([`crate::relink`]'s `rewrite_body_lines`, the body after the frontmatter
+//! when there is one, fences untouched, CR kept): only inline links
+//! `[text](target)` whose target is relative (no scheme, no leading `/`, not
+//! a bare `#fragment`) are touched, outside inline code, and a title after
+//! the target and a `#fragment` stay as written. A target is read in either
+//! markdown form, bare or in angle brackets, percent-decoded, and written
+//! back in angle brackets when it holds a space or a parenthesis (the form
+//! the folder indexes write). A target that climbs out of the domain is left
+//! alone.
+
+use crate::attachment::{canonical_asset_path, percent_decode_target};
+use crate::index::escape_link_url;
+use crate::relink::{BodyGate, LinkDialect, rewrite_body_lines};
+
+use super::assets::{AssetTarget, classify_target};
+use super::layout::domain_rel;
+
+/// The folder a reflection path sits in, `""` at the root.
+fn folder_of(path: &str) -> &str {
+    path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("")
+}
+
+/// `target` resolved against the folder of `from_file`, or `None` when it
+/// climbs out of the folder `from_file` is relative to. Handed a
+/// domain-relative `from_file`, it resolves inside the domain, which is how
+/// a link that leaves `reflections/` is followed to where it lands.
+pub(crate) fn resolve(from_file: &str, target: &str) -> Option<String> {
+    let mut parts: Vec<&str> = folder_of(from_file)
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    for segment in target.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// The relative path from the reflection at `from_file` to `target`.
+pub fn relative_to(from_file: &str, target: &str) -> String {
+    let from: Vec<&str> = folder_of(from_file)
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    let to: Vec<&str> = target.split('/').collect();
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut out: Vec<String> = std::iter::repeat_n("..".to_string(), from.len() - common).collect();
+    out.extend(to[common..].iter().map(|s| s.to_string()));
+    out.join("/")
+}
+
+fn is_relative(target: &str) -> bool {
+    !target.is_empty()
+        && !target.starts_with('#')
+        && !target.starts_with('/')
+        && !target.contains("://")
+        && !target.starts_with("mailto:")
+}
+
+/// Byte ranges of the inline code spans on one line (backticks included),
+/// matched the way `crate::parse::mask_inline_code` matches them. That
+/// function swaps characters for spaces, which shifts byte offsets when a
+/// span holds a multi-byte character, so this dialect keeps its own ranges.
+fn code_spans(line: &str) -> Vec<(usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'`' {
+            i += 1;
+            continue;
+        }
+        let run_end = i + bytes[i..].iter().take_while(|b| **b == b'`').count();
+        let run = run_end - i;
+        let mut k = run_end;
+        let mut closed = None;
+        while k < bytes.len() {
+            if bytes[k] == b'`' {
+                let m = k + bytes[k..].iter().take_while(|b| **b == b'`').count();
+                if m - k == run {
+                    closed = Some(m);
+                    break;
+                }
+                k = m;
+            } else {
+                k += 1;
+            }
+        }
+        match closed {
+            Some(end) => {
+                spans.push((i, end));
+                i = end;
+            }
+            None => i = run_end,
+        }
+    }
+    spans
+}
+
+/// One link destination, read from just after a `](`.
+struct Destination<'a> {
+    /// The path, percent-decoded, without a `#fragment` or a title.
+    path: String,
+    /// The `#fragment` as written, without the `#`.
+    fragment: Option<&'a str>,
+    /// What follows the target up to the closing parenthesis: a title.
+    rest: &'a str,
+    /// The byte offset of the closing parenthesis.
+    close: usize,
+}
+
+/// The byte offset of the depth-zero `)` at or after `from`, the rule the
+/// link target scan (`crate::attachment`'s `link_targets`) reads a
+/// destination by.
+fn closing_paren(line: &str, from: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    for (offset, byte) in line.as_bytes()[from..].iter().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(from + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The destination that starts at `open` (just after `](`), or `None` when
+/// none closes on this line.
+fn destination(line: &str, open: usize) -> Option<Destination<'_>> {
+    let (target, rest, close) = if line[open..].starts_with('<') {
+        // `[a](<my page.md> "Title")`: the target runs to the first `>`.
+        let gt = open + 1 + line[open + 1..].find('>')?;
+        let close = closing_paren(line, gt + 1)?;
+        (&line[open + 1..gt], &line[gt + 1..close], close)
+    } else {
+        let close = closing_paren(line, open)?;
+        let inside = &line[open..close];
+        // A title after the target (`[a](b.md "Title")`) is kept as written.
+        let target_len = inside.find(char::is_whitespace).unwrap_or(inside.len());
+        let (target, rest) = inside.split_at(target_len);
+        (target, rest, close)
+    };
+    let (path, fragment) = match target.split_once('#') {
+        Some((p, f)) => (p, Some(f)),
+        None => (target, None),
+    };
+    Some(Destination {
+        path: percent_decode_target(path),
+        fragment,
+        rest,
+        close,
+    })
+}
+
+/// One line of the reflection dialect: every relative link target outside
+/// inline code goes through `map`, which is handed the path (decoded, no
+/// title, no `#fragment`) and answers the replacement or `None` to keep it.
+/// A `](` that opens no destination is read past, so a later link on the
+/// line is still found.
+fn map_line(line: &str, map: &dyn Fn(&str) -> Option<String>) -> (String, usize) {
+    let spans = code_spans(line);
+    let in_code = |at: usize| spans.iter().any(|(s, e)| (*s..*e).contains(&at));
+    let mut out = String::with_capacity(line.len());
+    let mut changed = 0;
+    let mut cursor = 0;
+    while let Some(found) = line[cursor..].find("](") {
+        let open = cursor + found + 2;
+        out.push_str(&line[cursor..open]);
+        cursor = open;
+        let Some(dest) = destination(line, open) else {
+            continue;
+        };
+        let replacement = if in_code(open - 2) || !is_relative(&dest.path) {
+            None
+        } else {
+            map(&dest.path)
+        };
+        match replacement {
+            Some(mut target) => {
+                if let Some(f) = dest.fragment {
+                    target.push('#');
+                    target.push_str(f);
+                }
+                out.push_str(&escape_link_url(&target));
+                out.push_str(dest.rest);
+                changed += 1;
+            }
+            None => out.push_str(&line[open..dest.close]),
+        }
+        cursor = dest.close;
+    }
+    out.push_str(&line[cursor..]);
+    (out, changed)
+}
+
+/// Rewrite every relative link target of a reflection through `map`. The
+/// one walk every reflection link rewrite takes: the shared body walker with
+/// the reflection gate and dialect.
+pub(crate) fn map_links(source: &str, map: &dyn Fn(&str) -> Option<String>) -> (String, usize) {
+    rewrite_body_lines(source, BodyGate::Split, &|line| {
+        if LinkDialect::Relative.may_hold(line) {
+            map_line(line, map)
+        } else {
+            (line.to_string(), 0)
+        }
+    })
+}
+
+/// Rewrite the links in the reflection at `source_path` that point at `from`
+/// so they point at `to`.
+pub fn rewrite_links_to(source: &str, source_path: &str, from: &str, to: &str) -> (String, usize) {
+    map_links(source, &|target| {
+        (resolve(source_path, target).as_deref() == Some(from))
+            .then(|| relative_to(source_path, to))
+    })
+}
+
+/// Rewrite the links in the reflection at `source_path` that reach the
+/// Reflection file `from` (a path inside `reflections/`, `assets/...`) so
+/// they reach `to`. A target is matched by [`classify_target`], the reading
+/// the references use: the dialect hands it over percent-decoded, and the
+/// classifier resolves it inside the domain and folds the folder's case, so
+/// every link counted as a reference (an encoded one, one spelled `Assets/`,
+/// one that climbs to the domain root and back) follows its file. A title
+/// after the target and a formatting fragment are kept as written.
+pub fn rewrite_asset_links(
+    source: &str,
+    source_path: &str,
+    from: &str,
+    to: &str,
+) -> (String, usize) {
+    let from = canonical_asset_path(from).unwrap_or_else(|| from.to_string());
+    map_links(source, &|target| {
+        matches!(
+            classify_target(target, source_path),
+            AssetTarget::Reflection(path) if path == from
+        )
+        .then(|| relative_to(source_path, to))
+    })
+}
+
+/// Rebase the relative links inside a reflection that moved from `from` to
+/// `to`, so each still points at the file it pointed at. The links resolve
+/// inside the domain, so one that leaves `reflections/` for another file of
+/// the domain still lands on it after the move changes the depth.
+pub fn rebase_links(source: &str, from: &str, to: &str) -> (String, usize) {
+    map_links(source, &|target| {
+        let resolved = resolve(&domain_rel(from), target)?;
+        let rebased = relative_to(&domain_rel(to), &resolved);
+        (rebased != target.trim_start_matches("./")).then_some(rebased)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_paths_between_reflections() {
+        assert_eq!(relative_to("guides/a.md", "guides/b.md"), "b.md");
+        assert_eq!(relative_to("guides/a.md", "howto/c.md"), "../howto/c.md");
+        assert_eq!(relative_to("a.md", "guides/b.md"), "guides/b.md");
+        assert_eq!(relative_to("x/y/a.md", "b.md"), "../../b.md");
+    }
+
+    #[test]
+    fn links_to_a_moved_reflection_follow_it() {
+        let source = "# Home\n\nSee [deploying](guides/deploying.md#night) and [again](./guides/deploying.md).\n\n```\n[not a link](guides/deploying.md)\n```\n\nAnd `[code](guides/deploying.md)` and [elsewhere](https://x.test/guides/deploying.md).\n";
+        let (out, n) =
+            rewrite_links_to(source, "home.md", "guides/deploying.md", "ops/deploying.md");
+        assert_eq!(n, 2);
+        assert!(out.contains("[deploying](ops/deploying.md#night)"));
+        assert!(out.contains("[again](ops/deploying.md)"));
+        assert!(
+            out.contains("```\n[not a link](guides/deploying.md)\n```"),
+            "fences untouched"
+        );
+        assert!(
+            out.contains("`[code](guides/deploying.md)`"),
+            "inline code untouched"
+        );
+        assert!(
+            out.contains("https://x.test/guides/deploying.md"),
+            "absolute urls untouched"
+        );
+    }
+
+    #[test]
+    fn links_inside_the_moved_reflection_are_rebased() {
+        let source = "# Deploying\n\nSee [home](../home.md) and [peer](peer.md \"The peer\").\n";
+        let (out, n) = rebase_links(source, "guides/deploying.md", "ops/night/deploying.md");
+        assert_eq!(n, 2);
+        assert!(out.contains("[home](../../home.md)"));
+        assert!(
+            out.contains("[peer](../../guides/peer.md \"The peer\")"),
+            "a title stays: {out}"
+        );
+    }
+
+    /// The rebase maps a title through unchanged (it holds no `/` a path
+    /// mapping would move), so only a rewrite that compares the target can
+    /// tell whether the title and the parentheses were read around.
+    #[test]
+    fn a_title_and_parentheses_in_the_target_are_read_around() {
+        let source = "See [a](guides/a_(draft).md \"The draft\") and [b](b.md 'B').\n";
+        let (out, n) = rewrite_links_to(source, "home.md", "guides/a_(draft).md", "ops/a.md");
+        assert_eq!(n, 1, "{out}");
+        assert_eq!(out, "See [a](ops/a.md \"The draft\") and [b](b.md 'B').\n");
+    }
+
+    #[test]
+    fn a_link_out_to_the_domain_keeps_its_file_when_the_depth_changes() {
+        let source = "[m](../MANIFEST.md) and [n](../notes/a.md#top)\n";
+        let (out, n) = rebase_links(source, "a.md", "b/a.md");
+        assert_eq!(n, 2, "{out}");
+        assert_eq!(
+            out,
+            "[m](../../MANIFEST.md) and [n](../../notes/a.md#top)\n"
+        );
+    }
+
+    #[test]
+    fn a_target_with_a_space_is_written_in_angle_brackets_and_read_back() {
+        let source = "See [a](guides/a.md#top \"A\").\n";
+        let (out, n) = rewrite_links_to(source, "home.md", "guides/a.md", "ops/my page.md");
+        assert_eq!(n, 1);
+        assert_eq!(out, "See [a](<ops/my page.md#top> \"A\").\n");
+        let (back, n) = rewrite_links_to(&out, "home.md", "ops/my page.md", "ops/b.md");
+        assert_eq!(n, 1);
+        assert_eq!(back, "See [a](ops/b.md#top \"A\").\n");
+        let encoded = "See [c](ops/my%20page.md).\n";
+        let (out, n) = rewrite_links_to(encoded, "home.md", "ops/my page.md", "c.md");
+        assert_eq!(
+            (out.as_str(), n),
+            ("See [c](c.md).\n", 1),
+            "a percent-encoded target is read"
+        );
+    }
+
+    #[test]
+    fn a_bracket_that_opens_no_link_does_not_hide_a_later_one() {
+        let source = "x ](y and [a](b.md)\n";
+        let (out, n) = rewrite_links_to(source, "home.md", "b.md", "c.md");
+        assert_eq!((out.as_str(), n), ("x ](y and [a](c.md)\n", 1));
+    }
+
+    #[test]
+    fn a_link_climbing_out_of_the_folder_is_left_alone() {
+        let source = "[out](../../MANIFEST.md)\n";
+        let (out, n) = rebase_links(source, "a.md", "b/a.md");
+        assert_eq!((out.as_str(), n), (source, 0));
+    }
+
+    #[test]
+    fn asset_links_follow_a_moved_file() {
+        let page = "![a](../assets/gr%C3%B6%C3%9Fe.png \"Size\") ![b](../assets/größe.png#left) [c](./../assets/größe.png) ![d](../assets/other.png)\n```\n![e](../assets/größe.png)\n```\n";
+        let (out, n) = rewrite_asset_links(
+            page,
+            "guides/a.md",
+            "assets/größe.png",
+            "assets/diagrams/size.png",
+        );
+        assert_eq!(n, 3, "{out}");
+        assert!(
+            out.contains("![a](../assets/diagrams/size.png \"Size\")"),
+            "decoded match, title kept: {out}"
+        );
+        assert!(
+            out.contains("![b](../assets/diagrams/size.png#left)"),
+            "fragment kept: {out}"
+        );
+        assert!(out.contains("[c](../assets/diagrams/size.png)"));
+        assert!(out.contains("![d](../assets/other.png)"));
+        assert!(
+            out.contains("```\n![e](../assets/größe.png)\n```"),
+            "fences untouched"
+        );
+    }
+
+    /// The file half of a link rewrite only: an asset link with a fragment
+    /// follows the file in the page and in its baseline alike, through
+    /// `relink` (whose hash carry has its own test).
+    #[test]
+    fn an_asset_link_rewrite_reaches_the_baseline_too() {
+        use crate::reflection::{advance_baseline, feedback_changes, relink, split_sections};
+        let page =
+            "# Deploying\n\n## Flow\n<!-- r:7f3a9c2e -->\n\n![flow](../assets/a.png#right)\n";
+        let baseline = advance_baseline("", page, &["7f3a9c2e".to_string()]);
+        let out = relink(page, &baseline, &|s| {
+            rewrite_asset_links(s, "guides/deploying.md", "assets/a.png", "assets/b.png")
+        })
+        .unwrap();
+        assert_eq!(out.links, 1);
+        assert!(
+            out.page.contains("](../assets/b.png#right)")
+                && out.baseline.contains("](../assets/b.png#right)")
+        );
+        assert!(
+            feedback_changes(&out.page, &out.baseline)
+                .iter()
+                .all(|c| c.id.as_deref() != Some("7f3a9c2e"))
+        );
+        assert_eq!(split_sections(&out.page).len(), 2);
+        let cased = rewrite_asset_links(
+            "![a](../Assets/a.png)\n",
+            "guides/x.md",
+            "assets/a.png",
+            "assets/b.png",
+        );
+        assert_eq!(
+            cased.1, 1,
+            "the folder's case is folded as the references fold it: {}",
+            cased.0
+        );
+    }
+
+    /// The rewriter reads a link exactly as the references do: one that
+    /// climbs to the domain root and back into `reflections/assets/` is a
+    /// reference, so it follows the file too.
+    #[test]
+    fn a_domain_rooted_asset_link_follows_its_file() {
+        for (path, link, moved) in [
+            (
+                "guides/a.md",
+                "../../reflections/assets/x.png",
+                "../assets/y.png",
+            ),
+            ("a.md", "../reflections/assets/x.png", "assets/y.png"),
+        ] {
+            let page = format!("![x]({link})\n");
+            assert_eq!(
+                crate::reflection::reflection_asset_refs(&page, path),
+                ["assets/x.png"],
+                "{link} is a reference"
+            );
+            let (out, n) = rewrite_asset_links(&page, path, "assets/x.png", "assets/y.png");
+            assert_eq!((out, n), (format!("![x]({moved})\n"), 1), "{link}");
+        }
+    }
+
+    #[test]
+    fn the_frontmatter_and_the_line_endings_are_kept() {
+        let source = "---\ntitle: See [x](a.md)\n---\r\n\r\n# Home\r\n\r\nSee [a](a.md).\r\n";
+        let (out, n) = rewrite_links_to(source, "home.md", "a.md", "b.md");
+        assert_eq!(n, 1);
+        assert_eq!(
+            out,
+            "---\ntitle: See [x](a.md)\n---\r\n\r\n# Home\r\n\r\nSee [a](b.md).\r\n"
+        );
+    }
+}

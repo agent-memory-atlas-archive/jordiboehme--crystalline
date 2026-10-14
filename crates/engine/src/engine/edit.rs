@@ -113,6 +113,8 @@ impl Engine {
             // read they make. So the refusal teaches instead, in the same
             // words a save at that name gets.
             Err(EngineError::NotFound(missing)) => {
+                self.refuse_reflection_identifier(&p.domain, &p.identifier)
+                    .await?;
                 return match self
                     .teach_granted_miss(&p.domain, &p.identifier, scope)
                     .await?
@@ -123,6 +125,10 @@ impl Engine {
             }
             Err(e) => return Err(e),
         };
+        // A hit can be a stale row: a file that became the Reflection's page
+        // since the last sync still has its engram row until the next one.
+        self.refuse_reflection_identifier(&p.domain, &desc.path)
+            .await?;
         self.screen_granted_path(&desc.domain, &desc.path, scope, join)
             .await?;
         // An `evolve_ack` assignment is the one set_frontmatter key whose value
@@ -212,6 +218,19 @@ impl Engine {
         // heading a section edit dropped, and for a MANIFEST the text that
         // landed, which the MANIFEST rules then read.
         let is_manifest = is_manifest_path(&desc.path);
+        // A MANIFEST edit may switch Reflection on, which meets the screens
+        // the domain policies meet. The facts are gathered here, before any
+        // lock, because the closure below cannot await, and only while the
+        // switch is off: an edit of a MANIFEST that says on cannot switch it
+        // on, and gathering would read the pending check from disk for
+        // nothing.
+        let switch_facts = if is_manifest
+            && self.reflection_switch(&desc.domain) == crystalline_core::ReflectionSwitch::Off
+        {
+            Some(self.switch_facts(&desc.domain).await?)
+        } else {
+            None
+        };
         let mut heading_stripped: Option<String> = None;
         let mut manifest_text: Option<String> = None;
         let edited = self
@@ -242,6 +261,13 @@ impl Engine {
                         ack.as_ref(),
                     )?;
                     heading_stripped = stripped;
+                    if let Some(facts) = &switch_facts {
+                        super::reflection::screen_switch(current, &text, facts)?;
+                    } else if is_manifest {
+                        // The switch was on when this edit began; one that
+                        // went off meanwhile is not switched on unscreened.
+                        super::reflection::refuse_unscreened_switch_on(current, &text)?;
+                    }
                     if is_manifest {
                         manifest_text = Some(text.clone());
                     }
@@ -806,6 +832,17 @@ impl Engine {
         model: Option<&str>,
         ack: Option<&AckDraft>,
     ) -> Result<(String, Option<String>)> {
+        // The three section edits share one dispatch with every other kind
+        // of document that edits sections. Replace and insert_after put their
+        // content under a heading that stays: a repeat of that heading is
+        // dropped by the core edit, and reported here so the receipt can say
+        // so. insert_before never strips one.
+        if let Some(op) = SectionOp::parse(&p.operation, p.include_subsections) {
+            let content = self.require_content(p)?;
+            let section = self.require_section(p)?;
+            let edit = apply_section_op(source, op, section, content).map_err(section_err)?;
+            return Ok((edit.text, edit.heading_stripped));
+        }
         let text = match p.operation.as_str() {
             "append" => append_body(source, self.require_content(p)?),
             "prepend" => prepend_body(source, self.require_content(p)?),
@@ -831,29 +868,6 @@ impl Engine {
                     )));
                 }
                 source.replace(find, content)
-            }
-            // The two operations whose content lands under a heading that
-            // stays: a repeat of that heading is dropped by the core edit, and
-            // reported here so the receipt can say so.
-            "replace_section" => {
-                let content = self.require_content(p)?;
-                let section = self.require_section(p)?;
-                let edit =
-                    replace_section_reporting(source, section, content, p.include_subsections)
-                        .map_err(section_err)?;
-                return Ok((edit.text, edit.heading_stripped));
-            }
-            "insert_before_section" => {
-                let content = self.require_content(p)?;
-                let section = self.require_section(p)?;
-                insert_before_section(source, section, content).map_err(section_err)?
-            }
-            "insert_after_section" => {
-                let content = self.require_content(p)?;
-                let section = self.require_section(p)?;
-                let edit = insert_after_section_reporting(source, section, content)
-                    .map_err(section_err)?;
-                return Ok((edit.text, edit.heading_stripped));
             }
             "set_frontmatter" => {
                 Self::apply_set_frontmatter(source, p, permalink, actor, model, ack)?

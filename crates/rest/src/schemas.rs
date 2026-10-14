@@ -18,6 +18,9 @@
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    /// Sees no engram on any shared domain. What it works on is its
+    /// Reflection level and the private domains it is invited into.
+    None,
     /// Read only: search, read, browse.
     Viewer,
     /// Everything a viewer may do, plus writing and editing engrams.
@@ -49,6 +52,8 @@ pub struct User {
     /// trusted header, RFC 3339. Null for an account never seen.
     #[schema(example = "2026-08-08T09:14:22Z")]
     pub last_seen: Option<String>,
+    /// The Reflection level on every shared domain.
+    pub reflection: ReflectionLevel,
 }
 
 /// One identity an external provider asserts, tied to one account.
@@ -158,12 +163,43 @@ pub struct McpTokenInfo {
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MemberLevel {
+    /// Sees no engram of this domain; its Reflection level decides what it
+    /// works on.
+    None,
     /// Read only: this domain is visible and searchable, nothing more.
     Viewer,
     /// Everything a viewer may do, plus writing and editing its engrams.
     Editor,
     /// Everything an editor may do, plus managing this domain's membership.
     Manager,
+}
+
+/// The Reflection level an account holds on every shared domain, or a member
+/// on one private domain, beside its knowledge level. It only ever raises
+/// what the knowledge level gives: `Default` is "as knowledge",
+/// stored as SQL NULL so no sentinel value is written. There is no stored
+/// curator: curating follows from writing the engrams.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum ReflectionLevel {
+    /// As the knowledge level gives: a viewer reads and comments, `none`
+    /// sees nothing.
+    #[default]
+    Default,
+    /// Reads the Reflection and comments on it.
+    Reader,
+    /// Also edits reflection text and creates, moves and deletes reflections.
+    Contributor,
 }
 
 /// One membership row: who was invited to a private domain, at what level, by
@@ -174,6 +210,8 @@ pub struct DomainMember {
     pub principal: String,
     /// What this member may do here.
     pub level: MemberLevel,
+    /// The Reflection level on this domain.
+    pub reflection: ReflectionLevel,
     /// Who added or last changed this row. An audit field, stored as given:
     /// it is usually a login name but may name a non-account actor, the same
     /// latitude the identity-link plan gives `linked_by`.
@@ -234,15 +272,16 @@ pub struct EngramChanged {
 /// (a removal, and the old name of a rename; ruled 2026-09-27).
 ///
 /// `Everyone` when the domain is not private. `Accounts` when it is, naming
-/// every account that may read it: its owner, every member at any level and
-/// every instance admin by the role the accounts store records, disabled
-/// accounts left out. The names are the store's folded spelling (trimmed and
-/// lowercased), so a check folds `Scope::User.account` the same way, and a
-/// scope that carries `admin: true` reads too, since the surface's own admin
-/// flag outranks the stored role. The machine owner always reads, so it is
-/// never in the set. When the engine cannot read the records (no resolver
-/// installed yet, or a read error) it captures `Accounts` with nobody in it:
-/// the owner still hears the event, nobody else does.
+/// every account that may read it: its owner, every member who reads engrams
+/// there (a member at knowledge `none` does not) and every instance admin by
+/// the role the accounts store records, disabled accounts left out. The names
+/// are the store's folded spelling (trimmed and lowercased), so a check folds
+/// `Scope::User.account` the same way, and a scope that carries `admin: true`
+/// reads too, since the surface's own admin flag outranks the stored role.
+/// The machine owner always reads, so it is never in the set. When the engine
+/// cannot read the records (no resolver installed yet, or a read error) it
+/// captures `Accounts` with nobody in it: the owner still hears the event,
+/// nobody else does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DomainAudience {
     Everyone,
@@ -306,19 +345,28 @@ mod tests {
     /// about the wire: every field and every enum value must be the same.
     #[test]
     fn the_copies_match_the_store_types() {
-        use auth_store::{MemberLevel, Role};
+        use auth_store::{MemberLevel, ReflectionLevel, Role};
         let s = String::new;
         assert_eq!(
-            keys([Role::Viewer, Role::Editor, Role::Admin]),
+            keys([Role::None, Role::Viewer, Role::Editor, Role::Admin]),
             published::<super::Role>()
         );
         assert_eq!(
             keys([
+                MemberLevel::None,
                 MemberLevel::Viewer,
                 MemberLevel::Editor,
                 MemberLevel::Manager
             ]),
             published::<super::MemberLevel>()
+        );
+        assert_eq!(
+            keys([
+                ReflectionLevel::Default,
+                ReflectionLevel::Reader,
+                ReflectionLevel::Contributor
+            ]),
+            published::<super::ReflectionLevel>()
         );
         assert_eq!(
             keys([auth_store::User {
@@ -328,6 +376,7 @@ mod tests {
                 role: Role::Viewer,
                 disabled: false,
                 last_seen: None,
+                reflection: ReflectionLevel::Default,
             }]),
             published::<super::User>()
         );
@@ -378,6 +427,7 @@ mod tests {
             keys([auth_store::DomainMember {
                 principal: s(),
                 level: MemberLevel::Viewer,
+                reflection: ReflectionLevel::Default,
                 added_by: s(),
                 added_at: s(),
             }]),

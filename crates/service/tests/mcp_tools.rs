@@ -372,6 +372,9 @@ async fn a_writable_default_install_lists_everything_but_the_collaboration_surfa
         // The enable path, never hidden by the gate it opens.
         "configure",
         "delete_engram",
+        // The Reflection tools are listed whatever the domains say; they
+        // refuse at call time where Reflection is off.
+        "discuss",
         "edit_engram",
         "evolve_engrams",
         "infer_schema",
@@ -381,7 +384,9 @@ async fn a_writable_default_install_lists_everything_but_the_collaboration_surfa
         // is listed all the same; its mutating actions refuse instead.
         "provision",
         "read_engram",
+        "read_reflection",
         "recent_activity",
+        "reflect",
         "remove_domain",
         "search_engrams",
         "skills",
@@ -389,6 +394,7 @@ async fn a_writable_default_install_lists_everything_but_the_collaboration_surfa
         "validate_engrams",
         "vocabulary",
         "write_engram",
+        "write_reflection",
     ] {
         assert!(names.contains(&expected.to_string()), "missing {expected}");
     }
@@ -410,7 +416,7 @@ async fn a_writable_default_install_lists_everything_but_the_collaboration_surfa
             "{hidden} must be withheld while github.enabled is off: {names:?}"
         );
     }
-    assert_eq!(names.len(), 20, "every tool, exactly once: {names:?}");
+    assert_eq!(names.len(), 24, "every tool, exactly once: {names:?}");
 
     // The deterministic-ordering SHOULD on `/server/tools`, satisfied by
     // rmcp's `ToolRouter::list_all` (3.1.2 `handler/server/router/tool.rs:588`
@@ -696,6 +702,31 @@ async fn the_descriptions_of_the_call_time_gated_tools_state_their_condition() {
     assert!(
         provision.contains("## Provisioning"),
         "provision's description must name what has to declare before it can act: {provision}"
+    );
+    for name in ["reflect", "read_reflection", "write_reflection", "discuss"] {
+        let text = description(name);
+        assert!(
+            text.contains("reflection: on"),
+            "{name}'s description must name the switch it needs: {text}"
+        );
+    }
+    let read = description("read_reflection");
+    assert!(
+        read.contains("query") && read.contains("search_type"),
+        "{read}"
+    );
+    // Open point 1: write_reflection names the section operations it shares
+    // with edit_engram.
+    let write = description("write_reflection");
+    assert!(
+        write.contains("replace_section") && write.contains("insert_after_section"),
+        "{write}"
+    );
+    // Discuss teaches the conventional comment shape.
+    let discuss = description("discuss");
+    assert!(
+        discuss.contains("`<label> [decorations]: <subject>`") && discuss.contains("non-blocking"),
+        "discuss must teach conventional comments: {discuss}"
     );
 }
 
@@ -1132,7 +1163,7 @@ async fn configure_with_a_domain_answers_the_domain_view() {
         .await
         .unwrap();
     assert_eq!(out["domain"], "eng", "{out}");
-    assert_eq!(out["policies"].as_array().unwrap().len(), 4);
+    assert_eq!(out["policies"].as_array().unwrap().len(), 6);
     assert_eq!(out["sections"].as_array().unwrap().len(), 4);
     assert_eq!(out["rules"]["available"], true);
     assert_eq!(out["how"].as_array().unwrap().len(), 4);
@@ -1788,10 +1819,12 @@ async fn read_only_hides_the_write_gated_tools() {
             "{hidden} must be hidden in read-only mode: {names:?}"
         );
     }
-    // The ten read tools remain, `skills` among them: reading a skill is a
+    // The eleven read tools remain, `skills` among them: reading a skill is a
     // read, so the gate that hides it is `skills.serve`, never read-only.
+    // `read_reflection` is a read too.
     for expected in [
         "read_engram",
+        "read_reflection",
         "search_engrams",
         "build_context",
         "recent_activity",
@@ -1817,6 +1850,11 @@ async fn read_only_hides_the_write_gated_tools() {
         "discard_changes",
         "evolve_engrams",
         "provision",
+        // `reflect` for the reason `evolve_engrams` is hidden, the other two
+        // because they write.
+        "reflect",
+        "write_reflection",
+        "discuss",
     ] {
         assert!(
             !names.contains(&hidden.to_string()),
@@ -1834,7 +1872,7 @@ async fn read_only_hides_the_write_gated_tools() {
             "{hidden} needs github.enabled to be listed: {names:?}"
         );
     }
-    assert_eq!(names.len(), 10, "exactly 10 tools in read-only: {names:?}");
+    assert_eq!(names.len(), 11, "exactly 11 tools in read-only: {names:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5768,7 +5806,7 @@ type AnnotationRow = (
     Option<bool>,
 );
 
-const EXPECTED_ANNOTATIONS: [AnnotationRow; 23] = [
+const EXPECTED_ANNOTATIONS: [AnnotationRow; 27] = [
     (
         "write_engram",
         "Capture engram",
@@ -5893,6 +5931,38 @@ const EXPECTED_ANNOTATIONS: [AnnotationRow; 23] = [
         Some(false),
     ),
     (
+        "reflect",
+        "Reflect",
+        Some(true),
+        None,
+        Some(true),
+        Some(false),
+    ),
+    (
+        "read_reflection",
+        "Read reflection",
+        Some(true),
+        None,
+        Some(true),
+        Some(false),
+    ),
+    (
+        "write_reflection",
+        "Write reflection",
+        Some(false),
+        Some(true),
+        Some(false),
+        Some(false),
+    ),
+    (
+        "discuss",
+        "Discuss",
+        Some(false),
+        Some(false),
+        Some(false),
+        Some(false),
+    ),
+    (
         "configure",
         "Configure Crystalline",
         Some(false),
@@ -5965,7 +6035,7 @@ const EXPECTED_ANNOTATIONS: [AnnotationRow; 23] = [
 /// A GitHub-enabled server with no domains, built solely to inspect the tool
 /// surface and its annotations. Read-write makes every tool visible through
 /// `get_tool`; read-only narrows it to the read tools plus `update_domain` and
-/// `origin_status`. The 23 rows below are every tool except `skills` and
+/// `origin_status`. The 27 rows below are every tool except `skills` and
 /// `provision`, which carry their own dedicated tests.
 async fn annotation_server(read_only: bool) -> McpServer {
     let cfg = GlobalConfig {
@@ -6031,6 +6101,9 @@ async fn annotation_hints_line_up_with_the_gating() {
         "configure",
         "share_changes",
         "resolve_conflict",
+        // The two Reflection writers, hidden read-only beside `reflect`.
+        "write_reflection",
+        "discuss",
     ] {
         let tool = rw
             .get_tool(name)
@@ -6659,9 +6732,9 @@ fn assert_conservative(schema: &Value, context: &str) {
     }
 }
 
-/// Every one of the 23 tools in `EXPECTED_ANNOTATIONS` advertises an input
+/// Every one of the 27 tools in `EXPECTED_ANNOTATIONS` advertises an input
 /// schema that passes the naive conservative-shape sweep, both on the
-/// read-write server where all 23 are visible and on the read-only one where
+/// read-write server where all 27 are visible and on the read-only one where
 /// only a subset resolves through `get_tool`. Also locks down the two
 /// type-less `serde_json::Value` params in this codebase to their documented
 /// object shape.
@@ -8560,4 +8633,311 @@ async fn a_v112_ack_off_the_anchor_is_recorded_for_its_pair_and_removed_from_the
     );
     let a = std::fs::read_to_string(h.root.join("eng/meetings/a.md")).unwrap();
     assert!(!a.contains("evolve_ack"), "{a}");
+}
+
+/// Turn `domain`'s Reflection on in a [`Harness`]: the MANIFEST gains
+/// `reflection: on` and the engine reads it again.
+async fn switch_reflection_on(h: &Harness, domain: &str) {
+    let path = h.root.join(domain).join("MANIFEST.md");
+    let manifest = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("status: current\n", "status: current\nreflection: on\n");
+    std::fs::write(&path, manifest).unwrap();
+    h.engine.sync(None).await.unwrap();
+}
+
+/// V1: the reflection tools are listed on every instance and refuse at call
+/// time on a domain whose Reflection is off, naming the switch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_reflection_tools_refuse_while_reflection_is_off() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    for (tool, args) in [
+        ("reflect", json!({ "domains": ["eng"] })),
+        ("read_reflection", json!({ "domain": "eng" })),
+        (
+            "read_reflection",
+            json!({ "domain": "eng", "query": "night" }),
+        ),
+        // The gate goes before the argument checks.
+        ("read_reflection", json!({ "domain": "eng", "query": "" })),
+        (
+            "read_reflection",
+            json!({ "domain": "eng", "query": "night", "search_type": "title" }),
+        ),
+        (
+            "write_reflection",
+            json!({ "domain": "eng", "path": "a.md", "markdown": "# A\n" }),
+        ),
+        (
+            "discuss",
+            json!({ "domain": "eng", "path": "a.md", "section": "x", "text": "hi" }),
+        ),
+    ] {
+        // A call-time refusal (V1), not a protocol error.
+        let result = serde_json::to_value(call_result(peer, tool, args).await).unwrap();
+        assert_eq!(result["isError"], true, "{tool}: {result}");
+        let text = result
+            .pointer("/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            text.contains("Reflection is off for 'eng'"),
+            "{tool}: {text}"
+        );
+    }
+}
+
+/// The round trip an agent makes: write with sources, read back, the queue.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_writes_reads_and_works_the_reflection_over_mcp() {
+    let h = Harness::new(&["eng"]).await;
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    call(
+        peer,
+        "write_engram",
+        json!({ "domain": "eng", "title": "Deploy", "content": "- [fact] deploys run at night #eng" }),
+    )
+    .await
+    .unwrap();
+    let written = call(
+        peer,
+        "write_reflection",
+        json!({
+            "domain": "eng",
+            "path": "guides/deploying.md",
+            "markdown": "# Deploying\n\n## Night deploys\n\nDeploys run at night.\n",
+            "sources": { "Night deploys": ["deploy"], "_top": [] },
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(written["created"], true, "{written}");
+    assert_eq!(written["curated"], true, "{written}");
+    let tree = call_text(peer, "read_reflection", json!({ "domain": "eng" }))
+        .await
+        .unwrap();
+    assert!(tree.contains("guides/deploying.md"), "{tree}");
+    let queue = call_text(peer, "reflect", json!({ "domains": ["eng"] }))
+        .await
+        .unwrap();
+    assert!(
+        queue.contains("total: 0")
+            || queue.contains("\"total\": 0")
+            || queue.contains("\"total\":0"),
+        "{queue}"
+    );
+}
+
+/// R57: read_reflection with a query answers section hits, never a score, and
+/// refuses a call that names a path too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_reflection_with_a_query_answers_section_hits() {
+    let h = Harness::new(&["eng"]).await;
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    call(
+        peer,
+        "write_reflection",
+        json!({
+            "domain": "eng",
+            "path": "guides/deploying.md",
+            "markdown": "# Deploying\n\n## Night deploys\n\nDeploys run at night.\n\n## Rollback\n\nRoll back with the script.\n",
+        }),
+    )
+    .await
+    .unwrap();
+    let found = call_text(
+        peer,
+        "read_reflection",
+        json!({ "domain": "eng", "query": "night", "search_type": "text" }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        found.contains(r#""mode":"text""#),
+        "the mode that ran: {found}"
+    );
+    assert!(
+        found.contains("Night deploys") && !found.contains("Rollback"),
+        "{found}"
+    );
+    assert!(!found.contains("score"), "{found}");
+    // An argument error is a protocol error, like write_reflection's.
+    let both = call(
+        peer,
+        "read_reflection",
+        json!({ "domain": "eng", "path": "guides/deploying.md", "query": "night" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(both.contains("not both"), "{both}");
+}
+
+/// Open point 1 (approved): an agent changes one section of a reflection the
+/// way it changes one section of an engram, and the section keeps its id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_edits_one_section_of_a_reflection_over_mcp() {
+    let h = Harness::new(&["eng"]).await;
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    call(
+        peer,
+        "write_reflection",
+        json!({ "domain": "eng", "path": "a.md", "markdown": "# A\n\n## One\n\nFirst.\n\n## Two\n\nSecond.\n" }),
+    )
+    .await
+    .unwrap();
+    let before = std::fs::read_to_string(h.root.join("eng/reflections/a.md")).unwrap();
+    let id = crystalline_core::reflection::split_sections(&before)[2]
+        .id
+        .clone()
+        .unwrap();
+    let edited = call(
+        peer,
+        "write_reflection",
+        json!({ "domain": "eng", "path": "a.md", "operation": "replace_section", "section": "## Two", "content": "Second, revised." }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(edited["ids_assigned"], json!([]), "{edited}");
+    let after = std::fs::read_to_string(h.root.join("eng/reflections/a.md")).unwrap();
+    assert!(
+        after.contains(&format!("## Two\n<!-- r:{id} -->\n\nSecond, revised.\n")),
+        "{after}"
+    );
+    assert!(
+        after.contains("## One\n<!-- r:") && after.contains("First."),
+        "the other section is untouched: {after}"
+    );
+}
+
+/// The refusal text a reflection tool call comes back with, asserting it is
+/// a call-time refusal (`isError`), never a protocol error.
+async fn reflection_refusal(peer: &Peer<RoleClient>, tool: &str, args: Value) -> String {
+    let result = serde_json::to_value(call_result(peer, tool, args).await).unwrap();
+    assert_eq!(result["isError"], true, "{tool}: {result}");
+    result
+        .pointer("/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// A domain with `read_only: on` keeps its Reflection readable, and a write
+/// or a thread comes back as a call-time refusal naming the switch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_only_domain_refuses_reflection_writes_at_call_time() {
+    let h = Harness::new(&["eng"]).await;
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    call(
+        peer,
+        "write_reflection",
+        json!({ "domain": "eng", "path": "a.md", "markdown": "# A\n\n## One\n\nText.\n" }),
+    )
+    .await
+    .unwrap();
+    let path = h.root.join("eng/MANIFEST.md");
+    let manifest = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("reflection: on\n", "reflection: on\nread_only: on\n");
+    std::fs::write(&path, manifest).unwrap();
+    h.engine.sync(None).await.unwrap();
+    for (tool, args) in [
+        (
+            "write_reflection",
+            json!({ "domain": "eng", "path": "a.md", "markdown": "# A\n\n## One\n\nOther.\n" }),
+        ),
+        (
+            "discuss",
+            json!({ "domain": "eng", "path": "a.md", "section": "One", "text": "question: still true?" }),
+        ),
+    ] {
+        let text = reflection_refusal(peer, tool, args).await;
+        assert!(
+            text.contains("'eng' is read-only; its owner switches read_only off"),
+            "{tool}: {text}"
+        );
+    }
+    let page = call(
+        peer,
+        "read_reflection",
+        json!({ "domain": "eng", "path": "a.md" }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        page["markdown"]
+            .as_str()
+            .is_some_and(|m| m.contains("Text.")),
+        "{page}"
+    );
+}
+
+/// Every state the Reflection gate refuses in reaches the agent as a
+/// call-time refusal with its own sentence: an engram still waiting in
+/// reflections/, a GitHub domain with no home, a home on another server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_reflection_gate_states_are_call_time_refusals() {
+    // Pending: an engram lives in reflections/ when the switch goes on.
+    let h = Harness::new(&["eng"]).await;
+    std::fs::create_dir_all(h.root.join("eng/reflections")).unwrap();
+    std::fs::write(
+        h.root.join("eng/reflections/old.md"),
+        "---\ntype: engram\ntitle: Old\npermalink: reflections/old\nstatus: current\nrecorded_at: 2026-01-01\n---\n\n# Old\n\n- [fact] old\n",
+    )
+    .unwrap();
+    // Indexed as an engram first, then the switch goes on.
+    h.engine.sync(None).await.unwrap();
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let text =
+        reflection_refusal(client.peer(), "read_reflection", json!({ "domain": "eng" })).await;
+    assert!(
+        text.contains("Reflection for 'eng' waits until these engrams leave reflections/"),
+        "{text}"
+    );
+
+    // Homeless: a GitHub team domain whose Reflection has no home yet.
+    let h = Harness::build_tweaked(&["eng"], false, true, |cfg, _| {
+        cfg.domains.get_mut("eng").unwrap().origin = Some(crystalline_core::config::OriginConfig {
+            repo: "acme/kb".into(),
+            path: None,
+            branch: None,
+            poll_secs: None,
+        });
+    })
+    .await;
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let text = reflection_refusal(client.peer(), "reflect", json!({ "domains": ["eng"] })).await;
+    assert!(text.contains("its Reflection has no home yet"), "{text}");
+
+    // Elsewhere: the MANIFEST names another server as the home.
+    let h = Harness::new(&["eng"]).await;
+    let path = h.root.join("eng/MANIFEST.md");
+    let manifest = std::fs::read_to_string(&path).unwrap().replace(
+        "status: current\n",
+        "status: current\nreflection: on\nreflection_home: https://team.example.com\n",
+    );
+    std::fs::write(&path, manifest).unwrap();
+    h.engine.sync(None).await.unwrap();
+    let (client, _server) = h.connect().await;
+    let text = reflection_refusal(
+        client.peer(),
+        "discuss",
+        json!({ "domain": "eng", "path": "a.md", "section": "x", "text": "hi" }),
+    )
+    .await;
+    assert!(
+        text.contains("this domain's Reflection lives at https://team.example.com"),
+        "{text}"
+    );
 }

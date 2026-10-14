@@ -22,7 +22,11 @@ constant instead of the days since this script last ran (an engram may
 override it with its own `recorded` date), `manifest_verified` stamps
 each MANIFEST as verified so the aging rule never speaks about it, and
 `allow_verify_errors` lets a deliberately derelict workspace generate
-with verify errors standing rather than failing the build.
+with verify errors standing rather than failing the build. `reflection`
+maps a domain to its Reflection pages (path inside `reflections/` to
+text): the domain's MANIFEST gets `reflection: on` and the pages are
+written as plain files after the engrams, the way a person would add
+them.
 
 Regenerate after editing the content tables below (name workspaces to
 rebuild only those and leave the rest untouched):
@@ -31,6 +35,7 @@ rebuild only those and leave the rest untouched):
     bash fixtures/generate.sh aurora
     bash fixtures/generate.sh harbor
     bash fixtures/generate.sh derelict
+    bash fixtures/generate.sh lantern
 """
 from __future__ import annotations
 
@@ -1210,6 +1215,39 @@ WORKSPACES: dict[str, dict] = {
             ],
         },
     },
+    # The reflect benchmark's workspace: one domain that keeps a
+    # Reflection. No section cites the "Lamp lighting" engram, so the queue
+    # holds an `unreflected` update item for it, and `guides/lamp.md` has no
+    # baseline, so its section is a feedback item too. The page says the
+    # lamp is lit "at sunset" and the engram says thirty minutes before:
+    # the agent has to notice that itself, nothing compares the texts. Each
+    # `##` heading carries its hidden id line, the page marker: a page
+    # without one reads as an engram and holds the switch pending.
+    "lantern": {
+        "options": {
+            "reflection": {
+                "lighthouse": {
+                    "PACT.md": "# How we write about the lighthouse\n\n## Audience\n<!-- r:a1b2c3d4 -->\n\n- New keepers on their first week.\n\n## Structure\n<!-- r:b2c3d4e5 -->\n\n- guides/*.md\n",
+                    "guides/lamp.md": "# The lamp\n\n## Lighting up\n<!-- r:c3d4e5f6 -->\n\nThe lamp is lit at sunset by the keeper on watch, and the log is signed.\n",
+                },
+            },
+        },
+        "lighthouse": {
+            "scope": ["Running the lighthouse: the lamp, the fog signal and the watch"],
+            "when": ["Questions about how the lighthouse is kept"],
+            "notes": [],
+            "engrams": [
+                engram(
+                    "Lamp lighting",
+                    "When and how the lamp is lit.\n\n"
+                    "- [fact] The lamp is lit thirty minutes before sunset since the 2026 rule #lighthouse\n"
+                    "- [convention] The keeper on watch signs the log after lighting #lighthouse",
+                    tags="lighthouse,lamp",
+                    engram_type="runbook",
+                ),
+            ],
+        },
+    },
 }
 
 
@@ -1393,6 +1431,17 @@ def build_workspace(name: str, workspace: dict, state_root: Path) -> None:
             else "verify clean"
         )
         print(f"  {name}/{domain_name}: {len(spec['engrams'])} engrams, {state}")
+
+    for domain_name, pages in (options.get("reflection") or {}).items():
+        domain_dir = ws_dir / "domains" / domain_name
+        manifest = (domain_dir / "MANIFEST.md").read_text()
+        head, sep, rest = manifest.partition("\n---\n")
+        (domain_dir / "MANIFEST.md").write_text(f"{head}\nreflection: on{sep}{rest}")
+        for rel, text in pages.items():
+            path = domain_dir / "reflections" / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        print(f"  {name}/{domain_name}: Reflection on, {len(pages)} pages")
 
     for tree_name, tree_spec in origins.items():
         tree_dir = ws_dir / "origins" / tree_name

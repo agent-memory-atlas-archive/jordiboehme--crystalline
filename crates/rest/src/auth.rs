@@ -321,7 +321,11 @@ impl Caller {
 /// is an authorization rule of this layer, not a property of the stored value.
 fn rank(role: Role) -> u8 {
     match role {
-        Role::Viewer => 0,
+        // The instance gate admits a knowledge-`none` account wherever it
+        // admits a viewer: which domains it reads is decided per domain (it
+        // reads no shared domain, and a private one by its membership), and it
+        // must reach its own account, its tokens and the Reflection.
+        Role::None | Role::Viewer => 0,
         Role::Editor => 1,
         Role::Admin => 2,
     }
@@ -463,7 +467,7 @@ impl Identity {
                 return Ok(Caller::Account(user.clone()));
             }
             return Err(ApiError::forbidden(format!(
-                "this account is a {}, and {min} access is required",
+                "this account's knowledge level is {}, and {min} access is required",
                 user.role
             )));
         }
@@ -1784,6 +1788,7 @@ fn gone() -> ApiError {
             .to_string(),
         token_required: None,
         retry_after: None,
+        home_url: None,
     }
 }
 
@@ -2506,6 +2511,7 @@ mod tests {
             role: Role::Viewer,
             disabled: false,
             last_seen: None,
+            reflection: auth_store::ReflectionLevel::Default,
         }
     }
 
@@ -2694,6 +2700,7 @@ mod tests {
                 role,
                 disabled: false,
                 last_seen: None,
+                reflection: auth_store::ReflectionLevel::Default,
             }),
             csrf: None,
             anonymous: false,
@@ -2818,6 +2825,7 @@ mod tests {
                 role: Role::Admin,
                 disabled: false,
                 last_seen: None,
+                reflection: auth_store::ReflectionLevel::Default,
             }),
             csrf: csrf.map(str::to_string),
             anonymous: false,
@@ -2884,6 +2892,39 @@ mod tests {
     }
 
     #[test]
+    fn knowledge_none_passes_the_instance_gate_and_writes_nothing() {
+        let account = |role| Identity {
+            user: Some(User {
+                name: "ada".to_string(),
+                display: "Ada".to_string(),
+                email: None,
+                role,
+                disabled: false,
+                last_seen: None,
+                reflection: auth_store::ReflectionLevel::Default,
+            }),
+            csrf: None,
+            anonymous: false,
+        };
+        assert!(
+            account(Role::None).require_viewer().is_ok(),
+            "what it reads is decided per domain"
+        );
+        assert!(
+            account(Role::None).require_account().is_ok(),
+            "its own tokens and memberships"
+        );
+        let err = account(Role::None).require_editor().unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        assert!(
+            err.detail.contains("knowledge level is none"),
+            "{}",
+            err.detail
+        );
+        assert!(account(Role::None).require_admin().is_err());
+    }
+
+    #[test]
     fn require_editor_separates_roles_the_same_way() {
         let account = |role| Identity {
             user: Some(User {
@@ -2893,6 +2934,7 @@ mod tests {
                 role,
                 disabled: false,
                 last_seen: None,
+                reflection: auth_store::ReflectionLevel::Default,
             }),
             csrf: None,
             anonymous: false,

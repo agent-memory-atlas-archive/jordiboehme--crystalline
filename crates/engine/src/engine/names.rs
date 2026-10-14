@@ -11,6 +11,7 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 
 use crystalline_core::manifest::domain_name_of_source;
 use crystalline_core::names::{NameTable, config_name_inputs};
+use crystalline_core::relink::BodyGate;
 
 use super::*;
 use crate::params::DomainArgs;
@@ -29,6 +30,39 @@ pub enum SpellingPushFault {
     ReportChanged,
     /// The push fails right after its replace committed the new spellings.
     FailAfterReplace,
+}
+
+/// Every domain spelling in `source` other than its canonical name, written
+/// with that name, unless it resolves to a domain in `hidden`. The rule of
+/// [`Engine::normalize_domain_spellings`].
+fn respell_canonical(
+    table: &NameTable,
+    hidden: &HashSet<String>,
+    source: &str,
+    gate: BodyGate,
+) -> (String, usize) {
+    crystalline_core::relink::respell_domains_with(source, gate, &|domain: &str| {
+        let local = table.resolve(domain)?;
+        if hidden.contains(local) {
+            return None;
+        }
+        table.normalize(domain).map(str::to_string)
+    })
+}
+
+/// The spelling funnel decided for one caller, as a plain function: see
+/// [`Engine::spelling_funnel`].
+pub(crate) struct SpellingFunnel {
+    table: Arc<NameTable>,
+    hidden: HashSet<String>,
+    gate: BodyGate,
+}
+
+impl SpellingFunnel {
+    /// `source` with its spellings written canonically, and how many were.
+    pub(crate) fn respell(&self, source: &str) -> (String, usize) {
+        respell_canonical(&self.table, &self.hidden, source, self.gate)
+    }
 }
 
 impl Engine {
@@ -141,13 +175,48 @@ impl Engine {
         source: &str,
         hidden: &HashSet<String>,
     ) -> (String, usize) {
+        self.normalize_domain_spellings_gated(source, hidden, BodyGate::Lossless)
+            .await
+    }
+
+    /// [`Engine::normalize_domain_spellings`] over a body the gate names:
+    /// `BodyGate::Lossless` for an engram, `BodyGate::Split` for a reflection.
+    pub(super) async fn normalize_domain_spellings_gated(
+        &self,
+        source: &str,
+        hidden: &HashSet<String>,
+        gate: BodyGate,
+    ) -> (String, usize) {
         let table = self.name_table_now().await;
-        crystalline_core::relink::respell_domains(source, &|domain: &str| {
-            let local = table.resolve(domain)?;
-            if hidden.contains(local) {
-                return None;
-            }
-            table.normalize(domain).map(str::to_string)
+        respell_canonical(&table, hidden, source, gate)
+    }
+
+    /// The spelling funnel of [`Engine::normalize_domain_spellings_in`] as a
+    /// plain function over `scope`, for a rewrite that cannot wait on the
+    /// engine (a reflection's stored page and baseline go through
+    /// `crystalline_core::reflection::relink`). The hidden set is worked out
+    /// only when one of `sources` holds a spelling to decide about, the same
+    /// probe rule.
+    pub(crate) async fn spelling_funnel(
+        &self,
+        scope: &crate::scope::Scope,
+        sources: &[&str],
+        gate: BodyGate,
+    ) -> Result<SpellingFunnel> {
+        let table = self.name_table_now().await;
+        let none = HashSet::new();
+        let hidden = if sources
+            .iter()
+            .any(|source| respell_canonical(&table, &none, source, gate).1 > 0)
+        {
+            self.hidden_for(scope).await?
+        } else {
+            none
+        };
+        Ok(SpellingFunnel {
+            table,
+            hidden,
+            gate,
         })
     }
 
@@ -172,14 +241,29 @@ impl Engine {
         source: &str,
         scope: &crate::scope::Scope,
     ) -> Result<(String, usize)> {
+        self.normalize_domain_spellings_in(source, BodyGate::Lossless, scope)
+            .await
+    }
+
+    /// [`Engine::normalize_domain_spellings_for`] over a body the gate names:
+    /// `BodyGate::Split` for a reflection, which is never parsed as an
+    /// engram. The same probe-then-hidden-set rule.
+    pub(crate) async fn normalize_domain_spellings_in(
+        &self,
+        source: &str,
+        gate: BodyGate,
+        scope: &crate::scope::Scope,
+    ) -> Result<(String, usize)> {
         let probe = self
-            .normalize_domain_spellings(source, &HashSet::new())
+            .normalize_domain_spellings_gated(source, &HashSet::new(), gate)
             .await;
         if probe.1 == 0 {
             return Ok(probe);
         }
         let hidden = self.hidden_for(scope).await?;
-        Ok(self.normalize_domain_spellings(source, &hidden).await)
+        Ok(self
+            .normalize_domain_spellings_gated(source, &hidden, gate)
+            .await)
     }
 
     /// `localize` for one caller: a spelling that resolves to a domain in

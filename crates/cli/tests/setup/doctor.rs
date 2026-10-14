@@ -13,6 +13,7 @@ use assert_cmd::Command;
 // suites, so their imports gate with them or Windows sees them as unused.
 #[cfg(unix)]
 use crystalline_core::provision::sha256_hex;
+use predicates::prelude::PredicateBooleanExt;
 use serde_json::Value;
 #[cfg(unix)]
 use serde_json::json;
@@ -265,6 +266,232 @@ fn detects_unindexed_files_without_fixing_them() {
     assert_eq!(
         report["domains"][0]["unindexed"],
         serde_json::json!(["c.md"])
+    );
+}
+
+/// A Reflection's pages and threads files are no engrams to index: doctor
+/// never lists them as unindexed.
+#[test]
+fn a_reflection_page_is_never_an_unindexed_engram() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let db = work.path().join("index.db");
+    let domain_dir = setup_domain(work.path(), "eng", &config);
+    let manifest = std::fs::read_to_string(domain_dir.join("MANIFEST.md")).unwrap();
+    std::fs::write(
+        domain_dir.join("MANIFEST.md"),
+        manifest.replacen("---\n", "---\nreflection: on\n", 1),
+    )
+    .unwrap();
+    // A section id line marks the page as the Reflection's (and its threads
+    // file with it); an unmarked one would be an engram waiting to move out.
+    write(
+        &domain_dir,
+        "reflections/guides/a.md",
+        "# A page for people\n\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n",
+    );
+    write(
+        &domain_dir,
+        "reflections/guides/a.threads.md",
+        "# Threads\n",
+    );
+    bin()
+        .args(["sync", "--config"])
+        .arg(&config)
+        .args(["--db"])
+        .arg(&db)
+        .assert()
+        .success();
+    let out = bin()
+        .args(["--json", "doctor", "--config"])
+        .arg(&config)
+        .args(["--db"])
+        .arg(&db)
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        report["domains"][0]["unindexed"],
+        serde_json::json!([]),
+        "{report}"
+    );
+}
+
+/// Doctor counts reflection chunks only while the index holds some: a
+/// domain with the Reflection on and no page reports no reflection keys,
+/// and after a page is synced it reports its chunks, none embedded since no
+/// provider ran.
+#[test]
+fn doctor_counts_reflection_chunks_only_when_there_are_some() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let db = work.path().join("index.db");
+    let domain_dir = setup_domain(work.path(), "eng", &config);
+    let manifest = std::fs::read_to_string(domain_dir.join("MANIFEST.md")).unwrap();
+    std::fs::write(
+        domain_dir.join("MANIFEST.md"),
+        manifest.replacen("---\n", "---\nreflection: on\n", 1),
+    )
+    .unwrap();
+    let sync_and_doctor = || -> Value {
+        bin()
+            .args(["sync", "--config"])
+            .arg(&config)
+            .args(["--db"])
+            .arg(&db)
+            .assert()
+            .success();
+        let out = bin()
+            .args(["--json", "doctor", "--config"])
+            .arg(&config)
+            .args(["--db"])
+            .arg(&db)
+            .output()
+            .unwrap();
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let before = sync_and_doctor();
+    assert!(before["embeddings"].is_object(), "{before}");
+    assert!(
+        before["embeddings"].get("reflection_chunks").is_none(),
+        "{before}"
+    );
+    assert!(
+        before["embeddings"].get("reflection_embedded").is_none(),
+        "{before}"
+    );
+    write(
+        &domain_dir,
+        "reflections/guides/a.md",
+        "# A page for people\n\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n",
+    );
+    let after = sync_and_doctor();
+    assert!(
+        after["embeddings"]["reflection_chunks"].as_u64().unwrap() > 0,
+        "{after}"
+    );
+    assert_eq!(
+        after["embeddings"]["reflection_embedded"],
+        serde_json::json!(0),
+        "no provider ran: {after}"
+    );
+}
+
+/// The direct-read `status` (no daemon, so no `activity` block) carries the
+/// two reflection keys only while the index holds a reflection chunk, as the
+/// daemon's report does: without a page its output is what it always was.
+#[test]
+fn direct_status_counts_reflection_chunks_only_when_there_are_some() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let db = work.path().join("index.db");
+    let domain_dir = setup_domain(work.path(), "eng", &config);
+    let manifest = std::fs::read_to_string(domain_dir.join("MANIFEST.md")).unwrap();
+    std::fs::write(
+        domain_dir.join("MANIFEST.md"),
+        manifest.replacen("---\n", "---\nreflection: on\n", 1),
+    )
+    .unwrap();
+    let sync_and_status = || -> Value {
+        bin()
+            .args(["sync", "--config"])
+            .arg(&config)
+            .args(["--db"])
+            .arg(&db)
+            .assert()
+            .success();
+        let out = bin()
+            .args(["--json", "status", "--config"])
+            .arg(&config)
+            .args(["--db"])
+            .arg(&db)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let before = sync_and_status();
+    assert_eq!(before["indexed"], serde_json::json!(true), "{before}");
+    assert!(
+        before.get("activity").is_none(),
+        "the direct read, not a daemon: {before}"
+    );
+    assert!(before["embeddings"].is_object(), "{before}");
+    assert!(
+        before["embeddings"].get("reflection_chunks").is_none(),
+        "{before}"
+    );
+    assert!(
+        before["embeddings"]
+            .get("reflection_embedded_chunks")
+            .is_none(),
+        "{before}"
+    );
+    write(
+        &domain_dir,
+        "reflections/guides/a.md",
+        "# A page for people\n\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n",
+    );
+    let after = sync_and_status();
+    assert!(
+        after["embeddings"]["reflection_chunks"].as_u64().unwrap() > 0,
+        "{after}"
+    );
+    assert_eq!(
+        after["embeddings"]["reflection_embedded_chunks"],
+        serde_json::json!(0),
+        "no provider ran: {after}"
+    );
+}
+
+/// A provisioned artifact folder inside the root holds deployable files,
+/// not engrams: the sync never indexes them, so doctor never lists them as
+/// unindexed.
+#[test]
+fn an_artifact_folder_is_never_unindexed() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let db = work.path().join("index.db");
+    let domain_dir = setup_domain(work.path(), "eng", &config);
+    let manifest = std::fs::read_to_string(domain_dir.join("MANIFEST.md")).unwrap();
+    std::fs::write(
+        domain_dir.join("MANIFEST.md"),
+        format!(
+            "{}\n## Provisioning\n\n- skills: skills\n",
+            manifest.trim_end()
+        ),
+    )
+    .unwrap();
+    write(
+        &domain_dir,
+        "skills/tide/SKILL.md",
+        &engram("Tide", "skills/tide/skill"),
+    );
+    bin()
+        .args(["sync", "--config"])
+        .arg(&config)
+        .args(["--db"])
+        .arg(&db)
+        .assert()
+        .success();
+    let out = bin()
+        .args(["--json", "doctor", "--config"])
+        .arg(&config)
+        .args(["--db"])
+        .arg(&db)
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let unindexed = report["domains"][0]["unindexed"].as_array().unwrap();
+    assert!(
+        unindexed
+            .iter()
+            .all(|p| !p.as_str().unwrap().starts_with("skills/")),
+        "{report}"
     );
 }
 
@@ -968,6 +1195,31 @@ fn an_invalid_domain_name_is_a_policy_problem_naming_a_valid_domain_name() {
         .stdout(predicates::str::contains(
             "MANIFEST domain_name: ../up is not a valid domain name; read as ignored; the local name holds",
         ));
+}
+
+/// A bad reflection_home is named in its own words, not the rename's.
+#[test]
+fn an_invalid_reflection_home_is_a_policy_problem_in_its_own_words() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let db = work.path().join("index.db");
+    let domain_dir = setup_domain(work.path(), "eng", &config);
+    write(
+        &domain_dir,
+        "MANIFEST.md",
+        "---\ntype: manifest\ntitle: eng\npermalink: manifest\ntags:\n  - manifest\nstatus: stable\nrecorded_at: 2026-01-01\nreflection_home: kb.example.com\n---\n\n# eng\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n",
+    );
+    let mut cmd = bin();
+    let _home = shield_ambient_home(&mut cmd);
+    cmd.args(["doctor", "--config"])
+        .arg(&config)
+        .args(["--db"])
+        .arg(&db)
+        .assert()
+        .stdout(predicates::str::contains(
+            "MANIFEST reflection_home: kb.example.com is not an http or https address with no trailing slash; read as ignored; the Reflection has no home",
+        ))
+        .stdout(predicates::str::contains("a valid domain name").not());
 }
 
 #[test]

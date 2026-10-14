@@ -182,6 +182,29 @@ impl CrystallineUrl {
             .then_some(self.permalink.as_str())
     }
 
+    /// The file this address names, when it names one, with the kind of
+    /// document it belongs to: an engram attachment
+    /// (`crystalline://<domain>/assets/...`, answered as the domain-relative
+    /// path) or a Reflection's file (`crystalline://<domain>/reflections/assets/...`,
+    /// answered as the path inside `reflections/`). `None` for a glob and for
+    /// any other address. One question for both kinds, so the resource read
+    /// is one handler.
+    pub fn asset_ref(&self) -> Option<(crate::kind::ContentKind, &str)> {
+        if let Some(path) = self.asset_path() {
+            return Some((crate::kind::ContentKind::Engram, path));
+        }
+        if self.glob {
+            return None;
+        }
+        let inner = self
+            .permalink
+            .strip_prefix(crate::reflection::REFLECTIONS_DIR)?
+            .strip_prefix('/')?;
+        inner
+            .starts_with(ASSETS_PREFIX)
+            .then_some((crate::kind::ContentKind::Reflection, inner))
+    }
+
     /// Whether a candidate `(domain, permalink)` is matched by this address.
     pub fn matches(&self, domain: &str, permalink: &str) -> bool {
         if self.domain != domain {
@@ -380,5 +403,26 @@ mod permalink_tests {
             path_permalink("Projects/Velog/Alpha Notes.md"),
             "projects/velog/alpha-notes"
         );
+    }
+
+    #[test]
+    fn an_asset_address_names_its_kind_and_its_path() {
+        use crate::kind::ContentKind;
+        let url = CrystallineUrl::parse("crystalline://eng/reflections/assets/diagrams/flow.png")
+            .unwrap();
+        assert_eq!(
+            url.asset_ref(),
+            Some((ContentKind::Reflection, "assets/diagrams/flow.png"))
+        );
+        assert_eq!(url.asset_path(), None, "never an engram attachment");
+        let engram = CrystallineUrl::parse("crystalline://eng/assets/flow.png").unwrap();
+        assert_eq!(
+            engram.asset_ref(),
+            Some((ContentKind::Engram, "assets/flow.png"))
+        );
+        let page = CrystallineUrl::parse("crystalline://eng/reflections/guides/a.md").unwrap();
+        assert_eq!(page.asset_ref(), None);
+        let glob = CrystallineUrl::parse("crystalline://eng/reflections/assets/*").unwrap();
+        assert_eq!(glob.asset_ref(), None, "a glob names no file");
     }
 }

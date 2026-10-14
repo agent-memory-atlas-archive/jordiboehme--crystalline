@@ -291,3 +291,95 @@ fn missing_domain_registration_is_an_error_suggesting_domain_add() {
         .failure()
         .stderr(predicate::str::contains("domain add"));
 }
+
+/// A legacy engram as the importer takes it.
+const LEGACY: &str = "---\ntype: note\ntitle: X\ntags:\n  - t\nstatus: current\nrecorded_at: 2026-01-01\n---\n\nbody\n";
+
+/// R33 on this road too: where a Reflection keeps `reflections/` (the
+/// target domain switched it on, or the source tree's own MANIFEST declares
+/// it), nothing there is converted into an engram or copied into the
+/// folder; with neither, it is an ordinary folder, as before.
+#[test]
+fn import_never_reads_a_reflection_as_engrams() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let domain_dir = setup_domain(work.path(), "widgets", &config);
+    let import = |src: &Path| -> Value {
+        let out = bin()
+            .args(["--json", "import"])
+            .arg(src)
+            .args(["--domain", "widgets", "--config"])
+            .arg(&config)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice(&out).unwrap()
+    };
+    let tree = |name: &str, files: &[(&str, &str)]| -> std::path::PathBuf {
+        let src = work.path().join(name);
+        for (rel, text) in files {
+            let abs = src.join(rel);
+            std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+            std::fs::write(abs, text).unwrap();
+        }
+        src
+    };
+
+    // Neither side keeps a Reflection: an ordinary folder.
+    let plain = tree("plain", &[("reflections/old.md", LEGACY)]);
+    import(&plain);
+    assert!(domain_dir.join("reflections/old.md").exists());
+
+    // The target switched on: the pages and files stay out.
+    let manifest_path = domain_dir.join("MANIFEST.md");
+    let manifest = std::fs::read_to_string(&manifest_path).unwrap();
+    std::fs::write(
+        &manifest_path,
+        manifest.replacen("---\n", "---\nreflection: on\n", 1),
+    )
+    .unwrap();
+    let src = tree(
+        "on-target",
+        &[
+            ("reflections/page.md", LEGACY),
+            ("reflections/assets/flow.png", "png"),
+            ("notes/kept.md", LEGACY),
+        ],
+    );
+    let report = import(&src);
+    assert!(!domain_dir.join("reflections/page.md").exists(), "{report}");
+    assert!(
+        !domain_dir.join("reflections/assets/flow.png").exists(),
+        "{report}"
+    );
+    assert!(domain_dir.join("notes/kept.md").exists(), "{report}");
+    assert!(
+        report["warnings"]
+            .to_string()
+            .contains("reflections/page.md: under reflections/, which a Reflection keeps"),
+        "{report}"
+    );
+
+    // The target off again, the source's own MANIFEST on: the same.
+    std::fs::write(&manifest_path, &manifest).unwrap();
+    let src = tree(
+        "on-source",
+        &[
+            (
+                "MANIFEST.md",
+                "---\ntype: manifest\ntitle: src\npermalink: manifest\nstatus: stable\nreflection: on\n---\n\n# src\n",
+            ),
+            ("reflections/other.md", LEGACY),
+        ],
+    );
+    // Only the reflections/ entry is looked at; the source MANIFEST itself
+    // is not the subject here, so it is removed from the target afterwards.
+    let report = import(&src);
+    assert!(
+        !domain_dir.join("reflections/other.md").exists(),
+        "{report}"
+    );
+    std::fs::write(&manifest_path, &manifest).unwrap();
+}

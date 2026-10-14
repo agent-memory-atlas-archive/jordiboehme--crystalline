@@ -50,17 +50,17 @@ use crate::alias::{AliasMap, query_uses_tags};
 use crate::error::{IndexError, Result};
 use crate::store::WorkClaim;
 use crate::store::{
-    AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ContentMention, ContradictionRow,
-    DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage, EmbeddingRow,
-    EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode, GraphSlice,
-    HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector, NamedCount,
-    NewChunk, ObservationVector, OutboundRef, Page, RebuildKind, RecentFilter, ReferenceCandidates,
-    ScoredPair, SearchHit, SearchMode, SearchQuery, SpellingPlan, Store, StoreInfo, StoredEngram,
-    Vocabulary, build_vocabulary, changed_spellings, count_references_to_sql, domain_url_needles,
-    folder_slash, in_transaction, names_a_domain_url, page_window, reference_match,
-    referencing_domains_sql, rename_onto_taken_row, reset_spelled_references_sql,
-    resolve_references_to_sql, resolve_spelled_references_sql, spelled_references_sql,
-    spelling_plan,
+    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ChunkTable, ContentMention,
+    ContradictionRow, DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage,
+    EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode,
+    GraphSlice, HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector,
+    NamedCount, NewChunk, NewReflectionChunk, ObservationVector, OutboundRef, Page, RebuildKind,
+    RecentFilter, ReferenceCandidates, ReflectionRow, ScoredPair, SearchHit, SearchMode,
+    SearchQuery, SectionVector, SpellingPlan, Store, StoreInfo, StoredEngram, Vocabulary,
+    build_vocabulary, changed_spellings, count_references_to_sql, domain_url_needles, folder_slash,
+    in_transaction, names_a_domain_url, page_window, reference_match, referencing_domains_sql,
+    rename_onto_taken_row, reset_spelled_references_sql, resolve_references_to_sql,
+    resolve_spelled_references_sql, spelled_references_sql, spelling_plan,
 };
 use crate::sweep::{SpelledRef, UnresolvedRef};
 
@@ -83,20 +83,23 @@ pub struct TursoStore {
     fts_native: bool,
     // Tag name to id, to avoid re-interning tags during a sync.
     tag_cache: Mutex<HashMap<String, i64>>,
-    // The last computed embedding coverage snapshot, shared by effective_mode,
-    // the search staleness gate and CLI status so they issue one aggregate scan,
-    // not three. `None` means recompute on the next read. Interior mutability with
-    // the same std::sync discipline as tag_cache: the guard is taken in a tight
-    // scope and never held across an await (clippy::await_holding_lock).
+    // The last computed embedding coverage snapshot per chunk table, shared by
+    // effective_mode, the search staleness gate and CLI status so they issue
+    // one aggregate scan, not three. A table with no entry recomputes on its
+    // next read. Interior mutability with the same std::sync discipline as
+    // tag_cache: the guard is taken in a tight scope and never held across an
+    // await (clippy::await_holding_lock).
     //
-    // Invalidated (set to `None`) by exactly the Store methods that can change a
-    // chunk's embedding state, derived from the trait: store_embeddings (writes
-    // embeddings), replace_chunks (deletes and reinserts an engram's chunks),
-    // delete_engram (deletes an engram's chunks), clear_domain (deletes a domain's
-    // chunks), wipe (deletes every chunk) and rollback (reverts any of the above
-    // that ran inside the transaction). upsert_engram, upsert_engram_checked and
-    // rename_engram never touch the chunk table, so they are not invalidators.
-    coverage_cache: Mutex<Option<EmbeddingCoverage>>,
+    // Invalidated (cleared, every table at once) by exactly the Store methods
+    // that can change a chunk's embedding state, derived from the trait:
+    // store_embeddings_in (writes embeddings), prune_embeddings_except_in
+    // (clears them), replace_chunks (deletes and reinserts an engram's chunks),
+    // delete_engram (deletes an engram's chunks), clear_domain (deletes a
+    // domain's chunks), wipe (deletes every chunk) and rollback (reverts any of
+    // the above that ran inside the transaction). upsert_engram,
+    // upsert_engram_checked and rename_engram never touch the chunk table, so
+    // they are not invalidators.
+    coverage_cache: Mutex<HashMap<ChunkTable, EmbeddingCoverage>>,
     // The unreadable database this store was opened beside, when
     // `open_resilient` found one and moved it out of the way. `None` for every
     // ordinary open, which is every open but that one.
@@ -303,32 +306,27 @@ impl TursoStore {
             schema_version,
             fts_native,
             tag_cache: Mutex::new(HashMap::new()),
-            coverage_cache: Mutex::new(None),
+            coverage_cache: Mutex::new(HashMap::new()),
             set_aside: None,
         })
     }
 
-    /// Drop the cached embedding coverage snapshot so the next read recomputes it.
-    /// Called by every mutator that can change a chunk's embedding state. Kept in a
-    /// tight scope with no await so the std::sync guard never crosses a suspension
-    /// point.
+    /// Drop every cached embedding coverage snapshot so the next read of any
+    /// table recomputes it. One write invalidates every table: simple, and never
+    /// stale. Called by every mutator that can change a chunk's embedding state.
+    /// Kept in a tight scope with no await so the std::sync guard never crosses a
+    /// suspension point.
     fn invalidate_coverage(&self) {
-        *self.coverage_cache.lock().unwrap() = None;
+        self.coverage_cache.lock().unwrap().clear();
     }
 
-    /// Recompute the embedding coverage snapshot from the chunk table. This is the
-    /// one aggregate scan the cached `embedding_coverage()` fills from on a miss.
-    async fn compute_coverage(&self) -> Result<EmbeddingCoverage> {
-        let total = scalar_i64(&self.conn, "SELECT count(*) FROM chunk", vec![])
-            .await?
-            .max(0) as usize;
-        let rows = query_all(
-            &self.conn,
-            "SELECT model, dims, count(*) FROM chunk WHERE embedding IS NOT NULL \
-             GROUP BY model, dims ORDER BY count(*) DESC",
-            vec![],
-        )
-        .await?;
+    /// Recompute the embedding coverage snapshot of one chunk table. This is the
+    /// one aggregate scan the cached `embedding_coverage_of()` fills from on a
+    /// miss.
+    async fn compute_coverage(&self, table: ChunkTable) -> Result<EmbeddingCoverage> {
+        let sql = chunk_sql(table);
+        let total = scalar_i64(&self.conn, sql.count_all, vec![]).await?.max(0) as usize;
+        let rows = query_all(&self.conn, sql.count_embedded, vec![]).await?;
         let mut models = Vec::new();
         let mut embedded = 0usize;
         for r in &rows {
@@ -722,6 +720,133 @@ fn attachment_from_row(r: &Row) -> AttachmentRow {
     }
 }
 
+/// Decode one reflection row: path, title, content, sha256, size, modified.
+/// The column layout is identical across both backends.
+fn reflection_from_row(r: &Row) -> ReflectionRow {
+    ReflectionRow {
+        path: cell_text(r, 0).unwrap_or_default(),
+        title: cell_text(r, 1).unwrap_or_default(),
+        content: cell_text(r, 2).unwrap_or_default(),
+        sha256: cell_text(r, 3).unwrap_or_default(),
+        size: cell_i64(r, 4).unwrap_or(0).max(0) as u64,
+        modified: cell_text(r, 5).unwrap_or_default(),
+    }
+}
+
+/// The statements of one asset table. Picked by `match`, never built with
+/// `format!`, so each statement stays a literal a grep reads. The query-plan
+/// guard (`tests/it/plans.rs`) does not register them: each one seeks the
+/// table's unique `(domain_id, path)` index.
+struct AssetSql {
+    upsert: &'static str,
+    /// The blob rows that go with a deleted row, for a table that has blobs.
+    delete_blobs: Option<&'static str>,
+    delete: &'static str,
+    get: &'static str,
+    list: &'static str,
+}
+
+const ATTACHMENT_SQL: AssetSql = AssetSql {
+    upsert: "INSERT INTO attachment(domain_id, path, sha256, mime, size, modified) \
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT(domain_id, path) DO UPDATE SET \
+                 sha256=excluded.sha256, mime=excluded.mime, \
+                 size=excluded.size, modified=excluded.modified",
+    delete_blobs: Some(
+        "DELETE FROM attachment_blob WHERE attachment_id IN \
+         (SELECT id FROM attachment WHERE domain_id=?1 AND path=?2)",
+    ),
+    delete: "DELETE FROM attachment WHERE domain_id=?1 AND path=?2",
+    get: "SELECT path, sha256, mime, size, modified FROM attachment \
+          WHERE domain_id=?1 AND path=?2",
+    // TEXT sorts byte-wise here, the order the Postgres twin pins itself to
+    // with an explicit `COLLATE "C"`.
+    list: "SELECT path, sha256, mime, size, modified FROM attachment \
+           WHERE domain_id=?1 ORDER BY path",
+};
+
+const REFLECTION_ASSET_SQL: AssetSql = AssetSql {
+    upsert: "INSERT INTO reflection_asset(domain_id, path, sha256, mime, size, modified) \
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT(domain_id, path) DO UPDATE SET \
+                 sha256=excluded.sha256, mime=excluded.mime, \
+                 size=excluded.size, modified=excluded.modified",
+    // No blob table: a Reflection's bytes are always files.
+    delete_blobs: None,
+    delete: "DELETE FROM reflection_asset WHERE domain_id=?1 AND path=?2",
+    get: "SELECT path, sha256, mime, size, modified FROM reflection_asset \
+          WHERE domain_id=?1 AND path=?2",
+    list: "SELECT path, sha256, mime, size, modified FROM reflection_asset \
+           WHERE domain_id=?1 ORDER BY path",
+};
+
+fn asset_sql(table: AssetTable) -> &'static AssetSql {
+    match table {
+        AssetTable::Engram => &ATTACHMENT_SQL,
+        AssetTable::Reflection => &REFLECTION_ASSET_SQL,
+    }
+}
+
+/// The statements of one chunk table that do not depend on the query's shape.
+/// Picked by `match`, never built with `format!` for the table name, so each
+/// statement stays a literal the query-plan guard and a grep both read. The
+/// dynamic parts (placeholder lists, the cursor) are appended as before.
+struct ChunkSql {
+    /// `SELECT id, <owner>, seq, text, text_hash FROM <table> WHERE (embedding IS NULL OR model IS NULL OR model != ?1)`
+    needing: &'static str,
+    /// The domain scope clause, opened with ` AND `; the placeholder list
+    /// goes between head and tail.
+    needing_scope_head: &'static str,
+    needing_scope_tail: &'static str,
+    /// The column the keyset cursor and the `ORDER BY` lead with (`seq` follows).
+    owner_col: &'static str,
+    store: &'static str,
+    prune: &'static str,
+    count_all: &'static str,
+    count_embedded: &'static str,
+}
+
+const CHUNK_SQL: ChunkSql = ChunkSql {
+    needing: "SELECT id, engram_id, seq, text, text_hash FROM chunk \
+              WHERE (embedding IS NULL OR model IS NULL OR model != ?1)",
+    // -- actor: all - a draft's chunks reach the same embedding backlog a base
+    // row's do, which is what makes an overlay entry a full engram row rather
+    // than a second shape.
+    needing_scope_head: " AND engram_id IN (SELECT id FROM engram WHERE domain_id IN (",
+    needing_scope_tail: "))",
+    owner_col: "engram_id",
+    store: "UPDATE chunk SET embedding=?1, dims=?2, model=?3 WHERE id=?4",
+    prune: "UPDATE chunk SET embedding=NULL, dims=NULL, model=NULL \
+            WHERE embedding IS NOT NULL AND (model IS NULL OR model <> ?1)",
+    count_all: "SELECT count(*) FROM chunk",
+    count_embedded: "SELECT model, dims, count(*) FROM chunk WHERE embedding IS NOT NULL \
+                     GROUP BY model, dims ORDER BY count(*) DESC",
+};
+
+fn chunk_sql(table: ChunkTable) -> &'static ChunkSql {
+    match table {
+        ChunkTable::Engram => &CHUNK_SQL,
+        ChunkTable::Reflection => &REFLECTION_CHUNK_SQL,
+    }
+}
+
+/// The Reflection's chunk table. A reflection has no actor, so nothing here
+/// names one, and nothing here reads the `engram` table. A chunk has no owning
+/// row id (R51), so the backlog projects and orders by the chunk's own `id`.
+const REFLECTION_CHUNK_SQL: ChunkSql = ChunkSql {
+    needing: "SELECT id, id, seq, text, text_hash FROM reflection_chunk \
+              WHERE (embedding IS NULL OR model IS NULL OR model != ?1)",
+    needing_scope_head: " AND domain_id IN (",
+    needing_scope_tail: ")",
+    owner_col: "id",
+    store: "UPDATE reflection_chunk SET embedding=?1, dims=?2, model=?3 WHERE id=?4",
+    prune: "UPDATE reflection_chunk SET embedding=NULL, dims=NULL, model=NULL \
+            WHERE embedding IS NOT NULL AND (model IS NULL OR model <> ?1)",
+    count_all: "SELECT count(*) FROM reflection_chunk",
+    count_embedded: "SELECT model, dims, count(*) FROM reflection_chunk WHERE embedding IS NOT NULL \
+                     GROUP BY model, dims ORDER BY count(*) DESC",
+};
+
 /// The primary key of one attachment, or a [`IndexError::Constraint`] when the
 /// path has no row. Writing a blob without a metadata row would leave bytes
 /// nothing can serve, so the missing row is refused rather than created blank.
@@ -954,8 +1079,13 @@ fn opt_text(o: &Option<String>) -> Value {
 
 /// The maximum number of value tuples in one multi-row INSERT. Chunking keeps the
 /// bind-parameter count under SQLite's 999-parameter ceiling for every child
-/// table (the widest is chunk at 7 params per row).
+/// table (the widest is chunk at 7 params per row; `reflection_chunk` binds 11
+/// and has its own size below).
 const INSERT_CHUNK: usize = 100;
+
+/// [`INSERT_CHUNK`] for `reflection_chunk`, whose rows bind 11 parameters
+/// each: 90 rows stay under the same 999-parameter ceiling.
+const REFLECTION_INSERT_CHUNK: usize = 90;
 
 /// Build the parenthesized value tuples for a multi-row INSERT: `count` tuples of
 /// `width` sequential `?n` placeholders each, plus an optional fixed trailing
@@ -1261,6 +1391,27 @@ pub const DELETE_OBSERVATION_VECTORS_EXCEPT_SQL: &str =
 /// the contradiction check's off switch.
 #[doc(hidden)]
 pub const CLEAR_OBSERVATION_VECTORS_SQL: &str = "DELETE FROM observation_vector";
+
+/// The vector half of a reflection search: the closest chunk of each section
+/// of one domain's pages. Two narrow columns and the distance go into the
+/// grouping sorter, never a chunk's text (the turso sorter spill rule of
+/// `semantic_phase1_sql`), and the `LIMIT` bounds it. The `100` is
+/// `rank::SEMANTIC_TOPK` written out so the statement stays a `const`; a unit
+/// test in `reflection.rs` holds the two together.
+#[doc(hidden)]
+pub const REFLECTION_VECTOR_SQL: &str = "SELECT rc.path, rc.section_ord, min(vector_distance_cos(rc.embedding, ?1)) AS dist \
+     FROM reflection_chunk rc \
+     WHERE rc.domain_id=?2 AND rc.embedding IS NOT NULL AND rc.model=?3 AND rc.dims=?4 \
+     GROUP BY rc.path, rc.section_ord ORDER BY dist ASC, rc.path ASC, rc.section_ord ASC LIMIT 100";
+
+/// The aggregate behind [`Store::reflection_coverage`]: one domain's reflection
+/// chunks grouped by model and width, each group with its row count and its
+/// embedded count. A chunk not embedded yet has no model and no width, so it
+/// lands in the one group whose embedded count is 0. The domain index serves
+/// the domain and hands the groups over in order.
+#[doc(hidden)]
+pub const REFLECTION_COVERAGE_SQL: &str = "SELECT rc.model, rc.dims, count(*), count(rc.embedding) \
+     FROM reflection_chunk rc WHERE rc.domain_id=?1 GROUP BY rc.model, rc.dims";
 
 /// The address lookup behind [`Store::find_engram`].
 ///
@@ -1689,6 +1840,8 @@ impl Store for TursoStore {
     }
 
     async fn drop_empty_domain_row(&self, name: &str) -> Result<bool> {
+        // May delete stray chunk rows, so the coverage snapshot may be stale.
+        self.invalidate_coverage();
         in_transaction(self, async {
             // -- actor: all - one actor's draft is content too, so any row of
             // any actor keeps the domain row.
@@ -1696,7 +1849,9 @@ impl Store for TursoStore {
                 &self.conn,
                 "SELECT d.id FROM domain d WHERE d.name=?1 \
                  AND NOT EXISTS (SELECT 1 FROM engram e WHERE e.domain_id=d.id) \
-                 AND NOT EXISTS (SELECT 1 FROM attachment a WHERE a.domain_id=d.id)",
+                 AND NOT EXISTS (SELECT 1 FROM attachment a WHERE a.domain_id=d.id) \
+                 AND NOT EXISTS (SELECT 1 FROM reflection r WHERE r.domain_id=d.id) \
+                 AND NOT EXISTS (SELECT 1 FROM reflection_asset f WHERE f.domain_id=d.id)",
                 vec![Value::Text(name.to_string())],
             )
             .await?
@@ -1708,6 +1863,9 @@ impl Store for TursoStore {
             // the row is cleared by hand before the row itself.
             for sql in [
                 "DELETE FROM domain_spelling WHERE domain_id=?1",
+                // A chunk is not content, so it does not keep the row; it
+                // goes with it (the funnel never leaves one without its page).
+                "DELETE FROM reflection_chunk WHERE domain_id=?1",
                 "DELETE FROM tag_alias WHERE domain_id=?1",
                 "DELETE FROM domain_lock WHERE domain_id=?1",
                 "DELETE FROM relation WHERE domain_id=?1",
@@ -1952,6 +2110,9 @@ impl Store for TursoStore {
             "DELETE FROM attachment_blob WHERE attachment_id IN \
              (SELECT id FROM attachment WHERE domain_id=?1)",
             "DELETE FROM attachment WHERE domain_id=?1",
+            "DELETE FROM reflection_chunk WHERE domain_id=?1",
+            "DELETE FROM reflection WHERE domain_id=?1",
+            "DELETE FROM reflection_asset WHERE domain_id=?1",
             // Every spelling but the row's own name, which stays with the row.
             "DELETE FROM domain_spelling WHERE domain_id=?1 \
              AND spelling <> (SELECT name FROM domain WHERE id=?1)",
@@ -2859,8 +3020,9 @@ impl Store for TursoStore {
         Ok(())
     }
 
-    async fn chunks_needing_embedding(
+    async fn chunks_needing_embedding_in(
         &self,
+        table: ChunkTable,
         model: &str,
         domains: Option<&[DomainId]>,
         limit: usize,
@@ -2878,10 +3040,8 @@ impl Store for TursoStore {
         // always present, so turso keeps only `limit` records: one page of chunk
         // texts, each capped by the chunker's token budget. Never add a
         // `GROUP BY` here, and never drop the `LIMIT`.
-        let mut sql = String::from(
-            "SELECT id, engram_id, seq, text, text_hash FROM chunk \
-             WHERE (embedding IS NULL OR model IS NULL OR model != ?1)",
-        );
+        let chunk = chunk_sql(table);
+        let mut sql = String::from(chunk.needing);
         let mut params = vec![Value::Text(model.to_string())];
         let mut n = 2;
         if let Some(ids) = domains {
@@ -2897,26 +3057,24 @@ impl Store for TursoStore {
                     p
                 })
                 .collect();
-            sql.push_str(&format!(
-                // -- actor: all - a draft's chunks reach the same embedding
-                // backlog a base row's do, which is what makes an overlay entry
-                // a full engram row rather than a second shape.
-                " AND engram_id IN (SELECT id FROM engram WHERE domain_id IN ({}))",
-                placeholders.join(",")
-            ));
+            // The scope clause's actor note sits on `CHUNK_SQL`.
+            sql.push_str(chunk.needing_scope_head);
+            sql.push_str(&placeholders.join(","));
+            sql.push_str(chunk.needing_scope_tail);
         }
-        if let Some((engram_id, seq)) = after {
+        let owner = chunk.owner_col;
+        if let Some((owner_id, seq)) = after {
             sql.push_str(&format!(
-                " AND (engram_id > ?{n} OR (engram_id = ?{} AND seq > ?{}))",
+                " AND ({owner} > ?{n} OR ({owner} = ?{} AND seq > ?{}))",
                 n + 1,
                 n + 2
             ));
-            params.push(Value::Integer(engram_id));
-            params.push(Value::Integer(engram_id));
+            params.push(Value::Integer(owner_id));
+            params.push(Value::Integer(owner_id));
             params.push(Value::Integer(seq));
             n += 3;
         }
-        sql.push_str(&format!(" ORDER BY engram_id, seq LIMIT ?{n}"));
+        sql.push_str(&format!(" ORDER BY {owner}, seq LIMIT ?{n}"));
         params.push(Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)));
         let rows = query_all(&self.conn, &sql, params).await?;
         Ok(rows
@@ -2931,7 +3089,12 @@ impl Store for TursoStore {
             .collect())
     }
 
-    async fn store_embeddings(&self, batch: &[EmbeddingRow], model: &str) -> Result<()> {
+    async fn store_embeddings_in(
+        &self,
+        table: ChunkTable,
+        batch: &[EmbeddingRow],
+        model: &str,
+    ) -> Result<()> {
         // Writes embeddings, so the coverage snapshot is now stale.
         self.invalidate_coverage();
         // Validate the whole batch before opening the transaction so a bad row
@@ -2956,7 +3119,7 @@ impl Store for TursoStore {
             if let Err(e) = self
                 .conn
                 .execute(
-                    "UPDATE chunk SET embedding=?1, dims=?2, model=?3 WHERE id=?4",
+                    chunk_sql(table).store,
                     vec![
                         Value::Blob(bytes),
                         Value::Integer(row.dims as i64),
@@ -2974,31 +3137,30 @@ impl Store for TursoStore {
         Ok(())
     }
 
-    async fn prune_embeddings_except(&self, model: &str) -> Result<usize> {
+    async fn prune_embeddings_except_in(&self, table: ChunkTable, model: &str) -> Result<usize> {
         // Clears embeddings, so the coverage snapshot is now stale.
         self.invalidate_coverage();
         let n = self
             .conn
-            .execute(
-                "UPDATE chunk SET embedding=NULL, dims=NULL, model=NULL \
-                 WHERE embedding IS NOT NULL AND (model IS NULL OR model <> ?1)",
-                vec![Value::Text(model.to_string())],
-            )
+            .execute(chunk_sql(table).prune, vec![Value::Text(model.to_string())])
             .await?;
         Ok(n as usize)
     }
 
-    async fn embedding_coverage(&self) -> Result<EmbeddingCoverage> {
+    async fn embedding_coverage_of(&self, table: ChunkTable) -> Result<EmbeddingCoverage> {
         // Fast path in a tight scope so the std::sync guard is dropped before the
         // recompute await below (clippy::await_holding_lock), tag_cache style.
         {
             let cached = self.coverage_cache.lock().unwrap();
-            if let Some(cov) = cached.as_ref() {
+            if let Some(cov) = cached.get(&table) {
                 return Ok(cov.clone());
             }
         }
-        let cov = self.compute_coverage().await?;
-        *self.coverage_cache.lock().unwrap() = Some(cov.clone());
+        let cov = self.compute_coverage(table).await?;
+        self.coverage_cache
+            .lock()
+            .unwrap()
+            .insert(table, cov.clone());
         Ok(cov)
     }
 
@@ -3991,14 +4153,15 @@ impl Store for TursoStore {
         }))
     }
 
-    async fn upsert_attachment(&self, domain: DomainId, row: &AttachmentRow) -> Result<()> {
+    async fn upsert_asset(
+        &self,
+        table: AssetTable,
+        domain: DomainId,
+        row: &AttachmentRow,
+    ) -> Result<()> {
         self.conn
             .execute(
-                "INSERT INTO attachment(domain_id, path, sha256, mime, size, modified) \
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6) \
-                 ON CONFLICT(domain_id, path) DO UPDATE SET \
-                     sha256=excluded.sha256, mime=excluded.mime, \
-                     size=excluded.size, modified=excluded.modified",
+                asset_sql(table).upsert,
                 vec![
                     Value::Integer(domain.0),
                     Value::Text(row.path.clone()),
@@ -4012,43 +4175,38 @@ impl Store for TursoStore {
         Ok(())
     }
 
-    async fn delete_attachment(&self, domain: DomainId, path: &str) -> Result<bool> {
+    async fn delete_asset(&self, table: AssetTable, domain: DomainId, path: &str) -> Result<bool> {
+        let sql = asset_sql(table);
+        let key = vec![Value::Integer(domain.0), Value::Text(path.to_string())];
         // The blob goes first and by hand: this connection does not enable
         // `PRAGMA foreign_keys`, so the declared cascade would not fire and the
         // blob would outlive its row.
-        let key = vec![Value::Integer(domain.0), Value::Text(path.to_string())];
-        self.conn
-            .execute(
-                "DELETE FROM attachment_blob WHERE attachment_id IN \
-                 (SELECT id FROM attachment WHERE domain_id=?1 AND path=?2)",
-                key.clone(),
-            )
-            .await?;
-        let n = self
-            .conn
-            .execute("DELETE FROM attachment WHERE domain_id=?1 AND path=?2", key)
-            .await?;
+        if let Some(blobs) = sql.delete_blobs {
+            self.conn.execute(blobs, key.clone()).await?;
+        }
+        let n = self.conn.execute(sql.delete, key).await?;
         Ok(n > 0)
     }
 
-    async fn get_attachment(&self, domain: DomainId, path: &str) -> Result<Option<AttachmentRow>> {
+    async fn get_asset(
+        &self,
+        table: AssetTable,
+        domain: DomainId,
+        path: &str,
+    ) -> Result<Option<AttachmentRow>> {
         let row = query_first(
             &self.conn,
-            "SELECT path, sha256, mime, size, modified FROM attachment \
-             WHERE domain_id=?1 AND path=?2",
+            asset_sql(table).get,
             vec![Value::Integer(domain.0), Value::Text(path.to_string())],
         )
         .await?;
         Ok(row.as_ref().map(attachment_from_row))
     }
 
-    async fn list_attachments(&self, domain: DomainId) -> Result<Vec<AttachmentRow>> {
-        // TEXT sorts byte-wise here, the order the Postgres twin pins itself to
-        // with an explicit `COLLATE "C"`.
+    async fn list_assets(&self, table: AssetTable, domain: DomainId) -> Result<Vec<AttachmentRow>> {
         let rows = query_all(
             &self.conn,
-            "SELECT path, sha256, mime, size, modified FROM attachment \
-             WHERE domain_id=?1 ORDER BY path",
+            asset_sql(table).list,
             vec![Value::Integer(domain.0)],
         )
         .await?;
@@ -4086,6 +4244,218 @@ impl Store for TursoStore {
         }))
     }
 
+    async fn upsert_reflection(&self, domain: DomainId, row: &ReflectionRow) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO reflection(domain_id, path, title, content, sha256, size, modified) \
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                 ON CONFLICT(domain_id, path) DO UPDATE SET \
+                     title=excluded.title, content=excluded.content, sha256=excluded.sha256, \
+                     size=excluded.size, modified=excluded.modified",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(row.path.clone()),
+                    Value::Text(row.title.clone()),
+                    Value::Text(row.content.clone()),
+                    Value::Text(row.sha256.clone()),
+                    Value::Integer(row.size as i64),
+                    Value::Text(row.modified.clone()),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_reflection(&self, domain: DomainId, path: &str) -> Result<bool> {
+        // Takes the page's chunks too (R53), so the coverage snapshot is now
+        // stale.
+        self.invalidate_coverage();
+        let key = vec![Value::Integer(domain.0), Value::Text(path.to_string())];
+        self.conn
+            .execute(
+                "DELETE FROM reflection_chunk WHERE domain_id=?1 AND path=?2",
+                key.clone(),
+            )
+            .await?;
+        let n = self
+            .conn
+            .execute("DELETE FROM reflection WHERE domain_id=?1 AND path=?2", key)
+            .await?;
+        Ok(n > 0)
+    }
+
+    async fn get_reflection(&self, domain: DomainId, path: &str) -> Result<Option<ReflectionRow>> {
+        let row = query_first(
+            &self.conn,
+            "SELECT path, title, content, sha256, size, modified FROM reflection \
+             WHERE domain_id=?1 AND path=?2",
+            vec![Value::Integer(domain.0), Value::Text(path.to_string())],
+        )
+        .await?;
+        Ok(row.as_ref().map(reflection_from_row))
+    }
+
+    async fn list_reflections(&self, domain: DomainId) -> Result<Vec<ReflectionRow>> {
+        // TEXT sorts byte-wise here, the order the Postgres twin pins itself to
+        // with an explicit `COLLATE "C"`.
+        let rows = query_all(
+            &self.conn,
+            "SELECT path, title, content, sha256, size, modified FROM reflection \
+             WHERE domain_id=?1 ORDER BY path",
+            vec![Value::Integer(domain.0)],
+        )
+        .await?;
+        Ok(rows.iter().map(reflection_from_row).collect())
+    }
+
+    async fn reflection_coverage(&self, domain: DomainId) -> Result<EmbeddingCoverage> {
+        let rows = query_all(
+            &self.conn,
+            REFLECTION_COVERAGE_SQL,
+            vec![Value::Integer(domain.0)],
+        )
+        .await?;
+        let mut coverage = EmbeddingCoverage::default();
+        for r in &rows {
+            let total = cell_i64(r, 2).unwrap_or(0).max(0) as usize;
+            let embedded = cell_i64(r, 3).unwrap_or(0).max(0) as usize;
+            coverage.total_chunks += total;
+            coverage.embedded_chunks += embedded;
+            let model = cell_text(r, 0).unwrap_or_default();
+            if embedded == 0 || model.is_empty() {
+                continue;
+            }
+            coverage.models.push(ChunkModelCount {
+                model,
+                dims: cell_i64(r, 1).unwrap_or(0).max(0) as usize,
+                count: embedded,
+            });
+        }
+        // Most chunks first, as the table-wide count orders them.
+        coverage.models.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.model.cmp(&b.model))
+                .then(a.dims.cmp(&b.dims))
+        });
+        Ok(coverage)
+    }
+
+    async fn reflection_vector_hits(
+        &self,
+        domain: DomainId,
+        query: &[f32],
+        model: &str,
+    ) -> Result<Vec<SectionVector>> {
+        let coverage = self.reflection_coverage(domain).await?;
+        crate::rank::check_staleness(&coverage, model, query.len())?;
+        let rows = query_all(
+            &self.conn,
+            REFLECTION_VECTOR_SQL,
+            vec![
+                Value::Blob(crate::store::pack_f32_le(query)),
+                Value::Integer(domain.0),
+                Value::Text(model.to_string()),
+                Value::Integer(query.len() as i64),
+            ],
+        )
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| SectionVector {
+                path: cell_text(r, 0).unwrap_or_default(),
+                section_ord: cell_i64(r, 1).unwrap_or(0).max(0) as usize,
+                similarity: 1.0 - cell_real(r, 2).unwrap_or(1.0),
+            })
+            .collect())
+    }
+
+    async fn replace_reflection_chunks(
+        &self,
+        domain: DomainId,
+        path: &str,
+        chunks: &[NewReflectionChunk],
+    ) -> Result<()> {
+        // Deletes and reinserts this page's chunks, so the coverage snapshot
+        // is now stale.
+        self.invalidate_coverage();
+        let key = vec![Value::Integer(domain.0), Value::Text(path.to_string())];
+        // Carry over the vector of any chunk whose fingerprint is unchanged, as
+        // `replace_chunks` does within an engram, so an edit re-embeds only the
+        // sections that changed and a provenance-only write keeps them all.
+        let existing = query_all(
+            &self.conn,
+            "SELECT text_hash, model, dims, embedding FROM reflection_chunk \
+             WHERE domain_id=?1 AND path=?2 AND embedding IS NOT NULL",
+            key.clone(),
+        )
+        .await?;
+        let mut carry: HashMap<String, (Value, Value, Vec<u8>)> = HashMap::new();
+        for r in &existing {
+            let Some(hash) = cell_text(r, 0) else {
+                continue;
+            };
+            let model = match r.get_value(1) {
+                Ok(Value::Text(s)) => Value::Text(s),
+                _ => Value::Null,
+            };
+            let dims = match r.get_value(2) {
+                Ok(Value::Integer(i)) => Value::Integer(i),
+                _ => Value::Null,
+            };
+            let Ok(Value::Blob(emb)) = r.get_value(3) else {
+                continue;
+            };
+            carry.insert(hash, (model, dims, emb));
+        }
+
+        self.conn
+            .execute(
+                "DELETE FROM reflection_chunk WHERE domain_id=?1 AND path=?2",
+                key,
+            )
+            .await?;
+
+        // One 11-column multi-row insert per batch: a carry hit binds its
+        // preserved model, dims and embedding, a miss binds NULL for all three
+        // and leaves the chunk pending embedding.
+        for batch in chunks.chunks(REFLECTION_INSERT_CHUNK) {
+            let mut params: Vec<Value> = Vec::with_capacity(batch.len() * 11);
+            for c in batch {
+                params.push(Value::Integer(domain.0));
+                params.push(Value::Text(path.to_string()));
+                params.push(Value::Integer(c.chunk.seq));
+                params.push(Value::Integer(c.section_ord));
+                params.push(match &c.section {
+                    Some(id) => Value::Text(id.clone()),
+                    None => Value::Null,
+                });
+                params.push(Value::Text(c.heading.clone()));
+                params.push(Value::Text(c.chunk.text.clone()));
+                params.push(Value::Text(c.chunk.text_hash.clone()));
+                match carry.get(&c.chunk.text_hash) {
+                    Some((model, dims, emb)) => {
+                        params.push(model.clone());
+                        params.push(dims.clone());
+                        params.push(Value::Blob(emb.clone()));
+                    }
+                    None => {
+                        params.push(Value::Null);
+                        params.push(Value::Null);
+                        params.push(Value::Null);
+                    }
+                }
+            }
+            let sql = format!(
+                "INSERT INTO reflection_chunk(domain_id, path, seq, section_ord, section, heading, \
+                 text, text_hash, model, dims, embedding) VALUES {}",
+                value_rows(11, batch.len(), None)
+            );
+            self.conn.execute(&sql, params).await?;
+        }
+        Ok(())
+    }
+
     async fn begin(&self) -> Result<()> {
         self.conn.execute("BEGIN", ()).await?;
         Ok(())
@@ -4111,6 +4481,71 @@ mod tests {
 
     use super::*;
     use crate::store::{FileStamp, ObservationRecord};
+
+    /// The reflection vector statement compares the query only with vectors
+    /// of its own width: a chunk of the active model stored at another width
+    /// is left out, not handed to the distance function. Run against the
+    /// statement itself, because `reflection_vector_hits` refuses such a
+    /// domain at its staleness gate before the statement runs, so the width
+    /// predicate is the statement's own guard.
+    #[tokio::test]
+    async fn the_reflection_vector_statement_reads_one_width() {
+        let store = TursoStore::open_in_memory().await.unwrap();
+        let did = store
+            .upsert_domain("eng", Some("/k/eng"), crate::store::DomainKind::File)
+            .await
+            .unwrap();
+        let chunk = |ord: i64, text: &str| NewReflectionChunk {
+            section_ord: ord,
+            section: None,
+            heading: String::new(),
+            chunk: crate::store::NewChunk {
+                seq: ord,
+                text: text.to_string(),
+                text_hash: text.to_string(),
+            },
+        };
+        store
+            .replace_reflection_chunks(did, "a.md", &[chunk(0, "wide"), chunk(1, "narrow")])
+            .await
+            .unwrap();
+        let jobs = store
+            .chunks_needing_embedding_in(ChunkTable::Reflection, "m", None, 10, None)
+            .await
+            .unwrap();
+        for job in &jobs {
+            let width = if job.text == "wide" { 8 } else { 4 };
+            store
+                .store_embeddings_in(
+                    ChunkTable::Reflection,
+                    &[crate::store::EmbeddingRow {
+                        chunk_id: job.chunk_id,
+                        embedding: vec![0.5; width],
+                        dims: width,
+                    }],
+                    "m",
+                )
+                .await
+                .unwrap();
+        }
+        let rows = query_all(
+            &store.conn,
+            REFLECTION_VECTOR_SQL,
+            vec![
+                Value::Blob(crate::store::pack_f32_le(&[0.5; 8])),
+                Value::Integer(did.0),
+                Value::Text("m".to_string()),
+                Value::Integer(8),
+            ],
+        )
+        .await
+        .expect("the narrow chunk never reaches the distance function");
+        let got: Vec<(String, i64)> = rows
+            .iter()
+            .map(|r| (cell_text(r, 0).unwrap(), cell_i64(r, 1).unwrap()))
+            .collect();
+        assert_eq!(got, [("a.md".to_string(), 0)], "the 8-wide chunk alone");
+    }
 
     /// A line vector whose stored blob disagrees with its `dims` column is
     /// skipped, not returned: a blob of one float under `dims` 4, and a blob
@@ -4159,6 +4594,51 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    /// Deleting an attachment row takes its blob with it. Counted raw,
+    /// because `read_attachment_blob` joins `attachment` and so cannot see a
+    /// blob whose row is gone: this connection enforces no foreign key, so
+    /// the blob statement in `ATTACHMENT_SQL` is the only thing that deletes
+    /// it.
+    #[tokio::test]
+    async fn deleting_an_attachment_leaves_no_orphaned_blob() {
+        let store = TursoStore::open_in_memory().await.unwrap();
+        let did = store
+            .upsert_domain("v", None, DomainKind::Virtual)
+            .await
+            .unwrap();
+        store
+            .upsert_attachment(
+                did,
+                &AttachmentRow {
+                    path: "assets/shot.png".to_string(),
+                    sha256: "abc".to_string(),
+                    mime: "image/png".to_string(),
+                    size: 5,
+                    modified: "2026-10-14T09:00:00+00:00".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .write_attachment_blob(did, "assets/shot.png", b"bytes")
+            .await
+            .unwrap();
+        let blobs = async || {
+            query_first(&store.conn, "SELECT COUNT(*) FROM attachment_blob", vec![])
+                .await
+                .unwrap()
+                .and_then(|r| cell_i64(&r, 0))
+        };
+        assert_eq!(blobs().await, Some(1));
+        assert!(
+            store
+                .delete_attachment(did, "assets/shot.png")
+                .await
+                .unwrap()
+        );
+        assert_eq!(blobs().await, Some(0), "the blob went with its row");
     }
 
     #[test]

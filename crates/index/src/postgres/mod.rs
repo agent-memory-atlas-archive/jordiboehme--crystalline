@@ -29,8 +29,9 @@
 //!   access behind one mutex, this reproduces Turso's single-connection model and
 //!   gives the CAS the same atomicity.
 //! - Unlike Turso's unenforced `F32_BLOB`, pgvector enforces the `chunk.embedding`
-//!   column's declared width at insert. `store_embeddings` resizes it to the
-//!   active provider's `dims` on the fly (see `ensure_embedding_width`), so any
+//!   column's declared width at insert. `store_embeddings_in` resizes the
+//!   column of the chunk table it writes to the active provider's `dims` on the
+//!   fly (see `ensure_embedding_width`, which keeps the width per table), so any
 //!   provider works on either backend; a dims change already invalidates every
 //!   stored vector through the existing staleness machinery, so the resize rides
 //!   that invalidation instead of adding a new one.
@@ -41,13 +42,14 @@
 //!   cache of the one connection that ran it (`clear_cached_statements` in
 //!   `ensure_embedding_width`), so any other pooled connection with a stale plan
 //!   still cached raises Postgres's "cached plan must not change result type" on
-//!   its next use. Two statements in this module return that raw column and are
-//!   therefore the ones exposed to the hazard: `replace_chunks`' carry SELECT
-//!   and `lead_vectors`' SELECT. Nothing in `search` is - an expression over
-//!   the column (the `<=>` distance operator, which yields `float8`) or a
-//!   statement that only binds a vector parameter is unaffected and stays
-//!   cached. Any statement added later that selects `chunk.embedding` itself
-//!   joins that list and needs the same treatment.
+//!   its next use. Three statements in this module return that raw column and
+//!   are therefore the ones exposed to the hazard: `replace_chunks`' and
+//!   `replace_reflection_chunks`' carry SELECTs and `lead_vectors`' SELECT.
+//!   Nothing in `search` is - an expression over the column (the `<=>`
+//!   distance operator, which yields `float8`) or a statement that only binds
+//!   a vector parameter is unaffected and stays cached. Any statement added
+//!   later that selects a raw `embedding` column joins that list and needs the
+//!   same treatment.
 //!
 //!   Two fixes were tried and rejected before landing on the one below.
 //!   `.persistent(false)` (never cache the statement) looked right but breaks on
@@ -67,10 +69,13 @@
 //!
 //!   The fix instead prevents the stale plan from ever being reused:
 //!   `embedding_generation`, an `AtomicU64` on `PostgresStore`, is bumped every
-//!   time `ensure_embedding_width` actually runs its ALTER. Both exposed
-//!   statements fold the current generation into their SQL text as a trailing
-//!   comment, so a width change gives each of them different SQL text and
-//!   therefore a different sqlx cache key; every connection, not just the one
+//!   time `ensure_embedding_width` actually runs its ALTER, on any chunk table.
+//!   It is one counter for every table, not one per table: a resize of any
+//!   table rotates the cache key of every exposed statement, which is safe and
+//!   costs one re-prepare. Every exposed statement folds the current
+//!   generation into its SQL text as a trailing comment, so a width change
+//!   gives each of them different SQL text and therefore a different sqlx
+//!   cache key; every connection, not just the one
 //!   that ran the DDL, prepares fresh the next time it runs one of them after
 //!   a resize, and the plan it had cached under the old generation's text
 //!   simply ages out of the LRU unused.
@@ -106,17 +111,18 @@ use crate::alias::{AliasMap, query_uses_tags};
 use crate::error::{IndexError, Result};
 use crate::store::WorkClaim;
 use crate::store::{
-    AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ContentMention, ContradictionRow,
-    DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage, EmbeddingRow,
-    EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode, GraphSlice,
-    HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector, NamedCount,
-    NewChunk, OBSERVATION_VECTOR_CHUNK, ObservationVector, OutboundRef, Page, RebuildKind,
-    RecentFilter, ReferenceCandidates, ScoredPair, SearchHit, SearchMode, SearchQuery,
-    SpellingPlan, Store, StoreInfo, StoredEngram, Vocabulary, build_vocabulary, changed_spellings,
-    count_references_to_sql, domain_url_needles, folder_slash, in_transaction, names_a_domain_url,
-    page_window, reference_match, referencing_domains_sql, rename_onto_taken_row,
-    reset_spelled_references_sql, resolve_references_to_sql, resolve_spelled_references_sql,
-    spelled_references_sql, spelling_plan,
+    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ChunkTable, ContentMention,
+    ContradictionRow, DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage,
+    EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode,
+    GraphSlice, HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector,
+    NamedCount, NewChunk, NewReflectionChunk, OBSERVATION_VECTOR_CHUNK, ObservationVector,
+    OutboundRef, Page, RebuildKind, RecentFilter, ReferenceCandidates, ReflectionRow, ScoredPair,
+    SearchHit, SearchMode, SearchQuery, SectionVector, SpellingPlan, Store, StoreInfo,
+    StoredEngram, Vocabulary, build_vocabulary, changed_spellings, count_references_to_sql,
+    domain_url_needles, folder_slash, in_transaction, names_a_domain_url, page_window,
+    reference_match, referencing_domains_sql, rename_onto_taken_row, reset_spelled_references_sql,
+    resolve_references_to_sql, resolve_spelled_references_sql, spelled_references_sql,
+    spelling_plan,
 };
 use crate::sweep::{SpelledRef, UnresolvedRef};
 
@@ -229,11 +235,12 @@ pub struct PostgresStore {
     // Tag name to id, to avoid re-interning tags during a sync. Cleared on
     // rollback and wipe so a rolled-back tag id is never served stale.
     tag_cache: Mutex<HashMap<String, i64>>,
-    // The `chunk.embedding` column width last confirmed by this store, so a
-    // same-width `store_embeddings` call skips the catalog lookup. `None`
-    // until the first call; set by `ensure_embedding_width`, never by wipe
-    // (wiping rows never changes the column type).
-    embedding_width: Mutex<Option<i64>>,
+    // The `embedding` column width last confirmed by this store, per chunk
+    // table, so a same-width `store_embeddings_in` call skips the catalog
+    // lookup. Absent until the first call on that table; set by
+    // `ensure_embedding_width`, never by wipe (wiping rows never changes the
+    // column type).
+    embedding_width: Mutex<HashMap<ChunkTable, i64>>,
     // Bumped by `ensure_embedding_width` every time its `ALTER TABLE ... TYPE
     // vector({dims})` actually runs (never on the already-matches fast path).
     // `replace_chunks` folds the current value into its carry SELECT's SQL
@@ -244,20 +251,23 @@ pub struct PostgresStore {
     // `Ordering::Relaxed` is enough since the engine mutex already serializes
     // all store access, so there is never a concurrent reader to order against.
     embedding_generation: AtomicU64,
-    // The last computed embedding coverage snapshot, shared by effective_mode,
-    // the search staleness gate and CLI status so they issue one aggregate scan,
-    // not three. `None` means recompute on the next read. Interior mutability with
-    // the same std::sync discipline as tag_cache: the guard is taken in a tight
-    // scope and never held across an await (clippy::await_holding_lock).
+    // The last computed embedding coverage snapshot per chunk table, shared by
+    // effective_mode, the search staleness gate and CLI status so they issue
+    // one aggregate scan, not three. A table with no entry recomputes on its
+    // next read. Interior mutability with the same std::sync discipline as
+    // tag_cache: the guard is taken in a tight scope and never held across an
+    // await (clippy::await_holding_lock).
     //
-    // Invalidated (set to `None`) by exactly the Store methods that can change a
-    // chunk's embedding state, derived from the trait: store_embeddings (writes
-    // embeddings), replace_chunks (deletes and reinserts an engram's chunks),
-    // delete_engram (deletes an engram's chunks), clear_domain (deletes a domain's
-    // chunks), wipe (deletes every chunk) and rollback (reverts any of the above
-    // that ran inside the transaction). upsert_engram, upsert_engram_checked and
-    // rename_engram never touch the chunk table, so they are not invalidators.
-    coverage_cache: Mutex<Option<EmbeddingCoverage>>,
+    // Invalidated (cleared, every table at once) by exactly the Store methods
+    // that can change a chunk's embedding state, derived from the trait:
+    // store_embeddings_in (writes embeddings), prune_embeddings_except_in
+    // (clears them), replace_chunks (deletes and reinserts an engram's chunks),
+    // delete_engram (deletes an engram's chunks), clear_domain (deletes a
+    // domain's chunks), wipe (deletes every chunk) and rollback (reverts any of
+    // the above that ran inside the transaction). upsert_engram,
+    // upsert_engram_checked and rename_engram never touch the chunk table, so
+    // they are not invalidators.
+    coverage_cache: Mutex<HashMap<ChunkTable, EmbeddingCoverage>>,
 }
 
 /// A connection handle for one store method: either the pinned transaction
@@ -322,35 +332,30 @@ impl PostgresStore {
             schema_version,
             schema,
             tag_cache: Mutex::new(HashMap::new()),
-            embedding_width: Mutex::new(None),
+            embedding_width: Mutex::new(HashMap::new()),
             embedding_generation: AtomicU64::new(0),
-            coverage_cache: Mutex::new(None),
+            coverage_cache: Mutex::new(HashMap::new()),
         })
     }
 
-    /// Drop the cached embedding coverage snapshot so the next read recomputes it.
-    /// Called by every mutator that can change a chunk's embedding state. Kept in a
-    /// tight scope with no await so the std::sync guard never crosses a suspension
-    /// point.
+    /// Drop every cached embedding coverage snapshot so the next read of any
+    /// table recomputes it. One write invalidates every table: simple, and never
+    /// stale. Called by every mutator that can change a chunk's embedding state.
+    /// Kept in a tight scope with no await so the std::sync guard never crosses a
+    /// suspension point.
     fn invalidate_coverage(&self) {
-        *self.coverage_cache.lock().unwrap() = None;
+        self.coverage_cache.lock().unwrap().clear();
     }
 
-    /// Recompute the embedding coverage snapshot from the chunk table. This is the
-    /// one aggregate scan the cached `embedding_coverage()` fills from on a miss.
-    async fn compute_coverage(&self) -> Result<EmbeddingCoverage> {
+    /// Recompute the embedding coverage snapshot of one chunk table. This is the
+    /// one aggregate scan the cached `embedding_coverage_of()` fills from on a
+    /// miss.
+    async fn compute_coverage(&self, table: ChunkTable) -> Result<EmbeddingCoverage> {
+        let sql = chunk_sql(table);
         let mut conn = self.acquire().await?;
         let c = conn.as_mut();
-        let total = scalar_i64(&mut *c, "SELECT count(*) FROM chunk", vec![])
-            .await?
-            .max(0) as usize;
-        let rows = query_all(
-            &mut *c,
-            "SELECT model, dims, count(*) FROM chunk WHERE embedding IS NOT NULL \
-             GROUP BY model, dims ORDER BY count(*) DESC",
-            vec![],
-        )
-        .await?;
+        let total = scalar_i64(&mut *c, sql.count_all, vec![]).await?.max(0) as usize;
+        let rows = query_all(&mut *c, sql.count_embedded, vec![]).await?;
         let mut models = Vec::new();
         let mut embedded = 0usize;
         for r in &rows {
@@ -531,65 +536,70 @@ impl PostgresStore {
     /// not change result type"). The `clear_cached_statements` at the end
     /// sheds `conn`'s own stale plans but cannot reach the pool's other
     /// connections, so on a successful resize this bumps
-    /// `embedding_generation`: the two statements that return that raw column
-    /// (`replace_chunks`' carry SELECT and `lead_vectors`' SELECT) fold the new
+    /// `embedding_generation`: the statements that return that raw column
+    /// (`replace_chunks`' and `replace_reflection_chunks`' carry SELECTs and
+    /// `lead_vectors`' SELECT) fold the new
     /// value into their SQL text, which changes sqlx's cache key and forces a
     /// fresh prepare everywhere, on this connection and every other one,
     /// without needing to reach them. See the module doc for the full hazard
     /// and why those statements cannot instead retry in place.
-    async fn ensure_embedding_width(&self, conn: &mut PgConnection, dims: usize) -> Result<()> {
+    ///
+    /// The width is kept per chunk table: each table's `embedding` column is
+    /// probed and resized on its own, through the statements `chunk_width_sql`
+    /// picks for `table`.
+    async fn ensure_embedding_width(
+        &self,
+        conn: &mut PgConnection,
+        table: ChunkTable,
+        dims: usize,
+    ) -> Result<()> {
         let dims = dims as i64;
-        if *self.embedding_width.lock().unwrap() == Some(dims) {
+        if self.embedding_width.lock().unwrap().get(&table) == Some(&dims) {
             return Ok(());
         }
+        let ddl = chunk_width_sql(table);
         // `atttypmod` on a pgvector column is the declared dimension count
         // itself (pgvector stores it unmodified, unlike the `length + 4`
         // convention `char(n)`/`varchar(n)` use), so no decoding is needed.
         // `to_regclass` resolves through the connection's `search_path`, so
         // this finds the right `chunk` table under per-test schema isolation
         // without any schema-qualification.
-        let current: Option<(i32,)> = sqlx::query_as(
-            "SELECT atttypmod FROM pg_attribute \
-             WHERE attrelid = to_regclass('chunk') AND attname = 'embedding' AND NOT attisdropped",
-        )
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(IndexError::from)?;
+        let current: Option<(i32,)> = sqlx::query_as(ddl.probe)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(IndexError::from)?;
         if current.map(|(t,)| t as i64) == Some(dims) {
-            *self.embedding_width.lock().unwrap() = Some(dims);
+            self.embedding_width.lock().unwrap().insert(table, dims);
             return Ok(());
         }
-        sqlx::query("DROP INDEX IF EXISTS idx_chunk_embedding")
+        sqlx::query(ddl.drop_index)
             .execute(&mut *conn)
             .await
             .map_err(IndexError::from)?;
-        sqlx::query(AssertSqlSafe(format!(
-            "ALTER TABLE chunk ALTER COLUMN embedding TYPE vector({dims}) USING NULL"
-        )))
-        .execute(&mut *conn)
-        .await
-        .map_err(IndexError::from)?;
-        sqlx::query(
-            "CREATE INDEX idx_chunk_embedding ON chunk USING hnsw (embedding vector_cosine_ops)",
-        )
-        .execute(&mut *conn)
-        .await
-        .map_err(IndexError::from)?;
+        sqlx::query(AssertSqlSafe((ddl.alter)(dims)))
+            .execute(&mut *conn)
+            .await
+            .map_err(IndexError::from)?;
+        sqlx::query(ddl.create_index)
+            .execute(&mut *conn)
+            .await
+            .map_err(IndexError::from)?;
         // The DDL above just changed the `chunk.embedding` column's typmod, so
         // any plan this connection had cached for a statement returning that
         // column is now stale. `clear_cached_statements` sheds `conn`'s own
         // stale plans directly; it only reaches this one connection, so it is
         // a courtesy for whichever statements this connection still might run
-        // under the old SQL text (there are none: the two statements returning
-        // that raw column, `replace_chunks`' carry SELECT and `lead_vectors`'
-        // SELECT, both always carry the current generation), not what makes
+        // under the old SQL text (there are none: the statements returning
+        // that raw column, `replace_chunks`' and `replace_reflection_chunks`'
+        // carry SELECTs and `lead_vectors`' SELECT, all carry the current
+        // generation), not what makes
         // the pool's other connections safe. `embedding_generation` below is
         // what does that, by changing the cache key everywhere at once.
         Connection::clear_cached_statements(&mut *conn)
             .await
             .map_err(IndexError::from)?;
         self.embedding_generation.fetch_add(1, Ordering::Relaxed);
-        *self.embedding_width.lock().unwrap() = Some(dims);
+        self.embedding_width.lock().unwrap().insert(table, dims);
         Ok(())
     }
 }
@@ -648,6 +658,10 @@ pub(super) async fn exec(conn: &mut PgConnection, sql: &str, params: Vec<Param>)
 /// statement at 65535 bind parameters, far above this, so the chunk size stays in
 /// step with the Turso backend rather than tracking a different ceiling.
 const INSERT_CHUNK: usize = 100;
+
+/// [`INSERT_CHUNK`] for `reflection_chunk`, whose rows bind 11 parameters
+/// each, in step with the Turso backend's.
+const REFLECTION_INSERT_CHUNK: usize = 90;
 
 /// Build the parenthesized value tuples for a multi-row INSERT: `count` tuples of
 /// `width` sequential `$n` placeholders each, plus an optional fixed trailing
@@ -782,6 +796,165 @@ pub(super) fn cell_real(row: &PgRow, idx: usize) -> Option<f64> {
     row.try_get::<Option<f64>, _>(idx).ok().flatten()
 }
 
+/// The statements of one asset table. Picked by `match`, never built with
+/// `format!`, so each statement stays a literal a grep reads.
+struct AssetSql {
+    upsert: &'static str,
+    /// The blob rows that go with a deleted row, for a table that has blobs.
+    delete_blobs: Option<&'static str>,
+    delete: &'static str,
+    get: &'static str,
+    list: &'static str,
+}
+
+const ATTACHMENT_SQL: AssetSql = AssetSql {
+    upsert: "INSERT INTO attachment(domain_id, path, sha256, mime, size, modified) \
+             VALUES($1, $2, $3, $4, $5, $6) \
+             ON CONFLICT(domain_id, path) DO UPDATE SET \
+                 sha256=excluded.sha256, mime=excluded.mime, \
+                 size=excluded.size, modified=excluded.modified",
+    delete_blobs: Some(
+        "DELETE FROM attachment_blob WHERE attachment_id IN \
+         (SELECT id FROM attachment WHERE domain_id=$1 AND path=$2)",
+    ),
+    delete: "DELETE FROM attachment WHERE domain_id=$1 AND path=$2",
+    get: "SELECT path, sha256, mime, size, modified FROM attachment \
+          WHERE domain_id=$1 AND path=$2",
+    // The path is a text sort key, so it is pinned to `COLLATE "C"` to match
+    // Turso's byte order: a locale-collated database would otherwise return
+    // the same rows in a different order.
+    list: "SELECT path, sha256, mime, size, modified FROM attachment \
+           WHERE domain_id=$1 ORDER BY path COLLATE \"C\"",
+};
+
+const REFLECTION_ASSET_SQL: AssetSql = AssetSql {
+    upsert: "INSERT INTO reflection_asset(domain_id, path, sha256, mime, size, modified) \
+             VALUES($1, $2, $3, $4, $5, $6) \
+             ON CONFLICT(domain_id, path) DO UPDATE SET \
+                 sha256=excluded.sha256, mime=excluded.mime, \
+                 size=excluded.size, modified=excluded.modified",
+    // No blob table: a Reflection's bytes are always files.
+    delete_blobs: None,
+    delete: "DELETE FROM reflection_asset WHERE domain_id=$1 AND path=$2",
+    get: "SELECT path, sha256, mime, size, modified FROM reflection_asset \
+          WHERE domain_id=$1 AND path=$2",
+    list: "SELECT path, sha256, mime, size, modified FROM reflection_asset \
+           WHERE domain_id=$1 ORDER BY path COLLATE \"C\"",
+};
+
+fn asset_sql(table: AssetTable) -> &'static AssetSql {
+    match table {
+        AssetTable::Engram => &ATTACHMENT_SQL,
+        AssetTable::Reflection => &REFLECTION_ASSET_SQL,
+    }
+}
+
+/// The statements of one chunk table that do not depend on the query's shape.
+/// Picked by `match`, never built with `format!` for the table name, so each
+/// statement stays a literal the query-plan guard and a grep both read. The
+/// dynamic parts (placeholder lists, the cursor) are appended as before.
+struct ChunkSql {
+    /// `SELECT id, <owner>, seq, text, text_hash FROM <table> WHERE (embedding IS NULL OR model IS NULL OR model != $1)`
+    needing: &'static str,
+    /// The domain scope clause, opened with ` AND `; the placeholder list
+    /// goes between head and tail.
+    needing_scope_head: &'static str,
+    needing_scope_tail: &'static str,
+    /// The column the keyset cursor and the `ORDER BY` lead with (`seq` follows).
+    owner_col: &'static str,
+    store: &'static str,
+    prune: &'static str,
+    count_all: &'static str,
+    count_embedded: &'static str,
+}
+
+const CHUNK_SQL: ChunkSql = ChunkSql {
+    needing: "SELECT id, engram_id, seq, text, text_hash FROM chunk \
+              WHERE (embedding IS NULL OR model IS NULL OR model != $1)",
+    // -- actor: all - a draft's chunks reach the same embedding backlog a base
+    // row's do, which is what makes an overlay entry a full engram row rather
+    // than a second shape.
+    needing_scope_head: " AND engram_id IN (SELECT id FROM engram WHERE domain_id IN (",
+    needing_scope_tail: "))",
+    owner_col: "engram_id",
+    store: "UPDATE chunk SET embedding=$1, dims=$2, model=$3 WHERE id=$4",
+    prune: "UPDATE chunk SET embedding=NULL, dims=NULL, model=NULL \
+            WHERE embedding IS NOT NULL AND (model IS NULL OR model <> $1)",
+    count_all: "SELECT count(*) FROM chunk",
+    count_embedded: "SELECT model, dims, count(*) FROM chunk WHERE embedding IS NOT NULL \
+                     GROUP BY model, dims ORDER BY count(*) DESC",
+};
+
+fn chunk_sql(table: ChunkTable) -> &'static ChunkSql {
+    match table {
+        ChunkTable::Engram => &CHUNK_SQL,
+        ChunkTable::Reflection => &REFLECTION_CHUNK_SQL,
+    }
+}
+
+/// The Reflection's chunk table, the twin of Turso's. A reflection has no
+/// actor, so nothing here names one, and nothing here reads the `engram`
+/// table. A chunk has no owning row id (R51), so the backlog projects and
+/// orders by the chunk's own `id`.
+const REFLECTION_CHUNK_SQL: ChunkSql = ChunkSql {
+    needing: "SELECT id, id, seq, text, text_hash FROM reflection_chunk \
+              WHERE (embedding IS NULL OR model IS NULL OR model != $1)",
+    needing_scope_head: " AND domain_id IN (",
+    needing_scope_tail: ")",
+    owner_col: "id",
+    store: "UPDATE reflection_chunk SET embedding=$1, dims=$2, model=$3 WHERE id=$4",
+    prune: "UPDATE reflection_chunk SET embedding=NULL, dims=NULL, model=NULL \
+            WHERE embedding IS NOT NULL AND (model IS NULL OR model <> $1)",
+    count_all: "SELECT count(*) FROM reflection_chunk",
+    count_embedded: "SELECT model, dims, count(*) FROM reflection_chunk WHERE embedding IS NOT NULL \
+                     GROUP BY model, dims ORDER BY count(*) DESC",
+};
+
+/// The DDL `ensure_embedding_width` runs against one chunk table's `embedding`
+/// column. Picked by `match` like [`ChunkSql`]; the one statement that carries
+/// the width is a function, since the width is a type modifier, not a bind.
+struct ChunkWidthSql {
+    /// The column's declared width (`atttypmod`), or no row when the table is
+    /// missing. `to_regclass` resolves through the connection's `search_path`.
+    probe: &'static str,
+    /// Drops the HNSW index, which Postgres requires before a type change.
+    drop_index: &'static str,
+    /// Resizes the column to the given width, clearing every stored vector.
+    alter: fn(i64) -> String,
+    /// Recreates the HNSW index on the resized column.
+    create_index: &'static str,
+}
+
+const CHUNK_WIDTH_SQL: ChunkWidthSql = ChunkWidthSql {
+    probe: "SELECT atttypmod FROM pg_attribute \
+            WHERE attrelid = to_regclass('chunk') AND attname = 'embedding' AND NOT attisdropped",
+    drop_index: "DROP INDEX IF EXISTS idx_chunk_embedding",
+    alter: |dims| {
+        format!("ALTER TABLE chunk ALTER COLUMN embedding TYPE vector({dims}) USING NULL")
+    },
+    create_index: "CREATE INDEX idx_chunk_embedding ON chunk USING hnsw (embedding vector_cosine_ops)",
+};
+
+const REFLECTION_CHUNK_WIDTH_SQL: ChunkWidthSql = ChunkWidthSql {
+    probe: "SELECT atttypmod FROM pg_attribute \
+            WHERE attrelid = to_regclass('reflection_chunk') AND attname = 'embedding' AND NOT attisdropped",
+    drop_index: "DROP INDEX IF EXISTS idx_reflection_chunk_embedding",
+    alter: |dims| {
+        format!(
+            "ALTER TABLE reflection_chunk ALTER COLUMN embedding TYPE vector({dims}) USING NULL"
+        )
+    },
+    create_index: "CREATE INDEX idx_reflection_chunk_embedding ON reflection_chunk \
+                   USING hnsw (embedding vector_cosine_ops)",
+};
+
+fn chunk_width_sql(table: ChunkTable) -> &'static ChunkWidthSql {
+    match table {
+        ChunkTable::Engram => &CHUNK_WIDTH_SQL,
+        ChunkTable::Reflection => &REFLECTION_CHUNK_WIDTH_SQL,
+    }
+}
+
 /// Decode one attachment row: path, sha256, mime, size, modified. The column
 /// layout is identical across both backends.
 fn attachment_from_row(r: &PgRow) -> AttachmentRow {
@@ -791,6 +964,19 @@ fn attachment_from_row(r: &PgRow) -> AttachmentRow {
         mime: cell_text(r, 2).unwrap_or_default(),
         size: cell_i64(r, 3).unwrap_or(0).max(0) as u64,
         modified: cell_text(r, 4).unwrap_or_default(),
+    }
+}
+
+/// Decode one reflection row: path, title, content, sha256, size, modified.
+/// The column layout is identical across both backends.
+fn reflection_from_row(r: &PgRow) -> ReflectionRow {
+    ReflectionRow {
+        path: cell_text(r, 0).unwrap_or_default(),
+        title: cell_text(r, 1).unwrap_or_default(),
+        content: cell_text(r, 2).unwrap_or_default(),
+        sha256: cell_text(r, 3).unwrap_or_default(),
+        size: cell_i64(r, 4).unwrap_or(0).max(0) as u64,
+        modified: cell_text(r, 5).unwrap_or_default(),
     }
 }
 
@@ -1225,6 +1411,30 @@ pub const DELETE_OBSERVATION_VECTORS_EXCEPT_SQL: &str =
 #[doc(hidden)]
 pub const CLEAR_OBSERVATION_VECTORS_SQL: &str = "DELETE FROM observation_vector";
 
+/// The vector half of a reflection search: the closest chunk of each section
+/// of one domain's pages. Two narrow columns and the distance go into the
+/// grouping sorter, never a chunk's text (the turso sorter spill rule of
+/// `semantic_phase1_sql`), and the `LIMIT` bounds it. The `100` is
+/// `rank::SEMANTIC_TOPK` written out so the statement stays a `const`; a unit
+/// test in `reflection.rs` holds the two together.
+///
+/// `COLLATE "C"` pins the path tiebreak to byte order, the order turso's
+/// TEXT sorts in.
+#[doc(hidden)]
+pub const REFLECTION_VECTOR_SQL: &str = "SELECT rc.path, rc.section_ord, min(rc.embedding <=> $1) AS dist \
+     FROM reflection_chunk rc \
+     WHERE rc.domain_id=$2 AND rc.embedding IS NOT NULL AND rc.model=$3 AND rc.dims=$4 \
+     GROUP BY rc.path, rc.section_ord ORDER BY dist ASC, rc.path COLLATE \"C\" ASC, rc.section_ord ASC LIMIT 100";
+
+/// The aggregate behind [`Store::reflection_coverage`]: one domain's reflection
+/// chunks grouped by model and width, each group with its row count and its
+/// embedded count. A chunk not embedded yet has no model and no width, so it
+/// lands in the one group whose embedded count is 0. The domain index serves
+/// the domain and hands the groups over in order.
+#[doc(hidden)]
+pub const REFLECTION_COVERAGE_SQL: &str = "SELECT rc.model, rc.dims, count(*), count(rc.embedding) \
+     FROM reflection_chunk rc WHERE rc.domain_id=$1 GROUP BY rc.model, rc.dims";
+
 /// The address lookup behind [`Store::find_engram`].
 ///
 /// A permalink hit wins over a title hit; among title hits the lowest path
@@ -1605,6 +1815,8 @@ impl Store for PostgresStore {
     }
 
     async fn drop_empty_domain_row(&self, name: &str) -> Result<bool> {
+        // May delete stray chunk rows, so the coverage snapshot may be stale.
+        self.invalidate_coverage();
         in_transaction(self, async {
             let mut conn = self.acquire().await?;
             let c = conn.as_mut();
@@ -1615,6 +1827,8 @@ impl Store for PostgresStore {
                 "SELECT d.id FROM domain d WHERE d.name=$1 \
                  AND NOT EXISTS (SELECT 1 FROM engram e WHERE e.domain_id=d.id) \
                  AND NOT EXISTS (SELECT 1 FROM attachment a WHERE a.domain_id=d.id) \
+                 AND NOT EXISTS (SELECT 1 FROM reflection r WHERE r.domain_id=d.id) \
+                 AND NOT EXISTS (SELECT 1 FROM reflection_asset f WHERE f.domain_id=d.id) \
                  FOR UPDATE OF d",
             )
             .bind(name)
@@ -1629,6 +1843,9 @@ impl Store for PostgresStore {
             // each is cleared before the row itself.
             for sql in [
                 "DELETE FROM domain_spelling WHERE domain_id=$1",
+                // A chunk is not content, so it does not keep the row; it
+                // goes with it (the funnel never leaves one without its page).
+                "DELETE FROM reflection_chunk WHERE domain_id=$1",
                 "DELETE FROM tag_alias WHERE domain_id=$1",
                 "DELETE FROM domain_lock WHERE domain_id=$1",
                 "DELETE FROM relation WHERE domain_id=$1",
@@ -1885,6 +2102,9 @@ impl Store for PostgresStore {
             "DELETE FROM attachment_blob WHERE attachment_id IN \
              (SELECT id FROM attachment WHERE domain_id=$1)",
             "DELETE FROM attachment WHERE domain_id=$1",
+            "DELETE FROM reflection_chunk WHERE domain_id=$1",
+            "DELETE FROM reflection WHERE domain_id=$1",
+            "DELETE FROM reflection_asset WHERE domain_id=$1",
             // Every spelling but the row's own name, which stays with the row.
             // The declared cascade never fires: the row is kept.
             "DELETE FROM domain_spelling WHERE domain_id=$1 \
@@ -2871,8 +3091,9 @@ impl Store for PostgresStore {
         Ok(())
     }
 
-    async fn chunks_needing_embedding(
+    async fn chunks_needing_embedding_in(
         &self,
+        table: ChunkTable,
         model: &str,
         domains: Option<&[DomainId]>,
         limit: usize,
@@ -2890,10 +3111,8 @@ impl Store for PostgresStore {
         // present, so the plan is a top-N sort over one page of chunk texts,
         // each capped by the chunker's token budget. Never add a `GROUP BY`
         // here, and never drop the `LIMIT`.
-        let mut sql = String::from(
-            "SELECT id, engram_id, seq, text, text_hash FROM chunk \
-             WHERE (embedding IS NULL OR model IS NULL OR model != $1)",
-        );
+        let chunk = chunk_sql(table);
+        let mut sql = String::from(chunk.needing);
         let mut params = vec![Param::Text(model.to_string())];
         let mut n = 2;
         if let Some(ids) = domains {
@@ -2909,26 +3128,24 @@ impl Store for PostgresStore {
                     p
                 })
                 .collect();
-            sql.push_str(&format!(
-                // -- actor: all - a draft's chunks reach the same embedding
-                // backlog a base row's do, which is what makes an overlay entry
-                // a full engram row rather than a second shape.
-                " AND engram_id IN (SELECT id FROM engram WHERE domain_id IN ({}))",
-                placeholders.join(",")
-            ));
+            // The scope clause's actor note sits on `CHUNK_SQL`.
+            sql.push_str(chunk.needing_scope_head);
+            sql.push_str(&placeholders.join(","));
+            sql.push_str(chunk.needing_scope_tail);
         }
-        if let Some((engram_id, seq)) = after {
+        let owner = chunk.owner_col;
+        if let Some((owner_id, seq)) = after {
             sql.push_str(&format!(
-                " AND (engram_id > ${n} OR (engram_id = ${} AND seq > ${}))",
+                " AND ({owner} > ${n} OR ({owner} = ${} AND seq > ${}))",
                 n + 1,
                 n + 2
             ));
-            params.push(Param::Int(engram_id));
-            params.push(Param::Int(engram_id));
+            params.push(Param::Int(owner_id));
+            params.push(Param::Int(owner_id));
             params.push(Param::Int(seq));
             n += 3;
         }
-        sql.push_str(&format!(" ORDER BY engram_id, seq LIMIT ${n}"));
+        sql.push_str(&format!(" ORDER BY {owner}, seq LIMIT ${n}"));
         params.push(Param::Int(i64::try_from(limit).unwrap_or(i64::MAX)));
         let mut conn = self.acquire().await?;
         let rows = query_all(conn.as_mut(), &sql, params).await?;
@@ -2944,7 +3161,12 @@ impl Store for PostgresStore {
             .collect())
     }
 
-    async fn store_embeddings(&self, batch: &[EmbeddingRow], model: &str) -> Result<()> {
+    async fn store_embeddings_in(
+        &self,
+        table: ChunkTable,
+        batch: &[EmbeddingRow],
+        model: &str,
+    ) -> Result<()> {
         // Writes embeddings, so the coverage snapshot is now stale.
         self.invalidate_coverage();
         // Validate the whole batch before any write so a bad row never leaves
@@ -2970,7 +3192,7 @@ impl Store for PostgresStore {
             }
         }
         for dims in widths {
-            self.ensure_embedding_width(&mut *c, dims).await?;
+            self.ensure_embedding_width(&mut *c, table, dims).await?;
         }
         // The per-row updates then commit together, mirroring `wipe`.
         sqlx::query("BEGIN")
@@ -2979,14 +3201,13 @@ impl Store for PostgresStore {
             .map_err(IndexError::from)?;
         for row in batch {
             let vector = pgvector::Vector::from(row.embedding.clone());
-            if let Err(e) =
-                sqlx::query("UPDATE chunk SET embedding=$1, dims=$2, model=$3 WHERE id=$4")
-                    .bind(vector)
-                    .bind(row.dims as i64)
-                    .bind(model)
-                    .bind(row.chunk_id)
-                    .execute(&mut *c)
-                    .await
+            if let Err(e) = sqlx::query(chunk_sql(table).store)
+                .bind(vector)
+                .bind(row.dims as i64)
+                .bind(model)
+                .bind(row.chunk_id)
+                .execute(&mut *c)
+                .await
             {
                 let _ = sqlx::query("ROLLBACK").execute(&mut *c).await;
                 return Err(e.into());
@@ -2999,32 +3220,32 @@ impl Store for PostgresStore {
         Ok(())
     }
 
-    async fn prune_embeddings_except(&self, model: &str) -> Result<usize> {
+    async fn prune_embeddings_except_in(&self, table: ChunkTable, model: &str) -> Result<usize> {
         // Clears embeddings, so the coverage snapshot is now stale.
         self.invalidate_coverage();
         let mut conn = self.acquire().await?;
-        let done = sqlx::query(
-            "UPDATE chunk SET embedding=NULL, dims=NULL, model=NULL \
-             WHERE embedding IS NOT NULL AND (model IS NULL OR model <> $1)",
-        )
-        .bind(model)
-        .execute(conn.as_mut())
-        .await
-        .map_err(IndexError::from)?;
+        let done = sqlx::query(chunk_sql(table).prune)
+            .bind(model)
+            .execute(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
         Ok(done.rows_affected() as usize)
     }
 
-    async fn embedding_coverage(&self) -> Result<EmbeddingCoverage> {
+    async fn embedding_coverage_of(&self, table: ChunkTable) -> Result<EmbeddingCoverage> {
         // Fast path in a tight scope so the std::sync guard is dropped before the
         // recompute await below (clippy::await_holding_lock), tag_cache style.
         {
             let cached = self.coverage_cache.lock().unwrap();
-            if let Some(cov) = cached.as_ref() {
+            if let Some(cov) = cached.get(&table) {
                 return Ok(cov.clone());
             }
         }
-        let cov = self.compute_coverage().await?;
-        *self.coverage_cache.lock().unwrap() = Some(cov.clone());
+        let cov = self.compute_coverage(table).await?;
+        self.coverage_cache
+            .lock()
+            .unwrap()
+            .insert(table, cov.clone());
         Ok(cov)
     }
 
@@ -4052,43 +4273,42 @@ impl Store for PostgresStore {
         }))
     }
 
-    async fn upsert_attachment(&self, domain: DomainId, row: &AttachmentRow) -> Result<()> {
+    async fn upsert_asset(
+        &self,
+        table: AssetTable,
+        domain: DomainId,
+        row: &AttachmentRow,
+    ) -> Result<()> {
         let mut conn = self.acquire().await?;
-        sqlx::query(
-            "INSERT INTO attachment(domain_id, path, sha256, mime, size, modified) \
-             VALUES($1, $2, $3, $4, $5, $6) \
-             ON CONFLICT(domain_id, path) DO UPDATE SET \
-                 sha256=excluded.sha256, mime=excluded.mime, \
-                 size=excluded.size, modified=excluded.modified",
-        )
-        .bind(domain.0)
-        .bind(&row.path)
-        .bind(&row.sha256)
-        .bind(&row.mime)
-        .bind(row.size as i64)
-        .bind(&row.modified)
-        .execute(conn.as_mut())
-        .await
-        .map_err(IndexError::from)?;
+        sqlx::query(asset_sql(table).upsert)
+            .bind(domain.0)
+            .bind(&row.path)
+            .bind(&row.sha256)
+            .bind(&row.mime)
+            .bind(row.size as i64)
+            .bind(&row.modified)
+            .execute(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
         Ok(())
     }
 
-    async fn delete_attachment(&self, domain: DomainId, path: &str) -> Result<bool> {
+    async fn delete_asset(&self, table: AssetTable, domain: DomainId, path: &str) -> Result<bool> {
+        let sql = asset_sql(table);
         // The declared `ON DELETE CASCADE` would take the blob here, but it is
         // deleted explicitly so both backends behave alike: Turso's connection
         // does not enable foreign keys, so its cascade never fires.
         let mut conn = self.acquire().await?;
         let c = conn.as_mut();
-        sqlx::query(
-            "DELETE FROM attachment_blob WHERE attachment_id IN \
-             (SELECT id FROM attachment WHERE domain_id=$1 AND path=$2)",
-        )
-        .bind(domain.0)
-        .bind(path)
-        .execute(&mut *c)
-        .await
-        .map_err(IndexError::from)?;
-        let n = sqlx::query("DELETE FROM attachment WHERE domain_id=$1 AND path=$2")
+        if let Some(blobs) = sql.delete_blobs {
+            sqlx::query(blobs)
+                .bind(domain.0)
+                .bind(path)
+                .execute(&mut *c)
+                .await
+                .map_err(IndexError::from)?;
+        }
+        let n = sqlx::query(sql.delete)
             .bind(domain.0)
             .bind(path)
             .execute(&mut *c)
@@ -4098,27 +4318,27 @@ impl Store for PostgresStore {
         Ok(n > 0)
     }
 
-    async fn get_attachment(&self, domain: DomainId, path: &str) -> Result<Option<AttachmentRow>> {
+    async fn get_asset(
+        &self,
+        table: AssetTable,
+        domain: DomainId,
+        path: &str,
+    ) -> Result<Option<AttachmentRow>> {
         let mut conn = self.acquire().await?;
         let row = query_first(
             conn.as_mut(),
-            "SELECT path, sha256, mime, size, modified FROM attachment \
-             WHERE domain_id=$1 AND path=$2",
+            asset_sql(table).get,
             vec![Param::Int(domain.0), Param::Text(path.to_string())],
         )
         .await?;
         Ok(row.as_ref().map(attachment_from_row))
     }
 
-    async fn list_attachments(&self, domain: DomainId) -> Result<Vec<AttachmentRow>> {
-        // The path is a text sort key, so it is pinned to `COLLATE "C"` to match
-        // Turso's byte order: a locale-collated database would otherwise return
-        // the same rows in a different order.
+    async fn list_assets(&self, table: AssetTable, domain: DomainId) -> Result<Vec<AttachmentRow>> {
         let mut conn = self.acquire().await?;
         let rows = query_all(
             conn.as_mut(),
-            "SELECT path, sha256, mime, size, modified FROM attachment \
-             WHERE domain_id=$1 ORDER BY path COLLATE \"C\"",
+            asset_sql(table).list,
             vec![Param::Int(domain.0)],
         )
         .await?;
@@ -4163,6 +4383,230 @@ impl Store for PostgresStore {
         )
         .await?;
         Ok(row.and_then(|r| r.try_get::<Option<Vec<u8>>, _>(0).ok().flatten()))
+    }
+
+    async fn upsert_reflection(&self, domain: DomainId, row: &ReflectionRow) -> Result<()> {
+        let mut conn = self.acquire().await?;
+        sqlx::query(
+            "INSERT INTO reflection(domain_id, path, title, content, sha256, size, modified) \
+             VALUES($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT(domain_id, path) DO UPDATE SET \
+                 title=excluded.title, content=excluded.content, sha256=excluded.sha256, \
+                 size=excluded.size, modified=excluded.modified",
+        )
+        .bind(domain.0)
+        .bind(&row.path)
+        .bind(&row.title)
+        .bind(&row.content)
+        .bind(&row.sha256)
+        .bind(row.size as i64)
+        .bind(&row.modified)
+        .execute(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(())
+    }
+
+    async fn delete_reflection(&self, domain: DomainId, path: &str) -> Result<bool> {
+        // Takes the page's chunks too (R53), so the coverage snapshot is now
+        // stale.
+        self.invalidate_coverage();
+        let mut conn = self.acquire().await?;
+        let c = conn.as_mut();
+        sqlx::query("DELETE FROM reflection_chunk WHERE domain_id=$1 AND path=$2")
+            .bind(domain.0)
+            .bind(path)
+            .execute(&mut *c)
+            .await
+            .map_err(IndexError::from)?;
+        let n = sqlx::query("DELETE FROM reflection WHERE domain_id=$1 AND path=$2")
+            .bind(domain.0)
+            .bind(path)
+            .execute(&mut *c)
+            .await
+            .map_err(IndexError::from)?
+            .rows_affected();
+        Ok(n > 0)
+    }
+
+    async fn replace_reflection_chunks(
+        &self,
+        domain: DomainId,
+        path: &str,
+        chunks: &[NewReflectionChunk],
+    ) -> Result<()> {
+        // Deletes and reinserts this page's chunks, so the coverage snapshot
+        // is now stale.
+        self.invalidate_coverage();
+        let mut conn = self.acquire().await?;
+        let c = conn.as_mut();
+        // Carry over the vector of any chunk whose fingerprint is unchanged, as
+        // `replace_chunks` does within an engram. This selects the raw
+        // `embedding` column, so it carries the `/* w{generation} */` cache-key
+        // comment for the reason `replace_chunks`' carry SELECT does (see the
+        // module doc).
+        let generation = self.embedding_generation.load(Ordering::Relaxed);
+        let carry_sql = format!(
+            "SELECT text_hash, model, dims, embedding FROM reflection_chunk \
+             WHERE domain_id=$1 AND path=$2 AND embedding IS NOT NULL /* w{generation} */"
+        );
+        let existing = sqlx::query(AssertSqlSafe(carry_sql))
+            .bind(domain.0)
+            .bind(path)
+            .fetch_all(&mut *c)
+            .await
+            .map_err(IndexError::from)?;
+        let mut carry: HashMap<String, (Option<String>, Option<i64>, pgvector::Vector)> =
+            HashMap::new();
+        for r in &existing {
+            let Some(hash) = cell_text(r, 0) else {
+                continue;
+            };
+            let model = r.try_get::<Option<String>, _>(1).ok().flatten();
+            let dims = r.try_get::<Option<i64>, _>(2).ok().flatten();
+            let Some(emb) = r.try_get::<Option<pgvector::Vector>, _>(3).ok().flatten() else {
+                continue;
+            };
+            carry.insert(hash, (model, dims, emb));
+        }
+
+        sqlx::query("DELETE FROM reflection_chunk WHERE domain_id=$1 AND path=$2")
+            .bind(domain.0)
+            .bind(path)
+            .execute(&mut *c)
+            .await
+            .map_err(IndexError::from)?;
+
+        // One 11-column multi-row insert per batch: a carry hit binds its
+        // preserved model, dims and embedding, a miss binds NULL for all three
+        // and leaves the chunk pending embedding.
+        for batch in chunks.chunks(REFLECTION_INSERT_CHUNK) {
+            let mut params: Vec<Param> = Vec::with_capacity(batch.len() * 11);
+            for chunk in batch {
+                params.push(Param::Int(domain.0));
+                params.push(Param::Text(path.to_string()));
+                params.push(Param::Int(chunk.chunk.seq));
+                params.push(Param::Int(chunk.section_ord));
+                params.push(Param::TextOpt(chunk.section.clone()));
+                params.push(Param::Text(chunk.heading.clone()));
+                params.push(Param::Text(chunk.chunk.text.clone()));
+                params.push(Param::Text(chunk.chunk.text_hash.clone()));
+                match carry.get(&chunk.chunk.text_hash) {
+                    Some((model, dims, emb)) => {
+                        params.push(Param::TextOpt(model.clone()));
+                        params.push(Param::IntOpt(*dims));
+                        params.push(Param::VectorOpt(Some(emb.clone())));
+                    }
+                    None => {
+                        params.push(Param::TextOpt(None));
+                        params.push(Param::IntOpt(None));
+                        params.push(Param::VectorOpt(None));
+                    }
+                }
+            }
+            let sql = format!(
+                "INSERT INTO reflection_chunk(domain_id, path, seq, section_ord, section, heading, \
+                 text, text_hash, model, dims, embedding) VALUES {}",
+                value_rows(11, batch.len(), None)
+            );
+            exec(&mut *c, &sql, params).await?;
+        }
+        Ok(())
+    }
+
+    async fn get_reflection(&self, domain: DomainId, path: &str) -> Result<Option<ReflectionRow>> {
+        let mut conn = self.acquire().await?;
+        let row = query_first(
+            conn.as_mut(),
+            "SELECT path, title, content, sha256, size, modified FROM reflection \
+             WHERE domain_id=$1 AND path=$2",
+            vec![Param::Int(domain.0), Param::Text(path.to_string())],
+        )
+        .await?;
+        Ok(row.as_ref().map(reflection_from_row))
+    }
+
+    async fn list_reflections(&self, domain: DomainId) -> Result<Vec<ReflectionRow>> {
+        let mut conn = self.acquire().await?;
+        // `COLLATE "C"` pins byte order, the order Turso's TEXT sorts in.
+        let rows = query_all(
+            conn.as_mut(),
+            "SELECT path, title, content, sha256, size, modified FROM reflection \
+             WHERE domain_id=$1 ORDER BY path COLLATE \"C\"",
+            vec![Param::Int(domain.0)],
+        )
+        .await?;
+        Ok(rows.iter().map(reflection_from_row).collect())
+    }
+
+    async fn reflection_coverage(&self, domain: DomainId) -> Result<EmbeddingCoverage> {
+        let mut conn = self.acquire().await?;
+        let rows = query_all(
+            conn.as_mut(),
+            REFLECTION_COVERAGE_SQL,
+            vec![Param::Int(domain.0)],
+        )
+        .await?;
+        let mut coverage = EmbeddingCoverage::default();
+        for r in &rows {
+            let total = cell_i64(r, 2).unwrap_or(0).max(0) as usize;
+            let embedded = cell_i64(r, 3).unwrap_or(0).max(0) as usize;
+            coverage.total_chunks += total;
+            coverage.embedded_chunks += embedded;
+            let model = cell_text(r, 0).unwrap_or_default();
+            if embedded == 0 || model.is_empty() {
+                continue;
+            }
+            coverage.models.push(ChunkModelCount {
+                model,
+                dims: cell_i64(r, 1).unwrap_or(0).max(0) as usize,
+                count: embedded,
+            });
+        }
+        // Most chunks first, as the table-wide count orders them.
+        coverage.models.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.model.cmp(&b.model))
+                .then(a.dims.cmp(&b.dims))
+        });
+        Ok(coverage)
+    }
+
+    async fn reflection_vector_hits(
+        &self,
+        domain: DomainId,
+        query: &[f32],
+        model: &str,
+    ) -> Result<Vec<SectionVector>> {
+        // A width this domain's vectors do not have is caught here, before
+        // the statement runs, as the engram semantic scan relies on too: a
+        // read never resizes the column. A domain with no vectors passes,
+        // and `rc.dims` keeps every row from the distance, so a query of
+        // another width than the column answers no hits rather than an
+        // error (`reflection_coverage_is_counted_per_domain`).
+        let coverage = self.reflection_coverage(domain).await?;
+        crate::rank::check_staleness(&coverage, model, query.len())?;
+        let mut conn = self.acquire().await?;
+        let rows = query_all(
+            conn.as_mut(),
+            REFLECTION_VECTOR_SQL,
+            vec![
+                Param::Vector(pgvector::Vector::from(query.to_vec())),
+                Param::Int(domain.0),
+                Param::Text(model.to_string()),
+                Param::Int(query.len() as i64),
+            ],
+        )
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| SectionVector {
+                path: cell_text(r, 0).unwrap_or_default(),
+                section_ord: cell_i64(r, 1).unwrap_or(0).max(0) as usize,
+                similarity: 1.0 - cell_real(r, 2).unwrap_or(1.0),
+            })
+            .collect())
     }
 
     async fn begin(&self) -> Result<()> {

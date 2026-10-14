@@ -459,6 +459,9 @@ impl Engine {
         self.refuse_read_only_domain(domain, scope).await?;
         self.refuse_read_only_switch_on(domain, markdown, scope)
             .await?;
+        // A MANIFEST that switches Reflection on meets the screens the
+        // domain policies meet.
+        self.screen_manifest_write(domain, None, markdown).await?;
 
         let (rel, created) = match self.content_source(domain)? {
             ContentSource::File { root } => {
@@ -714,10 +717,15 @@ impl Engine {
         if self.domain_is_read_only(domain).await {
             return;
         }
+        // The switch in effect, so the listings follow what the index holds:
+        // an engram still waiting under a pending switch keeps its entry. A
+        // mode that cannot be read lists the folder, as with the switch off.
+        let mode = self.reflection_mode(domain).await.unwrap_or_default();
         let name = domain.to_string();
         // A full walk plus one read per engram is blocking IO, so it runs on the
         // blocking pool rather than on a runtime worker.
-        let joined = tokio::task::spawn_blocking(move || crate::index_files::refresh(&root)).await;
+        let joined =
+            tokio::task::spawn_blocking(move || crate::index_files::refresh(&root, mode)).await;
         match joined {
             Ok(report) if report.written > 0 || report.removed > 0 => {
                 tracing::debug!(
@@ -817,6 +825,9 @@ impl Engine {
                             bullets: m.bullets.clone(),
                             preferred: false,
                             read_only: m.domain_read_only,
+                            // The onboarding block stays count-free: session
+                            // start is where the counts are named.
+                            reflect_open: 0,
                         }),
                 );
         }
