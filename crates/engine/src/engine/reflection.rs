@@ -8,6 +8,7 @@ use crystalline_core::reflection::{ReflectionHome, ReflectionState};
 use crystalline_core::relink::BodyGate;
 
 use super::*;
+use crate::changes::ReflectionChanged;
 use crate::collab::session::RoomDoc;
 use crate::params::WriteReflectionParams;
 use crate::reflection_backup::BackupCause;
@@ -1243,6 +1244,13 @@ impl Engine {
         self.index_reflection(access.domain_id, &p.path, &final_text, &abs)
             .await?;
         self.mark_reflection_dirty(&p.domain, BackupCause::Settled);
+        self.announce_reflection(
+            &p.domain,
+            &p.path,
+            ReflectionChangeKind::Changed,
+            None,
+            change_label(&caller.scope),
+        );
         // The page lock goes before the room is touched: a room's save holds
         // the room's state and then takes this lock, so the other order
         // here would deadlock against a person typing. A room save that slips
@@ -1300,6 +1308,40 @@ impl Engine {
 }
 
 impl Engine {
+    /// Tell every tab that may read this domain's Reflection that something
+    /// in it changed. The event route delivers it by reflection right, not by
+    /// engram right.
+    pub(crate) fn announce_reflection(
+        &self,
+        domain: &str,
+        path: &str,
+        kind: ReflectionChangeKind,
+        from: Option<&str>,
+        actor: Option<String>,
+    ) {
+        self.announce(Change::Reflection(ReflectionChanged {
+            domain: domain.to_string(),
+            path: path.to_string(),
+            kind,
+            from: from.map(str::to_string),
+            actor,
+            audience: None,
+        }));
+    }
+
+    /// Announce `switched` when the domain's switch is no longer `before`.
+    /// Every Crystalline writer of a MANIFEST calls it after its write lands.
+    pub(crate) fn announce_switch_if_moved(
+        &self,
+        domain: &str,
+        before: crystalline_core::ReflectionSwitch,
+        actor: Option<String>,
+    ) {
+        if self.reflection_switch(domain) != before {
+            self.announce_reflection(domain, "", ReflectionChangeKind::Switched, None, actor);
+        }
+    }
+
     /// A reflection as a room reads it: the page without the block that
     /// names its source engrams, for everyone in the room; the checksum is
     /// the file's, so every stale check compares file against file.
@@ -1424,6 +1466,14 @@ impl Engine {
             let (domain_id, _) = self.domain_source(domain).await?;
             self.index_reflection(domain_id, inner, &final_text, &abs)
                 .await?;
+            // The typist when the save holds one person's words alone; a
+            // save of several, or of somebody the room cannot name, is by
+            // nobody in particular.
+            let actor = match authors {
+                [one] if one != "someone" => Some(one.clone()),
+                _ => None,
+            };
+            self.announce_reflection(domain, inner, ReflectionChangeKind::Changed, None, actor);
         }
         // A room's saves settle a minute after the typing stops; its close
         // settles them at once, whatever the close itself wrote.
@@ -1873,6 +1923,13 @@ impl Engine {
         self.index_reflection(access.domain_id, to, &page, &dst)
             .await?;
         drop((_first, _second));
+        self.announce_reflection(
+            domain,
+            to,
+            ReflectionChangeKind::Moved,
+            Some(from),
+            change_label(&caller.scope),
+        );
         // Every other page that links the moved one, PACT.md included: a link
         // that follows a move is no change of the agreement, and a move needs
         // only edit access. Each page under its own lock. The move has
@@ -1896,7 +1953,19 @@ impl Engine {
                 .relink_reflection(&access, inner, &|s| r::rewrite_links_to(s, inner, from, to))
                 .await
             {
-                Ok(n) => links += n,
+                Ok(n) => {
+                    links += n;
+                    if n > 0 {
+                        // A link that followed the move: nobody's change.
+                        self.announce_reflection(
+                            domain,
+                            inner,
+                            ReflectionChangeKind::Changed,
+                            None,
+                            None,
+                        );
+                    }
+                }
                 Err(e) => note_failure(inner, e),
             }
         }
@@ -1994,6 +2063,13 @@ impl Engine {
             .delete_reflection(access.domain_id, inner)
             .await?;
         self.mark_reflection_dirty(domain, BackupCause::Settled);
+        self.announce_reflection(
+            domain,
+            inner,
+            ReflectionChangeKind::Deleted,
+            None,
+            change_label(&caller.scope),
+        );
         Ok(())
     }
 
@@ -2078,6 +2154,13 @@ impl Engine {
         self.index_reflection(access.domain_id, inner, &final_text, &abs)
             .await?;
         self.mark_reflection_dirty(domain, BackupCause::Settled);
+        self.announce_reflection(
+            domain,
+            inner,
+            ReflectionChangeKind::Changed,
+            None,
+            change_label(&caller.scope),
+        );
         Ok(json!({ "domain": domain, "path": inner, "settled": ids, "outcome": outcome }))
     }
 }

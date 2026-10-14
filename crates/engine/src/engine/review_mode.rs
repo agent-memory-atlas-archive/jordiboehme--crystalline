@@ -647,6 +647,8 @@ impl Engine {
             )));
         }
 
+        // A folded MANIFEST draft may move the switch.
+        let switch_before = self.reflection_switch(domain);
         let mut folded = Vec::new();
         let mut discarded = Vec::new();
         for held in &drafts {
@@ -746,6 +748,7 @@ impl Engine {
         // daemon restarted.
         let synced = self.sync(Some(domain)).await;
         self.refresh_routing_cache().await;
+        self.announce_switch_if_moved(domain, switch_before, None);
         self.nudge_embed();
         synced?;
 

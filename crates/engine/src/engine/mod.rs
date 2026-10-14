@@ -64,7 +64,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::changes::{
-    Change, ChangeKind, DomainAudience, DomainChanged, EngramChanged, MovedFrom, change_label,
+    Change, ChangeKind, DomainAudience, DomainChanged, EngramChanged, MovedFrom,
+    ReflectionChangeKind, change_label,
 };
 use crate::collab::session::AgentPeer;
 use crate::domain_view::{DomainView, shown};

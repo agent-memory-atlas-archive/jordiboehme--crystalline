@@ -221,6 +221,10 @@ impl Engine {
                 .await;
         }
 
+        // A move onto the MANIFEST may move the destination's switch.
+        let switch_before =
+            names_the_manifest(&dest_rel).then(|| self.reflection_switch(&dest_domain));
+
         // After the overlay branch, so a move OUT of a reviewing domain keeps
         // its own refusal ("share the change first"), and before anything is
         // read or written, so a refusal costs nothing. This is the move INTO
@@ -556,6 +560,9 @@ impl Engine {
                 draft_of: None,
                 audience: None,
             }));
+        }
+        if let Some(before) = switch_before {
+            self.announce_switch_if_moved(&dest_domain, before, change_label(scope));
         }
         // The new address may be what a link in another domain has been
         // waiting for. A draft move returned above, through `move_within`.

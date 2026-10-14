@@ -372,6 +372,54 @@ async fn moving_a_file_rewrites_every_reflection_that_references_it_and_owes_no_
     assert!(err.is_err());
 }
 
+/// The file verbs announce `files` events, and a move announces each page
+/// whose link followed the file.
+#[tokio::test]
+async fn the_file_verbs_announce_files_and_the_pages_a_move_relinked() {
+    use crystalline_service::changes::{Change, ReflectionChangeKind as K};
+    let fx = reflecting().await;
+    fx.engine
+        .reflection_asset_write("eng", "assets/flow.png", PNG.to_vec(), &person())
+        .await
+        .unwrap();
+    fx.engine
+        .write_reflection(
+            &write("guides/a.md", "# A\n\n![flow](../assets/flow.png)\n"),
+            &person(),
+        )
+        .await
+        .unwrap();
+    let mut rx = fx.engine.changes().subscribe();
+    fx.engine
+        .reflection_asset_write("eng", "assets/flow.png", b"other".to_vec(), &person())
+        .await
+        .unwrap();
+    fx.engine
+        .move_reflection_asset("eng", "assets/flow.png", "assets/x/flow.png", &person())
+        .await
+        .unwrap();
+    fx.engine
+        .reflection_asset_delete("eng", "assets/x/flow.png", &person())
+        .await
+        .unwrap();
+    let mut heard = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if let Change::Reflection(change) = envelope.change {
+            heard.push((change.kind, change.path, change.from));
+        }
+    }
+    let s = |text: &str| text.to_string();
+    assert_eq!(
+        heard,
+        vec![
+            (K::Files, s("assets/flow.png"), None),
+            (K::Files, s("assets/x/flow.png"), Some(s("assets/flow.png"))),
+            (K::Changed, s("guides/a.md"), None),
+            (K::Files, s("assets/x/flow.png"), None),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn a_curators_agent_moves_and_removes_files_through_write_reflection() {
     let (fx, _, nora, ed) = three_people().await;

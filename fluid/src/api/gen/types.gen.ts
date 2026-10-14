@@ -1401,6 +1401,34 @@ export type ReflectionAssetsResponse = {
 };
 
 /**
+ * What happened in a domain's Reflection, as the `reflection` event says it.
+ */
+export type ReflectionChangeKind = 'changed' | 'moved' | 'deleted' | 'threads' | 'files' | 'switched';
+
+/**
+ * One change in a domain's Reflection, as a session that may read it hears
+ * it. A path and a kind, never text and never an engram name, so a person
+ * with knowledge `none` may hear it.
+ */
+export type ReflectionChanged = {
+    /**
+     * Who made the change, as a display label; null for a link that
+     * followed, a room save with no single typist, and the machine owner.
+     */
+    actor?: string | null;
+    domain: string;
+    /**
+     * `moved`, and `files` on a move: the path before.
+     */
+    from?: string | null;
+    kind: ReflectionChangeKind;
+    /**
+     * Inside `reflections/`, after the change; empty for `switched`.
+     */
+    path: string;
+};
+
+/**
  * The Reflection level an account holds on every shared domain, or a member
  * on one private domain, beside its knowledge level. It only ever raises
  * what the knowledge level gives: `Default` is "as knowledge",

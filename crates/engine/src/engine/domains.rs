@@ -462,6 +462,7 @@ impl Engine {
         // A MANIFEST that switches Reflection on meets the screens the
         // domain policies meet.
         self.screen_manifest_write(domain, None, markdown).await?;
+        let switch_before = self.reflection_switch(domain);
 
         let (rel, created) = match self.content_source(domain)? {
             ContentSource::File { root } => {
@@ -590,6 +591,7 @@ impl Engine {
         }));
 
         self.refresh_routing_cache().await;
+        self.announce_switch_if_moved(domain, switch_before, change_label(scope));
 
         Ok(json!({
             "domain": domain,

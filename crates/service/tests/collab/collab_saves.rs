@@ -1488,6 +1488,78 @@ async fn a_reflection_room_saves_straight_to_the_file_and_assigns_ids_on_close()
     );
 }
 
+/// A room's save is announced as a `changed` reflection event naming its
+/// one typist.
+#[tokio::test]
+async fn a_reflection_room_save_is_announced_with_its_typist() {
+    use crystalline_service::changes::{Change, ReflectionChangeKind};
+    let (_tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut rx = engine.changes().subscribe();
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed in the room.").await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    assert!(matches!(
+        next_control(&mut joined.rx).await,
+        Control::Saved { .. }
+    ));
+    let mut heard = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if let Change::Reflection(change) = envelope.change {
+            heard.push((change.kind, change.path, change.actor));
+        }
+    }
+    assert_eq!(
+        heard,
+        vec![(
+            ReflectionChangeKind::Changed,
+            "guides/a.md".to_string(),
+            Some("ada".to_string())
+        )]
+    );
+}
+
+/// A room closed without typing writes nothing, so it announces nothing.
+/// The fixture's page has no provenance block yet, which the first close
+/// writes; the second room finds nothing left to write.
+#[tokio::test]
+async fn a_room_close_that_writes_nothing_announces_nothing() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let close_untouched = || async {
+        let joined = sessions
+            .join_reflection("eng", "guides/a.md", "ada")
+            .await
+            .unwrap();
+        let _doc = sync_client(&joined).await;
+        assert!(joined.session.remove_conn(joined.conn).await);
+        joined.session.final_save().await;
+        sessions.dispose_if_empty(&joined.session).await;
+    };
+    close_untouched().await;
+    let before = std::fs::read(&path).unwrap();
+    let mut rx = engine.changes().subscribe();
+    close_untouched().await;
+    assert_eq!(std::fs::read(&path).unwrap(), before, "nothing was written");
+    let mut heard = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if let crystalline_service::changes::Change::Reflection(change) = envelope.change {
+            heard.push(change);
+        }
+    }
+    assert!(heard.is_empty(), "{heard:?}");
+}
+
 #[tokio::test]
 async fn two_people_in_one_reflection_room_merge_and_the_baseline_is_untouched() {
     let (tmp, engine, _scratch) = reflection_fixture().await;

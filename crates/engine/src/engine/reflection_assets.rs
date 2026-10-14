@@ -70,6 +70,14 @@ impl Engine {
         let written: WrittenAsset = self
             .asset_write_in(AssetHome::Reflection, domain, path, bytes, replace)
             .await?;
+        // The stored spelling, the one the file listing answers.
+        self.announce_reflection(
+            domain,
+            &written.row.path,
+            ReflectionChangeKind::Files,
+            None,
+            change_label(&caller.scope),
+        );
         Ok(WrittenReflectionAsset {
             row: written.row,
             created: written.created,
@@ -87,7 +95,15 @@ impl Engine {
         self.require_reflection(domain, caller, ReflectionRight::Curate)
             .await?;
         self.asset_delete_in(AssetHome::Reflection, domain, path)
-            .await
+            .await?;
+        self.announce_reflection(
+            domain,
+            path,
+            ReflectionChangeKind::Files,
+            None,
+            change_label(&caller.scope),
+        );
+        Ok(())
     }
 
     /// Move or rename a file inside `reflections/assets/` and rewrite every
@@ -130,6 +146,13 @@ impl Engine {
         let row_behind = self
             .asset_move_in(AssetHome::Reflection, domain, from, to)
             .await?;
+        self.announce_reflection(
+            domain,
+            to,
+            ReflectionChangeKind::Files,
+            Some(from),
+            change_label(&caller.scope),
+        );
         // The file has moved by now, so a page that cannot be relinked is
         // named in the receipt (and the log) instead of failing a move that
         // happened, as a page move does.
@@ -143,7 +166,19 @@ impl Engine {
                 })
                 .await
             {
-                Ok(n) => links += n,
+                Ok(n) => {
+                    links += n;
+                    if n > 0 {
+                        // A link that followed the file: nobody's change.
+                        self.announce_reflection(
+                            domain,
+                            inner,
+                            ReflectionChangeKind::Changed,
+                            None,
+                            None,
+                        );
+                    }
+                }
                 Err(e) => {
                     tracing::warn!(
                         domain,

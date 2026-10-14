@@ -766,6 +766,7 @@ async fn a_domain_rename_respells_the_reflection_pages() {
     ]);
     fx.engine.write_reflection(&p, &agent()).await.unwrap();
     let owed_before = r::feedback_changes(&file(&fx, "a.md"), &file(&fx, ".reflected/a.md")).len();
+    let mut rx = fx.engine.changes().subscribe();
 
     let report = rename_ops(&fx).await;
 
@@ -810,6 +811,21 @@ async fn a_domain_rename_respells_the_reflection_pages() {
         rewritten.iter().any(|row| row["domain"] == "ops"),
         "{report}"
     );
+    // One `changed` per page the respell rewrote, by nobody: eng's a.md and
+    // the renamed domain's own b.md.
+    let mut changed = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if let crystalline_service::changes::Change::Reflection(change) = envelope.change {
+            assert_eq!(
+                change.kind,
+                crystalline_service::changes::ReflectionChangeKind::Changed
+            );
+            assert_eq!(change.actor, None);
+            changed.push(change.path);
+        }
+    }
+    changed.sort();
+    assert_eq!(changed, ["a.md", "b.md"]);
 }
 
 /// A reflection page in a domain the rename may not write is listed under
@@ -1242,5 +1258,116 @@ async fn a_failed_index_leaves_the_page(fx: Fx) {
     assert!(
         chunks.iter().any(|c| c.text.contains("second, longer")),
         "the walk chunked the new text: {chunks:?}"
+    );
+}
+
+/// What the bus heard of the Reflection, in order: kind, path, from.
+fn reflection_events(
+    rx: &mut tokio::sync::broadcast::Receiver<crystalline_service::changes::Envelope>,
+) -> Vec<(
+    crystalline_service::changes::ReflectionChangeKind,
+    String,
+    Option<String>,
+)> {
+    let mut heard = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if let crystalline_service::changes::Change::Reflection(change) = envelope.change {
+            heard.push((change.kind, change.path, change.from));
+        }
+    }
+    heard
+}
+
+#[tokio::test]
+async fn every_reflection_verb_announces_a_reflection_event() {
+    use crystalline_service::changes::ReflectionChangeKind as K;
+    let fx = reflecting().await;
+    let mut rx = fx.engine.changes().subscribe();
+    fx.engine
+        .write_reflection(&write("a.md", PAGE), &person())
+        .await
+        .unwrap();
+    let opened = fx
+        .engine
+        .discuss(
+            &crystalline_service::params::DiscussParams {
+                domain: "eng".into(),
+                action: Some("open".into()),
+                path: Some("a.md".into()),
+                section: Some("Night deploys".into()),
+                text: Some("Still true?".into()),
+                ..Default::default()
+            },
+            &person(),
+        )
+        .await
+        .unwrap();
+    let thread = opened["id"].as_str().unwrap().to_string();
+    fx.engine
+        .reflection_thread_entry(
+            "eng",
+            "a.md",
+            &thread,
+            EntryKind::Resolve,
+            "Yes.",
+            &person(),
+        )
+        .await
+        .unwrap();
+    let id = crystalline_core::reflection::split_sections(&file(&fx, "a.md"))[1]
+        .id
+        .clone()
+        .unwrap();
+    fx.engine
+        .settle_reflection("eng", "a.md", &[id], "kept", &agent())
+        .await
+        .unwrap();
+    fx.engine
+        .move_reflection("eng", "a.md", "b.md", &person())
+        .await
+        .unwrap();
+    fx.engine
+        .delete_reflection("eng", "b.md", &person())
+        .await
+        .unwrap();
+    let a = || "a.md".to_string();
+    assert_eq!(
+        reflection_events(&mut rx),
+        vec![
+            (K::Changed, a(), None),
+            (K::Threads, a(), None),
+            (K::Threads, a(), None),
+            (K::Changed, a(), None),
+            (K::Moved, "b.md".to_string(), Some(a())),
+            (K::Deleted, "b.md".to_string(), None),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_move_announces_the_pages_whose_links_it_rewrote() {
+    use crystalline_service::changes::ReflectionChangeKind as K;
+    let fx = reflecting().await;
+    fx.engine
+        .write_reflection(&write("a.md", PAGE), &person())
+        .await
+        .unwrap();
+    fx.engine
+        .write_reflection(&write("links.md", "# Links\n\nSee [a](a.md).\n"), &person())
+        .await
+        .unwrap();
+    let mut rx = fx.engine.changes().subscribe();
+    fx.engine
+        .move_reflection("eng", "a.md", "b.md", &person())
+        .await
+        .unwrap();
+    let heard = reflection_events(&mut rx);
+    assert!(
+        heard.contains(&(K::Moved, "b.md".to_string(), Some("a.md".to_string()))),
+        "{heard:?}"
+    );
+    assert!(
+        heard.contains(&(K::Changed, "links.md".to_string(), None)),
+        "{heard:?}"
     );
 }

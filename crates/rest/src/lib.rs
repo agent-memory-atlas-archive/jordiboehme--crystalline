@@ -344,6 +344,8 @@ use crate::scope::{DomainAccess, DomainRight};
         schemas::DomainChanged,
         schemas::ChangeKind,
         schemas::MovedFrom,
+        schemas::ReflectionChanged,
+        schemas::ReflectionChangeKind,
     )),
 )]
 struct ApiDoc;

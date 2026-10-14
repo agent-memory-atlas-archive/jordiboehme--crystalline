@@ -7777,7 +7777,7 @@
           "events"
         ],
         "summary": "Live changes to the knowledge, as a server-sent event stream.",
-        "description": "A `text/event-stream` the web UI keeps open once per tab. Frames: `id: <epoch>:<seq>` + `event: engram` + `data: <EngramChanged>`; `id` + `event: domain` + `data: <DomainChanged>`; `event: reset` + `data: {}` with no id (invalidate everything and keep the connection); and a `: ping` comment every fifteen seconds. `Last-Event-ID` replays the ring after that id, or answers one `reset` when the epoch is not this process's or the id is older than the ring's oldest entry. Every frame is filtered by what the session may read; a `draft_of` frame reaches the draft's owner alone. Served read-only. OpenAPI cannot type a stream, so the body below is described as text and the schemas `EngramChanged`, `DomainChanged` and `ChangeKind` carry the shapes.",
+        "description": "A `text/event-stream` the web UI keeps open once per tab. Frames: `id: <epoch>:<seq>` + `event: engram` + `data: <EngramChanged>`; `id` + `event: domain` + `data: <DomainChanged>`; `id` + `event: reflection` + `data: <ReflectionChanged>`; `event: reset` + `data: {}` with no id (invalidate everything and keep the connection); and a `: ping` comment every fifteen seconds. `Last-Event-ID` replays the ring after that id, or answers one `reset` when the epoch is not this process's or the id is older than the ring's oldest entry. Every frame is filtered by what the session may read, `reflection` frames by the session's reflection right; a `draft_of` frame reaches the draft's owner alone. Served read-only. OpenAPI cannot type a stream, so the body below is described as text and the schemas `EngramChanged`, `DomainChanged`, `ChangeKind`, `ReflectionChanged` and `ReflectionChangeKind` carry the shapes.",
         "operationId": "stream_events",
         "parameters": [
           {
@@ -12590,6 +12590,53 @@
               "$ref": "#/components/schemas/AttachmentView"
             },
             "description": "The rows, ordered by path; `path` is inside `reflections/`\n(`assets/...`)."
+          }
+        }
+      },
+      "ReflectionChangeKind": {
+        "type": "string",
+        "description": "What happened in a domain's Reflection, as the `reflection` event says it.",
+        "enum": [
+          "changed",
+          "moved",
+          "deleted",
+          "threads",
+          "files",
+          "switched"
+        ]
+      },
+      "ReflectionChanged": {
+        "type": "object",
+        "description": "One change in a domain's Reflection, as a session that may read it hears\nit. A path and a kind, never text and never an engram name, so a person\nwith knowledge `none` may hear it.",
+        "required": [
+          "domain",
+          "path",
+          "kind"
+        ],
+        "properties": {
+          "actor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who made the change, as a display label; null for a link that\nfollowed, a room save with no single typist, and the machine owner."
+          },
+          "domain": {
+            "type": "string"
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`moved`, and `files` on a move: the path before."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ReflectionChangeKind"
+          },
+          "path": {
+            "type": "string",
+            "description": "Inside `reflections/`, after the change; empty for `switched`."
           }
         }
       },

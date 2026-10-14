@@ -1398,3 +1398,109 @@ async fn the_search_route_takes_search_type_and_page_and_answers_the_mcp_shape()
         "{refused}"
     );
 }
+
+/// The change stream as `cookie`, or as the anonymous viewer.
+async fn events_as(addr: std::net::SocketAddr, cookie: Option<&str>) -> reqwest::Response {
+    let mut req = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .get(format!("http://{addr}/api/v1/events"))
+        .header("accept", "text/event-stream");
+    if let Some(cookie) = cookie {
+        req = req.header("cookie", format!("fluid_session={cookie}"));
+    }
+    req.send().await.unwrap()
+}
+
+/// The `event:` names a stream sends within `within`; heartbeat comments
+/// carry none.
+async fn event_names(resp: &mut reqwest::Response, within: std::time::Duration) -> Vec<String> {
+    let mut body = String::new();
+    let deadline = tokio::time::Instant::now() + within;
+    while let Ok(Ok(Some(chunk))) = tokio::time::timeout_at(deadline, resp.chunk()).await {
+        body.push_str(std::str::from_utf8(&chunk).unwrap());
+    }
+    body.lines()
+        .filter_map(|line| line.strip_prefix("event:"))
+        .map(|name| name.trim().to_string())
+        .collect()
+}
+
+/// An engram edit and a reflection write, both in `eng`.
+async fn one_of_each(s: &Served) {
+    s.fx.engine
+        .edit_engram(&crystalline_service::params::EditParams {
+            identifier: "runbooks/deploy".into(),
+            domain: "eng".into(),
+            operation: "append".into(),
+            content: Some("- [fact] one more line".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    s.fx.engine
+        .write_reflection(
+            &crate::docs::write("guides/other.md", "# Other\n"),
+            &crystalline_service::ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_contributor_hears_reflection_events_and_no_engram_event() {
+    let s = serve().await;
+    let ann = Session::login(s.addr, "ann").await;
+    s.auth
+        .add_user("out", "out", None, Role::Editor, "pw12345678")
+        .await
+        .unwrap();
+    let out = Session::login(s.addr, "out").await;
+    let mut contributor = events_as(s.addr, Some(&ann.cookie)).await;
+    let mut stranger = events_as(s.addr, Some(&out.cookie)).await;
+    one_of_each(&s).await;
+    let heard = event_names(&mut contributor, std::time::Duration::from_secs(3)).await;
+    assert_eq!(
+        heard,
+        vec!["reflection"],
+        "the page, never the engram: {heard:?}"
+    );
+    let heard = event_names(&mut stranger, std::time::Duration::from_secs(3)).await;
+    assert!(heard.is_empty(), "a stranger hears neither: {heard:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_anonymous_viewer_of_a_public_domain_hears_both() {
+    let s = serve_with(true).await;
+    let mut anonymous = events_as(s.addr, None).await;
+    one_of_each(&s).await;
+    let mut heard = event_names(&mut anonymous, std::time::Duration::from_secs(3)).await;
+    heard.sort();
+    assert_eq!(
+        heard,
+        vec!["engram", "reflection"],
+        "it reads the engrams and the Reflection: {heard:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_contributor_hears_the_switch_go_off() {
+    let s = serve().await;
+    let ann = Session::login(s.addr, "ann").await;
+    let mut contributor = events_as(s.addr, Some(&ann.cookie)).await;
+    s.fx.engine
+        .set_manifest_policies(
+            "eng",
+            &[("reflection".to_string(), "off".to_string())],
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let heard = event_names(&mut contributor, std::time::Duration::from_secs(3)).await;
+    assert_eq!(
+        heard,
+        vec!["reflection"],
+        "the switch, never the MANIFEST's engram event: {heard:?}"
+    );
+}

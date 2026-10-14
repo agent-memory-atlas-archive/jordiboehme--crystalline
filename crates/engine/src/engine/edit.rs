@@ -224,9 +224,8 @@ impl Engine {
         // switch is off: an edit of a MANIFEST that says on cannot switch it
         // on, and gathering would read the pending check from disk for
         // nothing.
-        let switch_facts = if is_manifest
-            && self.reflection_switch(&desc.domain) == crystalline_core::ReflectionSwitch::Off
-        {
+        let switch_before = is_manifest.then(|| self.reflection_switch(&desc.domain));
+        let switch_facts = if switch_before == Some(crystalline_core::ReflectionSwitch::Off) {
             Some(self.switch_facts(&desc.domain).await?)
         } else {
             None
@@ -276,6 +275,12 @@ impl Engine {
             )
             .await
             .map_err(|failure| failure.error)?;
+        // A draft moves no switch: the folder's MANIFEST decides.
+        if let Some(before) = switch_before
+            && overlay.is_none()
+        {
+            self.announce_switch_if_moved(&desc.domain, before, change_label(scope));
+        }
 
         let mut response = json!({
             "domain": desc.domain,

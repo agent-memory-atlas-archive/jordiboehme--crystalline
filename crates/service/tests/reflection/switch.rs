@@ -827,3 +827,51 @@ async fn a_switch_off_of_a_team_domain_says_not_to_share_while_it_is_off() {
         .unwrap();
     assert!(receipt.get("note").is_none(), "{receipt}");
 }
+
+/// Every switch a Crystalline writer makes is announced as one `switched`
+/// event with an empty path; a MANIFEST write that leaves the switch where
+/// it was announces none.
+#[tokio::test]
+async fn every_switch_through_crystalline_announces_switched_with_an_empty_path() {
+    use crystalline_service::changes::{Change, ReflectionChangeKind};
+    let fx = fixture(&[]).await;
+    let mut rx = fx.engine.changes().subscribe();
+    let off = vec![("reflection".to_string(), "off".to_string())];
+    fx.engine
+        .set_manifest_policies("eng", &on(), &Scope::Unrestricted)
+        .await
+        .unwrap();
+    fx.engine
+        .set_manifest_policies("eng", &off, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let source = std::fs::read_to_string(fx.root.join("MANIFEST.md")).unwrap();
+    let save = crystalline_service::params::SaveParams {
+        domain: "eng".into(),
+        identifier: "manifest".into(),
+        content: manifest("reflection: on\n"),
+        expected_checksum: crate::support::sha256_hex(source.as_bytes()),
+    };
+    fx.engine
+        .save_engram(&save, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    fx.engine
+        .edit_engram(&EditParams {
+            identifier: "manifest".into(),
+            domain: "eng".into(),
+            operation: "append".into(),
+            content: Some("- Also its runbooks".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut switched = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if let Change::Reflection(change) = envelope.change {
+            assert_eq!(change.kind, ReflectionChangeKind::Switched, "{change:?}");
+            switched.push((change.path, change.from));
+        }
+    }
+    assert_eq!(switched, vec![(String::new(), None); 3]);
+}

@@ -1208,6 +1208,14 @@ impl Engine {
                             &domain,
                             crate::reflection_backup::BackupCause::Settled,
                         );
+                        // A respelled link is nobody's change.
+                        self.announce_reflection(
+                            &domain,
+                            &row.path,
+                            ReflectionChangeKind::Changed,
+                            None,
+                            None,
+                        );
                         let counts = outcome.rewritten.entry(domain.clone()).or_default();
                         counts.0 += 1;
                         counts.1 += references;

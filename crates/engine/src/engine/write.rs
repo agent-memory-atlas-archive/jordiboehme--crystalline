@@ -1001,6 +1001,8 @@ impl Engine {
                 .save_into_overlay(&view, p, &desc, &source, scope)
                 .await;
         }
+        let switch_before =
+            is_manifest_path(&desc.path).then(|| self.reflection_switch(&desc.domain));
 
         // The single point this save's text funnels through before it lands:
         // a cross-domain link spelled with an alias or a non-canonical local
@@ -1108,6 +1110,9 @@ impl Engine {
         // A save can rewrite a MANIFEST or the titles a folder index lists,
         // same as an edit.
         self.after_source_write(&source, &desc.path).await;
+        if let Some(before) = switch_before {
+            self.announce_switch_if_moved(&desc.domain, before, change_label(scope));
+        }
         self.refresh_index_files(&desc.domain).await;
         self.nudge_embed();
 
@@ -1401,6 +1406,7 @@ impl Engine {
             note_unmirrored(&mut receipt, warning);
             return Ok(receipt);
         }
+        let switch_before = is_manifest_path(path).then(|| self.reflection_switch(domain));
         match &source {
             ContentSource::File { root } => {
                 let abs = join_rel(root, path);
@@ -1420,6 +1426,10 @@ impl Engine {
             }
         }
         self.after_source_write(&source, path).await;
+        if let Some(before) = switch_before {
+            // The function takes a view and no scope, so nobody is named.
+            self.announce_switch_if_moved(domain, before, None);
+        }
         self.refresh_index_files(domain).await;
 
         // Read back after the reindex, exactly as a save does: the index takes

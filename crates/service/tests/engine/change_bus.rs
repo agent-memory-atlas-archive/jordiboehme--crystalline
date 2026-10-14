@@ -709,7 +709,7 @@ async fn a_domain_removal_and_a_rename_announce_domain_events() {
         .into_iter()
         .filter_map(|c| match c {
             Change::Domain(d) => Some(d),
-            Change::Engram(_) => None,
+            Change::Engram(_) | Change::Reflection(_) => None,
         })
         .collect();
     let names: Vec<String> = domains.iter().map(|d| d.domain.clone()).collect();
