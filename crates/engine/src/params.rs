@@ -685,6 +685,26 @@ pub struct DiscussParams {
     pub status: Option<String>,
 }
 
+/// Parameters for `reflect`.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct ReflectParams {
+    /// The domains whose Reflection queue to return. Omit for every domain
+    /// with a Reflection you can work on here.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub domains: Vec<String>,
+    /// Restrict to these kinds: feedback (what people changed), update (what
+    /// changed in the engrams, or what the Reflection does not cover yet),
+    /// review (threads waiting for you). Omit for all three.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub kinds: Vec<String>,
+    /// Page size. Defaults to 10, capped at 100.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// One-based page number. Defaults to 1.
+    #[serde(default)]
+    pub page: Option<usize>,
+}
+
 /// Parameters for `configure`. Omit everything to see the current settings,
 /// and with `github.enabled` on the GitHub connection too; with it off the
 /// snapshot reports that the feature is off and how to turn it on, leaving

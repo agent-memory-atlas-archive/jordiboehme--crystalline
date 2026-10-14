@@ -15,7 +15,7 @@ use crate::scope::{ReflectionCaller, ReflectionRight, Scope, reflection_right_wo
 #[derive(Debug, Clone)]
 pub(crate) struct ReflectionAccess {
     /// The domain root.
-    #[allow(dead_code)] // Read by the reflect queue and the file verbs (Tasks 14, 23).
+    #[allow(dead_code)] // Read by the file verbs (Task 23).
     pub root: PathBuf,
     /// The Reflection's folder, in its spelling on disk
     /// ([`reflection_dir`]), resolved once per verb.
@@ -517,13 +517,11 @@ impl Engine {
 /// One engram's facts a section's sources are held against.
 #[derive(Debug, Clone)]
 pub(crate) struct EngramFact {
-    #[allow(dead_code)] // Read by the reflect queue (Task 14).
     pub permalink: String,
     pub title: String,
     pub status: String,
     pub checksum: String,
     /// Seconds since the epoch of the file's last change.
-    #[allow(dead_code)] // Read by the reflect queue (Task 14).
     pub mtime: i64,
 }
 
@@ -531,7 +529,7 @@ pub(crate) struct EngramFact {
 /// folder's spelling on disk (see [`reflection_dir`]). A verb that holds a
 /// [`ReflectionAccess`] uses [`ReflectionAccess::abs`], which resolves the
 /// folder once.
-#[allow(dead_code)] // Used by the reflect queue, the rooms and the file verbs (Tasks 14, 18, 23).
+#[allow(dead_code)] // Used by the rooms and the file verbs (Tasks 18, 23).
 pub(super) fn reflection_abs(root: &Path, inner: &str) -> PathBuf {
     join_rel(&reflection_dir(root), inner)
 }
@@ -1138,8 +1136,9 @@ impl Engine {
 
 /// A thread as the answers show it (`ThreadView` in the contract). The
 /// Reflection is the target: the anchor's state comes from
-/// `anchor_state` over the page, and `anchor.section` is the section's id
-/// (`SectionRef::key`, the only form a reflection writes).
+/// `anchor_state` over the page, and `anchor.section` is what the anchor
+/// names (`SectionRef::key`): the section's id, or its heading for a thread
+/// opened on a heading that had no id yet.
 pub(crate) fn thread_view(inner: &str, t: &crystalline_core::threads::Thread, text: &str) -> Value {
     use crystalline_core::threads as th;
     let last = chrono::DateTime::parse_from_rfc3339(t.last_at())

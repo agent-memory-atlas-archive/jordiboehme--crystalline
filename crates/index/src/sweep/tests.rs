@@ -2283,6 +2283,35 @@ fn v112_compares_only_siblings_and_skips_reserved_files() {
     );
 }
 
+/// While `reflection: on` waits for `reflections/` to empty, V112
+/// never asks for engrams to move into it, nor pairs it with anything.
+#[test]
+fn v112_leaves_the_pending_reflections_folder_alone() {
+    let mut sweep = input(vec![
+        at(1, "reflections/a.md"),
+        at(2, "reflection/b.md"),
+        at(3, "reflection/c.md"),
+    ]);
+    assert!(
+        fired(&detect(&sweep)).contains(&"V112"),
+        "an ordinary pair while the switch is off"
+    );
+    sweep.reflection_pending = true;
+    assert!(
+        !fired(&detect(&sweep)).contains(&"V112"),
+        "{:?}",
+        fired(&detect(&sweep))
+    );
+    // A nested `reflections` folder is an ordinary folder: only the root one
+    // is the Reflection.
+    let mut nested = input(vec![
+        at(1, "docs/reflections/a.md"),
+        at(2, "docs/reflection/b.md"),
+    ]);
+    nested.reflection_pending = true;
+    assert!(fired(&detect(&nested)).contains(&"V112"));
+}
+
 #[test]
 fn v112_is_quiet_on_a_domain_without_close_folders() {
     let sweep = input(vec![

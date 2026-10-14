@@ -5603,6 +5603,8 @@ mod name_report;
 mod names;
 mod origins;
 mod read;
+mod reflect;
+pub use reflect::REFLECT_GUIDANCE;
 mod reflection;
 mod rename_domain;
 mod review_mode;

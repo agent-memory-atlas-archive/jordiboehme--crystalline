@@ -83,6 +83,10 @@ impl Engine {
                 return Vec::new();
             }
         };
+        // While `reflection: on` waits for `reflections/` to empty, the hint
+        // never pairs that folder with anything (R21).
+        let reflecting =
+            self.reflection_switch(&probe.domain) == crystalline_core::ReflectionSwitch::On;
         // Taken outside the budget, and held for the probe's few queries so
         // they are not queued behind another holder one by one. The wait has
         // its own ceiling, the neighbours advisory's: past it the hint is
@@ -93,7 +97,7 @@ impl Engine {
             );
             return Vec::new();
         };
-        let probed = close_folders_in(&*store, probe, actor.as_deref());
+        let probed = close_folders_in(&*store, probe, actor.as_deref(), reflecting);
         match tokio::time::timeout(CLOSE_FOLDER_TIMEOUT, probed).await {
             Ok(Ok(found)) => found,
             Ok(Err(e)) => {
@@ -119,12 +123,23 @@ impl Engine {
     }
 }
 
+/// Whether `folder` is the root `reflections` folder, in any ASCII letter
+/// case: the folder a pending Reflection switch waits on to empty.
+fn is_reflections_root(folder: &str) -> bool {
+    !folder.contains('/')
+        && folder.eq_ignore_ascii_case(crystalline_core::reflection::REFLECTIONS_DIR)
+}
+
 /// The probe itself, on a store the caller already holds: the caller's own
 /// view of the domain (base rows, and with an `actor` their drafts over them).
+/// With `reflecting` (the MANIFEST says `reflection: on`) the root
+/// `reflections` folder is never one side of a pair, so the hint never
+/// suggests moving engrams into the folder the switch waits on to empty.
 async fn close_folders_in(
     store: &dyn Store,
     probe: &FolderProbe,
     actor: Option<&str>,
+    reflecting: bool,
 ) -> Result<Vec<CloseFolder>> {
     let FolderProbe { domain, path } = probe;
     let Some(domain_id) = store.domain_id(domain).await? else {
@@ -175,5 +190,13 @@ async fn close_folders_in(
     let Some(created) = created_folder(path, &counts) else {
         return Ok(Vec::new());
     };
-    Ok(close_folders(&created, &sibling_folders(&created, &counts)))
+    if reflecting && is_reflections_root(&created) {
+        return Ok(Vec::new());
+    }
+    let mut siblings = sibling_folders(&created, &counts);
+    if reflecting {
+        // Before the matcher, which keeps only the closest few.
+        siblings.retain(|(folder, _)| !is_reflections_root(folder));
+    }
+    Ok(close_folders(&created, &siblings))
 }

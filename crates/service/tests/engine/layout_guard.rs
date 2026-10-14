@@ -147,6 +147,7 @@ fn reflection_variants_stay_in_their_modules() {
             "index/src/turso/mod.rs",
             "index/src/postgres/mod.rs",
             "index/src/sync.rs",
+            "engine/src/engine/reflect.rs",
             "engine/src/engine/reflection.rs",
             "engine/src/engine/rename_domain.rs",
             "engine/src/engine/threads.rs",
