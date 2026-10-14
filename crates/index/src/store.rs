@@ -2106,6 +2106,26 @@ pub struct AttachmentRow {
     pub modified: String,
 }
 
+/// One reflection as the index keeps it: the text Reflection-mode search
+/// reads and the title the tree shows. Never an engram row: reflections
+/// live in their own table and never reach search_engrams, evolve or the
+/// graph. `path` is inside `reflections/`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReflectionRow {
+    /// The path inside `reflections/`.
+    pub path: String,
+    /// The reflection's title.
+    pub title: String,
+    /// The whole file.
+    pub content: String,
+    /// Lowercase hex SHA-256 of the file.
+    pub sha256: String,
+    /// Byte length.
+    pub size: u64,
+    /// Last modification instant, RFC 3339.
+    pub modified: String,
+}
+
 /// Which table a domain's files are kept in. Each table keeps its own rows;
 /// one body of code reads and writes them all, the table chosen here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3349,6 +3369,20 @@ pub trait Store: Send + Sync {
     /// row has no blob (the normal case for a file domain, whose bytes are on
     /// disk).
     async fn read_attachment_blob(&self, domain: DomainId, path: &str) -> Result<Option<Vec<u8>>>;
+
+    // --- reflections ---------------------------------------------------------
+
+    /// Insert or replace one reflection's row, keyed by `(domain, path)`.
+    async fn upsert_reflection(&self, domain: DomainId, row: &ReflectionRow) -> Result<()>;
+
+    /// Remove one reflection's row. `false` when there was none.
+    async fn delete_reflection(&self, domain: DomainId, path: &str) -> Result<bool>;
+
+    /// One reflection's row, or `None`.
+    async fn get_reflection(&self, domain: DomainId, path: &str) -> Result<Option<ReflectionRow>>;
+
+    /// Every reflection row of a domain, ordered by path in byte order.
+    async fn list_reflections(&self, domain: DomainId) -> Result<Vec<ReflectionRow>>;
 
     // --- host locks ----------------------------------------------------------
     // The single-writer-per-file-domain rule for shared-database collaboration.

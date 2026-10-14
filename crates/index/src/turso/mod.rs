@@ -55,8 +55,8 @@ use crate::store::{
     EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode,
     GraphSlice, HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector,
     NamedCount, NewChunk, ObservationVector, OutboundRef, Page, RebuildKind, RecentFilter,
-    ReferenceCandidates, ScoredPair, SearchHit, SearchMode, SearchQuery, SpellingPlan, Store,
-    StoreInfo, StoredEngram, Vocabulary, build_vocabulary, changed_spellings,
+    ReferenceCandidates, ReflectionRow, ScoredPair, SearchHit, SearchMode, SearchQuery,
+    SpellingPlan, Store, StoreInfo, StoredEngram, Vocabulary, build_vocabulary, changed_spellings,
     count_references_to_sql, domain_url_needles, folder_slash, in_transaction, names_a_domain_url,
     page_window, reference_match, referencing_domains_sql, rename_onto_taken_row,
     reset_spelled_references_sql, resolve_references_to_sql, resolve_spelled_references_sql,
@@ -719,6 +719,19 @@ fn attachment_from_row(r: &Row) -> AttachmentRow {
         mime: cell_text(r, 2).unwrap_or_default(),
         size: cell_i64(r, 3).unwrap_or(0).max(0) as u64,
         modified: cell_text(r, 4).unwrap_or_default(),
+    }
+}
+
+/// Decode one reflection row: path, title, content, sha256, size, modified.
+/// The column layout is identical across both backends.
+fn reflection_from_row(r: &Row) -> ReflectionRow {
+    ReflectionRow {
+        path: cell_text(r, 0).unwrap_or_default(),
+        title: cell_text(r, 1).unwrap_or_default(),
+        content: cell_text(r, 2).unwrap_or_default(),
+        sha256: cell_text(r, 3).unwrap_or_default(),
+        size: cell_i64(r, 4).unwrap_or(0).max(0) as u64,
+        modified: cell_text(r, 5).unwrap_or_default(),
     }
 }
 
@@ -1989,6 +2002,7 @@ impl Store for TursoStore {
             "DELETE FROM attachment_blob WHERE attachment_id IN \
              (SELECT id FROM attachment WHERE domain_id=?1)",
             "DELETE FROM attachment WHERE domain_id=?1",
+            "DELETE FROM reflection WHERE domain_id=?1",
             // Every spelling but the row's own name, which stays with the row.
             "DELETE FROM domain_spelling WHERE domain_id=?1 \
              AND spelling <> (SELECT name FROM domain WHERE id=?1)",
@@ -4117,6 +4131,63 @@ impl Store for TursoStore {
             Ok(Value::Blob(b)) => Some(b),
             _ => None,
         }))
+    }
+
+    async fn upsert_reflection(&self, domain: DomainId, row: &ReflectionRow) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO reflection(domain_id, path, title, content, sha256, size, modified) \
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                 ON CONFLICT(domain_id, path) DO UPDATE SET \
+                     title=excluded.title, content=excluded.content, sha256=excluded.sha256, \
+                     size=excluded.size, modified=excluded.modified",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(row.path.clone()),
+                    Value::Text(row.title.clone()),
+                    Value::Text(row.content.clone()),
+                    Value::Text(row.sha256.clone()),
+                    Value::Integer(row.size as i64),
+                    Value::Text(row.modified.clone()),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_reflection(&self, domain: DomainId, path: &str) -> Result<bool> {
+        let n = self
+            .conn
+            .execute(
+                "DELETE FROM reflection WHERE domain_id=?1 AND path=?2",
+                vec![Value::Integer(domain.0), Value::Text(path.to_string())],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    async fn get_reflection(&self, domain: DomainId, path: &str) -> Result<Option<ReflectionRow>> {
+        let row = query_first(
+            &self.conn,
+            "SELECT path, title, content, sha256, size, modified FROM reflection \
+             WHERE domain_id=?1 AND path=?2",
+            vec![Value::Integer(domain.0), Value::Text(path.to_string())],
+        )
+        .await?;
+        Ok(row.as_ref().map(reflection_from_row))
+    }
+
+    async fn list_reflections(&self, domain: DomainId) -> Result<Vec<ReflectionRow>> {
+        // TEXT sorts byte-wise here, the order the Postgres twin pins itself to
+        // with an explicit `COLLATE "C"`.
+        let rows = query_all(
+            &self.conn,
+            "SELECT path, title, content, sha256, size, modified FROM reflection \
+             WHERE domain_id=?1 ORDER BY path",
+            vec![Value::Integer(domain.0)],
+        )
+        .await?;
+        Ok(rows.iter().map(reflection_from_row).collect())
     }
 
     async fn begin(&self) -> Result<()> {

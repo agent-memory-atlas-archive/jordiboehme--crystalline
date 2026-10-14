@@ -111,12 +111,12 @@ use crate::store::{
     EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode,
     GraphSlice, HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector,
     NamedCount, NewChunk, OBSERVATION_VECTOR_CHUNK, ObservationVector, OutboundRef, Page,
-    RebuildKind, RecentFilter, ReferenceCandidates, ScoredPair, SearchHit, SearchMode, SearchQuery,
-    SpellingPlan, Store, StoreInfo, StoredEngram, Vocabulary, build_vocabulary, changed_spellings,
-    count_references_to_sql, domain_url_needles, folder_slash, in_transaction, names_a_domain_url,
-    page_window, reference_match, referencing_domains_sql, rename_onto_taken_row,
-    reset_spelled_references_sql, resolve_references_to_sql, resolve_spelled_references_sql,
-    spelled_references_sql, spelling_plan,
+    RebuildKind, RecentFilter, ReferenceCandidates, ReflectionRow, ScoredPair, SearchHit,
+    SearchMode, SearchQuery, SpellingPlan, Store, StoreInfo, StoredEngram, Vocabulary,
+    build_vocabulary, changed_spellings, count_references_to_sql, domain_url_needles, folder_slash,
+    in_transaction, names_a_domain_url, page_window, reference_match, referencing_domains_sql,
+    rename_onto_taken_row, reset_spelled_references_sql, resolve_references_to_sql,
+    resolve_spelled_references_sql, spelled_references_sql, spelling_plan,
 };
 use crate::sweep::{SpelledRef, UnresolvedRef};
 
@@ -828,6 +828,19 @@ fn attachment_from_row(r: &PgRow) -> AttachmentRow {
         mime: cell_text(r, 2).unwrap_or_default(),
         size: cell_i64(r, 3).unwrap_or(0).max(0) as u64,
         modified: cell_text(r, 4).unwrap_or_default(),
+    }
+}
+
+/// Decode one reflection row: path, title, content, sha256, size, modified.
+/// The column layout is identical across both backends.
+fn reflection_from_row(r: &PgRow) -> ReflectionRow {
+    ReflectionRow {
+        path: cell_text(r, 0).unwrap_or_default(),
+        title: cell_text(r, 1).unwrap_or_default(),
+        content: cell_text(r, 2).unwrap_or_default(),
+        sha256: cell_text(r, 3).unwrap_or_default(),
+        size: cell_i64(r, 4).unwrap_or(0).max(0) as u64,
+        modified: cell_text(r, 5).unwrap_or_default(),
     }
 }
 
@@ -1922,6 +1935,7 @@ impl Store for PostgresStore {
             "DELETE FROM attachment_blob WHERE attachment_id IN \
              (SELECT id FROM attachment WHERE domain_id=$1)",
             "DELETE FROM attachment WHERE domain_id=$1",
+            "DELETE FROM reflection WHERE domain_id=$1",
             // Every spelling but the row's own name, which stays with the row.
             // The declared cascade never fires: the row is kept.
             "DELETE FROM domain_spelling WHERE domain_id=$1 \
@@ -4199,6 +4213,65 @@ impl Store for PostgresStore {
         )
         .await?;
         Ok(row.and_then(|r| r.try_get::<Option<Vec<u8>>, _>(0).ok().flatten()))
+    }
+
+    async fn upsert_reflection(&self, domain: DomainId, row: &ReflectionRow) -> Result<()> {
+        let mut conn = self.acquire().await?;
+        sqlx::query(
+            "INSERT INTO reflection(domain_id, path, title, content, sha256, size, modified) \
+             VALUES($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT(domain_id, path) DO UPDATE SET \
+                 title=excluded.title, content=excluded.content, sha256=excluded.sha256, \
+                 size=excluded.size, modified=excluded.modified",
+        )
+        .bind(domain.0)
+        .bind(&row.path)
+        .bind(&row.title)
+        .bind(&row.content)
+        .bind(&row.sha256)
+        .bind(row.size as i64)
+        .bind(&row.modified)
+        .execute(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(())
+    }
+
+    async fn delete_reflection(&self, domain: DomainId, path: &str) -> Result<bool> {
+        let mut conn = self.acquire().await?;
+        let n = sqlx::query("DELETE FROM reflection WHERE domain_id=$1 AND path=$2")
+            .bind(domain.0)
+            .bind(path)
+            .execute(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?
+            .rows_affected();
+        Ok(n > 0)
+    }
+
+    async fn get_reflection(&self, domain: DomainId, path: &str) -> Result<Option<ReflectionRow>> {
+        let mut conn = self.acquire().await?;
+        let row = query_first(
+            conn.as_mut(),
+            "SELECT path, title, content, sha256, size, modified FROM reflection \
+             WHERE domain_id=$1 AND path=$2",
+            vec![Param::Int(domain.0), Param::Text(path.to_string())],
+        )
+        .await?;
+        Ok(row.as_ref().map(reflection_from_row))
+    }
+
+    async fn list_reflections(&self, domain: DomainId) -> Result<Vec<ReflectionRow>> {
+        let mut conn = self.acquire().await?;
+        // `COLLATE "C"` pins byte order, the order Turso's TEXT sorts in.
+        let rows = query_all(
+            conn.as_mut(),
+            "SELECT path, title, content, sha256, size, modified FROM reflection \
+             WHERE domain_id=$1 ORDER BY path COLLATE \"C\"",
+            vec![Param::Int(domain.0)],
+        )
+        .await?;
+        Ok(rows.iter().map(reflection_from_row).collect())
     }
 
     async fn begin(&self) -> Result<()> {

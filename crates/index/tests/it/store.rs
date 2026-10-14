@@ -15,8 +15,9 @@ use std::path::Path;
 use crystalline_index::{
     AttachmentRow, DomainId, DomainKind, EMBED_PAGE_SIZE, EdgeKind, EmbeddingCoverage,
     EmbeddingRow, EngramId, EngramRecord, FileStamp, FilterOp, HostClaim, InboundPage,
-    InboundQuery, IndexError, MetadataFilter, NamedCount, NewChunk, RecentFilter, SearchMode,
-    SearchOrder, SearchQuery, Store, TursoStore, Vocabulary, resolve_forward_refs, sync_domain,
+    InboundQuery, IndexError, MetadataFilter, NamedCount, NewChunk, RecentFilter, ReflectionRow,
+    SearchMode, SearchOrder, SearchQuery, Store, TursoStore, Vocabulary, resolve_forward_refs,
+    sync_domain,
 };
 
 fn write(dir: &Path, rel: &str, content: &str) {
@@ -8340,6 +8341,85 @@ async fn colon_title_resolution(store: &dyn Store) {
 parity!(
     a_colon_in_a_title_resolves_at_home_on_both_backends,
     colon_title_resolution
+);
+
+// --- reflections -------------------------------------------------------------
+
+fn reflection_row(path: &str, title: &str, content: &str) -> ReflectionRow {
+    ReflectionRow {
+        path: path.to_string(),
+        title: title.to_string(),
+        content: content.to_string(),
+        sha256: format!("sha-{path}"),
+        size: content.len() as u64,
+        modified: "2026-09-30T09:00:00+00:00".to_string(),
+    }
+}
+
+async fn reflection_rows_roundtrip(store: &dyn Store) {
+    let did = store
+        .upsert_domain("eng", Some("/k/eng"), DomainKind::File)
+        .await
+        .unwrap();
+    let other = store
+        .upsert_domain("ops", Some("/k/ops"), DomainKind::File)
+        .await
+        .unwrap();
+    let row = reflection_row("guides/deploying.md", "Deploying", "# Deploying\n");
+    store.upsert_reflection(did, &row).await.unwrap();
+    assert_eq!(
+        store
+            .get_reflection(did, "guides/deploying.md")
+            .await
+            .unwrap(),
+        Some(row)
+    );
+    let changed = reflection_row("guides/deploying.md", "Deploying at night", "# Night\n");
+    store.upsert_reflection(did, &changed).await.unwrap();
+    assert_eq!(store.list_reflections(did).await.unwrap(), vec![changed]);
+    for path in ["b.md", "B.md", "a.md"] {
+        store
+            .upsert_reflection(did, &reflection_row(path, path, "x"))
+            .await
+            .unwrap();
+    }
+    store
+        .upsert_reflection(other, &reflection_row("a.md", "other", "y"))
+        .await
+        .unwrap();
+    let paths: Vec<String> = store
+        .list_reflections(did)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.path)
+        .collect();
+    assert_eq!(
+        paths,
+        ["B.md", "a.md", "b.md", "guides/deploying.md"],
+        "byte order, one domain"
+    );
+    assert!(store.delete_reflection(did, "a.md").await.unwrap());
+    assert!(!store.delete_reflection(did, "a.md").await.unwrap());
+    store.clear_domain(did).await.unwrap();
+    assert!(
+        store.list_reflections(did).await.unwrap().is_empty(),
+        "clear_domain takes them"
+    );
+    assert_eq!(
+        store.list_reflections(other).await.unwrap().len(),
+        1,
+        "and only this domain's"
+    );
+    store.wipe().await.unwrap();
+    assert!(
+        store.list_reflections(other).await.unwrap().is_empty(),
+        "wipe takes every row"
+    );
+}
+parity!(
+    reflection_rows_roundtrip_on_both_backends,
+    reflection_rows_roundtrip
 );
 
 // --- the registration stamp --------------------------------------------------

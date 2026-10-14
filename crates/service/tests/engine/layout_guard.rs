@@ -132,3 +132,34 @@ fn every_domain_walk_asks_the_layout() {
         );
     }
 }
+
+/// The Reflection's rows and variants stay in the modules that serve the
+/// Reflection: an engram reader that
+/// named one would be the one missed filter that leaks a reflection into the
+/// engram side. Each needle may appear only in the files listed for it; a
+/// task that adds a caller adds its file here in the same commit.
+#[test]
+fn reflection_variants_stay_in_their_modules() {
+    let allowed: &[(&str, &[&str])] = &[(
+        "list_reflections(",
+        &[
+            "index/src/store.rs",
+            "index/src/turso/mod.rs",
+            "index/src/postgres/mod.rs",
+        ],
+    )];
+    let mut strays: Vec<(String, String, &str)> = Vec::new();
+    for (file, name, body) in fn_bodies() {
+        for (needle, files) in allowed {
+            if body.contains(needle) && !files.contains(&file.as_str()) {
+                strays.push((file.clone(), name.clone(), needle));
+            }
+        }
+    }
+    strays.sort();
+    strays.dedup();
+    assert!(
+        strays.is_empty(),
+        "these name a Reflection row or variant outside the modules that serve the Reflection: {strays:?}"
+    );
+}

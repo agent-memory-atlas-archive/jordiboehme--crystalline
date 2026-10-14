@@ -121,6 +121,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "c-collated base path index",
         sql: SCHEMA_V19,
     },
+    Migration {
+        version: 20,
+        label: "reflection index",
+        sql: SCHEMA_V20,
+    },
 ];
 
 // The whole current schema in one step. The temporal columns stay TEXT ISO
@@ -629,6 +634,23 @@ const SCHEMA_V19: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_engram_base_path_c ON engram(domain_id, (path COLLATE "C")) WHERE actor = '';
 "#;
 
+// The Reflection's own index, the twin of Turso's v20: one row per reflection
+// (and PACT.md) under a domain's `reflections/`, beside the engram tables and
+// never joined to them. The unique index serves every statement.
+const SCHEMA_V20: &str = r#"
+CREATE TABLE reflection (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    domain_id BIGINT NOT NULL REFERENCES domain(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    size BIGINT NOT NULL,
+    modified TEXT NOT NULL,
+    UNIQUE(domain_id, path)
+);
+"#;
+
 const SCHEMA_V8: &str = r#"
 CREATE TABLE attachment (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -656,6 +678,7 @@ CREATE TABLE attachment_blob (
 /// `contradiction` and `contradiction_pair` reference `engram` and `domain`,
 /// so they go first. `observation_vector` references nothing and leads the
 /// list. `engram_meta_value` references `engram`, so it goes before it.
+/// `reflection` references `domain(id)` too.
 pub const WIPE_TABLES: &[&str] = &[
     "observation_vector",
     "contradiction",
@@ -673,6 +696,7 @@ pub const WIPE_TABLES: &[&str] = &[
     "tag_alias",
     "attachment_blob",
     "attachment",
+    "reflection",
     "domain_lock",
     "domain_spelling",
     "domain",

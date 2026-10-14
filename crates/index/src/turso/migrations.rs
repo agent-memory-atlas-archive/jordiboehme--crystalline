@@ -117,6 +117,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "metadata values",
         sql: SCHEMA_V19,
     },
+    Migration {
+        version: 20,
+        label: "reflection index",
+        sql: SCHEMA_V20,
+    },
 ];
 
 const SCHEMA_V1: &str = r#"
@@ -718,6 +723,26 @@ CREATE TABLE engram_meta_value (
 CREATE INDEX idx_engram_meta_value_key_value ON engram_meta_value(key, value, engram_id);
 "#;
 
+// The Reflection's own index: one row per reflection (and PACT.md) under a
+// domain's `reflections/`, read by Reflection-mode search and the tree. Beside
+// the engram tables and never joined to them, so nothing that reads engrams -
+// search_engrams, evolve, the graph - can ever see a reflection. The unique
+// index serves every statement (`WHERE domain_id=?1 [AND path=?2]
+// ORDER BY path`).
+const SCHEMA_V20: &str = r#"
+CREATE TABLE reflection (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain_id INTEGER NOT NULL REFERENCES domain(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    modified TEXT NOT NULL,
+    UNIQUE(domain_id, path)
+);
+"#;
+
 const SCHEMA_V9: &str = r#"
 CREATE TABLE attachment (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -744,7 +769,7 @@ CREATE TABLE attachment_blob (
 /// before that. `contradiction` and `contradiction_pair` reference `engram`
 /// and `domain`, so they go first. `observation_vector` references nothing
 /// and leads the list. `engram_meta_value` references `engram`, so it goes
-/// before it.
+/// before it. `reflection` references `domain(id)` too.
 pub const WIPE_TABLES: &[&str] = &[
     "observation_vector",
     "contradiction",
@@ -762,6 +787,7 @@ pub const WIPE_TABLES: &[&str] = &[
     "tag_alias",
     "attachment_blob",
     "attachment",
+    "reflection",
     "domain_lock",
     "domain_spelling",
     "domain",
@@ -2310,7 +2336,7 @@ mod tests {
         let started = std::time::Instant::now();
         let store = crate::TursoStore::open(&db_path).await.unwrap();
         let ms = started.elapsed().as_millis();
-        assert_eq!(store.store_info().await.unwrap().schema_version, 19);
+        assert_eq!(store.store_info().await.unwrap().schema_version, 20);
         let rows = store.meta_values().await.unwrap().len();
         assert_eq!(rows, 5 * ENGRAMS as usize, "five rows an engram");
         eprintln!(
@@ -2379,7 +2405,7 @@ mod tests {
             }
         }
         let store = crate::TursoStore::open(&db_path).await.unwrap();
-        assert_eq!(store.store_info().await.unwrap().schema_version, 19);
+        assert_eq!(store.store_info().await.unwrap().schema_version, 20);
 
         let base_rows = meta_rows(store.conn.raw(), 7).await;
         assert_eq!(base_rows, crate::store::meta_value_rows(&base));
@@ -2511,6 +2537,31 @@ mod tests {
         assert!(
             stdout.contains("1 passed"),
             "the child ran the test rather than filtering it out:\n{stdout}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reflection_migration_is_v20_and_creates_its_table() {
+        let v20 = MIGRATIONS.iter().find(|m| m.version == 20).unwrap();
+        assert_eq!(v20.label, "reflection index");
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        apply_migrations(&conn, MIGRATIONS).await.unwrap();
+        conn.execute(
+            "INSERT INTO reflection(domain_id, path, title, content, sha256, size, modified) VALUES(1, 'a.md', 'A', 'x', 's', 1, 't')",
+            (),
+        )
+        .await
+        .unwrap();
+        let at = |name: &str| {
+            WIPE_TABLES
+                .iter()
+                .position(|t| *t == name)
+                .unwrap_or_else(|| panic!("{name} is not in WIPE_TABLES"))
+        };
+        assert!(
+            at("reflection") < at("domain"),
+            "the reflection rows go before their domain"
         );
     }
 }
