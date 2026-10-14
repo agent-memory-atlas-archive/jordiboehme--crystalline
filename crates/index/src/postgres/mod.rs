@@ -4579,9 +4579,12 @@ impl Store for PostgresStore {
         query: &[f32],
         model: &str,
     ) -> Result<Vec<SectionVector>> {
-        // A width the column does not have is caught here, before the
-        // statement runs, as the engram semantic scan relies on too: a read
-        // never resizes the column.
+        // A width this domain's vectors do not have is caught here, before
+        // the statement runs, as the engram semantic scan relies on too: a
+        // read never resizes the column. A domain with no vectors passes,
+        // and `rc.dims` keeps every row from the distance, so a query of
+        // another width than the column answers no hits rather than an
+        // error (`reflection_coverage_is_counted_per_domain`).
         let coverage = self.reflection_coverage(domain).await?;
         crate::rank::check_staleness(&coverage, model, query.len())?;
         let mut conn = self.acquire().await?;
