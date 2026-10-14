@@ -2576,6 +2576,219 @@ async fn a_switch_off_saves_and_closes_the_reflection_rooms_first() {
     assert_eq!(sessions.session_count().await, 0);
 }
 
+/// A reflection room over `guides/a.md` in a registry the engine knows, with
+/// one line typed and not saved yet: what every MANIFEST writer below finds
+/// open when it switches the Reflection off.
+async fn a_typed_room_before_a_switch() -> (
+    tempfile::TempDir,
+    Arc<Engine>,
+    crate::support::ScratchStateDir,
+    Arc<CollabSessions>,
+    Joined,
+) {
+    let (tmp, engine, scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed just before the switch.").await;
+    (tmp, engine, scratch, sessions, joined)
+}
+
+/// The MANIFEST of `eng` as it is, and as it reads with the switch off.
+fn manifest_and_off(tmp: &tempfile::TempDir) -> (String, String) {
+    let now = std::fs::read_to_string(tmp.path().join("eng/MANIFEST.md")).unwrap();
+    let off = now.replacen("reflection: on\n", "reflection: off\n", 1);
+    assert_ne!(now, off);
+    (now, off)
+}
+
+/// The room's line is in the page and the room was closed as switched off.
+async fn assert_saved_then_closed(
+    tmp: &tempfile::TempDir,
+    sessions: &CollabSessions,
+    joined: &mut Joined,
+) {
+    let page = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    assert!(page.contains("Typed just before the switch."), "{page}");
+    let mut closed = None;
+    while closed.is_none() {
+        if let Control::Closed { reason } = next_control(&mut joined.rx).await {
+            closed = Some(reason);
+        }
+    }
+    assert_eq!(closed.as_deref(), Some("switched_off"));
+    assert_eq!(sessions.session_count().await, 0);
+}
+
+/// `edit_engram` on the MANIFEST closes the reflection rooms first.
+#[tokio::test]
+async fn an_edit_that_switches_off_saves_and_closes_the_rooms_first() {
+    let (tmp, engine, _scratch, sessions, mut joined) = a_typed_room_before_a_switch().await;
+    engine
+        .edit_engram(&crystalline_service::params::EditParams {
+            identifier: "manifest".into(),
+            domain: "eng".into(),
+            operation: "find_replace".into(),
+            find_text: Some("reflection: on".into()),
+            content: Some("reflection: off".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_saved_then_closed(&tmp, &sessions, &mut joined).await;
+}
+
+/// The MANIFEST editor's save closes the reflection rooms first.
+#[tokio::test]
+async fn a_manifest_editor_save_that_switches_off_saves_and_closes_the_rooms_first() {
+    let (tmp, engine, _scratch, sessions, mut joined) = a_typed_room_before_a_switch().await;
+    let (now, off) = manifest_and_off(&tmp);
+    engine
+        .save_manifest(
+            "eng",
+            &off,
+            &crate::support::sha256_hex(now.as_bytes()),
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_saved_then_closed(&tmp, &sessions, &mut joined).await;
+}
+
+/// `save_engram` of the MANIFEST closes the reflection rooms first.
+#[tokio::test]
+async fn an_engram_save_that_switches_off_saves_and_closes_the_rooms_first() {
+    let (tmp, engine, _scratch, sessions, mut joined) = a_typed_room_before_a_switch().await;
+    let (now, off) = manifest_and_off(&tmp);
+    engine
+        .save_engram(
+            &crystalline_service::params::SaveParams {
+                domain: "eng".into(),
+                identifier: "manifest".into(),
+                content: off,
+                expected_checksum: crate::support::sha256_hex(now.as_bytes()),
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_saved_then_closed(&tmp, &sessions, &mut joined).await;
+}
+
+/// A stale `save_engram` of the MANIFEST is refused, and it closes nobody's
+/// room: the rooms close only for a save that will land.
+#[tokio::test]
+async fn a_stale_engram_save_that_would_switch_off_closes_no_room() {
+    let (tmp, engine, _scratch, sessions, joined) = a_typed_room_before_a_switch().await;
+    let (_, off) = manifest_and_off(&tmp);
+    let refused = engine
+        .save_engram(
+            &crystalline_service::params::SaveParams {
+                domain: "eng".into(),
+                identifier: "manifest".into(),
+                content: off,
+                expected_checksum: "0".repeat(64),
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(sessions.session_count().await, 1);
+    assert!(!joined.session.is_disposed(), "the room stays open");
+}
+
+/// A restored MANIFEST closes the reflection rooms first.
+#[tokio::test]
+async fn a_restore_that_switches_off_saves_and_closes_the_rooms_first() {
+    let (tmp, engine, _scratch, sessions, mut joined) = a_typed_room_before_a_switch().await;
+    let (_, off) = manifest_and_off(&tmp);
+    engine
+        .restore_engram(
+            "eng",
+            "MANIFEST.md",
+            &off,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_saved_then_closed(&tmp, &sessions, &mut joined).await;
+}
+
+/// A move of the MANIFEST takes it away, which switches the Reflection off:
+/// the rooms close first, and the switch is announced.
+#[tokio::test]
+async fn a_move_of_the_manifest_saves_and_closes_the_rooms_first() {
+    let (tmp, engine, _scratch, sessions, mut joined) = a_typed_room_before_a_switch().await;
+    let mut changes = engine.changes().subscribe();
+    engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "manifest".into(),
+                domain: "eng".into(),
+                destination: "old-manifest.md".into(),
+                destination_domain: None,
+                permalink: None,
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_saved_then_closed(&tmp, &sessions, &mut joined).await;
+    let mut switched = 0;
+    while let Ok(envelope) = changes.try_recv() {
+        if let crystalline_service::changes::Change::Reflection(change) = envelope.change
+            && change.kind == crystalline_service::changes::ReflectionChangeKind::Switched
+        {
+            assert_eq!(change.domain, "eng");
+            switched += 1;
+        }
+    }
+    assert_eq!(switched, 1, "the switch-off is announced once");
+}
+
+/// A room over the MANIFEST whose own save switches the Reflection off
+/// closes the reflection rooms first, from inside its save, and does not
+/// hang doing it.
+#[tokio::test]
+async fn a_manifest_room_save_that_switches_off_saves_and_closes_the_rooms_first() {
+    let (tmp, _engine, _scratch, sessions, mut joined) = a_typed_room_before_a_switch().await;
+    let (_, off) = manifest_and_off(&tmp);
+    let manifest_room = sessions.join("eng", "manifest", None).await.unwrap();
+    let doc = sync_client(&manifest_room).await;
+    replace_all(&manifest_room, &doc, &off).await;
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        manifest_room
+            .session
+            .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100)),
+    )
+    .await
+    .expect("the MANIFEST room's save does not hang");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("eng/MANIFEST.md")).unwrap(),
+        off
+    );
+    let page = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    assert!(page.contains("Typed just before the switch."), "{page}");
+    let mut closed = None;
+    while closed.is_none() {
+        if let Control::Closed { reason } = next_control(&mut joined.rx).await {
+            closed = Some(reason);
+        }
+    }
+    assert_eq!(closed.as_deref(), Some("switched_off"));
+    assert_eq!(
+        sessions.session_count().await,
+        1,
+        "only the MANIFEST room is left"
+    );
+}
+
 /// A switch-off that is refused closes nobody's room: the rooms close only
 /// once every check that can still refuse the edit has passed.
 #[tokio::test]

@@ -492,6 +492,12 @@ impl Engine {
                         &found,
                     )));
                 }
+                // The last refusal is behind us: a MANIFEST that switches the
+                // Reflection off closes its rooms first, while it is still on.
+                // Safe under this lock: a reflection room's save never takes
+                // the MANIFEST's write lock.
+                self.close_reflection_rooms_if_switching_off(domain, Some(markdown))
+                    .await;
                 write_file(&path, markdown)?;
                 let store = self.store.lock().await;
                 let domain_id = store

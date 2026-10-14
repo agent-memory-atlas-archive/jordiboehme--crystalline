@@ -1023,6 +1023,17 @@ impl Engine {
         match &source {
             ContentSource::File { root } => {
                 let abs = join_rel(root, &desc.path);
+                // A MANIFEST that switches the Reflection off closes its rooms
+                // first, while it is still on. Only for a save that will land:
+                // a stale token is refused by the swap below, and closing
+                // nobody's room for it is the point of reading it here.
+                if switch_before == Some(crystalline_core::ReflectionSwitch::On)
+                    && std::fs::read(&abs)
+                        .is_ok_and(|bytes| sha256_hex(&bytes) == p.expected_checksum)
+                {
+                    self.close_reflection_rooms_if_switching_off(&desc.domain, Some(&content))
+                        .await;
+                }
                 // Held across the comparison, the write and the reindex. See
                 // `Engine::write_lock`.
                 let _lock = match self
@@ -1415,6 +1426,12 @@ impl Engine {
             return Ok(receipt);
         }
         let switch_before = is_manifest_path(path).then(|| self.reflection_switch(domain));
+        // A restored MANIFEST that switches the Reflection off closes its
+        // rooms first, while it is still on (a draft returned above).
+        if switch_before == Some(crystalline_core::ReflectionSwitch::On) {
+            self.close_reflection_rooms_if_switching_off(domain, Some(content))
+                .await;
+        }
         match &source {
             ContentSource::File { root } => {
                 let abs = join_rel(root, path);

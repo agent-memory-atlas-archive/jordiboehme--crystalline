@@ -1802,6 +1802,69 @@ async fn folding_a_draft_that_switches_reflection_on_seeds_the_pact() {
     );
 }
 
+/// A fold whose MANIFEST draft switches the Reflection off saves and closes
+/// the domain's reflection rooms first, and tells their sockets why:
+/// `switched_off`, not the `internal` the sweep after it would say.
+#[tokio::test]
+async fn folding_a_draft_that_switches_reflection_off_closes_its_rooms_as_switched_off() {
+    let on = MANIFEST.replace("status: stable\n", "status: stable\nreflection: on\n");
+    let f = build_fixture(&on, true, true, None, false, false).await;
+    let root = f.root.join("team");
+    std::fs::create_dir_all(root.join("reflections/guides")).unwrap();
+    std::fs::write(
+        root.join("reflections/guides/a.md"),
+        "# A\n\n## One\n<!-- r:aaaa1111 -->\n\nFirst.\n",
+    )
+    .unwrap();
+    let sessions = CollabSessions::new(f.engine.clone());
+    f.engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("team", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    f.draft("team", "alice", "MANIFEST.md", MANIFEST).await;
+    f.engine
+        .set_review_mode(
+            "team",
+            None,
+            folds(&[("alice", FoldChoice::Fold)]),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("MANIFEST.md")).unwrap(),
+        MANIFEST,
+        "the switch-off was folded"
+    );
+    let reason = loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), joined.rx.recv())
+            .await
+            .expect("a control frame arrives in time")
+            .expect("the broadcast channel stays open");
+        let mut decoder = DecoderV1::from(frame.bytes.as_ref());
+        let closed = MessageReader::new(&mut decoder)
+            .flatten()
+            .find_map(|message| match message {
+                Message::Custom(tag, payload)
+                    if tag == crystalline_service::collab::control::CONTROL_TAG =>
+                {
+                    match crystalline_service::collab::control::decode(&payload) {
+                        Some(crystalline_service::collab::control::Control::Closed { reason }) => {
+                            Some(reason)
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            });
+        if let Some(reason) = closed {
+            break reason;
+        }
+    };
+    assert_eq!(reason, "switched_off");
+}
+
 /// The fold seeds the pact before the switch lands, as the policy edit
 /// does: a pact that cannot be written refuses the fold, the domain goes on
 /// reviewing with the draft still held, and the same call works once the

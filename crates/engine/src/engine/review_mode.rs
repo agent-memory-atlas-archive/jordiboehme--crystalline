@@ -597,15 +597,8 @@ impl Engine {
         // too, but it tells their sockets `internal`, not why they closed.
         if let Some(root) = &root
             && folds_switch_off(root, &folding)
-            && let Some(rooms) = self.collab_rooms()
         {
-            rooms
-                .close_docs(
-                    domain,
-                    crystalline_core::ContentKind::Reflection,
-                    "switched_off",
-                )
-                .await;
+            self.close_reflection_rooms(domain).await;
         }
 
         // The key comes off first, and then the rooms go, and that pair is the
@@ -657,6 +650,10 @@ impl Engine {
             store.list_engrams(domain, None, None).await?
         };
         if let Some(refusal) = review::collision(domain, &folding, &base) {
+            // A fold that would switch the Reflection off has closed its rooms
+            // with `switched_off` already, and nothing was folded. That is
+            // harmless: each of those rooms saved its text first, and its
+            // editors can open the page again.
             self.write_review_key(domain, Some(crystalline_core::config::ReviewMode::Overlay))?;
             return Err(EngineError::Conflict(format!(
                 "{refusal}. The folder changed while this domain's co-editing rooms were being \

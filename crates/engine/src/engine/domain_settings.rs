@@ -256,17 +256,8 @@ impl Engine {
         // refused switch-off never gets here and closes nobody's room. If the
         // write below fails after this, the rooms' text is in the pages
         // already; their editors reopen them.
-        if switching_off
-            && overlay.is_none()
-            && let Some(rooms) = self.collab_rooms()
-        {
-            rooms
-                .close_docs(
-                    domain,
-                    crystalline_core::ContentKind::Reflection,
-                    "switched_off",
-                )
-                .await;
+        if switching_off && overlay.is_none() {
+            self.close_reflection_rooms(domain).await;
         }
         self.apply_source_edit(
             &desc,

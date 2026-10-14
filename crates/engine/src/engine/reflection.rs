@@ -1342,6 +1342,41 @@ impl Engine {
         }
     }
 
+    /// Save and close the domain's reflection rooms, telling each socket
+    /// `switched_off`, when landing `after` as the domain's MANIFEST in its
+    /// folder switches the Reflection off (`None`: the MANIFEST goes away).
+    ///
+    /// Every Crystalline writer of a MANIFEST calls it after its last
+    /// refusal and before its write, for the folder only, never for a draft:
+    /// the state is still on, so each room's last save lands in its page.
+    pub(crate) async fn close_reflection_rooms_if_switching_off(
+        &self,
+        domain: &str,
+        after: Option<&str>,
+    ) {
+        if self.reflection_switch(domain) == crystalline_core::ReflectionSwitch::On
+            && !after.is_some_and(declares_on)
+        {
+            self.close_reflection_rooms(domain).await;
+        }
+    }
+
+    /// Save and close every reflection room of `domain` with `switched_off`:
+    /// the switch-off is about to land. See
+    /// [`Engine::close_reflection_rooms_if_switching_off`].
+    pub(crate) async fn close_reflection_rooms(&self, domain: &str) {
+        if let Some(rooms) = self.collab_rooms() {
+            // Boxed: a room's last save can be a MANIFEST save that reaches
+            // this again, so the future is recursive.
+            Box::pin(rooms.close_docs(
+                domain,
+                crystalline_core::ContentKind::Reflection,
+                "switched_off",
+            ))
+            .await;
+        }
+    }
+
     /// A reflection as a room reads it: the page without the block that
     /// names its source engrams, for everyone in the room; the checksum is
     /// the file's, so every stale check compares file against file.

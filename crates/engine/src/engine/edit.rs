@@ -230,6 +230,32 @@ impl Engine {
         } else {
             None
         };
+        // An edit that switches the Reflection off closes its rooms first,
+        // while it is still on. The text is worked out here ahead of the
+        // write, because the closure below cannot await, and the rooms close
+        // only for an edit that will land: a stale token or an edit that does
+        // not apply is refused below and closes nobody's room. A draft moves
+        // no switch.
+        if switch_before == Some(crystalline_core::ReflectionSwitch::On) && overlay.is_none() {
+            let current = view.text_at(&source, &desc).await?.unwrap_or_default();
+            let fresh = p
+                .expected_checksum
+                .as_deref()
+                .is_none_or(|expected| sha256_hex(current.as_bytes()) == expected);
+            if fresh
+                && let Ok((after, _)) = self.apply_edit(
+                    &current,
+                    p,
+                    &desc.permalink,
+                    &actor,
+                    p.model.as_deref(),
+                    ack.as_ref(),
+                )
+            {
+                self.close_reflection_rooms_if_switching_off(&desc.domain, Some(&after))
+                    .await;
+            }
+        }
         let mut heading_stripped: Option<String> = None;
         let mut manifest_text: Option<String> = None;
         let edited = self
