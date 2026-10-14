@@ -2866,7 +2866,8 @@ const EMBED_TICK: Duration = Duration::from_secs(300);
 /// falls back to an inline embed when no worker is wired (an inline pass on this
 /// timer would reintroduce the request-path stall the worker exists to
 /// prevent), so an unwired tick is a silent no-op. The cadence is a parameter so
-/// a test can drive it fast; production passes `EMBED_TICK`.
+/// a test can drive it fast; production passes `EMBED_TICK`. Either backlog
+/// fires it: the engram chunks' or the Reflection's (R55).
 ///
 /// "A backlog remains" is not on its own the condition to fire: it stays true
 /// for the whole life of a pass that is working through one, so a first index
@@ -2876,7 +2877,8 @@ const EMBED_TICK: Duration = Duration::from_secs(300);
 /// live tick lands one cadence in rather than the moment the daemon starts.
 ///
 /// The same tick drives the contradiction pass: it drops an idle NLI model
-/// and, when nothing is left to embed, asks for a contradiction pass while
+/// and, when no engram chunk is left to embed (whatever the Reflection's
+/// chunks wait for), asks for a contradiction pass while
 /// that pass's pending count is unknown or non-zero, which is how a daemon
 /// that starts fully embedded still scores and how a pair a failed batch left
 /// is retried once per tick rather than in a loop. A failed model load is not
@@ -2905,6 +2907,11 @@ pub async fn run_embed_tick(
                 if engine.embed_in_flight() {
                     continue;
                 }
+                // The reflection backlog asks for an embed too, but never
+                // holds back the contradiction pass, which reads engram
+                // vectors only (R55). A failed reflection probe costs one
+                // tick, never the pass.
+                let pages = engine.reflection_embedding_backlog().await.unwrap_or(0);
                 match engine.embedding_backlog().await {
                     // Nothing left to embed is when the contradiction pass
                     // sees every lead vector: asked while its pending count is
@@ -2921,6 +2928,9 @@ pub async fn run_embed_tick(
                         engine.recheck_contradiction_claims().await;
                         if engine.contradictions_wanted() {
                             engine.request_contradictions();
+                        }
+                        if pages > 0 {
+                            engine.request_embed();
                         }
                     }
                     Ok(_) => {

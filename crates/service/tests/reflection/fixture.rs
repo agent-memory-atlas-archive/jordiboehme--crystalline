@@ -7,11 +7,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crystalline_core::config::{DomainEntry, GlobalConfig};
-use crystalline_index::TursoStore;
+use crystalline_core::config::{DomainEntry, EmbeddingsConfig, GlobalConfig};
+use crystalline_index::{EmbeddingProvider, TursoStore};
 use crystalline_service::Engine;
 use crystalline_service::params::{DeleteParams, MoveParams, WriteParams};
 use tokio::sync::Mutex;
+use tokio::sync::mpsc::UnboundedSender;
 
 pub struct Fx {
     pub tmp: tempfile::TempDir,
@@ -85,6 +86,54 @@ pub async fn fixture_with(
     files: &[(&str, &str)],
     tweak: impl FnOnce(&mut GlobalConfig, &std::path::Path),
 ) -> Fx {
+    fixture_wired_with(files, tweak, None, None, None).await
+}
+
+/// [`fixture_with`]'s body with an embedding provider and the worker channels
+/// wired, so a test sees what a write and the tick ask for.
+pub async fn fixture_wired(
+    files: &[(&str, &str)],
+    provider: Option<Arc<dyn EmbeddingProvider>>,
+    embed_tx: Option<UnboundedSender<()>>,
+    contradiction_tx: Option<UnboundedSender<()>>,
+) -> Fx {
+    fixture_wired_with(files, |_, _| {}, provider, embed_tx, contradiction_tx).await
+}
+
+/// [`fixture`] with the bag-of-words provider, configured as the active
+/// model, so writes chunk and `embed_pending` embeds them. What the sync
+/// indexed is embedded before the fixture returns, so both backlogs start
+/// empty.
+pub async fn fixture_with_provider(files: &[(&str, &str)]) -> Fx {
+    let provider = Arc::new(BagOfWords::new("fake"));
+    let fx = fixture_wired_with(
+        files,
+        |cfg, _| {
+            cfg.embeddings = Some(EmbeddingsConfig {
+                provider: "openai-compatible".into(),
+                model: "fake".into(),
+                endpoint: None,
+                api_key_env: None,
+            });
+        },
+        Some(provider),
+        None,
+        None,
+    )
+    .await;
+    fx.engine.embed_pending().await.unwrap();
+    fx
+}
+
+/// [`fixture_wired`] with a config tweak: the one builder every fixture
+/// here delegates to.
+pub async fn fixture_wired_with(
+    files: &[(&str, &str)],
+    tweak: impl FnOnce(&mut GlobalConfig, &std::path::Path),
+    provider: Option<Arc<dyn EmbeddingProvider>>,
+    embed_tx: Option<UnboundedSender<()>>,
+    contradiction_tx: Option<UnboundedSender<()>>,
+) -> Fx {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path().to_path_buf();
     let root = base.join("eng");
@@ -102,13 +151,76 @@ pub async fn fixture_with(
     let config_path = base.join("config.yaml");
     crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
     let store = TursoStore::open_in_memory().await.unwrap();
-    let engine = Arc::new(
-        Engine::new(Arc::new(Mutex::new(store)), cfg, None, Some(config_path))
-            .with_state_dir(base.join("state"))
-            // Origin state (base snapshots, the backup state) lands in the
-            // temp dir, never in the developer's own state directory.
-            .with_origins_dir(base.join("origins")),
-    );
+    let mut engine = Engine::new(
+        Arc::new(Mutex::new(store)),
+        cfg,
+        provider,
+        Some(config_path),
+    )
+    .with_state_dir(base.join("state"))
+    // Origin state (base snapshots, the backup state) lands in the
+    // temp dir, never in the developer's own state directory.
+    .with_origins_dir(base.join("origins"));
+    if let Some(tx) = embed_tx {
+        engine = engine.with_embed_channel(tx);
+    }
+    if let Some(tx) = contradiction_tx {
+        engine = engine.with_contradiction_channel(tx);
+    }
+    let engine = Arc::new(engine);
     engine.sync(None).await.unwrap();
     Fx { tmp, engine, root }
+}
+
+/// A deterministic provider over eight hashed word buckets: texts sharing
+/// words land near each other, so a semantic query finds the section that
+/// uses its words.
+pub struct BagOfWords {
+    model: String,
+}
+
+impl BagOfWords {
+    pub fn new(model: &str) -> BagOfWords {
+        BagOfWords {
+            model: model.to_string(),
+        }
+    }
+}
+
+/// [`BagOfWords`]'s vector for one text.
+pub fn bag_of_words(text: &str) -> Vec<f32> {
+    let mut v = [0f32; 8];
+    for tok in text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+    {
+        let mut h: u64 = 0;
+        for byte in tok.to_lowercase().bytes() {
+            h = h.wrapping_mul(31).wrapping_add(byte as u64);
+        }
+        v[(h % 8) as usize] += 1.0;
+    }
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm == 0.0 {
+        let mut z = [0f32; 8];
+        z[0] = 1.0;
+        return z.to_vec();
+    }
+    v.iter().map(|x| x / norm).collect()
+}
+
+#[async_trait::async_trait]
+impl EmbeddingProvider for BagOfWords {
+    async fn embed(&self, texts: &[String]) -> crystalline_index::Result<Vec<Vec<f32>>> {
+        Ok(texts.iter().map(|t| bag_of_words(t)).collect())
+    }
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+    fn dims(&self) -> usize {
+        8
+    }
+    fn max_input_tokens(&self) -> usize {
+        512
+    }
 }

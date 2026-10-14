@@ -15,5 +15,6 @@ mod nudges;
 mod queue;
 mod rest;
 mod rights;
+mod search;
 mod switch;
 mod threads;

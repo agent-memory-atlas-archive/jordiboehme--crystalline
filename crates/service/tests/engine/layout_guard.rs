@@ -189,6 +189,11 @@ fn reflection_variants_stay_in_their_modules() {
                 "index/src/turso/mod.rs",
                 "index/src/postgres/mod.rs",
                 "index/src/reflection.rs",
+                // These three count reflection chunks for status, doctor and
+                // the tick; none of them reads a vector.
+                "engine/src/engine/sync.rs",
+                "cli/src/cmd.rs",
+                "cli/src/doctor.rs",
             ],
         ),
         // R53's funnel: a reflection row written anywhere else would have no

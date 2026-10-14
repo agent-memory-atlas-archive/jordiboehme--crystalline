@@ -541,6 +541,7 @@ impl Engine {
         let info = store.store_info().await?;
         let stats = store.domain_stats().await?;
         let coverage = store.embedding_coverage().await?;
+        let reflection = store.embedding_coverage_of(ChunkTable::Reflection).await?;
         drop(store);
         let contradictions = self.contradictions_status().await?;
         let active_embedded = coverage.embedded_for(&self.model_id);
@@ -580,9 +581,12 @@ impl Engine {
             .collect();
         let mut activity = self.activity.lock().unwrap().snapshot_json();
         if let Value::Object(map) = &mut activity {
+            // Both backlogs: what the embed worker still has to do (R55).
             map.insert(
                 "embedding_backlog".to_string(),
-                json!(coverage.backlog_for(&self.model_id)),
+                json!(
+                    coverage.backlog_for(&self.model_id) + reflection.backlog_for(&self.model_id)
+                ),
             );
         }
         let mut result = json!({
@@ -620,6 +624,20 @@ impl Engine {
         {
             emb.insert("pruned_model_cache".to_string(), Value::Array(pruned));
         }
+        // Only while a Reflection holds a chunk, so the output stays
+        // byte-stable for an install that never turns one on.
+        if reflection.total_chunks > 0
+            && let Some(emb) = result.get_mut("embeddings").and_then(Value::as_object_mut)
+        {
+            emb.insert(
+                "reflection_chunks".to_string(),
+                json!(reflection.total_chunks),
+            );
+            emb.insert(
+                "reflection_embedded_chunks".to_string(),
+                json!(reflection.embedded_for(&self.model_id)),
+            );
+        }
         // Omitted entirely while collaboration is off, so pre-feature output
         // stays byte-stable for an install that never touches GitHub.
         if self.config.read().unwrap().github_enabled()
@@ -630,14 +648,28 @@ impl Engine {
         Ok(result)
     }
 
-    /// Chunks awaiting embedding for the active model: the figure `status_report`
-    /// exposes as `embedding_backlog`. Reads the cached coverage snapshot, so it
-    /// is cheap enough for the daemon's self-heal tick to poll; no per-chunk
-    /// scan.
+    /// Engram chunks awaiting embedding for the active model (R55): the
+    /// figure the contradiction gate and the similar wait read, and the
+    /// engram half of `status_report`'s `embedding_backlog`, which adds
+    /// [`Engine::reflection_embedding_backlog`]. Reads the cached coverage
+    /// snapshot, so it is cheap enough for the daemon's self-heal tick to
+    /// poll; no per-chunk scan.
     pub async fn embedding_backlog(&self) -> Result<usize> {
         let coverage = {
             let store = self.store.lock().await;
             store.embedding_coverage().await?
+        };
+        Ok(coverage.backlog_for(&self.model_id))
+    }
+
+    /// Reflection chunks awaiting the active model (R55): the daemon tick
+    /// asks for an embed while it is non-zero, and `status` adds it to the
+    /// engram backlog. Never read by the contradiction gate or the similar
+    /// wait, which wait on engram chunks only.
+    pub async fn reflection_embedding_backlog(&self) -> Result<usize> {
+        let coverage = {
+            let store = self.store.lock().await;
+            store.embedding_coverage_of(ChunkTable::Reflection).await?
         };
         Ok(coverage.backlog_for(&self.model_id))
     }

@@ -774,6 +774,8 @@ impl Engine {
     /// text just written to `abs`. The row carries the file's own
     /// modification instant, in the spelling the sync's prefilter compares
     /// (`asset_modified`), so the next walk does not read the file again.
+    /// A committed write nudges the embed worker (R56), after the store lock
+    /// is released.
     pub(super) async fn index_reflection(
         &self,
         domain_id: DomainId,
@@ -817,16 +819,20 @@ impl Engine {
             Ok::<(), EngineError>(())
         }
         .await;
-        match written {
-            Ok(()) => {
-                store.commit().await?;
-                Ok(())
-            }
+        let committed = match written {
+            Ok(()) => store.commit().await.map_err(EngineError::from),
             Err(e) => {
                 let _ = store.rollback().await;
                 Err(e)
             }
+        };
+        drop(store);
+        // R56: the new chunks are embedded soon after the write, as an
+        // engram's are, rather than at the next tick.
+        if committed.is_ok() {
+            self.nudge_embed();
         }
+        committed
     }
 
     /// Arm a failure of the next reflection index write, after its row and

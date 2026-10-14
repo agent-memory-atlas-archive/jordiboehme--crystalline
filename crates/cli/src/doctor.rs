@@ -3865,6 +3865,10 @@ async fn embedding_summary(store: &dyn Store, cfg: &GlobalConfig) -> Result<serd
         .embedding_coverage()
         .await
         .map_err(|e| anyhow!("could not read embedding coverage: {e}"))?;
+    let reflection = store
+        .embedding_coverage_of(crystalline_index::ChunkTable::Reflection)
+        .await
+        .map_err(|e| anyhow!("could not read reflection embedding coverage: {e}"))?;
     let configured = configured_model_id(cfg.embeddings.as_ref());
     let embedded_with_configured = coverage.embedded_for(&configured);
     let stale_chunks: usize = coverage
@@ -3918,7 +3922,7 @@ async fn embedding_summary(store: &dyn Store, cfg: &GlobalConfig) -> Result<serd
         }
         _ => None,
     };
-    Ok(serde_json::json!({
+    let mut summary = serde_json::json!({
         "configured_model": configured,
         "configured_repo": configured_repo,
         "model_snapshot": model_snapshot,
@@ -3928,7 +3932,22 @@ async fn embedding_summary(store: &dyn Store, cfg: &GlobalConfig) -> Result<serd
         "stale_chunks": stale_chunks,
         "models": coverage.models,
         "cached_models": cached_models,
-    }))
+    });
+    // Reflection chunks, only while there are any, so a report without a
+    // Reflection stays as it was.
+    if reflection.total_chunks > 0
+        && let Some(map) = summary.as_object_mut()
+    {
+        map.insert(
+            "reflection_chunks".to_string(),
+            serde_json::json!(reflection.total_chunks),
+        );
+        map.insert(
+            "reflection_embedded".to_string(),
+            serde_json::json!(reflection.embedded_for(&configured)),
+        );
+    }
+    Ok(summary)
 }
 
 /// Whether a cached repository belongs in the embedding listing: anything but
@@ -4926,9 +4945,17 @@ pub fn render_human(report: &DoctorReport) -> String {
             (Some(r), None) => format!(" ({r}, not downloaded)"),
             _ => String::new(),
         };
+        let reflection = match e["reflection_chunks"].as_u64().filter(|n| *n > 0) {
+            Some(n) => format!(
+                ", {} ({} embedded)",
+                plural(n as usize, "reflection chunk", "reflection chunks"),
+                e["reflection_embedded"].as_u64().unwrap_or(0)
+            ),
+            None => String::new(),
+        };
         let _ = writeln!(
             out,
-            "embeddings: {}/{} chunks embedded with '{}'{named} ({} from a different model)",
+            "embeddings: {}/{} chunks embedded with '{}'{named} ({} from a different model){reflection}",
             e["embedded_with_configured_model"],
             e["total_chunks"],
             e["configured_model"].as_str().unwrap_or_default(),
@@ -6321,6 +6348,36 @@ mod tests {
         let out = render_human(&report);
         assert!(out.contains("10/20 chunks embedded with 'm'"), "{out}");
         assert!(!out.contains("cached models:"), "{out}");
+    }
+
+    /// The embeddings line names reflection chunks only while there are any,
+    /// so a report without a Reflection reads as it always did.
+    #[test]
+    fn the_embeddings_line_names_reflection_chunks_only_when_there_are_some() {
+        let mut report = report_with_orphans(IndexAccess::Direct, &[]);
+        report.embeddings = Some(serde_json::json!({
+            "embedded_with_configured_model": 10,
+            "total_chunks": 20,
+            "configured_model": "m",
+            "stale_chunks": 0,
+        }));
+        let without = render_human(&report);
+        assert!(!without.contains("reflection chunk"), "{without}");
+        report.embeddings = Some(serde_json::json!({
+            "embedded_with_configured_model": 10,
+            "total_chunks": 20,
+            "configured_model": "m",
+            "stale_chunks": 0,
+            "reflection_chunks": 3,
+            "reflection_embedded": 1,
+        }));
+        let with = render_human(&report);
+        assert!(
+            with.contains(
+                "(0 stale chunks from a different model), 3 reflection chunks (1 embedded)\n"
+            ),
+            "{with}"
+        );
     }
 
     /// Over a daemon the doctor reads the index through a read verb, so

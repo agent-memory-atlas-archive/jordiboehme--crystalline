@@ -2583,6 +2583,10 @@ pub async fn status_value(route: IndexRoute, cfg: &GlobalConfig) -> Result<serde
         .embedding_coverage()
         .await
         .map_err(|e| anyhow!("could not read embedding coverage: {e}"))?;
+    let reflection = store
+        .embedding_coverage_of(crystalline_index::ChunkTable::Reflection)
+        .await
+        .map_err(|e| anyhow!("could not read reflection embedding coverage: {e}"))?;
 
     // Coverage for the active model: how many chunks are embedded with it, and
     // whether hybrid search is therefore available.
@@ -2608,7 +2612,7 @@ pub async fn status_value(route: IndexRoute, cfg: &GlobalConfig) -> Result<serde
         None => 0,
     };
 
-    Ok(serde_json::json!({
+    let mut report = serde_json::json!({
         "indexed": true,
         "fts_mode": info.fts_mode,
         "schema_version": info.schema_version,
@@ -2643,7 +2647,22 @@ pub async fn status_value(route: IndexRoute, cfg: &GlobalConfig) -> Result<serde
             "lines_embedded": null,
             "lines_eligible": null,
         },
-    }))
+    });
+    // The daemon's two reflection keys, under its rule: only while a
+    // Reflection holds a chunk, so the output stays byte-stable without one.
+    if reflection.total_chunks > 0
+        && let Some(emb) = report["embeddings"].as_object_mut()
+    {
+        emb.insert(
+            "reflection_chunks".to_string(),
+            serde_json::json!(reflection.total_chunks),
+        );
+        emb.insert(
+            "reflection_embedded_chunks".to_string(),
+            serde_json::json!(reflection.embedded_for(&active_model)),
+        );
+    }
+    Ok(report)
 }
 
 /// The one-line reason the contradiction check is not simply "N pairs

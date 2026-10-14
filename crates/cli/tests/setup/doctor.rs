@@ -317,6 +317,66 @@ fn a_reflection_page_is_never_an_unindexed_engram() {
     );
 }
 
+/// Doctor counts reflection chunks only while the index holds some: a
+/// domain with the Reflection on and no page reports no reflection keys,
+/// and after a page is synced it reports its chunks, none embedded since no
+/// provider ran.
+#[test]
+fn doctor_counts_reflection_chunks_only_when_there_are_some() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let db = work.path().join("index.db");
+    let domain_dir = setup_domain(work.path(), "eng", &config);
+    let manifest = std::fs::read_to_string(domain_dir.join("MANIFEST.md")).unwrap();
+    std::fs::write(
+        domain_dir.join("MANIFEST.md"),
+        manifest.replacen("---\n", "---\nreflection: on\n", 1),
+    )
+    .unwrap();
+    let sync_and_doctor = || -> Value {
+        bin()
+            .args(["sync", "--config"])
+            .arg(&config)
+            .args(["--db"])
+            .arg(&db)
+            .assert()
+            .success();
+        let out = bin()
+            .args(["--json", "doctor", "--config"])
+            .arg(&config)
+            .args(["--db"])
+            .arg(&db)
+            .output()
+            .unwrap();
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let before = sync_and_doctor();
+    assert!(before["embeddings"].is_object(), "{before}");
+    assert!(
+        before["embeddings"].get("reflection_chunks").is_none(),
+        "{before}"
+    );
+    assert!(
+        before["embeddings"].get("reflection_embedded").is_none(),
+        "{before}"
+    );
+    write(
+        &domain_dir,
+        "reflections/guides/a.md",
+        "# A page for people\n\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n",
+    );
+    let after = sync_and_doctor();
+    assert!(
+        after["embeddings"]["reflection_chunks"].as_u64().unwrap() > 0,
+        "{after}"
+    );
+    assert_eq!(
+        after["embeddings"]["reflection_embedded"],
+        serde_json::json!(0),
+        "no provider ran: {after}"
+    );
+}
+
 /// A provisioned artifact folder inside the root holds deployable files,
 /// not engrams: the sync never indexes them, so doctor never lists them as
 /// unindexed.
