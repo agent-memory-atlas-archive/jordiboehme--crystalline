@@ -50,6 +50,51 @@ impl Engine {
         self.move_engram_as(p, None, scope).await
     }
 
+    /// A move inside this actor's draft, under its two draft locks: its own
+    /// function, so the locks end with it and every later step of
+    /// [`Engine::move_engram_as`] (which closes rooms) runs with none held.
+    async fn move_draft_locked(
+        &self,
+        view: &DomainView<'_>,
+        p: &MoveParams,
+        draft: DraftMove<'_>,
+    ) -> Result<Value> {
+        let DraftMove {
+            who,
+            src,
+            src_source,
+            dest_rel,
+            cross,
+            asked,
+            mover,
+        } = draft;
+        // Two writes - a tombstone where the team's file is, an entry at
+        // the destination - so two draft locks, taken in key order so two
+        // moves that cross each other cannot each hold what the other
+        // wants. `move_within` refuses a cross-domain move outright, so
+        // both paths are this actor's own drafts in this one domain. See
+        // `Engine::draft_lock`.
+        let (first, second) = match src.path.as_str() <= dest_rel {
+            true => (src.path.as_str(), dest_rel),
+            false => (dest_rel, src.path.as_str()),
+        };
+        let low = self.draft_lock(&p.domain, who, first)?;
+        let _low = low.lock().await;
+        // A move onto its own path is the permalink-only rename (the caller
+        // refused a no-op one), and its one path is taken once rather than
+        // twice: one path is one lock.
+        let high = match first == second {
+            true => None,
+            false => Some(self.draft_lock(&p.domain, who, second)?),
+        };
+        let _high = match &high {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
+        view.move_within(p, src, src_source, dest_rel, cross, asked, mover)
+            .await
+    }
+
     /// [`Engine::move_engram`] with the mover's identity, resolved by
     /// [`Engine::actor`] (or, for a draft, the composed identity) and written
     /// into the moved engram's `generated` block when the move changes its
@@ -181,29 +226,6 @@ impl Engine {
         // which is the whole of review mode - the rename is reviewed like any
         // other change.
         if let Some(who) = overlay {
-            // Two writes - a tombstone where the team's file is, an entry at
-            // the destination - so two draft locks, taken in key order so two
-            // moves that cross each other cannot each hold what the other
-            // wants. `move_within` refuses a cross-domain move outright, so
-            // both paths are this actor's own drafts in this one domain. See
-            // `Engine::draft_lock`.
-            let (first, second) = match src.path <= dest_rel {
-                true => (src.path.as_str(), dest_rel.as_str()),
-                false => (dest_rel.as_str(), src.path.as_str()),
-            };
-            let low = self.draft_lock(&p.domain, who, first)?;
-            let _low = low.lock().await;
-            // A move onto its own path is the permalink-only rename (a no-op
-            // one was refused above), and its one path is taken once rather
-            // than twice: one path is one lock.
-            let high = match first == second {
-                true => None,
-                false => Some(self.draft_lock(&p.domain, who, second)?),
-            };
-            let _high = match &high {
-                Some(lock) => Some(lock.lock().await),
-                None => None,
-            };
             // A draft's permalink changes only when the caller names one. The
             // default rule stays out of review mode on purpose: a moved draft
             // is paired with the team's engram it came from by the address it
@@ -216,9 +238,16 @@ impl Engine {
                 .filter(|asked| !asked.trim().is_empty())
                 .map(|_| new_permalink.as_str());
             let mover = self.actor_for(client, overlay);
-            return view
-                .move_within(p, &src, &src_source, &dest_rel, cross, asked, &mover)
-                .await;
+            let draft = DraftMove {
+                who,
+                src: &src,
+                src_source: &src_source,
+                dest_rel: &dest_rel,
+                cross,
+                asked,
+                mover: &mover,
+            };
+            return self.move_draft_locked(&view, p, draft).await;
         }
 
         // A move onto the MANIFEST may move the destination's switch.
@@ -1284,4 +1313,15 @@ impl Engine {
             ContentSource::Virtual => self.load_content(src_source, src).await,
         }
     }
+}
+
+/// What [`Engine::move_draft_locked`] moves, and for whom.
+struct DraftMove<'a> {
+    who: &'a str,
+    src: &'a EngramDescriptor,
+    src_source: &'a ContentSource,
+    dest_rel: &'a str,
+    cross: bool,
+    asked: Option<&'a str>,
+    mover: &'a str,
 }
