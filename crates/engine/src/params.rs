@@ -590,7 +590,7 @@ pub struct ReadReflectionParams {
     /// answer as text until the pages are embedded.
     #[serde(default)]
     pub search_type: Option<String>,
-    /// With query: hits per page, default 10.
+    /// With query: hits per page, default 10, at most 100.
     #[serde(default)]
     pub limit: Option<usize>,
     /// With query: one-based page, default 1.

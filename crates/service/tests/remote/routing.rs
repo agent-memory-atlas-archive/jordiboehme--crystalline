@@ -1523,6 +1523,14 @@ async fn a_mounted_reflection_is_worked_under_its_local_name_on_its_own_server()
         found["domain"], "open-beta",
         "and the answer names the local name: {found}"
     );
+    let both = call(
+        &machine,
+        "read_reflection",
+        json!({ "domain": "open-beta", "path": "guides/a.md", "query": "people" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(both.to_string().contains("not both"), "{both}");
     let opened = call(
         &machine,
         "discuss",

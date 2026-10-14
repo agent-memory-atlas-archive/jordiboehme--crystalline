@@ -8660,6 +8660,12 @@ async fn the_reflection_tools_refuse_while_reflection_is_off() {
             "read_reflection",
             json!({ "domain": "eng", "query": "night" }),
         ),
+        // The gate goes before the argument checks.
+        ("read_reflection", json!({ "domain": "eng", "query": "" })),
+        (
+            "read_reflection",
+            json!({ "domain": "eng", "query": "night", "search_type": "title" }),
+        ),
         (
             "write_reflection",
             json!({ "domain": "eng", "path": "a.md", "markdown": "# A\n" }),
@@ -8753,26 +8759,23 @@ async fn read_reflection_with_a_query_answers_section_hits() {
     .await
     .unwrap();
     assert!(
+        found.contains(r#""mode":"text""#),
+        "the mode that ran: {found}"
+    );
+    assert!(
         found.contains("Night deploys") && !found.contains("Rollback"),
         "{found}"
     );
-    assert!(found.contains("text"), "the mode that ran: {found}");
     assert!(!found.contains("score"), "{found}");
-    let both = serde_json::to_value(
-        call_result(
-            peer,
-            "read_reflection",
-            json!({ "domain": "eng", "path": "guides/deploying.md", "query": "night" }),
-        )
-        .await,
+    // An argument error is a protocol error, like write_reflection's.
+    let both = call(
+        peer,
+        "read_reflection",
+        json!({ "domain": "eng", "path": "guides/deploying.md", "query": "night" }),
     )
-    .unwrap();
-    assert_eq!(both["isError"], true, "{both}");
-    let text = both
-        .pointer("/content/0/text")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    assert!(text.contains("not both"), "{text}");
+    .await
+    .unwrap_err();
+    assert!(both.contains("not both"), "{both}");
 }
 
 /// Open point 1 (approved): an agent changes one section of a reflection the

@@ -1513,6 +1513,9 @@ impl Engine {
         s: &ReflectionSearch<'_>,
         caller: &ReflectionCaller,
     ) -> Result<Value> {
+        let access = self
+            .require_reflection(domain, caller, ReflectionRight::Read)
+            .await?;
         let requested = parse_reflection_mode(s.search_type)?;
         let query = s.query.trim();
         if query.is_empty() {
@@ -1520,9 +1523,6 @@ impl Engine {
                 "a search needs `query`, the words to find".into(),
             ));
         }
-        let access = self
-            .require_reflection(domain, caller, ReflectionRight::Read)
-            .await?;
         let limit = s.limit.clamp(1, MAX_PAGE_LIMIT);
         let page = s.page.max(1);
         let provider = self.provider();
