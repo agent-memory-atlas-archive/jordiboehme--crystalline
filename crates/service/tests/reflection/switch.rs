@@ -572,6 +572,31 @@ async fn two_spellings_of_the_reflection_folder_refuse_the_switch() {
     );
 }
 
+/// A switch that arrives out of band (a plain editor, a pull) while the
+/// folder is spelled twice is held pending, naming both spellings, even when
+/// every file in them is a page: one Reflection cannot read two folders.
+/// Skipped on a filesystem that folds letter case.
+#[tokio::test]
+async fn an_out_of_band_switch_with_two_folder_spellings_stays_pending() {
+    let fx = fixture(&[("reflections/a.md", &page("A"))]).await;
+    std::fs::create_dir_all(fx.root.join("Reflections")).unwrap();
+    if crystalline_core::reflection::reflection_folders(&fx.root).len() < 2 {
+        eprintln!(
+            "skipped: this filesystem folds letter case, so reflections/ and Reflections/ cannot both exist"
+        );
+        return;
+    }
+    std::fs::write(fx.root.join("Reflections/b.md"), page("B")).unwrap();
+    std::fs::write(fx.root.join("MANIFEST.md"), manifest("reflection: on\n")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    assert_eq!(
+        fx.engine.reflection_state("eng").await.unwrap(),
+        ReflectionState::Pending {
+            engrams: vec!["Reflections/".to_string(), "reflections/".to_string()]
+        }
+    );
+}
+
 /// A move onto a missing MANIFEST.md writes the moved text as the MANIFEST,
 /// so a text that says `reflection: on` meets the switch-on screen.
 #[tokio::test]

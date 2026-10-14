@@ -8910,6 +8910,46 @@ parity!(
     a_hand_made_page_without_ids_holds_the_switch_pending
 );
 
+/// Two spellings of the Reflection's folder (`reflections/` and
+/// `Reflections/`, which only a case-sensitive filesystem holds at once)
+/// would land their pages on the same rows, so a switch that arrived out of
+/// band stays pending and both are named, whatever their files are. On a
+/// filesystem that folds letter case the second folder cannot be made and
+/// the test has nothing to check.
+async fn two_spellings_of_the_reflection_folder_hold_the_switch(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", &manifest_on());
+    write(root, "reflections/a.md", &page("A", "x"));
+    std::fs::create_dir_all(root.join("Reflections")).unwrap();
+    if crystalline_core::reflection::reflection_folders(root).len() < 2 {
+        eprintln!(
+            "skipped: this filesystem folds letter case, so reflections/ and Reflections/ cannot both exist"
+        );
+        return;
+    }
+    write(root, "Reflections/b.md", &page("B", "y"));
+    assert_eq!(
+        crystalline_index::pending_engrams(root, std::iter::empty::<&str>()),
+        ["Reflections/", "reflections/"]
+    );
+    sync_domain(store, "eng", root).await.unwrap();
+    assert!(
+        reflection_paths(store, "eng").await.is_empty(),
+        "the switch is pending"
+    );
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    let recorded = store.file_stamps(did).await.unwrap();
+    assert_eq!(
+        crystalline_index::reflection_mode(root, recorded.keys()),
+        crystalline_core::ReflectionMode::Off
+    );
+}
+parity!(
+    two_spellings_of_the_reflection_folder_hold_the_switch_on_both_backends,
+    two_spellings_of_the_reflection_folder_hold_the_switch
+);
+
 /// SD24: a folder under `reflections/` the walk cannot read keeps the rows
 /// of the pages inside it.
 #[cfg(unix)]

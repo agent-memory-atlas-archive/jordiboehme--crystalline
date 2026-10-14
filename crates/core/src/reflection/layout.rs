@@ -24,6 +24,24 @@ pub fn is_under_reflections(rel: &str) -> bool {
         .is_some_and(|first| first.eq_ignore_ascii_case(REFLECTIONS_DIR))
 }
 
+/// The folders directly under the domain at `root` whose name is
+/// `reflections` in any letter case, sorted. More than one cannot be one
+/// Reflection (their files would land on the same rows), which only a
+/// case-sensitive filesystem allows. A root that cannot be read has none.
+pub fn reflection_folders(root: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut folders: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .filter(|name| name.eq_ignore_ascii_case(REFLECTIONS_DIR))
+        .collect();
+    folders.sort();
+    folders
+}
+
 /// Whether a path inside `reflections/` names the pact. The name is
 /// compared with ASCII case folded, the way the folder is: on a case-folding
 /// filesystem `pact.md` is the same file as `PACT.md`.

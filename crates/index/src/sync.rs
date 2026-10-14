@@ -397,12 +397,23 @@ pub fn pending_engrams(
 }
 
 /// [`pending_engrams`] in the order found, stopping after `limit` when one
-/// is given.
+/// is given. A Reflection folder spelled in two letter cases (a
+/// case-sensitive filesystem) holds the switch whatever its files are: the
+/// two would land on the same rows, so each spelling is named as a folder,
+/// the way a folder the walk cannot read is.
 fn pending_engrams_up_to(
     root: &Path,
     recorded: impl Iterator<Item = impl AsRef<str>>,
     limit: Option<usize>,
 ) -> Vec<String> {
+    let folders = crystalline_core::reflection::reflection_folders(root);
+    if folders.len() > 1 {
+        return folders
+            .into_iter()
+            .map(|folder| format!("{folder}/"))
+            .take(limit.unwrap_or(usize::MAX))
+            .collect();
+    }
     let mut recorded = recorded.peekable();
     if recorded.peek().is_none() {
         return pending_engrams_on_disk(root, limit);

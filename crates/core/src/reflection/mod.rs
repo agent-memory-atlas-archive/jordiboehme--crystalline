@@ -37,8 +37,8 @@ pub use baseline::{
 };
 pub use layout::{
     BASELINE_DIR, PACT_FILE, REFLECTIONS_DIR, ReflectionFile, Structure, THREADS_SUFFIX,
-    baseline_path, classify, domain_rel, fits_structure, is_under_reflections, structure_globs,
-    threads_path, validate_reflection_path,
+    baseline_path, classify, domain_rel, fits_structure, is_under_reflections, reflection_folders,
+    structure_globs, threads_path, validate_reflection_path,
 };
 pub use links::{rebase_links, relative_to, rewrite_asset_links, rewrite_links_to};
 pub use provenance::{

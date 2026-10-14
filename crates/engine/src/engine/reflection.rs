@@ -214,22 +214,6 @@ fn may_be_pending(recorded: &[String]) -> bool {
             .any(|p| crystalline_core::reflection::is_under_reflections(p))
 }
 
-/// The folders directly under `root` whose name is `reflections` in any
-/// letter case, sorted. A root that cannot be read has none.
-fn reflection_folders(root: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    let mut folders: Vec<String> = entries
-        .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
-        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
-        .filter(|name| name.eq_ignore_ascii_case(crystalline_core::reflection::REFLECTIONS_DIR))
-        .collect();
-    folders.sort();
-    folders
-}
-
 impl Engine {
     /// This instance's `service.public_url` in its canonical spelling (the
     /// origin in ascii, default port dropped, the path with no trailing
@@ -252,8 +236,9 @@ impl Engine {
         let recorded = self.recorded_paths(domain).await?;
         // Every gate asks this. With rows recorded and none under the folder
         // (a Reflection in effect keeps its pages out of the engram rows),
-        // nothing can be pending and no file is read.
-        if !may_be_pending(&recorded) {
+        // nothing can be pending and no file is read, unless the folder is
+        // spelled twice, which holds the switch whatever the files are.
+        if !may_be_pending(&recorded) && r::reflection_folders(&root).len() < 2 {
             return Ok(Vec::new());
         }
         tokio::task::spawn_blocking(move || {
@@ -282,7 +267,7 @@ impl Engine {
                 ..Default::default()
             });
         };
-        let folders = reflection_folders(&root);
+        let folders = r::reflection_folders(&root);
         let engrams = self.pending_engrams(domain).await?;
         // The base snapshot is read for a domain with an origin only, and a
         // missing or unreadable one holds nothing.
@@ -583,7 +568,7 @@ pub(super) fn rooms_to_rewrite<'a>(
 /// Reflection's folder), else `reflections`. A write never puts a second
 /// spelling beside the first.
 pub(super) fn reflection_dir(root: &Path) -> PathBuf {
-    let name = reflection_folders(root)
+    let name = r::reflection_folders(root)
         .into_iter()
         .next()
         .unwrap_or_else(|| r::REFLECTIONS_DIR.to_string());
