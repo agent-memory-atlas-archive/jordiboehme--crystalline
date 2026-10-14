@@ -602,3 +602,151 @@ async fn evolve_leaves_the_pending_reflections_folder_out_of_v112() {
         .unwrap();
     assert!(after["queue"].as_array().unwrap().is_empty(), "{after}");
 }
+
+/// A domain whose queue cannot be read is left out of an unnamed queue and
+/// of the counts, and named in the answer; named, it is the caller's error.
+#[tokio::test]
+async fn an_unreadable_domain_never_fails_the_unnamed_queue_or_the_counts() {
+    let fx = curated(&[]).await;
+    let text = edit_page(&fx, "Deploys run at night.", "Deploys run at dawn.");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &person())
+        .await
+        .unwrap();
+    // A threads "file" that is a folder: reading it fails.
+    std::fs::create_dir_all(fx.root.join("reflections/guides/deploying.threads.md")).unwrap();
+    let unnamed = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert_eq!(unnamed["total"], 0, "{unnamed}");
+    assert_eq!(
+        unnamed["scope"]["domains"],
+        serde_json::json!([]),
+        "{unnamed}"
+    );
+    assert_eq!(
+        unnamed["scope"]["unreadable"],
+        serde_json::json!(["eng"]),
+        "{unnamed}"
+    );
+    let named = ReflectParams {
+        domains: vec!["eng".into()],
+        ..Default::default()
+    };
+    assert!(fx.engine.reflect(&named, &agent()).await.is_err());
+    assert!(
+        fx.engine
+            .reflect_open_counts(&[], &agent())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// A whole queue carries no `unreadable` member.
+#[tokio::test]
+async fn a_readable_scope_names_nothing_unreadable() {
+    let fx = curated(&[]).await;
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert!(queue["scope"].get("unreadable").is_none(), "{queue}");
+}
+
+#[tokio::test]
+async fn a_domain_named_twice_is_swept_once() {
+    let fx = curated(&[]).await;
+    let text = edit_page(&fx, "Deploys run at night.", "Deploys run at dawn.");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &person())
+        .await
+        .unwrap();
+    let twice = ReflectParams {
+        domains: vec!["eng".into(), "eng".into()],
+        ..Default::default()
+    };
+    let queue = fx.engine.reflect(&twice, &agent()).await.unwrap();
+    assert_eq!(queue["total"], 1, "{queue}");
+    assert_eq!(
+        queue["scope"]["domains"],
+        serde_json::json!(["eng"]),
+        "{queue}"
+    );
+    let counts = fx
+        .engine
+        .reflect_open_counts(&["eng".to_string(), "eng".to_string()], &agent())
+        .await
+        .unwrap();
+    assert_eq!(counts, vec![("eng".to_string(), 1)]);
+}
+
+/// The write list caps the Reflection at read (R18): an editor off the list
+/// sees the queue and is not nudged; one with no list is.
+#[tokio::test]
+async fn an_off_list_curator_gets_no_count() {
+    use std::sync::Arc;
+
+    use crystalline_service::rest::{AuthStore, Role};
+    use crystalline_service::{DomainAccess, Scope};
+
+    let fx = curated(&[]).await;
+    let text = edit_page(&fx, "Deploys run at night.", "Deploys run at dawn.");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &person())
+        .await
+        .unwrap();
+    let auth = Arc::new(
+        AuthStore::open(&fx.tmp.path().join("web-auth.db"))
+            .await
+            .unwrap(),
+    );
+    for name in ["ed", "lee"] {
+        auth.add_user(name, name, None, Role::Editor, "pw12345678")
+            .await
+            .unwrap();
+    }
+    auth.set_write_list("ed", &["agents-*".to_string()])
+        .await
+        .unwrap();
+    fx.engine
+        .set_domain_access(Arc::new(DomainAccess::new(auth)));
+    let as_user = |name: &str| {
+        ReflectionCaller::agent(
+            Scope::User {
+                account: name.into(),
+                admin: false,
+            },
+            name,
+            false,
+        )
+    };
+    let ed = as_user("ed");
+    assert_eq!(
+        fx.engine
+            .reflect_queue("eng", None, None, &ed)
+            .await
+            .unwrap()["total"],
+        1,
+        "the off-list editor still reads the queue"
+    );
+    assert!(
+        fx.engine
+            .reflect_open_counts(&[], &ed)
+            .await
+            .unwrap()
+            .is_empty(),
+        "and is not nudged"
+    );
+    assert_eq!(
+        fx.engine
+            .reflect_open_counts(&[], &as_user("lee"))
+            .await
+            .unwrap(),
+        vec![("eng".to_string(), 1)],
+        "an editor with no list curates and is nudged"
+    );
+}

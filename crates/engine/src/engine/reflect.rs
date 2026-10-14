@@ -115,13 +115,25 @@ fn joined_text<'a>(sections: impl Iterator<Item = &'a str>) -> String {
     out
 }
 
+/// How much of each item [`Engine::detect_reflection`] builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Detail {
+    /// Every member a queue row shows: diffs, sources.
+    Full,
+    /// Only what ranks and counts an item; no diff is rendered and no
+    /// source is looked up (the nudge counts).
+    Count,
+}
+
 impl Engine {
     /// Every open item of one domain's Reflection, unranked.
     async fn detect_reflection(
         &self,
         domain: &str,
         access: &ReflectionAccess,
+        detail: Detail,
     ) -> Result<Vec<Item>> {
+        let full = detail == Detail::Full;
         let rows = self
             .store
             .lock()
@@ -152,10 +164,16 @@ impl Engine {
             if row.path == r::PACT_FILE {
                 let changes = r::feedback_changes(&row.content, &baseline);
                 if !changes.is_empty() {
-                    let sections = r::split_sections(&row.content);
-                    let current = joined_text(sections.iter().map(|s| s.text.as_str()));
-                    let reflected_entries = r::parse_baseline(&baseline);
-                    let reflected = joined_text(reflected_entries.iter().map(|(_, t)| t.as_str()));
+                    let extra = if full {
+                        let sections = r::split_sections(&row.content);
+                        let current = joined_text(sections.iter().map(|s| s.text.as_str()));
+                        let reflected_entries = r::parse_baseline(&baseline);
+                        let reflected =
+                            joined_text(reflected_entries.iter().map(|(_, t)| t.as_str()));
+                        json!({ "diff": diffy::create_patch(&reflected, &current).to_string() })
+                    } else {
+                        Value::Null
+                    };
                     items.push(Item {
                         kind: "update",
                         what: "pact_changed",
@@ -164,7 +182,7 @@ impl Engine {
                         section: None,
                         heading: String::new(),
                         age_secs: row_age,
-                        extra: json!({ "diff": diffy::create_patch(&reflected, &current).to_string() }),
+                        extra,
                     });
                 }
                 continue;
@@ -179,9 +197,22 @@ impl Engine {
                 }
                 let age = secs_since_rfc3339(record.and_then(|rec| rec.changed_at.as_deref()))
                     .unwrap_or(row_age);
-                let sources: Vec<Value> = record
-                    .map(|rec| rec.sources.iter().map(|s| source_view(s, &facts)).collect())
-                    .unwrap_or_default();
+                let extra = if full {
+                    let sources: Vec<Value> = record
+                        .map(|rec| rec.sources.iter().map(|s| source_view(s, &facts)).collect())
+                        .unwrap_or_default();
+                    json!({
+                        "changed_by": record.map(|rec| rec.changed_by.clone()).unwrap_or_default(),
+                        "diff": diffy::create_patch(
+                            &r::normalize_section_text(&change.before),
+                            &r::normalize_section_text(&change.after),
+                        )
+                        .to_string(),
+                        "sources": sources,
+                    })
+                } else {
+                    Value::Null
+                };
                 items.push(Item {
                     kind: "feedback",
                     what: change.kind.as_str(),
@@ -190,15 +221,7 @@ impl Engine {
                     section: change.id.clone(),
                     heading: change.heading.clone(),
                     age_secs: age,
-                    extra: json!({
-                        "changed_by": record.map(|rec| rec.changed_by.clone()).unwrap_or_default(),
-                        "diff": diffy::create_patch(
-                            &r::normalize_section_text(&change.before),
-                            &r::normalize_section_text(&change.after),
-                        )
-                        .to_string(),
-                        "sources": sources,
-                    }),
+                    extra,
                 });
             }
             for section in r::split_sections(&row.content) {
@@ -225,7 +248,9 @@ impl Engine {
                     };
                     let entry = by_what.entry(what).or_insert((0, Vec::new()));
                     entry.0 = entry.0.max(age);
-                    entry.1.push(source_view(src, &facts));
+                    if full {
+                        entry.1.push(source_view(src, &facts));
+                    }
                 }
                 for (what, (age, sources)) in by_what {
                     items.push(Item {
@@ -379,30 +404,45 @@ impl Engine {
         })
     }
 
-    /// The domains a queue or a count runs over: the named ones, or every
-    /// registered domain whose Reflection is in effect here.
-    async fn reflect_scope(&self, named: &[String]) -> Result<Vec<String>> {
+    /// The domains a queue or a count runs over: the named ones (each once,
+    /// in the order first named), or every registered domain whose
+    /// Reflection is in effect here. Beside them, the domains of an unnamed
+    /// scope whose state could not be read: they are left out, not a
+    /// failure of the whole scope.
+    async fn reflect_scope(&self, named: &[String]) -> Result<(Vec<String>, Vec<String>)> {
         if !named.is_empty() {
-            return Ok(named.to_vec());
+            let mut out: Vec<String> = Vec::new();
+            for name in named {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+            return Ok((out, Vec::new()));
         }
         // An unnamed queue leaves out a read-only domain (like evolve) and a
         // local copy a connected server replaces (decision D19).
         let shadowed = self.shadowed_domains();
+        let mut names = self.known_domain_names();
+        names.sort();
+        names.dedup();
         let mut out = Vec::new();
-        for name in self.known_domain_names() {
+        let mut unreadable = Vec::new();
+        for name in names {
             if shadowed.contains(&name) || self.domain_is_read_only(&name).await {
                 continue;
             }
-            if matches!(
-                self.reflection_state(&name).await?,
-                ReflectionState::On { .. }
-            ) {
-                out.push(name);
+            match self.reflection_state(&name).await {
+                Ok(ReflectionState::On { .. }) => out.push(name),
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        "reflect: the Reflection state of '{name}' could not be read: {e}"
+                    );
+                    unreadable.push(name);
+                }
             }
         }
-        out.sort();
-        out.dedup();
-        Ok(out)
+        Ok((out, unreadable))
     }
 
     /// The `reflect` tool.
@@ -418,7 +458,8 @@ impl Engine {
         let mut items = Vec::new();
         let mut swept = Vec::new();
         let mut visible_everywhere = true;
-        for domain in self.reflect_scope(&p.domains).await? {
+        let (scope, mut unreadable) = self.reflect_scope(&p.domains).await?;
+        for domain in scope {
             let access = match self
                 .require_reflection(&domain, caller, ReflectionRight::Read)
                 .await
@@ -430,12 +471,27 @@ impl Engine {
             // One page answers every swept domain, so a domain that hides
             // engrams from the caller strips the sources of the whole page.
             visible_everywhere &= access.engrams_visible;
-            items.extend(self.detect_reflection(&domain, &access).await?);
+            match self.detect_reflection(&domain, &access, Detail::Full).await {
+                Ok(found) => items.extend(found),
+                Err(e) if named => return Err(e),
+                // One domain that cannot be read never costs the whole
+                // queue: it is named in the answer and left out.
+                Err(e) => {
+                    tracing::warn!("reflect: the queue of '{domain}' could not be read: {e}");
+                    unreadable.push(domain);
+                    continue;
+                }
+            }
             swept.push(domain);
         }
         let mut value =
             Self::page_json(&rank(items), &p.kinds, p.limit, p.page, visible_everywhere);
         value["scope"] = json!({ "domains": swept, "kinds": p.kinds });
+        // Present only when a domain was left out, so a whole answer keeps
+        // its shape.
+        if !unreadable.is_empty() {
+            value["scope"]["unreadable"] = json!(unreadable);
+        }
         Ok(value)
     }
 
@@ -450,7 +506,10 @@ impl Engine {
         let access = self
             .require_reflection(domain, caller, ReflectionRight::Read)
             .await?;
-        let items = rank(self.detect_reflection(domain, &access).await?);
+        let items = rank(
+            self.detect_reflection(domain, &access, Detail::Full)
+                .await?,
+        );
         let mut value = Self::page_json(&items, &[], limit, page, access.engrams_visible);
         value["domain"] = json!(domain);
         Ok(value)
@@ -505,7 +564,10 @@ impl Engine {
             out.sort_by(|a, b| a.0.cmp(&b.0));
             out.into_iter().map(|(_, v)| v).collect()
         };
-        let items = rank(self.detect_reflection(domain, &access).await?);
+        let items = rank(
+            self.detect_reflection(domain, &access, Detail::Full)
+                .await?,
+        );
         let mut queue = Self::page_json(&items, &[], Some(50), Some(1), access.engrams_visible);
         queue["domain"] = json!(domain);
         Ok(json!({
@@ -517,21 +579,33 @@ impl Engine {
     }
 
     /// Open items per domain the caller curates here, for the nudges (R9):
-    /// a domain with no open item is left out.
+    /// a domain with no open item is left out, and so is one whose queue
+    /// cannot be read (a nudge is a hint, never a failure).
     pub async fn reflect_open_counts(
         &self,
         domains: &[String],
         caller: &ReflectionCaller,
     ) -> Result<Vec<(String, usize)>> {
         let mut out = Vec::new();
-        for domain in self.reflect_scope(domains).await? {
+        for domain in self.reflect_scope(domains).await?.0 {
             let Ok(access) = self
                 .require_reflection(&domain, caller, ReflectionRight::Curate)
                 .await
             else {
                 continue;
             };
-            let n = self.detect_reflection(&domain, &access).await?.len();
+            let n = match self
+                .detect_reflection(&domain, &access, Detail::Count)
+                .await
+            {
+                Ok(items) => items.len(),
+                Err(e) => {
+                    tracing::warn!(
+                        "reflect: the open items of '{domain}' could not be counted: {e}"
+                    );
+                    continue;
+                }
+            };
             if n > 0 {
                 out.push((domain, n));
             }
