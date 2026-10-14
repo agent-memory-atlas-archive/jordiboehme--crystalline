@@ -180,7 +180,54 @@ fn collect(root: &Path, mode: ReflectionMode) -> Walked {
             .push(IndexEntry::file(&name, &title, description.as_deref()));
     }
 
+    // The walk leaves an effective Reflection's folder out, so the listings a
+    // pending switch had written there are looked for on their own: each is
+    // an existing index of a folder that holds no knowledge, so it goes.
+    if mode == ReflectionMode::Effective {
+        walked
+            .existing_indexes
+            .extend(stale_reflection_listings(root));
+    }
+
     walked
+}
+
+/// The folders under the Reflection's folder (any letter case) that hold an
+/// `index.md` this pass generated, from the time the switch was pending and
+/// the folder held engrams. An `index.md` that does not read as generated is
+/// somebody's own file and is not named. Hidden folders (the baseline) are
+/// not entered.
+fn stale_reflection_listings(root: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let off = DomainLayout::bare(ReflectionMode::Off);
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let is_folder = entry.file_type().is_ok_and(|t| t.is_dir())
+            && entry.file_name().to_str().is_some_and(|n| {
+                n.eq_ignore_ascii_case(crystalline_core::reflection::REFLECTIONS_DIR)
+            });
+        if !is_folder {
+            continue;
+        }
+        let walk = WalkDir::new(entry.path())
+            .into_iter()
+            .filter_entry(|e| e.depth() == 0 || off.enters_dir(&slash_rel(root, e.path())));
+        for item in walk.filter_map(Result::ok) {
+            if !item.file_type().is_file()
+                || item.file_name() != std::ffi::OsStr::new(crystalline_core::INDEX_FILE)
+            {
+                continue;
+            }
+            let generated = std::fs::read_to_string(item.path())
+                .is_ok_and(|text| crystalline_core::is_generated_index(&text));
+            if generated && let Some(rel) = rel_path(root, item.path()) {
+                found.push(parent_of(&rel).unwrap_or_default());
+            }
+        }
+    }
+    found
 }
 
 /// One concept's `title` and `description` frontmatter. A file that cannot be
@@ -340,6 +387,32 @@ mod tests {
             read(root, "index.md"),
             "---\nokf_version: \"0.2\"\n---\n\n# Contents\n\n* [A](a.md)\n"
         );
+    }
+
+    /// The listings a pending switch left under `reflections/` go once the
+    /// Reflection is in effect; an `index.md` somebody wrote there stays.
+    #[test]
+    fn an_effective_reflection_loses_the_listings_it_had_while_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "notes/a.md", &engram("A", None));
+        write(root, "reflections/guides/old.md", &engram("Old", None));
+        refresh(root, ReflectionMode::Off);
+        assert!(root.join("reflections/index.md").is_file());
+        assert!(root.join("reflections/guides/index.md").is_file());
+        std::fs::remove_file(root.join("reflections/guides/old.md")).unwrap();
+        write(
+            root,
+            "reflections/own/index.md",
+            "# Our pages\n\nRead these first.\n",
+        );
+
+        let report = refresh(root, ReflectionMode::Effective);
+        assert_eq!(report.removed, 2);
+        assert!(!root.join("reflections/index.md").exists());
+        assert!(!root.join("reflections/guides/index.md").exists());
+        assert!(root.join("reflections/own/index.md").is_file());
+        assert_eq!(refresh(root, ReflectionMode::Effective).removed, 0);
     }
 
     #[test]

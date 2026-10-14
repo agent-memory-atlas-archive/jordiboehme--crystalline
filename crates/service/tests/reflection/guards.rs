@@ -257,6 +257,44 @@ async fn index_files_skip_the_reflection_folder() {
     assert!(!root_listing.contains("reflections/"), "{root_listing}");
 }
 
+/// While the switch is pending the engrams under `reflections/` are listed
+/// in folder index files there; once the last one moves out and the switch
+/// takes effect, those generated listings go too.
+#[tokio::test]
+async fn the_listings_of_a_pending_folder_go_once_the_switch_takes_effect() {
+    let fx = fixture(&[
+        ("MANIFEST.md", &manifest("reflection: on\n")),
+        (
+            "reflections/guides/old.md",
+            &engram("Old", "reflections/guides/old", "- [fact] old"),
+        ),
+        ("notes/n.md", &engram("N", "notes/n", "- [fact] n")),
+    ])
+    .await;
+    assert!(
+        !fx.engine.reflection_effective("eng").await.unwrap(),
+        "pending"
+    );
+    assert!(fx.root.join("reflections/index.md").exists());
+    assert!(fx.root.join("reflections/guides/index.md").exists());
+    fx.engine
+        .move_engram(
+            &move_params("reflections/guides/old", "notes/old.md"),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    assert!(
+        fx.engine.reflection_effective("eng").await.unwrap(),
+        "in effect"
+    );
+    assert!(!fx.root.join("reflections/guides/index.md").exists());
+    assert!(!fx.root.join("reflections/index.md").exists());
+    let root_listing = std::fs::read_to_string(fx.root.join("index.md")).unwrap();
+    assert!(!root_listing.contains("reflections/"), "{root_listing}");
+}
+
 #[tokio::test]
 async fn a_restore_never_lands_an_engram_in_the_reflection_folder() {
     let fx = fixture(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;

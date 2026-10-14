@@ -73,8 +73,8 @@ pub use harness::profile::{
 };
 pub use harness::{HarnessKind, HarnessPaths, HarnessProfile, artifact_base, harness_paths};
 pub use index::{
-    INDEX_FILE, IndexEntry, LOG_FILE, OKF_VERSION, is_index_file, is_index_path, is_reserved_file,
-    is_reserved_path, render_index,
+    INDEX_FILE, IndexEntry, LOG_FILE, OKF_VERSION, is_generated_index, is_index_file,
+    is_index_path, is_reserved_file, is_reserved_path, render_index,
 };
 pub use kind::ContentKind;
 pub use layout::{DomainLayout, PathClass, ReflectionMode, is_pending_engram, slash_rel};
