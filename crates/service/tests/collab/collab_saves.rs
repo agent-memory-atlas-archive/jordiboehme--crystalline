@@ -2352,6 +2352,38 @@ async fn publish_name(joined: &Joined, doc: &Doc, name: &str) {
         .await;
 }
 
+/// A reflection read says who is in the room over the page (R77), nested as
+/// the contract and Fluid read it, and says nothing while no room is open.
+#[tokio::test]
+async fn a_reflection_read_says_who_is_editing_while_a_room_is_open() {
+    let (_tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let caller = crystalline_service::ReflectionCaller::owner();
+    let closed = engine
+        .read_reflection("eng", "guides/a.md", &caller)
+        .await
+        .unwrap();
+    assert!(closed.get("live").is_none(), "no room, no member: {closed}");
+    let joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    publish_name(&joined, &doc, "Ada").await;
+    let open = engine
+        .read_reflection("eng", "guides/a.md", &caller)
+        .await
+        .unwrap();
+    assert_eq!(
+        open["live"]["present"],
+        serde_json::json!(["Ada"]),
+        "{open}"
+    );
+    // The page read answers the file, not the room's text.
+    assert_eq!(open["checksum"], closed["checksum"]);
+}
+
 /// A room save names the signed-in account of each connection that sent an
 /// edit: a name a client puts into awareness is not recorded, and a
 /// participant who is there and types nothing is not either, even when its

@@ -318,7 +318,7 @@ pub async fn tree(
                     "heading": "Night deploys", "line": 12, "changed": true,
                     "sources": [ { "permalink": "runbooks/deploy",
                         "title": "Deploy runbook", "state": "current" } ] } ],
-                "threads": [] }),
+                "threads": [], "live": { "present": ["jordi"] } }),
         ),
         (
             status = 404,

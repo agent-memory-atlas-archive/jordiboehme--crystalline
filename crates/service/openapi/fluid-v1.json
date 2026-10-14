@@ -5962,6 +5962,11 @@
                 "example": {
                   "checksum": "9f2c...",
                   "domain": "eng",
+                  "live": {
+                    "present": [
+                      "jordi"
+                    ]
+                  },
                   "markdown": "# Deploying\n...",
                   "path": "guides/deploying.md",
                   "sections": [

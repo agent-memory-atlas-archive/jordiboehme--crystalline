@@ -1,4 +1,5 @@
 use super::*;
+use crate::collab::session::RoomDoc;
 
 /// Whether a grant matched only by its TITLE yields to what the reader's own
 /// view answers `name` with: an engram in that view whose permalink is the
@@ -287,7 +288,12 @@ impl Engine {
         match self.collab_rooms() {
             Some(rooms) => {
                 rooms
-                    .participants(&desc.domain, &desc.permalink, view.actor(), except)
+                    .participants(
+                        &desc.domain,
+                        &RoomDoc::Engram(desc.permalink.clone()),
+                        view.actor(),
+                        except,
+                    )
                     .await
             }
             None => Vec::new(),

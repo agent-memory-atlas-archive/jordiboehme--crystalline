@@ -800,14 +800,11 @@ impl CollabSessions {
     pub async fn participants(
         &self,
         domain: &str,
-        permalink: &str,
+        doc: &RoomDoc,
         overlay: Option<&str>,
         except: Option<ClientID>,
     ) -> Vec<String> {
-        match self
-            .live_room(domain, &RoomDoc::Engram(permalink.to_string()), overlay)
-            .await
-        {
+        match self.live_room(domain, doc, overlay).await {
             Some(session) => session.participants(except).await,
             None => Vec::new(),
         }

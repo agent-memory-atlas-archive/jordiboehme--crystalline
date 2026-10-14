@@ -1655,7 +1655,7 @@ impl Engine {
             .filter(|t| t.status == crystalline_core::threads::ThreadStatus::Open)
             .map(|t| thread_view(inner, t, &text))
             .collect();
-        Ok(json!({
+        let mut answer = json!({
             "domain": domain,
             "path": inner,
             "title": r::title_of(&text, inner),
@@ -1665,7 +1665,17 @@ impl Engine {
             "checksum": sha256_hex(text.as_bytes()),
             "sections": sections,
             "threads": open,
-        }))
+        });
+        // Who has the page open in a co-editing room (R77): nested, as the
+        // contract and Fluid read it; absent while no room is open.
+        if let Some(rooms) = self.collab_rooms() {
+            let doc = RoomDoc::Reflection(inner.to_string());
+            if rooms.has_live_doc(domain, &doc, None).await {
+                answer["live"] =
+                    json!({ "present": rooms.participants(domain, &doc, None, None).await });
+            }
+        }
+        Ok(answer)
     }
 }
 

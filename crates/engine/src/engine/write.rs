@@ -1,4 +1,5 @@
 use super::*;
+use crate::collab::session::RoomDoc;
 use crate::domain_view::Occupant;
 
 impl Engine {
@@ -870,7 +871,12 @@ impl Engine {
             None => None,
         };
         let present = rooms
-            .participants(&p.domain, &permalink, overlay, mine)
+            .participants(
+                &p.domain,
+                &RoomDoc::Engram(permalink.clone()),
+                overlay,
+                mine,
+            )
             .await;
         Some(LiveWriteTarget { permalink, present })
     }

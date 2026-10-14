@@ -1361,6 +1361,46 @@ async fn open_room(
     tokio_tungstenite::connect_async(request).await.unwrap().0
 }
 
+/// The page route answers `live.present` while a room is open over it, and
+/// no `live` member otherwise, for a reader with or without knowledge.
+#[tokio::test]
+async fn the_page_route_answers_live_while_a_room_is_open() {
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::updates::encoder::Encode;
+    let s = serve().await;
+    let owner = crystalline_service::ReflectionCaller::owner();
+    s.fx.engine
+        .write_reflection(&crate::docs::write("live.md", "# Live\n\nBody.\n"), &owner)
+        .await
+        .unwrap();
+    let ed = Session::login(s.addr, "ed").await;
+    let ann = Session::login(s.addr, "ann").await;
+    let (status, closed) = ed.get("/api/v1/domains/eng/reflections/live.md").await;
+    assert_eq!(status, 200, "{closed}");
+    assert!(closed.get("live").is_none(), "no room, no member: {closed}");
+
+    let mut room = open_room(s.addr, "/api/v1/collab-reflection/eng/live.md", &ed).await;
+    let mut awareness = yrs::sync::Awareness::new(yrs::Doc::new());
+    awareness.set_local_state_raw("{\"user\":{\"name\":\"Ed\"}}".to_string());
+    let frame = yrs::sync::Message::Awareness(awareness.update().unwrap()).encode_v1();
+    room.send(WsMessage::Binary(frame.into())).await.unwrap();
+
+    for who in [&ed, &ann] {
+        let mut present = Value::Null;
+        for _ in 0..50 {
+            let (status, open) = who.get("/api/v1/domains/eng/reflections/live.md").await;
+            assert_eq!(status, 200, "{open}");
+            present = open["live"]["present"].clone();
+            if present.as_array().is_some_and(|a| !a.is_empty()) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(present, json!(["Ed"]));
+    }
+}
+
 #[tokio::test]
 async fn the_search_route_takes_search_type_and_page_and_answers_the_mcp_shape() {
     let s = serve().await;
