@@ -12265,3 +12265,91 @@ parity!(
     lookup_in_domain_resolves_by_permalink_and_title_and_hints_the_slug_on_both_backends,
     lookup_in_domain_resolves_by_permalink_and_title_and_hints_the_slug
 );
+
+/// Each backend's engram hybrid search ranks through `rank::blend`, pinned by
+/// the order it gives three engrams whose two signals are set by hand: one
+/// unit query vector, one stored vector per engram at a chosen cosine.
+///
+/// - `Bravo`: "zebra" 4 times and cosine 0.95, so 0.4 * 0.8 + 0.6 * 0.95 = 0.89.
+/// - `Alpha`: "zebra" 5 times (the lexical best) and no vector hit, so
+///   1.0 * 0.85 = 0.85.
+/// - `Charlie`: "zebra" twice and cosine 0.80, so 0.4 * 0.4 + 0.6 * 0.8 = 0.64.
+///
+/// A hit both signals found outranks an equally strong single-signal one, and
+/// corroboration does not lift a weak lexical match over a strong one. A
+/// single-source penalty of 1.0 or taking the larger signal puts `Alpha`
+/// first; adding the two signals puts `Charlie` above `Alpha`. `Alpha` also
+/// has the first title, so a tie with `Bravo` goes red too.
+async fn hybrid_search_blends_its_two_signals(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let zebras = |n: usize| vec!["zebra"; n].join(" ");
+    for (title, permalink, count) in [("Alpha", "a", 5), ("Bravo", "b", 4), ("Charlie", "c", 2)] {
+        write(
+            root,
+            &format!("{permalink}.md"),
+            &engram(title, permalink, "engram", "", &zebras(count)),
+        );
+    }
+    sync_domain(store, "d", root).await.unwrap();
+
+    let at = |cos: f32| {
+        let mut v = vec![0f32; 8];
+        v[0] = cos;
+        v[1] = (1.0 - cos * cos).sqrt();
+        v
+    };
+    let mut orthogonal = vec![0f32; 8];
+    orthogonal[2] = 1.0;
+    let jobs = store
+        .chunks_needing_embedding("fake", None, 100, None)
+        .await
+        .unwrap();
+    let batch: Vec<EmbeddingRow> = jobs
+        .iter()
+        .map(|job| EmbeddingRow {
+            chunk_id: job.chunk_id,
+            embedding: if job.text.contains("Bravo") {
+                at(0.95)
+            } else if job.text.contains("Charlie") {
+                at(0.80)
+            } else {
+                orthogonal.clone()
+            },
+            dims: 8,
+        })
+        .collect();
+    assert_eq!(batch.len(), 3, "one chunk per engram: {jobs:?}");
+    store.store_embeddings(&batch, "fake").await.unwrap();
+
+    let mut query_vector = vec![0f32; 8];
+    query_vector[0] = 1.0;
+    let query = SearchQuery {
+        text: Some("zebra".into()),
+        mode: SearchMode::Hybrid,
+        query_embedding: Some(query_vector),
+        active_model: Some("fake".into()),
+        min_similarity: Some(0.78),
+        limit: 10,
+        page: 1,
+        ..SearchQuery::default()
+    };
+    let page = store.search(&query).await.unwrap();
+    let got: Vec<(&str, f64)> = page
+        .items
+        .iter()
+        .map(|h| (h.permalink.as_str(), h.score))
+        .collect();
+    let order: Vec<&str> = got.iter().map(|(p, _)| *p).collect();
+    assert_eq!(order, ["b", "a", "c"], "{got:?}");
+    for ((permalink, score), want) in got.iter().zip([0.89, 0.85, 0.64]) {
+        assert!(
+            (score - want).abs() < 1e-4,
+            "{permalink} scores {score}, the blend gives {want}"
+        );
+    }
+}
+parity!(
+    hybrid_search_blends_its_two_signals_on_both_backends,
+    hybrid_search_blends_its_two_signals
+);
