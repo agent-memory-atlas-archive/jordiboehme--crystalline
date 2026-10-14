@@ -901,6 +901,34 @@ mod tests {
     use super::*;
     use sqlx::Connection;
 
+    /// A clean schema for one test, with the search path set to it.
+    ///
+    /// The first migration runs `CREATE EXTENSION IF NOT EXISTS vector`, and
+    /// two sessions that run it at the same moment on a database that does not
+    /// have the extension yet make one of them fail with a duplicate key on
+    /// `pg_extension_name_index`. Every test is its own process, so the tests
+    /// do race on a fresh database. The extension is therefore created here
+    /// first, under an advisory lock, committed before the lock is released; the migration's own statement is then a
+    /// no-op.
+    async fn fresh_schema(conn: &mut sqlx::PgConnection, schema: &str) {
+        // One statement each: a multi-statement query is a single
+        // transaction, and the lock would be released before the extension
+        // row is committed.
+        for sql in [
+            "SELECT pg_advisory_lock(7301551)",
+            "CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public",
+            "SELECT pg_advisory_unlock(7301551)",
+        ] {
+            sqlx::raw_sql(sql).execute(&mut *conn).await.unwrap();
+        }
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
+        )))
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    }
+
     /// v16 against an index the old resolve pass wrote, the Turso v17 twin's
     /// fixture row for row: a prefix that spelled no domain had bound the bare
     /// target at home. The migration unbinds exactly those rows (and a row
@@ -921,12 +949,7 @@ mod tests {
         }
         let schema = format!("mig16_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
 
         let (before, v16) = (&MIGRATIONS[..15], &MIGRATIONS[15]);
         assert_eq!(v16.version, 16, "the sixteenth migration is v16");
@@ -1058,12 +1081,7 @@ mod tests {
         }
         let schema = format!("mig_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
 
         // A database at v10: everything up to but not including the marker.
         for m in &MIGRATIONS[..10] {
@@ -1129,12 +1147,7 @@ mod tests {
         }
         let schema = format!("mig13_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
 
         // A database at v12: everything up to but not including the kind.
         for m in &MIGRATIONS[..12] {
@@ -1211,12 +1224,7 @@ mod tests {
         }
         let schema = format!("mig12_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
 
         // A database at v11: everything up to but not including the widening.
         for m in &MIGRATIONS[..11] {
@@ -1311,12 +1319,7 @@ mod tests {
         }
         let schema = format!("mig14_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
 
         // A database at v13: everything up to but not including the move.
         for m in &MIGRATIONS[..13] {
@@ -1433,12 +1436,7 @@ mod tests {
         }
         let schema = format!("mig15_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
 
         for m in &MIGRATIONS[..14] {
             sqlx::raw_sql(m.sql).execute(&mut conn).await.unwrap();
@@ -1507,12 +1505,7 @@ mod tests {
         }
         let schema = format!("mig_toonew_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
 
         apply(&mut conn).await.unwrap();
         let known = MIGRATIONS.last().unwrap().version;
@@ -1561,12 +1554,7 @@ mod tests {
         let root = tmp.path().join("d");
         let schema = format!("mig_reparse_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS schema_migration (version BIGINT PRIMARY KEY, applied_at TEXT NOT NULL)",
         )
@@ -1609,12 +1597,7 @@ mod tests {
         engrams: &[(&str, &str, &serde_json::Value)],
     ) -> Vec<i64> {
         let mut conn = sqlx::PgConnection::connect(url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, schema).await;
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS schema_migration (version BIGINT PRIMARY KEY, applied_at TEXT NOT NULL)",
         )
@@ -1759,12 +1742,7 @@ mod tests {
         }
         let schema = format!("mig_pathc_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS schema_migration (version BIGINT PRIMARY KEY, applied_at TEXT NOT NULL)",
         )
@@ -2142,12 +2120,7 @@ mod tests {
         assert_eq!(MIGRATIONS[v23 - 1].version, 22, "it follows v22");
         let schema = format!("mig_refl_domain_{}", std::process::id());
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        fresh_schema(&mut conn, &schema).await;
         for m in &MIGRATIONS[..v23] {
             sqlx::raw_sql(m.sql).execute(&mut conn).await.unwrap();
         }
