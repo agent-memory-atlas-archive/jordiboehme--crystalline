@@ -595,6 +595,10 @@ async fn an_out_of_band_switch_with_two_folder_spellings_stays_pending() {
             engrams: vec!["Reflections/".to_string(), "reflections/".to_string()]
         }
     );
+    assert!(
+        !fx.engine.reflection_effective("eng").await.unwrap(),
+        "the mode shares and refreshes read agrees"
+    );
 }
 
 /// A move onto a missing MANIFEST.md writes the moved text as the MANIFEST,

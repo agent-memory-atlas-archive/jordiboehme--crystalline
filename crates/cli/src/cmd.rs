@@ -1149,7 +1149,7 @@ pub(crate) fn print_origin_withdraw(data: &serde_json::Value, json: bool) {
     }
     for p in data["skipped_reflection"].as_array().unwrap_or(&empty) {
         println!(
-            "left alone (a Reflection file now): {}",
+            "left alone (in the Reflection folder): {}",
             p.as_str().unwrap_or("")
         );
     }

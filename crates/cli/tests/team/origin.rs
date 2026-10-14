@@ -1557,7 +1557,7 @@ mod chain {
             "{out}"
         );
         assert!(
-            out.contains("left alone (a Reflection file now): reflections/e.md"),
+            out.contains("left alone (in the Reflection folder): reflections/e.md"),
             "{out}"
         );
     }
