@@ -1978,6 +1978,19 @@ pub struct NewReflectionChunk {
     pub chunk: NewChunk,
 }
 
+/// The closest chunk of one section, as cosine similarity: one row of
+/// [`Store::reflection_vector_hits`], keyed `(path, section_ord)` the way
+/// [`crate::reflection::rank_sections`] merges the two halves (R60).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SectionVector {
+    /// The page's path inside `reflections/`.
+    pub path: String,
+    /// The section's place on the page: 0 is the text before the first `##`.
+    pub section_ord: usize,
+    /// `1 - cosine distance` of the section's closest chunk to the query.
+    pub similarity: f64,
+}
+
 /// Which full-text path the store is using.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -3478,6 +3491,20 @@ pub trait Store: Send + Sync {
         path: &str,
         chunks: &[NewReflectionChunk],
     ) -> Result<()>;
+
+    /// The vector half of a reflection search (R60): the closest chunk of
+    /// each section of one domain's pages embedded by `model` at
+    /// `query.len()` dims, at most [`crate::rank::SEMANTIC_TOPK`] sections,
+    /// best first, ties on path then section order. Answers
+    /// [`crate::IndexError::StaleEmbeddings`] when the stored reflection vectors
+    /// cannot be compared with the query (`crate::rank::check_staleness`
+    /// over the reflection coverage), so a caller falls back to text.
+    async fn reflection_vector_hits(
+        &self,
+        domain: DomainId,
+        query: &[f32],
+        model: &str,
+    ) -> Result<Vec<SectionVector>>;
 
     // --- host locks ----------------------------------------------------------
     // The single-writer-per-file-domain rule for shared-database collaboration.

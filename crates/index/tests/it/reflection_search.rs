@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use crystalline_index::{
-    ChunkTable, EmbeddingProvider, Result, SearchMode, SearchQuery, Store, TursoStore,
+    ChunkTable, EmbeddingProvider, IndexError, Result, SearchMode, SearchQuery, Store, TursoStore,
     run_embedding_pass, run_embedding_pass_with_page, sync_domain,
 };
 
@@ -386,4 +386,66 @@ async fn each_table_keeps_its_own_coverage(store: &dyn Store) {
 parity!(
     each_table_keeps_its_own_coverage_on_both_backends,
     each_table_keeps_its_own_coverage
+);
+
+/// The vector half of a reflection search: the closest section of one
+/// domain's pages, nothing of another domain, and a refusal (not an empty
+/// answer) when the stored vectors cannot be compared with the query.
+async fn vector_hits_name_the_closest_section_of_one_domain(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", &manifest_on());
+    write(
+        root,
+        "reflections/a.md",
+        "# A\n\n## Pager\n<!-- r:aaaa1111 -->\n\npager rings loudly\n\n## Tea\n<!-- r:bbbb2222 -->\n\nbrew green tea\n",
+    );
+    let other = tempfile::tempdir().unwrap();
+    write(other.path(), "MANIFEST.md", &manifest_on());
+    write(
+        other.path(),
+        "reflections/b.md",
+        "# B\n\n## Pager\n<!-- r:cccc3333 -->\n\npager rings loudly\n",
+    );
+    sync_domain(store, "eng", root).await.unwrap();
+    sync_domain(store, "ops", other.path()).await.unwrap();
+    run_embedding_pass(store, &FakeProvider::new("fake"), |_, _| {})
+        .await
+        .unwrap();
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    let hits = store
+        .reflection_vector_hits(did, &embed_one("pager rings loudly"), "fake")
+        .await
+        .unwrap();
+    assert_eq!(
+        (hits[0].path.as_str(), hits[0].section_ord),
+        ("a.md", 1),
+        "{hits:?}"
+    );
+    assert!(
+        hits.iter().all(|h| h.path == "a.md"),
+        "one domain only: {hits:?}"
+    );
+    assert!(
+        hits.windows(2).all(|w| w[0].similarity >= w[1].similarity),
+        "best first: {hits:?}"
+    );
+    // Nothing is embedded by that model while another model's vectors are
+    // stored: the staleness gate answers before the statement runs.
+    let unknown = store
+        .reflection_vector_hits(did, &embed_one("pager"), "other-model")
+        .await;
+    assert!(
+        matches!(unknown, Err(IndexError::StaleEmbeddings { .. })),
+        "nothing of that model: {unknown:?}"
+    );
+    let stale = store.reflection_vector_hits(did, &[0.0; 4], "fake").await;
+    assert!(
+        matches!(stale, Err(IndexError::StaleEmbeddings { .. })),
+        "a width the stored vectors do not have: {stale:?}"
+    );
+}
+parity!(
+    vector_hits_name_the_closest_section_of_one_domain_on_both_backends,
+    vector_hits_name_the_closest_section_of_one_domain
 );

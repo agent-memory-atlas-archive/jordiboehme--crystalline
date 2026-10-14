@@ -56,9 +56,9 @@ use crate::store::{
     GraphSlice, HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector,
     NamedCount, NewChunk, NewReflectionChunk, ObservationVector, OutboundRef, Page, RebuildKind,
     RecentFilter, ReferenceCandidates, ReflectionRow, ScoredPair, SearchHit, SearchMode,
-    SearchQuery, SpellingPlan, Store, StoreInfo, StoredEngram, Vocabulary, build_vocabulary,
-    changed_spellings, count_references_to_sql, domain_url_needles, folder_slash, in_transaction,
-    names_a_domain_url, page_window, reference_match, referencing_domains_sql,
+    SearchQuery, SectionVector, SpellingPlan, Store, StoreInfo, StoredEngram, Vocabulary,
+    build_vocabulary, changed_spellings, count_references_to_sql, domain_url_needles, folder_slash,
+    in_transaction, names_a_domain_url, page_window, reference_match, referencing_domains_sql,
     rename_onto_taken_row, reset_spelled_references_sql, resolve_references_to_sql,
     resolve_spelled_references_sql, spelled_references_sql, spelling_plan,
 };
@@ -1391,6 +1391,18 @@ pub const DELETE_OBSERVATION_VECTORS_EXCEPT_SQL: &str =
 /// the contradiction check's off switch.
 #[doc(hidden)]
 pub const CLEAR_OBSERVATION_VECTORS_SQL: &str = "DELETE FROM observation_vector";
+
+/// The vector half of a reflection search: the closest chunk of each section
+/// of one domain's pages. Two narrow columns and the distance go into the
+/// grouping sorter, never a chunk's text (the turso sorter spill rule of
+/// `semantic_phase1_sql`), and the `LIMIT` bounds it. The `100` is
+/// `rank::SEMANTIC_TOPK` written out so the statement stays a `const`; a unit
+/// test in `reflection.rs` holds the two together.
+#[doc(hidden)]
+pub const REFLECTION_VECTOR_SQL: &str = "SELECT c.path, c.section_ord, min(vector_distance_cos(c.embedding, ?1)) AS dist \
+     FROM reflection_chunk c \
+     WHERE c.domain_id=?2 AND c.embedding IS NOT NULL AND c.model=?3 AND c.dims=?4 \
+     GROUP BY c.path, c.section_ord ORDER BY dist ASC, c.path ASC, c.section_ord ASC LIMIT 100";
 
 /// The address lookup behind [`Store::find_engram`].
 ///
@@ -4285,6 +4297,35 @@ impl Store for TursoStore {
         )
         .await?;
         Ok(rows.iter().map(reflection_from_row).collect())
+    }
+
+    async fn reflection_vector_hits(
+        &self,
+        domain: DomainId,
+        query: &[f32],
+        model: &str,
+    ) -> Result<Vec<SectionVector>> {
+        let coverage = self.embedding_coverage_of(ChunkTable::Reflection).await?;
+        crate::rank::check_staleness(&coverage, model, query.len())?;
+        let rows = query_all(
+            &self.conn,
+            REFLECTION_VECTOR_SQL,
+            vec![
+                Value::Blob(crate::store::pack_f32_le(query)),
+                Value::Integer(domain.0),
+                Value::Text(model.to_string()),
+                Value::Integer(query.len() as i64),
+            ],
+        )
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| SectionVector {
+                path: cell_text(r, 0).unwrap_or_default(),
+                section_ord: cell_i64(r, 1).unwrap_or(0).max(0) as usize,
+                similarity: 1.0 - cell_real(r, 2).unwrap_or(1.0),
+            })
+            .collect())
     }
 
     async fn replace_reflection_chunks(
