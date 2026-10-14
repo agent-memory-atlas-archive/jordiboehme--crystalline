@@ -132,6 +132,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "reflection chunks",
         sql: SCHEMA_V22,
     },
+    Migration {
+        version: 23,
+        label: "reflection chunks by domain",
+        sql: SCHEMA_V23,
+    },
 ];
 
 const SCHEMA_V1: &str = r#"
@@ -795,6 +800,14 @@ CREATE TABLE reflection_chunk (
 CREATE INDEX idx_reflection_chunk_page ON reflection_chunk(domain_id, path, seq);
 CREATE INDEX idx_reflection_chunk_model ON reflection_chunk(model);
 UPDATE reflection SET modified='';
+"#;
+
+// One domain's reflection chunks of one model and width, the rows a reflection
+// search reads: the vector statement and the per-domain coverage seek it, so
+// a search reads its own domain's chunks and never every domain's chunks of
+// the model (`idx_reflection_chunk_model` alone, filtered per row).
+const SCHEMA_V23: &str = r#"
+CREATE INDEX idx_reflection_chunk_domain_model ON reflection_chunk(domain_id, model, dims);
 "#;
 
 const SCHEMA_V9: &str = r#"
@@ -2393,7 +2406,7 @@ mod tests {
         let started = std::time::Instant::now();
         let store = crate::TursoStore::open(&db_path).await.unwrap();
         let ms = started.elapsed().as_millis();
-        assert_eq!(store.store_info().await.unwrap().schema_version, 22);
+        assert_eq!(store.store_info().await.unwrap().schema_version, 23);
         let rows = store.meta_values().await.unwrap().len();
         assert_eq!(rows, 5 * ENGRAMS as usize, "five rows an engram");
         eprintln!(
@@ -2462,7 +2475,7 @@ mod tests {
             }
         }
         let store = crate::TursoStore::open(&db_path).await.unwrap();
-        assert_eq!(store.store_info().await.unwrap().schema_version, 22);
+        assert_eq!(store.store_info().await.unwrap().schema_version, 23);
 
         let base_rows = meta_rows(store.conn.raw(), 7).await;
         assert_eq!(base_rows, crate::store::meta_value_rows(&base));

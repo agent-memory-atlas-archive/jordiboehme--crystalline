@@ -136,6 +136,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "reflection chunks",
         sql: SCHEMA_V22,
     },
+    Migration {
+        version: 23,
+        label: "reflection chunks by domain",
+        sql: SCHEMA_V23,
+    },
 ];
 
 // The whole current schema in one step. The temporal columns stay TEXT ISO
@@ -705,6 +710,14 @@ CREATE INDEX IF NOT EXISTS idx_reflection_chunk_page ON reflection_chunk(domain_
 CREATE INDEX IF NOT EXISTS idx_reflection_chunk_model ON reflection_chunk(model);
 CREATE INDEX IF NOT EXISTS idx_reflection_chunk_embedding ON reflection_chunk USING hnsw (embedding vector_cosine_ops);
 UPDATE reflection SET modified='';
+"#;
+
+// The twin of Turso's v23: one domain's reflection chunks of one model and
+// width, the rows a reflection search reads, so the vector statement and the
+// per-domain coverage seek one domain instead of filtering every domain's
+// chunks of the model row by row. `IF NOT EXISTS`, so a replay converges.
+const SCHEMA_V23: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_reflection_chunk_domain_model ON reflection_chunk(domain_id, model, dims);
 "#;
 
 const SCHEMA_V8: &str = r#"
@@ -2102,6 +2115,49 @@ mod tests {
                 && at("reflection") < at("domain"),
             "the chunks are wiped before the pages and the domains, or the foreign key refuses"
         );
+        drop(conn);
+        store.drop_schema().await.unwrap();
+    }
+
+    /// v23, the reflection chunks by domain: it follows v22, it leaves the
+    /// domain index in place, and a replay converges.
+    #[tokio::test]
+    async fn v23_adds_the_domain_index_and_replays_cleanly() {
+        let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        let v23 = MIGRATIONS
+            .iter()
+            .position(|m| m.version == 23)
+            .expect("no migration v23");
+        assert_eq!(MIGRATIONS[v23 - 1].version, 22, "it follows v22");
+        let schema = format!("mig_refl_domain_{}", std::process::id());
+        let store = crate::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .unwrap();
+        let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "SET search_path TO {schema}, public"
+        )))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::raw_sql(MIGRATIONS[v23].sql)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM pg_indexes \
+             WHERE schemaname = $1 AND indexname = 'idx_reflection_chunk_domain_model'",
+        )
+        .bind(&schema)
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(n, 1);
         drop(conn);
         store.drop_schema().await.unwrap();
     }

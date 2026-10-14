@@ -160,6 +160,7 @@ const ALIASES: &[(&str, &str)] = &[
     ("dst", "engram"),
     ("tgt", "engram"),
     ("c", "chunk"),
+    ("rc", "reflection_chunk"),
     ("r", "relation"),
     ("l", "link"),
     ("d", "domain"),
@@ -477,22 +478,23 @@ pub fn registry() -> Vec<HotStatement> {
             issued_by: "Store::reflection_vector_hits",
             // The vector half of a reflection search, the exact distance scan
             // over one domain's sections. Observed on this fixture, both
-            // planners reach `reflection_chunk` through
-            // `idx_reflection_chunk_model` on the model predicate (turso:
-            // `SEARCH c USING INDEX idx_reflection_chunk_model (model=?)`, then
-            // the group and order sorters) and test the domain on each row of
-            // the model, the shape the engram phase-1 scan has on postgres.
-            // No full pass on either, so no permission; the model index is
-            // named because it is what stands between every reflection search
-            // and a pass over every reflection chunk of the index.
+            // planners seek `idx_reflection_chunk_domain_model` on the domain,
+            // the model and the width (turso: `SEARCH rc USING INDEX
+            // idx_reflection_chunk_domain_model (domain_id=? AND model=? AND
+            // dims=?)`, then the group and order sorters), so a search reads
+            // its own domain's chunks. Before v23 both reached the rows through
+            // `idx_reflection_chunk_model` and tested the domain on each row of
+            // the model, every domain's chunks for one domain's search. No full
+            // pass on either, so no permission; the domain index is named
+            // because it is what keeps the read to one domain.
             turso: || crystalline_index::turso::REFLECTION_VECTOR_SQL.to_string(),
             postgres: || crystalline_index::postgres::REFLECTION_VECTOR_SQL.to_string(),
             literals: &[QVEC_TURSO, "1", "'fake'", "8"],
             literals_pg: Some(&[QVEC_PG, "1", "'fake'", "8"]),
             scan_expected: &[],
             scan_expected_pg: None,
-            turso_must_seek: &["idx_reflection_chunk_model"],
-            postgres_must_seek: &["idx_reflection_chunk_model"],
+            turso_must_seek: &["idx_reflection_chunk_domain_model"],
+            postgres_must_seek: &["idx_reflection_chunk_domain_model"],
         },
         HotStatement {
             issued_by: "search::semantic_hydrate_sql",
@@ -1619,6 +1621,34 @@ async fn a_dropped_index_is_caught_by_the_turso_plan_guard() {
         scanned,
         "with every engram index dropped the plan must be a bare scan, so the green run \
          means something: {plan:?}"
+    );
+}
+
+/// The turso guard reads the reflection vector statement as a read of
+/// `reflection_chunk`. Turso names the alias in a seek line (`SEARCH rc USING
+/// INDEX ...`), and the statement aliases the table `rc`, so the alias map must
+/// say so: an alias it does not know stands for itself, and one it maps to
+/// another table (`c` is `chunk`) would credit this read to that table, so a
+/// `scan_expected` written for `reflection_chunk` would never match and a
+/// failure would name the wrong table.
+#[tokio::test]
+async fn the_reflection_vector_read_is_credited_to_its_own_table() {
+    let store = turso_fixture().await;
+    let entry = registry()
+        .into_iter()
+        .find(|e| e.issued_by == "Store::reflection_vector_hits")
+        .expect("reflection_vector_hits is in the registry");
+    let sql = bind_literals(&(entry.turso)(), entry.literals);
+    let plan = store.explain_query_plan(&sql).await.unwrap();
+    let read: Vec<&str> = plan
+        .iter()
+        .filter_map(|line| read_of(line))
+        .map(|(name, _)| table_of(name))
+        .collect();
+    assert_eq!(
+        read,
+        ["reflection_chunk"],
+        "one read, credited to `reflection_chunk`: {plan:?}"
     );
 }
 

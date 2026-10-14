@@ -56,7 +56,7 @@ async fn store_info_reports_turso_schema_version() {
     // v16 domain spellings, v17 unbind references an unknown prefix bound at
     // home, v18 contradiction scores, v19 metadata values, v20 reflection index,
     // v21 reflection assets, v22 reflection chunks.
-    assert_eq!(info.schema_version, 22);
+    assert_eq!(info.schema_version, 23);
 }
 
 #[tokio::test]

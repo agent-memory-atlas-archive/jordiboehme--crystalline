@@ -1399,10 +1399,10 @@ pub const CLEAR_OBSERVATION_VECTORS_SQL: &str = "DELETE FROM observation_vector"
 /// `rank::SEMANTIC_TOPK` written out so the statement stays a `const`; a unit
 /// test in `reflection.rs` holds the two together.
 #[doc(hidden)]
-pub const REFLECTION_VECTOR_SQL: &str = "SELECT c.path, c.section_ord, min(vector_distance_cos(c.embedding, ?1)) AS dist \
-     FROM reflection_chunk c \
-     WHERE c.domain_id=?2 AND c.embedding IS NOT NULL AND c.model=?3 AND c.dims=?4 \
-     GROUP BY c.path, c.section_ord ORDER BY dist ASC, c.path ASC, c.section_ord ASC LIMIT 100";
+pub const REFLECTION_VECTOR_SQL: &str = "SELECT rc.path, rc.section_ord, min(vector_distance_cos(rc.embedding, ?1)) AS dist \
+     FROM reflection_chunk rc \
+     WHERE rc.domain_id=?2 AND rc.embedding IS NOT NULL AND rc.model=?3 AND rc.dims=?4 \
+     GROUP BY rc.path, rc.section_ord ORDER BY dist ASC, rc.path ASC, rc.section_ord ASC LIMIT 100";
 
 /// The address lookup behind [`Store::find_engram`].
 ///
