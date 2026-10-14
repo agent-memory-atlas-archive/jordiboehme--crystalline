@@ -1857,3 +1857,34 @@ async fn a_reflection_room_closed_untouched_writes_nothing() {
         "the file was not written at all"
     );
 }
+
+/// A room saved on close and kept open by somebody still in it mints no id
+/// under the next cursor: the final pass ends with that save.
+#[tokio::test]
+async fn a_reflection_room_kept_open_after_its_close_save_mints_no_ids() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    joined.session.final_save().await;
+    append_line(&joined, &doc, "\n## Four\n\nLater.").await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    loop {
+        if let Control::Saved { .. } = next_control(&mut joined.rx).await {
+            break;
+        }
+    }
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("## Four\n\nLater."), "{saved}");
+    assert!(
+        !saved.contains("## Four\n<!-- r:"),
+        "no id under the cursor of a room still open: {saved}"
+    );
+}
