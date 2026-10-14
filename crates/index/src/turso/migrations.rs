@@ -2548,6 +2548,12 @@ mod tests {
         let conn = db.connect().unwrap();
         apply_migrations(&conn, MIGRATIONS).await.unwrap();
         conn.execute(
+            "INSERT INTO domain(id, name, path, kind) VALUES (1, 'd', '/tmp/d', 'file')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
             "INSERT INTO reflection(domain_id, path, title, content, sha256, size, modified) VALUES(1, 'a.md', 'A', 'x', 's', 1, 't')",
             (),
         )

@@ -1746,7 +1746,8 @@ impl Store for TursoStore {
                 &self.conn,
                 "SELECT d.id FROM domain d WHERE d.name=?1 \
                  AND NOT EXISTS (SELECT 1 FROM engram e WHERE e.domain_id=d.id) \
-                 AND NOT EXISTS (SELECT 1 FROM attachment a WHERE a.domain_id=d.id)",
+                 AND NOT EXISTS (SELECT 1 FROM attachment a WHERE a.domain_id=d.id) \
+                 AND NOT EXISTS (SELECT 1 FROM reflection r WHERE r.domain_id=d.id)",
                 vec![Value::Text(name.to_string())],
             )
             .await?

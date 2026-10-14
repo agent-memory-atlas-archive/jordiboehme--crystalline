@@ -37,21 +37,24 @@ pub(crate) fn make_snippet(text: &str, terms: &[String]) -> String {
     out
 }
 
+/// Where `needle_lower` first starts in `haystack`, as a char index. The
+/// haystack is folded with Unicode `to_lowercase`, char by char, the way the
+/// callers fold their terms, so a non-ASCII term in another case (`über`
+/// against `Über`) is found too. A char that folds to several (`İ`) maps every
+/// one of them back to its own position.
 fn find_ci(haystack: &[char], needle_lower: &str) -> Option<usize> {
     let needle: Vec<char> = needle_lower.chars().collect();
-    if needle.is_empty() || needle.len() > haystack.len() {
+    let folded: Vec<(char, usize)> = haystack
+        .iter()
+        .enumerate()
+        .flat_map(|(i, c)| c.to_lowercase().map(move |l| (l, i)))
+        .collect();
+    if needle.is_empty() || needle.len() > folded.len() {
         return None;
     }
-    for i in 0..=haystack.len() - needle.len() {
-        if (0..needle.len()).all(|j| eq_ci(haystack[i + j], needle[j])) {
-            return Some(i);
-        }
-    }
-    None
-}
-
-fn eq_ci(a: char, b: char) -> bool {
-    a == b || a.to_ascii_lowercase() == b
+    (0..=folded.len() - needle.len())
+        .find(|&i| (0..needle.len()).all(|j| folded[i + j].0 == needle[j]))
+        .map(|i| folded[i].1)
 }
 
 fn collapse_ws(text: &str) -> String {
@@ -74,5 +77,19 @@ mod tests {
             make_snippet("short text", &["absent".to_string()]),
             lead("short text")
         );
+    }
+    #[test]
+    fn a_non_ascii_term_in_another_case_still_centres_the_window() {
+        let text = format!("{} Über den Wolken {}", "a ".repeat(100), "b ".repeat(100));
+        let snippet = make_snippet(&text, &["über".to_string()]);
+        assert!(
+            snippet.starts_with("...") && snippet.contains("Über den Wolken"),
+            "{snippet}"
+        );
+        // A char that folds to two (`İ`) does not shift the window: a
+        // position counted in folded chars would start it past the term.
+        let text = format!("{}needle {}", "\u{130}".repeat(100), "b ".repeat(100));
+        let snippet = make_snippet(&text, &["needle".to_string()]);
+        assert!(snippet.contains("needle"), "{snippet}");
     }
 }

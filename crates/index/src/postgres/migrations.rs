@@ -638,7 +638,7 @@ CREATE INDEX IF NOT EXISTS idx_engram_base_path_c ON engram(domain_id, (path COL
 // (and PACT.md) under a domain's `reflections/`, beside the engram tables and
 // never joined to them. The unique index serves every statement.
 const SCHEMA_V20: &str = r#"
-CREATE TABLE reflection (
+CREATE TABLE IF NOT EXISTS reflection (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     domain_id BIGINT NOT NULL REFERENCES domain(id) ON DELETE CASCADE,
     path TEXT NOT NULL,

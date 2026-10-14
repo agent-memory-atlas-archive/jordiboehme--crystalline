@@ -133,7 +133,56 @@ mod tests {
             search_reflections(&rows, "roll back", 10)[0].heading,
             "Rollback"
         );
-        assert_eq!(search_reflections(&rows, "night", 1).len(), 1);
+        let best = search_reflections(&rows, "night", 1);
+        assert_eq!(best.len(), 1);
+        assert_eq!(best[0].path, "howto/night.md", "the cut keeps the best hit");
         assert!(search_reflections(&rows, "   ", 10).is_empty());
+    }
+
+    #[test]
+    fn a_title_alone_makes_no_hit() {
+        let rows = vec![row(
+            "oncall.md",
+            "Night shifts",
+            "Who is on call.\n\n## Pager\n<!-- r:cccc3333 -->\n\nThe pager rings.\n",
+        )];
+        assert!(
+            search_reflections(&rows, "night", 10).is_empty(),
+            "a section the title alone matches is no hit"
+        );
+        let hits = search_reflections(&rows, "night pager", 10);
+        let got: Vec<(Option<&str>, u32)> = hits
+            .iter()
+            .map(|h| (h.section.as_deref(), h.score))
+            .collect();
+        // The title carries `night` (5); `pager` is in the heading line and
+        // the body (2), the heading being part of the section text.
+        assert_eq!(got, [(Some("cccc3333"), 7)]);
+    }
+
+    #[test]
+    fn equal_scores_rank_by_path_then_page_order() {
+        let rows = vec![
+            row(
+                "b.md",
+                "B",
+                "Alpha.\n\n## One\n<!-- r:11111111 -->\n\nalpha\n\n## Two\n<!-- r:22222222 -->\n\nalpha\n",
+            ),
+            row("a.md", "A", "## Zed\n<!-- r:33333333 -->\n\nalpha\n"),
+        ];
+        let got: Vec<(String, Option<String>)> = search_reflections(&rows, "alpha", 10)
+            .into_iter()
+            .map(|h| (h.path, h.section))
+            .collect();
+        let want: Vec<(String, Option<String>)> = [
+            ("a.md", "33333333"),
+            ("b.md", "_top"),
+            ("b.md", "11111111"),
+            ("b.md", "22222222"),
+        ]
+        .iter()
+        .map(|(p, s)| (p.to_string(), Some(s.to_string())))
+        .collect();
+        assert_eq!(got, want);
     }
 }

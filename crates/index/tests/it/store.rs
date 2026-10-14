@@ -2346,6 +2346,23 @@ async fn dropping_an_empty_domain_row(store: &dyn Store) {
     assert!(!store.drop_empty_domain_row("assets").await.unwrap());
     assert_eq!(store.domain_id("assets").await.unwrap(), Some(assets));
 
+    // And so does one reflection.
+    let reflected = store
+        .upsert_domain("reflected", Some("/tmp/reflected"), DomainKind::File)
+        .await
+        .unwrap();
+    store
+        .upsert_reflection(reflected, &reflection_row("deploying.md", "Deploying", "x"))
+        .await
+        .unwrap();
+    assert!(!store.drop_empty_domain_row("reflected").await.unwrap());
+    assert_eq!(store.domain_id("reflected").await.unwrap(), Some(reflected));
+    assert_eq!(
+        store.list_reflections(reflected).await.unwrap().len(),
+        1,
+        "the reflection rows stay with their domain"
+    );
+
     // A new registration under a dropped name holds no host lock of the
     // row before it.
     let first = store
