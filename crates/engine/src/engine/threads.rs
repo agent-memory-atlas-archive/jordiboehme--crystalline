@@ -223,36 +223,29 @@ impl Engine {
         // One lock per document: the page's, for the page and its threads
         // file alike.
         let _lock = self.lock_file(&doc_abs).await;
-        let (thread, document) = match (target, &access) {
-            (ThreadTarget::Reflection { path }, TargetAccess::Reflection(access)) => {
-                let source = read_opt(&doc_abs)?.ok_or_else(|| {
+        let (thread, document, page_update) = match (target, &access) {
+            (ThreadTarget::Reflection { path }, TargetAccess::Reflection(_)) => {
+                let page = read_opt(&doc_abs)?.ok_or_else(|| {
                     EngineError::NotFound(format!("no reflection '{path}' in domain '{domain}'"))
                 })?;
-                // A heading a plain editor added has no id yet: give the page
-                // its ids, as the next write would, so the thread has
-                // something stable to anchor on. Computed in memory first;
-                // nothing is written until the quote is found.
-                let mut page = source.clone();
-                if r::find_section(&r::split_sections(&page), key).is_some_and(|s| s.id.is_none()) {
-                    let baseline =
-                        read_opt(&access.abs(&r::baseline_path(path)))?.unwrap_or_default();
-                    page = r::assign_ids(
-                        &page,
-                        &r::baseline_ids(&baseline),
-                        &mut r::random_section_id,
-                    )
-                    .0;
-                }
                 let sections = r::split_sections(&page);
                 let section = r::find_section(&sections, key)
                     .filter(|s| s.id.as_deref() != Some(r::TOP_SECTION) || key == r::TOP_SECTION)
                     .ok_or_else(|| {
                         EngineError::Invalid(format!("no section '{key}' in '{path}'"))
                     })?;
-                let id = section.id.clone().expect("ids were assigned above");
+                // A heading a plain editor added has no id yet. A comment
+                // never rewrites the page (a reader may open a thread, and a
+                // rewrite would make a person's open editor stale), so the
+                // thread anchors on the heading instead; it keeps resolving
+                // by heading once a later write gives the section its id.
+                let section_ref = match &section.id {
+                    Some(id) => SectionRef::Id(id.clone()),
+                    None => SectionRef::Heading(section.heading.clone()),
+                };
                 let anchor = th::Anchor {
-                    section: SectionRef::Id(id.clone()),
-                    quote: p.quote.clone(),
+                    section: section_ref,
+                    quote: p.quote.clone().filter(|q| !q.trim().is_empty()),
                     occurrence: p.occurrence.unwrap_or(1).max(1),
                 };
                 if let Some(quote) = anchor.quote.as_deref()
@@ -273,23 +266,40 @@ impl Engine {
                     entries: vec![entry(EntryKind::Comment, caller, text)],
                 };
                 // The Reflection target's hook: a thread that answers a
-                // person's change records itself on the section.
-                if p.answers_feedback {
+                // person's change records itself on the section. A feedback
+                // item belongs to a section with an id, so a heading without
+                // one has none to answer.
+                let page_update = if p.answers_feedback {
+                    let id = thread.anchor.section.id().ok_or_else(|| {
+                        EngineError::Invalid(format!(
+                            "section '{key}' of '{path}' has no id yet, so it has no change to answer; open a plain thread instead"
+                        ))
+                    })?;
                     let mut prov = r::read_provenance(&page);
-                    prov.entry(id).or_default().answered_by = Some(thread.id.clone());
-                    page = r::write_provenance(&page, &prov).map_err(EngineError::Invalid)?;
-                }
-                if page != source {
+                    prov.entry(id.to_string()).or_default().answered_by = Some(thread.id.clone());
+                    Some(r::write_provenance(&page, &prov).map_err(EngineError::Invalid)?)
+                } else {
+                    None
+                };
+                (thread, page, page_update)
+            }
+        };
+        // The thread first, then the page that names it: a failed page write
+        // leaves a plain thread, never a section that waits on a thread that
+        // is not there.
+        let existing = read_opt(&threads_abs)?.unwrap_or_default();
+        write_file(&threads_abs, &th::open_thread(&existing, &thread))?;
+        let mut document = document;
+        if let Some(page) = page_update {
+            match (target, &access) {
+                (ThreadTarget::Reflection { path }, TargetAccess::Reflection(access)) => {
                     write_file(&doc_abs, &page)?;
-                    // Only a page that changed is indexed again.
                     self.index_reflection(access.domain_id, path, &page, &doc_abs)
                         .await?;
                 }
-                (thread, page)
             }
-        };
-        let existing = read_opt(&threads_abs)?.unwrap_or_default();
-        write_file(&threads_abs, &th::open_thread(&existing, &thread))?;
+            document = page;
+        }
         Ok(match target {
             ThreadTarget::Reflection { path } => thread_view(path, &thread, &document),
         })
@@ -325,12 +335,16 @@ impl Engine {
         // The page's lock, as in `open_thread`: a thread entry and a page
         // write, move or delete never interleave.
         let _lock = self.lock_file(&doc_abs).await;
+        let document = match target {
+            ThreadTarget::Reflection { path } => read_opt(&doc_abs)?.ok_or_else(|| {
+                EngineError::NotFound(format!("no reflection '{path}' in domain '{domain}'"))
+            })?,
+        };
         let file = read_opt(&threads_abs)?
             .ok_or_else(|| EngineError::NotFound(format!("no thread {id} here")))?;
         let updated =
             th::append_entry(&file, id, &entry(kind, caller, text)).map_err(thread_error)?;
         write_file(&threads_abs, &updated)?;
-        let document = read_opt(&doc_abs)?.unwrap_or_default();
         let thread = th::parse_threads(&updated)
             .into_iter()
             .find(|t| t.id == id)

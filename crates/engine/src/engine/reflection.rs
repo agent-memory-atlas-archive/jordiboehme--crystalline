@@ -15,7 +15,7 @@ use crate::scope::{ReflectionCaller, ReflectionRight, Scope, reflection_right_wo
 #[derive(Debug, Clone)]
 pub(crate) struct ReflectionAccess {
     /// The domain root.
-    #[allow(dead_code)] // Read by the threads, queue and room verbs (Tasks 13, 14, 18).
+    #[allow(dead_code)] // Read by the reflect queue and the file verbs (Tasks 14, 23).
     pub root: PathBuf,
     /// The Reflection's folder, in its spelling on disk
     /// ([`reflection_dir`]), resolved once per verb.
@@ -23,7 +23,7 @@ pub(crate) struct ReflectionAccess {
     /// The domain's index id.
     pub domain_id: DomainId,
     /// The caller's reflection right.
-    #[allow(dead_code)] // Read by the thread verbs (Task 13).
+    #[allow(dead_code)] // Read by the file verbs (Task 23).
     pub right: ReflectionRight,
     /// Whether the caller may read engrams here; source engrams are stripped
     /// from every answer when not.
@@ -531,7 +531,7 @@ pub(crate) struct EngramFact {
 /// folder's spelling on disk (see [`reflection_dir`]). A verb that holds a
 /// [`ReflectionAccess`] uses [`ReflectionAccess::abs`], which resolves the
 /// folder once.
-#[allow(dead_code)] // Used by the threads, queue and room verbs (Tasks 13, 14, 18).
+#[allow(dead_code)] // Used by the reflect queue, the rooms and the file verbs (Tasks 14, 18, 23).
 pub(super) fn reflection_abs(root: &Path, inner: &str) -> PathBuf {
     join_rel(&reflection_dir(root), inner)
 }

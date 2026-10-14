@@ -127,28 +127,215 @@ async fn an_anonymous_visitor_reads_threads_and_cannot_comment() {
     }
 }
 
+/// A reader opens a thread on a heading a plain editor added: the page is
+/// not rewritten (its bytes and checksum stay), the thread anchors on the
+/// heading and keeps resolving once a later write gives the section its id.
 #[tokio::test]
-async fn a_thread_on_a_heading_without_an_id_gives_it_one() {
+async fn a_thread_on_a_heading_without_an_id_leaves_the_page_alone() {
+    let (fx, vera) = viewer_engine(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;
+    fx.engine
+        .write_reflection(&write("d.md", PAGE), &person())
+        .await
+        .unwrap();
+    let path = fx.root.join("reflections/d.md");
+    let text = std::fs::read_to_string(&path).unwrap() + "\n## Added later\n\nBy hand.\n";
+    std::fs::write(&path, &text).unwrap();
+    let viewer = ReflectionCaller::person(vera, "vera");
+    let checksum = |fx: &crate::fixture::Fx, who: &ReflectionCaller| {
+        let fx = fx.engine.clone();
+        let who = who.clone();
+        async move {
+            fx.read_reflection("eng", "d.md", &who).await.unwrap()["checksum"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let before = checksum(&fx, &viewer).await;
+    let opened = fx
+        .engine
+        .discuss(
+            &open("Added later", Some("By hand"), "Who added this?"),
+            &viewer,
+        )
+        .await
+        .unwrap();
+    assert_eq!(opened["anchor"]["section"], "Added later");
+    assert_eq!(opened["anchor"]["state"], "found");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        text,
+        "the page is not rewritten"
+    );
+    assert_eq!(checksum(&fx, &viewer).await, before);
+    let threads = std::fs::read_to_string(fx.root.join("reflections/d.threads.md")).unwrap();
+    assert!(threads.contains("heading: Added later\n"), "{threads}");
+
+    // Anchoring on an id-less heading answers no feedback item: refused,
+    // nothing written.
+    let mut answering = open("Added later", None, "I read your change.");
+    answering.answers_feedback = true;
+    let err = fx.engine.discuss(&answering, &agent()).await.unwrap_err();
+    assert!(
+        matches!(err, crystalline_service::EngineError::Invalid(_)),
+        "{err:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+
+    // A later write gives the section its id; the thread still lists under it.
+    fx.engine
+        .write_reflection(&write("d.md", &text), &person())
+        .await
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("## Added later\n<!-- r:")
+    );
+    let listed = fx
+        .engine
+        .list_reflection_threads("eng", Some("d.md"), "open", &viewer)
+        .await
+        .unwrap();
+    let thread = &listed["threads"][0];
+    assert_eq!(thread["id"], opened["id"]);
+    assert_eq!(thread["anchor"]["section"], "Added later");
+    assert_eq!(thread["anchor"]["state"], "found");
+}
+
+/// An empty quote discusses the whole section and is not stored.
+#[tokio::test]
+async fn an_empty_quote_is_left_out() {
     let fx = crate::docs::reflecting().await;
     fx.engine
         .write_reflection(&write("d.md", PAGE), &person())
         .await
         .unwrap();
-    // A plain editor adds a heading after the write.
-    let path = fx.root.join("reflections/d.md");
-    let text = std::fs::read_to_string(&path).unwrap() + "\n## Added later\n\nBy hand.\n";
-    std::fs::write(&path, text).unwrap();
     let opened = fx
         .engine
-        .discuss(&open("Added later", None, "Who added this?"), &person())
+        .discuss(&open("aaaa1111", Some("  "), "Still true?"), &person())
         .await
         .unwrap();
-    let section = opened["anchor"]["section"].as_str().unwrap().to_string();
-    let file = std::fs::read_to_string(&path).unwrap();
+    assert!(opened["anchor"]["quote"].is_null(), "{opened}");
+    let threads = std::fs::read_to_string(fx.root.join("reflections/d.threads.md")).unwrap();
+    assert!(!threads.contains("quote:"), "{threads}");
+}
+
+/// A page or a section that is not there: the page is not found, the
+/// section is a malformed request; an answer on a thread whose page is gone
+/// is not found either.
+#[tokio::test]
+async fn a_missing_page_or_section_is_refused() {
+    let fx = crate::docs::reflecting().await;
+    fx.engine
+        .write_reflection(&write("d.md", PAGE), &person())
+        .await
+        .unwrap();
+    let mut elsewhere = open("aaaa1111", None, "Hello?");
+    elsewhere.path = Some("nowhere.md".into());
+    let err = fx.engine.discuss(&elsewhere, &person()).await.unwrap_err();
     assert!(
-        file.contains(&format!("## Added later\n<!-- r:{section} -->\n")),
-        "{file}"
+        matches!(err, crystalline_service::EngineError::NotFound(_)),
+        "{err:?}"
     );
+    let err = fx
+        .engine
+        .discuss(&open("No such section", None, "Hello?"), &person())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, crystalline_service::EngineError::Invalid(_)),
+        "{err:?}"
+    );
+    assert!(err.to_string().contains("No such section"), "{err}");
+    assert!(!fx.root.join("reflections/d.threads.md").exists());
+
+    let opened = fx
+        .engine
+        .discuss(&open("aaaa1111", None, "Still true?"), &person())
+        .await
+        .unwrap();
+    // The page goes outside Crystalline; its threads file stays.
+    std::fs::remove_file(fx.root.join("reflections/d.md")).unwrap();
+    let threads = fx.root.join("reflections/d.threads.md");
+    let before = std::fs::read_to_string(&threads).unwrap();
+    let err = fx
+        .engine
+        .discuss(
+            &step("answer", opened["id"].as_str().unwrap(), "Yes."),
+            &agent(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, crystalline_service::EngineError::NotFound(_)),
+        "{err:?}"
+    );
+    assert_eq!(err.to_string(), "no reflection 'd.md' in domain 'eng'");
+    assert_eq!(std::fs::read_to_string(&threads).unwrap(), before);
+}
+
+/// The anchor follows the page: an unrelated edit keeps it found, a move
+/// carries the thread to the new path, and a rewrite of the quoted text
+/// answers text_changed.
+#[tokio::test]
+async fn an_anchor_follows_an_edit_and_a_move() {
+    let fx = crate::docs::reflecting().await;
+    fx.engine
+        .write_reflection(&write("d.md", PAGE), &person())
+        .await
+        .unwrap();
+    let opened = fx
+        .engine
+        .discuss(
+            &open("aaaa1111", Some("run at night"), "Still true?"),
+            &person(),
+        )
+        .await
+        .unwrap();
+    let state = |listed: &serde_json::Value| listed["threads"][0]["anchor"]["state"].clone();
+    let edited = PAGE.replace("No id yet.", "Still no news.");
+    fx.engine
+        .write_reflection(&write("d.md", &edited), &person())
+        .await
+        .unwrap();
+    let listed = fx
+        .engine
+        .list_reflection_threads("eng", Some("d.md"), "open", &person())
+        .await
+        .unwrap();
+    assert_eq!(state(&listed), "found", "{listed}");
+
+    fx.engine
+        .move_reflection("eng", "d.md", "e.md", &person())
+        .await
+        .unwrap();
+    let old = fx
+        .engine
+        .list_reflection_threads("eng", Some("d.md"), "all", &person())
+        .await
+        .unwrap();
+    assert!(old["threads"].as_array().unwrap().is_empty(), "{old}");
+    let moved = fx
+        .engine
+        .list_reflection_threads("eng", Some("e.md"), "open", &person())
+        .await
+        .unwrap();
+    assert_eq!(moved["threads"][0]["id"], opened["id"]);
+    assert_eq!(moved["threads"][0]["path"], "e.md");
+    assert_eq!(state(&moved), "found", "{moved}");
+
+    let rewritten = edited.replace("Deploys run at night.", "Deploys run in the morning.");
+    fx.engine
+        .write_reflection(&write("e.md", &rewritten), &person())
+        .await
+        .unwrap();
+    let listed = fx
+        .engine
+        .list_reflection_threads("eng", Some("e.md"), "open", &person())
+        .await
+        .unwrap();
+    assert_eq!(state(&listed), "text_changed", "{listed}");
 }
 
 #[tokio::test]
@@ -315,6 +502,8 @@ async fn a_read_only_domain_freezes_its_reflection() {
     .unwrap();
     fx.engine.sync(None).await.unwrap();
     let before = std::fs::read_to_string(fx.root.join("reflections/guides/deploying.md")).unwrap();
+    let threads_before =
+        std::fs::read_to_string(fx.root.join("reflections/guides/deploying.threads.md")).unwrap();
     let frozen = |err: crystalline_service::EngineError| {
         assert!(
             matches!(err, crystalline_service::EngineError::DomainReadOnly(_)),
@@ -383,6 +572,11 @@ async fn a_read_only_domain_freezes_its_reflection() {
         std::fs::read_to_string(fx.root.join("reflections/guides/deploying.md")).unwrap(),
         before
     );
+    assert_eq!(
+        std::fs::read_to_string(fx.root.join("reflections/guides/deploying.threads.md")).unwrap(),
+        threads_before,
+        "a refused answer and a refused open leave the threads file as it was"
+    );
     assert!(!fx.root.join("reflections/guides/new.md").exists());
     let doc = fx
         .engine
@@ -431,5 +625,71 @@ async fn a_read_only_domain_answers_a_knowledge_none_contributor_with_its_senten
     assert_eq!(
         err.to_string(),
         "'eng' is read-only; its owner switches read_only off in the domain policies"
+    );
+}
+
+/// R18: an account whose write list leaves `eng` out keeps Read, so it
+/// comments; answering a feedback item needs curate, and that refusal
+/// names the list and its fix.
+#[tokio::test]
+async fn an_off_list_account_comments_and_cannot_answer_feedback() {
+    use std::sync::Arc;
+
+    use crystalline_service::rest::{AuthStore, Role};
+    use crystalline_service::{DomainAccess, Scope};
+
+    let fx = crate::docs::reflecting().await;
+    fx.engine
+        .write_reflection(&write("d.md", PAGE), &person())
+        .await
+        .unwrap();
+    let auth = Arc::new(
+        AuthStore::open(&fx.tmp.path().join("web-auth.db"))
+            .await
+            .unwrap(),
+    );
+    auth.add_user("ed", "ed", None, Role::Editor, "pw12345678")
+        .await
+        .unwrap();
+    auth.set_write_list("ed", &["agents-*".to_string()])
+        .await
+        .unwrap();
+    fx.engine
+        .set_domain_access(Arc::new(DomainAccess::new(auth)));
+    let ed = ReflectionCaller::agent(
+        Scope::User {
+            account: "ed".into(),
+            admin: false,
+        },
+        "ed",
+        false,
+    );
+    let opened = fx
+        .engine
+        .discuss(&open("aaaa1111", None, "Still true?"), &ed)
+        .await
+        .unwrap();
+    fx.engine
+        .discuss(&step("answer", opened["id"].as_str().unwrap(), "Yes."), &ed)
+        .await
+        .unwrap();
+    let page = std::fs::read_to_string(fx.root.join("reflections/d.md")).unwrap();
+    let mut answering = open("aaaa1111", None, "I read your change.");
+    answering.answers_feedback = true;
+    let err = fx.engine.discuss(&answering, &ed).await.unwrap_err();
+    assert!(
+        matches!(err, crystalline_service::EngineError::Forbidden(_)),
+        "{err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        crystalline_service::WriteBlock::WriteList {
+            account: "ed".into()
+        }
+        .sentence("eng")
+    );
+    assert_eq!(
+        std::fs::read_to_string(fx.root.join("reflections/d.md")).unwrap(),
+        page
     );
 }
