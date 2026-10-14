@@ -113,6 +113,41 @@ async fn the_switch_names_only_the_files_the_pending_predicate_names() {
     );
 }
 
+/// An engram whose frontmatter the line-preserving editor cannot cut (an
+/// anchor and alias, a flow-style mapping) is still an engram under R48:
+/// it is named by the switch-on refusal, and a switch that arrives out of
+/// band stays pending while it is there.
+#[tokio::test]
+async fn an_engram_whose_frontmatter_cannot_be_cut_holds_the_switch() {
+    let anchored = "---\ntype: note\nstatus: &s draft\nphase: *s\ntitle: Anchored\n---\n\n# Anchored\n\n## Part\n\nText.\n";
+    let flow = "---\n{type: note, status: draft, title: Flow}\n---\n\n# Flow\n";
+    let fx = fixture(&[
+        ("reflections/anchored.md", anchored),
+        ("reflections/flow.md", flow),
+    ])
+    .await;
+    let err = fx
+        .engine
+        .set_manifest_policies("eng", &on(), &Scope::Unrestricted)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("reflections/anchored.md") && err.contains("reflections/flow.md"),
+        "{err}"
+    );
+    std::fs::write(fx.root.join("MANIFEST.md"), manifest("reflection: on\n")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let ReflectionState::Pending { engrams } = fx.engine.reflection_state("eng").await.unwrap()
+    else {
+        panic!("the switch waits for the engrams");
+    };
+    assert_eq!(
+        engrams,
+        vec!["reflections/anchored.md", "reflections/flow.md"]
+    );
+}
+
 #[tokio::test]
 async fn a_manifest_edit_that_switches_on_is_screened_like_the_policy_patch() {
     let fx = fixture(&[(
