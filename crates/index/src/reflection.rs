@@ -122,7 +122,7 @@ pub fn rank_sections(
     let total = ranked.len();
     let items = ranked
         .into_iter()
-        .skip((page - 1) * limit)
+        .skip((page - 1).saturating_mul(limit))
         .take(limit)
         .map(|(score, k)| {
             let (row, section) = &sections[&k];

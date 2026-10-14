@@ -402,4 +402,20 @@ async fn a_search_takes_the_read_right_and_refuses_engram_only_modes() {
         (Some(2), Some(1), Some(0)),
         "{paged}"
     );
+    // A page far past the end answers an empty page, never an overflow.
+    let far = fx
+        .engine
+        .search_reflection(
+            "eng",
+            &ReflectionSearch {
+                query: "text",
+                search_type: Some("text"),
+                limit: 100,
+                page: usize::MAX,
+            },
+            &person(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(far["count"].as_u64(), Some(0), "{far}");
 }
