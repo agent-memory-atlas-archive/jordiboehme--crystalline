@@ -148,6 +148,62 @@ async fn an_engram_whose_frontmatter_cannot_be_cut_holds_the_switch() {
     );
 }
 
+/// An engram whose frontmatter broke after it was indexed holds the switch
+/// (R48a), and the refusals name it as a file that does not read as an
+/// engram now, not as an engram to move.
+#[tokio::test]
+async fn a_broken_engram_is_named_as_a_file_to_fix_not_an_engram() {
+    let fx = fixture(&[
+        (
+            "reflections/old.md",
+            &engram("Old", "reflections/old", "- [fact] old"),
+        ),
+        (
+            "reflections/kept.md",
+            &engram("Kept", "reflections/kept", "- [fact] kept"),
+        ),
+    ])
+    .await;
+    std::fs::write(
+        fx.root.join("reflections/old.md"),
+        "---\n: [\n---\n\n# Old\n",
+    )
+    .unwrap();
+    let err = fx
+        .engine
+        .set_manifest_policies("eng", &on(), &Scope::Unrestricted)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("these engrams live in reflections/, which Reflection would take over: reflections/kept.md."),
+        "{err}"
+    );
+    assert!(
+        err.contains("these files in reflections/ do not read as engrams now: reflections/old.md."),
+        "{err}"
+    );
+    std::fs::write(fx.root.join("MANIFEST.md"), manifest("reflection: on\n")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let err = fx
+        .engine
+        .read_reflection_tree(
+            "eng",
+            &ReflectionCaller::person(Scope::Unrestricted, "jordi"),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        format!(
+            "Reflection for 'eng' {}: reflections/kept.md. Reflection for 'eng' {}: reflections/old.md. Fix them so they read again, then move them out",
+            crystalline_service::engine::REFUSED_PENDING_NAMED,
+            crystalline_service::engine::REFUSED_PENDING_UNREADABLE
+        )
+    );
+}
+
 #[tokio::test]
 async fn a_manifest_edit_that_switches_on_is_screened_like_the_policy_patch() {
     let fx = fixture(&[(
@@ -602,6 +658,22 @@ async fn an_out_of_band_switch_with_two_folder_spellings_stays_pending() {
     assert!(
         !fx.engine.reflection_effective("eng").await.unwrap(),
         "the mode shares and refreshes read agrees"
+    );
+    let err = fx
+        .engine
+        .read_reflection_tree(
+            "eng",
+            &ReflectionCaller::person(Scope::Unrestricted, "jordi"),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        format!(
+            "Reflection for 'eng' {}: Reflections/, reflections/. Keep one and move the files of the others out",
+            crystalline_service::engine::REFUSED_PENDING_SPELLINGS
+        )
     );
 }
 
