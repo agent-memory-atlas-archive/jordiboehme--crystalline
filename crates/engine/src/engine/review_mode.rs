@@ -631,6 +631,15 @@ impl Engine {
             )));
         }
 
+        // A folded MANIFEST draft can switch the Reflection on: the draft was
+        // screened when it was written, and the fold is where the switch
+        // lands, so the pact is seeded below the way the policy edit seeds it.
+        let manifest_text = |root: &Option<PathBuf>| {
+            root.as_ref()
+                .and_then(|r| std::fs::read_to_string(r.join("MANIFEST.md")).ok())
+        };
+        let declared_on_before =
+            manifest_text(&root).is_some_and(|text| super::reflection::declares_on(&text));
         let mut folded = Vec::new();
         let mut discarded = Vec::new();
         for held in &drafts {
@@ -679,6 +688,17 @@ impl Engine {
                     "entries": held.entry_count(),
                 })),
             }
+        }
+
+        if !declared_on_before
+            && manifest_text(&root).is_some_and(|text| super::reflection::declares_on(&text))
+            && let Err(e) = self.seed_pact(domain).await
+        {
+            // The drafts are in the folder already; the Reflection works
+            // without its pact, and a person writes one like any page.
+            tracing::warn!(
+                "the folded MANIFEST of '{domain}' switched Reflection on, and its pact could not be seeded: {e}"
+            );
         }
 
         // Rows and mirror together, for every actor, and over the overlay as it
