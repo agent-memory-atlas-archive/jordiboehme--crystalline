@@ -5396,7 +5396,12 @@
             "description": "hybrid (default), text or semantic. hybrid and semantic answer as\ntext while the pages are not embedded yet; the answer's mode says\nwhich ran.",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "hybrid",
+                "text",
+                "semantic"
+              ]
             }
           },
           {

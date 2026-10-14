@@ -1502,9 +1502,9 @@ fn parse_reflection_mode(s: Option<&str>) -> Result<SearchMode> {
 
 impl Engine {
     /// Search a domain's Reflection (R57): text, semantic or hybrid over its
-    /// sections. Every page is ranked without its `reflection:` block, for
-    /// every caller, and the chunks never held it (R52), so no hit or snippet
-    /// names a source engram. Hybrid and semantic answer as text when there is
+    /// sections. A section never holds the frontmatter (`split_sections`
+    /// starts at the body) and neither do the chunks (R52), so no hit or
+    /// snippet comes out of a page's `reflection:` block, for any caller. Hybrid and semantic answer as text when there is
     /// no provider, nothing embedded by the active model, or stale vectors;
     /// `mode` says which ran. No hit carries a score.
     pub async fn search_reflection(
@@ -1529,7 +1529,7 @@ impl Engine {
         // The store lock is held to read the rows and the coverage, dropped
         // across the embed call, and taken again for the vector statement,
         // as in `search_engrams_under`.
-        let (mut rows, mut mode) = {
+        let (rows, mut mode) = {
             let store = self.store.lock().await;
             let rows = store.list_reflections(access.domain_id).await?;
             let ready = requested != SearchMode::Text
@@ -1540,9 +1540,6 @@ impl Engine {
                     .has_active_embeddings(&self.model_id);
             (rows, if ready { requested } else { SearchMode::Text })
         };
-        for row in &mut rows {
-            row.content = without_provenance(&row.content);
-        }
         let mut vectors = Vec::new();
         if mode != SearchMode::Text
             && let Some(provider) = &provider

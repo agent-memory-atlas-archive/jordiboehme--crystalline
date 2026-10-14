@@ -1026,6 +1026,19 @@ pub async fn review(
         .map_err(reflection_error)
 }
 
+// A schema type only, never built: the route reads `search_type` as a
+// string, so an unknown value answers the engine's 422 (which names the
+// three) instead of the query extractor's 400. No doc comment: one would
+// replace the parameter's own description in the generated client.
+#[expect(dead_code, reason = "a schema type only")]
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ReflectionSearchType {
+    Hybrid,
+    Text,
+    Semantic,
+}
+
 /// The query of the search route.
 #[derive(Debug, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -1036,7 +1049,10 @@ pub struct SearchQuery {
     /// hybrid (default), text or semantic. hybrid and semantic answer as
     /// text while the pages are not embedded yet; the answer's mode says
     /// which ran.
+    // Read as a string so an unknown value reaches the engine and its 422
+    // names the three; the schema lists them.
     #[serde(default)]
+    #[param(inline, value_type = Option<ReflectionSearchType>)]
     search_type: Option<String>,
     /// At most this many hits, default 20, at most 100.
     #[serde(default)]

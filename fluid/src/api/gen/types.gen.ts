@@ -4637,7 +4637,7 @@ export type SearchReflectionsData = {
          * text while the pages are not embedded yet; the answer's mode says
          * which ran.
          */
-        search_type?: string;
+        search_type?: 'hybrid' | 'text' | 'semantic';
         /**
          * At most this many hits, default 20, at most 100.
          */
