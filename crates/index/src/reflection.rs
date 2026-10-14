@@ -13,7 +13,8 @@
 //! `split_sections` leaves them out of the text. The snippet is the window
 //! the engram search cuts (`crate::snippet`) when the lexical half matched,
 //! else the section's lead, both taken from the section without its heading
-//! line (the hit carries the heading on its own).
+//! line, or the top section without the page's `# Title` line (the hit
+//! carries both on their own).
 //!
 //! It is also where a reflection row is written: [`index_reflection_row`]
 //! puts the row and its chunks in the index together (R53).
@@ -26,7 +27,7 @@ use crate::embed::ChunkParams;
 use crate::error::Result;
 use crate::snippet::{lead, make_snippet};
 use crate::store::{DomainId, Page, ReflectionRow, SearchMode, SectionVector, Store};
-use crystalline_core::reflection::{Section, split_sections};
+use crystalline_core::reflection::{Section, TOP_SECTION, split_sections};
 
 /// One section that matched.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -190,15 +191,27 @@ fn semantic_scores<'a>(
         .collect()
 }
 
-/// The text a section's snippet is cut from: the section without its
-/// `## heading` line, which the hit already carries as `heading`. The heading
-/// words still count for the lexical score, which reads the whole text. The
-/// top section has no heading line and is cut whole.
+/// The text a section's snippet is cut from: the section without the lines
+/// the hit already carries. A `##` section drops its heading line, empty
+/// heading or not (the hit carries `heading`); the top section drops the
+/// page's `# Title` line when that is its first line with text (the hit
+/// carries `title`). The lexical score reads the whole text, so heading and
+/// title words still count.
 fn snippet_text(section: &Section) -> &str {
-    if section.heading.is_empty() {
-        &section.text
-    } else {
-        section.text.split_once('\n').map_or("", |(_, body)| body)
+    if section.id.as_deref() != Some(TOP_SECTION) {
+        return section.text.split_once('\n').map_or("", |(_, body)| body);
+    }
+    let mut text = section.text.as_str();
+    loop {
+        let (first, rest) = text.split_once('\n').unwrap_or((text, ""));
+        if first.trim().is_empty() && !rest.is_empty() {
+            text = rest;
+            continue;
+        }
+        return match crystalline_core::parse::parse_heading(first) {
+            Some((1, _)) => rest,
+            _ => &section.text,
+        };
     }
 }
 
@@ -417,6 +430,63 @@ mod tests {
             "{:?}",
             page.items
         );
+    }
+
+    /// The top section's snippet does not start with the page's `# Title`
+    /// line, which the hit carries as `title`; the title words still count
+    /// for the score. A top section that is only the title line has an empty
+    /// snippet.
+    #[test]
+    fn the_top_snippet_leaves_out_the_title_line() {
+        let rows = vec![
+            row(
+                "night.md",
+                "Night shifts",
+                "\n# Night shifts\n\nWho is on call at night.\n\n## Pager\n<!-- r:cccc3333 -->\n\nThe pager.\n",
+            ),
+            row("bare.md", "Bare night", "# Bare night\n"),
+        ];
+        for mode in [SearchMode::Text, SearchMode::Hybrid, SearchMode::Semantic] {
+            let vectors = [v("night.md", 0, 0.9), v("bare.md", 0, 0.85)];
+            let page = rank_sections(&rows, "night", mode, &vectors, 0.78, 10, 1);
+            let snippets: Vec<(&str, &str)> = page
+                .items
+                .iter()
+                .map(|h| (h.path.as_str(), h.snippet.as_str()))
+                .collect();
+            assert_eq!(
+                snippets,
+                [("night.md", "Who is on call at night."), ("bare.md", "")],
+                "{mode:?}"
+            );
+        }
+        // Night shifts: one body match in the title line, one below it, and
+        // the title bonus (7): the title line still counts.
+        assert_eq!(search_reflections(&rows, "night", 10)[0].score, 7.0);
+    }
+
+    /// An empty `## ` heading is a section heading all the same: its line
+    /// never reaches the snippet, though the heading text is empty.
+    #[test]
+    fn an_empty_heading_line_never_reaches_the_snippet() {
+        let rows = vec![row(
+            "a.md",
+            "A",
+            "# A\n\n## \n<!-- r:dddd4444 -->\n\nThe pager rings.\n",
+        )];
+        for mode in [SearchMode::Text, SearchMode::Hybrid, SearchMode::Semantic] {
+            let page = rank_sections(&rows, "pager", mode, &[v("a.md", 1, 0.9)], 0.78, 10, 1);
+            let hit = &page.items[0];
+            assert_eq!(
+                (
+                    hit.section.as_deref(),
+                    hit.heading.as_str(),
+                    hit.snippet.as_str()
+                ),
+                (Some("dddd4444"), "", "The pager rings."),
+                "{mode:?}"
+            );
+        }
     }
 
     #[test]

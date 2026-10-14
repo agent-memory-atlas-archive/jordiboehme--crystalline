@@ -701,7 +701,7 @@ fn bullet_text<'a>(first: &'a str, continuation: &[BodyLine<'_>]) -> Cow<'a, str
 }
 
 /// Parse an ATX heading, returning `(level, text)`.
-pub(crate) fn parse_heading(line: &str) -> Option<(u8, String)> {
+pub fn parse_heading(line: &str) -> Option<(u8, String)> {
     let indent = line.len() - line.trim_start_matches(' ').len();
     if indent > 3 {
         return None;
