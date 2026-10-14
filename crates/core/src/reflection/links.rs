@@ -15,6 +15,7 @@ use crate::attachment::{canonical_asset_path, percent_decode_target};
 use crate::index::escape_link_url;
 use crate::relink::{BodyGate, LinkDialect, rewrite_body_lines};
 
+use super::assets::{AssetTarget, classify_target};
 use super::layout::domain_rel;
 
 /// The folder a reflection path sits in, `""` at the root.
@@ -229,11 +230,12 @@ pub fn rewrite_links_to(source: &str, source_path: &str, from: &str, to: &str) -
 
 /// Rewrite the links in the reflection at `source_path` that reach the
 /// Reflection file `from` (a path inside `reflections/`, `assets/...`) so
-/// they reach `to`. A target is compared as the references are read: the
-/// dialect hands it over percent-decoded (so a link an editor encoded still
-/// follows its file) and the folder's case is folded here (so one spelled
-/// `Assets/` does too); a title after the target and a formatting fragment
-/// are kept as written.
+/// they reach `to`. A target is matched by [`classify_target`], the reading
+/// the references use: the dialect hands it over percent-decoded, and the
+/// classifier resolves it inside the domain and folds the folder's case, so
+/// every link counted as a reference (an encoded one, one spelled `Assets/`,
+/// one that climbs to the domain root and back) follows its file. A title
+/// after the target and a formatting fragment are kept as written.
 pub fn rewrite_asset_links(
     source: &str,
     source_path: &str,
@@ -242,9 +244,11 @@ pub fn rewrite_asset_links(
 ) -> (String, usize) {
     let from = canonical_asset_path(from).unwrap_or_else(|| from.to_string());
     map_links(source, &|target| {
-        let landed = resolve(source_path, target)?;
-        let landed = canonical_asset_path(&landed).unwrap_or(landed);
-        (landed == from).then(|| relative_to(source_path, to))
+        matches!(
+            classify_target(target, source_path),
+            AssetTarget::Reflection(path) if path == from
+        )
+        .then(|| relative_to(source_path, to))
     })
 }
 
@@ -421,6 +425,30 @@ mod tests {
             "the folder's case is folded as the references fold it: {}",
             cased.0
         );
+    }
+
+    /// The rewriter reads a link exactly as the references do: one that
+    /// climbs to the domain root and back into `reflections/assets/` is a
+    /// reference, so it follows the file too.
+    #[test]
+    fn a_domain_rooted_asset_link_follows_its_file() {
+        for (path, link, moved) in [
+            (
+                "guides/a.md",
+                "../../reflections/assets/x.png",
+                "../assets/y.png",
+            ),
+            ("a.md", "../reflections/assets/x.png", "assets/y.png"),
+        ] {
+            let page = format!("![x]({link})\n");
+            assert_eq!(
+                crate::reflection::reflection_asset_refs(&page, path),
+                ["assets/x.png"],
+                "{link} is a reference"
+            );
+            let (out, n) = rewrite_asset_links(&page, path, "assets/x.png", "assets/y.png");
+            assert_eq!((out, n), (format!("![x]({moved})\n"), 1), "{link}");
+        }
     }
 
     #[test]

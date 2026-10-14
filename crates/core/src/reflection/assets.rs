@@ -32,7 +32,8 @@ pub enum AssetTarget {
 /// Classify one link target of the reflection at `reflection_path` (a path
 /// inside `reflections/`). `target` is what the shared link target scan
 /// (`crate::attachment`'s `link_targets`) hands out: percent-decoded, without
-/// a leading `./`, a title or a `#fragment`.
+/// a leading `./`, a title or a `#fragment`. A backslash is a separator, as a
+/// browser reads it.
 pub fn classify_target(target: &str, reflection_path: &str) -> AssetTarget {
     if target.starts_with(SCHEME) {
         return match CrystallineUrl::parse(target) {
@@ -45,6 +46,10 @@ pub fn classify_target(target: &str, reflection_path: &str) -> AssetTarget {
     if target.is_empty() || target.contains("://") || target.starts_with("mailto:") {
         return AssetTarget::Other;
     }
+    // A browser resolving a relative link reads `\` as `/`, so a backslash
+    // spelling reaches the same file and is classified like the `/` form.
+    let target = target.replace('\\', "/");
+    let target = target.as_str();
     if let Some(rooted) = target.strip_prefix('/') {
         return if is_under_assets(rooted) {
             AssetTarget::Engram
@@ -104,7 +109,7 @@ pub fn refuse_engram_attachments(source: &str, reflection_path: &str) -> Result<
     let Some(first) = found.first() else {
         return Ok(());
     };
-    let name = first.rsplit('/').next().unwrap_or(first);
+    let name = first.rsplit(['/', '\\']).next().unwrap_or(first);
     let suggestion = relative_to(reflection_path, &format!("{ASSETS_PREFIX}{name}"));
     Err(format!(
         "a reflection cannot embed an engram attachment ({}); copy the file into reflections/assets/ and link it from there, for example {suggestion}",
@@ -207,6 +212,25 @@ mod tests {
                 "a.md"
             ),
             ["crystalline://eng/assets/a.png", "/assets/b.png"]
+        );
+    }
+
+    /// A browser resolving a relative link turns `\` into `/`, so a
+    /// backslash spelling reaches the same file and is read like the `/` form.
+    #[test]
+    fn a_backslash_is_a_separator_as_a_browser_reads_it() {
+        assert_eq!(
+            classify_target("..\\assets\\shot.png", "a.md"),
+            AssetTarget::Engram
+        );
+        assert_eq!(
+            classify_target("..\\assets\\flow.png", "guides/a.md"),
+            AssetTarget::Reflection("assets/flow.png".into())
+        );
+        let err = refuse_engram_attachments("![shot](..\\assets\\shot.png)\n", "a.md").unwrap_err();
+        assert!(
+            err.contains("for example assets/shot.png"),
+            "the suggestion names the file, not the whole link: {err}"
         );
     }
 }

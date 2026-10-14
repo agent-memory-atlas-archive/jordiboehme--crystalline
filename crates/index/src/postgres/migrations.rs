@@ -1944,9 +1944,10 @@ mod tests {
     }
 
     /// v21, the Reflection's files: it follows the reflection index, its
-    /// table takes a row once the store opens, a replay of the step (a crash
-    /// between the DDL and the ledger stamp) converges, and the wipe clears
-    /// the rows before the domains they point at.
+    /// table takes a row once the store opens, a replay of the step converges
+    /// (a database another binary migrated may hold a step without its
+    /// stamp, as `apply` notes), and the wipe clears the rows before the
+    /// domains they point at.
     #[tokio::test]
     async fn v21_adds_the_reflection_asset_table_and_replays_cleanly() {
         let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
