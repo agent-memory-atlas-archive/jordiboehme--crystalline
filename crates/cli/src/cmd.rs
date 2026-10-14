@@ -1147,6 +1147,12 @@ pub(crate) fn print_origin_withdraw(data: &serde_json::Value, json: bool) {
             p.as_str().unwrap_or("")
         );
     }
+    for p in data["skipped_reflection"].as_array().unwrap_or(&empty) {
+        println!(
+            "left alone (a Reflection file now): {}",
+            p.as_str().unwrap_or("")
+        );
+    }
     // A repair either recreated the stack under a new number (stack numbers
     // come off the same sequence as pull request numbers, so the old one
     // never comes back) or found too few survivors to be a stack at all.

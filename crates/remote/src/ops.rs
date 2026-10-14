@@ -348,6 +348,11 @@ pub struct WithdrawReport {
     /// to fetch it back from, or the fetch itself failed. The path is left
     /// exactly as it stands rather than failing the withdrawal.
     pub skipped_reverts: Vec<String>,
+    /// Paths a revert left alone because they lie in the domain's Reflection
+    /// folder and the Reflection is in effect: the files there are pages now,
+    /// and a revert never writes into the Reflection. A share made while the
+    /// switch was still pending carried them as engrams.
+    pub skipped_reflection: Vec<String>,
     /// True when the chain around the withdrawn layer was repaired: the stack
     /// was dissolved and, where two layers survived, recreated, with every
     /// layer above the hole replayed onto the one below it.
@@ -5629,6 +5634,16 @@ async fn revert_layer_files(
             // standing rather than removed on a guess: both are the
             // "diverged" outcome the report has always used for a file it
             // did not touch.
+            // While the Reflection is in effect the detection leaves its
+            // folder out, so a path a pending share carried there is no
+            // change of the engrams any more: it is the Reflection's, not a
+            // file that moved on.
+            DiscardRefusal::NotAChange | DiscardRefusal::UnknownPath
+                if reflection == crystalline_core::ReflectionMode::Effective
+                    && crystalline_core::reflection::is_under_reflections(&path) =>
+            {
+                report.skipped_reflection.push(path)
+            }
             DiscardRefusal::NotAChange | DiscardRefusal::UnknownPath => {
                 report.skipped_diverged.push(path)
             }

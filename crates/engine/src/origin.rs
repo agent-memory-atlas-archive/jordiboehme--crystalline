@@ -992,11 +992,13 @@ pub(crate) fn share_plan_json(plan: &ops::SharePlan, root: Option<&Path>) -> Val
 
 /// Shapes [`ops::withdraw`]'s report into `origin_withdraw`'s JSON: the
 /// proposal number, whether a live pull request was closed on the forge, the
-/// fixed `"withdrawn"` status the record now carries, and the four
+/// fixed `"withdrawn"` status the record now carries, and the five
 /// working-tree lists a revert produces (all empty without one).
-/// `skipped_reverts` is the fourth: paths a revert left alone because their
+/// `skipped_reverts` holds paths a revert left alone because their
 /// pre-share content is nowhere to be had, distinct from `skipped_diverged`,
-/// where the local file simply moved on.
+/// where the local file simply moved on. `skipped_reflection` holds paths in
+/// the Reflection's folder, which a revert never writes into once the
+/// Reflection is in effect.
 ///
 /// `repaired` says the chain around the withdrawn layer was rebuilt, and
 /// `restacked` names the NEW stack number that rebuild allocated - `null`
@@ -1012,6 +1014,7 @@ pub(crate) fn withdraw_report_json(report: &ops::WithdrawReport) -> Value {
         "deleted": report.deleted,
         "skipped_diverged": report.skipped_diverged,
         "skipped_reverts": report.skipped_reverts,
+        "skipped_reflection": report.skipped_reflection,
         "repaired": report.repaired,
         "restacked": report.restacked,
     })
@@ -2666,6 +2669,7 @@ mod tests {
             restored: vec!["notes/a.md".to_string()],
             deleted: vec!["notes/b.md".to_string()],
             skipped_diverged: vec!["notes/c.md".to_string()],
+            skipped_reflection: vec!["reflections/d.md".to_string()],
             ..Default::default()
         };
         let v = withdraw_report_json(&report);
@@ -2675,6 +2679,7 @@ mod tests {
         assert_eq!(v["restored"][0], "notes/a.md");
         assert_eq!(v["deleted"][0], "notes/b.md");
         assert_eq!(v["skipped_diverged"][0], "notes/c.md");
+        assert_eq!(v["skipped_reflection"][0], "reflections/d.md");
     }
 
     #[test]

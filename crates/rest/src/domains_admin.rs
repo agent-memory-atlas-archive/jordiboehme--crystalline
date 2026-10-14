@@ -1815,7 +1815,10 @@ pub struct WithdrawBody {
                            working-tree lists a revert produced. \
                            `skipped_diverged` holds the paths whose local file \
                            moved on, `skipped_reverts` the paths whose \
-                           pre-share content is nowhere to be had - two \
+                           pre-share content is nowhere to be had, \
+                           `skipped_reflection` the paths in the domain's \
+                           Reflection folder, which a revert never writes \
+                           into once the Reflection is in effect - three \
                            different reasons a revert left a file alone. \
                            `repaired` says the chain around the withdrawn \
                            layer was rebuilt, and `restacked` names the NEW \
@@ -1832,6 +1835,7 @@ pub struct WithdrawBody {
                 "deleted": [],
                 "skipped_diverged": [],
                 "skipped_reverts": [],
+                "skipped_reflection": [],
                 "repaired": true,
                 "restacked": 43
             }),

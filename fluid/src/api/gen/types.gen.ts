@@ -5438,7 +5438,7 @@ export type WithdrawDomainProposalError = WithdrawDomainProposalErrors[keyof Wit
 
 export type WithdrawDomainProposalResponses = {
     /**
-     * The engine's own withdraw report: the number, whether a live pull request was closed, the `withdrawn` status the record now carries and the working-tree lists a revert produced. `skipped_diverged` holds the paths whose local file moved on, `skipped_reverts` the paths whose pre-share content is nowhere to be had - two different reasons a revert left a file alone. `repaired` says the chain around the withdrawn layer was rebuilt, and `restacked` names the NEW stack number that rebuild allocated: null covers both `no repair happened` and `the survivors no longer make a chain`, so a client reads it together with `repaired` rather than alone.
+     * The engine's own withdraw report: the number, whether a live pull request was closed, the `withdrawn` status the record now carries and the working-tree lists a revert produced. `skipped_diverged` holds the paths whose local file moved on, `skipped_reverts` the paths whose pre-share content is nowhere to be had, `skipped_reflection` the paths in the domain's Reflection folder, which a revert never writes into once the Reflection is in effect - three different reasons a revert left a file alone. `repaired` says the chain around the withdrawn layer was rebuilt, and `restacked` names the NEW stack number that rebuild allocated: null covers both `no repair happened` and `the survivors no longer make a chain`, so a client reads it together with `repaired` rather than alone.
      */
     200: {
         [key: string]: unknown;

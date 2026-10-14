@@ -293,13 +293,10 @@ async fn change_paths(eng: &Engine) -> Vec<String> {
         .collect()
 }
 
-/// Share changes work with the switch in effect, not the declared one: while
-/// the switch waits for the engrams under `reflections/` to move out, they
-/// are still engrams and still offered for a share; once it is in effect,
-/// the Reflection's files are not.
-#[tokio::test]
-async fn a_pending_switch_still_offers_its_engrams_for_a_share() {
-    let tmp = tempfile::tempdir().unwrap();
+/// A team domain `eng` whose origin holds the engram
+/// `reflections/kept.md`, with the switch arrived out of band and the
+/// engram edited since: the switch is pending, so the edit is a change.
+async fn pending_team_domain(tmp: &std::path::Path) -> (Engine, std::path::PathBuf) {
     let mock = Arc::new(MockProvider::new());
     let tree: BTreeMap<String, Vec<u8>> = [
         ("MANIFEST.md".to_string(), team_manifest("")),
@@ -312,7 +309,7 @@ async fn a_pending_switch_still_offers_its_engrams_for_a_share() {
     .collect();
     let commit = mock.add_commit(tree);
     mock.set_branch("main", &commit);
-    let domains_root = tmp.path().join("domains");
+    let domains_root = tmp.join("domains");
     let cfg = GlobalConfig {
         github: Some(GitHubConfig {
             enabled: Some(true),
@@ -326,11 +323,11 @@ async fn a_pending_switch_still_offers_its_engrams_for_a_share() {
         Arc::new(Mutex::new(store)),
         cfg,
         None,
-        Some(tmp.path().join("config.yaml")),
+        Some(tmp.join("config.yaml")),
     )
     .with_origin_provider(mock)
-    .with_origins_dir(tmp.path().join("origins"))
-    .with_state_dir(tmp.path().to_path_buf());
+    .with_origins_dir(tmp.join("origins"))
+    .with_state_dir(tmp.to_path_buf());
     eng.origin_add("acme/eng-knowledge", None, None, None, None)
         .await
         .unwrap();
@@ -345,6 +342,17 @@ async fn a_pending_switch_still_offers_its_engrams_for_a_share() {
     )
     .unwrap();
     eng.sync(None).await.unwrap();
+    (eng, root)
+}
+
+/// Share changes work with the switch in effect, not the declared one: while
+/// the switch waits for the engrams under `reflections/` to move out, they
+/// are still engrams and still offered for a share; once it is in effect,
+/// the Reflection's files are not.
+#[tokio::test]
+async fn a_pending_switch_still_offers_its_engrams_for_a_share() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (eng, root) = pending_team_domain(tmp.path()).await;
     assert!(!eng.reflection_effective("eng").await.unwrap(), "pending");
     let pending = change_paths(&eng).await;
     assert!(
@@ -410,4 +418,48 @@ async fn a_pending_switch_still_offers_its_engrams_for_a_share() {
         effective.iter().all(|p| !p.starts_with("reflections/")),
         "{effective:?}"
     );
+}
+
+/// A share made while the switch was pending, withdrawn with a revert once
+/// the engram moved out and the switch took effect: the path under
+/// `reflections/` is the Reflection's now, so the revert leaves it alone and
+/// says so under `skipped_reflection`, not as a file that diverged.
+#[tokio::test]
+async fn a_withdraw_after_the_switch_took_effect_names_the_reflection_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (eng, root) = pending_team_domain(tmp.path()).await;
+    let kept = vec!["reflections/kept.md".to_string()];
+    let shared = eng
+        .origin_share("eng", None, None, None, Some(&kept), ShareActor::Owner)
+        .await
+        .unwrap();
+    let number = shared["number"].as_u64().unwrap();
+    eng.move_engram(
+        &move_params("reflections/kept", "kept.md"),
+        &Scope::Unrestricted,
+    )
+    .await
+    .unwrap();
+    eng.sync(None).await.unwrap();
+    assert!(eng.reflection_effective("eng").await.unwrap(), "in effect");
+    let withdrawn = eng
+        .origin_withdraw("eng", Some(number), true, ShareActor::Owner)
+        .await
+        .unwrap();
+    assert_eq!(
+        withdrawn["skipped_diverged"],
+        serde_json::json!([]),
+        "{withdrawn}"
+    );
+    assert_eq!(
+        withdrawn["skipped_reflection"],
+        serde_json::json!(kept),
+        "{withdrawn}"
+    );
+    assert_eq!(withdrawn["restored"], serde_json::json!([]), "{withdrawn}");
+    assert!(
+        !root.join("reflections/kept.md").exists(),
+        "nothing is written into the Reflection's folder"
+    );
+    assert!(root.join("kept.md").exists());
 }
