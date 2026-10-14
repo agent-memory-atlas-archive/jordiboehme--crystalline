@@ -175,13 +175,9 @@ async fn a_broken_engram_is_named_as_a_file_to_fix_not_an_engram() {
         .await
         .unwrap_err()
         .to_string();
-    assert!(
-        err.contains("these engrams live in reflections/, which Reflection would take over: reflections/kept.md."),
-        "{err}"
-    );
-    assert!(
-        err.contains("these files in reflections/ do not read as engrams now: reflections/old.md."),
-        "{err}"
+    assert_eq!(
+        err,
+        "These engrams live in reflections/, which Reflection would take over: reflections/kept.md. Move them to another folder first (move_engram). These files in reflections/ do not read as engrams now: reflections/old.md. Fix them so they read again (frontmatter that parses, UTF-8 text), then move them out. Then switch Reflection on"
     );
     std::fs::write(fx.root.join("MANIFEST.md"), manifest("reflection: on\n")).unwrap();
     fx.engine.sync(None).await.unwrap();
@@ -197,7 +193,7 @@ async fn a_broken_engram_is_named_as_a_file_to_fix_not_an_engram() {
     assert_eq!(
         err,
         format!(
-            "Reflection for 'eng' {}: reflections/kept.md. Reflection for 'eng' {}: reflections/old.md. Fix them so they read again, then move them out",
+            "Reflection for 'eng' {}: reflections/kept.md. Reflection for 'eng' {}: reflections/old.md. Fix them so they read again (frontmatter that parses, UTF-8 text), then move them out",
             crystalline_service::engine::REFUSED_PENDING_NAMED,
             crystalline_service::engine::REFUSED_PENDING_UNREADABLE
         )

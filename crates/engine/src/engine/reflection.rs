@@ -29,10 +29,13 @@ pub const REFUSED_PENDING_NAMED: &str = "waits until these engrams leave reflect
 pub const REFUSED_PENDING: &str = "waits until the engrams in reflections/ are moved out";
 /// The pending refusal's words for files under `reflections/` that hold the
 /// switch although they do not read as engrams now (frontmatter that does
-/// not parse, another encoding, a file or folder that cannot be read); the
-/// paths follow.
+/// not parse, another encoding); the paths follow.
 pub const REFUSED_PENDING_UNREADABLE: &str =
     "waits on files in reflections/ that do not read as engrams now";
+/// The pending refusal's words for files or folders under `reflections/`
+/// that cannot be opened; the paths follow.
+pub const REFUSED_PENDING_UNOPENED: &str =
+    "waits on files or folders in reflections/ that cannot be opened";
 /// The pending refusal's words for a Reflection folder spelled in more than
 /// one letter case; the spellings follow.
 pub const REFUSED_PENDING_SPELLINGS: &str =
@@ -88,9 +91,10 @@ pub(crate) struct SwitchFacts {
     /// files [`crystalline_core::is_pending_engram`] calls pending that read
     /// as engrams.
     pub engrams: Vec<String>,
-    /// The rest of what holds the switch: files that do not read as engrams
-    /// now and folders that cannot be read, sorted.
-    pub unreadable: Vec<String>,
+    /// Files that open and do not read as engrams now, sorted.
+    pub broken: Vec<String>,
+    /// Files and folders that cannot be opened, sorted.
+    pub unopened: Vec<String>,
     pub origin: bool,
     /// This instance's `service.public_url`, canonical.
     pub own_url: Option<String>,
@@ -146,14 +150,20 @@ pub(crate) fn screen_switch(before: &str, after: &str, facts: &SwitchFacts) -> R
     let mut held: Vec<String> = Vec::new();
     if !facts.engrams.is_empty() {
         held.push(format!(
-            "these engrams live in reflections/, which Reflection would take over: {}. Move them to another folder first (move_engram)",
+            "These engrams live in reflections/, which Reflection would take over: {}. Move them to another folder first (move_engram)",
             facts.engrams.join(", ")
         ));
     }
-    if !facts.unreadable.is_empty() {
+    if !facts.broken.is_empty() {
         held.push(format!(
-            "these files in reflections/ do not read as engrams now: {}. Fix them so they read again (frontmatter that parses, UTF-8 text), then move them out",
-            facts.unreadable.join(", ")
+            "These files in reflections/ do not read as engrams now: {}. {BROKEN_ADVICE}",
+            facts.broken.join(", ")
+        ));
+    }
+    if !facts.unopened.is_empty() {
+        held.push(format!(
+            "These files or folders in reflections/ cannot be opened: {}. {UNOPENED_ADVICE}",
+            facts.unopened.join(", ")
         ));
     }
     if !held.is_empty() {
@@ -237,9 +247,11 @@ pub(crate) fn pact_starter(domain: &str) -> String {
 pub(crate) struct PendingNames {
     /// Engrams to move out.
     pub engrams: Vec<String>,
-    /// Files that do not read as engrams now, and folders that cannot be
-    /// read.
-    pub unreadable: Vec<String>,
+    /// Files that open but do not read as engrams now: frontmatter that does
+    /// not parse, or bytes that are not UTF-8.
+    pub broken: Vec<String>,
+    /// Files and folders that cannot be opened.
+    pub unopened: Vec<String>,
     /// The folder's spellings, when there is more than one.
     pub spellings: Vec<String>,
 }
@@ -255,10 +267,16 @@ impl PendingNames {
                 self.engrams.join(", ")
             ));
         }
-        if !self.unreadable.is_empty() {
+        if !self.broken.is_empty() {
             sentences.push(format!(
-                "Reflection for '{domain}' {REFUSED_PENDING_UNREADABLE}: {}. Fix them so they read again, then move them out",
-                self.unreadable.join(", ")
+                "Reflection for '{domain}' {REFUSED_PENDING_UNREADABLE}: {}. {BROKEN_ADVICE}",
+                self.broken.join(", ")
+            ));
+        }
+        if !self.unopened.is_empty() {
+            sentences.push(format!(
+                "Reflection for '{domain}' {REFUSED_PENDING_UNOPENED}: {}. {UNOPENED_ADVICE}",
+                self.unopened.join(", ")
             ));
         }
         if !self.spellings.is_empty() {
@@ -274,10 +292,17 @@ impl PendingNames {
     }
 }
 
+/// What to do with a file that opens and does not read as an engram.
+const BROKEN_ADVICE: &str =
+    "Fix them so they read again (frontmatter that parses, UTF-8 text), then move them out";
+/// What to do with a file or folder that cannot be opened.
+const UNOPENED_ADVICE: &str = "Make them readable for Crystalline, then move them out";
+
 /// Sort the paths the pending check names (domain-relative, a folder with a
 /// trailing `/`) by why they hold the switch: a folder that is one of two or
-/// more spellings of `reflections/`, a file that does not read as an engram
-/// now (or a folder that cannot be read), or an engram.
+/// more spellings of `reflections/`, a folder or file that cannot be opened,
+/// a file that opens and does not read as an engram now, or an engram.
+/// Blocking file reads: callers on the runtime use [`sort_pending_off_runtime`].
 pub(crate) fn sort_pending(root: &Path, names: &[String]) -> PendingNames {
     let spellings = r::reflection_folders(root);
     let mut out = PendingNames::default();
@@ -286,20 +311,36 @@ pub(crate) fn sort_pending(root: &Path, names: &[String]) -> PendingNames {
             if spellings.len() > 1 && spellings.iter().any(|s| s == folder) {
                 out.spellings.push(name.clone());
             } else {
-                out.unreadable.push(name.clone());
+                out.unopened.push(name.clone());
             }
             continue;
         }
-        let reads = std::fs::read_to_string(join_rel(root, name)).is_ok_and(|text| {
+        let Ok(bytes) = std::fs::read(join_rel(root, name)) else {
+            out.unopened.push(name.clone());
+            continue;
+        };
+        let reads = String::from_utf8(bytes).is_ok_and(|text| {
             crystalline_core::parse_engram(&crystalline_core::to_lf(&text)).is_ok()
         });
         if reads {
             out.engrams.push(name.clone());
         } else {
-            out.unreadable.push(name.clone());
+            out.broken.push(name.clone());
         }
     }
     out
+}
+
+/// [`sort_pending`] on the blocking pool, as [`Engine::pending_engrams`]
+/// reads the same files.
+async fn sort_pending_off_runtime(root: PathBuf, names: Vec<String>) -> Result<PendingNames> {
+    tokio::task::spawn_blocking(move || sort_pending(&root, &names))
+        .await
+        .map_err(|e| {
+            EngineError::Internal(format!(
+                "the files in the Reflection folder could not be read: {e}"
+            ))
+        })
 }
 
 /// Whether the recorded engram paths leave room for a pending engram: one
@@ -366,7 +407,7 @@ impl Engine {
             });
         };
         let folders = r::reflection_folders(&root);
-        let named = sort_pending(&root, &self.pending_engrams(domain).await?);
+        let named = sort_pending_off_runtime(root, self.pending_engrams(domain).await?).await?;
         // The base snapshot is read for a domain with an origin only, and a
         // missing or unreadable one holds nothing.
         let mut team_copy: Vec<String> = Vec::new();
@@ -391,7 +432,8 @@ impl Engine {
             virtual_domain: false,
             folders,
             engrams: named.engrams,
-            unreadable: named.unreadable,
+            broken: named.broken,
+            unopened: named.unopened,
             origin,
             own_url,
             team_copy,
@@ -501,8 +543,8 @@ impl Engine {
                     ContentSource::File { root } => Some(root),
                     _ => None,
                 };
-                let named = match &root {
-                    Some(root) => sort_pending(root, &engrams),
+                let named = match root {
+                    Some(root) => sort_pending_off_runtime(root, engrams).await?,
                     None => PendingNames {
                         engrams,
                         ..Default::default()
@@ -2047,6 +2089,68 @@ mod tests {
     const OFF: &str = "---\ntype: manifest\ntitle: eng\nstatus: stable\n---\n\n# eng\n";
     const ON: &str =
         "---\ntype: manifest\ntitle: eng\nstatus: stable\nreflection: on\n---\n\n# eng\n";
+
+    /// Every kind that holds a switch-on is named in its own sentence, each
+    /// starting with a capital letter; the encoding advice goes only with
+    /// files that open and do not read as engrams.
+    #[test]
+    fn the_switch_on_refusal_names_each_kind_in_its_own_sentence() {
+        let facts = SwitchFacts {
+            engrams: vec!["reflections/a.md".into()],
+            broken: vec!["reflections/b.md".into()],
+            unopened: vec!["reflections/c.md".into()],
+            ..Default::default()
+        };
+        let err = screen_switch(OFF, ON, &facts).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "These engrams live in reflections/, which Reflection would take over: reflections/a.md. Move them to another folder first (move_engram). These files in reflections/ do not read as engrams now: reflections/b.md. Fix them so they read again (frontmatter that parses, UTF-8 text), then move them out. These files or folders in reflections/ cannot be opened: reflections/c.md. Make them readable for Crystalline, then move them out. Then switch Reflection on"
+        );
+        let unopened = SwitchFacts {
+            unopened: vec!["reflections/c.md".into()],
+            ..Default::default()
+        };
+        let err = screen_switch(OFF, ON, &unopened).unwrap_err().to_string();
+        assert!(!err.contains("UTF-8"), "{err}");
+    }
+
+    /// A file that opens and does not read as an engram is broken; one that
+    /// cannot be opened, and a folder that cannot be read, are unopened.
+    #[cfg(unix)]
+    #[test]
+    fn pending_names_tell_a_broken_file_from_one_that_cannot_be_opened() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("reflections")).unwrap();
+        std::fs::write(root.join("reflections/ok.md"), "# Ok\n").unwrap();
+        std::fs::write(root.join("reflections/broken.md"), "---\n: [\n---\n").unwrap();
+        std::fs::write(root.join("reflections/latin.md"), b"# Caf\xe9\n").unwrap();
+        let shut = root.join("reflections/shut.md");
+        std::fs::write(&shut, "# Shut\n").unwrap();
+        std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let blocked = std::fs::read(&shut).is_err();
+        let names: Vec<String> = [
+            "reflections/ok.md",
+            "reflections/broken.md",
+            "reflections/latin.md",
+            "reflections/shut.md",
+            "reflections/sub/",
+        ]
+        .map(String::from)
+        .to_vec();
+        let named = sort_pending(root, &names);
+        std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(named.engrams, ["reflections/ok.md"]);
+        assert_eq!(
+            named.broken,
+            ["reflections/broken.md", "reflections/latin.md"]
+        );
+        if blocked {
+            assert_eq!(named.unopened, ["reflections/shut.md", "reflections/sub/"]);
+        }
+        assert!(named.spellings.is_empty());
+    }
 
     /// Two spellings of the folder collide on the Reflection's rows, so the
     /// switch-on names both; a filesystem that folds case (the macOS and

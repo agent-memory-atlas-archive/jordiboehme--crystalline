@@ -17,7 +17,7 @@ use super::{ApiError, ApiJson, ApiPath, ApiQuery, ProblemDetail, RestState, refu
 use crate::engine::{
     ANONYMOUS_COMMENT, EngineError, MOVE_ONTO_A_FILE, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS,
     REFUSED_OFF_START, REFUSED_PENDING, REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS,
-    REFUSED_PENDING_UNREADABLE, ReflectionSearch,
+    REFUSED_PENDING_UNOPENED, REFUSED_PENDING_UNREADABLE, ReflectionSearch,
 };
 use crate::files::{AttachmentView, attachment_response};
 use crate::params::{DiscussParams, WriteReflectionParams};
@@ -79,6 +79,7 @@ pub(crate) fn reflection_error(e: EngineError) -> ApiError {
                 || text.contains(REFUSED_PENDING_NAMED)
                 || text.contains(REFUSED_PENDING)
                 || text.contains(REFUSED_PENDING_UNREADABLE)
+                || text.contains(REFUSED_PENDING_UNOPENED)
                 || text.contains(REFUSED_PENDING_SPELLINGS)
                 || text == REFUSED_HOMELESS =>
         {
@@ -1579,6 +1580,7 @@ mod tests {
             format!("Reflection for 'eng' {REFUSED_PENDING_NAMED}: a"),
             format!("Reflection for 'eng' {REFUSED_PENDING}"),
             format!("Reflection for 'eng' {REFUSED_PENDING_UNREADABLE}: reflections/x.md"),
+            format!("Reflection for 'eng' {REFUSED_PENDING_UNOPENED}: reflections/y.md"),
             format!("Reflection for 'eng' {REFUSED_PENDING_SPELLINGS}: Reflections/, reflections/"),
             REFUSED_HOMELESS.to_string(),
         ] {
