@@ -1328,9 +1328,13 @@ impl Engine {
         if is_manifest_path(&normalize_rel(path)) {
             self.refuse_read_only_switch_on(domain, content, scope)
                 .await?;
-            self.screen_manifest_write(domain, None, content).await?;
         }
         let view = DomainView::for_write(self, domain, scope).await?;
+        // After the scoped view, so a caller who may not see the domain learns
+        // nothing about its files from the Reflection screen.
+        if is_manifest_path(&normalize_rel(path)) {
+            self.screen_manifest_write(domain, None, content).await?;
+        }
         self.restore_engram_in_view(&view, domain, path, content)
             .await
     }
