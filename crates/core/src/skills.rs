@@ -309,6 +309,35 @@ mod tests {
         );
     }
 
+    /// The four Reflection tools each get a sentence (a novel verb needs one,
+    /// AGENTS.md), provenance is "source engrams" so it is never read as the
+    /// engram field `sources`, and comments follow the conventional shape.
+    #[test]
+    fn the_intelligence_skill_teaches_the_reflection_tools_and_conventional_comments() {
+        let intelligence = skill("crystalline-intelligence").unwrap().content;
+        for needle in [
+            "`reflect`",
+            "`read_reflection`",
+            "`write_reflection`",
+            "`discuss`",
+            "`replace_section`",
+            "source engrams",
+            "`<label> [decorations]: <subject>`",
+            "praise, nitpick, suggestion, issue, todo, question, thought, chore or note",
+            "blocking, non-blocking or if-minor",
+        ] {
+            assert!(
+                intelligence.contains(needle),
+                "intelligence skill lacks {needle}"
+            );
+        }
+        let capture = skill("crystalline-capture").unwrap().content;
+        assert!(
+            capture.contains("call `reflect`"),
+            "capture skill lacks the reflect pointer"
+        );
+    }
+
     #[test]
     fn the_capture_skill_teaches_the_close_folder_hint() {
         let capture = skill("crystalline-capture").unwrap().content;

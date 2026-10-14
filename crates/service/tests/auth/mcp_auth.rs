@@ -1273,6 +1273,48 @@ impl VisibilityCtx {
             .unwrap();
     }
 
+    /// Invite `account` into `domain` at knowledge `level` with the
+    /// Reflection level `reflection` beside it.
+    async fn add_member_as(
+        &self,
+        domain: &str,
+        account: &str,
+        level: crystalline_service::rest::MemberLevel,
+        reflection: crystalline_service::rest::ReflectionLevel,
+    ) {
+        self.store
+            .upsert_domain_member(domain, account, level, Some(reflection), "keeper")
+            .await
+            .unwrap();
+    }
+
+    /// Give `account` the instance knowledge level `role` and the instance
+    /// Reflection level `reflection`, which hold on every shared domain.
+    async fn set_levels(
+        &self,
+        account: &str,
+        role: Role,
+        reflection: crystalline_service::rest::ReflectionLevel,
+    ) {
+        self.store.set_role(account, role).await.unwrap();
+        self.store
+            .set_reflection_level(account, reflection)
+            .await
+            .unwrap();
+    }
+
+    /// Switch `domain`'s Reflection on and let the engine read it.
+    async fn switch_reflection_on(&self, domain: &str) {
+        let path = self.path(domain, "MANIFEST.md");
+        let manifest = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            &path,
+            manifest.replacen("---\n\n", "reflection: on\n---\n\n", 1),
+        )
+        .unwrap();
+        self.engine.sync(None).await.unwrap();
+    }
+
     /// A live MCP token for `account`.
     async fn token_for(&self, account: &str) -> String {
         self.store
@@ -1624,6 +1666,274 @@ async fn an_authenticated_member_reads_its_private_domain_over_mcp() {
     assert!(
         !ctx.path("lab", "nope.md").exists(),
         "and nothing was written"
+    );
+}
+
+/// A tool call's answer as the agent reads it: the JSON its first content
+/// block carries, or the refusal text (a result with `isError`, or a
+/// JSON-RPC error) as `Err`.
+fn answer_of(raw: &str) -> Result<serde_json::Value, String> {
+    let payload = payload_of(raw);
+    if let Some(message) = payload["error"]["message"].as_str() {
+        return Err(message.to_string());
+    }
+    let text = payload["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    if payload["result"]["isError"] == true {
+        return Err(text.to_string());
+    }
+    let body = text.split_once("\n\n---\n").map_or(text, |(head, _)| head);
+    serde_json::from_str(body).map_err(|e| format!("not JSON ({e}):\n{text}"))
+}
+
+/// The names of the domains a `list_domains` answer lists.
+fn listed_names(raw: &str) -> Vec<String> {
+    let listed = answer_of(raw).unwrap_or_else(|e| panic!("list_domains answers: {e}"));
+    listed["domains"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|r| r["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// **A contributor's token gets nothing from any engram tool**, and works the
+/// Reflection: it edits, it comments, and no engram name reaches it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_contributor_gets_nothing_from_engram_tools_and_works_the_reflection() {
+    let ctx = mcp_ctx(true).await;
+    ctx.add_member_as(
+        "lab",
+        "mem",
+        crystalline_service::rest::MemberLevel::None,
+        crystalline_service::rest::ReflectionLevel::Contributor,
+    )
+    .await;
+    ctx.switch_reflection_on("lab").await;
+    let mut curated = crystalline_service::params::WriteReflectionParams {
+        domain: "lab".into(),
+        path: "notes.md".into(),
+        markdown: Some("# Notes\n\n## Formula\n\nThere is a formula; ask the owner.\n".into()),
+        ..Default::default()
+    };
+    curated.sources =
+        std::collections::BTreeMap::from([("Formula".to_string(), vec!["lab-note".to_string()])]);
+    ctx.engine
+        .write_reflection(&curated, &crystalline_service::ReflectionCaller::owner())
+        .await
+        .unwrap();
+
+    let token = ctx.token_for("mem").await;
+    let session = McpTestSession::open(&ctx.addr, Some(&token)).await;
+    let listed = session
+        .call_tool("list_domains", serde_json::json!({}))
+        .await;
+    assert!(
+        !listed_names(&listed).contains(&"lab".to_string()),
+        "no engram surface names the domain:\n{listed}"
+    );
+    let read = session
+        .call_tool(
+            "read_engram",
+            serde_json::json!({ "identifier": "lab-note", "domain": "lab" }),
+        )
+        .await;
+    assert!(!read.contains("secret formula"), "{read}");
+    let found = session
+        .call_tool(
+            "search_engrams",
+            serde_json::json!({ "query": "secret formula" }),
+        )
+        .await;
+    assert!(!found.contains("secret formula"), "{found}");
+
+    let doc = session
+        .call_tool(
+            "read_reflection",
+            serde_json::json!({ "domain": "lab", "path": "notes.md" }),
+        )
+        .await;
+    let page = answer_of(&doc).unwrap_or_else(|e| panic!("the reflection is readable: {e}"));
+    let markdown = page["markdown"].as_str().unwrap();
+    assert!(markdown.contains("ask the owner"), "{page}");
+    assert!(
+        !doc.contains("lab-note"),
+        "no source engram reaches a contributor:\n{doc}"
+    );
+    // The page as a contributor gets it: no bookkeeping block, and every
+    // section line counted on that text.
+    assert!(
+        !markdown.contains("reflection:"),
+        "the block is not answered:\n{markdown}"
+    );
+    let line = page["sections"][0]["line"].as_u64().unwrap() as usize;
+    assert_eq!(
+        markdown.lines().nth(line - 1),
+        Some("## Formula"),
+        "line counts on the markdown answered:\n{markdown}"
+    );
+    let wrote = session
+        .call_tool(
+            "write_reflection",
+            serde_json::json!({ "domain": "lab", "path": "notes.md", "markdown": "# Notes\n\n## Formula\n\nThere is a formula; ask the owner first.\n" }),
+        )
+        .await;
+    let receipt = answer_of(&wrote).unwrap_or_else(|e| panic!("a contributor edits: {e}"));
+    assert_eq!(receipt["path"], "notes.md", "{receipt}");
+    let stored = std::fs::read_to_string(ctx.path("lab", "reflections/notes.md")).unwrap();
+    assert!(stored.contains("ask the owner first."), "{stored}");
+    assert!(
+        stored.contains("engram: lab-note"),
+        "the stored block survives a contributor's write:\n{stored}"
+    );
+    let curate = session
+        .call_tool(
+            "write_reflection",
+            serde_json::json!({ "domain": "lab", "path": "notes.md", "markdown": "# Notes\n", "sources": { "Formula": ["lab-note"] } }),
+        )
+        .await;
+    let curate = answer_of(&curate).expect_err("a contributor does not curate");
+    assert!(
+        curate.contains("curate"),
+        "a contributor does not curate:\n{curate}"
+    );
+    let opened = session
+        .call_tool(
+            "discuss",
+            serde_json::json!({ "domain": "lab", "path": "notes.md", "section": "Formula", "text": "question: who is the owner?" }),
+        )
+        .await;
+    let thread = answer_of(&opened).unwrap_or_else(|e| panic!("a contributor comments: {e}"));
+    assert!(
+        thread["id"].as_str().is_some_and(|id| id.starts_with("t-")),
+        "a contributor comments:\n{thread}"
+    );
+    // PACT.md is written by curators; a contributor proposes through a thread.
+    let pact = session
+        .call_tool(
+            "write_reflection",
+            serde_json::json!({ "domain": "lab", "path": "PACT.md", "markdown": "# How we write\n\n## Audience\n\nEveryone.\n" }),
+        )
+        .await;
+    let pact = answer_of(&pact).expect_err("a contributor does not write the pact");
+    assert!(
+        pact.contains("curate"),
+        "a contributor does not write the pact:\n{pact}"
+    );
+}
+
+/// **An instance account with knowledge `none` gets nothing from any engram
+/// tool on a shared domain**, and works that domain's Reflection at the
+/// instance Reflection level it holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_instance_account_with_knowledge_none_gets_nothing_from_engram_tools_on_a_shared_domain()
+{
+    let ctx = mcp_ctx(true).await;
+    ctx.set_levels(
+        "mem",
+        Role::None,
+        crystalline_service::rest::ReflectionLevel::Reader,
+    )
+    .await;
+    ctx.switch_reflection_on("open").await;
+    ctx.engine
+        .write_reflection(
+            &crystalline_service::params::WriteReflectionParams {
+                domain: "open".into(),
+                path: "a.md".into(),
+                markdown: Some("# A\n\n## One\n\nText for people.\n".into()),
+                ..Default::default()
+            },
+            &crystalline_service::ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+    let token = ctx.token_for("mem").await;
+    let session = McpTestSession::open(&ctx.addr, Some(&token)).await;
+    let listed = session
+        .call_tool("list_domains", serde_json::json!({}))
+        .await;
+    assert!(
+        !listed_names(&listed).contains(&"open".to_string()),
+        "no engram surface names a shared domain:\n{listed}"
+    );
+    // A word of the `open` fixture engram ("the shared thing is public").
+    let found = session
+        .call_tool("search_engrams", serde_json::json!({ "query": "shared" }))
+        .await;
+    assert!(!found.contains("shared thing"), "{found}");
+    let hits = answer_of(&found).unwrap_or_else(|e| panic!("search answers: {e}"));
+    let domains: Vec<&str> = hits["hits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|h| h["domain"].as_str())
+        .collect();
+    assert!(!domains.contains(&"open"), "{hits}");
+    let doc = session
+        .call_tool(
+            "read_reflection",
+            serde_json::json!({ "domain": "open", "path": "a.md" }),
+        )
+        .await;
+    let page = answer_of(&doc).unwrap_or_else(|e| panic!("a reader reads: {e}"));
+    assert!(
+        page["markdown"]
+            .as_str()
+            .is_some_and(|m| m.contains("Text for people.")),
+        "a reader reads:\n{page}"
+    );
+    let opened = session
+        .call_tool(
+            "discuss",
+            serde_json::json!({ "domain": "open", "path": "a.md", "section": "One", "text": "praise: clear to me." }),
+        )
+        .await;
+    let thread = answer_of(&opened).unwrap_or_else(|e| panic!("a reader comments: {e}"));
+    assert!(
+        thread["id"].as_str().is_some_and(|id| id.starts_with("t-")),
+        "a reader comments:\n{thread}"
+    );
+    let refused = session
+        .call_tool(
+            "write_reflection",
+            serde_json::json!({ "domain": "open", "path": "a.md", "markdown": "# A\n" }),
+        )
+        .await;
+    let refused = answer_of(&refused).expect_err("a reader does not edit");
+    assert!(refused.contains("is read, and edit is needed"), "{refused}");
+}
+
+/// **The legacy open tier keeps working**: with `auth.mcp` off an agent
+/// with no account curates the Reflection of every domain it can see, and a
+/// private domain's Reflection stays as invisible to it as its engrams.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_open_tier_works_the_reflection_of_a_domain_it_can_see() {
+    let ctx = mcp_ctx(false).await;
+    ctx.switch_reflection_on("open").await;
+    ctx.switch_reflection_on("lab").await;
+    let session = McpTestSession::open(&ctx.addr, None).await;
+    let wrote = session
+        .call_tool(
+            "write_reflection",
+            serde_json::json!({ "domain": "open", "path": "a.md", "markdown": "# A\n\n## One\n\nText.\n", "sources": { "One": [] } }),
+        )
+        .await;
+    let wrote = answer_of(&wrote).unwrap_or_else(|e| panic!("the open tier writes: {e}"));
+    assert_eq!(
+        (wrote["path"].as_str(), wrote["curated"].as_bool()),
+        (Some("a.md"), Some(true)),
+        "the open tier curates:\n{wrote}"
+    );
+    let hidden = session
+        .call_tool("read_reflection", serde_json::json!({ "domain": "lab" }))
+        .await;
+    assert!(
+        hidden.contains("not registered"),
+        "a private domain answers as unknown:\n{hidden}"
     );
 }
 

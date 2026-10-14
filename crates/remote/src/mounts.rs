@@ -840,6 +840,10 @@ const TEXT_KEYS: &[&str] = &[
     "counterpart_line_text",
     "markdown",
     "body",
+    // A reflection's own text (0.26.0): a feedback item's diff and a thread's
+    // quoted passage are what people wrote, like the page's markdown above.
+    "diff",
+    "quote",
 ];
 
 /// The keys whose subtree points at the server's own Fluid or carries the
@@ -861,6 +865,8 @@ const NAME_LIST_KEYS: &[&str] = &[
     "pending_domains",
     "read_only_left_out",
     "read_only_skipped",
+    // The domains a `reflect` queue left out because they could not be read.
+    "unreadable",
 ];
 
 /// Rewrite every structured field of a source's answer from the source's
@@ -962,6 +968,35 @@ mod tests {
     use crate::server_token::CredentialKind;
     use crate::sources::{MountRecord, SourceRecord, SourcesFile};
     use serde_json::json;
+
+    /// Decision D18 for the Reflection: a page, a feedback diff and a quoted
+    /// passage are people's text and keep every address as written; the
+    /// domain fields around them are translated.
+    #[test]
+    fn a_reflections_body_text_is_never_translated() {
+        let names = NameMap {
+            source: "beta".to_string(),
+            to_remote: BTreeMap::from([("open-beta".to_string(), "open".to_string())]),
+            to_local: BTreeMap::from([("open".to_string(), "open-beta".to_string())]),
+        };
+        let link = "see crystalline://open/runbooks/deploy";
+        let mut answer = json!({
+            "domain": "open",
+            "markdown": link,
+            "threads": [{ "anchor": { "section": "s1", "quote": link }, "entries": [{ "text": link }] }],
+            "queue": [{ "domain": "open", "diff": link }],
+            "scope": { "domains": ["open"], "unreadable": ["open"] },
+        });
+        translate_answer(&mut answer, &names);
+        assert_eq!(answer["domain"], "open-beta");
+        assert_eq!(answer["queue"][0]["domain"], "open-beta");
+        assert_eq!(answer["scope"]["domains"], json!(["open-beta"]));
+        assert_eq!(answer["scope"]["unreadable"], json!(["open-beta"]));
+        assert_eq!(answer["markdown"], link);
+        assert_eq!(answer["threads"][0]["anchor"]["quote"], link);
+        assert_eq!(answer["threads"][0]["entries"][0]["text"], link);
+        assert_eq!(answer["queue"][0]["diff"], link);
+    }
 
     #[test]
     fn the_read_only_name_lists_move_to_the_local_names() {

@@ -572,7 +572,7 @@ pub struct EvolveParams {
 }
 
 /// Parameters for `read_reflection`.
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ReadReflectionParams {
     /// The domain whose Reflection to read.
     pub domain: String,
@@ -584,7 +584,7 @@ pub struct ReadReflectionParams {
 }
 
 /// Parameters for `write_reflection`.
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct WriteReflectionParams {
     /// The domain whose Reflection to change.
     pub domain: String,
@@ -647,7 +647,7 @@ pub struct WriteReflectionParams {
 }
 
 /// Parameters for `discuss`.
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct DiscussParams {
     /// The domain whose Reflection holds the reflection.
     pub domain: String,
@@ -686,7 +686,7 @@ pub struct DiscussParams {
 }
 
 /// Parameters for `reflect`.
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ReflectParams {
     /// The domains whose Reflection queue to return. Omit for every domain
     /// with a Reflection you can work on here.
@@ -1044,6 +1044,10 @@ domain_args!(ResolveConflictParams { one domain });
 domain_args!(WithdrawProposalParams { one domain });
 domain_args!(ProvisionParams { opt domain });
 domain_args!(ConfigureParams { opt domain });
+domain_args!(ReflectParams { all domains });
+domain_args!(ReadReflectionParams { one domain });
+domain_args!(WriteReflectionParams { one domain });
+domain_args!(DiscussParams { one domain });
 
 // Every text a tool parameter carries may arrive with CRLF line endings, and is
 // taken as the LF text it means: what Crystalline stores is LF only, and a
@@ -1226,5 +1230,20 @@ mod tests {
             back["type"], "decision",
             "renamed fields keep their wire name"
         );
+        let write: WriteReflectionParams = serde_json::from_value(serde_json::json!({
+            "domain": "jordi-acme",
+            "path": "guides/a.md",
+            "markdown": "# A\n",
+            "sources": { "One": ["deploy"] },
+        }))
+        .unwrap();
+        let sent = serde_json::to_value(&write).unwrap();
+        assert!(
+            sent.get("create_only").is_none(),
+            "REST only, never forwarded: {sent}"
+        );
+        let again: WriteReflectionParams = serde_json::from_value(sent).unwrap();
+        assert_eq!(again.sources, write.sources);
+        assert_eq!(again.markdown.as_deref(), Some("# A\n"));
     }
 }

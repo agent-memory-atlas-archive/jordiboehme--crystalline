@@ -488,11 +488,222 @@ pub fn merge_evolve(parts: Vec<Part>, page: usize, limit: usize, missing: &[Miss
     with_missing(merged, missing)
 }
 
+/// The merged `reflect` answer: one queue in the engine's own order (a
+/// section's items stay together, the group with the oldest item first),
+/// a page cut from it and renumbered, and every count added up. A part's
+/// rows arrive ranked with each group contiguous, so a group is a run of
+/// rows of one part with the same domain, path and section. The domains a
+/// part could not read (`scope.unreadable`) stay named, and the key is
+/// there only when one was left out, as in a local answer.
+pub fn merge_reflect(parts: Vec<Part>, page: usize, limit: usize, missing: &[Missing]) -> Value {
+    struct Group {
+        oldest: i64,
+        part: usize,
+        path: String,
+        key: Option<(String, String, String)>,
+        rows: Vec<Value>,
+    }
+    let page = page.max(1);
+    let limit = limit.max(1);
+    let text = |row: &Value, key: &str| {
+        row.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let mut groups: Vec<Group> = Vec::new();
+    let mut kinds = Map::new();
+    let mut domains: Vec<Value> = Vec::new();
+    let mut unreadable: Vec<Value> = Vec::new();
+    let mut total = 0u64;
+    let mut guidance = Value::Null;
+    let mut scope_kinds = json!([]);
+    for (index, part) in parts.into_iter().enumerate() {
+        let answer = part.answer;
+        total += number(&answer, "total");
+        for (k, v) in answer
+            .get("kinds")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            let sum = kinds.get(k).and_then(Value::as_u64).unwrap_or(0) + v.as_u64().unwrap_or(0);
+            kinds.insert(k.clone(), json!(sum));
+        }
+        for (list, into) in [
+            ("/scope/domains", &mut domains),
+            ("/scope/unreadable", &mut unreadable),
+        ] {
+            for domain in answer
+                .pointer(list)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if !into.contains(domain) {
+                    into.push(domain.clone());
+                }
+            }
+        }
+        if guidance.is_null() {
+            guidance = answer.get("guidance").cloned().unwrap_or(Value::Null);
+            scope_kinds = answer
+                .pointer("/scope/kinds")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+        }
+        for mut row in answer
+            .get("queue")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            tagsource(&mut row, &part.source);
+            let age = row.get("age_secs").and_then(Value::as_i64).unwrap_or(0);
+            let key = row.get("section").and_then(Value::as_str).map(|section| {
+                (
+                    text(&row, "domain"),
+                    text(&row, "path"),
+                    section.to_string(),
+                )
+            });
+            match groups.last_mut() {
+                Some(last) if last.part == index && key.is_some() && last.key == key => {
+                    last.oldest = last.oldest.max(age);
+                    last.rows.push(row);
+                }
+                _ => groups.push(Group {
+                    oldest: age,
+                    part: index,
+                    path: text(&row, "path"),
+                    key,
+                    rows: vec![row],
+                }),
+            }
+        }
+    }
+    // Oldest group first; a tie keeps part order (local first, then connect
+    // order), then path. The sort is stable, so a part's own order stands.
+    groups.sort_by(|a, b| {
+        b.oldest
+            .cmp(&a.oldest)
+            .then(a.part.cmp(&b.part))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    let start = (page - 1).saturating_mul(limit);
+    let queue: Vec<Value> = groups
+        .into_iter()
+        .flat_map(|g| g.rows)
+        .enumerate()
+        .skip(start)
+        .take(limit)
+        .map(|(i, mut row)| {
+            row["n"] = json!(i + 1);
+            row
+        })
+        .collect();
+    let mut merged = json!({
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "count": queue.len(),
+        "kinds": kinds,
+        "queue": queue,
+        "guidance": guidance,
+        "scope": { "domains": domains, "kinds": scope_kinds },
+    });
+    if !unreadable.is_empty() {
+        merged["scope"]["unreadable"] = Value::Array(unreadable);
+    }
+    with_missing(merged, missing)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
     use std::time::Duration;
+
+    #[test]
+    fn reflect_queues_merge_by_the_oldest_group_and_keep_a_group_together() {
+        let row = |kind: &str, domain: &str, path: &str, section: &str, age: i64| json!({ "n": 1, "kind": kind, "what": "changed", "domain": domain, "path": path, "section": section, "heading": "", "age_secs": age });
+        let parts = || {
+            vec![
+                Part {
+                    source: None,
+                    answer: json!({
+                        "total": 2, "page": 1, "limit": 10, "count": 2,
+                        "kinds": { "feedback": 1, "update": 1, "review": 0 },
+                        "queue": [row("feedback", "notes", "a.md", "s1", 100), row("update", "notes", "a.md", "s1", 10)],
+                        "guidance": "g", "scope": { "domains": ["notes"], "kinds": [] },
+                    }),
+                },
+                Part {
+                    source: Some("acme".into()),
+                    // The second row is younger than the local feedback item
+                    // and older than the update item behind it: a group kept
+                    // together puts it after both.
+                    answer: json!({
+                        "total": 2, "page": 1, "limit": 10, "count": 2,
+                        "kinds": { "feedback": 0, "update": 0, "review": 2 },
+                        "queue": [row("review", "runbooks", "b.md", "s2", 500), row("review", "runbooks", "b.md", "s3", 50)],
+                        "guidance": "g", "scope": { "domains": ["runbooks"], "kinds": [] },
+                    }),
+                },
+            ]
+        };
+        let merged = merge_reflect(parts(), 1, 10, &[]);
+        let order: Vec<(u64, &str)> = merged["queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["n"].as_u64().unwrap(), r["kind"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![(1, "review"), (2, "feedback"), (3, "update"), (4, "review")],
+            "the oldest group first, a group kept together"
+        );
+        assert_eq!(merged["queue"][0]["source"], "acme");
+        assert!(
+            merged["queue"][1].get("source").is_none(),
+            "a local row names no source"
+        );
+        assert_eq!(merged["queue"][3]["section"], "s3");
+        assert_eq!(merged["total"], 4);
+        assert_eq!(
+            merged["kinds"],
+            json!({ "feedback": 1, "update": 1, "review": 2 })
+        );
+        assert_eq!(merged["scope"]["domains"], json!(["notes", "runbooks"]));
+        assert!(
+            merged["scope"].get("unreadable").is_none(),
+            "a whole answer keeps its shape: {merged}"
+        );
+        assert_eq!(merged["guidance"], "g");
+        let second = merge_reflect(parts(), 2, 2, &[]);
+        assert_eq!(
+            second["queue"][0]["n"], 3,
+            "a page is cut from the merged order and keeps its rank"
+        );
+        assert_eq!(second["count"], 2);
+        let missing = [Missing {
+            source: "beta".into(),
+            reason: "could not be reached".into(),
+            recovers: false,
+        }];
+        assert_eq!(
+            merge_reflect(parts(), 1, 10, &missing)["missing"][0]["source"],
+            "beta"
+        );
+        // A domain a part could not read stays named in the merged answer.
+        let mut with_unreadable = parts();
+        with_unreadable[1].answer["scope"]["unreadable"] = json!(["broken"]);
+        assert_eq!(
+            merge_reflect(with_unreadable, 1, 10, &[])["scope"]["unreadable"],
+            json!(["broken"])
+        );
+    }
 
     #[test]
     fn evolve_parts_keep_every_left_out_domain() {

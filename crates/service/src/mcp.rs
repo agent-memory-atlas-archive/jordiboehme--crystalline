@@ -97,6 +97,16 @@
 //! stays registered like every other hidden tool, so a call by name still
 //! sweeps and answers.
 //!
+//! The four Reflection tools (`reflect`, `read_reflection`,
+//! `write_reflection`, `discuss`) are always listed on a writable instance
+//! and refuse at call time on a domain whose Reflection is off (V1). On a
+//! read-only instance `read_reflection` stays listed and the other three are
+//! hidden, `reflect` for the reason `evolve_engrams` is; their routes stay
+//! registered. Their rights are the Reflection's own, decided by the
+//! engine's reflection gate and never by `refuse_unwritable`, so a viewer's
+//! agent may discuss and a contributor's agent may edit. See
+//! `REFLECTION_WRITE_TOOLS`.
+//!
 //! One more tool, `provision`, is gated a fourth way, and it splits across
 //! the rule too: hidden read-only, since every action but `status` writes,
 //! and refusing while no registered domain's MANIFEST declares a
@@ -283,6 +293,14 @@ const WRITE_TOOLS: [&str; 7] = [
     "add_domain",
     "remove_domain",
 ];
+
+/// The Reflection tools hidden in read-only mode: `reflect` for the reason
+/// `evolve_engrams` is (every item it returns prescribes a write), the other
+/// two because they write. `read_reflection` is a read and stays listed.
+/// None of them is one of the `WRITE_TOOLS`: their rights are the
+/// Reflection's own, decided by the engine's reflection gate, never by
+/// `refuse_unwritable`.
+const REFLECTION_WRITE_TOOLS: [&str; 3] = ["reflect", "write_reflection", "discuss"];
 
 /// Whether a tool name is one of the write-gated tools (hidden in read-only
 /// mode).
@@ -899,6 +917,7 @@ fn refused_collab_tool(name: &str, github_enabled: bool) -> bool {
 use crystalline_core::config::{ResponseFormat, SkillsServe};
 
 use crate::DiscardTarget;
+use crate::ReflectionCaller;
 use crate::collab::session::AgentPeer;
 use crate::domain_view::DomainView;
 use crate::engine::{
@@ -1901,6 +1920,28 @@ impl McpServer {
         }
     }
 
+    /// Who a reflection tool call is: an agent under this connection's scope,
+    /// named the way a write's actor is, and the open tier (`auth.mcp` off,
+    /// no account) curating what it can see, as `refuse_unwritable` lets it
+    /// write engrams.
+    fn reflection_caller(&self, ctx: &RequestContext<RoleServer>) -> ReflectionCaller {
+        let caller = self.caller(ctx);
+        let open_tier = matches!(caller.scope, Scope::Anonymous) && !self.engine.auth_mcp();
+        let name = caller.actor().unwrap_or_else(|| "agent".to_string());
+        ReflectionCaller::agent(caller.scope, &name, open_tier)
+    }
+
+    /// A reflection verb's error as MCP answers it: the gate's refusals (the
+    /// Reflection is off, pending, homeless or lives elsewhere, and a right
+    /// too low) are call-time refusals the agent reads (V1); every other
+    /// error maps as `to_error` maps it.
+    fn reflection_refused(e: EngineError) -> Result<CallToolResult, ErrorData> {
+        match e {
+            EngineError::Refused(text) | EngineError::Forbidden(text) => refuse(text),
+            other => Err(to_error(other)),
+        }
+    }
+
     /// The gate on changing what this instance IS: which domains are
     /// registered on it, how it is configured, and which of the artifacts its
     /// domains ship are installed into the harnesses on the machine it runs
@@ -2083,6 +2124,12 @@ impl McpServer {
             "split_engram" => ok_split(value),
             "read_engram" | "delete_engram" | "infer_schema" => ok(value),
             "search_engrams" => self.ok_found(value),
+            // The Reflection tools render as their own handlers do: one page,
+            // a write and a thread as plain JSON; a queue, a tree and a thread
+            // list as a list.
+            "write_reflection" => ok(value),
+            "read_reflection" if value.get("markdown").is_some() => ok(value),
+            "discuss" if value.get("id").is_some() => ok(value),
             _ => self.ok_list(value),
         }
     }
@@ -2574,6 +2621,25 @@ fn remote_failed(error: ErrorData) -> RemoteToolError {
     RemoteToolError::Failed(error.message.to_string())
 }
 
+/// The Reflection caller of a remote `tool` call: the token's account under
+/// its own scope, named the way its writes are recorded (decision D11). Never
+/// the MCP open tier: a remote call always carries a token. None of the
+/// four arms goes through `refuse_unwritable`; the reflection gate decides,
+/// as it does for the MCP handlers.
+fn remote_reflection_caller(caller: &Caller) -> ReflectionCaller {
+    let name = caller.actor().unwrap_or_else(|| "agent".to_string());
+    ReflectionCaller::agent(caller.scope.clone(), &name, false)
+}
+
+/// An engine error of a Reflection arm as a remote answer: a refusal keeps
+/// its own words, everything else as `to_error` maps it.
+fn remote_engine(e: EngineError) -> RemoteToolError {
+    match e {
+        EngineError::Refused(text) | EngineError::Forbidden(text) => RemoteToolError::Refused(text),
+        other => remote_failed(to_error(other)),
+    }
+}
+
 impl McpServer {
     /// One engine verb for a connected machine's `tool` command, through the
     /// verb core the MCP handler of the same name runs: localized for this
@@ -2585,6 +2651,10 @@ impl McpServer {
     /// refused, a permalink collision is the engine's error. The answer is raw
     /// engine JSON, as the control socket's `tool` answers, never the
     /// session's TOON.
+    ///
+    /// The four Reflection tools run the engine's Reflection verbs for the
+    /// token's account ([`remote_reflection_caller`]) and are gated by the
+    /// engine's reflection gate instead, as their MCP handlers are.
     ///
     /// `tool` is one of `remote_ctl::REMOTE_TOOLS`; the route has refused
     /// anything else, and so does the last arm here. This never reaches the
@@ -2642,6 +2712,64 @@ impl McpServer {
                 .evolve_engrams_core(remote_args(args)?, caller)
                 .await
                 .map_err(remote_failed),
+            "reflect" => {
+                let p: ReflectParams = remote_args(args)?;
+                let p = self
+                    .engine
+                    .localized_for(&p, &caller.scope)
+                    .await
+                    .map_err(remote_engine)?;
+                self.engine
+                    .reflect(&p, &remote_reflection_caller(caller))
+                    .await
+                    .map_err(remote_engine)
+            }
+            "read_reflection" => {
+                let p: ReadReflectionParams = remote_args(args)?;
+                let p = self
+                    .engine
+                    .localized_for(&p, &caller.scope)
+                    .await
+                    .map_err(remote_engine)?;
+                let reflection_caller = remote_reflection_caller(caller);
+                match p.path.as_deref() {
+                    None => {
+                        self.engine
+                            .read_reflection_tree(&p.domain, &reflection_caller)
+                            .await
+                    }
+                    Some(path) => {
+                        self.engine
+                            .read_reflection(&p.domain, path, &reflection_caller)
+                            .await
+                    }
+                }
+                .map_err(remote_engine)
+            }
+            "write_reflection" => {
+                let p: WriteReflectionParams = remote_args(args)?;
+                let p = self
+                    .engine
+                    .localized_for(&p, &caller.scope)
+                    .await
+                    .map_err(remote_engine)?;
+                self.engine
+                    .write_reflection(&p, &remote_reflection_caller(caller))
+                    .await
+                    .map_err(remote_engine)
+            }
+            "discuss" => {
+                let p: DiscussParams = remote_args(args)?;
+                let p = self
+                    .engine
+                    .localized_for(&p, &caller.scope)
+                    .await
+                    .map_err(remote_engine)?;
+                self.engine
+                    .discuss(&p, &remote_reflection_caller(caller))
+                    .await
+                    .map_err(remote_engine)
+            }
             other => Err(RemoteToolError::Refused(format!(
                 "the tool '{other}' {}",
                 crate::remote_ctl::NOT_REMOTE
@@ -2978,6 +3106,112 @@ impl McpServer {
         self.evolve_engrams_core(p, &caller)
             .await
             .and_then(|v| self.ok_list(v))
+    }
+
+    #[tool(
+        name = "reflect",
+        title = "Reflect",
+        description = "Get the work queue of a domain's Reflection and work it. The Reflection is the domain's documents for people under reflections/, written at the level its PACT.md agrees on; it exists where the domain's MANIFEST says reflection: on. Three kinds of item, oldest first: feedback (a person changed a section - the diff, who changed it and the engrams the section was built from; judge it into the engrams, keep it as their text, or answer it in a thread), update (an engram behind a section changed, was retired or is gone; engrams no section covers yet; a page off the pact's structure; a changed pact - bring the engrams into the reflections) and review (threads waiting for you). Within a section the feedback item comes before any update item, so you read a person's change before you rewrite it. Read-only: it changes nothing. Call it when a session-end reminder or the routing block names a domain's Reflection, when the user asks what the Reflection needs, and in a scheduled run on the home instance. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server. domains narrows the queue, kinds filters it, limit and page page through it. When the answer's scope carries unreadable, those domains were left out because their Reflection could not be read; the rest of the queue is complete.",
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn reflect(
+        &self,
+        Parameters(p): Parameters<ReflectParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(answer) = self.mounted("reflect", &p, &ctx).await {
+            return answer;
+        }
+        let p = self.localized(p, &ctx).await?;
+        let caller = self.reflection_caller(&ctx);
+        match self.engine.reflect(&p, &caller).await {
+            Ok(v) => self.ok_list(v),
+            Err(e) => Self::reflection_refused(e),
+        }
+    }
+
+    #[tool(
+        name = "read_reflection",
+        title = "Read reflection",
+        description = "Read a domain's Reflection - its documents for people under reflections/, where the MANIFEST says reflection: on. Without path: the tree of reflections with titles, section counts and open thread counts, and PACT.md, the agreement on audience, level of detail and structure. With path: one reflection's markdown with every section's hidden id (the <!-- r:... --> line under its ## heading), whether its text changed since it was last reflected, the engrams it was built from and its open threads. Read before write_reflection or discuss, and pass the checksum back as expected_checksum. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn read_reflection(
+        &self,
+        Parameters(p): Parameters<ReadReflectionParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(answer) = self.mounted("read_reflection", &p, &ctx).await {
+            return answer;
+        }
+        let p = self.localized(p, &ctx).await?;
+        let caller = self.reflection_caller(&ctx);
+        match p.path.as_deref() {
+            None => match self.engine.read_reflection_tree(&p.domain, &caller).await {
+                Ok(v) => self.ok_list(v),
+                Err(e) => Self::reflection_refused(e),
+            },
+            Some(path) => match self.engine.read_reflection(&p.domain, path, &caller).await {
+                Ok(v) => ok(v),
+                Err(e) => Self::reflection_refused(e),
+            },
+        }
+    }
+
+    #[tool(
+        name = "write_reflection",
+        title = "Write reflection",
+        description = "Create, change, move or delete a reflection - a document for people under reflections/, where the domain's MANIFEST says reflection: on - or edit PACT.md, the domain's agreement on audience, level of detail and structure (PACT.md and every write with sources need curate access, which everyone who edits the engrams holds; anyone else proposes a PACT.md change with discuss). Write at the level PACT.md describes. action write (the default) takes the whole markdown: keep each ## heading's <!-- r:... --> id line as it is; new headings get one. To change one section instead, pass operation replace_section, insert_before_section or insert_after_section with section (the heading path, for example ## Night deploys) and content, exactly as edit_engram does; the section keeps its id line. Pass sources (section id or heading to engram permalinks in this domain) for every section you built from engrams: that curates the section and records what it reflects. Without sources a write is an ordinary edit, and a person's change stays a feedback item in reflect. action settle with sections and outcome kept (the person's text stands, sources stay) or taken_in (you changed the engrams to match) settles feedback items. action move carries the reflection's threads and baseline and rewrites relative links to it; delete takes both along. Needs edit access; sources and settle need curate access. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn write_reflection(
+        &self,
+        Parameters(p): Parameters<WriteReflectionParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(answer) = self.mounted("write_reflection", &p, &ctx).await {
+            return answer;
+        }
+        let p = self.localized(p, &ctx).await?;
+        let caller = self.reflection_caller(&ctx);
+        match self.engine.write_reflection(&p, &caller).await {
+            Ok(v) => ok(v),
+            Err(e) => Self::reflection_refused(e),
+        }
+    }
+
+    #[tool(
+        name = "discuss",
+        title = "Discuss",
+        description = "Discuss a passage of a reflection with the people who read it, the way comments work on a shared document. The Reflection is a domain's documents for people under reflections/, where its MANIFEST says reflection: on. open a thread on a section (by id or heading) or on an exact quoted passage, answer it, resolve it with a short outcome, reopen it, or list threads. Use it to ask about or disagree with a person's change instead of overwriting it (answers_feedback marks their feedback item as answered while the thread is open), and to answer the review items reflect returns. Write for people in plain words: contributors cannot see engrams, so engram links in your text are refused. Write each comment as a conventional comment: a first line `<label> [decorations]: <subject>`, then an optional discussion, with the label one of praise, nitpick, suggestion, issue, todo, question, thought, chore or note and the decorations blocking, non-blocking or if-minor (for example `question (non-blocking): is this still true after the migration?`). A resolved thread's history never changes; a reopen is a new entry. Anyone who can read the Reflection may discuss. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn discuss(
+        &self,
+        Parameters(p): Parameters<DiscussParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(answer) = self.mounted("discuss", &p, &ctx).await {
+            return answer;
+        }
+        let p = self.localized(p, &ctx).await?;
+        let caller = self.reflection_caller(&ctx);
+        let listing = p.action.as_deref() == Some("list");
+        match self.engine.discuss(&p, &caller).await {
+            Ok(value) if listing => self.ok_list(value),
+            Ok(value) => ok(value),
+            Err(e) => Self::reflection_refused(e),
+        }
     }
 
     #[tool(
@@ -4581,6 +4815,9 @@ impl ServerHandler for McpServer {
             if t.name == crate::EVOLVE_TOOL_NAME && hidden_evolve_tool(read_only) {
                 return false;
             }
+            if REFLECTION_WRITE_TOOLS.contains(&t.name.as_ref()) && read_only {
+                return false;
+            }
             if t.name == "provision" && hidden_provision_tool(read_only) {
                 return false;
             }
@@ -4607,6 +4844,9 @@ impl ServerHandler for McpServer {
             return None;
         }
         if name == crate::EVOLVE_TOOL_NAME && hidden_evolve_tool(read_only) {
+            return None;
+        }
+        if REFLECTION_WRITE_TOOLS.contains(&name) && read_only {
             return None;
         }
         if name == "provision" && hidden_provision_tool(read_only) {

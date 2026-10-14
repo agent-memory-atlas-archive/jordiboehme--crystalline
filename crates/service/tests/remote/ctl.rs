@@ -208,6 +208,10 @@ fn the_remote_allow_lists_are_pinned() {
             "infer_schema",
             "vocabulary",
             "evolve_engrams",
+            "reflect",
+            "read_reflection",
+            "write_reflection",
+            "discuss",
         ]
     );
 }

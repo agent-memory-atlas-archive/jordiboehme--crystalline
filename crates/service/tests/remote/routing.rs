@@ -1440,3 +1440,102 @@ async fn a_write_to_a_mounted_read_only_domain_gets_the_servers_sentence_under_i
     );
     assert!(!acme.file("open", "nope.md").exists());
 }
+
+/// 0.26.0: a mounted domain's Reflection is read, written, discussed and
+/// queued under its local name, on its own server, and an unscoped reflect
+/// fans out without one server name in a structured field.
+#[tokio::test]
+async fn a_mounted_reflection_is_worked_under_its_local_name_on_its_own_server() {
+    let acme = RemoteServer::start(Options::TOKENS).await;
+    let beta = RemoteServer::start(Options::TOKENS).await;
+    let manifest = beta.file("open", "MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replace("status: stable\n", "status: stable\nreflection: on\n"),
+    )
+    .unwrap();
+    beta.engine.sync(None).await.unwrap();
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&acme, "acme", "keeper").await;
+    machine.connect(&beta, "beta", "keeper").await;
+    machine.mount();
+    assert_eq!(
+        machine
+            .engine
+            .sources()
+            .unwrap()
+            .table()
+            .mount("open-beta")
+            .unwrap()
+            .source,
+        "beta"
+    );
+
+    let page = "# A\n\n## One\n\nText for people.\n";
+    let written = call(
+        &machine,
+        "write_reflection",
+        json!({ "domain": "open-beta", "path": "guides/a.md", "markdown": page }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(written["created"], true, "{written}");
+    assert!(
+        beta.file("open", "reflections/guides/a.md").exists(),
+        "the page lands on its own server"
+    );
+    assert!(
+        !acme.file("open", "reflections/guides/a.md").exists(),
+        "acme's open was never asked"
+    );
+    assert!(
+        !machine.tmp.path().join("open-beta").exists(),
+        "nothing local"
+    );
+
+    let doc = call(
+        &machine,
+        "read_reflection",
+        json!({ "domain": "open-beta", "path": "guides/a.md" }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        doc["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("Text for people."),
+        "{doc}"
+    );
+    let opened = call(
+        &machine,
+        "discuss",
+        json!({ "domain": "open-beta", "path": "guides/a.md", "section": "One", "text": "question: is this still true?" }),
+    )
+    .await
+    .unwrap();
+    assert!(opened["id"].as_str().unwrap().starts_with("t-"), "{opened}");
+
+    let named = call(&machine, "reflect", json!({ "domains": ["open-beta"] }))
+        .await
+        .unwrap();
+    assert_eq!(named["scope"]["domains"], json!(["open-beta"]), "{named}");
+    let all = call(&machine, "reflect", json!({})).await.unwrap();
+    assert!(
+        all["scope"]["domains"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("open-beta")),
+        "{all}"
+    );
+    assert!(
+        all.get("missing").is_none(),
+        "acme has no Reflection on and still answers: {all}"
+    );
+    for answer in [&written, &doc, &opened, &named, &all] {
+        let mut leaks = Vec::new();
+        find_server_names(answer, None, &mut leaks);
+        assert!(leaks.is_empty(), "beta's own name in {leaks:?}\n{answer}");
+    }
+}

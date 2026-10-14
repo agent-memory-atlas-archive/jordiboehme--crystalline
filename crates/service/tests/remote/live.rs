@@ -583,3 +583,115 @@ async fn a_read_only_refusal_has_the_same_shape_for_a_mounted_domain() {
     );
     assert!(!server.file("open", "not-here.md").exists());
 }
+
+/// 0.26.0 over a stdio session: the Reflection tools reach a mounted
+/// domain, answer in the shape the local handlers answer, and carry the
+/// server's own refusal for an account below the right a verb needs.
+#[tokio::test]
+async fn the_reflection_tools_reach_a_mounted_domain_over_stdio_with_the_accounts_right() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let manifest = server.file("open", "MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replace("status: stable\n", "status: stable\nreflection: on\n"),
+    )
+    .unwrap();
+    server.engine.sync(None).await.unwrap();
+    server
+        .engine
+        .write_reflection(
+            &crystalline_service::params::WriteReflectionParams {
+                domain: "open".into(),
+                path: "guides/a.md".into(),
+                markdown: Some("# A\n\n## One\n\nText for people.\n".into()),
+                ..Default::default()
+            },
+            &crystalline_service::ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+
+    // keeper is an instance editor: curate on the shared `open`.
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    let doc = call(
+        client.peer(),
+        "read_reflection",
+        json!({ "domain": "open", "path": "guides/a.md" }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        doc["markdown"]
+            .as_str()
+            .is_some_and(|m| m.contains("Text for people.")),
+        "plain JSON, as locally: {doc}"
+    );
+    // A page stays plain JSON when lists answer TOON, as a local page does:
+    // the routed answer renders as the local handler renders it.
+    call(
+        client.peer(),
+        "configure",
+        json!({ "set": { "service.response_format": "toon" } }),
+    )
+    .await
+    .unwrap();
+    let again = call(
+        client.peer(),
+        "read_reflection",
+        json!({ "domain": "open", "path": "guides/a.md" }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        again["markdown"]
+            .as_str()
+            .is_some_and(|m| m.contains("Text for people.")),
+        "plain JSON under TOON too: {again}"
+    );
+    let written = call(
+        client.peer(),
+        "write_reflection",
+        json!({ "domain": "open", "path": "guides/a.md", "markdown": "# A\n\n## One\n\nText for people, edited.\n" }),
+    )
+    .await
+    .unwrap();
+    assert!(written.is_object(), "{written}");
+    let stored = std::fs::read_to_string(server.file("open", "reflections/guides/a.md")).unwrap();
+    assert!(stored.contains("edited"), "{stored}");
+    assert!(
+        stored.contains("keeper"),
+        "changed_by names the account the token belongs to: {stored}"
+    );
+
+    // looker is an instance viewer: read and comment on `open`, never edit.
+    let viewer = LocalMachine::start(false).await;
+    viewer.connect(&server, "acme", "looker").await;
+    viewer.mount();
+    let (client, _s) = connect(McpServer::new(viewer.engine.clone())).await;
+    let opened = call(
+        client.peer(),
+        "discuss",
+        json!({ "domain": "open", "path": "guides/a.md", "section": "One", "text": "question: is this still true?" }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        opened["id"].as_str().is_some_and(|id| id.starts_with("t-")),
+        "{opened}"
+    );
+    let refused = call(
+        client.peer(),
+        "write_reflection",
+        json!({ "domain": "open", "path": "guides/a.md", "markdown": "# A\n" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refused.contains("your access to the Reflection of 'open' is read, and edit is needed"),
+        "the server's refusal word for word: {refused}"
+    );
+}

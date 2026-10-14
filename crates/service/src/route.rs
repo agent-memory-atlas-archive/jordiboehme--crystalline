@@ -33,7 +33,8 @@ use std::time::Duration;
 use crystalline_remote::{
     CTL_TIMEOUT, ForwardedAgent, MountTable, NameMap, ONE_DOMAIN_LIMIT, Part, RemoteFailure, Route,
     SourceSet, ToolShape, attach_row_urls, merge_evolve, merge_list_domains, merge_recent,
-    merge_search, missing_from, missing_from_evolve, part_request_limit, seconds, translate_answer,
+    merge_reflect, merge_search, missing_from, missing_from_evolve, part_request_limit, seconds,
+    translate_answer,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -44,17 +45,21 @@ use crate::engine::{
 };
 
 /// The tools that change content: refused on a read-only instance for a
-/// mounted domain too, as they are for a local one.
+/// mounted domain too, as they are for a local one (the two Reflection
+/// writers are hidden there).
 const WRITE_TOOLS: &[&str] = &[
     "write_engram",
     "edit_engram",
     "split_engram",
     "delete_engram",
     "move_engram",
+    "write_reflection",
+    "discuss",
 ];
 use crate::params::*;
 
-/// The tools a call can be forwarded with: the server's `REMOTE_TOOLS`.
+/// The tools a call can be forwarded with: the server's `REMOTE_TOOLS`, the
+/// fifteen engine verbs and the four Reflection tools.
 pub const FORWARDED_TOOLS: &[&str] = crate::remote_ctl::REMOTE_TOOLS;
 
 /// How a tool reaches domains, `None` for one the router leaves alone.
@@ -66,6 +71,8 @@ pub fn shape_of(tool: &str) -> Option<ToolShape> {
         }
         "search_engrams" | "recent_activity" | "list_domains" => ToolShape::AllDomains,
         t if t == crate::EVOLVE_TOOL_NAME => ToolShape::AllDomains,
+        "read_reflection" | "write_reflection" | "discuss" => ToolShape::OneDomain,
+        "reflect" => ToolShape::AllDomains,
         "build_context" => ToolShape::Anchored,
         "move_engram" => ToolShape::Move,
         "share_changes" | "update_domain" | "origin_status" | "resolve_conflict"
@@ -117,6 +124,10 @@ pub fn named_domains(tool: &str, args: &Value) -> anyhow::Result<Vec<String>> {
         "remove_domain" => names_of::<RemoveDomainParams>(args),
         "provision" => names_of::<ProvisionParams>(args),
         "configure" => names_of::<ConfigureParams>(args),
+        "reflect" => names_of::<ReflectParams>(args),
+        "read_reflection" => names_of::<ReadReflectionParams>(args),
+        "write_reflection" => names_of::<WriteReflectionParams>(args),
+        "discuss" => names_of::<DiscussParams>(args),
         _ => Ok(Vec::new()),
     }
 }
@@ -513,7 +524,7 @@ async fn fan_out(
         .and_then(Value::as_u64)
         .map_or(limit_default, |l| l as usize)
         .clamp(1, limit_max);
-    let paged = tool == "search_engrams" || tool == crate::EVOLVE_TOOL_NAME;
+    let paged = tool == "search_engrams" || tool == crate::EVOLVE_TOOL_NAME || tool == "reflect";
     let part_args = |mut a: Value| {
         if paged && let Some(obj) = a.as_object_mut() {
             obj.insert("page".into(), json!(1));
@@ -532,8 +543,11 @@ async fn fan_out(
         let names = table.names(&source);
         // A part names its source's domains: the ones the filter asked for,
         // or every one this source mounts here. `list_domains` has no filter
-        // to name them in; its rows are narrowed below instead.
-        let forwarded = part_args(forwarded_args(args, &names, tool != "list_domains"));
+        // to name them in, and an unnamed `reflect` must stay unnamed (a
+        // named domain whose Reflection is off is refused, an unnamed one is
+        // skipped); both are narrowed below instead.
+        let whole_source = tool != "list_domains" && tool != "reflect";
+        let forwarded = part_args(forwarded_args(args, &names, whole_source));
         let set = set.clone();
         let tool = tool.to_string();
         let agent = agent.clone();
@@ -560,7 +574,7 @@ async fn fan_out(
             obj.insert("domains".into(), Value::Array(kept));
         }
         let local_args = localized_local(engine, tool, local_args).await?;
-        let mut value = crate::client::dispatch_engine(engine, tool, local_args)
+        let mut value = local_part(engine, tool, local_args)
             .await
             .map_err(RouteError::Local)?;
         crate::web_url::attach_template(&mut value, &engine.local_web_base());
@@ -611,6 +625,22 @@ async fn fan_out(
                         row["path"] = Value::Null;
                     }
                 }
+                if tool == "reflect" {
+                    // Only the Reflections this machine mounts from this
+                    // source: a domain another source keeps is not worked
+                    // under its server name.
+                    let mounted =
+                        |d: &Value| d.as_str().is_some_and(|d| names.to_local.contains_key(d));
+                    if let Some(rows) = value.get_mut("queue").and_then(Value::as_array_mut) {
+                        rows.retain(|row| row.get("domain").is_some_and(mounted));
+                    }
+                    for list in ["/scope/domains", "/scope/unreadable"] {
+                        if let Some(domains) = value.pointer_mut(list).and_then(Value::as_array_mut)
+                        {
+                            domains.retain(mounted);
+                        }
+                    }
+                }
                 translate_answer(&mut value, &names);
                 answered.push((
                     source.clone(),
@@ -641,8 +671,24 @@ async fn fan_out(
         "search_engrams" => merge_search(parts, page, limit, &missing),
         "recent_activity" => merge_recent(parts, &missing),
         "list_domains" => merge_list_domains(parts, &missing),
+        "reflect" => merge_reflect(parts, page, limit, &missing),
         _ => merge_evolve(parts, page, limit, &missing),
     })
+}
+
+/// The local part of a fan-out: the control socket's dispatcher for the
+/// fifteen engine verbs, and the engine's own `reflect` for the machine
+/// owner (only owner sessions route, decision D8; `dispatch_engine` serves
+/// no Reflection tool, and no CLI verb or hook calls one).
+async fn local_part(engine: &Arc<Engine>, tool: &str, args: Value) -> anyhow::Result<Value> {
+    if tool == "reflect" {
+        let p: ReflectParams =
+            serde_json::from_value(args).map_err(|e| anyhow::anyhow!("invalid arguments: {e}"))?;
+        return Ok(engine
+            .reflect(&p, &crate::ReflectionCaller::owner())
+            .await?);
+    }
+    crate::client::dispatch_engine(engine, tool, args).await
 }
 
 /// The local half of a sweep with every domain it names spelled as the
@@ -666,6 +712,7 @@ async fn localized_local(engine: &Engine, tool: &str, args: Value) -> Result<Val
         "search_engrams" => respelled::<SearchParams>(engine, args).await,
         "recent_activity" => respelled::<RecentParams>(engine, args).await,
         t if t == crate::EVOLVE_TOOL_NAME => respelled::<EvolveParams>(engine, args).await,
+        "reflect" => respelled::<ReflectParams>(engine, args).await,
         _ => Ok(args),
     }
 }

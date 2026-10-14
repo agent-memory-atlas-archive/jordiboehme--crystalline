@@ -84,11 +84,13 @@ fn conditional(request: &Value, data: Value) -> Value {
     envelope
 }
 
-/// The engine verbs a remote `tool` call may run: exactly the ones the control
-/// socket's `tool` command dispatches. Pinned exactly by
-/// `tests/remote/ctl.rs::the_remote_allow_lists_are_pinned`. Each has its arm
-/// in `McpServer::remote_tool`, which runs the same verb core the MCP handler
-/// of that name runs.
+/// The engine verbs and Reflection tools a remote `tool` call may run: the
+/// fifteen engine verbs the control socket's `tool` command dispatches, and
+/// the four Reflection tools (0.26.0), each with its arm in
+/// `McpServer::remote_tool`, which runs what the MCP handler of that name
+/// runs. Pinned exactly by
+/// `tests/remote/ctl.rs::the_remote_allow_lists_are_pinned`. A connected
+/// machine forwards exactly these (`route::FORWARDED_TOOLS` is this constant).
 pub const REMOTE_TOOLS: &[&str] = &[
     "write_engram",
     "read_engram",
@@ -105,6 +107,10 @@ pub const REMOTE_TOOLS: &[&str] = &[
     "infer_schema",
     "vocabulary",
     crate::EVOLVE_TOOL_NAME,
+    "reflect",
+    "read_reflection",
+    "write_reflection",
+    "discuss",
 ];
 
 /// The client half a remote write records when the connected machine named
