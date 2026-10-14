@@ -3231,7 +3231,7 @@ impl Engine {
     /// a machine that has not connected yet is never cached, so a later
     /// connect is seen too. Errors with `RemoteError::NotConnected` when no
     /// token has been saved and no test provider is injected.
-    fn resolve_origin_provider(&self) -> Result<Arc<dyn Provider>> {
+    pub(super) fn resolve_origin_provider(&self) -> Result<Arc<dyn Provider>> {
         if let Some(p) = &self.origin_provider_override {
             return Ok(p.clone());
         }

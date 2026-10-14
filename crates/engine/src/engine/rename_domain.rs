@@ -1204,6 +1204,10 @@ impl Engine {
                 {
                     Ok(0) => {}
                     Ok(references) => {
+                        self.mark_reflection_dirty(
+                            &domain,
+                            crate::reflection_backup::BackupCause::Settled,
+                        );
                         let counts = outcome.rewritten.entry(domain.clone()).or_default();
                         counts.0 += 1;
                         counts.1 += references;

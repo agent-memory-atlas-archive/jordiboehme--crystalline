@@ -382,6 +382,44 @@ async fn create_blob_tree_commit_and_branch_send_the_documented_bodies() {
 }
 
 #[tokio::test]
+async fn a_root_tree_is_posted_without_a_base_tree() {
+    let state = Arc::new(Captured::default());
+    let app = Router::new()
+        .route(
+            "/repos/acme/brand-knowledge/git/trees",
+            post(
+                |State(state): State<Arc<Captured>>, Json(body): Json<serde_json::Value>| async move {
+                    *state.tree_body.lock().unwrap() = Some(body);
+                    Json(serde_json::json!({"sha": "roottree1"}))
+                },
+            ),
+        )
+        .with_state(state.clone());
+    let base = spawn(app).await;
+    let provider = GitHubProvider::new(Some(base), None);
+
+    let tree_sha = provider
+        .create_root_tree(
+            &origin(),
+            &[TreeWrite {
+                path: "reflections/a.md".to_string(),
+                blob_sha: Some("blobsha1".to_string()),
+            }],
+        )
+        .await
+        .unwrap();
+    assert_eq!(tree_sha, "roottree1");
+
+    let tree_body = state.tree_body.lock().unwrap().clone().unwrap();
+    assert!(
+        tree_body.get("base_tree").is_none(),
+        "a root tree names no base: {tree_body}"
+    );
+    assert_eq!(tree_body["tree"][0]["path"], "reflections/a.md");
+    assert_eq!(tree_body["tree"][0]["sha"], "blobsha1");
+}
+
+#[tokio::test]
 async fn delete_branch_sends_delete_to_the_ref_path() {
     let app = Router::new().route(
         "/repos/acme/brand-knowledge/git/refs/heads/crystalline-share-1",

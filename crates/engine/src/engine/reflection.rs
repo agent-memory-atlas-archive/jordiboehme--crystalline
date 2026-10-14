@@ -10,6 +10,7 @@ use crystalline_core::relink::BodyGate;
 use super::*;
 use crate::collab::session::RoomDoc;
 use crate::params::WriteReflectionParams;
+use crate::reflection_backup::BackupCause;
 use crate::scope::{ReflectionCaller, ReflectionRight, Scope, reflection_right_word};
 
 // The words of the gate's state refusals and of the anonymous comment
@@ -980,6 +981,7 @@ impl Engine {
         }
         self.index_reflection(access.domain_id, &p.path, &final_text, &abs)
             .await?;
+        self.mark_reflection_dirty(&p.domain, BackupCause::Settled);
         // The page lock goes before the room is touched: a room's save holds
         // the room's state and then takes this lock, so the other order
         // here would deadlock against a person typing. A room save that slips
@@ -1144,11 +1146,19 @@ impl Engine {
             write_file(&baseline_abs, &baseline)?;
         }
         // A close with nothing new to land writes nothing.
-        if current.as_deref() != Some(final_text.as_str()) {
+        let wrote = current.as_deref() != Some(final_text.as_str());
+        if wrote {
             write_file(&abs, &final_text)?;
             let (domain_id, _) = self.domain_source(domain).await?;
             self.index_reflection(domain_id, inner, &final_text, &abs)
                 .await?;
+        }
+        // A room's saves settle a minute after the typing stops; its close
+        // settles them at once, whatever the close itself wrote.
+        if final_save {
+            self.mark_reflection_dirty(domain, BackupCause::Settled);
+        } else if wrote || baseline != stored_baseline {
+            self.mark_reflection_dirty(domain, BackupCause::Edit);
         }
         Ok(receipt(&final_text))
     }
@@ -1530,6 +1540,8 @@ impl Engine {
                 Err(e) => note_failure(Some(inner), e),
             }
         }
+        // The move and every page it relinked.
+        self.mark_reflection_dirty(domain, BackupCause::Settled);
         let mut receipt = json!({ "from": from, "to": to, "links_rewritten": links, "threads_moved": threads_moved });
         if !failed.is_empty() {
             receipt["links_failed"] = json!(failed);
@@ -1621,6 +1633,7 @@ impl Engine {
             .await
             .delete_reflection(access.domain_id, inner)
             .await?;
+        self.mark_reflection_dirty(domain, BackupCause::Settled);
         Ok(())
     }
 
@@ -1704,6 +1717,7 @@ impl Engine {
         )?;
         self.index_reflection(access.domain_id, inner, &final_text, &abs)
             .await?;
+        self.mark_reflection_dirty(domain, BackupCause::Settled);
         Ok(json!({ "domain": domain, "path": inner, "settled": ids, "outcome": outcome }))
     }
 }

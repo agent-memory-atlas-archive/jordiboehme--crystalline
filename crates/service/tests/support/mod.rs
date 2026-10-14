@@ -228,6 +228,10 @@ struct Inner {
     /// snapshot into a new [`Commit`].
     trees: HashMap<String, BTreeMap<String, Vec<u8>>>,
     tree_counter: u64,
+    /// Whether every branch write (`create_branch`, `update_branch`) fails
+    /// with `RemoteError::Offline`. Set through
+    /// `MockProvider::set_offline_writes`.
+    offline_writes: bool,
     proposal_counter: u64,
     /// How many times `branch_head` has been called, for the daemon poller
     /// tests: it is always the first call any `origin_update`/`origin_status`
@@ -610,6 +614,24 @@ impl MockProvider {
             .and_then(|c| c.files.get(path).cloned())
     }
 
+    /// Makes every branch write (creating or moving a branch) answer as
+    /// though the forge could not be reached, until turned off again. Blobs,
+    /// trees and commits still land.
+    pub fn set_offline_writes(&self, offline: bool) {
+        self.inner.lock().unwrap().offline_writes = offline;
+    }
+
+    /// Every path a commit's tree holds, sorted.
+    pub fn commit_paths(&self, commit: &str) -> Vec<String> {
+        self.inner
+            .lock()
+            .unwrap()
+            .commits
+            .get(commit)
+            .map(|c| c.files.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// The provider calls made so far, in order, for asserting the exact
     /// sequence a share-update or withdraw drives.
     pub fn calls(&self) -> Vec<String> {
@@ -946,6 +968,33 @@ impl Provider for MockProvider {
         Ok(id)
     }
 
+    async fn create_root_tree(
+        &self,
+        _origin: &OriginSpec,
+        writes: &[TreeWrite],
+    ) -> Result<String, RemoteError> {
+        let mut inner = self.inner.lock().unwrap();
+        let mut files = BTreeMap::new();
+        for write in writes {
+            if let Some(sha) = &write.blob_sha {
+                let content = inner
+                    .blobs
+                    .get(sha)
+                    .cloned()
+                    .ok_or_else(|| RemoteError::Api {
+                        status: 404,
+                        message: format!("no blob {sha}"),
+                    })?;
+                files.insert(write.path.clone(), content);
+            }
+        }
+        inner.tree_counter += 1;
+        let id = format!("tree{}", inner.tree_counter);
+        inner.trees.insert(id.clone(), files);
+        inner.calls.push(format!("create_root_tree:{id}"));
+        Ok(id)
+    }
+
     async fn create_commit(
         &self,
         origin: &OriginSpec,
@@ -982,6 +1031,9 @@ impl Provider for MockProvider {
         commit: &str,
     ) -> Result<(), RemoteError> {
         let mut inner = self.inner.lock().unwrap();
+        if inner.offline_writes {
+            return Err(RemoteError::Offline);
+        }
         inner.etag_counter += 1;
         let etag = format!("etag{}", inner.etag_counter);
         inner.branches.insert(name.to_string(), commit.to_string());
@@ -1016,6 +1068,9 @@ impl Provider for MockProvider {
         force: bool,
     ) -> Result<(), RemoteError> {
         let mut inner = self.inner.lock().unwrap();
+        if inner.offline_writes {
+            return Err(RemoteError::Offline);
+        }
         // Extends the old `update_branch:{name}:{commit}` with the force flag
         // rather than rewording it, so `starts_with` assertions keep matching.
         // Recorded before either refusal below, so a refused update shows in

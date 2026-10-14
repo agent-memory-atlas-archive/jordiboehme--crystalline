@@ -232,6 +232,21 @@ pub trait Provider: Send + Sync {
         writes: &[TreeWrite],
     ) -> Result<String, RemoteError>;
 
+    /// Creates a tree holding only `writes`, on no base: the first commit of
+    /// a branch that must share nothing with the tracked one. The default
+    /// refuses, so a forge that cannot do it says so instead of basing the
+    /// tree on something else.
+    async fn create_root_tree(
+        &self,
+        origin: &OriginSpec,
+        writes: &[TreeWrite],
+    ) -> Result<String, RemoteError> {
+        let _ = (origin, writes);
+        Err(RemoteError::Refused(
+            "this forge cannot start a branch from an empty tree".to_string(),
+        ))
+    }
+
     /// Creates a commit with the given tree and parents, returns its sha.
     /// One parent for an ordinary share commit, two for the merge commit a
     /// share-update makes after the base advanced; order matters, the branch

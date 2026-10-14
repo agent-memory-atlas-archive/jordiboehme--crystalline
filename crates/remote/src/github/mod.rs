@@ -469,7 +469,35 @@ impl Provider for GitHubProvider {
             })
             .collect();
         let body = CreateTreeRequest {
-            base_tree: commit.tree.sha,
+            base_tree: Some(commit.tree.sha),
+            tree: entries,
+        };
+        let tree_path = format!("/repos/{owner}/{name}/git/trees");
+        let response = self
+            .send(self.request(Method::POST, &tree_path).json(&body))
+            .await?;
+        let response = self.check(response, Some(&origin.repo)).await?;
+        let body: ShaResponse = parse_json(response).await?;
+        Ok(body.sha)
+    }
+
+    async fn create_root_tree(
+        &self,
+        origin: &OriginSpec,
+        writes: &[TreeWrite],
+    ) -> Result<String, RemoteError> {
+        let (owner, name) = split_repo(&origin.repo)?;
+        let entries = writes
+            .iter()
+            .map(|write| TreeEntryRequest {
+                path: write.path.clone(),
+                mode: "100644",
+                kind: "blob",
+                sha: write.blob_sha.clone(),
+            })
+            .collect();
+        let body = CreateTreeRequest {
+            base_tree: None,
             tree: entries,
         };
         let tree_path = format!("/repos/{owner}/{name}/git/trees");

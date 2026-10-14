@@ -781,6 +781,16 @@ pub async fn run_serve(
         });
     }
 
+    // The Reflection backup: commits a home instance's settled Reflection
+    // changes to their backup branch. A no-op tick when nothing is marked.
+    {
+        let e = engine.clone();
+        let rx = shared.watch();
+        tokio::spawn(async move {
+            run_reflection_backup(e, rx).await;
+        });
+    }
+
     // The reflect count tick: counts every Reflection's open items for the
     // machine owner and records them in maintenance.json, where the hooks
     // and the remote hook_status read them. A no-op write when nothing
@@ -2792,6 +2802,22 @@ async fn run_origin_poller(engine: Arc<Engine>, mut shutdown: watch::Receiver<bo
             _ = wait_true(&mut shutdown) => break,
             _ = ticker.tick() => {
                 engine.origin_poll_tick(Instant::now(), chrono::Utc::now()).await;
+            }
+        }
+    }
+}
+
+/// How often the Reflection backup looks for due changes.
+const REFLECTION_BACKUP_HEARTBEAT: Duration = Duration::from_secs(5);
+
+/// Run the Reflection backup tick until shutdown.
+async fn run_reflection_backup(engine: Arc<Engine>, mut shutdown: watch::Receiver<bool>) {
+    let mut ticker = tokio::time::interval(REFLECTION_BACKUP_HEARTBEAT);
+    loop {
+        tokio::select! {
+            _ = wait_true(&mut shutdown) => break,
+            _ = ticker.tick() => {
+                engine.reflection_backup_tick(Instant::now()).await;
             }
         }
     }

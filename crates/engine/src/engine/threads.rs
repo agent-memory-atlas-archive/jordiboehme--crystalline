@@ -10,6 +10,7 @@ use crystalline_core::threads::{
 
 use super::reflection::{ReflectionAccess, thread_view};
 use super::*;
+use crate::reflection_backup::BackupCause;
 use crate::scope::{ReflectionCaller, ReflectionRight};
 
 /// The access a target's right check answers.
@@ -299,6 +300,11 @@ impl Engine {
             }
             document = page;
         }
+        match target {
+            ThreadTarget::Reflection { .. } => {
+                self.mark_reflection_dirty(domain, BackupCause::Settled);
+            }
+        }
         Ok(match target {
             ThreadTarget::Reflection { path } => thread_view(path, &thread, &document),
         })
@@ -348,6 +354,11 @@ impl Engine {
             .into_iter()
             .find(|t| t.id == id)
             .expect("just appended");
+        match target {
+            ThreadTarget::Reflection { .. } => {
+                self.mark_reflection_dirty(domain, BackupCause::Settled);
+            }
+        }
         Ok(match target {
             ThreadTarget::Reflection { path } => thread_view(path, &thread, &document),
         })

@@ -925,6 +925,10 @@ pub struct Engine {
     // leaves it as - reads exactly as an instance whose credential names
     // nobody. Production code never sets this either.
     origin_provider_override_login: Option<String>,
+    // The Reflections marked for their backup commit, in memory: a restart
+    // before a due backup loses the mark, and the next change marks it again
+    // and commits both (the backup diffs the whole folder).
+    backup_marks: crate::reflection_backup::BackupMarks,
     // Overrides where per-domain origin state (the base snapshot, conflict
     // records, `state.json`) is read and written, for tests: `None` means the
     // real `crystalline_core::config::origin_state_dir`, a real machine path
@@ -2138,6 +2142,7 @@ impl Engine {
             write_locks: std::sync::Mutex::new(HashMap::new()),
             origin_provider_override: None,
             origin_provider_override_login: None,
+            backup_marks: Default::default(),
             origins_dir_override: None,
             state_dir_override: None,
             connect_auth: Arc::new(RealConnectAuth),
@@ -3227,6 +3232,90 @@ impl Engine {
     pub fn with_origin_provider(mut self, provider: Arc<dyn Provider>) -> Engine {
         self.origin_provider_override = Some(provider);
         self
+    }
+
+    /// Mark a domain's Reflection for its backup commit. Cheap and silent: a
+    /// domain that is not a home with an origin simply never becomes due in
+    /// the tick.
+    pub fn mark_reflection_dirty(
+        &self,
+        domain: &str,
+        cause: crate::reflection_backup::BackupCause,
+    ) {
+        self.backup_marks
+            .mark(domain, cause, std::time::Instant::now());
+    }
+
+    /// One backup pass: every marked domain that is due and is this
+    /// instance's home Reflection is committed to its backup branch with the
+    /// instance's own credential. A domain that is not such a home here (a
+    /// local Reflection, one without an origin, a read-only domain) loses its
+    /// mark and makes no forge call. With GitHub collaboration off nothing
+    /// is attempted and the marks wait. A failed backup keeps its mark and
+    /// waits a minute before the next attempt.
+    pub async fn reflection_backup_tick(
+        &self,
+        now: std::time::Instant,
+    ) -> Vec<(
+        String,
+        std::result::Result<crystalline_remote::reflections_backup::BackupOutcome, String>,
+    )> {
+        let mut out = Vec::new();
+        if !self.config.read().unwrap().github_enabled() {
+            return out;
+        }
+        for domain in self.backup_marks.due_domains(now) {
+            if !self.backs_up_reflection_here(&domain).await {
+                self.backup_marks.clear(&domain);
+                continue;
+            }
+            let attempt = async {
+                let provider = self.resolve_origin_provider().map_err(|e| e.to_string())?;
+                let (spec, root, state_dir) = self
+                    .origin_spec_for_domain(&domain)
+                    .map_err(|e| e.to_string())?;
+                crystalline_remote::reflections_backup::backup_reflections(
+                    provider.as_ref(),
+                    &spec,
+                    &root,
+                    &state_dir,
+                    &format!("Back up the Reflection of {domain}"),
+                )
+                .await
+                .map_err(|e| e.to_string())
+            }
+            .await;
+            match &attempt {
+                Ok(_) => self.backup_marks.clear_if_unchanged(&domain, now),
+                Err(e) => {
+                    // At warn, so an operator sees a backup that keeps failing.
+                    tracing::warn!(
+                        domain = %domain,
+                        "reflection backup failed, retrying in a minute: {e}"
+                    );
+                    self.backup_marks.failed(&domain, now);
+                }
+            }
+            out.push((domain, attempt));
+        }
+        out
+    }
+
+    /// Whether this instance backs up `domain`'s Reflection: it is its home
+    /// (`On { home: Here }`), the domain is connected to a repository, and
+    /// the domain is not read-only. A Reflection never goes to a repository
+    /// its domain is not connected to.
+    async fn backs_up_reflection_here(&self, domain: &str) -> bool {
+        let home = matches!(
+            self.reflection_state(domain).await,
+            Ok(crystalline_core::reflection::ReflectionState::On {
+                home: crystalline_core::reflection::ReflectionHome::Here
+            })
+        );
+        home && self
+            .domain_entry(domain)
+            .is_ok_and(|entry| entry.origin.is_some())
+            && !self.domain_is_read_only(domain).await
     }
 
     /// The GitHub login the injected provider acts as, for tests that need a

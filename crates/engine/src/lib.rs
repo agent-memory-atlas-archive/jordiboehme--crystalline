@@ -34,6 +34,7 @@ pub use rename::{
     MachineOwner, PendingRename, RenameOwner, RenameStep, discard_pending_rename,
     machine_rename_owner, pending_rename,
 };
+pub mod reflection_backup;
 #[doc(hidden)]
 pub mod review;
 #[doc(hidden)]

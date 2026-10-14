@@ -203,6 +203,11 @@ impl Engine {
             // journal. A no-op on every sync but the first one after a rebuild.
             self.restore_overlays_quietly(name).await;
             self.announce_report(name, &report, None);
+            if report.reflections_changed > 0 {
+                // A plain editor changed the Reflection: an edit, settled
+                // after a minute without another one.
+                self.mark_reflection_dirty(name, crate::reflection_backup::BackupCause::Edit);
+            }
             applied.push((domain, report));
         }
         // A full run has claimed every file domain this instance can host,
@@ -326,6 +331,11 @@ impl Engine {
         // domain declares.
         if manifest_touched {
             self.refresh_names().await;
+        }
+        if report.reflections_changed > 0 {
+            // A file dropped into the Reflection by hand, found by the
+            // watcher: an edit, as in the full sync.
+            self.mark_reflection_dirty(name, crate::reflection_backup::BackupCause::Edit);
         }
         self.announce_report(name, &report, actor);
         Ok(report)
