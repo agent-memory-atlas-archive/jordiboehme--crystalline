@@ -46,7 +46,7 @@ pub use embed::{
 pub use error::{IndexError, Result, SCHEMA_TOO_NEW_OPENING, is_schema_too_new_text};
 pub use factory::{open_store, store_location};
 pub use store::{
-    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ContentMention,
+    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ChunkTable, ContentMention,
     ContradictionRow, DEFAULT_RETIRED_WEIGHT, DEFAULT_SALIENCE_WEIGHT, DomainHost, DomainId,
     DomainKind, DomainLookup, DomainStats, EdgeKind, EmbeddingCoverage, EmbeddingRow,
     EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FilterOp, FtsMode,

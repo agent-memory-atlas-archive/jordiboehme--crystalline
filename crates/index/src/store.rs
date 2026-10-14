@@ -1941,6 +1941,20 @@ impl EmbeddingCoverage {
     }
 }
 
+/// Which table a chunk and its vector live in. Each table keeps its own rows;
+/// one body of code chunks, embeds, prunes and counts them all, the table
+/// chosen here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChunkTable {
+    /// `chunk`: the engram chunks.
+    Engram,
+}
+
+impl ChunkTable {
+    /// Every table, in the order the embed passes walk them: engrams first.
+    pub const ALL: &'static [ChunkTable] = &[ChunkTable::Engram];
+}
+
 /// Which full-text path the store is using.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -2919,49 +2933,89 @@ pub trait Store: Send + Sync {
     /// after each upsert.
     async fn replace_chunks(&self, engram_id: EngramId, chunks: &[NewChunk]) -> Result<()>;
 
-    /// Return chunks that need an embedding for the given model: those with no
-    /// embedding yet, plus those embedded by a different model (a model swap).
-    /// `domains`, when `Some`, restricts the scan to those domains: the daemon
-    /// scopes each instance's embed pass to the file domains it hosts plus all
-    /// virtual domains, so a non-host does not wastefully re-embed a chunk
-    /// another instance owns. `None` scans every domain (the single-instance and
-    /// standalone default). Duplicate embedding across instances is always safe
-    /// (the chunk fingerprint folds in the model id, so two instances converge
-    /// on the same vector), just wasteful, and this filter avoids the waste.
+    /// Return chunks in `table` that need an embedding for the given model:
+    /// those with no embedding yet, plus those embedded by a different model (a
+    /// model swap). `domains`, when `Some`, restricts the scan to those domains:
+    /// the daemon scopes each instance's embed pass to the file domains it hosts
+    /// plus all virtual domains, so a non-host does not wastefully re-embed a
+    /// chunk another instance owns. `None` scans every domain (the
+    /// single-instance and standalone default). Duplicate embedding across
+    /// instances is always safe (the chunk fingerprint folds in the model id, so
+    /// two instances converge on the same vector), just wasteful, and this
+    /// filter avoids the waste.
     ///
     /// The result is one page: at most `limit` jobs ordered by
-    /// `(engram_id, seq)`, starting past the `after` key when it is given. A
+    /// `(owner, seq)`, starting past the `after` key when it is given. A
     /// caller pages the backlog with the last row of the previous page as the
     /// next cursor rather than holding every job's text at once, and stops when
     /// a page comes back short. Rows that gain an embedding mid-pass drop out of
     /// the predicate behind the cursor, so paging never skips or repeats a job.
-    async fn chunks_needing_embedding(
+    /// [`ChunkJob::engram_id`] is the owning row of the table: for
+    /// [`ChunkTable::Engram`] the engram id.
+    async fn chunks_needing_embedding_in(
         &self,
+        table: ChunkTable,
         model: &str,
         domains: Option<&[DomainId]>,
         limit: usize,
         after: Option<(i64, i64)>,
     ) -> Result<Vec<ChunkJob>>;
 
-    /// Store a batch of embeddings against their chunks for the given model.
-    async fn store_embeddings(&self, batch: &[EmbeddingRow], model: &str) -> Result<()>;
+    /// Store a batch of embeddings against their chunks in `table` for the
+    /// given model.
+    async fn store_embeddings_in(
+        &self,
+        table: ChunkTable,
+        batch: &[EmbeddingRow],
+        model: &str,
+    ) -> Result<()>;
 
-    /// Clear the vectors of every model other than `model`, returning how many
-    /// chunks were cleared.
+    /// Clear the vectors in `table` of every model other than `model`,
+    /// returning how many chunks were cleared.
     ///
-    /// The embedding lives in columns on `chunk` (`embedding`, `dims`,
+    /// The embedding lives in columns on the chunk table (`embedding`, `dims`,
     /// `model`), so this nulls those three and never removes a chunk row: the
     /// text stays, and every cleared chunk is back in
-    /// [`Store::chunks_needing_embedding`] for the active model. Called once
-    /// by an embed pass that finds the active model covering every chunk, to
-    /// reclaim the space an install's previous model left behind. A user who
-    /// switches back simply re-embeds; nothing is kept for a return trip.
-    async fn prune_embeddings_except(&self, model: &str) -> Result<usize>;
+    /// [`Store::chunks_needing_embedding_in`] for the active model. Called once
+    /// per table by an embed pass that finds the active model covering every
+    /// chunk of that table, to reclaim the space an install's previous model
+    /// left behind. A user who switches back simply re-embeds; nothing is kept
+    /// for a return trip.
+    async fn prune_embeddings_except_in(&self, table: ChunkTable, model: &str) -> Result<usize>;
 
-    /// Embedding coverage across the index: total chunks, embedded chunks and a
-    /// per-model breakdown. Drives `status` reporting and the interactive
-    /// default search mode.
-    async fn embedding_coverage(&self) -> Result<EmbeddingCoverage>;
+    /// Embedding coverage of `table`: total chunks, embedded chunks and a
+    /// per-model breakdown.
+    async fn embedding_coverage_of(&self, table: ChunkTable) -> Result<EmbeddingCoverage>;
+
+    /// [`Store::chunks_needing_embedding_in`] on the engram chunks.
+    async fn chunks_needing_embedding(
+        &self,
+        model: &str,
+        domains: Option<&[DomainId]>,
+        limit: usize,
+        after: Option<(i64, i64)>,
+    ) -> Result<Vec<ChunkJob>> {
+        self.chunks_needing_embedding_in(ChunkTable::Engram, model, domains, limit, after)
+            .await
+    }
+
+    /// [`Store::store_embeddings_in`] on the engram chunks.
+    async fn store_embeddings(&self, batch: &[EmbeddingRow], model: &str) -> Result<()> {
+        self.store_embeddings_in(ChunkTable::Engram, batch, model)
+            .await
+    }
+
+    /// [`Store::prune_embeddings_except_in`] on the engram chunks.
+    async fn prune_embeddings_except(&self, model: &str) -> Result<usize> {
+        self.prune_embeddings_except_in(ChunkTable::Engram, model)
+            .await
+    }
+
+    /// [`Store::embedding_coverage_of`] the engram chunks: what engram search's
+    /// mode decision and staleness gate, `status` and the backlog read (R55).
+    async fn embedding_coverage(&self) -> Result<EmbeddingCoverage> {
+        self.embedding_coverage_of(ChunkTable::Engram).await
+    }
 
     /// Every engram in `domain` whose first chunk carries an embedding by
     /// `model`, with that vector, ordered by engram id. The maintenance
@@ -3607,5 +3661,20 @@ mod meta_value_tests {
         );
         assert!(meta_value_rows(&json!(null)).is_empty());
         assert!(meta_value_rows(&json!({})).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChunkTable;
+
+    #[test]
+    fn the_embed_passes_walk_the_engram_table_first() {
+        assert_eq!(ChunkTable::ALL.first(), Some(&ChunkTable::Engram));
+        let mut seen = std::collections::HashSet::new();
+        assert!(
+            ChunkTable::ALL.iter().all(|t| seen.insert(*t)),
+            "each table once"
+        );
     }
 }

@@ -50,7 +50,7 @@ use crate::alias::{AliasMap, query_uses_tags};
 use crate::error::{IndexError, Result};
 use crate::store::WorkClaim;
 use crate::store::{
-    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ContentMention,
+    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ChunkTable, ContentMention,
     ContradictionRow, DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage,
     EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode,
     GraphSlice, HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector,
@@ -83,20 +83,23 @@ pub struct TursoStore {
     fts_native: bool,
     // Tag name to id, to avoid re-interning tags during a sync.
     tag_cache: Mutex<HashMap<String, i64>>,
-    // The last computed embedding coverage snapshot, shared by effective_mode,
-    // the search staleness gate and CLI status so they issue one aggregate scan,
-    // not three. `None` means recompute on the next read. Interior mutability with
-    // the same std::sync discipline as tag_cache: the guard is taken in a tight
-    // scope and never held across an await (clippy::await_holding_lock).
+    // The last computed embedding coverage snapshot per chunk table, shared by
+    // effective_mode, the search staleness gate and CLI status so they issue
+    // one aggregate scan, not three. A table with no entry recomputes on its
+    // next read. Interior mutability with the same std::sync discipline as
+    // tag_cache: the guard is taken in a tight scope and never held across an
+    // await (clippy::await_holding_lock).
     //
-    // Invalidated (set to `None`) by exactly the Store methods that can change a
-    // chunk's embedding state, derived from the trait: store_embeddings (writes
-    // embeddings), replace_chunks (deletes and reinserts an engram's chunks),
-    // delete_engram (deletes an engram's chunks), clear_domain (deletes a domain's
-    // chunks), wipe (deletes every chunk) and rollback (reverts any of the above
-    // that ran inside the transaction). upsert_engram, upsert_engram_checked and
-    // rename_engram never touch the chunk table, so they are not invalidators.
-    coverage_cache: Mutex<Option<EmbeddingCoverage>>,
+    // Invalidated (cleared, every table at once) by exactly the Store methods
+    // that can change a chunk's embedding state, derived from the trait:
+    // store_embeddings_in (writes embeddings), prune_embeddings_except_in
+    // (clears them), replace_chunks (deletes and reinserts an engram's chunks),
+    // delete_engram (deletes an engram's chunks), clear_domain (deletes a
+    // domain's chunks), wipe (deletes every chunk) and rollback (reverts any of
+    // the above that ran inside the transaction). upsert_engram,
+    // upsert_engram_checked and rename_engram never touch the chunk table, so
+    // they are not invalidators.
+    coverage_cache: Mutex<HashMap<ChunkTable, EmbeddingCoverage>>,
     // The unreadable database this store was opened beside, when
     // `open_resilient` found one and moved it out of the way. `None` for every
     // ordinary open, which is every open but that one.
@@ -303,32 +306,27 @@ impl TursoStore {
             schema_version,
             fts_native,
             tag_cache: Mutex::new(HashMap::new()),
-            coverage_cache: Mutex::new(None),
+            coverage_cache: Mutex::new(HashMap::new()),
             set_aside: None,
         })
     }
 
-    /// Drop the cached embedding coverage snapshot so the next read recomputes it.
-    /// Called by every mutator that can change a chunk's embedding state. Kept in a
-    /// tight scope with no await so the std::sync guard never crosses a suspension
-    /// point.
+    /// Drop every cached embedding coverage snapshot so the next read of any
+    /// table recomputes it. One write invalidates every table: simple, and never
+    /// stale. Called by every mutator that can change a chunk's embedding state.
+    /// Kept in a tight scope with no await so the std::sync guard never crosses a
+    /// suspension point.
     fn invalidate_coverage(&self) {
-        *self.coverage_cache.lock().unwrap() = None;
+        self.coverage_cache.lock().unwrap().clear();
     }
 
-    /// Recompute the embedding coverage snapshot from the chunk table. This is the
-    /// one aggregate scan the cached `embedding_coverage()` fills from on a miss.
-    async fn compute_coverage(&self) -> Result<EmbeddingCoverage> {
-        let total = scalar_i64(&self.conn, "SELECT count(*) FROM chunk", vec![])
-            .await?
-            .max(0) as usize;
-        let rows = query_all(
-            &self.conn,
-            "SELECT model, dims, count(*) FROM chunk WHERE embedding IS NOT NULL \
-             GROUP BY model, dims ORDER BY count(*) DESC",
-            vec![],
-        )
-        .await?;
+    /// Recompute the embedding coverage snapshot of one chunk table. This is the
+    /// one aggregate scan the cached `embedding_coverage_of()` fills from on a
+    /// miss.
+    async fn compute_coverage(&self, table: ChunkTable) -> Result<EmbeddingCoverage> {
+        let sql = chunk_sql(table);
+        let total = scalar_i64(&self.conn, sql.count_all, vec![]).await?.max(0) as usize;
+        let rows = query_all(&self.conn, sql.count_embedded, vec![]).await?;
         let mut models = Vec::new();
         let mut embedded = 0usize;
         for r in &rows {
@@ -786,6 +784,48 @@ fn asset_sql(table: AssetTable) -> &'static AssetSql {
     match table {
         AssetTable::Engram => &ATTACHMENT_SQL,
         AssetTable::Reflection => &REFLECTION_ASSET_SQL,
+    }
+}
+
+/// The statements of one chunk table that do not depend on the query's shape.
+/// Picked by `match`, never built with `format!` for the table name, so each
+/// statement stays a literal the query-plan guard and a grep both read. The
+/// dynamic parts (placeholder lists, the cursor) are appended as before.
+struct ChunkSql {
+    /// `SELECT id, <owner>, seq, text, text_hash FROM <table> WHERE (embedding IS NULL OR model IS NULL OR model != ?1)`
+    needing: &'static str,
+    /// The domain scope clause, opened with ` AND `; the placeholder list
+    /// goes between head and tail.
+    needing_scope_head: &'static str,
+    needing_scope_tail: &'static str,
+    /// The column the keyset cursor and the `ORDER BY` lead with (`seq` follows).
+    owner_col: &'static str,
+    store: &'static str,
+    prune: &'static str,
+    count_all: &'static str,
+    count_embedded: &'static str,
+}
+
+const CHUNK_SQL: ChunkSql = ChunkSql {
+    needing: "SELECT id, engram_id, seq, text, text_hash FROM chunk \
+              WHERE (embedding IS NULL OR model IS NULL OR model != ?1)",
+    // -- actor: all - a draft's chunks reach the same embedding backlog a base
+    // row's do, which is what makes an overlay entry a full engram row rather
+    // than a second shape.
+    needing_scope_head: " AND engram_id IN (SELECT id FROM engram WHERE domain_id IN (",
+    needing_scope_tail: "))",
+    owner_col: "engram_id",
+    store: "UPDATE chunk SET embedding=?1, dims=?2, model=?3 WHERE id=?4",
+    prune: "UPDATE chunk SET embedding=NULL, dims=NULL, model=NULL \
+            WHERE embedding IS NOT NULL AND (model IS NULL OR model <> ?1)",
+    count_all: "SELECT count(*) FROM chunk",
+    count_embedded: "SELECT model, dims, count(*) FROM chunk WHERE embedding IS NOT NULL \
+                     GROUP BY model, dims ORDER BY count(*) DESC",
+};
+
+fn chunk_sql(table: ChunkTable) -> &'static ChunkSql {
+    match table {
+        ChunkTable::Engram => &CHUNK_SQL,
     }
 }
 
@@ -2930,8 +2970,9 @@ impl Store for TursoStore {
         Ok(())
     }
 
-    async fn chunks_needing_embedding(
+    async fn chunks_needing_embedding_in(
         &self,
+        table: ChunkTable,
         model: &str,
         domains: Option<&[DomainId]>,
         limit: usize,
@@ -2949,10 +2990,8 @@ impl Store for TursoStore {
         // always present, so turso keeps only `limit` records: one page of chunk
         // texts, each capped by the chunker's token budget. Never add a
         // `GROUP BY` here, and never drop the `LIMIT`.
-        let mut sql = String::from(
-            "SELECT id, engram_id, seq, text, text_hash FROM chunk \
-             WHERE (embedding IS NULL OR model IS NULL OR model != ?1)",
-        );
+        let chunk = chunk_sql(table);
+        let mut sql = String::from(chunk.needing);
         let mut params = vec![Value::Text(model.to_string())];
         let mut n = 2;
         if let Some(ids) = domains {
@@ -2968,26 +3007,24 @@ impl Store for TursoStore {
                     p
                 })
                 .collect();
-            sql.push_str(&format!(
-                // -- actor: all - a draft's chunks reach the same embedding
-                // backlog a base row's do, which is what makes an overlay entry
-                // a full engram row rather than a second shape.
-                " AND engram_id IN (SELECT id FROM engram WHERE domain_id IN ({}))",
-                placeholders.join(",")
-            ));
+            // The scope clause's actor note sits on `CHUNK_SQL`.
+            sql.push_str(chunk.needing_scope_head);
+            sql.push_str(&placeholders.join(","));
+            sql.push_str(chunk.needing_scope_tail);
         }
-        if let Some((engram_id, seq)) = after {
+        let owner = chunk.owner_col;
+        if let Some((owner_id, seq)) = after {
             sql.push_str(&format!(
-                " AND (engram_id > ?{n} OR (engram_id = ?{} AND seq > ?{}))",
+                " AND ({owner} > ?{n} OR ({owner} = ?{} AND seq > ?{}))",
                 n + 1,
                 n + 2
             ));
-            params.push(Value::Integer(engram_id));
-            params.push(Value::Integer(engram_id));
+            params.push(Value::Integer(owner_id));
+            params.push(Value::Integer(owner_id));
             params.push(Value::Integer(seq));
             n += 3;
         }
-        sql.push_str(&format!(" ORDER BY engram_id, seq LIMIT ?{n}"));
+        sql.push_str(&format!(" ORDER BY {owner}, seq LIMIT ?{n}"));
         params.push(Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)));
         let rows = query_all(&self.conn, &sql, params).await?;
         Ok(rows
@@ -3002,7 +3039,12 @@ impl Store for TursoStore {
             .collect())
     }
 
-    async fn store_embeddings(&self, batch: &[EmbeddingRow], model: &str) -> Result<()> {
+    async fn store_embeddings_in(
+        &self,
+        table: ChunkTable,
+        batch: &[EmbeddingRow],
+        model: &str,
+    ) -> Result<()> {
         // Writes embeddings, so the coverage snapshot is now stale.
         self.invalidate_coverage();
         // Validate the whole batch before opening the transaction so a bad row
@@ -3027,7 +3069,7 @@ impl Store for TursoStore {
             if let Err(e) = self
                 .conn
                 .execute(
-                    "UPDATE chunk SET embedding=?1, dims=?2, model=?3 WHERE id=?4",
+                    chunk_sql(table).store,
                     vec![
                         Value::Blob(bytes),
                         Value::Integer(row.dims as i64),
@@ -3045,31 +3087,30 @@ impl Store for TursoStore {
         Ok(())
     }
 
-    async fn prune_embeddings_except(&self, model: &str) -> Result<usize> {
+    async fn prune_embeddings_except_in(&self, table: ChunkTable, model: &str) -> Result<usize> {
         // Clears embeddings, so the coverage snapshot is now stale.
         self.invalidate_coverage();
         let n = self
             .conn
-            .execute(
-                "UPDATE chunk SET embedding=NULL, dims=NULL, model=NULL \
-                 WHERE embedding IS NOT NULL AND (model IS NULL OR model <> ?1)",
-                vec![Value::Text(model.to_string())],
-            )
+            .execute(chunk_sql(table).prune, vec![Value::Text(model.to_string())])
             .await?;
         Ok(n as usize)
     }
 
-    async fn embedding_coverage(&self) -> Result<EmbeddingCoverage> {
+    async fn embedding_coverage_of(&self, table: ChunkTable) -> Result<EmbeddingCoverage> {
         // Fast path in a tight scope so the std::sync guard is dropped before the
         // recompute await below (clippy::await_holding_lock), tag_cache style.
         {
             let cached = self.coverage_cache.lock().unwrap();
-            if let Some(cov) = cached.as_ref() {
+            if let Some(cov) = cached.get(&table) {
                 return Ok(cov.clone());
             }
         }
-        let cov = self.compute_coverage().await?;
-        *self.coverage_cache.lock().unwrap() = Some(cov.clone());
+        let cov = self.compute_coverage(table).await?;
+        self.coverage_cache
+            .lock()
+            .unwrap()
+            .insert(table, cov.clone());
         Ok(cov)
     }
 

@@ -29,8 +29,9 @@
 //!   access behind one mutex, this reproduces Turso's single-connection model and
 //!   gives the CAS the same atomicity.
 //! - Unlike Turso's unenforced `F32_BLOB`, pgvector enforces the `chunk.embedding`
-//!   column's declared width at insert. `store_embeddings` resizes it to the
-//!   active provider's `dims` on the fly (see `ensure_embedding_width`), so any
+//!   column's declared width at insert. `store_embeddings_in` resizes the
+//!   column of the chunk table it writes to the active provider's `dims` on the
+//!   fly (see `ensure_embedding_width`, which keeps the width per table), so any
 //!   provider works on either backend; a dims change already invalidates every
 //!   stored vector through the existing staleness machinery, so the resize rides
 //!   that invalidation instead of adding a new one.
@@ -67,9 +68,11 @@
 //!
 //!   The fix instead prevents the stale plan from ever being reused:
 //!   `embedding_generation`, an `AtomicU64` on `PostgresStore`, is bumped every
-//!   time `ensure_embedding_width` actually runs its ALTER. Both exposed
-//!   statements fold the current generation into their SQL text as a trailing
-//!   comment, so a width change gives each of them different SQL text and
+//!   time `ensure_embedding_width` actually runs its ALTER, on any chunk table.
+//!   It is one counter for every table, not one per table: a resize of any
+//!   table rotates the cache key of every exposed statement, which is safe and
+//!   costs one re-prepare. Both exposed statements fold the current
+//!   generation into their SQL text as a trailing comment, so a width change gives each of them different SQL text and
 //!   therefore a different sqlx cache key; every connection, not just the one
 //!   that ran the DDL, prepares fresh the next time it runs one of them after
 //!   a resize, and the plan it had cached under the old generation's text
@@ -106,7 +109,7 @@ use crate::alias::{AliasMap, query_uses_tags};
 use crate::error::{IndexError, Result};
 use crate::store::WorkClaim;
 use crate::store::{
-    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ContentMention,
+    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ChunkTable, ContentMention,
     ContradictionRow, DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage,
     EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode,
     GraphSlice, HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector,
@@ -229,11 +232,12 @@ pub struct PostgresStore {
     // Tag name to id, to avoid re-interning tags during a sync. Cleared on
     // rollback and wipe so a rolled-back tag id is never served stale.
     tag_cache: Mutex<HashMap<String, i64>>,
-    // The `chunk.embedding` column width last confirmed by this store, so a
-    // same-width `store_embeddings` call skips the catalog lookup. `None`
-    // until the first call; set by `ensure_embedding_width`, never by wipe
-    // (wiping rows never changes the column type).
-    embedding_width: Mutex<Option<i64>>,
+    // The `embedding` column width last confirmed by this store, per chunk
+    // table, so a same-width `store_embeddings_in` call skips the catalog
+    // lookup. Absent until the first call on that table; set by
+    // `ensure_embedding_width`, never by wipe (wiping rows never changes the
+    // column type).
+    embedding_width: Mutex<HashMap<ChunkTable, i64>>,
     // Bumped by `ensure_embedding_width` every time its `ALTER TABLE ... TYPE
     // vector({dims})` actually runs (never on the already-matches fast path).
     // `replace_chunks` folds the current value into its carry SELECT's SQL
@@ -244,20 +248,23 @@ pub struct PostgresStore {
     // `Ordering::Relaxed` is enough since the engine mutex already serializes
     // all store access, so there is never a concurrent reader to order against.
     embedding_generation: AtomicU64,
-    // The last computed embedding coverage snapshot, shared by effective_mode,
-    // the search staleness gate and CLI status so they issue one aggregate scan,
-    // not three. `None` means recompute on the next read. Interior mutability with
-    // the same std::sync discipline as tag_cache: the guard is taken in a tight
-    // scope and never held across an await (clippy::await_holding_lock).
+    // The last computed embedding coverage snapshot per chunk table, shared by
+    // effective_mode, the search staleness gate and CLI status so they issue
+    // one aggregate scan, not three. A table with no entry recomputes on its
+    // next read. Interior mutability with the same std::sync discipline as
+    // tag_cache: the guard is taken in a tight scope and never held across an
+    // await (clippy::await_holding_lock).
     //
-    // Invalidated (set to `None`) by exactly the Store methods that can change a
-    // chunk's embedding state, derived from the trait: store_embeddings (writes
-    // embeddings), replace_chunks (deletes and reinserts an engram's chunks),
-    // delete_engram (deletes an engram's chunks), clear_domain (deletes a domain's
-    // chunks), wipe (deletes every chunk) and rollback (reverts any of the above
-    // that ran inside the transaction). upsert_engram, upsert_engram_checked and
-    // rename_engram never touch the chunk table, so they are not invalidators.
-    coverage_cache: Mutex<Option<EmbeddingCoverage>>,
+    // Invalidated (cleared, every table at once) by exactly the Store methods
+    // that can change a chunk's embedding state, derived from the trait:
+    // store_embeddings_in (writes embeddings), prune_embeddings_except_in
+    // (clears them), replace_chunks (deletes and reinserts an engram's chunks),
+    // delete_engram (deletes an engram's chunks), clear_domain (deletes a
+    // domain's chunks), wipe (deletes every chunk) and rollback (reverts any of
+    // the above that ran inside the transaction). upsert_engram,
+    // upsert_engram_checked and rename_engram never touch the chunk table, so
+    // they are not invalidators.
+    coverage_cache: Mutex<HashMap<ChunkTable, EmbeddingCoverage>>,
 }
 
 /// A connection handle for one store method: either the pinned transaction
@@ -322,35 +329,30 @@ impl PostgresStore {
             schema_version,
             schema,
             tag_cache: Mutex::new(HashMap::new()),
-            embedding_width: Mutex::new(None),
+            embedding_width: Mutex::new(HashMap::new()),
             embedding_generation: AtomicU64::new(0),
-            coverage_cache: Mutex::new(None),
+            coverage_cache: Mutex::new(HashMap::new()),
         })
     }
 
-    /// Drop the cached embedding coverage snapshot so the next read recomputes it.
-    /// Called by every mutator that can change a chunk's embedding state. Kept in a
-    /// tight scope with no await so the std::sync guard never crosses a suspension
-    /// point.
+    /// Drop every cached embedding coverage snapshot so the next read of any
+    /// table recomputes it. One write invalidates every table: simple, and never
+    /// stale. Called by every mutator that can change a chunk's embedding state.
+    /// Kept in a tight scope with no await so the std::sync guard never crosses a
+    /// suspension point.
     fn invalidate_coverage(&self) {
-        *self.coverage_cache.lock().unwrap() = None;
+        self.coverage_cache.lock().unwrap().clear();
     }
 
-    /// Recompute the embedding coverage snapshot from the chunk table. This is the
-    /// one aggregate scan the cached `embedding_coverage()` fills from on a miss.
-    async fn compute_coverage(&self) -> Result<EmbeddingCoverage> {
+    /// Recompute the embedding coverage snapshot of one chunk table. This is the
+    /// one aggregate scan the cached `embedding_coverage_of()` fills from on a
+    /// miss.
+    async fn compute_coverage(&self, table: ChunkTable) -> Result<EmbeddingCoverage> {
+        let sql = chunk_sql(table);
         let mut conn = self.acquire().await?;
         let c = conn.as_mut();
-        let total = scalar_i64(&mut *c, "SELECT count(*) FROM chunk", vec![])
-            .await?
-            .max(0) as usize;
-        let rows = query_all(
-            &mut *c,
-            "SELECT model, dims, count(*) FROM chunk WHERE embedding IS NOT NULL \
-             GROUP BY model, dims ORDER BY count(*) DESC",
-            vec![],
-        )
-        .await?;
+        let total = scalar_i64(&mut *c, sql.count_all, vec![]).await?.max(0) as usize;
+        let rows = query_all(&mut *c, sql.count_embedded, vec![]).await?;
         let mut models = Vec::new();
         let mut embedded = 0usize;
         for r in &rows {
@@ -537,44 +539,47 @@ impl PostgresStore {
     /// fresh prepare everywhere, on this connection and every other one,
     /// without needing to reach them. See the module doc for the full hazard
     /// and why those statements cannot instead retry in place.
-    async fn ensure_embedding_width(&self, conn: &mut PgConnection, dims: usize) -> Result<()> {
+    ///
+    /// The width is kept per chunk table: each table's `embedding` column is
+    /// probed and resized on its own, through the statements `chunk_width_sql`
+    /// picks for `table`.
+    async fn ensure_embedding_width(
+        &self,
+        conn: &mut PgConnection,
+        table: ChunkTable,
+        dims: usize,
+    ) -> Result<()> {
         let dims = dims as i64;
-        if *self.embedding_width.lock().unwrap() == Some(dims) {
+        if self.embedding_width.lock().unwrap().get(&table) == Some(&dims) {
             return Ok(());
         }
+        let ddl = chunk_width_sql(table);
         // `atttypmod` on a pgvector column is the declared dimension count
         // itself (pgvector stores it unmodified, unlike the `length + 4`
         // convention `char(n)`/`varchar(n)` use), so no decoding is needed.
         // `to_regclass` resolves through the connection's `search_path`, so
         // this finds the right `chunk` table under per-test schema isolation
         // without any schema-qualification.
-        let current: Option<(i32,)> = sqlx::query_as(
-            "SELECT atttypmod FROM pg_attribute \
-             WHERE attrelid = to_regclass('chunk') AND attname = 'embedding' AND NOT attisdropped",
-        )
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(IndexError::from)?;
+        let current: Option<(i32,)> = sqlx::query_as(ddl.probe)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(IndexError::from)?;
         if current.map(|(t,)| t as i64) == Some(dims) {
-            *self.embedding_width.lock().unwrap() = Some(dims);
+            self.embedding_width.lock().unwrap().insert(table, dims);
             return Ok(());
         }
-        sqlx::query("DROP INDEX IF EXISTS idx_chunk_embedding")
+        sqlx::query(ddl.drop_index)
             .execute(&mut *conn)
             .await
             .map_err(IndexError::from)?;
-        sqlx::query(AssertSqlSafe(format!(
-            "ALTER TABLE chunk ALTER COLUMN embedding TYPE vector({dims}) USING NULL"
-        )))
-        .execute(&mut *conn)
-        .await
-        .map_err(IndexError::from)?;
-        sqlx::query(
-            "CREATE INDEX idx_chunk_embedding ON chunk USING hnsw (embedding vector_cosine_ops)",
-        )
-        .execute(&mut *conn)
-        .await
-        .map_err(IndexError::from)?;
+        sqlx::query(AssertSqlSafe((ddl.alter)(dims)))
+            .execute(&mut *conn)
+            .await
+            .map_err(IndexError::from)?;
+        sqlx::query(ddl.create_index)
+            .execute(&mut *conn)
+            .await
+            .map_err(IndexError::from)?;
         // The DDL above just changed the `chunk.embedding` column's typmod, so
         // any plan this connection had cached for a statement returning that
         // column is now stale. `clear_cached_statements` sheds `conn`'s own
@@ -589,7 +594,7 @@ impl PostgresStore {
             .await
             .map_err(IndexError::from)?;
         self.embedding_generation.fetch_add(1, Ordering::Relaxed);
-        *self.embedding_width.lock().unwrap() = Some(dims);
+        self.embedding_width.lock().unwrap().insert(table, dims);
         Ok(())
     }
 }
@@ -832,6 +837,79 @@ fn asset_sql(table: AssetTable) -> &'static AssetSql {
     match table {
         AssetTable::Engram => &ATTACHMENT_SQL,
         AssetTable::Reflection => &REFLECTION_ASSET_SQL,
+    }
+}
+
+/// The statements of one chunk table that do not depend on the query's shape.
+/// Picked by `match`, never built with `format!` for the table name, so each
+/// statement stays a literal the query-plan guard and a grep both read. The
+/// dynamic parts (placeholder lists, the cursor) are appended as before.
+struct ChunkSql {
+    /// `SELECT id, <owner>, seq, text, text_hash FROM <table> WHERE (embedding IS NULL OR model IS NULL OR model != $1)`
+    needing: &'static str,
+    /// The domain scope clause, opened with ` AND `; the placeholder list
+    /// goes between head and tail.
+    needing_scope_head: &'static str,
+    needing_scope_tail: &'static str,
+    /// The column the keyset cursor and the `ORDER BY` lead with (`seq` follows).
+    owner_col: &'static str,
+    store: &'static str,
+    prune: &'static str,
+    count_all: &'static str,
+    count_embedded: &'static str,
+}
+
+const CHUNK_SQL: ChunkSql = ChunkSql {
+    needing: "SELECT id, engram_id, seq, text, text_hash FROM chunk \
+              WHERE (embedding IS NULL OR model IS NULL OR model != $1)",
+    // -- actor: all - a draft's chunks reach the same embedding backlog a base
+    // row's do, which is what makes an overlay entry a full engram row rather
+    // than a second shape.
+    needing_scope_head: " AND engram_id IN (SELECT id FROM engram WHERE domain_id IN (",
+    needing_scope_tail: "))",
+    owner_col: "engram_id",
+    store: "UPDATE chunk SET embedding=$1, dims=$2, model=$3 WHERE id=$4",
+    prune: "UPDATE chunk SET embedding=NULL, dims=NULL, model=NULL \
+            WHERE embedding IS NOT NULL AND (model IS NULL OR model <> $1)",
+    count_all: "SELECT count(*) FROM chunk",
+    count_embedded: "SELECT model, dims, count(*) FROM chunk WHERE embedding IS NOT NULL \
+                     GROUP BY model, dims ORDER BY count(*) DESC",
+};
+
+fn chunk_sql(table: ChunkTable) -> &'static ChunkSql {
+    match table {
+        ChunkTable::Engram => &CHUNK_SQL,
+    }
+}
+
+/// The DDL `ensure_embedding_width` runs against one chunk table's `embedding`
+/// column. Picked by `match` like [`ChunkSql`]; the one statement that carries
+/// the width is a function, since the width is a type modifier, not a bind.
+struct ChunkWidthSql {
+    /// The column's declared width (`atttypmod`), or no row when the table is
+    /// missing. `to_regclass` resolves through the connection's `search_path`.
+    probe: &'static str,
+    /// Drops the HNSW index, which Postgres requires before a type change.
+    drop_index: &'static str,
+    /// Resizes the column to the given width, clearing every stored vector.
+    alter: fn(i64) -> String,
+    /// Recreates the HNSW index on the resized column.
+    create_index: &'static str,
+}
+
+const CHUNK_WIDTH_SQL: ChunkWidthSql = ChunkWidthSql {
+    probe: "SELECT atttypmod FROM pg_attribute \
+            WHERE attrelid = to_regclass('chunk') AND attname = 'embedding' AND NOT attisdropped",
+    drop_index: "DROP INDEX IF EXISTS idx_chunk_embedding",
+    alter: |dims| {
+        format!("ALTER TABLE chunk ALTER COLUMN embedding TYPE vector({dims}) USING NULL")
+    },
+    create_index: "CREATE INDEX idx_chunk_embedding ON chunk USING hnsw (embedding vector_cosine_ops)",
+};
+
+fn chunk_width_sql(table: ChunkTable) -> &'static ChunkWidthSql {
+    match table {
+        ChunkTable::Engram => &CHUNK_WIDTH_SQL,
     }
 }
 
@@ -2941,8 +3019,9 @@ impl Store for PostgresStore {
         Ok(())
     }
 
-    async fn chunks_needing_embedding(
+    async fn chunks_needing_embedding_in(
         &self,
+        table: ChunkTable,
         model: &str,
         domains: Option<&[DomainId]>,
         limit: usize,
@@ -2960,10 +3039,8 @@ impl Store for PostgresStore {
         // present, so the plan is a top-N sort over one page of chunk texts,
         // each capped by the chunker's token budget. Never add a `GROUP BY`
         // here, and never drop the `LIMIT`.
-        let mut sql = String::from(
-            "SELECT id, engram_id, seq, text, text_hash FROM chunk \
-             WHERE (embedding IS NULL OR model IS NULL OR model != $1)",
-        );
+        let chunk = chunk_sql(table);
+        let mut sql = String::from(chunk.needing);
         let mut params = vec![Param::Text(model.to_string())];
         let mut n = 2;
         if let Some(ids) = domains {
@@ -2979,26 +3056,24 @@ impl Store for PostgresStore {
                     p
                 })
                 .collect();
-            sql.push_str(&format!(
-                // -- actor: all - a draft's chunks reach the same embedding
-                // backlog a base row's do, which is what makes an overlay entry
-                // a full engram row rather than a second shape.
-                " AND engram_id IN (SELECT id FROM engram WHERE domain_id IN ({}))",
-                placeholders.join(",")
-            ));
+            // The scope clause's actor note sits on `CHUNK_SQL`.
+            sql.push_str(chunk.needing_scope_head);
+            sql.push_str(&placeholders.join(","));
+            sql.push_str(chunk.needing_scope_tail);
         }
-        if let Some((engram_id, seq)) = after {
+        let owner = chunk.owner_col;
+        if let Some((owner_id, seq)) = after {
             sql.push_str(&format!(
-                " AND (engram_id > ${n} OR (engram_id = ${} AND seq > ${}))",
+                " AND ({owner} > ${n} OR ({owner} = ${} AND seq > ${}))",
                 n + 1,
                 n + 2
             ));
-            params.push(Param::Int(engram_id));
-            params.push(Param::Int(engram_id));
+            params.push(Param::Int(owner_id));
+            params.push(Param::Int(owner_id));
             params.push(Param::Int(seq));
             n += 3;
         }
-        sql.push_str(&format!(" ORDER BY engram_id, seq LIMIT ${n}"));
+        sql.push_str(&format!(" ORDER BY {owner}, seq LIMIT ${n}"));
         params.push(Param::Int(i64::try_from(limit).unwrap_or(i64::MAX)));
         let mut conn = self.acquire().await?;
         let rows = query_all(conn.as_mut(), &sql, params).await?;
@@ -3014,7 +3089,12 @@ impl Store for PostgresStore {
             .collect())
     }
 
-    async fn store_embeddings(&self, batch: &[EmbeddingRow], model: &str) -> Result<()> {
+    async fn store_embeddings_in(
+        &self,
+        table: ChunkTable,
+        batch: &[EmbeddingRow],
+        model: &str,
+    ) -> Result<()> {
         // Writes embeddings, so the coverage snapshot is now stale.
         self.invalidate_coverage();
         // Validate the whole batch before any write so a bad row never leaves
@@ -3040,7 +3120,7 @@ impl Store for PostgresStore {
             }
         }
         for dims in widths {
-            self.ensure_embedding_width(&mut *c, dims).await?;
+            self.ensure_embedding_width(&mut *c, table, dims).await?;
         }
         // The per-row updates then commit together, mirroring `wipe`.
         sqlx::query("BEGIN")
@@ -3049,14 +3129,13 @@ impl Store for PostgresStore {
             .map_err(IndexError::from)?;
         for row in batch {
             let vector = pgvector::Vector::from(row.embedding.clone());
-            if let Err(e) =
-                sqlx::query("UPDATE chunk SET embedding=$1, dims=$2, model=$3 WHERE id=$4")
-                    .bind(vector)
-                    .bind(row.dims as i64)
-                    .bind(model)
-                    .bind(row.chunk_id)
-                    .execute(&mut *c)
-                    .await
+            if let Err(e) = sqlx::query(chunk_sql(table).store)
+                .bind(vector)
+                .bind(row.dims as i64)
+                .bind(model)
+                .bind(row.chunk_id)
+                .execute(&mut *c)
+                .await
             {
                 let _ = sqlx::query("ROLLBACK").execute(&mut *c).await;
                 return Err(e.into());
@@ -3069,32 +3148,32 @@ impl Store for PostgresStore {
         Ok(())
     }
 
-    async fn prune_embeddings_except(&self, model: &str) -> Result<usize> {
+    async fn prune_embeddings_except_in(&self, table: ChunkTable, model: &str) -> Result<usize> {
         // Clears embeddings, so the coverage snapshot is now stale.
         self.invalidate_coverage();
         let mut conn = self.acquire().await?;
-        let done = sqlx::query(
-            "UPDATE chunk SET embedding=NULL, dims=NULL, model=NULL \
-             WHERE embedding IS NOT NULL AND (model IS NULL OR model <> $1)",
-        )
-        .bind(model)
-        .execute(conn.as_mut())
-        .await
-        .map_err(IndexError::from)?;
+        let done = sqlx::query(chunk_sql(table).prune)
+            .bind(model)
+            .execute(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
         Ok(done.rows_affected() as usize)
     }
 
-    async fn embedding_coverage(&self) -> Result<EmbeddingCoverage> {
+    async fn embedding_coverage_of(&self, table: ChunkTable) -> Result<EmbeddingCoverage> {
         // Fast path in a tight scope so the std::sync guard is dropped before the
         // recompute await below (clippy::await_holding_lock), tag_cache style.
         {
             let cached = self.coverage_cache.lock().unwrap();
-            if let Some(cov) = cached.as_ref() {
+            if let Some(cov) = cached.get(&table) {
                 return Ok(cov.clone());
             }
         }
-        let cov = self.compute_coverage().await?;
-        *self.coverage_cache.lock().unwrap() = Some(cov.clone());
+        let cov = self.compute_coverage(table).await?;
+        self.coverage_cache
+            .lock()
+            .unwrap()
+            .insert(table, cov.clone());
         Ok(cov)
     }
 

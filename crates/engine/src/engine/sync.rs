@@ -1,5 +1,5 @@
 use super::*;
-use crystalline_index::SnapshotChoice;
+use crystalline_index::{ChunkTable, SnapshotChoice};
 
 impl Engine {
     // --- sync / reindex (ctl + CLI) ------------------------------------------
@@ -829,46 +829,57 @@ impl Engine {
     }
 
     /// Clear the vectors of every model but the active one, but only once the
-    /// active model covers every chunk in the index.
+    /// active model covers every chunk, table by table.
     ///
-    /// `None` says the condition was not met and nothing was touched; `Some(n)`
-    /// says the prune ran and cleared `n` chunks. The gate is the whole point:
-    /// below full coverage the chunks a pass has not reached yet still carry
-    /// the previous model's vectors, and those are what search and the
-    /// neighbours answer from until it does.
+    /// `None` says no chunk table met the condition and nothing was touched;
+    /// `Some(n)` says the prune ran on at least one table and cleared `n`
+    /// chunks across them. The gate is the whole point: below full coverage
+    /// the chunks a pass has not reached yet still carry the previous model's
+    /// vectors, and those are what search and the neighbours answer from until
+    /// it does. Each table is gated on its own coverage, so a table the pass
+    /// has finished is pruned while another still waits.
     pub async fn prune_stale_embeddings_if_complete(&self) -> Result<Option<usize>> {
         let store = self.store.lock().await;
-        let coverage = store.embedding_coverage().await?;
-        if coverage.total_chunks == 0
-            || coverage.embedded_for(&self.model_id) < coverage.total_chunks
-        {
-            return Ok(None);
+        let mut answer: Option<usize> = None;
+        for &table in ChunkTable::ALL {
+            let coverage = store.embedding_coverage_of(table).await?;
+            if coverage.total_chunks == 0
+                || coverage.embedded_for(&self.model_id) < coverage.total_chunks
+            {
+                continue;
+            }
+            // Under the gate above every chunk of this table already carries
+            // the active model, so a snapshot showing one embedding group and
+            // no chunk this model does not account for has already proved the
+            // statement would match nothing. Skip it there: a pass runs on
+            // every write and the statement is a scan of the chunk table. What
+            // survives this is the index the snapshot cannot vouch for, a
+            // second group or an embedded chunk outside the model's count, and
+            // that one still runs.
+            if coverage.models.len() <= 1
+                && coverage.embedded_chunks == coverage.embedded_for(&self.model_id)
+            {
+                answer.get_or_insert(0);
+                continue;
+            }
+            #[cfg(any(test, feature = "testing"))]
+            self.prune_statements
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let pruned = store
+                .prune_embeddings_except_in(table, &self.model_id)
+                .await?;
+            if pruned > 0 {
+                tracing::info!(
+                    model = %self.model_id,
+                    table = ?table,
+                    pruned,
+                    "cleared the vectors of a model this install no longer uses"
+                );
+            }
+            *answer.get_or_insert(0) += pruned;
         }
-        // Under the gate above every chunk already carries the active model, so
-        // a snapshot showing one embedding group and no chunk this model does
-        // not account for has already proved the statement would match nothing.
-        // Skip it there: a pass runs on every write and the statement is a scan
-        // of the chunk table. What survives this is the index the snapshot
-        // cannot vouch for, a second group or an embedded chunk outside the
-        // model's count, and that one still runs.
-        if coverage.models.len() <= 1
-            && coverage.embedded_chunks == coverage.embedded_for(&self.model_id)
-        {
-            return Ok(Some(0));
-        }
-        #[cfg(any(test, feature = "testing"))]
-        self.prune_statements
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let pruned = store.prune_embeddings_except(&self.model_id).await?;
         drop(store);
-        if pruned > 0 {
-            tracing::info!(
-                model = %self.model_id,
-                pruned,
-                "cleared the vectors of a model this install no longer uses"
-            );
-        }
-        Ok(Some(pruned))
+        Ok(answer)
     }
 
     /// Best-effort WAL checkpoint: reclaims disk after a burst of writes (a
@@ -1022,68 +1033,80 @@ impl Engine {
         // The backlog is walked one keyset page at a time so a large first index
         // never holds every chunk's text at once. The store lock is held only to
         // pull a page and to write vectors, never across the embed call.
+        //
+        // Every chunk table is walked in turn, engrams first, each with its own
+        // keyset cursor: a cursor is a position in one table's ordering and
+        // means nothing in another's.
         let mut embedded = 0usize;
-        let mut cursor: Option<(i64, i64)> = None;
-        loop {
-            let mut jobs = {
-                let store = self.store.lock().await;
-                store
-                    .chunks_needing_embedding(&model, scope.as_deref(), page_size, cursor)
-                    .await?
-            };
-            if jobs.is_empty() {
-                break;
-            }
-            // A short page is the last one. The cursor is taken from the store's
-            // ordering, before the length sort reorders the page.
-            let last_page = jobs.len() < page_size;
-            cursor = jobs.last().map(|j| (j.engram_id, j.seq));
-            // Length-sort so batches pay for their longest member once instead
-            // of padding every short chunk out to whatever long one happened to
-            // land in the same batch.
-            order_jobs_for_batching(&mut jobs);
-            if activity.is_none() {
-                *activity = Some(ActivityState::begin(&self.activity, "embed", None));
-            }
-            for batch in jobs.chunks(EMBED_BATCH) {
-                let texts: Vec<String> = batch.iter().map(|j| j.text.clone()).collect();
-                // A batch the provider cannot handle is logged and skipped: its
-                // chunks keep no embedding, so they stay in the backlog for a
-                // later pass instead of starving every batch behind them.
-                let vectors = match provider.embed(&texts).await {
-                    Ok(v) if v.len() == batch.len() => v,
-                    Ok(v) => {
-                        tracing::warn!(
-                            chunks = ?batch.iter().map(|j| j.chunk_id).collect::<Vec<_>>(),
-                            "skipping an embed batch: the provider returned {} vectors for {} inputs",
-                            v.len(),
-                            batch.len()
-                        );
-                        continue;
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            chunks = ?batch.iter().map(|j| j.chunk_id).collect::<Vec<_>>(),
-                            "skipping an embed batch the provider rejected: {e}"
-                        );
-                        continue;
-                    }
+        for &table in ChunkTable::ALL {
+            let mut cursor: Option<(i64, i64)> = None;
+            loop {
+                let mut jobs = {
+                    let store = self.store.lock().await;
+                    store
+                        .chunks_needing_embedding_in(
+                            table,
+                            &model,
+                            scope.as_deref(),
+                            page_size,
+                            cursor,
+                        )
+                        .await?
                 };
-                let rows: Vec<crystalline_index::EmbeddingRow> = batch
-                    .iter()
-                    .zip(vectors)
-                    .map(|(job, embedding)| crystalline_index::EmbeddingRow {
-                        chunk_id: job.chunk_id,
-                        dims: embedding.len(),
-                        embedding,
-                    })
-                    .collect();
-                let store = self.store.lock().await;
-                store.store_embeddings(&rows, &model).await?;
-                embedded += batch.len();
-            }
-            if last_page {
-                break;
+                if jobs.is_empty() {
+                    break;
+                }
+                // A short page is the last one. The cursor is taken from the store's
+                // ordering, before the length sort reorders the page.
+                let last_page = jobs.len() < page_size;
+                cursor = jobs.last().map(|j| (j.engram_id, j.seq));
+                // Length-sort so batches pay for their longest member once instead
+                // of padding every short chunk out to whatever long one happened to
+                // land in the same batch.
+                order_jobs_for_batching(&mut jobs);
+                if activity.is_none() {
+                    *activity = Some(ActivityState::begin(&self.activity, "embed", None));
+                }
+                for batch in jobs.chunks(EMBED_BATCH) {
+                    let texts: Vec<String> = batch.iter().map(|j| j.text.clone()).collect();
+                    // A batch the provider cannot handle is logged and skipped: its
+                    // chunks keep no embedding, so they stay in the backlog for a
+                    // later pass instead of starving every batch behind them.
+                    let vectors = match provider.embed(&texts).await {
+                        Ok(v) if v.len() == batch.len() => v,
+                        Ok(v) => {
+                            tracing::warn!(
+                                chunks = ?batch.iter().map(|j| j.chunk_id).collect::<Vec<_>>(),
+                                "skipping an embed batch: the provider returned {} vectors for {} inputs",
+                                v.len(),
+                                batch.len()
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                chunks = ?batch.iter().map(|j| j.chunk_id).collect::<Vec<_>>(),
+                                "skipping an embed batch the provider rejected: {e}"
+                            );
+                            continue;
+                        }
+                    };
+                    let rows: Vec<crystalline_index::EmbeddingRow> = batch
+                        .iter()
+                        .zip(vectors)
+                        .map(|(job, embedding)| crystalline_index::EmbeddingRow {
+                            chunk_id: job.chunk_id,
+                            dims: embedding.len(),
+                            embedding,
+                        })
+                        .collect();
+                    let store = self.store.lock().await;
+                    store.store_embeddings_in(table, &rows, &model).await?;
+                    embedded += batch.len();
+                }
+                if last_page {
+                    break;
+                }
             }
         }
         Ok(embedded)

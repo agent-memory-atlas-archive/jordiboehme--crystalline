@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use crystalline_core::config::EmbeddingsConfig;
 
 use crate::error::{IndexError, Result};
-use crate::store::{ChunkJob, EmbeddingRow, Store};
+use crate::store::{ChunkJob, ChunkTable, EmbeddingRow, Store};
 
 pub use chunk::{
     ChunkParams, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ID, chunk_engram, chunk_engram_with,
@@ -233,63 +233,70 @@ pub async fn run_embedding_pass_with_page(
     let page_size = page_size.max(1);
     let mut done = 0usize;
     let mut batches = 0usize;
-    let mut cursor: Option<(i64, i64)> = None;
-    loop {
-        // The standalone `sync --embed` / `reindex --embed` fill embeds every
-        // domain (`None`); the daemon's background queue scopes its own pass.
-        let mut jobs = store
-            .chunks_needing_embedding(provider.model_id(), None, page_size, cursor)
-            .await?;
-        if jobs.is_empty() {
-            break;
-        }
-        // A short page is the last one. The cursor is taken from the store's
-        // ordering, before the length sort reorders the page.
-        let last_page = jobs.len() < page_size;
-        cursor = jobs.last().map(|j| (j.engram_id, j.seq));
-        order_jobs_for_batching(&mut jobs);
-        let total = done + jobs.len();
+    // Every chunk table in turn, engrams first, each with its own keyset
+    // cursor: a cursor is a position in one table's ordering and means
+    // nothing in another's.
+    for &table in ChunkTable::ALL {
+        let mut cursor: Option<(i64, i64)> = None;
+        loop {
+            // The standalone `sync --embed` / `reindex --embed` fill embeds every
+            // domain (`None`); the daemon's background queue scopes its own pass.
+            let mut jobs = store
+                .chunks_needing_embedding_in(table, provider.model_id(), None, page_size, cursor)
+                .await?;
+            if jobs.is_empty() {
+                break;
+            }
+            // A short page is the last one. The cursor is taken from the store's
+            // ordering, before the length sort reorders the page.
+            let last_page = jobs.len() < page_size;
+            cursor = jobs.last().map(|j| (j.engram_id, j.seq));
+            order_jobs_for_batching(&mut jobs);
+            let total = done + jobs.len();
 
-        for batch in jobs.chunks(EMBED_BATCH_SIZE) {
-            let texts: Vec<String> = batch.iter().map(|j| j.text.clone()).collect();
-            // A batch the provider cannot handle is logged and skipped, never
-            // fatal: its chunks keep no embedding, so they stay in the backlog
-            // for a later pass instead of starving every batch behind them.
-            let vectors = match provider.embed(&texts).await {
-                Ok(v) if v.len() == batch.len() => v,
-                Ok(v) => {
-                    tracing::warn!(
-                        chunks = ?batch.iter().map(|j| j.chunk_id).collect::<Vec<_>>(),
-                        "skipping an embed batch: the provider returned {} vectors for {} inputs",
-                        v.len(),
-                        batch.len()
-                    );
-                    continue;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        chunks = ?batch.iter().map(|j| j.chunk_id).collect::<Vec<_>>(),
-                        "skipping an embed batch the provider rejected: {e}"
-                    );
-                    continue;
-                }
-            };
-            let rows: Vec<EmbeddingRow> = batch
-                .iter()
-                .zip(vectors)
-                .map(|(job, embedding)| EmbeddingRow {
-                    chunk_id: job.chunk_id,
-                    dims: embedding.len(),
-                    embedding,
-                })
-                .collect();
-            store.store_embeddings(&rows, provider.model_id()).await?;
-            done += batch.len();
-            batches += 1;
-            progress(done, total);
-        }
-        if last_page {
-            break;
+            for batch in jobs.chunks(EMBED_BATCH_SIZE) {
+                let texts: Vec<String> = batch.iter().map(|j| j.text.clone()).collect();
+                // A batch the provider cannot handle is logged and skipped, never
+                // fatal: its chunks keep no embedding, so they stay in the backlog
+                // for a later pass instead of starving every batch behind them.
+                let vectors = match provider.embed(&texts).await {
+                    Ok(v) if v.len() == batch.len() => v,
+                    Ok(v) => {
+                        tracing::warn!(
+                            chunks = ?batch.iter().map(|j| j.chunk_id).collect::<Vec<_>>(),
+                            "skipping an embed batch: the provider returned {} vectors for {} inputs",
+                            v.len(),
+                            batch.len()
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            chunks = ?batch.iter().map(|j| j.chunk_id).collect::<Vec<_>>(),
+                            "skipping an embed batch the provider rejected: {e}"
+                        );
+                        continue;
+                    }
+                };
+                let rows: Vec<EmbeddingRow> = batch
+                    .iter()
+                    .zip(vectors)
+                    .map(|(job, embedding)| EmbeddingRow {
+                        chunk_id: job.chunk_id,
+                        dims: embedding.len(),
+                        embedding,
+                    })
+                    .collect();
+                store
+                    .store_embeddings_in(table, &rows, provider.model_id())
+                    .await?;
+                done += batch.len();
+                batches += 1;
+                progress(done, total);
+            }
+            if last_page {
+                break;
+            }
         }
     }
     Ok(EmbedReport {
