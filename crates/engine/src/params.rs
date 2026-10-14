@@ -646,6 +646,45 @@ pub struct WriteReflectionParams {
     pub create_only: bool,
 }
 
+/// Parameters for `discuss`.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct DiscussParams {
+    /// The domain whose Reflection holds the reflection.
+    pub domain: String,
+    /// open (the default), answer, resolve, reopen or list.
+    #[serde(default)]
+    pub action: Option<String>,
+    /// The reflection's path inside reflections/. For list, omit it to list
+    /// the threads of every reflection.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// open: the section the thread is about, by id or heading.
+    #[serde(default)]
+    pub section: Option<String>,
+    /// open: the exact passage the thread is about, quoted from the section.
+    /// Omit to discuss the whole section.
+    #[serde(default)]
+    pub quote: Option<String>,
+    /// open: which occurrence of the quote in the section, counting from 1.
+    #[serde(default)]
+    pub occurrence: Option<u32>,
+    /// answer, resolve, reopen: the thread id (t-...).
+    #[serde(default)]
+    pub thread: Option<String>,
+    /// What you say. For resolve it is the short outcome, and it is
+    /// required. Write it in plain words for people: no engram links.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// open: this thread answers a person's change to the section (a feedback
+    /// item from reflect) instead of settling it; the feedback item waits while
+    /// the thread is open. Needs curate access.
+    #[serde(default)]
+    pub answers_feedback: bool,
+    /// list: open (the default), resolved or all.
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
 /// Parameters for `configure`. Omit everything to see the current settings,
 /// and with `github.enabled` on the GitHub connection too; with it off the
 /// snapshot reports that the feature is off and how to turn it on, leaving

@@ -149,6 +149,7 @@ fn reflection_variants_stay_in_their_modules() {
             "index/src/sync.rs",
             "engine/src/engine/reflection.rs",
             "engine/src/engine/rename_domain.rs",
+            "engine/src/engine/threads.rs",
         ],
     )];
     let mut strays: Vec<(String, String, &str)> = Vec::new();

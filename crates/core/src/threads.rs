@@ -46,6 +46,15 @@ pub struct Anchor {
     pub occurrence: u32,
 }
 
+/// What a thread is about. The one place this module names a kind of
+/// document; the engine dispatches on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThreadTarget {
+    /// A Reflection page, by its path inside `reflections/`. Its threads
+    /// live in `<page>.threads.md` beside it.
+    Reflection { path: String },
+}
+
 /// Open or resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

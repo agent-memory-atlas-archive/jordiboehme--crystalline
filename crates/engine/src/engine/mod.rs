@@ -1376,6 +1376,7 @@ pub enum PreviewCredential {
 pub use crate::rename::RenameHold;
 pub use crate::rename::RenameStep;
 pub use crate::scope::OWNER_IDENTITY_NAME;
+pub use crystalline_core::threads::ThreadTarget;
 pub use domain_settings::{DOMAIN_SETTINGS_HOW, PolicyEdit, VIRTUAL_NO_RULES};
 #[cfg(any(test, feature = "testing"))]
 pub use names::SpellingPushFault;
@@ -5608,6 +5609,7 @@ mod review_mode;
 mod schemas;
 mod search;
 mod sync;
+mod threads;
 mod transfer;
 mod validate;
 mod write;

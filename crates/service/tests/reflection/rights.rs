@@ -50,6 +50,28 @@ pub async fn contributor_engine() -> (crate::fixture::Fx, Scope) {
     )
 }
 
+/// A signed-in instance viewer on the shared domain `eng`: Read.
+pub async fn viewer_engine(files: &[(&str, &str)]) -> (crate::fixture::Fx, Scope) {
+    let fx = fixture(files).await;
+    let auth = Arc::new(
+        AuthStore::open(&fx.tmp.path().join("web-auth.db"))
+            .await
+            .unwrap(),
+    );
+    auth.add_user("vera", "Vera", None, Role::Viewer, "pw12345678")
+        .await
+        .unwrap();
+    fx.engine
+        .set_domain_access(Arc::new(DomainAccess::new(auth)));
+    (
+        fx,
+        Scope::User {
+            account: "vera".into(),
+            admin: false,
+        },
+    )
+}
+
 /// `eng` shared; `nora` an instance account with knowledge `none` and
 /// Reflection `contributor`.
 pub async fn shared_contributor_engine() -> (crate::fixture::Fx, Scope) {
