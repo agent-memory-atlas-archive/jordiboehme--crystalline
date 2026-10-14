@@ -574,6 +574,22 @@ impl Engine {
             return Ok(review::left_json(domain, Vec::new(), Vec::new(), 0));
         }
 
+        // A folded MANIFEST draft can switch the Reflection on: the draft was
+        // screened when it was written, and the fold is where the switch
+        // lands. The pact is seeded first, the way the policy edit seeds it
+        // before it writes the switch, and before the key comes off and the
+        // rooms close: a seed that fails refuses the fold with nothing
+        // changed, so the same call works once the folder takes the pact. A
+        // pact without the switch is harmless, as the policy edit accepts.
+        if let Some(root) = &root
+            && folds_switch_on(root, &folding)
+            && let Err(e) = self.seed_pact(domain).await
+        {
+            return Err(EngineError::Conflict(format!(
+                "a draft of the MANIFEST switches Reflection on, and its PACT.md could not be written ({e}), so nothing was folded and the domain still reviews changes"
+            )));
+        }
+
         // The key comes off first, and then the rooms go, and that pair is the
         // whole of step 2: see the ordering on [`Engine::set_review_mode`].
         //
@@ -628,22 +644,6 @@ impl Engine {
                 "{refusal}. The folder changed while this domain's co-editing rooms were being \
                  closed, so nothing was folded and the domain reviews changes again; what those \
                  rooms saved is in the folder now, which `origin status` lists as out-of-band work"
-            )));
-        }
-
-        // A folded MANIFEST draft can switch the Reflection on: the draft was
-        // screened when it was written, and the fold is where the switch
-        // lands. The pact is seeded first, the way the policy edit seeds it
-        // before it writes the switch. A seed that fails refuses the fold the
-        // way the collision above does: the key goes back on and nothing is
-        // folded, so the same call works once the folder takes the pact.
-        if let Some(root) = &root
-            && folds_switch_on(root, &folding)
-            && let Err(e) = self.seed_pact(domain).await
-        {
-            self.write_review_key(domain, Some(crystalline_core::config::ReviewMode::Overlay))?;
-            return Err(EngineError::Conflict(format!(
-                "a draft of the MANIFEST switches Reflection on, and its PACT.md could not be written ({e}), so nothing was folded and the domain reviews changes again"
             )));
         }
 

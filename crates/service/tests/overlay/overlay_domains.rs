@@ -1810,6 +1810,7 @@ async fn a_pact_that_cannot_be_seeded_refuses_the_fold_for_a_retry() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("PACT.md could not be written"), "{err}");
+    assert!(err.contains("still reviews changes"), "{err}");
     assert_eq!(
         std::fs::read_to_string(root.join("MANIFEST.md")).unwrap(),
         MANIFEST,
