@@ -501,3 +501,52 @@ async fn a_withdraw_after_the_switch_took_effect_names_the_reflection_files() {
     );
     assert!(root.join("kept.md").exists());
 }
+
+/// Adding a domain from its origin over a folder that already holds one
+/// counts the local changes with the Reflection mode in effect: the MANIFEST
+/// says `reflection: on`, but an engram still lives under `reflections/`, so
+/// the switch is pending and that engram is a change like any other.
+#[tokio::test]
+async fn adopting_a_folder_counts_a_pending_engram_as_a_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(MockProvider::new());
+    let tree: BTreeMap<String, Vec<u8>> =
+        [("MANIFEST.md".to_string(), team_manifest("reflection: on\n"))]
+            .into_iter()
+            .collect();
+    let commit = mock.add_commit(tree);
+    mock.set_branch("main", &commit);
+    let domains_root = tmp.path().join("domains");
+    let root = domains_root.join("eng");
+    std::fs::create_dir_all(root.join("reflections")).unwrap();
+    std::fs::write(root.join("MANIFEST.md"), team_manifest("reflection: on\n")).unwrap();
+    std::fs::write(
+        root.join("reflections/note.md"),
+        engram("Note", "reflections/note", "- [fact] mine"),
+    )
+    .unwrap();
+    let cfg = GlobalConfig {
+        github: Some(GitHubConfig {
+            enabled: Some(true),
+            ..GitHubConfig::default()
+        }),
+        domains_root: Some(domains_root.clone()),
+        ..GlobalConfig::default()
+    };
+    let store = TursoStore::open_in_memory().await.unwrap();
+    let eng = Engine::new(
+        Arc::new(Mutex::new(store)),
+        cfg,
+        None,
+        Some(tmp.path().join("config.yaml")),
+    )
+    .with_origin_provider(mock)
+    .with_origins_dir(tmp.path().join("origins"))
+    .with_state_dir(tmp.path().to_path_buf());
+    let added = eng
+        .origin_add("acme/eng-knowledge", None, None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(added["adopted"], true, "{added}");
+    assert_eq!(added["local_changes"], 1, "{added}");
+}

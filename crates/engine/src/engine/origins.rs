@@ -274,9 +274,15 @@ impl Engine {
         };
         let state_dir = self.origin_state_dir(&domain_name)?;
         progress_at(1, &format!("downloading {repo}"));
-        let report = ops::subscribe(provider.as_ref(), &spec, &root, &state_dir)
-            .await
-            .inspect_err(|e| self.drop_github_credential_on_auth(e))?;
+        let report = ops::subscribe(
+            provider.as_ref(),
+            &spec,
+            &root,
+            &state_dir,
+            subscribed_reflection_mode,
+        )
+        .await
+        .inspect_err(|e| self.drop_github_credential_on_auth(e))?;
         progress_at(
             2,
             &format!(
@@ -783,9 +789,15 @@ impl Engine {
                 root.display()
             ))
         })?;
-        let report = ops::subscribe(provider.as_ref(), spec, root, state_dir)
-            .await
-            .inspect_err(|e| self.drop_github_credential_on_auth(e))?;
+        let report = ops::subscribe(
+            provider.as_ref(),
+            spec,
+            root,
+            state_dir,
+            subscribed_reflection_mode,
+        )
+        .await
+        .inspect_err(|e| self.drop_github_credential_on_auth(e))?;
 
         // Tell a running daemon's watcher to start watching the freshly
         // bootstrapped root, the same signal `origin_add` sends.
@@ -3684,4 +3696,12 @@ enum Holder {
     Connected(DomainEntry),
     /// An origin-less file domain rooted at this path, adoptable in place.
     Adopt(PathBuf, DomainEntry),
+}
+
+/// The Reflection mode in effect at the root of a domain being subscribed:
+/// the index holds no row of it yet, so the files under `reflections/`
+/// decide, the fallback [`crystalline_index::reflection_mode`] takes when
+/// nothing is recorded.
+fn subscribed_reflection_mode(root: &Path) -> crystalline_core::ReflectionMode {
+    crystalline_index::reflection_mode(root, std::iter::empty::<&str>())
 }

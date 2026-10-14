@@ -407,11 +407,19 @@ struct UpstreamEdit {
 /// counterpart are materialized and no local file is ever overwritten or
 /// deleted, so an existing file that differs from the origin simply becomes
 /// an ordinary local change against the new base, ready to share or update.
+///
+/// `reflection` answers the domain's Reflection mode in effect at its root,
+/// asked once the tree is materialized, so the count of local changes an
+/// adoption reports agrees with the change list: while a switch is pending
+/// the engrams under `reflections/` are changes like any other. This crate
+/// cannot read the index the mode is decided from, so the caller hands in
+/// how ([`declared_reflection_mode`] when it has nothing better).
 pub async fn subscribe(
     provider: &dyn Provider,
     spec: &OriginSpec,
     domain_root: &Path,
     state_dir: &Path,
+    reflection: fn(&Path) -> crystalline_core::ReflectionMode,
 ) -> Result<SubscribeReport, RemoteError> {
     // An unconditional probe (no etag) must report a concrete head; only a
     // conditional probe can answer Unchanged, so an Unchanged here is a
@@ -506,15 +514,8 @@ pub async fn subscribe(
 
     let engrams = extracted.keys().filter(|p| p.ends_with(".md")).count();
     let local_changes = if adopted {
-        detect_local_changes_against(
-            domain_root,
-            &files,
-            state_dir,
-            crystalline_core::ReflectionMode::declared(crystalline_core::reflection_at(
-                domain_root,
-            )),
-        )?
-        .substantive_count()
+        detect_local_changes_against(domain_root, &files, state_dir, reflection(domain_root))?
+            .substantive_count()
     } else {
         0
     };
@@ -535,6 +536,14 @@ pub async fn subscribe(
         adopted,
         local_changes,
     })
+}
+
+/// The Reflection mode the MANIFEST at `root` declares, read without the
+/// index: `reflection: on` reads as in effect even while engrams still wait
+/// under `reflections/`. For a caller of [`subscribe`] with no way to ask
+/// the pending check.
+pub fn declared_reflection_mode(root: &Path) -> crystalline_core::ReflectionMode {
+    crystalline_core::ReflectionMode::declared(crystalline_core::reflection_at(root))
 }
 
 /// Above this many candidates a `NotADomain` refusal stops listing and starts

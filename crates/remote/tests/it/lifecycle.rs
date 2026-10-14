@@ -26,8 +26,8 @@ use crystalline_remote::error::{PREVIEW_FALLS_BACK, preview_proposal_open_note};
 use crystalline_remote::merge::ConflictKind;
 use crystalline_remote::ops::{
     CommitReport, DIRECT_NO_AMEND, OriginStatusReport, PlannedAction, ProposeOutcome, PullReport,
-    Resolution, ShareOptions, SubscribeReport, propose, propose_preview, pull, resolve, status,
-    subscribe, withdraw,
+    Resolution, ShareOptions, SubscribeReport, declared_reflection_mode, propose, propose_preview,
+    pull, resolve, status, subscribe, withdraw,
 };
 use crystalline_remote::provider::{
     Feedback, OriginSpec, ProposalRequest, ProposalState, Provider,
@@ -84,9 +84,15 @@ async fn subscribe_at(mock: &MockProvider, commit: &str) -> (Subscribed, Subscri
     let state = tempfile::tempdir().unwrap();
     let domain_root = work.path().join("domain");
     let state_dir = state.path().join("origin");
-    let report = subscribe(mock, &spec(), &domain_root, &state_dir)
-        .await
-        .expect("subscribe should succeed");
+    let report = subscribe(
+        mock,
+        &spec(),
+        &domain_root,
+        &state_dir,
+        declared_reflection_mode,
+    )
+    .await
+    .expect("subscribe should succeed");
     (
         Subscribed {
             _work: work,
@@ -132,9 +138,15 @@ async fn subscribe_named(
     let state = tempfile::tempdir().unwrap();
     let domain_root = work.path().join(domain_name);
     let state_dir = state.path().join("origin");
-    subscribe(mock, spec, &domain_root, &state_dir)
-        .await
-        .expect("subscribe should succeed");
+    subscribe(
+        mock,
+        spec,
+        &domain_root,
+        &state_dir,
+        declared_reflection_mode,
+    )
+    .await
+    .expect("subscribe should succeed");
     Subscribed {
         _work: work,
         _state: state,
@@ -340,9 +352,15 @@ async fn scenario_01_subscribe_without_manifest_is_not_a_domain_and_writes_nothi
     let domain_root = work.path().join("domain");
     let state_dir = state.path().join("origin");
 
-    let err = subscribe(&mock, &spec(), &domain_root, &state_dir)
-        .await
-        .unwrap_err();
+    let err = subscribe(
+        &mock,
+        &spec(),
+        &domain_root,
+        &state_dir,
+        declared_reflection_mode,
+    )
+    .await
+    .unwrap_err();
     assert!(
         matches!(err, crystalline_remote::RemoteError::NotADomain { .. }),
         "{err:?}"
@@ -379,9 +397,15 @@ async fn scenario_01_subscribe_names_a_manifest_found_one_folder_down() {
     let domain_root = work.path().join("domain");
     let state_dir = state.path().join("origin");
 
-    let err = subscribe(&mock, &spec(), &domain_root, &state_dir)
-        .await
-        .unwrap_err();
+    let err = subscribe(
+        &mock,
+        &spec(),
+        &domain_root,
+        &state_dir,
+        declared_reflection_mode,
+    )
+    .await
+    .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("memory/MANIFEST.md"), "{msg}");
     // Named as what it is passed as: the subpath is the `path` parameter, and
@@ -410,9 +434,15 @@ async fn scenario_01_subscribe_lists_manifests_at_two_depths_shallowest_first() 
     let domain_root = work.path().join("domain");
     let state_dir = state.path().join("origin");
 
-    let err = subscribe(&mock, &spec(), &domain_root, &state_dir)
-        .await
-        .unwrap_err();
+    let err = subscribe(
+        &mock,
+        &spec(),
+        &domain_root,
+        &state_dir,
+        declared_reflection_mode,
+    )
+    .await
+    .unwrap_err();
     let msg = err.to_string();
     let memory_at = msg.find("memory/MANIFEST.md").expect(&msg);
     let archive_at = msg.find("archive/notes/MANIFEST.md").expect(&msg);
@@ -453,9 +483,15 @@ async fn scenario_01_subscribe_at_a_subpath_names_a_manifest_found_elsewhere_und
     let domain_root = work.path().join("domain");
     let state_dir = state.path().join("origin");
 
-    let err = subscribe(&mock, &requested, &domain_root, &state_dir)
-        .await
-        .unwrap_err();
+    let err = subscribe(
+        &mock,
+        &requested,
+        &domain_root,
+        &state_dir,
+        declared_reflection_mode,
+    )
+    .await
+    .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("no MANIFEST.md was found at wrong"), "{msg}");
     assert!(msg.contains("wrong/memory/MANIFEST.md"), "{msg}");
@@ -485,9 +521,15 @@ async fn scenario_01_subscribe_into_a_non_empty_directory_adopts_in_place() {
     write(&domain_root.join("notes/local-only.md"), b"mine");
     let state_dir = state.path().join("origin");
 
-    let report = subscribe(&mock, &spec(), &domain_root, &state_dir)
-        .await
-        .expect("a non-empty target is connected in place");
+    let report = subscribe(
+        &mock,
+        &spec(),
+        &domain_root,
+        &state_dir,
+        declared_reflection_mode,
+    )
+    .await
+    .expect("a non-empty target is connected in place");
 
     assert!(report.adopted);
     assert_eq!(report.base_commit, c1);
@@ -4530,9 +4572,15 @@ async fn escaping_decl_fails_subscribe_and_pull() {
     let state = tempfile::tempdir().unwrap();
     let domain_root = work.path().join("domain");
     let state_dir = state.path().join("origin");
-    let err = subscribe(&mock, &spec, &domain_root, &state_dir)
-        .await
-        .unwrap_err();
+    let err = subscribe(
+        &mock,
+        &spec,
+        &domain_root,
+        &state_dir,
+        declared_reflection_mode,
+    )
+    .await
+    .unwrap_err();
     assert!(
         matches!(err, crystalline_remote::RemoteError::State(_)),
         "{err:?}"
@@ -4695,9 +4743,15 @@ async fn mirror_flows_through_resolve_scan_and_desired_set() {
     let state_dir = crystalline_core::config::origin_state_dir(domain).unwrap();
     let work = tempfile::tempdir().unwrap();
     let domain_root = work.path().join("harbor");
-    subscribe(&mock, &spec, &domain_root, &state_dir)
-        .await
-        .unwrap();
+    subscribe(
+        &mock,
+        &spec,
+        &domain_root,
+        &state_dir,
+        declared_reflection_mode,
+    )
+    .await
+    .unwrap();
 
     // A team-domain entry pointing at the materialized working tree and origin.
     let mut entry = crystalline_core::config::DomainEntry::file(&domain_root);
