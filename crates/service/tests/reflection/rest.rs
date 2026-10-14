@@ -259,6 +259,12 @@ async fn a_contributor_sees_no_sources_and_no_engram_route() {
         .await;
     assert_eq!(status, 200);
     assert_eq!(hits["hits"].as_array().unwrap().len(), 0, "{hits}");
+    // Knowledge `none` searches the Reflection it reads.
+    let (status, hits) = ann
+        .get("/api/v1/domains/eng/reflection/search?q=night")
+        .await;
+    assert_eq!(status, 200, "{hits}");
+    assert_eq!(hits["hits"][0]["path"], "guides/deploying.md", "{hits}");
     // The answered checksum is the stored file's, so an edit of the stripped
     // text with it is not stale, and the stored block survives it.
     let (status, saved) = ann
@@ -384,6 +390,11 @@ async fn the_rights_per_route() {
     let ed = Session::login(s.addr, "ed").await;
     let (_, status) = ed.get("/api/v1/domains/eng/reflection").await;
     assert_eq!(status["right"], "read", "{status}");
+    let (status, hits) = ed
+        .get("/api/v1/domains/eng/reflection/search?q=night")
+        .await;
+    assert_eq!(status, 200, "an off-list reader searches: {hits}");
+    assert_eq!(hits["hits"][0]["path"], "guides/deploying.md", "{hits}");
     let (status, err) = ed
         .send(
             reqwest::Method::PUT,

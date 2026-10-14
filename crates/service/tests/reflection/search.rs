@@ -7,8 +7,9 @@ use std::time::Duration;
 use crystalline_core::config::EvolveConfig;
 use crystalline_index::embed::DEFAULT_MODEL_ID;
 use crystalline_index::{ChunkTable, EmbeddingRow};
-use crystalline_service::ReflectionCaller;
 use crystalline_service::engine::ReflectionSearch;
+use crystalline_service::rest::{AuthStore, Role};
+use crystalline_service::{DomainAccess, ReflectionCaller, Scope};
 
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -365,6 +366,40 @@ async fn a_search_takes_the_read_right_and_refuses_engram_only_modes() {
         ("reflections/a.md", &page("A")),
     ])
     .await;
+    // An account with no Reflection right is refused, with the answer an
+    // unknown domain gets; the owner, the control, finds the page.
+    let auth = Arc::new(
+        AuthStore::open(&fx.tmp.path().join("web-auth.db"))
+            .await
+            .unwrap(),
+    );
+    auth.add_user("out", "out", None, Role::None, "pw12345678")
+        .await
+        .unwrap();
+    fx.engine
+        .set_domain_access(Arc::new(DomainAccess::new(auth)));
+    let out = ReflectionCaller::person(
+        Scope::User {
+            account: "out".into(),
+            admin: false,
+        },
+        "out",
+    );
+    let refused = fx
+        .engine
+        .search_reflection("eng", &search("text", Some("text")), &out)
+        .await
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("eng") && !refused.to_string().contains("hybrid"),
+        "{refused}"
+    );
+    let found = fx
+        .engine
+        .search_reflection("eng", &search("text", Some("text")), &person())
+        .await
+        .unwrap();
+    assert_eq!(found["hits"][0]["path"], "a.md", "{found}");
     let err = fx
         .engine
         .search_reflection("eng", &search("text", Some("title")), &person())

@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use crystalline_service::engine::ReflectionSearch;
 use crystalline_service::params::SearchParams;
 use crystalline_service::rest::{AuthStore, MemberLevel, ReflectionLevel, Role};
 use crystalline_service::{DomainAccess, ReflectionCaller, ReflectionRight, Scope};
@@ -167,6 +168,16 @@ async fn an_instance_account_with_knowledge_none_sees_no_shared_domain_and_edits
 #[tokio::test]
 async fn an_off_list_editor_reads_the_reflection_and_the_refusal_names_the_list() {
     let fx = crate::docs::reflecting().await;
+    fx.engine
+        .write_reflection(
+            &crate::docs::write(
+                "guides/night.md",
+                "# Night\n\n## Deploys\n\nDeploys run at night.\n",
+            ),
+            &ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
     let auth = Arc::new(
         AuthStore::open(&fx.tmp.path().join("web-auth.db"))
             .await
@@ -193,6 +204,7 @@ async fn an_off_list_editor_reads_the_reflection_and_the_refusal_names_the_list(
         .read_reflection_tree("eng", &caller)
         .await
         .unwrap();
+    searches_night(&fx, &caller).await;
     let err = fx
         .engine
         .write_reflection(&crate::docs::write("guides/a.md", "# A\n"), &caller)
@@ -220,6 +232,13 @@ async fn an_off_list_editor_reads_the_reflection_and_the_refusal_names_the_list(
     auth.set_reflection_level("nora", ReflectionLevel::Contributor)
         .await
         .unwrap();
+    let nora = Scope::User {
+        account: "nora".into(),
+        admin: false,
+    };
+    // Knowledge `none` searches the Reflection it edits, and keeps searching
+    // once the write list caps it to a reader.
+    searches_night(&fx, &ReflectionCaller::person(nora, "nora")).await;
     auth.set_write_list("nora", &["agents-*".to_string()])
         .await
         .unwrap();
@@ -231,6 +250,7 @@ async fn an_off_list_editor_reads_the_reflection_and_the_refusal_names_the_list(
         fx.engine.reflection_right(&nora, "eng").await.unwrap(),
         ReflectionRight::Read
     );
+    searches_night(&fx, &ReflectionCaller::person(nora.clone(), "nora")).await;
     let err = fx
         .engine
         .write_reflection(
@@ -246,4 +266,23 @@ async fn an_off_list_editor_reads_the_reflection_and_the_refusal_names_the_list(
         }
         .sentence("eng")
     );
+}
+
+/// `who` finds the night page by text: searching takes the read right.
+async fn searches_night(fx: &crate::fixture::Fx, who: &ReflectionCaller) {
+    let found = fx
+        .engine
+        .search_reflection(
+            "eng",
+            &ReflectionSearch {
+                query: "night",
+                search_type: Some("text"),
+                limit: 10,
+                page: 1,
+            },
+            who,
+        )
+        .await
+        .unwrap();
+    assert_eq!(found["hits"][0]["path"], "guides/night.md", "{found}");
 }
