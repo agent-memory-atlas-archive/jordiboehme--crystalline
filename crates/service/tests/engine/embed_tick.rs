@@ -258,6 +258,63 @@ async fn embed_pending_pages_the_backlog_and_embeds_each_chunk_once() {
     assert_eq!(engine.embed_pending_with_page(3).await.unwrap(), 0);
 }
 
+#[tokio::test]
+async fn embed_pending_walks_each_chunk_table_with_its_own_cursor() {
+    // Ten one-chunk engrams and three one-chunk reflection pages, paged at
+    // three. The engram walk ends with its cursor at the last engram id; a
+    // cursor carried into the reflection table would skip every reflection
+    // chunk whose own id sits below it, which is all of them here.
+    let store = TursoStore::open_in_memory().await.unwrap();
+    let store: Arc<Mutex<dyn Store>> = Arc::new(Mutex::new(store));
+    let engine = Arc::new(virtual_engine(store.clone()));
+    let embedder = Arc::new(CountingEmbedder::new());
+    engine.set_provider(embedder.clone());
+
+    for i in 0..10 {
+        engine
+            .write_engram(&write_params(
+                &format!("Note {i:02}"),
+                &format!("the body of note number {i:02}"),
+            ))
+            .await
+            .unwrap();
+    }
+    {
+        let store = store.lock().await;
+        let did = store.domain_id("notes").await.unwrap().unwrap();
+        for i in 0..3 {
+            let content = format!("## S\n<!-- r:aaaa111{i} -->\n\npage body {i}\n");
+            let row = crystalline_index::ReflectionRow {
+                path: format!("p{i}.md"),
+                title: format!("P{i}"),
+                sha256: String::new(),
+                size: content.len() as u64,
+                modified: String::new(),
+                content,
+            };
+            crystalline_index::reflection::index_reflection_row(
+                &*store,
+                did,
+                &row,
+                &crystalline_index::ChunkParams::default(),
+            )
+            .await
+            .unwrap();
+        }
+    }
+
+    let embedded = engine.embed_pending_with_page(3).await.unwrap();
+    assert_eq!(
+        embedded, 13,
+        "ten engram chunks and three reflection chunks"
+    );
+    let store = store.lock().await;
+    for table in crystalline_index::ChunkTable::ALL {
+        let cov = store.embedding_coverage_of(*table).await.unwrap();
+        assert_eq!(cov.embedded_chunks, cov.total_chunks, "{table:?}: {cov:?}");
+    }
+}
+
 /// An embedder that rejects any batch holding a text with the poison marker,
 /// the shape of a chunk the real provider chokes on.
 struct PoisonEmbedder;

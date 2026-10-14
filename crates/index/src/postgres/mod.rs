@@ -42,9 +42,9 @@
 //!   cache of the one connection that ran it (`clear_cached_statements` in
 //!   `ensure_embedding_width`), so any other pooled connection with a stale plan
 //!   still cached raises Postgres's "cached plan must not change result type" on
-//!   its next use. Two statements in this module return that raw column and are
-//!   therefore the ones exposed to the hazard: `replace_chunks`' carry SELECT
-//!   and `lead_vectors`' SELECT. Nothing in `search` is - an expression over
+//!   its next use. Three statements in this module return that raw column and
+//!   are therefore the ones exposed to the hazard: `replace_chunks`' and
+//!   `replace_reflection_chunks`' carry SELECTs and `lead_vectors`' SELECT. Nothing in `search` is - an expression over
 //!   the column (the `<=>` distance operator, which yields `float8`) or a
 //!   statement that only binds a vector parameter is unaffected and stays
 //!   cached. Any statement added later that selects `chunk.embedding` itself
@@ -71,9 +71,10 @@
 //!   time `ensure_embedding_width` actually runs its ALTER, on any chunk table.
 //!   It is one counter for every table, not one per table: a resize of any
 //!   table rotates the cache key of every exposed statement, which is safe and
-//!   costs one re-prepare. Both exposed statements fold the current
-//!   generation into their SQL text as a trailing comment, so a width change gives each of them different SQL text and
-//!   therefore a different sqlx cache key; every connection, not just the one
+//!   costs one re-prepare. Every exposed statement folds the current
+//!   generation into its SQL text as a trailing comment, so a width change
+//!   gives each of them different SQL text and therefore a different sqlx
+//!   cache key; every connection, not just the one
 //!   that ran the DDL, prepares fresh the next time it runs one of them after
 //!   a resize, and the plan it had cached under the old generation's text
 //!   simply ages out of the LRU unused.
@@ -113,9 +114,9 @@ use crate::store::{
     ContradictionRow, DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage,
     EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode,
     GraphSlice, HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector,
-    NamedCount, NewChunk, OBSERVATION_VECTOR_CHUNK, ObservationVector, OutboundRef, Page,
-    RebuildKind, RecentFilter, ReferenceCandidates, ReflectionRow, ScoredPair, SearchHit,
-    SearchMode, SearchQuery, SpellingPlan, Store, StoreInfo, StoredEngram, Vocabulary,
+    NamedCount, NewChunk, NewReflectionChunk, OBSERVATION_VECTOR_CHUNK, ObservationVector,
+    OutboundRef, Page, RebuildKind, RecentFilter, ReferenceCandidates, ReflectionRow, ScoredPair,
+    SearchHit, SearchMode, SearchQuery, SpellingPlan, Store, StoreInfo, StoredEngram, Vocabulary,
     build_vocabulary, changed_spellings, count_references_to_sql, domain_url_needles, folder_slash,
     in_transaction, names_a_domain_url, page_window, reference_match, referencing_domains_sql,
     rename_onto_taken_row, reset_spelled_references_sql, resolve_references_to_sql,
@@ -533,8 +534,9 @@ impl PostgresStore {
     /// not change result type"). The `clear_cached_statements` at the end
     /// sheds `conn`'s own stale plans but cannot reach the pool's other
     /// connections, so on a successful resize this bumps
-    /// `embedding_generation`: the two statements that return that raw column
-    /// (`replace_chunks`' carry SELECT and `lead_vectors`' SELECT) fold the new
+    /// `embedding_generation`: the statements that return that raw column
+    /// (`replace_chunks`' and `replace_reflection_chunks`' carry SELECTs and
+    /// `lead_vectors`' SELECT) fold the new
     /// value into their SQL text, which changes sqlx's cache key and forces a
     /// fresh prepare everywhere, on this connection and every other one,
     /// without needing to reach them. See the module doc for the full hazard
@@ -585,9 +587,10 @@ impl PostgresStore {
         // column is now stale. `clear_cached_statements` sheds `conn`'s own
         // stale plans directly; it only reaches this one connection, so it is
         // a courtesy for whichever statements this connection still might run
-        // under the old SQL text (there are none: the two statements returning
-        // that raw column, `replace_chunks`' carry SELECT and `lead_vectors`'
-        // SELECT, both always carry the current generation), not what makes
+        // under the old SQL text (there are none: the statements returning
+        // that raw column, `replace_chunks`' and `replace_reflection_chunks`'
+        // carry SELECTs and `lead_vectors`' SELECT, all carry the current
+        // generation), not what makes
         // the pool's other connections safe. `embedding_generation` below is
         // what does that, by changing the cache key everywhere at once.
         Connection::clear_cached_statements(&mut *conn)
@@ -653,6 +656,10 @@ pub(super) async fn exec(conn: &mut PgConnection, sql: &str, params: Vec<Param>)
 /// statement at 65535 bind parameters, far above this, so the chunk size stays in
 /// step with the Turso backend rather than tracking a different ceiling.
 const INSERT_CHUNK: usize = 100;
+
+/// [`INSERT_CHUNK`] for `reflection_chunk`, whose rows bind 11 parameters
+/// each, in step with the Turso backend's.
+const REFLECTION_INSERT_CHUNK: usize = 90;
 
 /// Build the parenthesized value tuples for a multi-row INSERT: `count` tuples of
 /// `width` sequential `$n` placeholders each, plus an optional fixed trailing
@@ -879,8 +886,27 @@ const CHUNK_SQL: ChunkSql = ChunkSql {
 fn chunk_sql(table: ChunkTable) -> &'static ChunkSql {
     match table {
         ChunkTable::Engram => &CHUNK_SQL,
+        ChunkTable::Reflection => &REFLECTION_CHUNK_SQL,
     }
 }
+
+/// The Reflection's chunk table, the twin of Turso's. A reflection has no
+/// actor, so nothing here names one, and nothing here reads the `engram`
+/// table. A chunk has no owning row id (R51), so the backlog projects and
+/// orders by the chunk's own `id`.
+const REFLECTION_CHUNK_SQL: ChunkSql = ChunkSql {
+    needing: "SELECT id, id, seq, text, text_hash FROM reflection_chunk \
+              WHERE (embedding IS NULL OR model IS NULL OR model != $1)",
+    needing_scope_head: " AND domain_id IN (",
+    needing_scope_tail: ")",
+    owner_col: "id",
+    store: "UPDATE reflection_chunk SET embedding=$1, dims=$2, model=$3 WHERE id=$4",
+    prune: "UPDATE reflection_chunk SET embedding=NULL, dims=NULL, model=NULL \
+            WHERE embedding IS NOT NULL AND (model IS NULL OR model <> $1)",
+    count_all: "SELECT count(*) FROM reflection_chunk",
+    count_embedded: "SELECT model, dims, count(*) FROM reflection_chunk WHERE embedding IS NOT NULL \
+                     GROUP BY model, dims ORDER BY count(*) DESC",
+};
 
 /// The DDL `ensure_embedding_width` runs against one chunk table's `embedding`
 /// column. Picked by `match` like [`ChunkSql`]; the one statement that carries
@@ -907,9 +933,23 @@ const CHUNK_WIDTH_SQL: ChunkWidthSql = ChunkWidthSql {
     create_index: "CREATE INDEX idx_chunk_embedding ON chunk USING hnsw (embedding vector_cosine_ops)",
 };
 
+const REFLECTION_CHUNK_WIDTH_SQL: ChunkWidthSql = ChunkWidthSql {
+    probe: "SELECT atttypmod FROM pg_attribute \
+            WHERE attrelid = to_regclass('reflection_chunk') AND attname = 'embedding' AND NOT attisdropped",
+    drop_index: "DROP INDEX IF EXISTS idx_reflection_chunk_embedding",
+    alter: |dims| {
+        format!(
+            "ALTER TABLE reflection_chunk ALTER COLUMN embedding TYPE vector({dims}) USING NULL"
+        )
+    },
+    create_index: "CREATE INDEX idx_reflection_chunk_embedding ON reflection_chunk \
+                   USING hnsw (embedding vector_cosine_ops)",
+};
+
 fn chunk_width_sql(table: ChunkTable) -> &'static ChunkWidthSql {
     match table {
         ChunkTable::Engram => &CHUNK_WIDTH_SQL,
+        ChunkTable::Reflection => &REFLECTION_CHUNK_WIDTH_SQL,
     }
 }
 
@@ -2031,6 +2071,7 @@ impl Store for PostgresStore {
             "DELETE FROM attachment_blob WHERE attachment_id IN \
              (SELECT id FROM attachment WHERE domain_id=$1)",
             "DELETE FROM attachment WHERE domain_id=$1",
+            "DELETE FROM reflection_chunk WHERE domain_id=$1",
             "DELETE FROM reflection WHERE domain_id=$1",
             "DELETE FROM reflection_asset WHERE domain_id=$1",
             // Every spelling but the row's own name, which stays with the row.
@@ -4336,15 +4377,110 @@ impl Store for PostgresStore {
     }
 
     async fn delete_reflection(&self, domain: DomainId, path: &str) -> Result<bool> {
+        // Takes the page's chunks too (R53), so the coverage snapshot is now
+        // stale.
+        self.invalidate_coverage();
         let mut conn = self.acquire().await?;
+        let c = conn.as_mut();
+        sqlx::query("DELETE FROM reflection_chunk WHERE domain_id=$1 AND path=$2")
+            .bind(domain.0)
+            .bind(path)
+            .execute(&mut *c)
+            .await
+            .map_err(IndexError::from)?;
         let n = sqlx::query("DELETE FROM reflection WHERE domain_id=$1 AND path=$2")
             .bind(domain.0)
             .bind(path)
-            .execute(conn.as_mut())
+            .execute(&mut *c)
             .await
             .map_err(IndexError::from)?
             .rows_affected();
         Ok(n > 0)
+    }
+
+    async fn replace_reflection_chunks(
+        &self,
+        domain: DomainId,
+        path: &str,
+        chunks: &[NewReflectionChunk],
+    ) -> Result<()> {
+        // Deletes and reinserts this page's chunks, so the coverage snapshot
+        // is now stale.
+        self.invalidate_coverage();
+        let mut conn = self.acquire().await?;
+        let c = conn.as_mut();
+        // Carry over the vector of any chunk whose fingerprint is unchanged, as
+        // `replace_chunks` does within an engram. This selects the raw
+        // `embedding` column, so it carries the `/* w{generation} */` cache-key
+        // comment for the reason `replace_chunks`' carry SELECT does (see the
+        // module doc).
+        let generation = self.embedding_generation.load(Ordering::Relaxed);
+        let carry_sql = format!(
+            "SELECT text_hash, model, dims, embedding FROM reflection_chunk \
+             WHERE domain_id=$1 AND path=$2 AND embedding IS NOT NULL /* w{generation} */"
+        );
+        let existing = sqlx::query(AssertSqlSafe(carry_sql))
+            .bind(domain.0)
+            .bind(path)
+            .fetch_all(&mut *c)
+            .await
+            .map_err(IndexError::from)?;
+        let mut carry: HashMap<String, (Option<String>, Option<i64>, pgvector::Vector)> =
+            HashMap::new();
+        for r in &existing {
+            let Some(hash) = cell_text(r, 0) else {
+                continue;
+            };
+            let model = r.try_get::<Option<String>, _>(1).ok().flatten();
+            let dims = r.try_get::<Option<i64>, _>(2).ok().flatten();
+            let Some(emb) = r.try_get::<Option<pgvector::Vector>, _>(3).ok().flatten() else {
+                continue;
+            };
+            carry.insert(hash, (model, dims, emb));
+        }
+
+        sqlx::query("DELETE FROM reflection_chunk WHERE domain_id=$1 AND path=$2")
+            .bind(domain.0)
+            .bind(path)
+            .execute(&mut *c)
+            .await
+            .map_err(IndexError::from)?;
+
+        // One 11-column multi-row insert per batch: a carry hit binds its
+        // preserved model, dims and embedding, a miss binds NULL for all three
+        // and leaves the chunk pending embedding.
+        for batch in chunks.chunks(REFLECTION_INSERT_CHUNK) {
+            let mut params: Vec<Param> = Vec::with_capacity(batch.len() * 11);
+            for chunk in batch {
+                params.push(Param::Int(domain.0));
+                params.push(Param::Text(path.to_string()));
+                params.push(Param::Int(chunk.chunk.seq));
+                params.push(Param::Int(chunk.section_ord));
+                params.push(Param::TextOpt(chunk.section.clone()));
+                params.push(Param::Text(chunk.heading.clone()));
+                params.push(Param::Text(chunk.chunk.text.clone()));
+                params.push(Param::Text(chunk.chunk.text_hash.clone()));
+                match carry.get(&chunk.chunk.text_hash) {
+                    Some((model, dims, emb)) => {
+                        params.push(Param::TextOpt(model.clone()));
+                        params.push(Param::IntOpt(*dims));
+                        params.push(Param::VectorOpt(Some(emb.clone())));
+                    }
+                    None => {
+                        params.push(Param::TextOpt(None));
+                        params.push(Param::IntOpt(None));
+                        params.push(Param::VectorOpt(None));
+                    }
+                }
+            }
+            let sql = format!(
+                "INSERT INTO reflection_chunk(domain_id, path, seq, section_ord, section, heading, \
+                 text, text_hash, model, dims, embedding) VALUES {}",
+                value_rows(11, batch.len(), None)
+            );
+            exec(&mut *c, &sql, params).await?;
+        }
+        Ok(())
     }
 
     async fn get_reflection(&self, domain: DomainId, path: &str) -> Result<Option<ReflectionRow>> {

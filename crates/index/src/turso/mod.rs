@@ -54,13 +54,13 @@ use crate::store::{
     ContradictionRow, DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage,
     EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode,
     GraphSlice, HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector,
-    NamedCount, NewChunk, ObservationVector, OutboundRef, Page, RebuildKind, RecentFilter,
-    ReferenceCandidates, ReflectionRow, ScoredPair, SearchHit, SearchMode, SearchQuery,
-    SpellingPlan, Store, StoreInfo, StoredEngram, Vocabulary, build_vocabulary, changed_spellings,
-    count_references_to_sql, domain_url_needles, folder_slash, in_transaction, names_a_domain_url,
-    page_window, reference_match, referencing_domains_sql, rename_onto_taken_row,
-    reset_spelled_references_sql, resolve_references_to_sql, resolve_spelled_references_sql,
-    spelled_references_sql, spelling_plan,
+    NamedCount, NewChunk, NewReflectionChunk, ObservationVector, OutboundRef, Page, RebuildKind,
+    RecentFilter, ReferenceCandidates, ReflectionRow, ScoredPair, SearchHit, SearchMode,
+    SearchQuery, SpellingPlan, Store, StoreInfo, StoredEngram, Vocabulary, build_vocabulary,
+    changed_spellings, count_references_to_sql, domain_url_needles, folder_slash, in_transaction,
+    names_a_domain_url, page_window, reference_match, referencing_domains_sql,
+    rename_onto_taken_row, reset_spelled_references_sql, resolve_references_to_sql,
+    resolve_spelled_references_sql, spelled_references_sql, spelling_plan,
 };
 use crate::sweep::{SpelledRef, UnresolvedRef};
 
@@ -826,8 +826,26 @@ const CHUNK_SQL: ChunkSql = ChunkSql {
 fn chunk_sql(table: ChunkTable) -> &'static ChunkSql {
     match table {
         ChunkTable::Engram => &CHUNK_SQL,
+        ChunkTable::Reflection => &REFLECTION_CHUNK_SQL,
     }
 }
+
+/// The Reflection's chunk table. A reflection has no actor, so nothing here
+/// names one, and nothing here reads the `engram` table. A chunk has no owning
+/// row id (R51), so the backlog projects and orders by the chunk's own `id`.
+const REFLECTION_CHUNK_SQL: ChunkSql = ChunkSql {
+    needing: "SELECT id, id, seq, text, text_hash FROM reflection_chunk \
+              WHERE (embedding IS NULL OR model IS NULL OR model != ?1)",
+    needing_scope_head: " AND domain_id IN (",
+    needing_scope_tail: ")",
+    owner_col: "id",
+    store: "UPDATE reflection_chunk SET embedding=?1, dims=?2, model=?3 WHERE id=?4",
+    prune: "UPDATE reflection_chunk SET embedding=NULL, dims=NULL, model=NULL \
+            WHERE embedding IS NOT NULL AND (model IS NULL OR model <> ?1)",
+    count_all: "SELECT count(*) FROM reflection_chunk",
+    count_embedded: "SELECT model, dims, count(*) FROM reflection_chunk WHERE embedding IS NOT NULL \
+                     GROUP BY model, dims ORDER BY count(*) DESC",
+};
 
 /// The primary key of one attachment, or a [`IndexError::Constraint`] when the
 /// path has no row. Writing a blob without a metadata row would leave bytes
@@ -1061,8 +1079,13 @@ fn opt_text(o: &Option<String>) -> Value {
 
 /// The maximum number of value tuples in one multi-row INSERT. Chunking keeps the
 /// bind-parameter count under SQLite's 999-parameter ceiling for every child
-/// table (the widest is chunk at 7 params per row).
+/// table (the widest is chunk at 7 params per row; `reflection_chunk` binds 11
+/// and has its own size below).
 const INSERT_CHUNK: usize = 100;
+
+/// [`INSERT_CHUNK`] for `reflection_chunk`, whose rows bind 11 parameters
+/// each: 90 rows stay under the same 999-parameter ceiling.
+const REFLECTION_INSERT_CHUNK: usize = 90;
 
 /// Build the parenthesized value tuples for a multi-row INSERT: `count` tuples of
 /// `width` sequential `?n` placeholders each, plus an optional fixed trailing
@@ -2061,6 +2084,7 @@ impl Store for TursoStore {
             "DELETE FROM attachment_blob WHERE attachment_id IN \
              (SELECT id FROM attachment WHERE domain_id=?1)",
             "DELETE FROM attachment WHERE domain_id=?1",
+            "DELETE FROM reflection_chunk WHERE domain_id=?1",
             "DELETE FROM reflection WHERE domain_id=?1",
             "DELETE FROM reflection_asset WHERE domain_id=?1",
             // Every spelling but the row's own name, which stays with the row.
@@ -4217,12 +4241,19 @@ impl Store for TursoStore {
     }
 
     async fn delete_reflection(&self, domain: DomainId, path: &str) -> Result<bool> {
+        // Takes the page's chunks too (R53), so the coverage snapshot is now
+        // stale.
+        self.invalidate_coverage();
+        let key = vec![Value::Integer(domain.0), Value::Text(path.to_string())];
+        self.conn
+            .execute(
+                "DELETE FROM reflection_chunk WHERE domain_id=?1 AND path=?2",
+                key.clone(),
+            )
+            .await?;
         let n = self
             .conn
-            .execute(
-                "DELETE FROM reflection WHERE domain_id=?1 AND path=?2",
-                vec![Value::Integer(domain.0), Value::Text(path.to_string())],
-            )
+            .execute("DELETE FROM reflection WHERE domain_id=?1 AND path=?2", key)
             .await?;
         Ok(n > 0)
     }
@@ -4249,6 +4280,92 @@ impl Store for TursoStore {
         )
         .await?;
         Ok(rows.iter().map(reflection_from_row).collect())
+    }
+
+    async fn replace_reflection_chunks(
+        &self,
+        domain: DomainId,
+        path: &str,
+        chunks: &[NewReflectionChunk],
+    ) -> Result<()> {
+        // Deletes and reinserts this page's chunks, so the coverage snapshot
+        // is now stale.
+        self.invalidate_coverage();
+        let key = vec![Value::Integer(domain.0), Value::Text(path.to_string())];
+        // Carry over the vector of any chunk whose fingerprint is unchanged, as
+        // `replace_chunks` does within an engram, so an edit re-embeds only the
+        // sections that changed and a provenance-only write keeps them all.
+        let existing = query_all(
+            &self.conn,
+            "SELECT text_hash, model, dims, embedding FROM reflection_chunk \
+             WHERE domain_id=?1 AND path=?2 AND embedding IS NOT NULL",
+            key.clone(),
+        )
+        .await?;
+        let mut carry: HashMap<String, (Value, Value, Vec<u8>)> = HashMap::new();
+        for r in &existing {
+            let Some(hash) = cell_text(r, 0) else {
+                continue;
+            };
+            let model = match r.get_value(1) {
+                Ok(Value::Text(s)) => Value::Text(s),
+                _ => Value::Null,
+            };
+            let dims = match r.get_value(2) {
+                Ok(Value::Integer(i)) => Value::Integer(i),
+                _ => Value::Null,
+            };
+            let Ok(Value::Blob(emb)) = r.get_value(3) else {
+                continue;
+            };
+            carry.insert(hash, (model, dims, emb));
+        }
+
+        self.conn
+            .execute(
+                "DELETE FROM reflection_chunk WHERE domain_id=?1 AND path=?2",
+                key,
+            )
+            .await?;
+
+        // One 11-column multi-row insert per batch: a carry hit binds its
+        // preserved model, dims and embedding, a miss binds NULL for all three
+        // and leaves the chunk pending embedding.
+        for batch in chunks.chunks(REFLECTION_INSERT_CHUNK) {
+            let mut params: Vec<Value> = Vec::with_capacity(batch.len() * 11);
+            for c in batch {
+                params.push(Value::Integer(domain.0));
+                params.push(Value::Text(path.to_string()));
+                params.push(Value::Integer(c.chunk.seq));
+                params.push(Value::Integer(c.section_ord));
+                params.push(match &c.section {
+                    Some(id) => Value::Text(id.clone()),
+                    None => Value::Null,
+                });
+                params.push(Value::Text(c.heading.clone()));
+                params.push(Value::Text(c.chunk.text.clone()));
+                params.push(Value::Text(c.chunk.text_hash.clone()));
+                match carry.get(&c.chunk.text_hash) {
+                    Some((model, dims, emb)) => {
+                        params.push(model.clone());
+                        params.push(dims.clone());
+                        params.push(Value::Blob(emb.clone()));
+                    }
+                    None => {
+                        params.push(Value::Null);
+                        params.push(Value::Null);
+                        params.push(Value::Null);
+                    }
+                }
+            }
+            let sql = format!(
+                "INSERT INTO reflection_chunk(domain_id, path, seq, section_ord, section, heading, \
+                 text, text_hash, model, dims, embedding) VALUES {}",
+                value_rows(11, batch.len(), None)
+            );
+            self.conn.execute(&sql, params).await?;
+        }
+        Ok(())
     }
 
     async fn begin(&self) -> Result<()> {

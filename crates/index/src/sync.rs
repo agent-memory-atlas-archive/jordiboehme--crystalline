@@ -310,13 +310,15 @@ impl FileRows {
         store: &S,
         domain: DomainId,
         row: &FileRow,
+        chunk_params: &ChunkParams,
     ) -> Result<()> {
         match (self, row) {
             (FileRows::Assets(table), FileRow::Asset(row)) => {
                 store.upsert_asset(table, domain, row).await
             }
+            // The row and its chunks, through the one funnel (R53).
             (FileRows::Reflections, FileRow::Reflection(row)) => {
-                store.upsert_reflection(domain, row).await
+                crate::reflection::index_reflection_row(store, domain, row, chunk_params).await
             }
             // `build` answers the row of its own table, so the pairing never
             // crosses; an arm that made it cross is a bug, not a skip.
@@ -1389,6 +1391,8 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         assets,
         asset_deletes,
         assets_complete,
+        &chunk_params,
+        false,
         &mut report,
     )
     .await
@@ -1404,6 +1408,8 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         reflections,
         reflection_deletes,
         reflections_complete,
+        &chunk_params,
+        ends_rebuild,
         &mut report,
     )
     .await
@@ -1425,6 +1431,8 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         reflection_assets,
         reflection_asset_deletes,
         reflections_complete,
+        &chunk_params,
+        false,
         &mut report,
     )
     .await
@@ -1783,14 +1791,17 @@ pub async fn resolve_forward_refs<S: Store + ?Sized>(
 ///
 /// The rows are not engrams, so this is deliberately not the engram pipeline:
 /// there is no move detection (a row carries no permalink, so a rename is a
-/// delete plus an add and costs one read), no chunking and no embedding. What
-/// it does share is the stat prefilter: a candidate whose recorded row still
-/// carries the same size and modification instant cannot have changed content
-/// without one of them moving, so it is skipped without reading a byte.
+/// delete plus an add and costs one read). A reflection row is chunked with
+/// `chunk_params` as it is written (R53); an asset row is not. What it does
+/// share is the stat prefilter: a candidate whose recorded row still carries
+/// the same size and modification instant cannot have changed content without
+/// one of them moving, so it is skipped without reading a byte, unless `force`
+/// is set.
 ///
 /// A full walk (`complete`) reconciles domain-wide, deleting every row it did
 /// not see; a targeted pass deletes only the paths it was asked about and looked
 /// for in vain, so a one-file watcher event never touches another row.
+#[allow(clippy::too_many_arguments)]
 async fn reconcile_rows<S: Store + ?Sized>(
     store: &S,
     domain: DomainId,
@@ -1798,6 +1809,8 @@ async fn reconcile_rows<S: Store + ?Sized>(
     found: Vec<FileCandidate>,
     deletes: Vec<String>,
     complete: bool,
+    chunk_params: &ChunkParams,
+    force: bool,
     report: &mut SyncReport,
 ) -> Result<usize> {
     if !complete && found.is_empty() && deletes.is_empty() {
@@ -1809,9 +1822,12 @@ async fn reconcile_rows<S: Store + ?Sized>(
     for candidate in found {
         let modified = rfc3339_from_mtime(candidate.mtime);
         seen.insert(candidate.rel.clone());
-        if existing
-            .get(&candidate.rel)
-            .is_some_and(|(size, at)| *size == candidate.size && *at == modified)
+        // A forced walk re-reads pages, so `reindex --full` re-chunks them
+        // (R58); the asset arms are never forced.
+        if !force
+            && existing
+                .get(&candidate.rel)
+                .is_some_and(|(size, at)| *size == candidate.size && *at == modified)
         {
             continue;
         }
@@ -1823,7 +1839,7 @@ async fn reconcile_rows<S: Store + ?Sized>(
         };
         match read {
             Ok(Some(row)) => {
-                rows.upsert(store, domain, &row).await?;
+                rows.upsert(store, domain, &row, chunk_params).await?;
                 changed += 1;
             }
             Ok(None) => {}

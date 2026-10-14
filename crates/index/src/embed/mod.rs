@@ -28,7 +28,7 @@ use crate::store::{ChunkJob, ChunkTable, EmbeddingRow, Store};
 
 pub use chunk::{
     ChunkParams, DEFAULT_MAX_TOKENS, DEFAULT_MODEL_ID, chunk_engram, chunk_engram_with,
-    estimate_tokens, fingerprint,
+    chunk_reflection, estimate_tokens, fingerprint,
 };
 pub use models::{
     Architecture, LOCAL_MODELS, LocalModel, SnapshotChoice, cached_model_dirs, choose_snapshot,

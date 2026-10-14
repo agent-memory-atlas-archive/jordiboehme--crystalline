@@ -131,6 +131,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "reflection assets",
         sql: SCHEMA_V21,
     },
+    Migration {
+        version: 22,
+        label: "reflection chunks",
+        sql: SCHEMA_V22,
+    },
 ];
 
 // The whole current schema in one step. The temporal columns stay TEXT ISO
@@ -673,6 +678,35 @@ CREATE TABLE IF NOT EXISTS reflection_asset (
 );
 "#;
 
+// The Reflection's embedding chunks, the twin of Turso's v22: one or more per
+// `##` section of a page under `reflections/`, beside the engram `chunk` table
+// and never joined to it, so no engram reader can meet one. Keyed by
+// `(domain_id, path, seq)` with no foreign key to `reflection`. The embedding
+// starts at `vector(384)` with its own HNSW cosine index, and
+// `ensure_embedding_width` resizes it on its own, as it does `chunk`'s. The
+// page stamps are blanked so the next walk reads every page once and chunks
+// it (R58). Every `CREATE` is `IF NOT EXISTS`, so a replay converges.
+const SCHEMA_V22: &str = r#"
+CREATE TABLE IF NOT EXISTS reflection_chunk (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    domain_id BIGINT NOT NULL REFERENCES domain(id),
+    path TEXT NOT NULL,
+    seq BIGINT NOT NULL DEFAULT 0,
+    section_ord BIGINT NOT NULL DEFAULT 0,
+    section TEXT,
+    heading TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL DEFAULT '',
+    text_hash TEXT NOT NULL DEFAULT '',
+    model TEXT,
+    dims BIGINT,
+    embedding vector(384)
+);
+CREATE INDEX IF NOT EXISTS idx_reflection_chunk_page ON reflection_chunk(domain_id, path, seq);
+CREATE INDEX IF NOT EXISTS idx_reflection_chunk_model ON reflection_chunk(model);
+CREATE INDEX IF NOT EXISTS idx_reflection_chunk_embedding ON reflection_chunk USING hnsw (embedding vector_cosine_ops);
+UPDATE reflection SET modified='';
+"#;
+
 const SCHEMA_V8: &str = r#"
 CREATE TABLE attachment (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -700,7 +734,8 @@ CREATE TABLE attachment_blob (
 /// `contradiction` and `contradiction_pair` reference `engram` and `domain`,
 /// so they go first. `observation_vector` references nothing and leads the
 /// list. `engram_meta_value` references `engram`, so it goes before it.
-/// `reflection` and `reflection_asset` reference `domain(id)` too.
+/// `reflection` and `reflection_asset` reference `domain(id)` too, and so does
+/// `reflection_chunk`, which goes before `reflection`.
 pub const WIPE_TABLES: &[&str] = &[
     "observation_vector",
     "contradiction",
@@ -718,6 +753,7 @@ pub const WIPE_TABLES: &[&str] = &[
     "tag_alias",
     "attachment_blob",
     "attachment",
+    "reflection_chunk",
     "reflection",
     "reflection_asset",
     "domain_lock",
@@ -1994,6 +2030,77 @@ mod tests {
         assert!(
             at("reflection_asset").is_some() && at("reflection_asset") < at("domain"),
             "the file rows are wiped before the domains they point at, or the foreign key refuses"
+        );
+        drop(conn);
+        store.drop_schema().await.unwrap();
+    }
+
+    /// v22, the Reflection's chunks: it follows the reflection asset table, a
+    /// replay of the step converges (every `CREATE` is `IF NOT EXISTS`), it
+    /// blanks the page stamps so the next walk re-reads every page, and the
+    /// wipe clears the chunks before the pages and the domains.
+    #[tokio::test]
+    async fn v22_adds_the_reflection_chunk_table_and_replays_cleanly() {
+        let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        let at_version = |v: i64| {
+            MIGRATIONS
+                .iter()
+                .position(|m| m.version == v)
+                .unwrap_or_else(|| panic!("no migration v{v}"))
+        };
+        let (v21, v22) = (at_version(21), at_version(22));
+        assert_eq!(MIGRATIONS[v22].label, "reflection chunks");
+        assert_eq!(v22, v21 + 1, "it follows the reflection asset table");
+
+        let schema = format!("mig_refl_chunk_{}", std::process::id());
+        let store = crate::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .unwrap();
+        let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "SET search_path TO {schema}, public"
+        )))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO domain (id, name, path) OVERRIDING SYSTEM VALUE VALUES (1, 'd', NULL);
+             INSERT INTO reflection (domain_id, path, title, content, sha256, size, modified)
+             VALUES (1, 'a.md', 'A', 'x', 's', 1, '2026-10-14T00:00:00+00:00');",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::raw_sql(MIGRATIONS[v22].sql)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let (modified,): (String,) = sqlx::query_as("SELECT modified FROM reflection")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            modified, "",
+            "the stamp is blank, so the next walk reads the page"
+        );
+        sqlx::raw_sql(
+            "INSERT INTO reflection_chunk (domain_id, path, seq, text, text_hash)
+             VALUES (1, 'a.md', 0, 't', 'h');",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let at = |t: &str| WIPE_TABLES.iter().position(|w| *w == t);
+        assert!(
+            at("reflection_chunk").is_some()
+                && at("reflection_chunk") < at("reflection")
+                && at("reflection") < at("domain"),
+            "the chunks are wiped before the pages and the domains, or the foreign key refuses"
         );
         drop(conn);
         store.drop_schema().await.unwrap();

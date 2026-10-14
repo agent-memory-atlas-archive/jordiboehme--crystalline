@@ -13,11 +13,11 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crystalline_index::{
-    AssetTable, AttachmentRow, ChunkParams, DomainId, DomainKind, EMBED_PAGE_SIZE, EdgeKind,
-    EmbeddingCoverage, EmbeddingRow, EngramId, EngramRecord, FileStamp, FilterOp, HostClaim,
-    InboundPage, InboundQuery, IndexError, MetadataFilter, NamedCount, NewChunk, RecentFilter,
-    ReflectionRow, SearchMode, SearchOrder, SearchQuery, Store, TursoStore, Vocabulary, apply_scan,
-    resolve_forward_refs, scan_paths, sync_domain,
+    AssetTable, AttachmentRow, ChunkParams, ChunkTable, DomainId, DomainKind, EMBED_PAGE_SIZE,
+    EdgeKind, EmbeddingCoverage, EmbeddingRow, EngramId, EngramRecord, FileStamp, FilterOp,
+    HostClaim, InboundPage, InboundQuery, IndexError, MetadataFilter, NamedCount, NewChunk,
+    RecentFilter, ReflectionRow, SearchMode, SearchOrder, SearchQuery, Store, TursoStore,
+    Vocabulary, apply_scan, resolve_forward_refs, scan_domain, scan_paths, sync_domain,
 };
 
 fn write(dir: &Path, rel: &str, content: &str) {
@@ -9144,6 +9144,157 @@ parity!(
     reflection_files_get_their_own_rows
 );
 
+// --- a Reflection's chunks (reflection core, Task 27) ------------------------
+
+async fn reflection_chunks_follow_their_page(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", &manifest_on());
+    write(root, "reflections/a.md", &page("A", "alphaterm"));
+    write(root, "reflections/b.md", &page("B", "betaterm"));
+    sync_domain(store, "eng", root).await.unwrap();
+    let cov = store
+        .embedding_coverage_of(ChunkTable::Reflection)
+        .await
+        .unwrap();
+    assert_eq!(cov.total_chunks, 4, "two sections per page: {cov:?}");
+    assert_eq!(
+        store.embedding_coverage().await.unwrap().total_chunks,
+        1,
+        "the MANIFEST's one chunk: engram coverage never counts a page"
+    );
+    let jobs = store
+        .chunks_needing_embedding_in(ChunkTable::Reflection, "m", None, 10, None)
+        .await
+        .unwrap();
+    assert_eq!(jobs.len(), 4);
+    let engram_jobs = store
+        .chunks_needing_embedding("m", None, 10, None)
+        .await
+        .unwrap();
+    assert!(
+        engram_jobs.len() == 1 && engram_jobs.iter().all(|j| !j.text.contains("term")),
+        "the engram backlog holds the MANIFEST and no page: {engram_jobs:?}"
+    );
+    std::fs::remove_file(root.join("reflections/a.md")).unwrap();
+    sync_domain(store, "eng", root).await.unwrap();
+    assert_eq!(
+        store
+            .embedding_coverage_of(ChunkTable::Reflection)
+            .await
+            .unwrap()
+            .total_chunks,
+        2,
+        "a deleted page takes its chunks"
+    );
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    store.clear_domain(did).await.unwrap();
+    assert_eq!(
+        store
+            .embedding_coverage_of(ChunkTable::Reflection)
+            .await
+            .unwrap()
+            .total_chunks,
+        0,
+        "clear_domain takes them"
+    );
+}
+parity!(
+    reflection_chunks_follow_their_page_on_both_backends,
+    reflection_chunks_follow_their_page
+);
+
+async fn a_provenance_only_write_keeps_every_vector(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", &manifest_on());
+    write(root, "reflections/a.md", &page("A", "alphaterm"));
+    sync_domain(store, "eng", root).await.unwrap();
+    let jobs = store
+        .chunks_needing_embedding_in(ChunkTable::Reflection, "m", None, 10, None)
+        .await
+        .unwrap();
+    let rows: Vec<EmbeddingRow> = jobs
+        .iter()
+        .map(|j| EmbeddingRow {
+            chunk_id: j.chunk_id,
+            embedding: vec![0.5; 8],
+            dims: 8,
+        })
+        .collect();
+    store
+        .store_embeddings_in(ChunkTable::Reflection, &rows, "m")
+        .await
+        .unwrap();
+    let with_block = format!(
+        "---\ntitle: A\nreflection:\n  aaaa1111:\n    reflected: x\n---\n\n{}",
+        page("A", "alphaterm")
+            .split_once("---\n\n")
+            .map(|(_, b)| b)
+            .unwrap()
+    );
+    write(root, "reflections/a.md", &with_block);
+    sync_domain(store, "eng", root).await.unwrap();
+    let cov = store
+        .embedding_coverage_of(ChunkTable::Reflection)
+        .await
+        .unwrap();
+    assert_eq!(
+        cov.embedded_for("m"),
+        cov.total_chunks,
+        "the section text did not change, so no vector was lost: {cov:?}"
+    );
+}
+parity!(
+    a_provenance_only_write_keeps_every_vector_on_both_backends,
+    a_provenance_only_write_keeps_every_vector
+);
+
+async fn a_forced_rebuild_rechunks_reflections(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", &manifest_on());
+    write(root, "reflections/a.md", &page("A", "alphaterm"));
+    sync_domain(store, "eng", root).await.unwrap();
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    // A chunk lost behind the index's back: only a forced walk restores it,
+    // because the page's stamp still matches.
+    store
+        .replace_reflection_chunks(did, "a.md", &[])
+        .await
+        .unwrap();
+    sync_domain(store, "eng", root).await.unwrap();
+    assert_eq!(
+        store
+            .embedding_coverage_of(ChunkTable::Reflection)
+            .await
+            .unwrap()
+            .total_chunks,
+        0,
+        "the prefilter skipped it"
+    );
+    // The disk half of `reindex --full` (`reindex_domains` with a rebuild
+    // kind runs exactly this per domain): a forced scan, then its apply.
+    let stamps = store.file_stamps(did).await.unwrap();
+    let scan = scan_domain("eng", root, stamps, &ChunkParams::default(), true)
+        .await
+        .unwrap();
+    apply_scan(store, did, scan).await.unwrap();
+    assert_eq!(
+        store
+            .embedding_coverage_of(ChunkTable::Reflection)
+            .await
+            .unwrap()
+            .total_chunks,
+        2,
+        "reindex --full re-chunked the page"
+    );
+}
+parity!(
+    a_forced_rebuild_rechunks_reflections_on_both_backends,
+    a_forced_rebuild_rechunks_reflections
+);
+
 // --- the registration stamp --------------------------------------------------
 
 /// The `last_registered` stamp: a domain the configuration still names is
@@ -11556,7 +11707,8 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
          actor's row keeps the domain, the seven statements of `clear_domain` - the seventh is the `engram_meta_value` delete, the sixth the one that \
          takes the bodies out of `engram_content`, which names the rows about to go because \
          that table has no domain of its own - the id-scoped delete inside `delete_engram` \
-         and `chunks_needing_embedding`'s domain scope, all `-- actor: all`, plus \
+         and `CHUNK_SQL`'s domain scope (the engram backlog of `chunks_needing_embedding_in`), \
+         all `-- actor: all`, plus \
          `clear_overlay_entry`'s delete, which is `-- actor: by id` because the id it \
          names was resolved by an actor-scoped lookup two statements above"
     );

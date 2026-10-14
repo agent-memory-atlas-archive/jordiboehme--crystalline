@@ -39,9 +39,9 @@ pub use device::{ACCELERATION_ENV, CpuReason, DeviceKind, DeviceReport};
 pub use embed::{
     Architecture, ChunkParams, EMBED_PAGE_SIZE, EmbedReport, EmbeddingProvider, LocalModel,
     ModelDownload, SnapshotChoice, cached_model_dirs, choose_snapshot, chunk_engram,
-    configured_model_id, download_local_model, hub_dir_name, local_model, lookup_local_model,
-    older_snapshot_warning, order_jobs_for_batching, provider_from_config, prune_model_cache,
-    remove_stale_model_lock_dirs, retire_older_snapshots, run_embedding_pass,
+    chunk_reflection, configured_model_id, download_local_model, hub_dir_name, local_model,
+    lookup_local_model, older_snapshot_warning, order_jobs_for_batching, provider_from_config,
+    prune_model_cache, remove_stale_model_lock_dirs, retire_older_snapshots, run_embedding_pass,
     run_embedding_pass_with_page, stale_model_lock_dirs, update_local_model,
 };
 pub use error::{IndexError, Result, SCHEMA_TOO_NEW_OPENING, is_schema_too_new_text};
@@ -53,11 +53,11 @@ pub use store::{
     EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FilterOp, FtsMode,
     GraphEdge, GraphNode, GraphSlice, HitKind, HostClaim, InboundHit, InboundPage, InboundQuery,
     InboundRef, LEXICAL_CANDIDATE_CAP, LINKS_TO, LeadVector, MetadataFilter, NamedCount, NewChunk,
-    OBSERVATION_VECTOR_CHUNK, ObservationVector, OutboundRef, Page, RETIRED_STATUSES, RebuildKind,
-    RecentFilter, ReflectionRow, ScoredPair, SearchHit, SearchMode, SearchOrder, SearchQuery,
-    Store, StoreInfo, StoredEngram, TagAlias, TagCount, Vocabulary, WorkClaim, is_current_status,
-    is_retired_status, lookup_in_domain, merge_vocabularies, parse_metadata_filters,
-    retired_factor, salience_prior,
+    NewReflectionChunk, OBSERVATION_VECTOR_CHUNK, ObservationVector, OutboundRef, Page,
+    RETIRED_STATUSES, RebuildKind, RecentFilter, ReflectionRow, ScoredPair, SearchHit, SearchMode,
+    SearchOrder, SearchQuery, Store, StoreInfo, StoredEngram, TagAlias, TagCount, Vocabulary,
+    WorkClaim, is_current_status, is_retired_status, lookup_in_domain, merge_vocabularies,
+    parse_metadata_filters, retired_factor, salience_prior,
 };
 /// The shared statement builders, reachable from `tests/it/plans.rs` and from
 /// nothing else.

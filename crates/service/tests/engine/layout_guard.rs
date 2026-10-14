@@ -182,6 +182,25 @@ fn reflection_variants_stay_in_their_modules() {
                 "engine/src/engine/reflect.rs",
             ],
         ),
+        (
+            "ChunkTable::Reflection",
+            &[
+                "index/src/store.rs",
+                "index/src/turso/mod.rs",
+                "index/src/postgres/mod.rs",
+                "index/src/reflection.rs",
+            ],
+        ),
+        // R53's funnel: a reflection row written anywhere else would have no
+        // chunks.
+        (
+            ".upsert_reflection(",
+            &[
+                "index/src/reflection.rs",
+                "index/src/turso/mod.rs",
+                "index/src/postgres/mod.rs",
+            ],
+        ),
     ];
     let mut strays: Vec<(String, String, &str)> = Vec::new();
     for (file, name, body) in fn_bodies() {

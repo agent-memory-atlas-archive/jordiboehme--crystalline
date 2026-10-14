@@ -6,11 +6,16 @@
 //! holds. Hits rank by score, then path, then section order. Id lines never
 //! reach a snippet: `split_sections` leaves them out of the text. The
 //! snippet is the window the engram search cuts (`crate::snippet`).
+//!
+//! It is also where a reflection row is written: [`index_reflection_row`]
+//! puts the row and its chunks in the index together (R53).
 
 use serde::Serialize;
 
+use crate::embed::ChunkParams;
+use crate::error::Result;
 use crate::snippet::make_snippet;
-use crate::store::ReflectionRow;
+use crate::store::{DomainId, ReflectionRow, Store};
 use crystalline_core::reflection::split_sections;
 
 /// One section that matched.
@@ -78,6 +83,22 @@ pub fn search_reflections(rows: &[ReflectionRow], query: &str, limit: usize) -> 
             .then(ao.cmp(bo))
     });
     hits.into_iter().take(limit).map(|(hit, _)| hit).collect()
+}
+
+/// Put one reflection's row and its chunks in the index (R53): the one
+/// writer of reflection rows, called by the sync and by the engine, so a page
+/// never has a row without the chunks of that same text.
+pub async fn index_reflection_row<S: Store + ?Sized>(
+    store: &S,
+    domain: DomainId,
+    row: &ReflectionRow,
+    params: &ChunkParams,
+) -> Result<()> {
+    store.upsert_reflection(domain, row).await?;
+    let chunks = crate::embed::chunk_reflection(&row.title, &row.content, params);
+    store
+        .replace_reflection_chunks(domain, &row.path, &chunks)
+        .await
 }
 
 #[cfg(test)]

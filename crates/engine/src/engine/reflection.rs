@@ -770,10 +770,10 @@ impl Engine {
             .collect())
     }
 
-    /// Put one reflection's row in the index, from the text just written to
-    /// `abs`. The row carries the file's own modification instant, in the
-    /// spelling the sync's prefilter compares (`asset_modified`), so the
-    /// next walk does not read the file again.
+    /// Put one reflection's row and its chunks in the index (R53), from the
+    /// text just written to `abs`. The row carries the file's own
+    /// modification instant, in the spelling the sync's prefilter compares
+    /// (`asset_modified`), so the next walk does not read the file again.
     pub(super) async fn index_reflection(
         &self,
         domain_id: DomainId,
@@ -789,11 +789,14 @@ impl Engine {
             size: text.len() as u64,
             modified: asset_modified(abs),
         };
-        self.store
-            .lock()
-            .await
-            .upsert_reflection(domain_id, &row)
-            .await?;
+        let store = self.store.lock().await;
+        crystalline_index::reflection::index_reflection_row(
+            &*store,
+            domain_id,
+            &row,
+            &self.chunk_params,
+        )
+        .await?;
         Ok(())
     }
 }

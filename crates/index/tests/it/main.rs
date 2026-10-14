@@ -14,6 +14,7 @@ mod perf;
 mod perf_meta;
 mod plans;
 mod recovery;
+mod reflection_search;
 mod reindex;
 mod reparse;
 mod retired;

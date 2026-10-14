@@ -1725,9 +1725,14 @@ pub struct OutboundRef {
 pub struct ChunkJob {
     /// The chunk row id.
     pub chunk_id: i64,
-    /// The owning engram id.
+    /// The owning engram id for [`ChunkTable::Engram`]. A reflection chunk
+    /// has no owning row id (R51), so for [`ChunkTable::Reflection`] this is
+    /// the chunk's own id: the keyset cursor `(engram_id, seq)` is then
+    /// `(id, seq)`, and since `id` is unique and increasing, paging never
+    /// skips or repeats a job.
     pub engram_id: i64,
-    /// The chunk sequence within the engram.
+    /// The chunk sequence within the engram (within the page for a reflection
+    /// chunk).
     pub seq: i64,
     /// The chunk text.
     pub text: String,
@@ -1948,11 +1953,29 @@ impl EmbeddingCoverage {
 pub enum ChunkTable {
     /// `chunk`: the engram chunks.
     Engram,
+    /// `reflection_chunk`: the Reflection's section chunks, never read by
+    /// engram search.
+    Reflection,
 }
 
 impl ChunkTable {
     /// Every table, in the order the embed passes walk them: engrams first.
-    pub const ALL: &'static [ChunkTable] = &[ChunkTable::Engram];
+    pub const ALL: &'static [ChunkTable] = &[ChunkTable::Engram, ChunkTable::Reflection];
+}
+
+/// A freshly computed chunk of one reflection page, handed to
+/// [`Store::replace_reflection_chunks`]. Produced by
+/// [`crate::embed::chunk_reflection`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewReflectionChunk {
+    /// The section's place on the page: 0 is the text before the first `##`.
+    pub section_ord: i64,
+    /// The section id, `_top` for the top, `None` for a heading with no id yet.
+    pub section: Option<String>,
+    /// The section heading, empty for the top.
+    pub heading: String,
+    /// The chunk itself; its `seq` counts through the whole page.
+    pub chunk: NewChunk,
 }
 
 /// Which full-text path the store is using.
@@ -2951,7 +2974,8 @@ pub trait Store: Send + Sync {
     /// a page comes back short. Rows that gain an embedding mid-pass drop out of
     /// the predicate behind the cursor, so paging never skips or repeats a job.
     /// [`ChunkJob::engram_id`] is the owning row of the table: for
-    /// [`ChunkTable::Engram`] the engram id.
+    /// [`ChunkTable::Engram`] the engram id, for [`ChunkTable::Reflection`]
+    /// the chunk's own id (a reflection chunk has no owning row id).
     async fn chunks_needing_embedding_in(
         &self,
         table: ChunkTable,
@@ -3434,7 +3458,8 @@ pub trait Store: Send + Sync {
     /// Insert or replace one reflection's row, keyed by `(domain, path)`.
     async fn upsert_reflection(&self, domain: DomainId, row: &ReflectionRow) -> Result<()>;
 
-    /// Remove one reflection's row. `false` when there was none.
+    /// Remove one reflection's row and its chunks. `false` when there was no
+    /// row.
     async fn delete_reflection(&self, domain: DomainId, path: &str) -> Result<bool>;
 
     /// One reflection's row, or `None`.
@@ -3442,6 +3467,17 @@ pub trait Store: Send + Sync {
 
     /// Every reflection row of a domain, ordered by path in byte order.
     async fn list_reflections(&self, domain: DomainId) -> Result<Vec<ReflectionRow>>;
+
+    /// Replace one page's chunk rows with a freshly computed set, carrying over
+    /// the vector of any chunk whose fingerprint is unchanged, so an edit
+    /// re-embeds only the sections that changed. Called by
+    /// [`crate::reflection::index_reflection_row`] only (R53).
+    async fn replace_reflection_chunks(
+        &self,
+        domain: DomainId,
+        path: &str,
+        chunks: &[NewReflectionChunk],
+    ) -> Result<()>;
 
     // --- host locks ----------------------------------------------------------
     // The single-writer-per-file-domain rule for shared-database collaboration.
