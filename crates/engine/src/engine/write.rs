@@ -973,6 +973,8 @@ impl Engine {
         if is_manifest_path(&desc.path) {
             self.refuse_read_only_switch_on(&p.domain, &p.content, scope)
                 .await?;
+            self.screen_manifest_write(&p.domain, None, &p.content)
+                .await?;
         }
         // A reserved name never resolves to an engram today (sync skips both),
         // so this is defence in depth rather than a reachable branch: the
@@ -1326,6 +1328,7 @@ impl Engine {
         if is_manifest_path(&normalize_rel(path)) {
             self.refuse_read_only_switch_on(domain, content, scope)
                 .await?;
+            self.screen_manifest_write(domain, None, content).await?;
         }
         let view = DomainView::for_write(self, domain, scope).await?;
         self.restore_engram_in_view(&view, domain, path, content)

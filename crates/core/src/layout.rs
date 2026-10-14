@@ -226,10 +226,12 @@ pub fn slash_rel(root: &Path, path: &Path) -> String {
 /// marker. A page marker is a section id line `<!-- r:<hex> -->`, the
 /// Reflection's provenance key in the frontmatter, or a baseline twin under
 /// `reflections/.reflected/`; a threads file (`<page>.threads.md`) is marked
-/// when its page is a marked page. Crystalline writes every page with id lines, so
-/// a domain switched off and on again finds no pending engram; a page a
-/// person wrote by hand with none of the markers reads as an engram, which
-/// only holds the switch pending (no file is ever dropped).
+/// when its page is a marked page. Crystalline writes an id line under every
+/// `##` heading of a page it writes, the seeded `PACT.md` included, so a
+/// domain switched off and on again finds no pending engram among them; a
+/// page a person wrote by hand with none of the markers, or one with no `##`
+/// heading and no provenance, reads as an engram, which only holds the
+/// switch pending (no file is ever dropped).
 ///
 /// A file that cannot be read counts as pending (fail closed); a file that is
 /// gone, is not valid UTF-8 or does not parse is no engram, as the walk sees

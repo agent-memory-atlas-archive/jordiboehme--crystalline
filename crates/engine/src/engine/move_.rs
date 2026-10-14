@@ -169,6 +169,9 @@ impl Engine {
             };
             self.refuse_read_only_switch_on(&dest_domain, &text, scope)
                 .await?;
+            // No MANIFEST stands there before the move.
+            self.screen_manifest_write(&dest_domain, Some(""), &text)
+                .await?;
         }
 
         // The third place a move can land, and it is two writes rather than

@@ -5,6 +5,7 @@
 use super::*;
 
 use crystalline_core::manifest_view::{PolicyRow, manifest_facts, policy_rows};
+use crystalline_core::reflection::ReflectionState;
 use crystalline_core::verify::{
     ConfigEdit, DOMAIN_CONFIG_FILE, VERIFY_RULES, edit_domain_config, is_severity_word,
     load_domain_config, verify_rule,
@@ -184,6 +185,46 @@ impl Engine {
             self.require_domain(domain, scope).await?;
             return Err(EngineError::DomainReadOnly(read_only_sentence(domain)));
         }
+        // Reflection: a switch-on is screened against the text the edits
+        // would produce, so the policy PATCH, configure and a raw MANIFEST
+        // edit refuse with one sentence. A switch-off (`set reflection: off`,
+        // or `unset reflection`) is never screened.
+        let mut edits: Vec<PolicyEdit> = edits.to_vec();
+        let wants_on = edits.iter().any(|edit| {
+            matches!(edit, PolicyEdit::Set { key, value }
+                if key == crystalline_core::REFLECTION_KEY
+                    && value == crystalline_core::ReflectionSwitch::On.as_str())
+        });
+        let already_on =
+            wants_on && self.reflection_switch(domain) == crystalline_core::ReflectionSwitch::On;
+        // A switch-on of a domain that already says `on` but has no home
+        // (state Homeless) refills the home instead of doing nothing.
+        let refill =
+            already_on && self.reflection_state(domain).await? == ReflectionState::Homeless;
+        let switching_on = wants_on && (refill || !already_on);
+        if switching_on {
+            let facts = self.switch_facts(domain).await?;
+            // Before the MANIFEST is read: a virtual domain has none on disk
+            // to read, and the refusal is the one `screen_switch` gives.
+            if facts.virtual_domain {
+                return Err(super::reflection::virtual_refusal());
+            }
+            if facts.origin
+                && let Some(own) = facts.own_url.clone()
+            {
+                edits.push(PolicyEdit::Set {
+                    key: crystalline_core::REFLECTION_HOME_KEY.to_string(),
+                    value: own,
+                });
+            }
+            let before = self.manifest_source(domain).await?.markdown;
+            let after = apply_policy_edits(&before, &edits);
+            if refill {
+                super::reflection::screen_home(&after, &facts)?;
+            } else {
+                super::reflection::screen_switch(&before, &after, &facts)?;
+            }
+        }
         let view = if unlocking {
             DomainView::for_unlock(self, domain).await?
         } else {
@@ -192,7 +233,6 @@ impl Engine {
         let overlay = view.actor().map(str::to_string);
         let actor = self.actor_for(None, overlay.as_deref());
         let (desc, source) = view.resolve("manifest").await?;
-        let edits: Vec<PolicyEdit> = edits.to_vec();
         self.apply_source_edit(
             &desc,
             &source,
@@ -201,19 +241,13 @@ impl Engine {
             &actor,
             None,
             scope,
-            move |current| {
-                let mut out = current.to_string();
-                for edit in &edits {
-                    out = match edit {
-                        PolicyEdit::Set { key, value } => set_frontmatter_field(&out, key, value),
-                        PolicyEdit::Unset { key } => remove_frontmatter_field(&out, key),
-                    };
-                }
-                Ok(out)
-            },
+            move |current| Ok(apply_policy_edits(current, &edits)),
         )
         .await?;
         self.refresh_routing_cache().await;
+        if switching_on && overlay.is_none() {
+            self.seed_pact(domain).await?;
+        }
         let markdown = match overlay.as_deref() {
             None => self.manifest_markdown(domain).await?,
             Some(who) => {
@@ -413,8 +447,19 @@ impl Engine {
                     .find(|row| row.key == key)
                     .and_then(|row| row.declared.clone())
             };
+            // A switch-on of a Homeless domain is kept although the MANIFEST
+            // says `on` already: it refills the home (R22). The state is
+            // asked only when the call names the switch.
+            let names_switch = policy_edits.iter().any(|edit| {
+                matches!(edit, PolicyEdit::Set { key, .. } if key == crystalline_core::REFLECTION_KEY)
+            });
+            let homeless =
+                names_switch && self.reflection_state(domain).await? == ReflectionState::Homeless;
             policy_edits.retain(|edit| match edit {
-                PolicyEdit::Set { key, value } => declared(key).as_deref() != Some(value.as_str()),
+                PolicyEdit::Set { key, value } => {
+                    declared(key).as_deref() != Some(value.as_str())
+                        || (homeless && key == crystalline_core::REFLECTION_KEY)
+                }
                 PolicyEdit::Unset { key } => declared(key).is_some(),
             });
         }
@@ -492,6 +537,19 @@ impl Engine {
         }
         Ok(view)
     }
+}
+
+/// A MANIFEST's text with the policy edits applied in order: the one fold
+/// the switch screen and the write share.
+fn apply_policy_edits(current: &str, edits: &[PolicyEdit]) -> String {
+    let mut out = current.to_string();
+    for edit in edits {
+        out = match edit {
+            PolicyEdit::Set { key, value } => set_frontmatter_field(&out, key, value),
+            PolicyEdit::Unset { key } => remove_frontmatter_field(&out, key),
+        };
+    }
+    out
 }
 
 /// The answer of a configure call whose policy keys landed and whose

@@ -218,6 +218,14 @@ impl Engine {
         // heading a section edit dropped, and for a MANIFEST the text that
         // landed, which the MANIFEST rules then read.
         let is_manifest = is_manifest_path(&desc.path);
+        // A MANIFEST edit may switch Reflection on, which meets the screens
+        // the domain policies meet. The facts are gathered here, before any
+        // lock, because the closure below cannot await.
+        let switch_facts = if is_manifest {
+            Some(self.switch_facts(&desc.domain).await?)
+        } else {
+            None
+        };
         let mut heading_stripped: Option<String> = None;
         let mut manifest_text: Option<String> = None;
         let edited = self
@@ -248,6 +256,9 @@ impl Engine {
                         ack.as_ref(),
                     )?;
                     heading_stripped = stripped;
+                    if let Some(facts) = &switch_facts {
+                        super::reflection::screen_switch(current, &text, facts)?;
+                    }
                     if is_manifest {
                         manifest_text = Some(text.clone());
                     }

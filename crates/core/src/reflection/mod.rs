@@ -16,6 +16,7 @@ pub mod layout;
 pub mod links;
 pub mod provenance;
 pub mod sections;
+pub mod state;
 
 pub use anchors::anchor_state;
 pub use baseline::{
@@ -36,3 +37,4 @@ pub use sections::{
     Section, TOP_SECTION, assign_ids, edit_section, find_section, id_line, normalize_section_text,
     parse_id_line, random_section_id, reattach_ids, section_hash, split_sections,
 };
+pub use state::{ReflectionHome, ReflectionState};

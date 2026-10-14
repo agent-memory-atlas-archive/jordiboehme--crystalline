@@ -459,6 +459,9 @@ impl Engine {
         self.refuse_read_only_domain(domain, scope).await?;
         self.refuse_read_only_switch_on(domain, markdown, scope)
             .await?;
+        // A MANIFEST that switches Reflection on meets the screens the
+        // domain policies meet.
+        self.screen_manifest_write(domain, None, markdown).await?;
 
         let (rel, created) = match self.content_source(domain)? {
             ContentSource::File { root } => {

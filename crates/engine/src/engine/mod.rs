@@ -2757,13 +2757,7 @@ impl Engine {
         if crystalline_core::reflection_at(&root) == crystalline_core::ReflectionSwitch::Off {
             return Ok(crystalline_core::ReflectionMode::Off);
         }
-        let recorded: Vec<String> = {
-            let store = self.store.lock().await;
-            match store.domain_id(domain).await? {
-                Some(id) => store.file_stamps(id).await?.into_keys().collect(),
-                None => Vec::new(),
-            }
-        };
+        let recorded = self.recorded_paths(domain).await?;
         // The predicate reads the recorded files (or walks the folder on an
         // empty index): blocking IO, so off the runtime's workers.
         tokio::task::spawn_blocking(move || {
@@ -2774,6 +2768,17 @@ impl Engine {
             EngineError::Internal(format!(
                 "the Reflection mode of '{domain}' could not be read: {e}"
             ))
+        })
+    }
+
+    /// The domain-relative paths the index records for `domain`'s files,
+    /// empty when it holds no row of the domain. The store lock is held for
+    /// the two reads only.
+    pub(crate) async fn recorded_paths(&self, domain: &str) -> Result<Vec<String>> {
+        let store = self.store.lock().await;
+        Ok(match store.domain_id(domain).await? {
+            Some(id) => store.file_stamps(id).await?.into_keys().collect(),
+            None => Vec::new(),
         })
     }
 
@@ -5597,6 +5602,7 @@ mod name_report;
 mod names;
 mod origins;
 mod read;
+mod reflection;
 mod rename_domain;
 mod review_mode;
 mod schemas;

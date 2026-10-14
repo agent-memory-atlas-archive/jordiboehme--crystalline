@@ -369,34 +369,64 @@ pub fn reflection_mode(
     if crystalline_core::reflection_at(root) != crystalline_core::ReflectionSwitch::On {
         return ReflectionMode::Off;
     }
-    let mut recorded = recorded.peekable();
-    let pending = if recorded.peek().is_none() {
-        pending_engram_on_disk(root)
-    } else {
-        recorded.any(|p| {
-            let p = p.as_ref();
-            crystalline_core::reflection::is_under_reflections(p)
-                && crystalline_core::is_pending_engram(root, p)
-        })
-    };
-    if pending {
-        ReflectionMode::Off
-    } else {
+    if pending_engrams_up_to(root, recorded, Some(1)).is_empty() {
         ReflectionMode::Effective
+    } else {
+        ReflectionMode::Off
     }
 }
 
-/// Whether any file under `reflections/` is a pending engram
-/// ([`crystalline_core::is_pending_engram`]). Only asked when the index holds
-/// no row of the domain; the first match answers. A folder the walk cannot
-/// read counts as pending (fail closed), since it may hold one.
-fn pending_engram_on_disk(root: &Path) -> bool {
+/// The engrams under `reflections/` that wait to move out, sorted: every
+/// path [`crystalline_core::is_pending_engram`] calls pending, asked of the
+/// same files [`reflection_mode`] asks it of (the `recorded` paths, or the
+/// files on disk when nothing is recorded). The switch is not read, so the
+/// switch-on screen can ask before the switch is on. A folder or an entry the
+/// walk cannot read is named as it stands, since it may hold an engram
+/// (fail closed, as [`reflection_mode`] fails).
+pub fn pending_engrams(
+    root: &Path,
+    recorded: impl Iterator<Item = impl AsRef<str>>,
+) -> Vec<String> {
+    let mut pending = pending_engrams_up_to(root, recorded, None);
+    pending.sort();
+    pending
+}
+
+/// [`pending_engrams`] in the order found, stopping after `limit` when one
+/// is given.
+fn pending_engrams_up_to(
+    root: &Path,
+    recorded: impl Iterator<Item = impl AsRef<str>>,
+    limit: Option<usize>,
+) -> Vec<String> {
+    let mut recorded = recorded.peekable();
+    if recorded.peek().is_none() {
+        return pending_engrams_on_disk(root, limit);
+    }
+    let pending = recorded.map(|p| p.as_ref().to_string()).filter(|p| {
+        crystalline_core::reflection::is_under_reflections(p)
+            && crystalline_core::is_pending_engram(root, p)
+    });
+    match limit {
+        Some(limit) => pending.take(limit).collect(),
+        None => pending.collect(),
+    }
+}
+
+/// The files under `reflections/` on disk that are pending engrams
+/// ([`crystalline_core::is_pending_engram`]), up to `limit`. A folder the
+/// walk cannot read is named instead of its files, since it may hold one.
+fn pending_engrams_on_disk(root: &Path, limit: Option<usize>) -> Vec<String> {
+    let mut found = Vec::new();
+    let full = |found: &Vec<String>| limit.is_some_and(|limit| found.len() >= limit);
+    let folder_rel = format!("{}/", crystalline_core::reflection::REFLECTIONS_DIR);
     let Ok(entries) = std::fs::read_dir(root) else {
-        return true;
+        return vec![folder_rel];
     };
     for entry in entries {
         let Ok(entry) = entry else {
-            return true;
+            found.push(folder_rel.clone());
+            return found;
         };
         // The classifier's case rule: `Reflections/` is the Reflection's folder too.
         let is_folder = entry
@@ -413,17 +443,27 @@ fn pending_engram_on_disk(root: &Path) -> bool {
             .into_iter()
             .filter_entry(|e| e.depth() == 0 || off.enters_dir(&slash_rel(root, e.path())));
         for item in walk {
-            let Ok(item) = item else {
-                return true;
+            let item = match item {
+                Ok(item) => item,
+                Err(e) => {
+                    let at = e.path().unwrap_or(&entry.path()).to_path_buf();
+                    found.push(slash_rel(root, &at));
+                    if full(&found) {
+                        return found;
+                    }
+                    continue;
+                }
             };
-            if item.file_type().is_file()
-                && crystalline_core::is_pending_engram(root, &slash_rel(root, item.path()))
-            {
-                return true;
+            let rel = slash_rel(root, item.path());
+            if item.file_type().is_file() && crystalline_core::is_pending_engram(root, &rel) {
+                found.push(rel);
+                if full(&found) {
+                    return found;
+                }
             }
         }
     }
-    false
+    found
 }
 
 /// Whether the domain at `root` has a Reflection in effect.

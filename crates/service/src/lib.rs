@@ -58,6 +58,7 @@ pub use client::{
     origin_resolve, origin_share, origin_status, origin_update, origin_withdraw, run_mcp, run_tool,
     scaffold_virtual_manifest, tags_retag, use_daemon, virtual_routing_bullets,
 };
+pub use crystalline_core::reflection::{ReflectionHome, ReflectionState};
 pub use crystalline_engine::engine::{
     ConvergenceReport, Engine, EngineError, OVERLAY_NEEDS_IDENTITY, REVIEW_NO_STACKING, RenameStep,
     ShareActor, WriteBlock, WrittenAttachment,
