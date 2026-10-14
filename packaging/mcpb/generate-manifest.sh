@@ -198,7 +198,7 @@ cat >"$manifest_path" <<JSON
     },
     {
       "name": "read_reflection",
-      "description": "Read a domain's Reflection: the tree of its documents for people, one document with its sections, source engrams and open threads, or the sections that match a search query."
+      "description": "Read a domain's Reflection: the tree of its documents for people, one document with its sections, source engrams and open threads, or the sections that match a search query. A page from a domain served by another machine carries its images as Markdown links only, no resource links."
     },
     {
       "name": "write_reflection",
