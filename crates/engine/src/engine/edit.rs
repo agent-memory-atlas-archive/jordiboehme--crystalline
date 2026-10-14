@@ -125,6 +125,10 @@ impl Engine {
             }
             Err(e) => return Err(e),
         };
+        // A hit can be a stale row: a file that became the Reflection's page
+        // since the last sync still has its engram row until the next one.
+        self.refuse_reflection_identifier(&p.domain, &desc.path)
+            .await?;
         self.screen_granted_path(&desc.domain, &desc.path, scope, join)
             .await?;
         // An `evolve_ack` assignment is the one set_frontmatter key whose value

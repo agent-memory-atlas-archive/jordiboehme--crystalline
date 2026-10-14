@@ -966,6 +966,10 @@ impl Engine {
             }
             Err(e) => return Err(e),
         };
+        // A hit can be a stale row: a file that became the Reflection's page
+        // since the last sync still has its engram row until the next one.
+        self.refuse_reflection_identifier(&p.domain, &desc.path)
+            .await?;
         if is_manifest_path(&desc.path) {
             self.refuse_read_only_switch_on(&p.domain, &p.content, scope)
                 .await?;

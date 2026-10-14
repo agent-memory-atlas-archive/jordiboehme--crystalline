@@ -2782,14 +2782,15 @@ impl Engine {
         Ok(self.reflection_mode(domain).await? == crystalline_core::ReflectionMode::Effective)
     }
 
-    /// Answer a resolve miss on an identifier the Reflection holds with the
-    /// teaching refusal while the Reflection is in effect, instead of a bare
-    /// "not found". Asked on the miss only, never before the lookup: an
-    /// engram moved out of the folder may keep a custom permalink that still
-    /// starts with `reflections/`, and it must stay reachable by it. While
-    /// pending, the engrams still there resolve and never get here. The
-    /// cheap path test runs first; only a path under the folder costs the
-    /// mode.
+    /// The teaching refusal for an identifier or a resolved path the
+    /// Reflection holds while it is in effect. Asked of the identifier on a
+    /// resolve miss, instead of a bare "not found", and of the resolved path
+    /// on a hit, never of the identifier before the lookup: an engram moved
+    /// out of the folder may keep a custom permalink that still starts with
+    /// `reflections/`, and it must stay reachable by it (its path is outside).
+    /// The hit check catches a stale row: a file that became a page since the
+    /// last sync. While pending, the engrams still there pass. The cheap path
+    /// test runs first; only a path under the folder costs the mode.
     pub(crate) async fn refuse_reflection_identifier(
         &self,
         domain: &str,

@@ -75,6 +75,10 @@ impl Engine {
             }
             Err(e) => return Err(e),
         };
+        // A hit can be a stale row: a file that became the Reflection's page
+        // since the last sync still has its engram row until the next one.
+        self.refuse_reflection_identifier(&p.domain, &desc.path)
+            .await?;
         // **The open document outranks both substrates, and the probe is above
         // the lock.** A caller's `expected_checksum` came from a read, and a
         // read of a page somebody has open answers the live text and its

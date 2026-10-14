@@ -186,6 +186,57 @@ async fn an_engram_moved_out_keeps_answering_to_its_custom_permalink() {
     assert!(!fx.root.join("notes/a.md").exists());
 }
 
+/// A row the index still holds for a file that became a page since the last
+/// sync is not an engram any more: no verb acts on it through that row.
+#[tokio::test]
+async fn a_stale_row_of_a_page_is_refused_until_the_next_sync() {
+    let fx = fixture(&[(
+        "reflections/kept.md",
+        &engram("Kept", "reflections/kept", "- [fact] kept"),
+    )])
+    .await;
+    std::fs::write(fx.root.join("MANIFEST.md"), manifest("reflection: on\n")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    assert!(
+        !fx.engine.reflection_effective("eng").await.unwrap(),
+        "pending"
+    );
+    // Out of band, the file becomes a marked page; no sync runs.
+    std::fs::write(fx.root.join("reflections/kept.md"), page("Kept")).unwrap();
+    assert!(
+        fx.engine.reflection_effective("eng").await.unwrap(),
+        "in effect"
+    );
+    let edit = EditParams {
+        domain: "eng".into(),
+        identifier: "reflections/kept".into(),
+        operation: "append".into(),
+        content: Some("- [fact] more".into()),
+        ..Default::default()
+    };
+    refusal(fx.engine.edit_engram(&edit).await.unwrap_err());
+    refusal(
+        fx.engine
+            .move_engram(
+                &move_params("reflections/kept", "notes/kept.md"),
+                &Scope::Unrestricted,
+            )
+            .await
+            .unwrap_err(),
+    );
+    refusal(
+        fx.engine
+            .delete_engram(&delete_params("reflections/kept"))
+            .await
+            .unwrap_err(),
+    );
+    assert_eq!(
+        std::fs::read_to_string(fx.root.join("reflections/kept.md")).unwrap(),
+        page("Kept"),
+        "the page is untouched"
+    );
+}
+
 #[tokio::test]
 async fn index_files_skip_the_reflection_folder() {
     // The fixture's sync generates the folder listings (`index.files` is on

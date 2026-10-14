@@ -79,6 +79,10 @@ impl Engine {
             }
             Err(e) => return Err(e),
         };
+        // A hit can be a stale row: a file that became the Reflection's page
+        // since the last sync still has its engram row until the next one.
+        self.refuse_reflection_identifier(&p.domain, &src.path)
+            .await?;
         let dest_domain = p
             .destination_domain
             .clone()
