@@ -736,8 +736,9 @@ fn reflection_from_row(r: &Row) -> ReflectionRow {
 }
 
 /// The statements of one asset table. Picked by `match`, never built with
-/// `format!`, so each statement stays a literal the query-plan guard and a
-/// grep both read.
+/// `format!`, so each statement stays a literal a grep reads. The query-plan
+/// guard (`tests/it/plans.rs`) does not register them: each one seeks the
+/// table's unique `(domain_id, path)` index.
 struct AssetSql {
     upsert: &'static str,
     /// The blob rows that go with a deleted row, for a table that has blobs.
@@ -766,9 +767,25 @@ const ATTACHMENT_SQL: AssetSql = AssetSql {
            WHERE domain_id=?1 ORDER BY path",
 };
 
+const REFLECTION_ASSET_SQL: AssetSql = AssetSql {
+    upsert: "INSERT INTO reflection_asset(domain_id, path, sha256, mime, size, modified) \
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT(domain_id, path) DO UPDATE SET \
+                 sha256=excluded.sha256, mime=excluded.mime, \
+                 size=excluded.size, modified=excluded.modified",
+    // No blob table: a Reflection's bytes are always files.
+    delete_blobs: None,
+    delete: "DELETE FROM reflection_asset WHERE domain_id=?1 AND path=?2",
+    get: "SELECT path, sha256, mime, size, modified FROM reflection_asset \
+          WHERE domain_id=?1 AND path=?2",
+    list: "SELECT path, sha256, mime, size, modified FROM reflection_asset \
+           WHERE domain_id=?1 ORDER BY path",
+};
+
 fn asset_sql(table: AssetTable) -> &'static AssetSql {
     match table {
         AssetTable::Engram => &ATTACHMENT_SQL,
+        AssetTable::Reflection => &REFLECTION_ASSET_SQL,
     }
 }
 
@@ -1747,7 +1764,8 @@ impl Store for TursoStore {
                 "SELECT d.id FROM domain d WHERE d.name=?1 \
                  AND NOT EXISTS (SELECT 1 FROM engram e WHERE e.domain_id=d.id) \
                  AND NOT EXISTS (SELECT 1 FROM attachment a WHERE a.domain_id=d.id) \
-                 AND NOT EXISTS (SELECT 1 FROM reflection r WHERE r.domain_id=d.id)",
+                 AND NOT EXISTS (SELECT 1 FROM reflection r WHERE r.domain_id=d.id) \
+                 AND NOT EXISTS (SELECT 1 FROM reflection_asset f WHERE f.domain_id=d.id)",
                 vec![Value::Text(name.to_string())],
             )
             .await?
@@ -2004,6 +2022,7 @@ impl Store for TursoStore {
              (SELECT id FROM attachment WHERE domain_id=?1)",
             "DELETE FROM attachment WHERE domain_id=?1",
             "DELETE FROM reflection WHERE domain_id=?1",
+            "DELETE FROM reflection_asset WHERE domain_id=?1",
             // Every spelling but the row's own name, which stays with the row.
             "DELETE FROM domain_spelling WHERE domain_id=?1 \
              AND spelling <> (SELECT name FROM domain WHERE id=?1)",
@@ -4264,6 +4283,51 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    /// Deleting an attachment row takes its blob with it. Counted raw,
+    /// because `read_attachment_blob` joins `attachment` and so cannot see a
+    /// blob whose row is gone: this connection enforces no foreign key, so
+    /// the blob statement in `ATTACHMENT_SQL` is the only thing that deletes
+    /// it.
+    #[tokio::test]
+    async fn deleting_an_attachment_leaves_no_orphaned_blob() {
+        let store = TursoStore::open_in_memory().await.unwrap();
+        let did = store
+            .upsert_domain("v", None, DomainKind::Virtual)
+            .await
+            .unwrap();
+        store
+            .upsert_attachment(
+                did,
+                &AttachmentRow {
+                    path: "assets/shot.png".to_string(),
+                    sha256: "abc".to_string(),
+                    mime: "image/png".to_string(),
+                    size: 5,
+                    modified: "2026-10-14T09:00:00+00:00".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .write_attachment_blob(did, "assets/shot.png", b"bytes")
+            .await
+            .unwrap();
+        let blobs = async || {
+            query_first(&store.conn, "SELECT COUNT(*) FROM attachment_blob", vec![])
+                .await
+                .unwrap()
+                .and_then(|r| cell_i64(&r, 0))
+        };
+        assert_eq!(blobs().await, Some(1));
+        assert!(
+            store
+                .delete_attachment(did, "assets/shot.png")
+                .await
+                .unwrap()
+        );
+        assert_eq!(blobs().await, Some(0), "the blob went with its row");
     }
 
     #[test]

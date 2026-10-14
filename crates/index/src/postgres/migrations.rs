@@ -126,6 +126,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "reflection index",
         sql: SCHEMA_V20,
     },
+    Migration {
+        version: 21,
+        label: "reflection assets",
+        sql: SCHEMA_V21,
+    },
 ];
 
 // The whole current schema in one step. The temporal columns stay TEXT ISO
@@ -651,6 +656,23 @@ CREATE TABLE IF NOT EXISTS reflection (
 );
 "#;
 
+// The Reflection's files, the twin of Turso's v21: one row per allowlisted
+// file under a domain's `reflections/assets/`, keyed by its path inside
+// `reflections/`, beside `attachment` and never joined to it. `IF NOT
+// EXISTS`, so a replay converges. The unique index serves every statement.
+const SCHEMA_V21: &str = r#"
+CREATE TABLE IF NOT EXISTS reflection_asset (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    domain_id BIGINT NOT NULL REFERENCES domain(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size BIGINT NOT NULL,
+    modified TEXT NOT NULL,
+    UNIQUE(domain_id, path)
+);
+"#;
+
 const SCHEMA_V8: &str = r#"
 CREATE TABLE attachment (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -678,7 +700,7 @@ CREATE TABLE attachment_blob (
 /// `contradiction` and `contradiction_pair` reference `engram` and `domain`,
 /// so they go first. `observation_vector` references nothing and leads the
 /// list. `engram_meta_value` references `engram`, so it goes before it.
-/// `reflection` references `domain(id)` too.
+/// `reflection` and `reflection_asset` reference `domain(id)` too.
 pub const WIPE_TABLES: &[&str] = &[
     "observation_vector",
     "contradiction",
@@ -697,6 +719,7 @@ pub const WIPE_TABLES: &[&str] = &[
     "attachment_blob",
     "attachment",
     "reflection",
+    "reflection_asset",
     "domain_lock",
     "domain_spelling",
     "domain",
@@ -1917,6 +1940,61 @@ mod tests {
             "PERF v18 backfill 50k: open with the migration {ms} ms, {rows} rows, {:.1} us per engram",
             ms as f64 * 1000.0 / ENGRAMS as f64
         );
+        store.drop_schema().await.unwrap();
+    }
+
+    /// v21, the Reflection's files: it follows the reflection index, its
+    /// table takes a row once the store opens, a replay of the step (a crash
+    /// between the DDL and the ledger stamp) converges, and the wipe clears
+    /// the rows before the domains they point at.
+    #[tokio::test]
+    async fn v21_adds_the_reflection_asset_table_and_replays_cleanly() {
+        let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        let at_version = |v: i64| {
+            MIGRATIONS
+                .iter()
+                .position(|m| m.version == v)
+                .unwrap_or_else(|| panic!("no migration v{v}"))
+        };
+        let (v20, v21) = (at_version(20), at_version(21));
+        assert_eq!(MIGRATIONS[v21].label, "reflection assets");
+        assert_eq!(MIGRATIONS[v20].label, "reflection index");
+        assert_eq!(v21, v20 + 1, "nothing between the two");
+
+        let schema = format!("mig_refl_asset_{}", std::process::id());
+        let store = crate::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .unwrap();
+        let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "SET search_path TO {schema}, public"
+        )))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::raw_sql(MIGRATIONS[v21].sql)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO domain (id, name, path) OVERRIDING SYSTEM VALUE VALUES (1, 'd', NULL);
+             INSERT INTO reflection_asset (domain_id, path, sha256, mime, size, modified)
+             VALUES (1, 'assets/a.png', 's', 'image/png', 1, 't');",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let at = |t: &str| WIPE_TABLES.iter().position(|w| *w == t);
+        assert!(
+            at("reflection_asset").is_some() && at("reflection_asset") < at("domain"),
+            "the file rows are wiped before the domains they point at, or the foreign key refuses"
+        );
+        drop(conn);
         store.drop_schema().await.unwrap();
     }
 }

@@ -11,7 +11,7 @@
 //! the folder indexes write). A target that climbs out of the domain is left
 //! alone.
 
-use crate::attachment::percent_decode_target;
+use crate::attachment::{canonical_asset_path, percent_decode_target};
 use crate::index::escape_link_url;
 use crate::relink::{BodyGate, LinkDialect, rewrite_body_lines};
 
@@ -227,6 +227,27 @@ pub fn rewrite_links_to(source: &str, source_path: &str, from: &str, to: &str) -
     })
 }
 
+/// Rewrite the links in the reflection at `source_path` that reach the
+/// Reflection file `from` (a path inside `reflections/`, `assets/...`) so
+/// they reach `to`. A target is compared as the references are read: the
+/// dialect hands it over percent-decoded (so a link an editor encoded still
+/// follows its file) and the folder's case is folded here (so one spelled
+/// `Assets/` does too); a title after the target and a formatting fragment
+/// are kept as written.
+pub fn rewrite_asset_links(
+    source: &str,
+    source_path: &str,
+    from: &str,
+    to: &str,
+) -> (String, usize) {
+    let from = canonical_asset_path(from).unwrap_or_else(|| from.to_string());
+    map_links(source, &|target| {
+        let landed = resolve(source_path, target)?;
+        let landed = canonical_asset_path(&landed).unwrap_or(landed);
+        (landed == from).then(|| relative_to(source_path, to))
+    })
+}
+
 /// Rebase the relative links inside a reflection that moved from `from` to
 /// `to`, so each still points at the file it pointed at. The links resolve
 /// inside the domain, so one that leaves `reflections/` for another file of
@@ -337,6 +358,69 @@ mod tests {
         let source = "[out](../../MANIFEST.md)\n";
         let (out, n) = rebase_links(source, "a.md", "b/a.md");
         assert_eq!((out.as_str(), n), (source, 0));
+    }
+
+    #[test]
+    fn asset_links_follow_a_moved_file() {
+        let page = "![a](../assets/gr%C3%B6%C3%9Fe.png \"Size\") ![b](../assets/größe.png#left) [c](./../assets/größe.png) ![d](../assets/other.png)\n```\n![e](../assets/größe.png)\n```\n";
+        let (out, n) = rewrite_asset_links(
+            page,
+            "guides/a.md",
+            "assets/größe.png",
+            "assets/diagrams/size.png",
+        );
+        assert_eq!(n, 3, "{out}");
+        assert!(
+            out.contains("![a](../assets/diagrams/size.png \"Size\")"),
+            "decoded match, title kept: {out}"
+        );
+        assert!(
+            out.contains("![b](../assets/diagrams/size.png#left)"),
+            "fragment kept: {out}"
+        );
+        assert!(out.contains("[c](../assets/diagrams/size.png)"));
+        assert!(out.contains("![d](../assets/other.png)"));
+        assert!(
+            out.contains("```\n![e](../assets/größe.png)\n```"),
+            "fences untouched"
+        );
+    }
+
+    /// The file half of a link rewrite only: an asset link with a fragment
+    /// follows the file in the page and in its baseline alike, through
+    /// `relink` (whose hash carry has its own test).
+    #[test]
+    fn an_asset_link_rewrite_reaches_the_baseline_too() {
+        use crate::reflection::{advance_baseline, feedback_changes, relink, split_sections};
+        let page =
+            "# Deploying\n\n## Flow\n<!-- r:7f3a9c2e -->\n\n![flow](../assets/a.png#right)\n";
+        let baseline = advance_baseline("", page, &["7f3a9c2e".to_string()]);
+        let out = relink(page, &baseline, &|s| {
+            rewrite_asset_links(s, "guides/deploying.md", "assets/a.png", "assets/b.png")
+        })
+        .unwrap();
+        assert_eq!(out.links, 1);
+        assert!(
+            out.page.contains("](../assets/b.png#right)")
+                && out.baseline.contains("](../assets/b.png#right)")
+        );
+        assert!(
+            feedback_changes(&out.page, &out.baseline)
+                .iter()
+                .all(|c| c.id.as_deref() != Some("7f3a9c2e"))
+        );
+        assert_eq!(split_sections(&out.page).len(), 2);
+        let cased = rewrite_asset_links(
+            "![a](../Assets/a.png)\n",
+            "guides/x.md",
+            "assets/a.png",
+            "assets/b.png",
+        );
+        assert_eq!(
+            cased.1, 1,
+            "the folder's case is folded as the references fold it: {}",
+            cased.0
+        );
     }
 
     #[test]

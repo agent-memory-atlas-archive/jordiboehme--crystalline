@@ -2132,6 +2132,11 @@ pub struct ReflectionRow {
 pub enum AssetTable {
     /// `attachment`: the engram attachments under `assets/`.
     Engram,
+    /// `reflection_asset`: a Reflection's files under `reflections/assets/`,
+    /// keyed by their path inside `reflections/` (`assets/...`). No engram
+    /// path reads this table, and it has no blobs: a Reflection always lives
+    /// in a file domain.
+    Reflection,
 }
 
 /// One tag in use, with how many engrams and how many observations carry it.

@@ -45,6 +45,11 @@ pub fn validate_reflection_path(path: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("the reflection path is empty".to_string());
     }
+    if crate::is_under_assets(path) {
+        return Err(format!(
+            "'{path}' is inside reflections/assets/, which holds the Reflection's files; a reflection cannot live there"
+        ));
+    }
     if path.contains('\\') || path.starts_with('/') {
         return Err(format!(
             "'{path}' must be a forward-slashed path inside reflections/"
@@ -100,6 +105,9 @@ pub enum ReflectionFile {
     Threads { of: String },
     /// The baseline of the reflection at `of`.
     Baseline { of: String },
+    /// A file under `reflections/assets/`, by its canonical path inside
+    /// `reflections/` (`assets/<rel>`). Never a reflection.
+    Asset(String),
     /// Anything else: a stray file, a reserved name, a temp file.
     Other,
 }
@@ -110,12 +118,24 @@ fn threads_of(path: &str) -> Option<String> {
     validate_reflection_path(&of).is_ok().then_some(of)
 }
 
-/// Classify a path inside `reflections/`. The pact's name is matched with
+/// Classify a path inside `reflections/`. A path under `assets/` (the folder
+/// matched with ASCII case folded) is never a reflection: an allowlisted file
+/// there is the Reflection's own file, anything else is `Other`. The pact's
+/// name is matched with
 /// ASCII case folded, as the folder is. The baseline prefix is read first,
 /// so a baseline of a page or of a threads file is a baseline. A threads
 /// file or a baseline whose page could not be a reflection (hidden, reserved,
 /// climbing out) is `Other`, like any stray file.
 pub fn classify(path: &str) -> ReflectionFile {
+    // Nothing under assets/ is a reflection: an allowlisted file is the
+    // Reflection's own attachment, everything else there is nobody's.
+    if let Some(canonical) = crate::canonical_asset_path(path) {
+        return if crate::validate_asset_path(&canonical).is_ok() {
+            ReflectionFile::Asset(canonical)
+        } else {
+            ReflectionFile::Other
+        };
+    }
     if is_pact(path) {
         return ReflectionFile::Pact;
     }
@@ -311,6 +331,42 @@ mod tests {
             classify(".tmp-a.md"),
             ReflectionFile::Other,
             "a hidden temp file is nobody's page"
+        );
+    }
+
+    #[test]
+    fn nothing_under_assets_is_a_reflection() {
+        assert_eq!(
+            classify("assets/flow.png"),
+            ReflectionFile::Asset("assets/flow.png".into())
+        );
+        assert_eq!(
+            classify("assets/deep/deck.pdf"),
+            ReflectionFile::Asset("assets/deep/deck.pdf".into())
+        );
+        assert_eq!(
+            classify("Assets/flow.png"),
+            ReflectionFile::Asset("assets/flow.png".into()),
+            "one spelling, as for engram attachments"
+        );
+        assert_eq!(
+            classify("assets/notes.md"),
+            ReflectionFile::Other,
+            "markdown is never a file here, never a reflection"
+        );
+        assert_eq!(classify("assets/tool.exe"), ReflectionFile::Other);
+        assert_eq!(
+            classify("guides/picture.png"),
+            ReflectionFile::Other,
+            "only the assets folder holds files"
+        );
+        for bad in ["assets/a.md", "Assets/a.md", "assets/deep/b.md"] {
+            let err = validate_reflection_path(bad).unwrap_err();
+            assert!(err.contains("reflections/assets/"), "{bad}: {err}");
+        }
+        assert!(
+            validate_reflection_path("assets-notes/a.md").is_ok(),
+            "only the folder itself is reserved"
         );
     }
 

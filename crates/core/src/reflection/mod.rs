@@ -11,6 +11,7 @@
 //! the path classifier) lives beside the engram code and is used from here.
 
 pub mod anchors;
+pub mod assets;
 pub mod baseline;
 pub mod layout;
 pub mod links;
@@ -19,6 +20,10 @@ pub mod sections;
 pub mod state;
 
 pub use anchors::anchor_state;
+pub use assets::{
+    AssetTarget, classify_target, engram_attachment_embeds, reflection_asset_refs,
+    refuse_engram_attachments,
+};
 pub use baseline::{
     ChangeKind, Relinked, SectionChange, advance_baseline, baseline_ids, feedback_changes,
     parse_baseline, relink, render_baseline,
@@ -28,7 +33,7 @@ pub use layout::{
     baseline_path, classify, domain_rel, fits_structure, is_under_reflections, structure_globs,
     threads_path, validate_reflection_path,
 };
-pub use links::{rebase_links, relative_to, rewrite_links_to};
+pub use links::{rebase_links, relative_to, rewrite_asset_links, rewrite_links_to};
 pub use provenance::{
     PROVENANCE_KEY, Provenance, SectionRecord, SourceRef, read_provenance, text_changed, title_of,
     write_provenance,

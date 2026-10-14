@@ -13,10 +13,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crystalline_index::{
-    AttachmentRow, ChunkParams, DomainId, DomainKind, EMBED_PAGE_SIZE, EdgeKind, EmbeddingCoverage,
-    EmbeddingRow, EngramId, EngramRecord, FileStamp, FilterOp, HostClaim, InboundPage,
-    InboundQuery, IndexError, MetadataFilter, NamedCount, NewChunk, RecentFilter, ReflectionRow,
-    SearchMode, SearchOrder, SearchQuery, Store, TursoStore, Vocabulary, apply_scan,
+    AssetTable, AttachmentRow, ChunkParams, DomainId, DomainKind, EMBED_PAGE_SIZE, EdgeKind,
+    EmbeddingCoverage, EmbeddingRow, EngramId, EngramRecord, FileStamp, FilterOp, HostClaim,
+    InboundPage, InboundQuery, IndexError, MetadataFilter, NamedCount, NewChunk, RecentFilter,
+    ReflectionRow, SearchMode, SearchOrder, SearchQuery, Store, TursoStore, Vocabulary, apply_scan,
     resolve_forward_refs, scan_paths, sync_domain,
 };
 
@@ -2362,6 +2362,28 @@ async fn dropping_an_empty_domain_row(store: &dyn Store) {
         1,
         "the reflection rows stay with their domain"
     );
+
+    // And so does one file of the Reflection.
+    let filed = store
+        .upsert_domain("filed", Some("/tmp/filed"), DomainKind::File)
+        .await
+        .unwrap();
+    store
+        .upsert_asset(
+            AssetTable::Reflection,
+            filed,
+            &AttachmentRow {
+                path: "assets/flow.png".to_string(),
+                sha256: "abc".to_string(),
+                mime: "image/png".to_string(),
+                size: 3,
+                modified: "2026-09-26T10:00:00+00:00".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!store.drop_empty_domain_row("filed").await.unwrap());
+    assert_eq!(store.domain_id("filed").await.unwrap(), Some(filed));
 
     // A new registration under a dropped name holds no host lock of the
     // row before it.
@@ -8917,6 +8939,209 @@ async fn an_unreadable_reflection_folder_keeps_its_rows(store: &dyn Store) {
 parity!(
     an_unreadable_reflection_folder_deletes_no_row,
     an_unreadable_reflection_folder_keeps_its_rows
+);
+
+// --- a Reflection's files (reflection core, Task 22) -------------------------
+
+async fn reflection_asset_rows_roundtrip(store: &dyn Store) {
+    let did = store
+        .upsert_domain("eng", Some("/k/eng"), DomainKind::File)
+        .await
+        .unwrap();
+    let other = store
+        .upsert_domain("ops", Some("/k/ops"), DomainKind::File)
+        .await
+        .unwrap();
+    let row = |path: &str, sha: &str| AttachmentRow {
+        path: path.to_string(),
+        sha256: sha.to_string(),
+        mime: "image/png".to_string(),
+        size: 4,
+        modified: "2026-10-13T09:00:00+00:00".to_string(),
+    };
+    store
+        .upsert_asset(AssetTable::Reflection, did, &row("assets/flow.png", "a"))
+        .await
+        .unwrap();
+    store
+        .upsert_asset(AssetTable::Reflection, did, &row("assets/flow.png", "b"))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_asset(AssetTable::Reflection, did, "assets/flow.png")
+            .await
+            .unwrap(),
+        Some(row("assets/flow.png", "b"))
+    );
+    for path in ["assets/b.png", "assets/B.png", "assets/a.png"] {
+        store
+            .upsert_asset(AssetTable::Reflection, did, &row(path, "x"))
+            .await
+            .unwrap();
+    }
+    store
+        .upsert_asset(AssetTable::Reflection, other, &row("assets/a.png", "y"))
+        .await
+        .unwrap();
+    let paths: Vec<String> = store
+        .list_assets(AssetTable::Reflection, did)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.path)
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "assets/B.png",
+            "assets/a.png",
+            "assets/b.png",
+            "assets/flow.png"
+        ],
+        "byte order, one domain"
+    );
+    assert!(
+        store.list_attachments(did).await.unwrap().is_empty(),
+        "never an engram attachment row"
+    );
+    assert!(
+        store
+            .delete_asset(AssetTable::Reflection, did, "assets/a.png")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .delete_asset(AssetTable::Reflection, did, "assets/a.png")
+            .await
+            .unwrap()
+    );
+    store.clear_domain(did).await.unwrap();
+    assert!(
+        store
+            .list_assets(AssetTable::Reflection, did)
+            .await
+            .unwrap()
+            .is_empty(),
+        "clear_domain takes them"
+    );
+    assert_eq!(
+        store
+            .list_assets(AssetTable::Reflection, other)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "and only this domain's"
+    );
+    store.wipe().await.unwrap();
+    assert!(
+        store
+            .list_assets(AssetTable::Reflection, other)
+            .await
+            .unwrap()
+            .is_empty(),
+        "wipe takes every row"
+    );
+}
+parity!(
+    reflection_asset_rows_roundtrip_on_both_backends,
+    reflection_asset_rows_roundtrip
+);
+
+async fn reflection_files_get_their_own_rows(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", &manifest_on());
+    write(root, "assets/shot.png", "an engram attachment");
+    write(root, "reflections/guides/a.md", &page("A", "x"));
+    write(root, "reflections/assets/flow.png", "a reflection picture");
+    write(root, "reflections/assets/deep/deck.pdf", "a deck");
+    // Marked like a page (an id line), so it does not hold the switch
+    // pending as an unmarked engram would (R48): it is still never a page.
+    write(
+        root,
+        "reflections/assets/notes.md",
+        "# not a reflection\n\n## Part\n<!-- r:bbbb2222 -->\n\nx\n",
+    );
+    write(
+        root,
+        "reflections/assets/tool.exe",
+        "refused by the allowlist",
+    );
+    sync_domain(store, "eng", root).await.unwrap();
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    let files = |rows: Vec<AttachmentRow>| rows.into_iter().map(|r| r.path).collect::<Vec<_>>();
+    assert_eq!(
+        files(
+            store
+                .list_assets(AssetTable::Reflection, did)
+                .await
+                .unwrap()
+        ),
+        ["assets/deep/deck.pdf", "assets/flow.png"]
+    );
+    assert_eq!(
+        files(store.list_attachments(did).await.unwrap()),
+        ["assets/shot.png"],
+        "never an engram attachment"
+    );
+    assert_eq!(
+        reflection_paths(store, "eng").await,
+        ["guides/a.md"],
+        "nothing under assets/ is a reflection"
+    );
+
+    // The watcher's targeted pass adds and removes one file.
+    write(root, "reflections/assets/new.png", "n");
+    std::fs::remove_file(root.join("reflections/assets/flow.png")).unwrap();
+    let stamps = store.file_stamps(did).await.unwrap();
+    let scan = scan_paths(
+        "eng",
+        root,
+        stamps,
+        vec![
+            "reflections/assets/new.png".into(),
+            "reflections/assets/flow.png".into(),
+        ],
+        &ChunkParams::default(),
+    )
+    .await;
+    let report = apply_scan(store, did, scan).await.unwrap();
+    assert_eq!(
+        files(
+            store
+                .list_assets(AssetTable::Reflection, did)
+                .await
+                .unwrap()
+        ),
+        ["assets/deep/deck.pdf", "assets/new.png"]
+    );
+    assert_eq!(
+        report.reflections_changed, 2,
+        "one file added, one removed: the count the backup mark reads, so a file dropped in by hand is backed up"
+    );
+
+    // Switched off: the folder is ordinary again and the rows go.
+    write(root, "MANIFEST.md", MANIFEST_OFF);
+    sync_domain(store, "eng", root).await.unwrap();
+    assert!(
+        store
+            .list_assets(AssetTable::Reflection, did)
+            .await
+            .unwrap()
+            .is_empty(),
+        "switching off clears them"
+    );
+    assert_eq!(
+        files(store.list_attachments(did).await.unwrap()),
+        ["assets/shot.png"]
+    );
+}
+parity!(
+    reflection_files_are_indexed_beside_reflections_and_never_as_attachments,
+    reflection_files_get_their_own_rows
 );
 
 // --- the registration stamp --------------------------------------------------

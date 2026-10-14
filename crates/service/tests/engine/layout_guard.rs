@@ -155,6 +155,15 @@ fn reflection_variants_stay_in_their_modules() {
             ],
         ),
         (
+            "AssetTable::Reflection",
+            &[
+                "index/src/store.rs",
+                "index/src/turso/mod.rs",
+                "index/src/postgres/mod.rs",
+                "index/src/sync.rs",
+            ],
+        ),
+        (
             "RoomDoc::Reflection",
             &[
                 "engine/src/collab/session.rs",

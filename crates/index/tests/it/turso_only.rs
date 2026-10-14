@@ -54,8 +54,9 @@ async fn store_info_reports_turso_schema_version() {
     // v12 domain rebuild marker, v13 engram actor dimension,
     // v14 domain rebuild kind, v15 engram body in its own table,
     // v16 domain spellings, v17 unbind references an unknown prefix bound at
-    // home, v18 contradiction scores, v19 metadata values, v20 reflection index.
-    assert_eq!(info.schema_version, 20);
+    // home, v18 contradiction scores, v19 metadata values, v20 reflection index,
+    // v21 reflection assets.
+    assert_eq!(info.schema_version, 21);
 }
 
 #[tokio::test]

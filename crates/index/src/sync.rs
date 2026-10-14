@@ -343,7 +343,9 @@ impl FileRows {
     fn report_path(self, rel: &str) -> String {
         match self {
             FileRows::Assets(AssetTable::Engram) => rel.to_string(),
-            FileRows::Reflections => crystalline_core::reflection::domain_rel(rel),
+            FileRows::Assets(AssetTable::Reflection) | FileRows::Reflections => {
+                crystalline_core::reflection::domain_rel(rel)
+            }
         }
     }
 }
@@ -707,6 +709,12 @@ pub struct DomainScan {
     reflections: Vec<FileCandidate>,
     /// Reflection paths a targeted scan looked for and did not find.
     reflection_deletes: Vec<String>,
+    /// Allowlisted files under `reflections/assets/`, while the Reflection is
+    /// effective, keyed by their path inside `reflections/`. Their
+    /// completeness is `reflections_complete`.
+    reflection_assets: Vec<FileCandidate>,
+    /// Reflection file paths a targeted scan looked for and did not find.
+    reflection_asset_deletes: Vec<String>,
     /// Whether `reflections` is every reflection of the domain (a full walk
     /// that read everything under the folder), so the apply may delete every
     /// row it did not see - which is also how a switch turned off (or
@@ -768,6 +776,7 @@ pub async fn scan_domain(
     let mut current: HashMap<String, Scanned> = HashMap::new();
     let mut assets: Vec<FileCandidate> = Vec::new();
     let mut reflections: Vec<FileCandidate> = Vec::new();
+    let mut reflection_assets: Vec<FileCandidate> = Vec::new();
     // Entries the walk could not read: a forced walk that skipped one has not
     // re-parsed the whole domain, so it must not stamp the parser generation.
     let mut unread = 0usize;
@@ -873,6 +882,28 @@ pub async fn scan_domain(
                     size: meta.len(),
                 });
             }
+            // A file under `reflections/assets/` goes through the engram
+            // side's own candidate builder, rooted at the Reflection folder as
+            // it is spelled on disk, so its canonical fold and its existence
+            // probe work as they do at the domain root.
+            PathClass::Reflection(ReflectionFile::Asset(_)) => {
+                let (folder, inner) = rel.split_once('/').unwrap_or((rel.as_str(), ""));
+                let Ok(meta) = entry.metadata() else {
+                    unread += 1;
+                    unread_reflections = true;
+                    continue;
+                };
+                if let Some(candidate) = asset_candidate(
+                    &root.join(folder),
+                    inner,
+                    entry.path(),
+                    &fname,
+                    file_mtime(&meta),
+                    meta.len(),
+                ) {
+                    reflection_assets.push(candidate);
+                }
+            }
             // Threads and the baseline are files, never rows; a temp or stray
             // file is nobody's.
             PathClass::Reflection(
@@ -912,6 +943,7 @@ pub async fn scan_domain(
     // complete walk clears the table: that is how switching off, and a
     // pending switch, leave no row behind.
     scan.reflections = reflections;
+    scan.reflection_assets = reflection_assets;
     scan.reflections_complete = !unread_reflections;
     scan.reflection = reflection;
     scan.report.unread += unread;
@@ -965,6 +997,8 @@ pub async fn scan_paths(
     let mut asset_deletes: Vec<String> = Vec::new();
     let mut reflections: Vec<FileCandidate> = Vec::new();
     let mut reflection_deletes: Vec<String> = Vec::new();
+    let mut reflection_assets: Vec<FileCandidate> = Vec::new();
+    let mut reflection_asset_deletes: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for rel in paths {
         // The same path can arrive twice in one debounce batch; classify it once.
@@ -979,6 +1013,38 @@ pub async fn scan_paths(
         // files are never rows. `symlink_metadata` for the reason the asset
         // branch below gives: the full walk never follows a link.
         if let PathClass::Reflection(file) = &class {
+            // A Reflection file, the engram asset branch below rooted at the
+            // Reflection folder: rows carry the canonical spelling, and on a
+            // case-sensitive filesystem a canonical path that still resolves
+            // is a different file that is still there.
+            if let ReflectionFile::Asset(canonical) = file {
+                let (folder, inner) = rel.split_once('/').unwrap_or((rel.as_str(), ""));
+                let fname = inner.rsplit('/').next().unwrap_or(inner);
+                match std::fs::symlink_metadata(&abs) {
+                    Ok(meta) if meta.is_file() => {
+                        if let Some(candidate) = asset_candidate(
+                            &root.join(folder),
+                            inner,
+                            &abs,
+                            fname,
+                            file_mtime(&meta),
+                            meta.len(),
+                        ) {
+                            reflection_assets.push(candidate);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        if canonical.as_str() == inner
+                            || !root.join(folder).join(canonical).exists()
+                        {
+                            reflection_asset_deletes.push(canonical.clone());
+                        }
+                    }
+                    Err(e) => unreadable.push((rel.clone(), e.to_string())),
+                }
+                continue;
+            }
             if matches!(file, ReflectionFile::Page(_) | ReflectionFile::Pact) {
                 let inner = inner_rel(&rel);
                 match std::fs::symlink_metadata(&abs) {
@@ -1099,6 +1165,8 @@ pub async fn scan_paths(
     scan.asset_deletes = asset_deletes;
     scan.reflections = reflections;
     scan.reflection_deletes = reflection_deletes;
+    scan.reflection_assets = reflection_assets;
+    scan.reflection_asset_deletes = reflection_asset_deletes;
     scan.reflection = reflection;
     scan
 }
@@ -1229,6 +1297,8 @@ async fn classify_changes(
         assets_complete: false,
         reflections: Vec::new(),
         reflection_deletes: Vec::new(),
+        reflection_assets: Vec::new(),
+        reflection_asset_deletes: Vec::new(),
         reflections_complete: false,
         reflection: ReflectionMode::Off,
         // The caller decides: only a forced full scan ends a rebuild.
@@ -1283,6 +1353,8 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         assets_complete,
         reflections,
         reflection_deletes,
+        reflection_assets,
+        reflection_asset_deletes,
         reflections_complete,
         reflection,
         ends_rebuild,
@@ -1331,6 +1403,27 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         FileRows::Reflections,
         reflections,
         reflection_deletes,
+        reflections_complete,
+        &mut report,
+    )
+    .await
+    {
+        Ok(changed) => report.reflections_changed += changed,
+        Err(e) => {
+            let _ = store.rollback().await;
+            return Err(e);
+        }
+    }
+
+    // The Reflection's files, through the code the attachment rows use and
+    // counted with the pages, so a file a plain editor or a pull drops into
+    // `reflections/assets/` marks the backup like a page does.
+    match reconcile_rows(
+        store,
+        domain,
+        FileRows::Assets(AssetTable::Reflection),
+        reflection_assets,
+        reflection_asset_deletes,
         reflections_complete,
         &mut report,
     )

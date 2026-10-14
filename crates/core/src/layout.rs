@@ -87,8 +87,9 @@ impl PathClass {
     }
 
     /// Whether the path belongs in the backup of a domain's own documents,
-    /// which is kept apart from the engram share: the Reflection's files,
-    /// all but its temp and stray files.
+    /// which is kept apart from the engram share: the Reflection's pages,
+    /// pact, threads, baseline and files under `reflections/assets/`, all
+    /// but its temp and stray files.
     pub fn backs_up(&self) -> bool {
         match self {
             PathClass::Engram
@@ -97,7 +98,14 @@ impl PathClass {
             | PathClass::Hidden
             | PathClass::Artifact
             | PathClass::Other => false,
-            PathClass::Reflection(file) => !matches!(file, ReflectionFile::Other),
+            PathClass::Reflection(file) => match file {
+                ReflectionFile::Page(_)
+                | ReflectionFile::Pact
+                | ReflectionFile::Threads { .. }
+                | ReflectionFile::Baseline { .. }
+                | ReflectionFile::Asset(_) => true,
+                ReflectionFile::Other => false,
+            },
         }
     }
 }
@@ -445,6 +453,11 @@ mod tests {
             ),
             ("reflections/.a.md.tmp", ReflectionFile::Other),
             ("reflections/index.md", ReflectionFile::Other),
+            (
+                "reflections/assets/flow.png",
+                ReflectionFile::Asset("assets/flow.png".into()),
+            ),
+            ("reflections/assets/a.md", ReflectionFile::Other),
         ] {
             assert_eq!(on.classify(rel), PathClass::Reflection(file), "{rel}");
         }
@@ -471,6 +484,10 @@ mod tests {
         assert!(
             !on.classify("reflections/.a.md.tmp").backs_up(),
             "a temp file is never backed up"
+        );
+        assert!(
+            on.classify("reflections/assets/flow.png").backs_up(),
+            "a Reflection's file is backed up with its pages"
         );
         assert_eq!(
             ReflectionMode::declared(crate::manifest::ReflectionSwitch::On),

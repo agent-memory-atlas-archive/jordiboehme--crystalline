@@ -813,9 +813,25 @@ const ATTACHMENT_SQL: AssetSql = AssetSql {
            WHERE domain_id=$1 ORDER BY path COLLATE \"C\"",
 };
 
+const REFLECTION_ASSET_SQL: AssetSql = AssetSql {
+    upsert: "INSERT INTO reflection_asset(domain_id, path, sha256, mime, size, modified) \
+             VALUES($1, $2, $3, $4, $5, $6) \
+             ON CONFLICT(domain_id, path) DO UPDATE SET \
+                 sha256=excluded.sha256, mime=excluded.mime, \
+                 size=excluded.size, modified=excluded.modified",
+    // No blob table: a Reflection's bytes are always files.
+    delete_blobs: None,
+    delete: "DELETE FROM reflection_asset WHERE domain_id=$1 AND path=$2",
+    get: "SELECT path, sha256, mime, size, modified FROM reflection_asset \
+          WHERE domain_id=$1 AND path=$2",
+    list: "SELECT path, sha256, mime, size, modified FROM reflection_asset \
+           WHERE domain_id=$1 ORDER BY path COLLATE \"C\"",
+};
+
 fn asset_sql(table: AssetTable) -> &'static AssetSql {
     match table {
         AssetTable::Engram => &ATTACHMENT_SQL,
+        AssetTable::Reflection => &REFLECTION_ASSET_SQL,
     }
 }
 
@@ -1666,6 +1682,7 @@ impl Store for PostgresStore {
                  AND NOT EXISTS (SELECT 1 FROM engram e WHERE e.domain_id=d.id) \
                  AND NOT EXISTS (SELECT 1 FROM attachment a WHERE a.domain_id=d.id) \
                  AND NOT EXISTS (SELECT 1 FROM reflection r WHERE r.domain_id=d.id) \
+                 AND NOT EXISTS (SELECT 1 FROM reflection_asset f WHERE f.domain_id=d.id) \
                  FOR UPDATE OF d",
             )
             .bind(name)
@@ -1937,6 +1954,7 @@ impl Store for PostgresStore {
              (SELECT id FROM attachment WHERE domain_id=$1)",
             "DELETE FROM attachment WHERE domain_id=$1",
             "DELETE FROM reflection WHERE domain_id=$1",
+            "DELETE FROM reflection_asset WHERE domain_id=$1",
             // Every spelling but the row's own name, which stays with the row.
             // The declared cascade never fires: the row is kept.
             "DELETE FROM domain_spelling WHERE domain_id=$1 \

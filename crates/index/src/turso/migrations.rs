@@ -122,6 +122,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "reflection index",
         sql: SCHEMA_V20,
     },
+    Migration {
+        version: 21,
+        label: "reflection assets",
+        sql: SCHEMA_V21,
+    },
 ];
 
 const SCHEMA_V1: &str = r#"
@@ -743,6 +748,23 @@ CREATE TABLE reflection (
 );
 "#;
 
+// The Reflection's files: one row per allowlisted file under a domain's
+// `reflections/assets/`, keyed by its path inside `reflections/`. The same
+// columns as `attachment` and never joined to it, so no engram path can see
+// one. The unique index serves every statement.
+const SCHEMA_V21: &str = r#"
+CREATE TABLE reflection_asset (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain_id INTEGER NOT NULL REFERENCES domain(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    modified TEXT NOT NULL,
+    UNIQUE(domain_id, path)
+);
+"#;
+
 const SCHEMA_V9: &str = r#"
 CREATE TABLE attachment (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -769,7 +791,7 @@ CREATE TABLE attachment_blob (
 /// before that. `contradiction` and `contradiction_pair` reference `engram`
 /// and `domain`, so they go first. `observation_vector` references nothing
 /// and leads the list. `engram_meta_value` references `engram`, so it goes
-/// before it. `reflection` references `domain(id)` too.
+/// before it. `reflection` and `reflection_asset` reference `domain(id)` too.
 pub const WIPE_TABLES: &[&str] = &[
     "observation_vector",
     "contradiction",
@@ -788,6 +810,7 @@ pub const WIPE_TABLES: &[&str] = &[
     "attachment_blob",
     "attachment",
     "reflection",
+    "reflection_asset",
     "domain_lock",
     "domain_spelling",
     "domain",
@@ -2336,7 +2359,7 @@ mod tests {
         let started = std::time::Instant::now();
         let store = crate::TursoStore::open(&db_path).await.unwrap();
         let ms = started.elapsed().as_millis();
-        assert_eq!(store.store_info().await.unwrap().schema_version, 20);
+        assert_eq!(store.store_info().await.unwrap().schema_version, 21);
         let rows = store.meta_values().await.unwrap().len();
         assert_eq!(rows, 5 * ENGRAMS as usize, "five rows an engram");
         eprintln!(
@@ -2405,7 +2428,7 @@ mod tests {
             }
         }
         let store = crate::TursoStore::open(&db_path).await.unwrap();
-        assert_eq!(store.store_info().await.unwrap().schema_version, 20);
+        assert_eq!(store.store_info().await.unwrap().schema_version, 21);
 
         let base_rows = meta_rows(store.conn.raw(), 7).await;
         assert_eq!(base_rows, crate::store::meta_value_rows(&base));
@@ -2568,6 +2591,43 @@ mod tests {
         assert!(
             at("reflection") < at("domain"),
             "the reflection rows go before their domain"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reflection_asset_migration_follows_the_reflection_index() {
+        let at_version = |v: i64| {
+            MIGRATIONS
+                .iter()
+                .position(|m| m.version == v)
+                .unwrap_or_else(|| panic!("no migration v{v}"))
+        };
+        let v21 = at_version(21);
+        let v20 = at_version(20);
+        assert_eq!(MIGRATIONS[v21].label, "reflection assets");
+        assert_eq!(
+            MIGRATIONS[v20].label, "reflection index",
+            "it follows the reflection table's migration"
+        );
+        assert_eq!(v21, v20 + 1, "nothing between the two");
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        apply_migrations(&conn, MIGRATIONS).await.unwrap();
+        conn.execute(
+            "INSERT INTO reflection_asset(domain_id, path, sha256, mime, size, modified) VALUES(1, 'assets/a.png', 's', 'image/png', 1, 't')",
+            (),
+        )
+        .await
+        .unwrap();
+        let at = |name: &str| {
+            WIPE_TABLES
+                .iter()
+                .position(|t| *t == name)
+                .unwrap_or_else(|| panic!("{name} is not in WIPE_TABLES"))
+        };
+        assert!(
+            at("reflection_asset") < at("domain"),
+            "the file rows go before their domain"
         );
     }
 }
