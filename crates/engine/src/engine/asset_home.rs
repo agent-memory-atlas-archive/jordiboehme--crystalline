@@ -86,6 +86,19 @@ impl AssetHome {
     }
 }
 
+/// The failure a test arms for the next asset move: the rows always fail
+/// after the rename; what the undo meets differs.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AssetMoveFault {
+    /// The undo runs as it would.
+    RowsFail,
+    /// The undo fails.
+    UndoFails,
+    /// A new file appears at the old path before the undo.
+    FileAppears,
+}
+
 /// Whether a write may replace a file that is already there.
 #[derive(Debug)]
 pub(crate) enum ReplaceRule {
@@ -528,8 +541,13 @@ impl Engine {
                     home.noun()
                 );
                 self.after_asset_change(home, domain);
+                let why = if undo.kind() == std::io::ErrorKind::AlreadyExists {
+                    format!("a new file appeared at '{from}' meanwhile, so the move was not undone")
+                } else {
+                    "the move could not be undone".to_string()
+                };
                 Ok(Some(format!(
-                    "the file moved to '{to}', and its index row could not follow ({e}); the next sync brings the row up to date"
+                    "the file moved to '{to}', and its index row could not follow ({e}); {why}; the next sync brings the rows up to date"
                 )))
             }
         }
@@ -555,12 +573,27 @@ impl Engine {
         Ok(())
     }
 
-    /// Put a moved file back where it was.
+    /// Put a moved file back where it was, never over a file that appeared
+    /// at the old path meanwhile (an editor or a pull: this process holds
+    /// the path's lock, others do not): that answers `AlreadyExists` and
+    /// leaves the moved file where it is. A narrow window between the check
+    /// and the rename stays, as no portable rename refuses to replace.
     fn undo_asset_rename(&self, dst: &Path, src: &Path) -> std::io::Result<()> {
         #[cfg(any(test, feature = "testing"))]
-        if self.asset_move_fault.lock().unwrap().take() == Some(true) {
-            return Err(std::io::Error::other(
-                "the undo was refused (test failpoint)",
+        match self.asset_move_fault.lock().unwrap().take() {
+            Some(AssetMoveFault::UndoFails) => {
+                return Err(std::io::Error::other(
+                    "the undo was refused (test failpoint)",
+                ));
+            }
+            // Somebody else writes the old path before the undo runs.
+            Some(AssetMoveFault::FileAppears) => std::fs::write(src, b"new")?,
+            _ => {}
+        }
+        if src.symlink_metadata().is_ok() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("'{}' holds a new file", src.display()),
             ));
         }
         std::fs::rename(dst, src)
@@ -571,7 +604,18 @@ impl Engine {
     /// hits.
     #[cfg(any(test, feature = "testing"))]
     pub fn fail_next_asset_move(&self, undo_fails: bool) {
-        *self.asset_move_fault.lock().unwrap() = Some(undo_fails);
+        *self.asset_move_fault.lock().unwrap() = Some(if undo_fails {
+            AssetMoveFault::UndoFails
+        } else {
+            AssetMoveFault::RowsFail
+        });
+    }
+
+    /// Arm a failure of the rows of the next asset move, after its rename,
+    /// with a new file written at the old path before the undo runs.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn fail_next_asset_move_with_a_file_at_the_old_path(&self) {
+        *self.asset_move_fault.lock().unwrap() = Some(AssetMoveFault::FileAppears);
     }
 
     /// What a change to a file of `home` owes afterwards.

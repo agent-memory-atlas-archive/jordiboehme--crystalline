@@ -874,6 +874,10 @@ const NAME_LIST_KEYS: &[&str] = &[
     "read_only_skipped",
     // The domains a `reflect` queue left out because they could not be read.
     "unreadable",
+    // The domains a `reflect` queue left out because their Reflection is
+    // pending (a list of strings only; other `pending` keys hold objects or
+    // a flag and are left alone by the string check below).
+    "pending",
 ];
 
 /// Rewrite every structured field of a source's answer from the source's
@@ -992,13 +996,14 @@ mod tests {
             "markdown": link,
             "threads": [{ "anchor": { "section": "s1", "quote": link }, "entries": [{ "text": link }] }],
             "queue": [{ "domain": "open", "diff": link }],
-            "scope": { "domains": ["open"], "unreadable": ["open"] },
+            "scope": { "domains": ["open"], "unreadable": ["open"], "pending": ["open"] },
         });
         translate_answer(&mut answer, &names);
         assert_eq!(answer["domain"], "open-beta");
         assert_eq!(answer["queue"][0]["domain"], "open-beta");
         assert_eq!(answer["scope"]["domains"], json!(["open-beta"]));
         assert_eq!(answer["scope"]["unreadable"], json!(["open-beta"]));
+        assert_eq!(answer["scope"]["pending"], json!(["open-beta"]));
         assert_eq!(answer["markdown"], link);
         assert_eq!(answer["threads"][0]["anchor"]["quote"], link);
         assert_eq!(answer["threads"][0]["entries"][0]["text"], link);

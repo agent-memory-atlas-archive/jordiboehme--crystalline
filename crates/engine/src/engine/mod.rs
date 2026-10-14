@@ -1135,10 +1135,10 @@ pub struct Engine {
     // The rename test seams: a failure after one step, and a hold after one.
     #[cfg(any(test, feature = "testing"))]
     rename_fail_after: std::sync::Mutex<Option<crate::rename::RenameStep>>,
-    // A failure of the rows of the next asset move, after its rename
-    // (`Some(true)`: the undo fails too).
+    // A failure of the rows of the next asset move, after its rename, and
+    // what its undo meets.
     #[cfg(any(test, feature = "testing"))]
-    asset_move_fault: std::sync::Mutex<Option<bool>>,
+    asset_move_fault: std::sync::Mutex<Option<asset_home::AssetMoveFault>>,
     // And a hold on the next write right after it is counted.
     #[cfg(any(test, feature = "testing"))]
     write_hold: std::sync::Mutex<Option<Arc<crate::rename::RenameHold>>>,

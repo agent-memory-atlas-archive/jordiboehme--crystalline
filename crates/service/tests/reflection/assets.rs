@@ -860,3 +860,35 @@ async fn only_an_added_engram_embed_is_refused() {
         .to_string();
     assert!(err.contains("engram attachment"), "{err}");
 }
+
+/// An undo never replaces a file that appeared at the old path: the moved
+/// file stays at the new one, and the receipt says why.
+#[tokio::test]
+async fn an_undo_never_replaces_a_file_that_appeared_at_the_old_path() {
+    let fx = reflecting().await;
+    fx.engine
+        .reflection_asset_write("eng", "assets/a.png", PNG.to_vec(), &person())
+        .await
+        .unwrap();
+    fx.engine.fail_next_asset_move_with_a_file_at_the_old_path();
+    let moved = fx
+        .engine
+        .move_reflection_asset("eng", "assets/a.png", "assets/b.png", &agent())
+        .await
+        .unwrap();
+    let note = moved["note"].as_str().unwrap();
+    assert!(
+        note.contains("a new file appeared at 'assets/a.png'") && note.contains("next sync"),
+        "{moved}"
+    );
+    assert_eq!(
+        std::fs::read(fx.root.join("reflections/assets/a.png")).unwrap(),
+        b"new",
+        "the new file is kept"
+    );
+    assert_eq!(
+        std::fs::read(fx.root.join("reflections/assets/b.png")).unwrap(),
+        PNG,
+        "the moved file stays"
+    );
+}
