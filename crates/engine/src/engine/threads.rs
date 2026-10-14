@@ -33,8 +33,7 @@ fn refuse_anonymous_comment(caller: &ReflectionCaller) -> Result<()> {
         return Ok(());
     }
     Err(EngineError::Forbidden(
-        "anonymous visitors read this Reflection and cannot comment; sign in to comment"
-            .to_string(),
+        super::reflection::ANONYMOUS_COMMENT.to_string(),
     ))
 }
 

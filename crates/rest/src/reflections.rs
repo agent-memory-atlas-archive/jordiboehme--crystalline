@@ -13,7 +13,10 @@ use utoipa::{IntoParams, ToSchema};
 
 use super::auth::Identity;
 use super::{ApiError, ApiJson, ApiPath, ApiQuery, ProblemDetail, RestState, refuse_read_only};
-use crate::engine::EngineError;
+use crate::engine::{
+    ANONYMOUS_COMMENT, EngineError, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_OFF_START,
+    REFUSED_PENDING, REFUSED_PENDING_NAMED,
+};
 use crate::params::{DiscussParams, WriteReflectionParams};
 use crate::scope::ReflectionCaller;
 
@@ -27,12 +30,32 @@ fn caller(identity: &Identity) -> ReflectionCaller {
     ReflectionCaller::person(identity.scope(), &name)
 }
 
-/// The account a reflection write is signed with. The anonymous viewer reads
-/// a public Reflection and never writes one, so every write answers it 401,
-/// whatever the domain and whatever its state, the answer every other write
-/// on this surface gives the anonymous tier (logging in is what fixes it).
-fn require_writer(identity: &Identity) -> Result<(), ApiError> {
-    identity.require_account().map(|_| ())
+/// The anonymous viewer's answer to a page write (save, move, delete).
+const ANONYMOUS_EDIT: &str =
+    "anonymous visitors read this Reflection and cannot change it; sign in to edit";
+
+/// Refuse a reflection write by the anonymous viewer, before the engine
+/// reads anything else of the request. Where it may not read the domain it
+/// learns nothing: the domain answers the 404 an unregistered name answers,
+/// on every route. Where it reads the Reflection (a public domain), the
+/// answer is 401 with `sentence`, since signing in is what fixes it, and it
+/// comes whatever the Reflection's state, the answer every other write on
+/// this surface gives the anonymous tier.
+async fn refuse_anonymous(
+    state: &RestState,
+    identity: &Identity,
+    domain: &str,
+    sentence: &str,
+) -> Result<(), ApiError> {
+    if identity.user.is_some() {
+        return Ok(());
+    }
+    state
+        .engine
+        .reflection_status(domain, &caller(identity))
+        .await
+        .map_err(reflection_error)?;
+    Err(ApiError::unauthorized(sentence))
 }
 
 /// Engine errors as this surface answers them: the four Reflection states a
@@ -42,23 +65,22 @@ fn require_writer(identity: &Identity) -> Result<(), ApiError> {
 /// somebody is editing are 409 (the shared mapping answers every other
 /// `Conflict` 422); everything else keeps the shared mapping.
 fn reflection_error(e: EngineError) -> ApiError {
-    const ELSEWHERE: &str = "this domain's Reflection lives at ";
     match &e {
-        EngineError::Refused(text) if text.starts_with(ELSEWHERE) => {
-            let url = text[ELSEWHERE.len()..].to_string();
+        EngineError::Refused(text) if text.starts_with(REFUSED_ELSEWHERE_START) => {
+            let url = text[REFUSED_ELSEWHERE_START.len()..].to_string();
             ApiError::conflict(text.clone()).home_url(url)
         }
         EngineError::Refused(text)
-            if text.starts_with("Reflection is off for")
-                || text.contains("waits until these engrams leave reflections/")
-                || text.contains("waits until the engrams in reflections/ are moved out")
-                || text.contains("has no home yet") =>
+            if text.starts_with(REFUSED_OFF_START)
+                || text.contains(REFUSED_PENDING_NAMED)
+                || text.contains(REFUSED_PENDING)
+                || text == REFUSED_HOMELESS =>
         {
             ApiError::conflict(text.clone())
         }
         // The anonymous visitor of a public domain reads and never comments:
         // logging in is what fixes it, so 401 like every other anonymous write.
-        EngineError::Forbidden(text) if text.starts_with("anonymous visitors read") => {
+        EngineError::Forbidden(text) if text == ANONYMOUS_COMMENT => {
             ApiError::unauthorized(text.clone())
         }
         EngineError::Conflict(text)
@@ -365,7 +387,8 @@ pub struct SaveReflectionBody {
         ),
         (
             status = 401,
-            description = "The anonymous viewer, which never writes.",
+            description = "The anonymous viewer of a domain it reads: it reads \
+                           the Reflection and never changes it.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -375,6 +398,13 @@ pub struct SaveReflectionBody {
                            naming the right held and the right needed; the \
                            domain is off the caller's write list; or this \
                            instance is read-only.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 404,
+            description = "No such domain, or none this caller may see (the \
+                           anonymous viewer included).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -400,7 +430,7 @@ pub async fn save(
     ApiPath((domain, path)): ApiPath<(String, String)>,
     ApiJson(body): ApiJson<SaveReflectionBody>,
 ) -> Result<Json<Value>, ApiError> {
-    require_writer(&identity)?;
+    refuse_anonymous(&state, &identity, &domain, ANONYMOUS_EDIT).await?;
     refuse_read_only(&state)?;
     let p = WriteReflectionParams {
         domain,
@@ -434,13 +464,21 @@ pub async fn save(
         (status = 204, description = "Deleted with its threads and baseline."),
         (
             status = 401,
-            description = "The anonymous viewer, which never writes.",
+            description = "The anonymous viewer of a domain it reads: it reads \
+                           the Reflection and never changes it.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
         (
             status = 403,
             description = "Below edit access, or this instance is read-only.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 404,
+            description = "No such domain, or none this caller may see (the \
+                           anonymous viewer included).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -463,7 +501,7 @@ pub async fn remove(
     identity: Identity,
     ApiPath((domain, path)): ApiPath<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_writer(&identity)?;
+    refuse_anonymous(&state, &identity, &domain, ANONYMOUS_EDIT).await?;
     refuse_read_only(&state)?;
     state
         .engine
@@ -502,13 +540,21 @@ pub struct MoveReflectionBody {
         ),
         (
             status = 401,
-            description = "The anonymous viewer, which never writes.",
+            description = "The anonymous viewer of a domain it reads: it reads \
+                           the Reflection and never changes it.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
         (
             status = 403,
             description = "Below edit access, or this instance is read-only.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 404,
+            description = "No such domain, or none this caller may see (the \
+                           anonymous viewer included).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -532,7 +578,7 @@ pub async fn move_to(
     ApiPath(domain): ApiPath<String>,
     ApiJson(body): ApiJson<MoveReflectionBody>,
 ) -> Result<Json<Value>, ApiError> {
-    require_writer(&identity)?;
+    refuse_anonymous(&state, &identity, &domain, ANONYMOUS_EDIT).await?;
     refuse_read_only(&state)?;
     state
         .engine
@@ -582,6 +628,13 @@ pub struct ThreadsQuery {
                 "entries": [ { "at": "2026-09-30T10:00:00Z", "kind": "comment",
                     "author": { "name": "jordi", "agent": false },
                     "text": "Still at night?" } ] } ] }),
+        ),
+        (
+            status = 404,
+            description = "No such domain, or none this caller may see (the \
+                           anonymous viewer included).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
         ),
         (
             status = 409,
@@ -656,13 +709,21 @@ pub struct OpenThreadBody {
         ),
         (
             status = 401,
-            description = "The anonymous viewer: a comment needs somebody to sign it.",
+            description = "The anonymous viewer of a domain it reads: a comment \
+                           needs somebody to sign it.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
         (
             status = 403,
             description = "This instance is read-only.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 404,
+            description = "No such domain, or none this caller may see (the \
+                           anonymous viewer included).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -687,7 +748,7 @@ pub async fn open(
     ApiPath(domain): ApiPath<String>,
     ApiJson(body): ApiJson<OpenThreadBody>,
 ) -> Result<Response, ApiError> {
-    require_writer(&identity)?;
+    refuse_anonymous(&state, &identity, &domain, ANONYMOUS_COMMENT).await?;
     refuse_read_only(&state)?;
     let p = DiscussParams {
         domain,
@@ -756,7 +817,8 @@ pub struct ThreadStepBody {
         ),
         (
             status = 401,
-            description = "The anonymous viewer: an entry needs somebody to sign it.",
+            description = "The anonymous viewer of a domain it reads: an entry \
+                           needs somebody to sign it.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -794,7 +856,7 @@ pub async fn step(
     ApiPath((domain, id, action)): ApiPath<(String, String, String)>,
     ApiJson(body): ApiJson<ThreadStepBody>,
 ) -> Result<Json<Value>, ApiError> {
-    require_writer(&identity)?;
+    refuse_anonymous(&state, &identity, &domain, ANONYMOUS_COMMENT).await?;
     refuse_read_only(&state)?;
     use crystalline_core::threads::EntryKind;
     let (kind, text) = match action.as_str() {
@@ -865,6 +927,13 @@ pub struct QueueQuery {
                 "guidance": "..." }),
         ),
         (
+            status = 404,
+            description = "No such domain, or none this caller may see (the \
+                           anonymous viewer included).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
             status = 409,
             description = "The Reflection is not here (then possibly `home_url`).",
             body = ProblemDetail,
@@ -908,6 +977,13 @@ pub async fn queue(
                 "queue": { "domain": "eng", "total": 0, "page": 1, "limit": 50,
                     "count": 0, "kinds": { "feedback": 0, "update": 0, "review": 0 },
                     "queue": [], "guidance": "..." } }),
+        ),
+        (
+            status = 404,
+            description = "No such domain, or none this caller may see (the \
+                           anonymous viewer included).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
         ),
         (
             status = 409,
@@ -967,6 +1043,13 @@ pub struct SearchQuery {
                 "snippet": "Deploys run at night." } ] }),
         ),
         (
+            status = 404,
+            description = "No such domain, or none this caller may see (the \
+                           anonymous viewer included).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
             status = 409,
             description = "The Reflection is not here (then possibly `home_url`).",
             body = ProblemDetail,
@@ -1014,21 +1097,21 @@ mod tests {
     /// the home.
     #[test]
     fn the_reflection_states_are_conflicts_and_elsewhere_names_its_home() {
-        let elsewhere = reflection_error(EngineError::Refused(
-            "this domain's Reflection lives at https://team.example.com".into(),
-        ));
+        let elsewhere = reflection_error(EngineError::Refused(format!(
+            "{REFUSED_ELSEWHERE_START}https://team.example.com"
+        )));
         assert_eq!(elsewhere.status, StatusCode::CONFLICT);
         assert_eq!(
             elsewhere.home_url.as_deref(),
             Some("https://team.example.com")
         );
         for text in [
-            "Reflection is off for 'eng'; its owner switches it on in the domain policies",
-            "Reflection for 'eng' waits until these engrams leave reflections/: a",
-            "Reflection for 'eng' waits until the engrams in reflections/ are moved out",
-            "this domain is connected to GitHub and its Reflection has no home yet: switch",
+            format!("{REFUSED_OFF_START}'eng'; its owner switches it on in the domain policies"),
+            format!("Reflection for 'eng' {REFUSED_PENDING_NAMED}: a"),
+            format!("Reflection for 'eng' {REFUSED_PENDING}"),
+            REFUSED_HOMELESS.to_string(),
         ] {
-            let e = reflection_error(EngineError::Refused(text.into()));
+            let e = reflection_error(EngineError::Refused(text.clone()));
             assert_eq!(e.status, StatusCode::CONFLICT, "{text}");
             assert!(e.home_url.is_none(), "{text}");
         }
@@ -1041,9 +1124,7 @@ mod tests {
     /// other `Forbidden` stays 403.
     #[test]
     fn an_anonymous_comment_is_told_to_sign_in() {
-        let e = reflection_error(EngineError::Forbidden(
-            "anonymous visitors read this Reflection and cannot comment; sign in to comment".into(),
-        ));
+        let e = reflection_error(EngineError::Forbidden(ANONYMOUS_COMMENT.into()));
         assert_eq!(e.status, StatusCode::UNAUTHORIZED);
         let e = reflection_error(EngineError::Forbidden(
             "your access to the Reflection of 'eng' is read, and edit is needed".into(),

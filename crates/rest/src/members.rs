@@ -529,8 +529,11 @@ pub async fn remove_member(
     ApiPath((domain, principal)): ApiPath<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     // The account, the 404 and the read-only refusal, in that order, before
-    // anything else: those answers are the same for a leave and an eviction,
-    // and the leave case must not be a way around them.
+    // anything that decides the request: those answers are the same for a
+    // leave and an eviction, and the leave case must not be a way around
+    // them. Only the principal's spelling is read ahead of the 404, because
+    // the gate needs to know whether this is a leave; it is path validation
+    // alone and answers alike for every domain name.
     let actor = identity.require_account()?;
     // The store folds a login name; a path segment is whatever was typed.
     // Compare on the folded form, or `DELETE /members/ADA` by `ada` would be

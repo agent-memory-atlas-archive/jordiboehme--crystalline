@@ -5606,6 +5606,10 @@ mod read;
 mod reflect;
 pub use reflect::REFLECT_GUIDANCE;
 mod reflection;
+pub use reflection::{
+    ANONYMOUS_COMMENT, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_OFF_START,
+    REFUSED_PENDING, REFUSED_PENDING_NAMED,
+};
 mod rename_domain;
 mod review_mode;
 mod schemas;

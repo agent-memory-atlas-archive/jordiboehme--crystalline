@@ -274,13 +274,14 @@ pub struct EngramChanged {
 /// `Everyone` when the domain is not private. `Accounts` when it is, naming
 /// every account that may read it: its owner, every member who reads engrams
 /// there (a member at knowledge `none` does not) and every instance admin by
-/// the role the accounts store records, disabled accounts left out. The names are the store's folded spelling (trimmed and
-/// lowercased), so a check folds `Scope::User.account` the same way, and a
-/// scope that carries `admin: true` reads too, since the surface's own admin
-/// flag outranks the stored role. The machine owner always reads, so it is
-/// never in the set. When the engine cannot read the records (no resolver
-/// installed yet, or a read error) it captures `Accounts` with nobody in it:
-/// the owner still hears the event, nobody else does.
+/// the role the accounts store records, disabled accounts left out. The names
+/// are the store's folded spelling (trimmed and lowercased), so a check folds
+/// `Scope::User.account` the same way, and a scope that carries `admin: true`
+/// reads too, since the surface's own admin flag outranks the stored role.
+/// The machine owner always reads, so it is never in the set. When the engine
+/// cannot read the records (no resolver installed yet, or a read error) it
+/// captures `Accounts` with nobody in it: the owner still hears the event,
+/// nobody else does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DomainAudience {
     Everyone,

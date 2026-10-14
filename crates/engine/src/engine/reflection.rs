@@ -11,6 +11,29 @@ use super::*;
 use crate::params::WriteReflectionParams;
 use crate::scope::{ReflectionCaller, ReflectionRight, Scope, reflection_right_word};
 
+// The words of the gate's state refusals and of the anonymous comment
+// refusal. Public so a surface that answers them in its own terms (REST:
+// 409 for a state, 401 for the anonymous visitor) matches these and never
+// a copy that could drift from them.
+
+/// The start of the refusal for a Reflection that is switched off; the
+/// domain's name follows in quotes.
+pub const REFUSED_OFF_START: &str = "Reflection is off for ";
+/// The pending refusal's words for a caller who reads engrams; the engram
+/// paths follow.
+pub const REFUSED_PENDING_NAMED: &str = "waits until these engrams leave reflections/";
+/// The pending refusal's words for a caller who does not read engrams: no
+/// engram is named.
+pub const REFUSED_PENDING: &str = "waits until the engrams in reflections/ are moved out";
+/// The refusal for a GitHub-connected domain whose Reflection has no home.
+pub const REFUSED_HOMELESS: &str = "this domain is connected to GitHub and its Reflection has no home yet: switch Reflection on in the domain policies at the team server";
+/// The start of the refusal for a Reflection held by another instance; its
+/// address follows.
+pub const REFUSED_ELSEWHERE_START: &str = "this domain's Reflection lives at ";
+/// The refusal of a thread write by the anonymous visitor of a public domain.
+pub const ANONYMOUS_COMMENT: &str =
+    "anonymous visitors read this Reflection and cannot comment; sign in to comment";
+
 /// What the gate hands a reflection verb.
 #[derive(Debug, Clone)]
 pub(crate) struct ReflectionAccess {
@@ -382,28 +405,26 @@ impl Engine {
             ReflectionState::On { home } => home,
             ReflectionState::Off => {
                 return Err(EngineError::Refused(format!(
-                    "Reflection is off for '{domain}'; its owner switches it on in the domain policies"
+                    "{REFUSED_OFF_START}'{domain}'; its owner switches it on in the domain policies"
                 )));
             }
             ReflectionState::Pending { engrams } if engrams_visible => {
                 return Err(EngineError::Refused(format!(
-                    "Reflection for '{domain}' waits until these engrams leave reflections/: {}",
+                    "Reflection for '{domain}' {REFUSED_PENDING_NAMED}: {}",
                     engrams.join(", ")
                 )));
             }
             ReflectionState::Pending { .. } => {
                 return Err(EngineError::Refused(format!(
-                    "Reflection for '{domain}' waits until the engrams in reflections/ are moved out"
+                    "Reflection for '{domain}' {REFUSED_PENDING}"
                 )));
             }
             ReflectionState::Homeless => {
-                return Err(EngineError::Refused(
-                    "this domain is connected to GitHub and its Reflection has no home yet: switch Reflection on in the domain policies at the team server".to_string(),
-                ));
+                return Err(EngineError::Refused(REFUSED_HOMELESS.to_string()));
             }
             ReflectionState::Elsewhere { url } => {
                 return Err(EngineError::Refused(format!(
-                    "this domain's Reflection lives at {url}"
+                    "{REFUSED_ELSEWHERE_START}{url}"
                 )));
             }
         };

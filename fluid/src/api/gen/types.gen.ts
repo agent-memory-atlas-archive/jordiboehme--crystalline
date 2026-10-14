@@ -4175,13 +4175,17 @@ export type MoveReflectionData = {
 
 export type MoveReflectionErrors = {
     /**
-     * The anonymous viewer, which never writes.
+     * The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.
      */
     401: ProblemDetail;
     /**
      * Below edit access, or this instance is read-only.
      */
     403: ProblemDetail;
+    /**
+     * No such domain, or none this caller may see (the anonymous viewer included).
+     */
+    404: ProblemDetail;
     /**
      * Somebody is editing it, or the Reflection is not here.
      */
@@ -4228,6 +4232,10 @@ export type GetReflectQueueData = {
 
 export type GetReflectQueueErrors = {
     /**
+     * No such domain, or none this caller may see (the anonymous viewer included).
+     */
+    404: ProblemDetail;
+    /**
      * The Reflection is not here (then possibly `home_url`).
      */
     409: ProblemDetail;
@@ -4259,6 +4267,10 @@ export type GetReflectionReviewData = {
 };
 
 export type GetReflectionReviewErrors = {
+    /**
+     * No such domain, or none this caller may see (the anonymous viewer included).
+     */
+    404: ProblemDetail;
     /**
      * The Reflection is not here (then possibly `home_url`).
      */
@@ -4300,6 +4312,10 @@ export type SearchReflectionsData = {
 };
 
 export type SearchReflectionsErrors = {
+    /**
+     * No such domain, or none this caller may see (the anonymous viewer included).
+     */
+    404: ProblemDetail;
     /**
      * The Reflection is not here (then possibly `home_url`).
      */
@@ -4346,6 +4362,10 @@ export type ListReflectionThreadsData = {
 
 export type ListReflectionThreadsErrors = {
     /**
+     * No such domain, or none this caller may see (the anonymous viewer included).
+     */
+    404: ProblemDetail;
+    /**
      * The Reflection is not here (then possibly `home_url`).
      */
     409: ProblemDetail;
@@ -4378,13 +4398,17 @@ export type OpenReflectionThreadData = {
 
 export type OpenReflectionThreadErrors = {
     /**
-     * The anonymous viewer: a comment needs somebody to sign it.
+     * The anonymous viewer of a domain it reads: a comment needs somebody to sign it.
      */
     401: ProblemDetail;
     /**
      * This instance is read-only.
      */
     403: ProblemDetail;
+    /**
+     * No such domain, or none this caller may see (the anonymous viewer included).
+     */
+    404: ProblemDetail;
     /**
      * The Reflection is not here (then possibly `home_url`).
      */
@@ -4430,7 +4454,7 @@ export type StepReflectionThreadData = {
 
 export type StepReflectionThreadErrors = {
     /**
-     * The anonymous viewer: an entry needs somebody to sign it.
+     * The anonymous viewer of a domain it reads: an entry needs somebody to sign it.
      */
     401: ProblemDetail;
     /**
@@ -4518,13 +4542,17 @@ export type DeleteReflectionData = {
 
 export type DeleteReflectionErrors = {
     /**
-     * The anonymous viewer, which never writes.
+     * The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.
      */
     401: ProblemDetail;
     /**
      * Below edit access, or this instance is read-only.
      */
     403: ProblemDetail;
+    /**
+     * No such domain, or none this caller may see (the anonymous viewer included).
+     */
+    404: ProblemDetail;
     /**
      * Somebody is editing it, or the Reflection is not here.
      */
@@ -4604,13 +4632,17 @@ export type SaveReflectionData = {
 
 export type SaveReflectionErrors = {
     /**
-     * The anonymous viewer, which never writes.
+     * The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.
      */
     401: ProblemDetail;
     /**
      * Below edit access (curate for PACT.md), with a detail naming the right held and the right needed; the domain is off the caller's write list; or this instance is read-only.
      */
     403: ProblemDetail;
+    /**
+     * No such domain, or none this caller may see (the anonymous viewer included).
+     */
+    404: ProblemDetail;
     /**
      * A stale `expected_checksum` (detail starting "stale edit"), a create over an existing page, or the Reflection is not here (then possibly `home_url`).
      */

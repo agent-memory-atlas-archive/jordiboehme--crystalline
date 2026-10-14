@@ -4581,7 +4581,7 @@
             }
           },
           "401": {
-            "description": "The anonymous viewer, which never writes.",
+            "description": "The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4592,6 +4592,16 @@
           },
           "403": {
             "description": "Below edit access, or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see (the anonymous viewer included).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4703,6 +4713,16 @@
               }
             }
           },
+          "404": {
+            "description": "No such domain, or none this caller may see (the anonymous viewer included).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
           "409": {
             "description": "The Reflection is not here (then possibly `home_url`).",
             "content": {
@@ -4766,6 +4786,16 @@
                       "title": "Deploying"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see (the anonymous viewer included).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
                 }
               }
             }
@@ -4840,6 +4870,16 @@
                     }
                   ],
                   "query": "night"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see (the anonymous viewer included).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
                 }
               }
             }
@@ -4943,6 +4983,16 @@
               }
             }
           },
+          "404": {
+            "description": "No such domain, or none this caller may see (the anonymous viewer included).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
           "409": {
             "description": "The Reflection is not here (then possibly `home_url`).",
             "content": {
@@ -5020,7 +5070,7 @@
             }
           },
           "401": {
-            "description": "The anonymous viewer: a comment needs somebody to sign it.",
+            "description": "The anonymous viewer of a domain it reads: a comment needs somebody to sign it.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5031,6 +5081,16 @@
           },
           "403": {
             "description": "This instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see (the anonymous viewer included).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5154,7 +5214,7 @@
             }
           },
           "401": {
-            "description": "The anonymous viewer: an entry needs somebody to sign it.",
+            "description": "The anonymous viewer of a domain it reads: an entry needs somebody to sign it.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5426,7 +5486,7 @@
             }
           },
           "401": {
-            "description": "The anonymous viewer, which never writes.",
+            "description": "The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5437,6 +5497,16 @@
           },
           "403": {
             "description": "Below edit access (curate for PACT.md), with a detail naming the right held and the right needed; the domain is off the caller's write list; or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see (the anonymous viewer included).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5498,7 +5568,7 @@
             "description": "Deleted with its threads and baseline."
           },
           "401": {
-            "description": "The anonymous viewer, which never writes.",
+            "description": "The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5509,6 +5579,16 @@
           },
           "403": {
             "description": "Below edit access, or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see (the anonymous viewer included).",
             "content": {
               "application/problem+json": {
                 "schema": {

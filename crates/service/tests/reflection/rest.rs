@@ -27,6 +27,33 @@ pub async fn serve() -> Served {
 }
 
 pub async fn serve_with(anonymous: bool) -> Served {
+    serve_opts(Opts {
+        anonymous,
+        private: !anonymous,
+        origin: false,
+    })
+    .await
+}
+
+/// How [`serve_opts`] sets the instance up.
+#[derive(Clone, Copy)]
+pub struct Opts {
+    /// The anonymous viewer is on.
+    pub anonymous: bool,
+    /// `eng` is private to keeper, with the members [`serve`] names.
+    pub private: bool,
+    /// `eng` is connected to a GitHub repository and its MANIFEST names no
+    /// `reflection_home`, so its Reflection is homeless (and no page is
+    /// written: a homeless Reflection takes none).
+    pub origin: bool,
+}
+
+pub async fn serve_opts(opts: Opts) -> Served {
+    let Opts {
+        anonymous,
+        private,
+        origin,
+    } = opts;
     let fx = fixture_with(
         &[
             ("MANIFEST.md", &manifest("reflection: on\n")),
@@ -40,6 +67,15 @@ pub async fn serve_with(anonymous: bool) -> Served {
                 anonymous: Some(anonymous),
                 ..Default::default()
             });
+            if origin {
+                cfg.domains.get_mut("eng").unwrap().origin =
+                    Some(crystalline_core::config::OriginConfig {
+                        repo: "acme/kb".into(),
+                        path: None,
+                        branch: None,
+                        poll_secs: None,
+                    });
+            }
         },
     )
     .await;
@@ -62,7 +98,7 @@ pub async fn serve_with(anonymous: bool) -> Served {
     auth.set_reflection_level("nora", ReflectionLevel::Contributor)
         .await
         .unwrap();
-    if !anonymous {
+    if private {
         auth.set_domain_visibility("eng", true, "keeper")
             .await
             .unwrap();
@@ -93,10 +129,12 @@ pub async fn serve_with(anonymous: bool) -> Served {
             vec!["runbooks/deploy".to_string()],
         ),
     ]);
-    fx.engine
-        .write_reflection(&p, &crystalline_service::ReflectionCaller::owner())
-        .await
-        .unwrap();
+    if !origin {
+        fx.engine
+            .write_reflection(&p, &crystalline_service::ReflectionCaller::owner())
+            .await
+            .unwrap();
+    }
     let router = http_router(
         fx.engine.clone(),
         Arc::new(AtomicUsize::new(0)),
@@ -448,6 +486,13 @@ async fn status_tree_doc_move_delete_search_and_review() {
         )
         .await;
     assert_eq!(status, 422, "{err}");
+    assert!(
+        err["detail"]
+            .as_str()
+            .unwrap()
+            .contains("instead of deleting it"),
+        "refused as the pact, not for some other reason: {err}"
+    );
 }
 
 #[tokio::test]
@@ -708,6 +753,43 @@ async fn an_anonymous_visitor_reads_a_public_reflection_and_cannot_comment() {
         401,
         "a comment needs somebody to sign it"
     );
+    let err: Value = resp.json().await.unwrap();
+    assert_eq!(err["detail"], ANONYMOUS_COMMENT, "{err}");
+    // The other thread writes say the same; the page writes say why too.
+    for (method, path, body, detail) in [
+        (
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/reflection/threads/t-00000000/answer",
+            Some(json!({ "path": "guides/deploying.md", "text": "Hello?" })),
+            ANONYMOUS_COMMENT,
+        ),
+        (
+            reqwest::Method::PUT,
+            "/api/v1/domains/eng/reflections/guides/deploying.md",
+            Some(json!({ "markdown": "# Mine\n" })),
+            ANONYMOUS_EDIT,
+        ),
+        (
+            reqwest::Method::DELETE,
+            "/api/v1/domains/eng/reflections/guides/deploying.md",
+            None,
+            ANONYMOUS_EDIT,
+        ),
+        (
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/reflection/move",
+            Some(json!({ "from": "guides/deploying.md", "to": "x/deploying.md" })),
+            ANONYMOUS_EDIT,
+        ),
+    ] {
+        let (status, err) = anonymous(s.addr, method.clone(), path, body).await;
+        assert_eq!(status, 401, "{method} {path}: {err}");
+        assert_eq!(err["detail"], detail, "{method} {path}");
+    }
+    assert!(
+        s.fx.root.join("reflections/guides/deploying.md").exists(),
+        "the page is untouched"
+    );
     assert!(
         !s.fx
             .root
@@ -715,4 +797,209 @@ async fn an_anonymous_visitor_reads_a_public_reflection_and_cannot_comment() {
             .exists(),
         "no thread was written"
     );
+}
+
+/// The contract's sentences for the anonymous viewer's writes.
+const ANONYMOUS_COMMENT: &str =
+    "anonymous visitors read this Reflection and cannot comment; sign in to comment";
+const ANONYMOUS_EDIT: &str =
+    "anonymous visitors read this Reflection and cannot change it; sign in to edit";
+
+/// A request with no session at all: the anonymous viewer, where it is on.
+async fn anonymous(
+    addr: std::net::SocketAddr,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Value>,
+) -> (u16, Value) {
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut req = client.request(method, format!("http://{addr}{path}"));
+    if let Some(body) = body {
+        req = req.json(&body);
+    }
+    let resp = req.send().await.unwrap();
+    let status = resp.status().as_u16();
+    let text = resp.text().await.unwrap();
+    (
+        status,
+        serde_json::from_str(&text).unwrap_or(Value::String(text)),
+    )
+}
+
+/// Every per-domain reflection operation the router mounts, as a method and
+/// a concrete path on `domain`, with a body that passes extraction.
+fn reflection_requests(domain: &str) -> Vec<(reqwest::Method, String, Option<Value>)> {
+    let body = json!({
+        "markdown": "# A\n", "path": "guides/deploying.md", "section": "Night deploys",
+        "text": "Why?", "outcome": "Yes.", "from": "guides/deploying.md", "to": "x/deploying.md",
+    });
+    let ops: Vec<_> = crate::support::MOUNTED_OPERATIONS
+        .iter()
+        .filter(|op| op.contains("{domain}/reflection"))
+        .map(|op| {
+            let (method, template) = op.split_once(' ').unwrap();
+            let mut path = template
+                .replace("{domain}", domain)
+                .replace("{path}", "guides/deploying.md")
+                .replace("{id}", "t-00000000")
+                .replace("{action}", "answer");
+            if path.ends_with("/reflection/search") {
+                path.push_str("?q=night");
+            }
+            let method: reqwest::Method = method.parse().unwrap();
+            let body = (method == reqwest::Method::POST || method == reqwest::Method::PUT)
+                .then(|| body.clone());
+            (method, path, body)
+        })
+        .collect();
+    assert_eq!(
+        ops.len(),
+        12,
+        "every per-domain reflection operation: {ops:?}"
+    );
+    ops
+}
+
+/// Every reflection route answers `send`'s caller on `eng` exactly as on a
+/// name nobody registered: 404 with the same words.
+async fn every_route_hides_eng<F, Fut>(send: F)
+where
+    F: Fn(reqwest::Method, String, Option<Value>) -> Fut,
+    Fut: std::future::Future<Output = (u16, Value)>,
+{
+    let ghosts = reflection_requests("ghost");
+    for ((method, path, body), (_, ghost_path, ghost_body)) in
+        reflection_requests("eng").into_iter().zip(ghosts)
+    {
+        let (status, err) = send(method.clone(), path.clone(), body).await;
+        let (ghost_status, ghost_err) = send(method.clone(), ghost_path, ghost_body).await;
+        assert_eq!(ghost_status, 404, "{method} on ghost: {ghost_err}");
+        assert_eq!(status, 404, "{method} {path}: {err}");
+        assert_eq!(
+            err["detail"].as_str().unwrap(),
+            ghost_err["detail"]
+                .as_str()
+                .unwrap()
+                .replace("ghost", "eng"),
+            "{method} {path} answers like an unregistered name"
+        );
+    }
+}
+
+/// A signed-in stranger learns nothing about a private domain on any
+/// reflection route, reads and writes alike.
+#[tokio::test]
+async fn a_stranger_meets_an_unregistered_name_on_every_route() {
+    let s = serve().await;
+    s.auth
+        .add_user("out", "out", None, Role::Editor, "pw12345678")
+        .await
+        .unwrap();
+    let out = Session::login(s.addr, "out").await;
+    every_route_hides_eng(|method, path, body| {
+        let out = &out;
+        async move { out.send(method, &path, body).await }
+    })
+    .await;
+}
+
+/// The anonymous viewer of an instance with a private domain learns nothing
+/// about it either: a write is the same 404, not a 401 that would say the
+/// name is worth signing in for.
+#[tokio::test]
+async fn the_anonymous_viewer_meets_an_unregistered_name_on_a_private_domain() {
+    let s = serve_opts(Opts {
+        anonymous: true,
+        private: true,
+        origin: false,
+    })
+    .await;
+    let addr = s.addr;
+    every_route_hides_eng(|method, path, body| async move {
+        anonymous(addr, method, &path, body).await
+    })
+    .await;
+}
+
+/// Engrams waiting in reflections/ hold the Reflection back: 409, naming
+/// them to a reader of engrams and to nobody else.
+#[tokio::test]
+async fn a_pending_reflection_answers_409_and_names_engrams_only_to_their_readers() {
+    let s = serve().await;
+    // Indexed as an engram while the switch is off, then switched on by
+    // hand, the way a pulled MANIFEST would switch it.
+    std::fs::write(s.fx.root.join("MANIFEST.md"), manifest("")).unwrap();
+    std::fs::write(
+        s.fx.root.join("reflections/old.md"),
+        engram("Old", "reflections/old", "- [fact] old"),
+    )
+    .unwrap();
+    s.fx.engine.sync(None).await.unwrap();
+    std::fs::write(s.fx.root.join("MANIFEST.md"), manifest("reflection: on\n")).unwrap();
+    let ed = Session::login(s.addr, "ed").await;
+    let (_, status) = ed.get("/api/v1/domains/eng/reflection").await;
+    assert_eq!(status["state"], "pending", "{status}");
+    let (status, err) = ed.get("/api/v1/domains/eng/reflection/tree").await;
+    assert_eq!(status, 409, "{err}");
+    assert_eq!(
+        err["detail"],
+        "Reflection for 'eng' waits until these engrams leave reflections/: reflections/old.md",
+        "{err}"
+    );
+    let ann = Session::login(s.addr, "ann").await;
+    let (status, err) = ann.get("/api/v1/domains/eng/reflection/tree").await;
+    assert_eq!(status, 409, "{err}");
+    assert_eq!(
+        err["detail"], "Reflection for 'eng' waits until the engrams in reflections/ are moved out",
+        "no engram named to a contributor: {err}"
+    );
+}
+
+/// A GitHub-connected domain whose Reflection has no home answers 409 with
+/// the way out.
+#[tokio::test]
+async fn a_homeless_reflection_answers_409() {
+    let s = serve_opts(Opts {
+        anonymous: false,
+        private: true,
+        origin: true,
+    })
+    .await;
+    let ed = Session::login(s.addr, "ed").await;
+    let (_, status) = ed.get("/api/v1/domains/eng/reflection").await;
+    assert_eq!(status["state"], "homeless", "{status}");
+    let (status, err) = ed.get("/api/v1/domains/eng/reflection/tree").await;
+    assert_eq!(status, 409, "{err}");
+    assert_eq!(
+        err["detail"],
+        "this domain is connected to GitHub and its Reflection has no home yet: switch Reflection on in the domain policies at the team server"
+    );
+    assert!(err.get("home_url").is_none(), "{err}");
+}
+
+/// The two handler-side refusals: an action the route does not know, and a
+/// search with nothing to find.
+#[tokio::test]
+async fn an_unknown_thread_action_is_404_and_a_search_needs_words() {
+    let s = serve().await;
+    let ed = Session::login(s.addr, "ed").await;
+    let (status, err) = ed
+        .send(
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/reflection/threads/t-00000000/close",
+            Some(json!({ "path": "guides/deploying.md", "text": "x" })),
+        )
+        .await;
+    assert_eq!(status, 404, "{err}");
+    assert_eq!(
+        err["detail"],
+        "no thread action 'close'; use answer, resolve or reopen"
+    );
+    for query in ["", "?q=", "?q=%20%20"] {
+        let (status, err) = ed
+            .get(&format!("/api/v1/domains/eng/reflection/search{query}"))
+            .await;
+        assert_eq!(status, 422, "search{query}: {err}");
+        assert_eq!(err["detail"], "search needs `q`, the words to find");
+    }
 }
