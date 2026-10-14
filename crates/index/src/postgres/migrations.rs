@@ -715,9 +715,12 @@ UPDATE reflection SET modified='';
 // The twin of Turso's v23: one domain's reflection chunks of one model and
 // width, the rows a reflection search reads, so the vector statement and the
 // per-domain coverage seek one domain instead of filtering every domain's
-// chunks of the model row by row. `IF NOT EXISTS`, so a replay converges.
+// chunks of the model row by row. The model index serves no statement any
+// more, so it goes, and a fresh install and an upgrade end with the same
+// indexes. Both statements are guarded, so a replay converges.
 const SCHEMA_V23: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_reflection_chunk_domain_model ON reflection_chunk(domain_id, model, dims);
+DROP INDEX IF EXISTS idx_reflection_chunk_model;
 "#;
 
 const SCHEMA_V8: &str = r#"
@@ -2119,10 +2122,13 @@ mod tests {
         store.drop_schema().await.unwrap();
     }
 
-    /// v23, the reflection chunks by domain: it follows v22, it leaves the
-    /// domain index in place, and a replay converges.
+    /// v23, the reflection chunks by domain, over a database at v22 with
+    /// chunk rows in it: the domain index is there afterwards, the model
+    /// index (which no statement seeks any more) is gone, the rows are kept,
+    /// and a replay of v23 changes nothing. Talks to sqlx directly, because
+    /// opening a store applies every migration at once.
     #[tokio::test]
-    async fn v23_adds_the_domain_index_and_replays_cleanly() {
+    async fn v23_over_v22_swaps_the_model_index_for_the_domain_index() {
         let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
             return;
         };
@@ -2135,30 +2141,66 @@ mod tests {
             .expect("no migration v23");
         assert_eq!(MIGRATIONS[v23 - 1].version, 22, "it follows v22");
         let schema = format!("mig_refl_domain_{}", std::process::id());
-        let store = crate::PostgresStore::open_in_schema(&url, &schema)
-            .await
-            .unwrap();
         let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "SET search_path TO {schema}, public"
+            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema}, public"
         )))
         .execute(&mut conn)
         .await
         .unwrap();
-        sqlx::raw_sql(MIGRATIONS[v23].sql)
+        for m in &MIGRATIONS[..v23] {
+            sqlx::raw_sql(m.sql).execute(&mut conn).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO domain (id, name, path) OVERRIDING SYSTEM VALUE VALUES (1, 'd', NULL);
+             INSERT INTO reflection_chunk (domain_id, path, seq, text, text_hash, model, dims)
+             VALUES (1, 'a.md', 0, 't', 'h', 'm', 8), (1, 'a.md', 1, 'u', 'i', NULL, NULL);",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let indexes = |schema: String| async move {
+            let mut conn = sqlx::PgConnection::connect(&url_of()).await.unwrap();
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT indexname FROM pg_indexes \
+                 WHERE schemaname = $1 AND tablename = 'reflection_chunk' ORDER BY indexname",
+            )
+            .bind(schema)
+            .fetch_all(&mut conn)
+            .await
+            .unwrap();
+            rows.into_iter().map(|(n,)| n).collect::<Vec<String>>()
+        };
+        fn url_of() -> String {
+            std::env::var("CRYSTALLINE_TEST_POSTGRES_URL").unwrap()
+        }
+        assert!(
+            indexes(schema.clone())
+                .await
+                .contains(&"idx_reflection_chunk_model".to_string()),
+            "precondition: v22 has the model index"
+        );
+        let want = [
+            "idx_reflection_chunk_domain_model",
+            "idx_reflection_chunk_embedding",
+            "idx_reflection_chunk_page",
+            "reflection_chunk_pkey",
+        ];
+        for round in ["v23", "a replay of v23"] {
+            sqlx::raw_sql(MIGRATIONS[v23].sql)
+                .execute(&mut conn)
+                .await
+                .unwrap();
+            assert_eq!(indexes(schema.clone()).await, want, "after {round}");
+            let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM reflection_chunk")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
+            assert_eq!(n, 2, "after {round}: the rows stay");
+        }
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&mut conn)
             .await
             .unwrap();
-        let (n,): (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM pg_indexes \
-             WHERE schemaname = $1 AND indexname = 'idx_reflection_chunk_domain_model'",
-        )
-        .bind(&schema)
-        .fetch_one(&mut conn)
-        .await
-        .unwrap();
-        assert_eq!(n, 1);
-        drop(conn);
-        store.drop_schema().await.unwrap();
     }
 }

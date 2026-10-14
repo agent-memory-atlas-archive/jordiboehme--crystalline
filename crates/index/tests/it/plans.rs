@@ -484,7 +484,8 @@ pub fn registry() -> Vec<HotStatement> {
             // dims=?)`, then the group and order sorters), so a search reads
             // its own domain's chunks. Before v23 both reached the rows through
             // `idx_reflection_chunk_model` and tested the domain on each row of
-            // the model, every domain's chunks for one domain's search. No full
+            // the model, every domain's chunks for one domain's search (v23
+            // drops that index, which served nothing else). No full
             // pass on either, so no permission; the domain index is named
             // because it is what keeps the read to one domain.
             turso: || crystalline_index::turso::REFLECTION_VECTOR_SQL.to_string(),

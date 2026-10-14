@@ -805,9 +805,14 @@ UPDATE reflection SET modified='';
 // One domain's reflection chunks of one model and width, the rows a reflection
 // search reads: the vector statement and the per-domain coverage seek it, so
 // a search reads its own domain's chunks and never every domain's chunks of
-// the model (`idx_reflection_chunk_model` alone, filtered per row).
+// the model (`idx_reflection_chunk_model` alone, filtered per row). That model
+// index serves no statement any more (the backlog and the prune ask
+// `model != ?`, which no index answers), so it goes, and a fresh install and
+// an upgrade end with the same indexes. Both statements are guarded, so a
+// replay changes nothing.
 const SCHEMA_V23: &str = r#"
-CREATE INDEX idx_reflection_chunk_domain_model ON reflection_chunk(domain_id, model, dims);
+CREATE INDEX IF NOT EXISTS idx_reflection_chunk_domain_model ON reflection_chunk(domain_id, model, dims);
+DROP INDEX IF EXISTS idx_reflection_chunk_model;
 "#;
 
 const SCHEMA_V9: &str = r#"
@@ -2697,6 +2702,74 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name} is not in WIPE_TABLES"))
         };
         assert!(at("reflection_chunk") < at("reflection") && at("reflection") < at("domain"));
+    }
+
+    /// v23, the reflection chunks by domain, over a database at v22 with
+    /// chunk rows in it: the domain index is there afterwards, the model
+    /// index (which no statement seeks any more) is gone, the rows are kept,
+    /// and a replay of v23 changes nothing.
+    #[tokio::test]
+    async fn v23_over_v22_swaps_the_model_index_for_the_domain_index() {
+        let v23 = MIGRATIONS
+            .iter()
+            .position(|m| m.version == 23)
+            .expect("no migration v23");
+        assert_eq!(MIGRATIONS[v23 - 1].version, 22, "it follows v22");
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        apply_migrations(&conn, &MIGRATIONS[..v23]).await.unwrap();
+        conn.execute(
+            "INSERT INTO domain(id, name, path, kind) VALUES (1, 'd', '/tmp/d', 'file')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reflection_chunk(domain_id, path, seq, text, text_hash, model, dims) \
+             VALUES (1, 'a.md', 0, 't', 'h', 'm', 8), (1, 'a.md', 1, 'u', 'i', NULL, NULL)",
+            (),
+        )
+        .await
+        .unwrap();
+        let indexes = || async {
+            let mut rows = conn
+                .query(
+                    "SELECT name FROM sqlite_schema \
+                     WHERE type = 'index' AND tbl_name = 'reflection_chunk' ORDER BY name",
+                    (),
+                )
+                .await
+                .unwrap();
+            let mut names = Vec::new();
+            while let Some(row) = rows.next().await.unwrap() {
+                if let Ok(turso::Value::Text(n)) = row.get_value(0) {
+                    names.push(n);
+                }
+            }
+            names
+        };
+        assert!(
+            indexes()
+                .await
+                .contains(&"idx_reflection_chunk_model".to_string()),
+            "precondition: v22 has the model index"
+        );
+        for round in ["v23", "a replay of v23"] {
+            conn.execute_batch(MIGRATIONS[v23].sql).await.unwrap();
+            assert_eq!(
+                indexes().await,
+                [
+                    "idx_reflection_chunk_domain_model",
+                    "idx_reflection_chunk_page"
+                ],
+                "after {round}"
+            );
+            assert_eq!(
+                scalar(&conn, "SELECT count(*) FROM reflection_chunk").await,
+                2,
+                "after {round}: the rows stay"
+            );
+        }
     }
 
     #[tokio::test]
