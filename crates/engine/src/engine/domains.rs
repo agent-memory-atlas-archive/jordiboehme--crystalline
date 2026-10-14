@@ -825,6 +825,9 @@ impl Engine {
                             bullets: m.bullets.clone(),
                             preferred: false,
                             read_only: m.domain_read_only,
+                            // The onboarding block stays count-free: session
+                            // start is where the counts are named.
+                            reflect_open: 0,
                         }),
                 );
         }

@@ -1,7 +1,7 @@
 //! `reflect`: the Reflection's work queue - feedback, update, review - recomputed
 //! on every call and never stored, the shape of evolve's queue.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crystalline_core::reflection::{self as r, ReflectionState, Structure};
 use crystalline_core::threads::{self as th, SectionRef, ThreadStatus, Waiting};
@@ -627,5 +627,40 @@ impl Engine {
             }
         }
         Ok(out)
+    }
+
+    /// The domains whose Reflection `caller` curates here: what every nudge
+    /// counts over.
+    pub async fn curated_reflections(&self, caller: &ReflectionCaller) -> Result<BTreeSet<String>> {
+        let mut out = BTreeSet::new();
+        for domain in self.reflect_scope(&[], false).await?.0 {
+            if self
+                .require_reflection(&domain, caller, ReflectionRight::Curate)
+                .await
+                .is_ok()
+            {
+                out.insert(domain);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Count every Reflection's open items as the machine owner and record
+    /// the counts in `<state_dir>/hooks/maintenance.json`, for the hooks and
+    /// for `hook_status`. The daemon's count tick calls this; nothing else
+    /// writes `reflect_open`.
+    pub async fn record_reflect_counts(&self) -> Result<BTreeMap<String, u64>> {
+        // The unnamed scope already leaves out a hidden copy and a read-only
+        // domain, so nothing is filtered here.
+        let counts: BTreeMap<String, u64> = self
+            .reflect_open_counts(&[], &ReflectionCaller::owner())
+            .await?
+            .into_iter()
+            .map(|(domain, n)| (domain, n as u64))
+            .collect();
+        if let Ok(state_dir) = self.journal_state_dir() {
+            crate::maintenance::record_reflect_open_under(&state_dir, &counts);
+        }
+        Ok(counts)
     }
 }

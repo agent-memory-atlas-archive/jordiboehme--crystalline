@@ -781,6 +781,18 @@ pub async fn run_serve(
         });
     }
 
+    // The reflect count tick: counts every Reflection's open items for the
+    // machine owner and records them in maintenance.json, where the hooks
+    // and the remote hook_status read them. A no-op write when nothing
+    // changed; an empty map when no Reflection is on.
+    {
+        let e = engine.clone();
+        let rx = shared.watch();
+        tokio::spawn(async move {
+            run_reflect_count_tick(e, REFLECT_COUNT_HEARTBEAT, rx).await;
+        });
+    }
+
     // The source poller: each connected server's routing model and
     // maintenance status, asked through their etags every SOURCE_POLL, and a
     // cheap look at sources.json and config.yaml every SOURCE_LOOK. A no-op
@@ -2780,6 +2792,32 @@ async fn run_origin_poller(engine: Arc<Engine>, mut shutdown: watch::Receiver<bo
             _ = wait_true(&mut shutdown) => break,
             _ = ticker.tick() => {
                 engine.origin_poll_tick(Instant::now(), chrono::Utc::now()).await;
+            }
+        }
+    }
+}
+
+/// How often the daemon recounts open reflect items for the hooks. A daily
+/// nudge does not need fresher counts, and a count runs the detection over
+/// every Reflection here.
+pub const REFLECT_COUNT_HEARTBEAT: Duration = Duration::from_secs(300);
+
+/// Run the reflect count tick until shutdown. The interval's first tick is
+/// immediate and is kept, so a daemon that starts after plain-editor edits
+/// records fresh counts at once.
+async fn run_reflect_count_tick(
+    engine: Arc<Engine>,
+    cadence: Duration,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut ticker = tokio::time::interval(cadence);
+    loop {
+        tokio::select! {
+            _ = wait_true(&mut shutdown) => break,
+            _ = ticker.tick() => {
+                if let Err(e) = engine.record_reflect_counts().await {
+                    tracing::debug!("reflect counts not recorded: {e}");
+                }
             }
         }
     }

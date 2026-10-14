@@ -60,6 +60,17 @@ async fn curated(extra: &[(&str, &str)]) -> Fx {
     fx
 }
 
+/// A curated reflection with one person's change waiting as a feedback item.
+pub async fn curated_with_a_feedback_item() -> Fx {
+    let fx = curated(&[]).await;
+    let text = edit_page(&fx, "Deploys run at night.", "Deploys run at dawn.");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &person())
+        .await
+        .unwrap();
+    fx
+}
+
 fn age_file(fx: &Fx, rel: &str, days: u64) {
     let file = std::fs::File::options()
         .write(true)

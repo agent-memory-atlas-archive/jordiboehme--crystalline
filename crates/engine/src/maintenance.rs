@@ -7,7 +7,7 @@
 //! machine state rather than knowledge: nothing here is ever an engram, it
 //! never syncs anywhere and deleting it costs at most one delayed nudge.
 //!
-//! Three writers, all outside this module:
+//! The writers, all outside this module:
 //!
 //! - the REST write handlers (`crate::rest::engrams`), which mark a domain
 //!   pending when a human creates, saves or retires an engram in it;
@@ -18,6 +18,10 @@
 //! - the Stop hook, which reads the file to decide whether to nudge, starts
 //!   the machine's clock with [`record_first_seen`] on its very first call and
 //!   stamps `last_nudge_at` with [`record_nudge`] when it asks.
+//! - the daemon's reflect count tick (`Engine::record_reflect_counts`), which
+//!   replaces `reflect_open` with the open reflect items it counted, and the
+//!   Stop hook's reflect ask, which stamps `last_reflect_nudge_at` with
+//!   [`record_reflect_nudge`].
 //!
 //! Every one of them writes through a recorder here rather than saving a state
 //! it loaded earlier, and that is a correctness rule rather than a convention:
@@ -51,7 +55,7 @@
 //! never be reported as failed because a throttle record could not be
 //! updated.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, TimeDelta, Utc};
@@ -90,6 +94,8 @@ pub enum NudgeKind {
     Share,
     /// "Knowledge maintenance is due."
     Evolve,
+    /// "A Reflection has open items."
+    Reflect,
 }
 
 impl NudgeKind {
@@ -99,6 +105,7 @@ impl NudgeKind {
         match self {
             NudgeKind::Share => "share",
             NudgeKind::Evolve => "evolve",
+            NudgeKind::Reflect => "reflect",
         }
     }
 }
@@ -179,13 +186,25 @@ pub struct MaintenanceState {
     /// depend on hashing.
     #[serde(default)]
     pub mcp_nudges: BTreeMap<String, DateTime<Utc>>,
+    /// Open reflect items per domain whose Reflection is on here, as the
+    /// daemon last counted them for the machine owner
+    /// (`Engine::record_reflect_counts`, every `REFLECT_COUNT_HEARTBEAT`). Zero
+    /// counts are left out. The hooks read it; a server narrows it to the
+    /// domains each account curates before it answers.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reflect_open: BTreeMap<String, u64>,
+    /// When the Stop hook last asked for the Reflection queue. Written by
+    /// [`record_reflect_nudge`], read by the hook's own cooldown. Always this
+    /// machine's, for its own and its mounted domains, like `last_nudge_at`.
+    #[serde(default)]
+    pub last_reflect_nudge_at: Option<DateTime<Utc>>,
 }
 
 /// What a connected Crystalline's Stop hook asks this server for
 /// (`hook_status` on `POST /api/v1/ctl`): one member per nudge the hook can
 /// raise.
 ///
-/// **Shaped to grow.** Reflection (0.25.0) adds a `reflect` member beside
+/// **Shaped to grow.** Reflection (0.26.0) adds the `reflect` member beside
 /// `evolve`. Every member is `#[serde(default)]` and unknown members are
 /// ignored, so an older client reading a newer server skips what it does not
 /// know and a newer client reading an older server sees nothing due there.
@@ -194,6 +213,10 @@ pub struct HookStatus {
     /// The evolve nudge's server half.
     #[serde(default)]
     pub evolve: EvolveStatus,
+    /// The reflect nudge's server half (0.26.0). Absent in a 0.23.0 answer
+    /// or cache, which reads as nothing open.
+    #[serde(default)]
+    pub reflect: ReflectStatus,
 }
 
 /// The server half of the evolve nudge: the backlog of human writes and the
@@ -219,6 +242,30 @@ pub struct EvolveStatus {
     pub last_run_at: Option<DateTime<Utc>>,
 }
 
+/// The server half of the reflect nudge: open reflect items per domain whose
+/// Reflection the caller curates. The cooldown (`last_reflect_nudge_at`)
+/// stays on the client's machine.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReflectStatus {
+    /// Domain name to open item count, zero counts left out.
+    #[serde(default)]
+    pub domains: BTreeMap<String, u64>,
+}
+
+impl ReflectStatus {
+    /// The recorded counts, narrowed to `curated`.
+    pub fn from_state(state: &MaintenanceState, curated: &BTreeSet<String>) -> ReflectStatus {
+        ReflectStatus {
+            domains: state
+                .reflect_open
+                .iter()
+                .filter(|(domain, _)| curated.contains(domain.as_str()))
+                .map(|(domain, n)| (domain.clone(), *n))
+                .collect(),
+        }
+    }
+}
+
 impl HookStatus {
     /// The status `state` implies for a caller who may see `visible`.
     pub fn from_state(
@@ -242,6 +289,9 @@ impl HookStatus {
                 pending_since,
                 last_run_at: state.last_run_at,
             },
+            // Filled by the caller, which knows whose curate right to narrow
+            // by.
+            reflect: ReflectStatus::default(),
         }
     }
 }
@@ -389,6 +439,24 @@ pub fn record_mcp_nudge(kind: NudgeKind, identity: &str) {
     }
 }
 
+/// Stamp the Stop hook's reflect ask at `now`. A recorder rather than a save
+/// for the reason [`record_nudge`] is one; failures are logged at debug and
+/// swallowed.
+pub fn record_reflect_nudge(now: DateTime<Utc>) {
+    if let Err(e) = path().and_then(|p| record_reflect_nudge_at(&p, now)) {
+        tracing::debug!("maintenance state not stamped with the reflect nudge: {e}");
+    }
+}
+
+/// Record the open reflect counts under `state_dir`, replacing the whole map.
+/// Failures are swallowed like every recorder's: a missed record costs a
+/// late nudge, never a failed tick.
+pub(crate) fn record_reflect_open_under(state_dir: &Path, counts: &BTreeMap<String, u64>) {
+    if let Err(e) = record_reflect_open_at(&path_under(state_dir), counts) {
+        tracing::debug!("maintenance state not stamped with the reflect counts: {e}");
+    }
+}
+
 // --- path-taking internals ---------------------------------------------------
 //
 // The functions above resolve `path()` and swallow; these do the work
@@ -490,6 +558,28 @@ fn record_nudge_at(path: &Path, now: DateTime<Utc>) -> Result<(), ConfigError> {
     let _write = write_lock();
     let mut state = load_from(path);
     state.last_nudge_at = Some(now);
+    write_locked(path, &state)
+}
+
+/// [`record_reflect_nudge`] against an explicit file, one critical section like
+/// [`record_nudge_at`].
+fn record_reflect_nudge_at(path: &Path, now: DateTime<Utc>) -> Result<(), ConfigError> {
+    let _write = write_lock();
+    let mut state = load_from(path);
+    state.last_reflect_nudge_at = Some(now);
+    write_locked(path, &state)
+}
+
+/// [`record_reflect_open_under`] against an explicit file, one critical
+/// section like the recorders above. An unchanged map writes nothing, so a
+/// count tick with nothing new leaves the file's bytes alone.
+fn record_reflect_open_at(path: &Path, counts: &BTreeMap<String, u64>) -> Result<(), ConfigError> {
+    let _write = write_lock();
+    let mut state = load_from(path);
+    if state.reflect_open == *counts {
+        return Ok(());
+    }
+    state.reflect_open = counts.clone();
     write_locked(path, &state)
 }
 
@@ -891,6 +981,8 @@ mod tests {
                 "share:ada".to_string(),
                 "2026-08-03T13:00:00Z".parse().unwrap(),
             )]),
+            reflect_open: BTreeMap::from([("eng".to_string(), 2)]),
+            last_reflect_nudge_at: Some("2026-08-04T08:00:00Z".parse().unwrap()),
         };
 
         save_to(&path, &state).unwrap();
@@ -905,6 +997,65 @@ mod tests {
         assert!(
             path.exists(),
             "the parent folder is created by the atomic write"
+        );
+    }
+    #[test]
+    fn the_reflect_status_names_only_the_reflections_the_caller_curates() {
+        let state = MaintenanceState {
+            reflect_open: BTreeMap::from([("eng".to_string(), 3), ("ops".to_string(), 1)]),
+            last_reflect_nudge_at: DateTime::from_timestamp(1_800_000_000, 0),
+            ..MaintenanceState::default()
+        };
+        let curated: BTreeSet<String> = ["eng".to_string()].into();
+        let status = ReflectStatus::from_state(&state, &curated);
+        assert_eq!(status.domains, BTreeMap::from([("eng".to_string(), 3)]));
+        let json = serde_json::to_value(HookStatus {
+            reflect: status,
+            ..HookStatus::default()
+        })
+        .unwrap();
+        // The whole member: the reflect cooldown is the client's own and
+        // never rides in it.
+        assert_eq!(
+            json["reflect"],
+            serde_json::json!({ "domains": { "eng": 3 } })
+        );
+    }
+
+    /// A 0.23.0 server's answer and a 0.23.0 cache (no `reflect`) read as
+    /// nothing open; a 0.26.0 answer reads in full.
+    #[test]
+    fn hook_status_with_and_without_the_reflect_member() {
+        let old: HookStatus =
+            serde_json::from_str(r#"{"evolve":{"pending_domains":["a"]}}"#).unwrap();
+        assert_eq!(old.reflect, ReflectStatus::default());
+        let new: HookStatus =
+            serde_json::from_str(r#"{"evolve":{},"reflect":{"domains":{"eng":2}}}"#).unwrap();
+        assert_eq!(
+            new.reflect.domains,
+            BTreeMap::from([("eng".to_string(), 2)])
+        );
+    }
+
+    #[test]
+    fn recording_the_counts_replaces_the_map_and_keeps_every_other_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = path_under(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"v":1,"pending_domains":["eng"],"reflect_open":{"gone":4}}"#,
+        )
+        .unwrap();
+        record_reflect_open_at(&path, &BTreeMap::from([("eng".to_string(), 2)])).unwrap();
+        let state = load_from(&path);
+        assert_eq!(state.reflect_open, BTreeMap::from([("eng".to_string(), 2)]));
+        assert_eq!(state.pending_domains, vec!["eng".to_string()]);
+        record_reflect_open_at(&path, &BTreeMap::new()).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("reflect_open"),
+            "an empty map is not written: {text}"
         );
     }
 }

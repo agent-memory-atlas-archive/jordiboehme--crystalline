@@ -8,6 +8,7 @@ mod support;
 mod docs;
 mod fixture;
 mod guards;
+mod nudges;
 mod queue;
 mod rights;
 mod switch;

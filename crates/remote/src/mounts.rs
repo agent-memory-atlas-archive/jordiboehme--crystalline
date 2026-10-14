@@ -92,6 +92,10 @@ pub struct RemoteDomain {
     /// either way.
     #[serde(default)]
     pub domain_read_only: bool,
+    /// Open reflect items of this domain's Reflection that the account
+    /// curates (0.26.0); 0 from an older server, which sends none.
+    #[serde(default)]
+    pub reflect_open: u64,
 }
 
 /// One domain registered on this machine.
@@ -119,6 +123,8 @@ pub struct Mount {
     /// Whether the server marks it read-only for this account, from the
     /// source's routing model. Only shown here: the server enforces it.
     pub domain_read_only: bool,
+    /// Its open reflect items, from the source's routing model.
+    pub reflect_open: u64,
     /// Whether it is the same domain as a local copy (same origin), which
     /// is hidden while this source is connected. True whatever name either
     /// of them has; the hidden copy is in [`MountTable::shadowed`] with
@@ -810,6 +816,7 @@ pub fn assign(
                 source: source.name.clone(),
                 bullets: domain.bullets,
                 domain_read_only: domain.domain_read_only,
+                reflect_open: domain.reflect_open,
             });
         }
         if let Some(list) = &source.domains {
@@ -1044,6 +1051,7 @@ mod tests {
             bullets: vec![format!("Route here for {name} questions")],
             origin: repo.and_then(origin),
             domain_read_only: false,
+            reflect_open: 0,
         }
     }
 
@@ -2327,5 +2335,27 @@ mod tests {
             !said.iter().any(|a| matches!(a, Announcement::Moved { .. })),
             "{said:?}"
         );
+    }
+    /// The counts survive the cache, so a stale block still names them.
+    #[test]
+    fn a_routing_rows_reflect_count_reaches_its_mount() {
+        let offered = crate::remote_domains(&json!({ "read_only": false, "domains": [
+            { "name": "open", "bullets": ["shared questions"], "origin": null, "reflect_open": 2 },
+            { "name": "lab", "bullets": ["lab questions"], "origin": null },
+        ] }));
+        assert_eq!(offered[0].reflect_open, 2);
+        assert_eq!(
+            offered[1].reflect_open, 0,
+            "an older server says nothing: no count"
+        );
+        let mut sources = SourcesFile::default();
+        sources.sources.push(source("acme"));
+        let (table, _) = assign(
+            &mut sources,
+            &[],
+            &BTreeMap::from([("acme".to_string(), offered)]),
+        );
+        assert_eq!(table.mount("open").unwrap().reflect_open, 2);
+        assert_eq!(table.mount("lab").unwrap().reflect_open, 0);
     }
 }

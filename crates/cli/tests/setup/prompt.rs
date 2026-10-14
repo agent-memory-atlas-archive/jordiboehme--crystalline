@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use predicates::prelude::*;
 
-use crate::common::fixtures_dir;
+use crate::common::{crystalline, fixtures_dir, isolate, isolated_state_dir};
 
 #[test]
 fn prompt_text_matches_snapshot() {
@@ -937,4 +937,41 @@ fn prompt_system_text_format_tolerates_garbage_stdin() {
     // explicitly so this is byte-identity with that expectation rather than a
     // second snapshot that could drift away from it.
     insta::assert_snapshot!("prompt_text_matches_snapshot", text);
+}
+
+/// Session start names a Reflection the daemon counted open items in, from
+/// this machine's maintenance file; an explicit --config leaves the counts
+/// out, because they were counted for this machine's registry.
+#[test]
+fn session_start_names_a_reflection_with_recorded_open_items() {
+    let home = tempfile::tempdir().unwrap();
+    let hooks = isolated_state_dir(home.path()).join("hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    std::fs::write(
+        hooks.join("maintenance.json"),
+        r#"{"v":1,"reflect_open":{"astronomy":2}}"#,
+    )
+    .unwrap();
+    let fixture = fixtures_dir().join("prompt-fixture");
+    let run = |explicit: bool| {
+        let mut cmd = crystalline();
+        isolate(&mut cmd, home.path());
+        cmd.current_dir(&fixture)
+            .env("CRYSTALLINE_CONFIG", fixture.join("config.yaml"))
+            .args(["prompt", "system", "--workspace", "workspace"]);
+        if explicit {
+            cmd.args(["--config", "config.yaml"]);
+        }
+        String::from_utf8(cmd.output().unwrap().stdout).unwrap()
+    };
+    let text = run(false);
+    assert!(
+        text.lines().any(|l| l.starts_with("- astronomy:")
+            && l.ends_with("(Reflection: 2 open items - call reflect)")),
+        "{text}"
+    );
+    assert!(
+        !run(true).contains("(Reflection:"),
+        "an explicit --config is not this machine's registry"
+    );
 }

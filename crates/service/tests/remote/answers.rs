@@ -320,3 +320,79 @@ async fn the_routing_model_marks_read_only_domains_per_token() {
     );
     assert_ne!(mine["etag"], theirs["etag"]);
 }
+
+/// Over the wire, the recorded counts reach only an account that curates
+/// the Reflection, in hook_status and in the routing model, and a new count
+/// is a new etag.
+#[tokio::test]
+async fn the_reflect_counts_reach_only_the_curators() {
+    use crystalline_service::maintenance::{MaintenanceState, save};
+    use std::collections::BTreeMap;
+
+    let server = RemoteServer::start(Options::TOKENS).await;
+    // The record is the process's one maintenance file; the other tests that
+    // save it hold the same guard.
+    let _guard = crate::support::maintenance_guard().await;
+    let manifest = server.file("open", "MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replace("status: stable\n", "status: stable\nreflection: on\n"),
+    )
+    .unwrap();
+    server.engine.sync(None).await.unwrap();
+    let mut state = MaintenanceState {
+        reflect_open: BTreeMap::from([("open".to_string(), 2), ("lab".to_string(), 1)]),
+        ..Default::default()
+    };
+    save(&state).unwrap();
+
+    let keeper = server.token_for("keeper").await;
+    let (_, reply) = server.ctl(Some(&keeper), cmd("hook_status")).await;
+    assert_eq!(
+        reply["data"]["reflect"]["domains"],
+        json!({ "open": 2 }),
+        "lab keeps no Reflection: {reply}"
+    );
+    let etag = reply["etag"].as_str().unwrap().to_string();
+    let (_, routing) = server.ctl(Some(&keeper), cmd("routing_bullets")).await;
+    let open = routing["data"]["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "open")
+        .unwrap()
+        .clone();
+    assert_eq!(open["reflect_open"], 2, "{routing}");
+
+    let looker = server.token_for("looker").await;
+    let (_, reply) = server.ctl(Some(&looker), cmd("hook_status")).await;
+    assert_eq!(
+        reply["data"]["reflect"]["domains"],
+        json!({}),
+        "a commenter is not nudged: {reply}"
+    );
+    let (_, routing) = server.ctl(Some(&looker), cmd("routing_bullets")).await;
+    assert!(!routing.to_string().contains("reflect_open"), "{routing}");
+
+    let (_, same) = server
+        .ctl(
+            Some(&keeper),
+            json!({ "v": 1, "cmd": "hook_status", "if_none_match": etag }),
+        )
+        .await;
+    assert_eq!(same["not_modified"], true, "{same}");
+    state.reflect_open.insert("open".to_string(), 3);
+    save(&state).unwrap();
+    let (_, changed) = server
+        .ctl(
+            Some(&keeper),
+            json!({ "v": 1, "cmd": "hook_status", "if_none_match": etag }),
+        )
+        .await;
+    assert!(
+        changed.get("not_modified").is_none(),
+        "a new count is a new etag: {changed}"
+    );
+    assert_eq!(changed["data"]["reflect"]["domains"]["open"], 3);
+}

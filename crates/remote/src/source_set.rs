@@ -400,6 +400,7 @@ impl SourceSet {
                         source: source.name.clone(),
                         bullets: Vec::new(),
                         domain_read_only: false,
+                        reflect_open: 0,
                         replaces_local: false,
                     });
                 }
@@ -1011,6 +1012,7 @@ mod tests {
                 branch: "main".to_string(),
             }),
             domain_read_only: false,
+            reflect_open: 0,
         }
     }
 

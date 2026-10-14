@@ -71,6 +71,28 @@ pub struct PromptDomain {
     /// viewer's role, a domain off the caller's write list). The routing line
     /// then says "(read-only)".
     pub read_only: bool,
+    /// Open reflect items in this domain's Reflection, as the running
+    /// instance counted them; 0 when unknown. The routing line then names
+    /// the Reflection ([`annotate_reflection`]).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub reflect_open: u64,
+}
+
+/// Whether a count is zero, for `skip_serializing_if`.
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// Name the open reflect items counted on each domain's routing line.
+/// Separate from [`generate_prompt`], whose output stays a pure function of
+/// config and MANIFESTs. Only a domain `counts` names is touched: a mounted
+/// row carries its server's count and keeps it.
+pub fn annotate_reflection(output: &mut PromptOutput, counts: &BTreeMap<String, u64>) {
+    for domain in &mut output.domains {
+        if let Some(n) = counts.get(&domain.name) {
+            domain.reflect_open = *n;
+        }
+    }
 }
 
 /// The result of building a routing prompt for a workspace.
@@ -139,6 +161,7 @@ pub fn generate_prompt(
             bullets,
             preferred: is_preferred,
             read_only,
+            reflect_open: 0,
         });
     }
 
@@ -207,6 +230,7 @@ pub fn generate_prompt_unscoped(
             bullets,
             preferred: false,
             read_only,
+            reflect_open: 0,
         });
     }
 
@@ -459,7 +483,12 @@ fn render_domain_lines(
             .cloned()
             .collect::<Vec<_>>()
             .join("; ");
-        let _ = writeln!(out, "- {label}: {bullets}");
+        let reflection = match d.reflect_open {
+            0 => String::new(),
+            1 => " (Reflection: 1 open item - call reflect)".to_string(),
+            n => format!(" (Reflection: {n} open items - call reflect)"),
+        };
+        let _ = writeln!(out, "- {label}: {bullets}{reflection}");
     }
 }
 
@@ -729,6 +758,9 @@ struct JsonPromptDomain<'a> {
     /// which is the instance.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     read_only: bool,
+    /// Present only on a row with open reflect items.
+    #[serde(skip_serializing_if = "is_zero")]
+    reflect_open: u64,
 }
 
 #[derive(Serialize)]
@@ -741,7 +773,7 @@ struct JsonPrompt<'a> {
 }
 
 /// Render the prompt as JSON: `{version: 1, kind: "system", read_only, workspace,
-/// domains: [{name, bullets, preferred, read_only?}]}`. `read_only` is always present;
+/// domains: [{name, bullets, preferred, read_only?, reflect_open?}]}`. `read_only` is always present;
 /// `kind` is additive and `version` stays 1.
 pub fn render_json(output: &PromptOutput) -> String {
     let wrapped = JsonPrompt {
@@ -757,6 +789,7 @@ pub fn render_json(output: &PromptOutput) -> String {
                 bullets: &d.bullets,
                 preferred: d.preferred,
                 read_only: d.read_only,
+                reflect_open: d.reflect_open,
             })
             .collect(),
     };
@@ -1469,12 +1502,14 @@ mod tests {
                     bullets: vec!["Old incidents".into()],
                     preferred: true,
                     read_only: true,
+                    reflect_open: 0,
                 },
                 PromptDomain {
                     name: "eng".into(),
                     bullets: vec!["Route here".into()],
                     preferred: false,
                     read_only: false,
+                    reflect_open: 0,
                 },
             ],
             warnings: Vec::new(),
@@ -1526,5 +1561,53 @@ mod tests {
         let row = |name: &str| output.domains.iter().find(|d| d.name == name).unwrap();
         assert!(row("archive").read_only);
         assert!(!row("notes").read_only);
+    }
+    #[test]
+    fn a_domain_with_open_reflect_items_says_so_in_its_routing_line() {
+        let mut output = PromptOutput {
+            workspace: std::path::PathBuf::from("/w"),
+            domains: vec![
+                PromptDomain {
+                    name: "eng".into(),
+                    bullets: vec!["eng questions".into()],
+                    preferred: false,
+                    read_only: false,
+                    reflect_open: 0,
+                },
+                PromptDomain {
+                    name: "ops".into(),
+                    bullets: vec!["ops questions".into()],
+                    preferred: false,
+                    read_only: false,
+                    reflect_open: 0,
+                },
+                // A mounted row arrives with its server's own count.
+                PromptDomain {
+                    name: "ops-acme".into(),
+                    bullets: vec!["acme ops".into()],
+                    preferred: false,
+                    read_only: false,
+                    reflect_open: 4,
+                },
+            ],
+            warnings: vec![],
+            read_only: false,
+        };
+        annotate_reflection(&mut output, &BTreeMap::from([("eng".to_string(), 3u64)]));
+        let text = render_text(&output);
+        assert!(
+            text.contains("- eng: eng questions (Reflection: 3 open items - call reflect)\n"),
+            "{text}"
+        );
+        assert!(text.contains("- ops: ops questions\n"));
+        assert!(
+            text.contains("- ops-acme: acme ops (Reflection: 4 open items - call reflect)\n"),
+            "a domain the map does not name keeps its count: {text}"
+        );
+        let json = render_json(&output);
+        assert!(
+            json.contains("\"reflect_open\":3") || json.contains("\"reflect_open\": 3"),
+            "{json}"
+        );
     }
 }

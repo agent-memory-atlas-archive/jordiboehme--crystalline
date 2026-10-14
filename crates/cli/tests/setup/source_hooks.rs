@@ -1054,3 +1054,103 @@ fn session_start_marks_a_mounted_read_only_domain() {
     assert!(stdout.contains("- specs: Route here for specs"), "{stdout}");
     assert_eq!(blackhole.offered(), 0);
 }
+
+/// A server's open reflect items reach the Stop hook from the cached
+/// hook_status answer (the server being down), under the domain's local
+/// name, and the cooldown is stamped on this machine.
+#[test]
+fn the_stop_hook_names_a_mounted_reflection_with_open_items() {
+    let server = CliServer::start();
+    let home = tempfile::tempdir().unwrap();
+    connect(&server, home.path());
+    let host = host_dir(&server, home.path());
+    std::fs::write(
+        host.join("hook_status.json"),
+        json!({
+            "account": "keeper",
+            "etag": "cached",
+            "fetched_at": chrono::Utc::now().to_rfc3339(),
+            "data": { "evolve": {}, "reflect": { "domains": { "open": 2, "unmounted": 5 } } },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    server.stop();
+    let work = tempfile::tempdir().unwrap();
+    let transcript = work.path().join("transcript.jsonl");
+    std::fs::write(
+        &transcript,
+        (0..25)
+            .map(|i| format!("{{\"turn\":{i}}}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let out = bin(home.path())
+        .args(["hook", "stop"])
+        .write_stdin(
+            json!({
+                "session_id": "sources-stop-reflect",
+                "transcript_path": transcript.display().to_string(),
+                "hook_event_name": "Stop",
+            })
+            .to_string(),
+        )
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let decision: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("no nudge ({e}): {:?}", String::from_utf8_lossy(&out.stdout)));
+    let reason = decision["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("Also open: the Reflection of open has 2 items waiting."),
+        "{reason}"
+    );
+    assert!(!reason.contains("unmounted"), "{reason}");
+    let local =
+        std::fs::read_to_string(isolated_state_dir(home.path()).join("hooks/maintenance.json"))
+            .unwrap();
+    assert!(
+        local.contains("last_reflect_nudge_at"),
+        "the cooldown is stamped locally: {local}"
+    );
+}
+
+/// Session start names a mounted Reflection with open items from the cached
+/// routing model, and keeps the count when the copy is stale.
+#[test]
+fn session_start_names_a_mounted_reflection_from_the_cached_routing_model() {
+    let server = CliServer::start();
+    let home = tempfile::tempdir().unwrap();
+    connect(&server, home.path());
+    server.stop();
+    let routing = host_dir(&server, home.path()).join("routing.json");
+    let mut cached: Value = serde_json::from_slice(&std::fs::read(&routing).unwrap()).unwrap();
+    for row in cached["data"]["domains"].as_array_mut().unwrap() {
+        if row["name"] == "open" {
+            row["reflect_open"] = json!(2);
+        }
+    }
+    // Recorded the way the client records an unreachable server, which is
+    // what the staleness line classifies as "cannot be reached".
+    cached["last_failure"] = json!(format!(
+        "acme ({}) cannot be reached right now: connection refused (check the VPN or the network)",
+        server.origin
+    ));
+    std::fs::write(&routing, cached.to_string()).unwrap();
+    let out = prompt_system(home.path());
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.lines().any(|l| l.starts_with("- open:")
+            && l.ends_with("(Reflection: 2 open items - call reflect)")),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("cannot be reached right now"),
+        "the staleness line still follows: {stdout}"
+    );
+}

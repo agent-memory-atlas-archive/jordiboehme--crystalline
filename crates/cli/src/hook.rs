@@ -62,7 +62,14 @@
 //! was later unregistered is never named and never arms the ask. Being
 //! long-lived by design, that file is the one thing the stale sweep above
 //! spares.
+//!
+//! The same file carries the open reflect items the daemon last counted per
+//! domain (`reflect_open`). A nudged session whose own reflect cooldown is
+//! clear gets one last paragraph naming the Reflections of the domains it
+//! recalled from that have open items, joined by every connected server's
+//! counts from its cached `hook_status` answer.
 
+use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
@@ -146,6 +153,9 @@ pub const EVOLVE_RUN_INTERVAL_DAYS: i64 = 7;
 /// Both arms are gated by it, so a backlog that stays pending asks once a
 /// day rather than once a session.
 pub const EVOLVE_NUDGE_COOLDOWN_HOURS: i64 = 24;
+
+/// The floor between two reflect asks: a day, like the maintenance ask.
+pub const REFLECT_NUDGE_COOLDOWN_HOURS: i64 = 24;
 
 /// A transcript byte size at or above this is substantial on its own, no
 /// read required: `run_stop` stats the file first and only reads it when the
@@ -480,13 +490,22 @@ fn unshared_team_work<'a>(
     (changes, names)
 }
 
-/// The pending domains of every source's cached maintenance status, by their
-/// names on this machine; a domain this machine does not mount is left out.
-/// Only the cached structured answer is read, never a server's text, and
-/// nothing is fetched: the Stop hook never talks to a server.
-fn remote_pending(set: &crystalline_remote::SourceSet) -> Vec<String> {
+/// What every source's cached maintenance status says, by this machine's
+/// names: the evolve backlog, and the open reflect items of the Reflections
+/// the account curates there. A domain this machine does not mount is left
+/// out. Only the cached structured answer is read, never a server's text, and
+/// nothing is fetched: the Stop hook never talks to a server (decision D20).
+#[derive(Debug, Default)]
+struct RemoteBacklogs {
+    /// The servers' pending domains, by local name, never twice.
+    pending: Vec<String>,
+    /// The servers' open reflect counts, by local name, zero counts left out.
+    reflect_open: BTreeMap<String, u64>,
+}
+
+fn remote_backlogs(set: &crystalline_remote::SourceSet) -> RemoteBacklogs {
     let table = set.table();
-    let mut pending = Vec::new();
+    let mut out = RemoteBacklogs::default();
     for record in set.records() {
         let Some(cached) = crystalline_remote::read_cached(
             &record.host_dir(set.remote_dir()),
@@ -501,13 +520,98 @@ fn remote_pending(set: &crystalline_remote::SourceSet) -> Vec<String> {
         let names = table.names(&record.name);
         for remote in status.evolve.pending_domains {
             if let Some(local) = names.to_local.get(&remote)
-                && !pending.contains(local)
+                && !out.pending.contains(local)
             {
-                pending.push(local.clone());
+                out.pending.push(local.clone());
+            }
+        }
+        for (remote, n) in status.reflect.domains {
+            if let Some(local) = names.to_local.get(&remote)
+                && n > 0
+            {
+                out.reflect_open.insert(local.clone(), n);
             }
         }
     }
-    pending
+    out
+}
+
+/// Whether the reflect ask's cooldown is clear: never asked, or asked at
+/// least [`REFLECT_NUDGE_COOLDOWN_HOURS`] ago.
+pub fn reflect_ask(m: &MaintenanceState, now: DateTime<Utc>) -> bool {
+    m.last_reflect_nudge_at.is_none_or(|at| {
+        now.signed_duration_since(at) >= TimeDelta::hours(REFLECT_NUDGE_COOLDOWN_HOURS)
+    })
+}
+
+/// The domains this session recalled from, in first-seen order: what the
+/// reflect ask narrows to.
+pub(crate) fn session_domains(state: &SessionState) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for address in &state.recalled {
+        let Some(rest) = address.strip_prefix(crystalline_core::address::SCHEME) else {
+            continue;
+        };
+        let domain = rest.split('/').next().unwrap_or("");
+        if !domain.is_empty() && !out.iter().any(|d| d == domain) {
+            out.push(domain.to_string());
+        }
+    }
+    out
+}
+
+/// The recorded counts of the domains this install still registers, so a
+/// ghost is never named (the reflect twin of [`registered_pending`]).
+fn registered_counts<'a>(
+    recorded: &BTreeMap<String, u64>,
+    registered: impl Iterator<Item = &'a str>,
+) -> BTreeMap<String, u64> {
+    let registered: std::collections::HashSet<&str> = registered.collect();
+    recorded
+        .iter()
+        .filter(|(domain, _)| registered.contains(domain.as_str()))
+        .map(|(domain, n)| (domain.clone(), *n))
+        .collect()
+}
+
+/// The counts of the session's domains, or every count when the session
+/// recalled nothing, in domain order.
+fn session_counts(counts: &BTreeMap<String, u64>, session: &[String]) -> Vec<(String, u64)> {
+    counts
+        .iter()
+        .filter(|(domain, n)| {
+            **n > 0 && (session.is_empty() || session.iter().any(|s| s == *domain))
+        })
+        .map(|(domain, n)| (domain.clone(), *n))
+        .collect()
+}
+
+/// The reflect paragraph for these open counts, or `None` when there are none.
+/// One domain is named; several are counted, like the share paragraph.
+fn reflect_line(counts: &[(String, u64)]) -> Option<String> {
+    let total: u64 = counts.iter().map(|(_, n)| n).sum();
+    if total == 0 {
+        return None;
+    }
+    let items = if total == 1 {
+        "1 item".to_string()
+    } else {
+        format!("{total} items")
+    };
+    let (whose, which) = if counts.len() == 1 {
+        (
+            format!("the Reflection of {} has {items}", counts[0].0),
+            "that domain",
+        )
+    } else {
+        (
+            format!("the Reflections of {} domains have {items}", counts.len()),
+            "those domains",
+        )
+    };
+    Some(format!(
+        "Also open: {whose} waiting. Call the crystalline reflect tool for {which} and work the queue: read what people changed before you rewrite anything, and answer open threads in plain words."
+    ))
 }
 
 /// The sharing paragraph for a session holding `changes` unshared changes
@@ -538,15 +642,16 @@ fn share_line(changes: usize, domains: &[String]) -> Option<String> {
 }
 
 /// The full reason string this handler prints, composed from the capture
-/// nudge and, when they are due, the maintenance paragraph and the sharing
-/// paragraph. The pending domains are named only when there are any: an ask
-/// raised by the weekly arm alone has nothing to point at.
+/// nudge and, when they are due, the maintenance paragraph, the sharing
+/// paragraph and the Reflection paragraph. The pending domains are named only
+/// when there are any: an ask raised by the weekly arm alone has nothing to
+/// point at.
 ///
-/// The two ride-alongs are independent of each other and of nothing else: both
-/// require the capture nudge to have been earned, neither requires the other,
-/// and they always land in this order so a reader meets the same paragraph in
-/// the same place every time.
-fn nudge_reason(evolve: Option<&[String]>, share: Option<&str>) -> String {
+/// The ride-alongs (maintenance, sharing, Reflection) are independent of each
+/// other and of nothing else: each requires the capture nudge to have been
+/// earned, none requires another, and they always land in this order so a
+/// reader meets the same paragraph in the same place every time.
+fn nudge_reason(evolve: Option<&[String]>, share: Option<&str>, reflect: Option<&str>) -> String {
     let mut reason = NUDGE_REASON.to_string();
     if let Some(domains) = evolve {
         reason.push(' ');
@@ -556,6 +661,10 @@ fn nudge_reason(evolve: Option<&[String]>, share: Option<&str>) -> String {
         }
     }
     if let Some(line) = share {
+        reason.push(' ');
+        reason.push_str(line);
+    }
+    if let Some(line) = reflect {
         reason.push(' ');
         reason.push_str(line);
     }
@@ -674,6 +783,13 @@ pub fn run_stop(harness: Option<&str>) {
         // decision agree without re-reading the file.
         maintenance_state.first_seen = Some(now);
     }
+    // Every source's cached hook_status, read once per Stop and only when
+    // the capture nudge is earned: it feeds both the evolve and the reflect
+    // ask. The hook never talks to a server (decision D20).
+    let backlogs = match (&sources, decision) {
+        (Some(set), StopDecision::Nudge) => remote_backlogs(set),
+        _ => RemoteBacklogs::default(),
+    };
     // The ride-along: only a call that already earned the capture nudge ever
     // asks, so the maintenance throttle can never be the reason this handler
     // breaks its silence. The state it asks about is narrowed to the domains
@@ -691,10 +807,7 @@ pub fn run_stop(harness: Option<&str>) {
         };
         // Every server's backlog joins this machine's (decision D4); the
         // cooldown and the weekly clock stay this machine's.
-        let visible = match &sources {
-            Some(set) => visible.with_remote_pending(&remote_pending(set)),
-            None => visible,
-        };
+        let visible = visible.with_remote_pending(&backlogs.pending);
         evolve_ask(&visible, now)
     } else {
         None
@@ -731,10 +844,40 @@ pub fn run_stop(harness: Option<&str>) {
         _ => None,
     };
 
+    // The third ride-along, the same rule: only a call that earned the capture
+    // nudge asks. This machine's counts are what its daemon recorded,
+    // narrowed to the domains still registered here and not hidden behind a
+    // source; a mounted domain's are its server's, already narrowed to the
+    // Reflections the account curates. Both by local name (a mounted name
+    // never collides with a registered one, decision D13), and the cooldown
+    // is this machine's (decision D4).
+    let reflect = match decision {
+        StopDecision::Nudge if reflect_ask(&maintenance_state, now) => {
+            let mut counts = registered_counts(
+                &maintenance_state.reflect_open,
+                loaded
+                    .effective
+                    .domains
+                    .keys()
+                    .map(String::as_str)
+                    .filter(|d| !shadowed.contains(*d)),
+            );
+            counts.extend(backlogs.reflect_open.clone());
+            reflect_line(&session_counts(&counts, &session_domains(&state)))
+        }
+        _ => None,
+    };
+    if reflect.is_some() {
+        maintenance::record_reflect_nudge(now);
+    }
+
     sweep_stale_state();
 
     if decision == StopDecision::Nudge {
-        let payload = stop_payload(harness, &nudge_reason(evolve.as_deref(), share.as_deref()));
+        let payload = stop_payload(
+            harness,
+            &nudge_reason(evolve.as_deref(), share.as_deref(), reflect.as_deref()),
+        );
         if let Ok(line) = serde_json::to_string(&payload) {
             println!("{line}");
         }
@@ -1545,7 +1688,11 @@ mod tests {
 
     #[test]
     fn the_reason_names_the_focus_domains() {
-        let focused = nudge_reason(Some(&["playground".to_string(), "ops".to_string()]), None);
+        let focused = nudge_reason(
+            Some(&["playground".to_string(), "ops".to_string()]),
+            None,
+            None,
+        );
         assert!(
             focused.starts_with(NUDGE_REASON),
             "the capture nudge stays first and whole: {focused}"
@@ -1556,7 +1703,7 @@ mod tests {
             "the pending domains are named: {focused}"
         );
 
-        let weekly_only = nudge_reason(Some(&[]), None);
+        let weekly_only = nudge_reason(Some(&[]), None, None);
         assert!(weekly_only.contains(EVOLVE_NUDGE_REASON));
         assert!(
             !weekly_only.contains("Focus domains"),
@@ -1564,7 +1711,7 @@ mod tests {
         );
 
         assert_eq!(
-            nudge_reason(None, None),
+            nudge_reason(None, None, None),
             NUDGE_REASON,
             "no ask means the capture nudge alone, byte for byte"
         );
@@ -1640,7 +1787,7 @@ mod tests {
     fn the_reason_carries_the_share_line_beside_the_other_two() {
         let line = share_line(2, &["eng".to_string()]).unwrap();
 
-        let share_only = nudge_reason(None, Some(&line));
+        let share_only = nudge_reason(None, Some(&line), None);
         assert!(
             share_only.starts_with(NUDGE_REASON),
             "the capture nudge still comes first: {share_only}"
@@ -1651,7 +1798,7 @@ mod tests {
         );
         assert!(share_only.ends_with(&line), "{share_only}");
 
-        let both = nudge_reason(Some(&["ops".to_string()]), Some(&line));
+        let both = nudge_reason(Some(&["ops".to_string()]), Some(&line), None);
         assert!(both.contains(EVOLVE_NUDGE_REASON), "{both}");
         assert!(
             both.find(EVOLVE_NUDGE_REASON) < both.find(&line),
@@ -1659,7 +1806,7 @@ mod tests {
         );
 
         assert!(
-            !nudge_reason(None, None).contains("not yet shared"),
+            !nudge_reason(None, None, None).contains("not yet shared"),
             "a session with nothing unshared says nothing about sharing"
         );
     }
@@ -1802,7 +1949,10 @@ mod tests {
             ),
             (
                 crystalline_remote::HOOK_STATUS_FILE,
-                serde_json::json!({ "evolve": { "pending_domains": ["jordi", "unmounted"] } }),
+                serde_json::json!({
+                    "evolve": { "pending_domains": ["jordi", "unmounted"] },
+                    "reflect": { "domains": { "jordi": 2, "unmounted": 5 } },
+                }),
             ),
         ] {
             crystalline_remote::write_cached(
@@ -1820,10 +1970,75 @@ mod tests {
         }
         let set =
             crystalline_remote::SourceSet::load(dir.path().to_path_buf(), Vec::new(), |_| None);
+        let backlogs = remote_backlogs(&set);
+        assert_eq!(backlogs.pending, vec!["jordi-acme".to_string()]);
         assert_eq!(
-            remote_pending(&set),
-            vec!["jordi-acme".to_string()],
-            "a domain this machine does not mount is not named"
+            backlogs.reflect_open,
+            BTreeMap::from([("jordi-acme".to_string(), 2u64)]),
+            "the server's counts by their local names; a domain this machine does not mount is not named"
+        );
+    }
+    #[test]
+    fn the_reflect_paragraph_rides_last_and_waits_out_its_cooldown() {
+        let line = reflect_line(&[("eng".to_string(), 3)]).unwrap();
+        assert!(
+            line.starts_with("Also open: the Reflection of eng has 3 items waiting."),
+            "{line}"
+        );
+        assert!(reflect_line(&[]).is_none());
+        let two = reflect_line(&[("eng".to_string(), 1), ("ops".to_string(), 2)]).unwrap();
+        assert!(
+            two.starts_with("Also open: the Reflections of 2 domains have 3 items waiting."),
+            "{two}"
+        );
+        let reason = nudge_reason(Some(&[]), Some("SHARE"), Some(&line));
+        let share = reason.find("SHARE").unwrap();
+        let reflect = reason.find("Also open").unwrap();
+        assert!(share < reflect, "share, then reflect");
+
+        let mut m = MaintenanceState::default();
+        assert!(reflect_ask(&m, now()), "no stamp, due");
+        m.last_reflect_nudge_at = Some(hours_ago(2));
+        assert!(!reflect_ask(&m, now()), "inside the day");
+        m.last_reflect_nudge_at = Some(hours_ago(25));
+        assert!(reflect_ask(&m, now()));
+    }
+
+    #[test]
+    fn the_session_domains_come_from_what_was_recalled() {
+        let mut state = SessionState::fresh();
+        state.recalled = vec![
+            "crystalline://eng/runbooks/deploy".into(),
+            "crystalline://ops/x".into(),
+            "crystalline://eng/y".into(),
+        ];
+        assert_eq!(
+            session_domains(&state),
+            vec!["eng".to_string(), "ops".to_string()]
+        );
+        assert!(session_domains(&SessionState::fresh()).is_empty());
+    }
+
+    #[test]
+    fn the_reflect_counts_narrow_to_the_registry_and_the_session() {
+        let recorded = BTreeMap::from([
+            ("eng".to_string(), 3u64),
+            ("ops".to_string(), 1),
+            ("gone".to_string(), 4),
+        ]);
+        let registered = registered_counts(&recorded, ["eng", "ops"].into_iter());
+        assert!(
+            !registered.contains_key("gone"),
+            "a domain no longer registered is never named"
+        );
+        assert_eq!(
+            session_counts(&registered, &["eng".to_string()]),
+            vec![("eng".to_string(), 3)]
+        );
+        assert_eq!(
+            session_counts(&registered, &[]),
+            vec![("eng".to_string(), 3), ("ops".to_string(), 1)],
+            "a session that recalled nothing hears about every domain"
         );
     }
 }

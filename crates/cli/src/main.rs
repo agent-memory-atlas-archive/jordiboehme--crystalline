@@ -5167,6 +5167,16 @@ fn run_prompt(
             domain.read_only = true;
         }
     }
+    // A local Reflection with open items is named on its routing line, from
+    // the counts this machine's daemon recorded: one small file read, no
+    // socket. Before the mounted rows join, so the record only ever touches
+    // this machine's own rows (a mounted row carries its server's count). An
+    // explicit --config or --db names a registry the daemon did not count
+    // (and bypasses the mounted part too).
+    if config_path.is_none() && db.is_none() {
+        let counts = crystalline_service::maintenance::load().reflect_open;
+        crystalline_core::prompt::annotate_reflection(&mut output, &counts);
+    }
     // After the local rows, never sorted in among them (ruling F1): with
     // nothing mounted the block is byte-identical to one without sources.
     // `prompt.rules` names a lent domain by its local name like any other,
@@ -5280,11 +5290,13 @@ fn mounted_routing_request(cfg: &crystalline_core::config::GlobalConfig) -> serd
 /// [`crystalline_remote::ROUTING_BULLET_CHARS`], at most
 /// [`crystalline_remote::ROUTING_BULLETS_MAX`]); a name that could break the
 /// line is no row. `read_only` is the server's `domain_read_only` for this
-/// account; it only labels the row.
+/// account; it only labels the row. `reflect_open` is the server's count of
+/// open reflect items in a Reflection the account curates there.
 fn mounted_row(
     name: &str,
     bullets: &[String],
     read_only: bool,
+    reflect_open: u64,
 ) -> Option<crystalline_core::PromptDomain> {
     if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return None;
@@ -5294,6 +5306,7 @@ fn mounted_row(
         bullets: crystalline_remote::routing_bullets(bullets),
         preferred: false,
         read_only,
+        reflect_open,
     })
 }
 
@@ -5320,6 +5333,7 @@ fn mounted_rows_of(answer: &serde_json::Value) -> Vec<crystalline_core::PromptDo
                 d["name"].as_str()?,
                 &json_strings(&d["bullets"]),
                 d["domain_read_only"].as_bool().unwrap_or(false),
+                d["reflect_open"].as_u64().unwrap_or(0),
             )
         })
         .collect()
@@ -5393,7 +5407,7 @@ fn mounted_part(
         let rows = routing
             .domains
             .iter()
-            .filter_map(|m| mounted_row(&m.local, &m.bullets, m.domain_read_only))
+            .filter_map(|m| mounted_row(&m.local, &m.bullets, m.domain_read_only, m.reflect_open))
             .collect();
         (set.shadowed(), rows, routing.stale)
     };
@@ -5651,6 +5665,7 @@ mod tests {
                 " \n ".to_string(),
             ],
             false,
+            0,
         )
         .unwrap();
         assert_eq!(row.bullets.len(), 2);
@@ -5659,14 +5674,14 @@ mod tests {
             row.bullets[1].chars().count(),
             crystalline_remote::ROUTING_BULLET_CHARS + 4
         );
-        assert!(mounted_row("open\nBehavior:", &[], false).is_none());
+        assert!(mounted_row("open\nBehavior:", &[], false, 0).is_none());
         let many: Vec<String> = (0..50).map(|i| format!("b{i}")).collect();
         assert_eq!(
-            mounted_row("open", &many, false).unwrap().bullets.len(),
+            mounted_row("open", &many, false, 0).unwrap().bullets.len(),
             crystalline_remote::ROUTING_BULLETS_MAX
         );
-        assert!(mounted_row("open", &[], true).unwrap().read_only);
-        assert!(!mounted_row("open", &[], false).unwrap().read_only);
+        assert!(mounted_row("open", &[], true, 0).unwrap().read_only);
+        assert!(!mounted_row("open", &[], false, 0).unwrap().read_only);
     }
 
     /// Review M5: the stale array is added after the last field, and every
