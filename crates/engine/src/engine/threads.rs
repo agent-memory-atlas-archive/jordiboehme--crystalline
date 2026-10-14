@@ -237,8 +237,8 @@ impl Engine {
                 // A heading a plain editor added has no id yet. A comment
                 // never rewrites the page (a reader may open a thread, and a
                 // rewrite would make a person's open editor stale), so the
-                // thread anchors on the heading instead; it keeps resolving
-                // by heading once a later write gives the section its id.
+                // thread anchors on the heading instead; the write that
+                // later gives the section its id moves the thread onto it.
                 let section_ref = match &section.id {
                     Some(id) => SectionRef::Id(id.clone()),
                     None => SectionRef::Heading(section.heading.clone()),

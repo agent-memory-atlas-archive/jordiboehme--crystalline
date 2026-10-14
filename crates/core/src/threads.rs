@@ -509,6 +509,74 @@ fn with_status(yaml: &str, meta: &Meta, status: ThreadStatus) -> Option<String> 
     })
 }
 
+/// `file` with every thread anchored by heading re-anchored on the section
+/// id `section_id` answers for that heading, so a later rename of the
+/// heading keeps the thread on its section. The only bytes that change are
+/// the `heading:` line of each such thread's yaml block, which becomes a
+/// `section:` line. A thread whose heading answers no id, or whose block
+/// has no `heading:` line of its own to rewrite (a flow-style block, a
+/// heading spread over several lines), stays as it is: it keeps resolving
+/// by heading. `None` when no thread changed. The file comes back as LF.
+pub fn anchor_headings_on_ids(
+    file: &str,
+    section_id: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let file = crate::to_lf(file).into_owned();
+    let mut rewrites: Vec<(usize, usize, String)> = Vec::new();
+    for span in thread_spans(&file) {
+        let Some((_, meta)) = read_thread(&file, &span) else {
+            continue;
+        };
+        let (None, Some(heading)) = (&meta.section, &meta.heading) else {
+            continue;
+        };
+        let Some(id) = section_id(heading) else {
+            continue;
+        };
+        let Some((start, end, _)) = yaml_block(&file[span.body..span.end]) else {
+            continue;
+        };
+        let (start, end) = (span.body + start, span.body + end);
+        if let Some(yaml) = with_section(&file[start..end], &meta, &id) {
+            rewrites.push((start, end, yaml));
+        }
+    }
+    if rewrites.is_empty() {
+        return None;
+    }
+    let mut out = file;
+    // Back to front, so each range is still where it was found.
+    for (start, end, yaml) in rewrites.into_iter().rev() {
+        out.replace_range(start..end, &yaml);
+    }
+    Some(out)
+}
+
+/// `yaml` (a thread's block, read as `meta`, anchored by heading) anchored
+/// on section `id` instead: its `heading:` line becomes `section: <id>`,
+/// taken only where the rewrite reads back as the same block with the
+/// anchor alone changed (a quoted passage may hold a line that starts with
+/// the same word). `None` when no line qualifies.
+fn with_section(yaml: &str, meta: &Meta, id: &str) -> Option<String> {
+    let lines: Vec<&str> = yaml.split_inclusive('\n').collect();
+    let wanted = Meta {
+        section: Some(id.to_string()),
+        heading: None,
+        ..meta.clone()
+    };
+    lines.iter().enumerate().find_map(|(i, line)| {
+        line.strip_prefix("heading:")?;
+        let newline = if line.ends_with('\n') { "\n" } else { "" };
+        let rewritten = format!(
+            "{}section: {id}{newline}{}",
+            lines[..i].concat(),
+            lines[i + 1..].concat()
+        );
+        let read = serde_yaml_ng::from_str::<Meta>(&rewritten).ok()?;
+        (read == wanted).then_some(rewritten)
+    })
+}
+
 /// Where an anchor stands in its document now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnchorState {
@@ -966,6 +1034,61 @@ mod tests {
             resolve_anchor(&whole, &lookup),
             AnchorState::Found { .. }
         ));
+    }
+
+    /// A thread anchored by heading moves onto the section's id once the
+    /// section has one: only its `heading:` line changes. A heading that
+    /// answers no id, and a block whose heading spans lines, stay as they
+    /// are, so no thread is lost.
+    #[test]
+    fn a_heading_anchor_moves_onto_the_section_id_and_nothing_else_changes() {
+        let by_heading = |id: &str, heading: &str| Thread {
+            id: id.into(),
+            anchor: Anchor {
+                section: SectionRef::Heading(heading.into()),
+                quote: Some("Deploys run at night".into()),
+                occurrence: 1,
+            },
+            ..thread(None, 1)
+        };
+        let mut file = open_thread("", &by_heading("t-0000aaaa", "Night deploys"));
+        file = open_thread(&file, &thread(None, 1));
+        file = open_thread(&file, &by_heading("t-0000bbbb", "Gone"));
+        file.push_str("\n## t-0000cccc\n\n```yaml\nheading: >-\n  Night\n  deploys\nstatus: open\n```\n\n- 2026-09-30T10:00:00Z, comment by jordi (person): Hi\n");
+        let ids = |heading: &str| (heading == "Night deploys").then(|| "7f3a9c2e".to_string());
+        let moved = anchor_headings_on_ids(&file, &ids).expect("one thread moved");
+        let threads = parse_threads(&moved);
+        assert_eq!(threads.len(), 4, "{moved}");
+        assert_eq!(
+            threads[0].anchor,
+            Anchor {
+                section: SectionRef::Id("7f3a9c2e".into()),
+                quote: Some("Deploys run at night".into()),
+                occurrence: 1,
+            }
+        );
+        assert_eq!(threads[0].entries, by_heading("t-0000aaaa", "x").entries);
+        assert_eq!(threads[1], thread(None, 1), "an id anchor stays");
+        assert_eq!(
+            threads[2],
+            by_heading("t-0000bbbb", "Gone"),
+            "no id, no move"
+        );
+        assert_eq!(
+            threads[3].anchor.section,
+            SectionRef::Heading("Night deploys".into()),
+            "a heading over two lines is left by heading"
+        );
+        assert_eq!(
+            moved.replacen("section: 7f3a9c2e\n", "heading: Night deploys\n", 1),
+            file,
+            "only the heading line changed"
+        );
+        assert_eq!(
+            anchor_headings_on_ids(&moved, &ids),
+            None,
+            "a second pass changes nothing"
+        );
     }
 
     #[test]

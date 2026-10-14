@@ -705,6 +705,39 @@ pub(super) fn compose_reflection(
     Ok((text, minted, prov))
 }
 
+/// Move every thread of a page that is anchored by heading onto the id its
+/// heading carries in `page`, the text just written, so a later rename of
+/// the heading keeps the thread on its section. Runs under the page lock,
+/// after the page is on disk: a failure here leaves the thread anchored by
+/// heading, which still resolves, so it is logged and the write stands. A
+/// heading the page no longer holds answers no id, and its thread stays as
+/// it is.
+fn anchor_threads_on_ids(threads_abs: &Path, page: &str) {
+    let file = match read_opt(threads_abs) {
+        Ok(Some(file)) => file,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!("could not read {}: {e}", threads_abs.display());
+            return;
+        }
+    };
+    let sections = r::split_sections(page);
+    let id_of = |heading: &str| {
+        r::find_section(&sections, heading)
+            .filter(|s| !s.heading.is_empty())
+            .and_then(|s| s.id.clone())
+    };
+    let Some(moved) = crystalline_core::threads::anchor_headings_on_ids(&file, &id_of) else {
+        return;
+    };
+    if let Err(e) = write_file(threads_abs, &moved) {
+        tracing::warn!(
+            "could not anchor the threads in {} on section ids: {e}",
+            threads_abs.display()
+        );
+    }
+}
+
 /// `text` with `prov` as its bookkeeping block, as LF, and each of `ids`
 /// still on the page stamped `reflected` with the hash of its section in
 /// that stored text. The top's text starts after the frontmatter the block
@@ -1072,6 +1105,7 @@ impl Engine {
                 &r::advance_baseline(&baseline, &final_text, &advanced),
             )?;
         }
+        anchor_threads_on_ids(&access.abs(&r::threads_path(&p.path)), &final_text);
         self.index_reflection(access.domain_id, &p.path, &final_text, &abs)
             .await?;
         self.mark_reflection_dirty(&p.domain, BackupCause::Settled);
@@ -1252,6 +1286,7 @@ impl Engine {
         let wrote = current.as_deref() != Some(final_text.as_str());
         if wrote {
             write_file(&abs, &final_text)?;
+            anchor_threads_on_ids(&reflection_abs(&root, &r::threads_path(inner)), &final_text);
             let (domain_id, _) = self.domain_source(domain).await?;
             self.index_reflection(domain_id, inner, &final_text, &abs)
                 .await?;

@@ -129,7 +129,7 @@ async fn an_anonymous_visitor_reads_threads_and_cannot_comment() {
 
 /// A reader opens a thread on a heading a plain editor added: the page is
 /// not rewritten (its bytes and checksum stay), the thread anchors on the
-/// heading and keeps resolving once a later write gives the section its id.
+/// heading and moves onto the id a later write gives the section.
 #[tokio::test]
 async fn a_thread_on_a_heading_without_an_id_leaves_the_page_alone() {
     let (fx, vera) = viewer_engine(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;
@@ -199,8 +199,148 @@ async fn a_thread_on_a_heading_without_an_id_leaves_the_page_alone() {
         .unwrap();
     let thread = &listed["threads"][0];
     assert_eq!(thread["id"], opened["id"]);
-    assert_eq!(thread["anchor"]["section"], "Added later");
+    assert_ne!(thread["anchor"]["section"], "Added later", "{thread}");
     assert_eq!(thread["anchor"]["state"], "found");
+}
+
+/// The id a write gives a heading is the one its threads anchor on from
+/// then: the write rewrites their `heading:` anchors into ids under the page
+/// lock, so a later rename of the heading keeps each thread on its section.
+/// A write that renames an id-less heading in the same go leaves its thread
+/// anchored by the old heading, exactly as it was: it is never lost.
+#[tokio::test]
+async fn a_write_that_gives_a_heading_its_id_moves_its_threads_onto_it() {
+    let fx = crate::docs::reflecting().await;
+    fx.engine
+        .write_reflection(&write("d.md", PAGE), &person())
+        .await
+        .unwrap();
+    let path = fx.root.join("reflections/d.md");
+    let threads_path = fx.root.join("reflections/d.threads.md");
+    let text = std::fs::read_to_string(&path).unwrap()
+        + "\n## Kept\n\nKept text.\n\n## Renamed\n\nRenamed text.\n";
+    std::fs::write(&path, &text).unwrap();
+    let kept = fx
+        .engine
+        .discuss(&open("Kept", Some("Kept text"), "Why?"), &person())
+        .await
+        .unwrap();
+    let renamed = fx
+        .engine
+        .discuss(&open("Renamed", None, "And this?"), &person())
+        .await
+        .unwrap();
+    // One write gives both headings their ids, and renames the second.
+    let receipt = fx
+        .engine
+        .write_reflection(
+            &write("d.md", &text.replace("## Renamed", "## Renamed now")),
+            &person(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt["ids_assigned"].as_array().unwrap().len(), 2);
+    let page = std::fs::read_to_string(&path).unwrap();
+    let id = page
+        .split("## Kept\n<!-- r:")
+        .nth(1)
+        .and_then(|rest| rest.split(" -->").next())
+        .expect("Kept has its id")
+        .to_string();
+    let threads = std::fs::read_to_string(&threads_path).unwrap();
+    assert!(threads.contains(&format!("section: {id}\n")), "{threads}");
+    assert!(threads.contains("heading: Renamed\n"), "{threads}");
+
+    // A rename of the heading now keeps the thread on its section.
+    let page = page.replace("## Kept\n", "## Kept for good\n");
+    fx.engine
+        .write_reflection(&write("d.md", &page), &person())
+        .await
+        .unwrap();
+    let listed = fx
+        .engine
+        .list_reflection_threads("eng", Some("d.md"), "open", &person())
+        .await
+        .unwrap();
+    let by_id = |want: &serde_json::Value| {
+        listed["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == *want)
+            .cloned()
+            .expect("the thread is listed")
+    };
+    let thread = by_id(&kept["id"]);
+    assert_eq!(thread["anchor"]["section"], id.as_str());
+    assert_eq!(thread["anchor"]["state"], "found", "{thread}");
+    let thread = by_id(&renamed["id"]);
+    assert_eq!(thread["anchor"]["section"], "Renamed");
+    assert_eq!(thread["anchor"]["state"], "section_gone", "{thread}");
+}
+
+/// A room's closing save gives a heading typed in the room its id, and the
+/// thread opened on that heading moves onto it, like a write.
+#[tokio::test]
+async fn a_rooms_closing_save_moves_a_heading_thread_onto_the_new_id() {
+    let fx = crate::docs::reflecting().await;
+    fx.engine
+        .write_reflection(&write("d.md", PAGE), &person())
+        .await
+        .unwrap();
+    let path = fx.root.join("reflections/d.md");
+    let stored = std::fs::read_to_string(&path).unwrap();
+    let typed = stored.clone() + "\n## Typed in the room\n\nRoom text.\n";
+    let saved = fx
+        .engine
+        .save_reflection_room(
+            "eng",
+            "d.md",
+            &typed,
+            &crate::support::sha256_hex(stored.as_bytes()),
+            &["jordi".to_string()],
+            false,
+        )
+        .await
+        .unwrap();
+    let opened = fx
+        .engine
+        .discuss(&open("Typed in the room", None, "New?"), &person())
+        .await
+        .unwrap();
+    assert_eq!(opened["anchor"]["section"], "Typed in the room");
+    let current = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        saved["checksum"],
+        crate::support::sha256_hex(current.as_bytes())
+    );
+    fx.engine
+        .save_reflection_room(
+            "eng",
+            "d.md",
+            &current,
+            &crate::support::sha256_hex(current.as_bytes()),
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+    let page = std::fs::read_to_string(&path).unwrap();
+    assert!(page.contains("## Typed in the room\n<!-- r:"), "{page}");
+    let threads = std::fs::read_to_string(fx.root.join("reflections/d.threads.md")).unwrap();
+    assert!(!threads.contains("heading:"), "{threads}");
+    let renamed = page.replace("## Typed in the room\n", "## Typed and renamed\n");
+    fx.engine
+        .write_reflection(&write("d.md", &renamed), &person())
+        .await
+        .unwrap();
+    let listed = fx
+        .engine
+        .list_reflection_threads("eng", Some("d.md"), "open", &person())
+        .await
+        .unwrap();
+    assert_eq!(listed["threads"][0]["id"], opened["id"]);
+    assert_eq!(listed["threads"][0]["anchor"]["state"], "found", "{listed}");
 }
 
 /// An empty quote discusses the whole section and is not stored.
