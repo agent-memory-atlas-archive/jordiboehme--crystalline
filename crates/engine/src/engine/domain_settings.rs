@@ -202,6 +202,16 @@ impl Engine {
         let refill =
             already_on && self.reflection_state(domain).await? == ReflectionState::Homeless;
         let switching_on = wants_on && (refill || !already_on);
+        // A switch-off of a Reflection that is on: on a domain shared
+        // through GitHub, its folder turns into engram content then.
+        let switching_off = edits.iter().any(|edit| match edit {
+            PolicyEdit::Set { key, value } => {
+                key == crystalline_core::REFLECTION_KEY
+                    && value == crystalline_core::ReflectionSwitch::Off.as_str()
+            }
+            PolicyEdit::Unset { key } => key == crystalline_core::REFLECTION_KEY,
+        }) && self.reflection_switch(domain)
+            == crystalline_core::ReflectionSwitch::On;
         if switching_on {
             let facts = self.switch_facts(domain).await?;
             // Before the MANIFEST is read: a virtual domain has none on disk
@@ -266,13 +276,22 @@ impl Engine {
                     })?
             }
         };
-        Ok(json!({
+        let mut receipt = json!({
             "domain": domain,
             "markdown": markdown,
             "draft": overlay.is_some(),
-        }))
+        });
+        // Said only where it is true: the switch is off in the folder (not a
+        // draft) of a domain with a GitHub origin.
+        if switching_off && overlay.is_none() && self.domain_has_origin(domain)? {
+            receipt["note"] = json!(SWITCH_OFF_SHARED_NOTE);
+        }
+        Ok(receipt)
     }
 }
+
+/// What a switch-off of a Reflection on a domain shared through GitHub says.
+const SWITCH_OFF_SHARED_NOTE: &str = "Reflection is off now, so \"share changes\" offers the files in reflections/ as engram changes. Do not share changes while it is off. To move the Reflection's home, switch it on again here at once and share the MANIFEST change.";
 
 /// The line an answer carries when the YAML edit lost comments.
 const YAML_COMMENTS_DROPPED: &str =
@@ -535,8 +554,15 @@ impl Engine {
         if draft {
             view["draft"] = json!(true);
         }
-        if let Some(note) = note {
-            view["note"] = json!(note);
+        // The switch-off note first, then the YAML one, in one line.
+        let notes: Vec<&str> = written
+            .as_ref()
+            .and_then(|written| written["note"].as_str())
+            .into_iter()
+            .chain(note)
+            .collect();
+        if !notes.is_empty() {
+            view["note"] = json!(notes.join(" "));
         }
         Ok(view)
     }

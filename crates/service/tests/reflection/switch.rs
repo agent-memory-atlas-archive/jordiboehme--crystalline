@@ -627,3 +627,67 @@ async fn a_pact_that_cannot_be_seeded_leaves_the_switch_off_for_a_retry() {
         crystalline_core::ReflectionSwitch::On
     );
 }
+
+/// A switch-off says what it means for sharing on a domain connected to
+/// GitHub, on the policy PATCH and on configure alike, and only there: a
+/// switch-off of a local domain, or of one already off, says nothing.
+#[tokio::test]
+async fn a_switch_off_of_a_team_domain_says_not_to_share_while_it_is_off() {
+    let fx = fixture_with(&[], |cfg, _| {
+        with_origin(cfg, Some("https://kb.example.com"))
+    })
+    .await;
+    let off = vec![("reflection".to_string(), "off".to_string())];
+    fx.engine
+        .set_manifest_policies("eng", &on(), &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let receipt = fx
+        .engine
+        .set_manifest_policies("eng", &off, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let note = receipt["note"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("\"share changes\" offers the files in reflections/")
+            && note.contains("Do not share changes while it is off"),
+        "{receipt}"
+    );
+    let again = fx
+        .engine
+        .set_manifest_policies("eng", &off, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert!(again.get("note").is_none(), "already off: {again}");
+
+    // configure, removing the key.
+    fx.engine
+        .set_manifest_policies("eng", &on(), &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let view = fx
+        .engine
+        .change_domain_settings(
+            "eng",
+            &Default::default(),
+            &["reflection".to_string()],
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert!(
+        view["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("Do not share changes while it is off")),
+        "{view}"
+    );
+
+    // A local domain: no origin, nothing to share, no note.
+    let fx = fixture(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;
+    let receipt = fx
+        .engine
+        .set_manifest_policies("eng", &off, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert!(receipt.get("note").is_none(), "{receipt}");
+}

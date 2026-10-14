@@ -3910,7 +3910,7 @@ export type SetDomainPoliciesError = SetDomainPoliciesErrors[keyof SetDomainPoli
 
 export type SetDomainPoliciesResponses = {
     /**
-     * The manifest as it now reads for this caller, mirroring the GET shape, plus `draft: true` when it is the caller's draft.
+     * The manifest as it now reads for this caller, mirroring the GET shape, plus `draft: true` when it is the caller's draft, and a `note` when the change switched the Reflection off on a domain connected to GitHub: "share changes" then offers the files in `reflections/` as engram changes.
      */
     200: ManifestResponse;
 };

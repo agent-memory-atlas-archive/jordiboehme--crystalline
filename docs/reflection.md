@@ -14,6 +14,8 @@ A reflection is not an engram. It needs no frontmatter, `search_engrams` never r
 
 Set the MANIFEST key `reflection: on`. Do it in the domain policies card in Fluid, with `PATCH /api/v1/domains/{domain}/manifest`, or ask your agent (the `configure` tool with `domain`). Switching it on writes a first `reflections/PACT.md` with the three headings to fill in. Switching it off again is always allowed, and the files stay where they are.
 
+On a domain connected to GitHub, switching it off has one more effect. The folder `reflections/` is then ordinary engram content, so "share changes" offers its pages, their threads and `PACT.md`. Threads can hold comments from people who may not see engrams. So do not share changes while the switch is off. Once these files are in the team's copy, switching on again is refused until the team's copy no longer holds them. The answer to the switch-off says this too.
+
 Switching it on is refused in these cases, and the refusal says why:
 
 - Engrams already live in `reflections/`. The refusal names them. Move them to another folder first (`move_engram`), then switch it on.
@@ -40,7 +42,7 @@ The agent reads the pact before it writes. A page that fits none of the `## Stru
 
 Every `##` heading of a reflection gets a hidden id on the next line, for example `<!-- r:7f3a9c2e -->`. The id ties a section to its threads and to the engrams it was built from, so a section keeps them when its heading changes. Leave the line alone. A heading added in another editor gets its id on the next write through Crystalline.
 
-The id lines also mark a file as a page. Give every page at least one `##` heading, and put an id line under it. A page written through Crystalline gets its id lines, but only under `##` headings, so a page without one has none. For an id you write by hand, use 4 to 16 lowercase hex digits that start with a letter, for example `<!-- r:c3d4e5f6 -->` (an id like `1234e567` can be read as a number). A file with no id line reads as an engram when Crystalline looks at the folder from scratch: when Reflection is switched on, after a rebuild such as `crystalline reindex --full`, and on the first sync of a new machine. The Reflection then waits until the file is moved out or marked.
+The id lines also mark a file as a page. Give every page at least one `##` heading, and put an id line under it. A page written through Crystalline gets its id lines, but only under `##` headings, so a page without one has none. For an id you write by hand, use 4 to 16 lowercase hex digits that start with a letter, for example `<!-- r:c3d4e5f6 -->` (an id like `1234e567` can be read as a number). A file with no id line, no `reflection:` block in its frontmatter and no copy in the hidden folder `.reflected/` reads as an engram when Crystalline looks at the folder from scratch: when Reflection is switched on, after a rebuild such as `crystalline reindex --full`, and on the first sync of a new machine. The Reflection then waits until the file is moved out or marked.
 
 The frontmatter block `reflection:` is Crystalline's own. For each section it records the engrams the section was built from (with their checksum at that time), a hash of the text at the last reflect, and who changed the text since then. A person who cannot read the engrams gets the page without this block, so engram names stay hidden from them. Do not edit the block by hand.
 
@@ -72,6 +74,7 @@ Access has two axes. They are set side by side: per account for every shared dom
 - A member of a private domain at knowledge `none` needs a Reflection level; without one the membership grants nothing and is refused.
 - An account whose write list leaves a domain out at most reads and comments there, whatever its levels say. The list never grants access.
 - An anonymous visitor reads a public domain's Reflection and never comments.
+- A version before 0.26.0 does not know the knowledge level `none` and reads it as `viewer`. So before you go back to an older version, give those accounts and members a level that is right for the older version.
 
 The commands:
 
@@ -156,7 +159,7 @@ The home backs the whole `reflections/` folder up to the branch `crystalline/ref
 
 The branch starts empty and never carries an engram. "Share changes" never offers a file under `reflections/`. A change marked while the daemon restarts is committed with the next one. A failed backup is tried again later, with a growing wait up to one hour.
 
-To move the home to a new `service.public_url` or to another server, copy the `reflections/` folder there first (the restore steps below work for that too). Then switch Reflection off and on again at the new home. That fills in `reflection_home` again.
+To move the home to a new `service.public_url` or to another server, copy the `reflections/` folder there first (the restore steps below work for that too). Then switch Reflection off and on again at the new home, in one go. That fills in `reflection_home` again. Do not share changes between the two steps: while the switch is off, "share changes" offers the files in `reflections/` as engram changes. Share the MANIFEST change at once after the switch-on. Until the old home pulls it, both instances act as the home and back up to the same branch. The old home stops when it pulls the change.
 
 ## Restore from the backup
 

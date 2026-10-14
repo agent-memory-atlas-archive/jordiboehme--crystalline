@@ -988,6 +988,43 @@ async fn a_homeless_reflection_answers_409() {
     assert!(err.get("home_url").is_none(), "{err}");
 }
 
+/// A switch-off on a domain connected to GitHub says in the PATCH answer
+/// what it means for sharing; a PATCH that switches nothing off says nothing.
+#[tokio::test]
+async fn a_switch_off_on_a_team_domain_answers_with_the_sharing_note() {
+    let s = serve_opts(Opts {
+        anonymous: false,
+        private: true,
+        origin: true,
+    })
+    .await;
+    let keeper = Session::login(s.addr, "keeper").await;
+    let off = || Some(json!({ "reflection": "off" }));
+    let (status, body) = keeper
+        .send(
+            reqwest::Method::PATCH,
+            "/api/v1/domains/eng/manifest",
+            off(),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("\"share changes\" offers the files in reflections/")),
+        "{body}"
+    );
+    let (status, body) = keeper
+        .send(
+            reqwest::Method::PATCH,
+            "/api/v1/domains/eng/manifest",
+            off(),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.get("note").is_none(), "already off: {body}");
+}
+
 /// The two handler-side refusals: an action the route does not know, and a
 /// search with nothing to find.
 #[tokio::test]
