@@ -467,6 +467,21 @@ impl Engine {
         let (rel, created) = match self.content_source(domain)? {
             ContentSource::File { root } => {
                 let path = root.join("MANIFEST.md");
+                // A MANIFEST that switches the Reflection off closes its rooms
+                // first, while it is still on, and before the write lock below:
+                // the close takes the co-editing registry, which is never taken
+                // under a file's write lock. Only for a save that should land:
+                // the token is read here once ahead of the guarded compare, so
+                // a stale save closes nobody's room.
+                let fresh = sha256_hex(
+                    std::fs::read_to_string(&path)
+                        .unwrap_or_default()
+                        .as_bytes(),
+                ) == expected_checksum;
+                if fresh {
+                    self.close_reflection_rooms_if_switching_off(domain, Some(markdown))
+                        .await;
+                }
                 // The same compare-then-write section `save_engram` holds, for
                 // the same reason: two saves of one MANIFEST must not both find
                 // their token fresh. See `Engine::write_lock`.
@@ -492,12 +507,6 @@ impl Engine {
                         &found,
                     )));
                 }
-                // The last refusal is behind us: a MANIFEST that switches the
-                // Reflection off closes its rooms first, while it is still on.
-                // Safe under this lock: a reflection room's save never takes
-                // the MANIFEST's write lock.
-                self.close_reflection_rooms_if_switching_off(domain, Some(markdown))
-                    .await;
                 write_file(&path, markdown)?;
                 let store = self.store.lock().await;
                 let domain_id = store

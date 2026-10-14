@@ -61,9 +61,6 @@ pub const MAX_PARTICIPANTS: usize = 16;
 /// Fan-out queue depth per connection; a receiver this far behind is closed
 /// by the socket loop and reconnects rather than silently losing frames.
 const BROADCAST_CAPACITY: usize = 256;
-/// How long [`CollabSessions::close_docs`] waits for the registry before it
-/// gives up and closes nothing; see `sweep_domain`.
-const CLOSE_DOCS_REGISTRY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// How long a pause in typing lands the save after.
 pub const SAVE_DEBOUNCE_MS: u64 = 2_000;
 /// The longest continuous typing goes without a save landing.
@@ -590,29 +587,7 @@ impl CollabSessions {
         reason: &str,
     ) -> usize {
         let victims: Vec<Arc<CollabSession>> = {
-            let mut sessions = match kind {
-                None => self.sessions.lock().await,
-                // `close_docs` can be reached from inside a room's own save (a
-                // MANIFEST room whose text switches the Reflection off), which
-                // holds that room's guard. A join or a disposal holds the
-                // registry and waits for a room's guard, so waiting here for
-                // ever could deadlock against one of them. It waits a bounded
-                // time instead; a room it cannot close keeps its text through
-                // the refused last save (`keep_refused_text`).
-                Some(_) => {
-                    match tokio::time::timeout(CLOSE_DOCS_REGISTRY_WAIT, self.sessions.lock()).await
-                    {
-                        Ok(sessions) => sessions,
-                        Err(_) => {
-                            tracing::warn!(
-                                domain,
-                                "the co-editing registry stayed busy, so no room was closed before the switch"
-                            );
-                            return 0;
-                        }
-                    }
-                }
-            };
+            let mut sessions = self.sessions.lock().await;
             // The DOMAIN component alone, whatever document each room is a
             // room over: leaving review mode ends every draft in the domain,
             // so a room over any of them is a room over nothing a moment
@@ -1760,7 +1735,47 @@ impl CollabSession {
             // the Save button always retries at once.
             return None;
         }
+        if self.switches_reflection_off_locked(&state) {
+            state = match self.close_reflection_rooms_unlocked(state).await {
+                Some(state) => state,
+                None => return None,
+            };
+        }
         self.save_locked(&mut state, now).await
+    }
+
+    /// Whether this room's text, saved now, switches its domain's Reflection
+    /// off: an engram room over the folder's own MANIFEST (never a draft)
+    /// whose text does not say on while the switch is on. Read under the
+    /// guard; takes no other lock.
+    fn switches_reflection_off_locked(&self, state: &SessionState) -> bool {
+        matches!(self.doc(), RoomDoc::Engram(_))
+            && crate::engine::is_manifest_path(&state.path)
+            && self.view().is_ok_and(|view| view.actor().is_none())
+            && self
+                .engine
+                .switches_reflection_off(&self.domain, Some(&Self::file_text_locked(state)))
+    }
+
+    /// Close the domain's reflection rooms ahead of this room's save that
+    /// switches the Reflection off, then take the guard again. The close
+    /// takes the registry, and the lock order is registry, then session, so
+    /// the guard is dropped for it: a join holds the registry while it waits
+    /// for this room's guard. `None` when the room may not save any more
+    /// once the guard is back. A close that the text no longer needs (it
+    /// changed meanwhile) costs those rooms their sockets, never their text.
+    async fn close_reflection_rooms_unlocked(
+        &self,
+        state: tokio::sync::MutexGuard<'_, SessionState>,
+    ) -> Option<tokio::sync::MutexGuard<'_, SessionState>> {
+        drop(state);
+        self.engine.close_reflection_rooms(&self.domain).await;
+        let state = self.state.lock().await;
+        if self.is_disposed() || state.closed || matches!(state.save_state, SaveStateTag::Conflict)
+        {
+            return None;
+        }
+        Some(state)
     }
 
     /// The last participant left, or the daemon is shutting the session down:
@@ -1784,6 +1799,9 @@ impl CollabSession {
         }
         if matches!(state.save_state, SaveStateTag::Conflict) {
             return None; // an unresolved conflict never saves; drafts hold the text
+        }
+        if self.switches_reflection_off_locked(&state) {
+            state = self.close_reflection_rooms_unlocked(state).await?;
         }
         // The last chance to land this text, so no retry backoff applies.
         self.final_pass.store(true, Ordering::Relaxed);
@@ -2178,6 +2196,14 @@ impl CollabSession {
                     state.permalink
                 );
                 if self.merge_external(state, theirs, detail).await {
+                    // A merged MANIFEST that switches the Reflection off is
+                    // left to the next tick, which closes the reflection rooms
+                    // with this guard dropped (see `due_save`): the guard is
+                    // held here, and the close takes the registry.
+                    if self.switches_reflection_off_locked(state) {
+                        state.flush_requested = true;
+                        return None;
+                    }
                     // A clean merge over an unedited room IS their text, so
                     // this writes nothing; a room that edited between the last
                     // save and the probe has its merged text landed instead.
@@ -2724,11 +2750,7 @@ impl CollabSession {
                             .save_engram_in_overlay(&view, &params, &pinned)
                             .await
                     }
-                    Ok(_) => {
-                        self.engine
-                            .save_engram(&params, &crate::scope::Scope::Unrestricted)
-                            .await
-                    }
+                    Ok(_) => self.engine.save_engram_from_room(&params).await,
                     Err(err) => Err(err),
                 };
                 if receipt.is_ok() {
@@ -2795,17 +2817,19 @@ impl CollabSession {
                 match view.actor() {
                     Some(_) => {
                         self.engine
-                            .restore_engram_in_view(view, &self.domain, &state.path, file, None)
+                            .restore_engram_in_view(
+                                view,
+                                &self.domain,
+                                &state.path,
+                                file,
+                                None,
+                                false,
+                            )
                             .await
                     }
                     None => {
                         self.engine
-                            .restore_engram(
-                                &self.domain,
-                                &state.path,
-                                file,
-                                &crate::scope::Scope::Unrestricted,
-                            )
+                            .restore_engram_from_room(&self.domain, &state.path, file)
                             .await
                     }
                 }

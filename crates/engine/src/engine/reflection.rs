@@ -1349,16 +1349,24 @@ impl Engine {
     /// Every Crystalline writer of a MANIFEST calls it after its last
     /// refusal and before its write, for the folder only, never for a draft:
     /// the state is still on, so each room's last save lands in its page.
+    /// It takes the co-editing registry, so a caller holds no room's guard
+    /// and no file's write lock (lock order: registry, then session).
     pub(crate) async fn close_reflection_rooms_if_switching_off(
         &self,
         domain: &str,
         after: Option<&str>,
     ) {
-        if self.reflection_switch(domain) == crystalline_core::ReflectionSwitch::On
-            && !after.is_some_and(declares_on)
-        {
+        if self.switches_reflection_off(domain, after) {
             self.close_reflection_rooms(domain).await;
         }
+    }
+
+    /// Whether landing `after` as `domain`'s MANIFEST in its folder switches
+    /// its Reflection off: it is on now, and `after` does not say on (`None`:
+    /// the MANIFEST goes away). Takes no lock.
+    pub(crate) fn switches_reflection_off(&self, domain: &str, after: Option<&str>) -> bool {
+        self.reflection_switch(domain) == crystalline_core::ReflectionSwitch::On
+            && !after.is_some_and(declares_on)
     }
 
     /// Save and close every reflection room of `domain` with `switched_off`:
@@ -1366,8 +1374,10 @@ impl Engine {
     /// [`Engine::close_reflection_rooms_if_switching_off`].
     pub(crate) async fn close_reflection_rooms(&self, domain: &str) {
         if let Some(rooms) = self.collab_rooms() {
-            // Boxed: a room's last save can be a MANIFEST save that reaches
-            // this again, so the future is recursive.
+            // Boxed because the recursion is in the types only: `close_docs`
+            // runs room saves, and a MANIFEST room's save can reach this
+            // function. At run time it never recurses: `close_docs` closes
+            // reflection rooms, whose saves never write the MANIFEST.
             Box::pin(rooms.close_docs(
                 domain,
                 crystalline_core::ContentKind::Reflection,

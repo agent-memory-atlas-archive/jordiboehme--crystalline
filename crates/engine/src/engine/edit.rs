@@ -233,11 +233,16 @@ impl Engine {
         // An edit that switches the Reflection off closes its rooms first,
         // while it is still on. The text is worked out here ahead of the
         // write, because the closure below cannot await, and the rooms close
-        // only for an edit that will land: a stale token or an edit that does
-        // not apply is refused below and closes nobody's room. A draft moves
-        // no switch.
-        if switch_before == Some(crystalline_core::ReflectionSwitch::On) && overlay.is_none() {
+        // only for an edit that should land; a later refusal costs the rooms
+        // their sockets, never their text. A draft moves no switch, and an
+        // edit into an open room over the MANIFEST lands with that room's
+        // save, which closes the rooms itself.
+        if switch_before == Some(crystalline_core::ReflectionSwitch::On)
+            && overlay.is_none()
+            && self.live_text_at(&desc, &view).await.is_none()
+        {
             let current = view.text_at(&source, &desc).await?.unwrap_or_default();
+            let current = crystalline_core::to_lf(&current).into_owned();
             let fresh = p
                 .expected_checksum
                 .as_deref()

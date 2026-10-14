@@ -2069,8 +2069,9 @@ fn no_engine_function_composes_into_a_room_under_a_file_write_lock() {
     /// Every way an engine function reaches into a room, all of which take
     /// the same session state lock the room's saver holds across the file
     /// lock: the writes (an engram's, a reflection's merge), the reads and
-    /// the disposals.
-    const ROOM_ENTRY_NEEDLES: [&str; 10] = [
+    /// the disposals, and the switch-off's close of a domain's reflection
+    /// rooms, which takes the registry and then each room's state.
+    const ROOM_ENTRY_NEEDLES: [&str; 13] = [
         ".apply_text(",
         ".apply_doc_text(",
         ".absorb_doc_change(",
@@ -2081,6 +2082,9 @@ fn no_engine_function_composes_into_a_room_under_a_file_write_lock() {
         ".touch_agent_presence(",
         ".dispose_domain(",
         ".dispose_domain_discarding(",
+        ".close_docs(",
+        ".close_reflection_rooms(",
+        ".close_reflection_rooms_if_switching_off(",
     ];
 
     /// Every way an engine function takes a per-path write lock: the file's

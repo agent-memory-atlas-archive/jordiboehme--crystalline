@@ -934,6 +934,29 @@ impl Engine {
         scope: &crate::scope::Scope,
         join: Option<&crate::join::Join>,
     ) -> Result<Value> {
+        self.save_engram_closing(p, scope, join, true).await
+    }
+
+    /// [`Engine::save_engram`] for a co-editing room over the folder's own
+    /// document. The room holds its guard across this call, and the registry
+    /// is never taken under a room's guard (lock order: registry, then
+    /// session), so this save does not close the reflection rooms itself:
+    /// the room closes them before it takes its guard for the save.
+    pub(crate) async fn save_engram_from_room(&self, p: &SaveParams) -> Result<Value> {
+        self.save_engram_closing(p, &crate::scope::Scope::Unrestricted, None, false)
+            .await
+    }
+
+    /// The body of [`Engine::save_engram_joined`]. `close_rooms` says whether a
+    /// MANIFEST save that switches the Reflection off closes the domain's
+    /// reflection rooms before it writes: every caller but a room's own save.
+    async fn save_engram_closing(
+        &self,
+        p: &SaveParams,
+        scope: &crate::scope::Scope,
+        join: Option<&crate::join::Join>,
+        close_rooms: bool,
+    ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
@@ -1027,7 +1050,8 @@ impl Engine {
                 // first, while it is still on. Only for a save that will land:
                 // a stale token is refused by the swap below, and closing
                 // nobody's room for it is the point of reading it here.
-                if switch_before == Some(crystalline_core::ReflectionSwitch::On)
+                if close_rooms
+                    && switch_before == Some(crystalline_core::ReflectionSwitch::On)
                     && std::fs::read(&abs)
                         .is_ok_and(|bytes| sha256_hex(&bytes) == p.expected_checksum)
                 {
@@ -1344,6 +1368,39 @@ impl Engine {
         content: &str,
         scope: &crate::scope::Scope,
     ) -> Result<Value> {
+        self.restore_engram_closing(domain, path, content, scope, true)
+            .await
+    }
+
+    /// [`Engine::restore_engram`] for a co-editing room over the folder's own
+    /// document, which holds its guard across the call: it never closes the
+    /// reflection rooms, for the reason [`Engine::save_engram_from_room`]
+    /// gives. A room restores a MANIFEST only after it was deleted, which
+    /// had switched the Reflection off already.
+    pub(crate) async fn restore_engram_from_room(
+        &self,
+        domain: &str,
+        path: &str,
+        content: &str,
+    ) -> Result<Value> {
+        self.restore_engram_closing(
+            domain,
+            path,
+            content,
+            &crate::scope::Scope::Unrestricted,
+            false,
+        )
+        .await
+    }
+
+    async fn restore_engram_closing(
+        &self,
+        domain: &str,
+        path: &str,
+        content: &str,
+        scope: &crate::scope::Scope,
+        close_rooms: bool,
+    ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
@@ -1357,8 +1414,15 @@ impl Engine {
         if is_manifest_path(&normalize_rel(path)) {
             self.screen_manifest_write(domain, None, content).await?;
         }
-        self.restore_engram_in_view(&view, domain, path, content, change_label(scope))
-            .await
+        self.restore_engram_in_view(
+            &view,
+            domain,
+            path,
+            content,
+            change_label(scope),
+            close_rooms,
+        )
+        .await
     }
 
     /// [`Engine::restore_engram`] through a view somebody already built.
@@ -1376,6 +1440,7 @@ impl Engine {
         path: &str,
         content: &str,
         actor: Option<String>,
+        close_rooms: bool,
     ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
@@ -1428,7 +1493,7 @@ impl Engine {
         let switch_before = is_manifest_path(path).then(|| self.reflection_switch(domain));
         // A restored MANIFEST that switches the Reflection off closes its
         // rooms first, while it is still on (a draft returned above).
-        if switch_before == Some(crystalline_core::ReflectionSwitch::On) {
+        if close_rooms && switch_before == Some(crystalline_core::ReflectionSwitch::On) {
             self.close_reflection_rooms_if_switching_off(domain, Some(content))
                 .await;
         }

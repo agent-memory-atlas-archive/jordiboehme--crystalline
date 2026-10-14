@@ -90,6 +90,33 @@ impl Engine {
         // of, and the room is closed by the removal that follows. See
         // `Engine::live_text_at` for why this cannot move below the lock.
         let live = self.live_text_at(&desc, &view).await;
+        // Deleting the folder's MANIFEST switches the Reflection off. Its rooms
+        // are saved and closed first, while it is still on, and before the
+        // write lock below: the close takes the co-editing registry, which is
+        // never taken under a file's write lock. Only for a delete that should
+        // land (the token, when one is sent, is read here once ahead of the
+        // guarded compare).
+        let switch_before = (overlay.is_none()
+            && is_manifest_path(&desc.path)
+            && matches!(source, ContentSource::File { .. }))
+        .then(|| self.reflection_switch(&desc.domain));
+        if switch_before == Some(crystalline_core::ReflectionSwitch::On) {
+            let fresh = match &p.expected_checksum {
+                None => true,
+                Some(expected) => {
+                    live.as_ref().is_some_and(|live| {
+                        &live.checksum == expected || &sha256_hex(live.text.as_bytes()) == expected
+                    }) || self
+                        .load_content(&source, &desc)
+                        .await
+                        .is_ok_and(|text| &sha256_hex(text.as_bytes()) == expected)
+                }
+            };
+            if fresh {
+                self.close_reflection_rooms_if_switching_off(&desc.domain, None)
+                    .await;
+            }
+        }
         // Held across the comparison and the removal, so a guarded delete
         // cannot check a text that a concurrent save then rewrites underneath
         // it - the draft's own lock when this deletion lands in an overlay, the
@@ -241,6 +268,9 @@ impl Engine {
         // The deleted engram must leave its folder's generated index, and an
         // emptied folder loses the index file altogether.
         self.refresh_index_files(&desc.domain).await;
+        if let Some(before) = switch_before {
+            self.announce_switch_if_moved(&desc.domain, before, change_label(scope));
+        }
 
         Ok(json!({
             "domain": desc.domain,
