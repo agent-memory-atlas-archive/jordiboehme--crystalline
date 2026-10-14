@@ -108,7 +108,7 @@ async fn instance_full(
             .await
             .unwrap();
         for (member, level) in *members {
-            auth.upsert_domain_member(domain, member, *level, owner)
+            auth.upsert_domain_member(domain, member, *level, None, owner)
                 .await
                 .unwrap();
         }

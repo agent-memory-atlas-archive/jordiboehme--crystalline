@@ -1340,7 +1340,7 @@ async fn a_room_saved_by_a_rename_or_a_removal_carries_the_captured_audience() {
             .await
             .unwrap();
     }
-    auth.upsert_domain_member("eng", "mem", MemberLevel::Viewer, "keeper")
+    auth.upsert_domain_member("eng", "mem", MemberLevel::Viewer, None, "keeper")
         .await
         .unwrap();
     engine.set_domain_access(Arc::new(crystalline_service::DomainAccess::new(auth)));

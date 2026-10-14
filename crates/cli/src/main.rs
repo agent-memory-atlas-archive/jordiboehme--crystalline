@@ -1004,8 +1004,15 @@ enum UsersCommand {
         /// there. Change it later with `crystalline users writes`.
         #[arg(long, value_name = "DOMAINS")]
         writes: Option<String>,
+        /// The Reflection level beside the knowledge level. Only raises what
+        /// the knowledge level gives; editors and above always curate.
+        /// Without it a new account or member starts at default, and an
+        /// existing member keeps what it has.
+        #[arg(long, value_enum)]
+        reflection: Option<ReflectionArg>,
     },
-    /// List every account with its role and whether it is disabled.
+    /// List every account with its role, its Reflection level and whether it
+    /// is disabled.
     List,
     /// Replace an account's password.
     Passwd {
@@ -1023,6 +1030,15 @@ enum UsersCommand {
         /// The new role.
         #[arg(value_enum)]
         role: RoleArg,
+    },
+    /// Change an account's Reflection level on every shared domain: reader
+    /// reads and comments, contributor also edits, default follows the role.
+    Reflection {
+        /// The account to change.
+        name: String,
+        /// The new Reflection level.
+        #[arg(value_enum)]
+        level: ReflectionArg,
     },
     /// Turn an account off: it can neither sign in nor keep using a session it
     /// already holds. Its rows are kept, so `enable` brings it back. Disabling
@@ -1143,6 +1159,9 @@ enum UsersCommand {
 /// clap can validate the value and list it in `--help`.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum RoleArg {
+    /// Sees no engram on a shared domain; its Reflection level decides what
+    /// it works on.
+    None,
     /// Read only: search, read, browse.
     Viewer,
     /// Everything a viewer may do, plus writing and editing engrams.
@@ -1154,9 +1173,32 @@ enum RoleArg {
 impl From<RoleArg> for crystalline_service::rest::Role {
     fn from(arg: RoleArg) -> crystalline_service::rest::Role {
         match arg {
+            RoleArg::None => crystalline_service::rest::Role::None,
             RoleArg::Viewer => crystalline_service::rest::Role::Viewer,
             RoleArg::Editor => crystalline_service::rest::Role::Editor,
             RoleArg::Admin => crystalline_service::rest::Role::Admin,
+        }
+    }
+}
+
+/// The Reflection levels `users` and `domain members` accept, mirroring
+/// `crystalline_service::rest::ReflectionLevel`.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ReflectionArg {
+    /// As the knowledge level gives: a viewer reads and comments.
+    Default,
+    /// Reads the Reflection and comments on it.
+    Reader,
+    /// Also edits reflection text and creates, moves and deletes reflections.
+    Contributor,
+}
+
+impl From<ReflectionArg> for crystalline_service::rest::ReflectionLevel {
+    fn from(arg: ReflectionArg) -> crystalline_service::rest::ReflectionLevel {
+        match arg {
+            ReflectionArg::Default => crystalline_service::rest::ReflectionLevel::Default,
+            ReflectionArg::Reader => crystalline_service::rest::ReflectionLevel::Reader,
+            ReflectionArg::Contributor => crystalline_service::rest::ReflectionLevel::Contributor,
         }
     }
 }
@@ -1434,6 +1476,12 @@ enum MembersCommand {
         /// What that account may do here. Defaults to viewer (read only).
         #[arg(long, value_enum, default_value_t = LevelArg::Viewer)]
         level: LevelArg,
+        /// The Reflection level beside the knowledge level. Only raises what
+        /// the knowledge level gives; editors and above always curate.
+        /// Without it a new account or member starts at default, and an
+        /// existing member keeps what it has.
+        #[arg(long, value_enum)]
+        reflection: Option<ReflectionArg>,
         /// Load the global config from this file instead of the default path.
         #[arg(long)]
         config: Option<PathBuf>,
@@ -1476,6 +1524,8 @@ enum VisibilityArg {
 /// lists it in `--help`.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum LevelArg {
+    /// Sees no engram of this domain; give it a Reflection level.
+    None,
     /// Read only: the domain is visible and searchable, nothing more.
     Viewer,
     /// Everything a viewer may do, plus writing and editing its engrams.
@@ -1487,6 +1537,7 @@ enum LevelArg {
 impl From<LevelArg> for crystalline_service::rest::MemberLevel {
     fn from(arg: LevelArg) -> crystalline_service::rest::MemberLevel {
         match arg {
+            LevelArg::None => crystalline_service::rest::MemberLevel::None,
             LevelArg::Viewer => crystalline_service::rest::MemberLevel::Viewer,
             LevelArg::Editor => crystalline_service::rest::MemberLevel::Editor,
             LevelArg::Manager => crystalline_service::rest::MemberLevel::Manager,

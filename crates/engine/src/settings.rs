@@ -595,7 +595,7 @@ pub fn registry() -> &'static [SettingSpec] {
         },
         SettingSpec {
             key: "auth.oidc.default_role",
-            doc: "The role an account provisioned through single sign-on is created at: viewer, editor or admin; unset means viewer, the least privileged one (applies at the next daemon start)",
+            doc: "The role an account provisioned through single sign-on is created at: none, viewer, editor or admin; unset means viewer, the least privileged one (applies at the next daemon start)",
             kind: SettingKind::String,
             startup_effective: true,
             secret: false,
@@ -2366,7 +2366,7 @@ fn set_oidc_default_role(config: &mut GlobalConfig, value: &str) -> Result<(), S
     // spelling so casing is canonical on the way in.
     let role: Role = raw.parse().map_err(|_| {
         SettingsError(format!(
-            "auth.oidc.default_role must be viewer, editor or admin, got '{value}'"
+            "auth.oidc.default_role must be none, viewer, editor or admin, got '{value}'"
         ))
     })?;
     oidc_mut(config).default_role = Some(role.as_str().to_string());
@@ -5068,7 +5068,10 @@ mod tests {
     fn oidc_default_role_refuses_an_unknown_role() {
         let mut cfg = GlobalConfig::default();
         let err = apply(&mut cfg, "auth.oidc.default_role", "owner").unwrap_err();
-        assert!(err.to_string().contains("viewer, editor or admin"), "{err}");
+        assert!(
+            err.to_string().contains("none, viewer, editor or admin"),
+            "{err}"
+        );
         assert!(cfg.auth.is_none(), "a rejected role must not be written");
     }
 

@@ -3748,7 +3748,15 @@ async fn an_admin_creates_lists_edits_and_removes_an_account() {
     assert_eq!(body["user"]["disabled"], false);
     assert_eq!(
         user_fields(&body["user"]),
-        vec!["disabled", "display", "email", "last_seen", "name", "role"],
+        vec![
+            "disabled",
+            "display",
+            "email",
+            "last_seen",
+            "name",
+            "reflection",
+            "role"
+        ],
         "no password material may reach the client: {body}"
     );
 
@@ -3765,7 +3773,15 @@ async fn an_admin_creates_lists_edits_and_removes_an_account() {
     );
     assert_eq!(
         user_fields(&body["users"][0]),
-        vec!["disabled", "display", "email", "last_seen", "name", "role"],
+        vec![
+            "disabled",
+            "display",
+            "email",
+            "last_seen",
+            "name",
+            "reflection",
+            "role"
+        ],
         "the listing carries no hashes either: {body}"
     );
 
@@ -3848,6 +3864,63 @@ async fn an_admin_creates_lists_edits_and_removes_an_account() {
             .await
             .unwrap();
     assert_eq!(user_names(&body), vec!["root".to_string()], "{body}");
+}
+
+/// The Reflection level on the users routes: `POST` takes `role: none` and
+/// `reflection`, `PATCH` changes `reflection` on its own (`default` clears
+/// it), and a body that changes nothing names the four fields it could send.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_admin_sets_knowledge_none_and_the_reflection_level() {
+    let (fixture, token, csrf) = serve_as_admin(AuthOptions::default()).await;
+    let addr = fixture.addr;
+
+    let created = as_session(addr, reqwest::Method::POST, "/api/v1/users", &token, &csrf)
+        .json(&serde_json::json!({
+            "name": "nora",
+            "role": "none",
+            "reflection": "contributor",
+            "password": "hunter2",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+    let body: serde_json::Value = created.json().await.unwrap();
+    assert_eq!(body["user"]["role"], "none", "{body}");
+    assert_eq!(body["user"]["reflection"], "contributor", "{body}");
+
+    let patch = |body: serde_json::Value| {
+        as_session(
+            addr,
+            reqwest::Method::PATCH,
+            "/api/v1/users/nora",
+            &token,
+            &csrf,
+        )
+        .json(&body)
+        .send()
+    };
+    let cleared = patch(serde_json::json!({"reflection": "default"}))
+        .await
+        .unwrap();
+    assert_eq!(cleared.status(), 200);
+    let body: serde_json::Value = cleared.json().await.unwrap();
+    assert_eq!(body["user"]["reflection"], "default", "{body}");
+    assert_eq!(
+        body["user"]["role"], "none",
+        "the role is untouched: {body}"
+    );
+
+    let nothing = patch(serde_json::json!({})).await.unwrap();
+    assert_eq!(nothing.status(), 422);
+    let body: serde_json::Value = nothing.json().await.unwrap();
+    assert!(
+        body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("send role, reflection, disabled or display"),
+        "{body}"
+    );
 }
 
 /// An admin cannot lock itself out by hand: deleting or disabling its own

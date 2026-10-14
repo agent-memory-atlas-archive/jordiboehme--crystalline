@@ -481,7 +481,7 @@ async fn a_members_revoked_access_is_captured_before_a_rename_so_they_do_not_hea
         .await
         .unwrap();
     fx.auth
-        .upsert_domain_member("lab", "ada", MemberLevel::Manager, "root")
+        .upsert_domain_member("lab", "ada", MemberLevel::Manager, None, "root")
         .await
         .unwrap();
     let ada = login(fx.addr, "ada", "adapw").await;
@@ -899,7 +899,7 @@ async fn a_plain_member_hears_a_private_domain_and_its_rename() {
         .await
         .unwrap();
     fx.auth
-        .upsert_domain_member("lab", "vera", MemberLevel::Viewer, "root")
+        .upsert_domain_member("lab", "vera", MemberLevel::Viewer, None, "root")
         .await
         .unwrap();
     let vera = login(fx.addr, "vera", "verapw").await;

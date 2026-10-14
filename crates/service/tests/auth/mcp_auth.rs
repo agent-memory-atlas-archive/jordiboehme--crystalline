@@ -1268,7 +1268,7 @@ impl VisibilityCtx {
         level: crystalline_service::rest::MemberLevel,
     ) {
         self.store
-            .upsert_domain_member(domain, account, level, "keeper")
+            .upsert_domain_member(domain, account, level, None, "keeper")
             .await
             .unwrap();
     }

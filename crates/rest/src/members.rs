@@ -60,7 +60,7 @@ use axum::http::StatusCode;
 
 use super::auth::Identity;
 use super::auth_store::{
-    DomainMember, MemberLevel, RefusalKind, StoreRefusal, normalize_account_name,
+    DomainMember, MemberLevel, ReflectionLevel, RefusalKind, StoreRefusal, normalize_account_name,
 };
 use super::{
     ApiError, ApiJson, ApiPath, ProblemDetail, RestState, refuse_read_only, require_domain_read,
@@ -95,14 +95,25 @@ pub struct MembersResponse {
 
 /// What `PUT /domains/{domain}/members/{principal}` takes.
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
-#[schema(description = "The level to invite this account at, or to move it \
-                        to: `viewer` reads, `editor` writes, `manager` also \
-                        administers the membership.")]
+#[schema(description = "Two levels side by side. `level` is the knowledge \
+                        level: `none` sees no engram, `viewer` reads, `editor` \
+                        writes, `manager` also administers the membership. \
+                        `reflection` raises the Reflection level: `reader` \
+                        reads and comments, `contributor` also edits. A member \
+                        at `none` needs `reader` or `contributor`.")]
 pub struct MemberBody {
-    /// viewer | editor | manager
+    /// none | viewer | editor | manager
     #[schema(example = "editor")]
     #[schema(value_type = super::schemas::MemberLevel)]
     pub level: MemberLevel,
+    /// default | reader | contributor, or absent to keep what is stored
+    /// (`default` for a new member). Only raises what `level` gives:
+    /// `default` is "as knowledge" (a viewer reads and comments, `none`
+    /// sees nothing). Curating follows from `editor` and above.
+    #[serde(default)]
+    #[schema(example = "default")]
+    #[schema(value_type = Option<super::schemas::ReflectionLevel>)]
+    pub reflection: Option<ReflectionLevel>,
 }
 
 /// What `PUT /domains/{domain}/owner` takes.
@@ -134,7 +145,7 @@ const NOT_AN_ENABLED_ACCOUNT: &str = "that name is not an enabled account on thi
 
 /// Turn a membership store failure into a status.
 ///
-/// Three of the store's refusals are the caller's doing rather than this
+/// Four of the store's refusals are the caller's doing rather than this
 /// server's, and each of them would otherwise arrive as a 500 that reads like
 /// a bug:
 ///
@@ -145,7 +156,9 @@ const NOT_AN_ENABLED_ACCOUNT: &str = "that name is not an enabled account on thi
 ///   route as the way to change who that is;
 /// * a principal that is not an existing, enabled account is an unprocessable
 ///   body: the name is well-formed and there is nobody behind it. This arm
-///   answers [`NOT_AN_ENABLED_ACCOUNT`] and never the store's own words.
+///   answers [`NOT_AN_ENABLED_ACCOUNT`] and never the store's own words;
+/// * a member at knowledge `none` with Reflection `default` would hold
+///   nothing, so it is an unprocessable body too, in the store's words.
 ///
 /// The classification is [`RefusalKind`], read off the error as a TYPE. It was
 /// substring matching over the store's prose, which meant a rewording in
@@ -165,6 +178,10 @@ fn store_error(e: anyhow::Error) -> ApiError {
              hand the domain on with PUT /domains/{domain}/owner instead",
         ),
         Some(RefusalKind::NoSuchAccount) => ApiError::unprocessable(NOT_AN_ENABLED_ACCOUNT),
+        // A member at knowledge `none` with no Reflection level would hold
+        // nothing. The store's one sentence names the fix; it is only reached
+        // for an enabled account the caller named itself, so it is no oracle.
+        Some(RefusalKind::EmptyMembership) => ApiError::unprocessable(format!("{e}")),
         // A name that cannot be a login name at all is the same 422
         // [`principal_key`] answers for a path segment. The routes that take
         // the principal in the PATH fold it there and never reach this arm;
@@ -423,8 +440,9 @@ pub async fn list(
         ),
         (
             status = 422,
-            description = "An unknown level, or a principal that names no \
-                           enabled account.",
+            description = "An unknown level, a principal that names no \
+                           enabled account, or a member with knowledge `none` \
+                           and no Reflection level.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -440,7 +458,7 @@ pub async fn set_member(
     let principal = principal_key(&principal)?;
     state
         .auth
-        .upsert_domain_member(&domain, &principal, body.level, &actor)
+        .upsert_domain_member(&domain, &principal, body.level, body.reflection, &actor)
         .await
         .map_err(store_error)?;
     Ok(StatusCode::NO_CONTENT)

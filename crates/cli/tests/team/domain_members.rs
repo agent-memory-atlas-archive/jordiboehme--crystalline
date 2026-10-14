@@ -126,6 +126,10 @@ fn the_membership_lifecycle_round_trips() {
     let invited = fx.domain(&["members", "eng", "add", "bob", "--level", "editor"]);
     assert!(invited.contains("bob"), "{invited}");
     assert!(invited.contains("editor"), "{invited}");
+    assert!(
+        invited.contains("with Reflection default"),
+        "a new member starts at default: {invited}"
+    );
 
     let listed = fx.domain(&["members", "eng", "list"]);
     assert!(
@@ -134,6 +138,7 @@ fn the_membership_lifecycle_round_trips() {
     );
     assert!(listed.contains("NAME"), "{listed}");
     assert!(listed.contains("LEVEL"), "{listed}");
+    assert!(listed.contains("REFLECTION"), "{listed}");
     assert!(listed.contains("bob"), "{listed}");
     assert!(listed.contains("1 member of 'eng'"), "{listed}");
     for line in listed.lines() {

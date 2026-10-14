@@ -820,7 +820,7 @@ async fn private_oak(engine: &Engine, dir: &Path) {
     auth.set_domain_visibility("oak", true, "keeper")
         .await
         .unwrap();
-    auth.upsert_domain_member("oak", "mem", MemberLevel::Viewer, "keeper")
+    auth.upsert_domain_member("oak", "mem", MemberLevel::Viewer, None, "keeper")
         .await
         .unwrap();
     engine.set_domain_access(Arc::new(crystalline_service::DomainAccess::new(auth)));

@@ -19,6 +19,8 @@ testing = []
 [dependencies]
 # hex_lower (ruled: identity depends on the index for it).
 crystalline-index = { workspace = true }
+# `Author` and `sanitize_name` for `ReflectionCaller` (scope.rs).
+crystalline-core = { workspace = true }
 anyhow = { workspace = true }
 argon2 = { workspace = true }
 chrono = { workspace = true }

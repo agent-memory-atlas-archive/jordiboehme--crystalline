@@ -52,7 +52,7 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 
 use super::auth::{Caller, Identity};
-use super::auth_store::{Role, User};
+use super::auth_store::{ReflectionLevel, Role, User};
 use super::{
     ApiError, ApiJson, ApiPath, ProblemDetail, RestState, check_password, refuse_read_only,
 };
@@ -141,9 +141,15 @@ pub struct CreateBody {
     #[serde(default)]
     #[schema(example = "bob@example.com")]
     email: Option<String>,
-    /// What the new account may do.
+    /// What the new account may do: none (sees no engram on a shared
+    /// domain), viewer, editor or admin.
     #[schema(value_type = super::schemas::Role)]
     role: Role,
+    /// The Reflection level on every shared domain: default, reader or
+    /// contributor. Only raises what the role gives.
+    #[serde(default)]
+    #[schema(value_type = Option<super::schemas::ReflectionLevel>)]
+    reflection: Option<ReflectionLevel>,
     /// The initial password. Never stored in the clear; the store hashes it.
     #[schema(example = "correct horse battery staple")]
     password: String,
@@ -241,11 +247,18 @@ pub async fn create(
         ))
         .await?
         .map_err(|e| store_error(e, &body.name))?;
+    if let Some(level) = body.reflection.filter(|l| *l != ReflectionLevel::Default) {
+        state
+            .auth
+            .set_reflection_level(&body.name, level)
+            .await
+            .map_err(|e| store_error(e, &body.name))?;
+    }
     let user = read_back(&state, &body.name).await?;
     Ok((StatusCode::CREATED, Json(UserResponse { user })))
 }
 
-/// What `PATCH /users/{name}` takes: whichever of the three an admin wants to
+/// What `PATCH /users/{name}` takes: whichever of the four an admin wants to
 /// change. All absent is refused rather than served as a no-op, so a client
 /// sending the wrong field names hears about it.
 ///
@@ -254,17 +267,23 @@ pub async fn create(
 /// means a client editing a role or a display name can never trip the
 /// password's own session-revoking side effect by accident.
 #[derive(Deserialize, utoipa::ToSchema)]
-#[schema(description = "Whichever of the three an admin wants to change. All \
+#[schema(description = "Whichever of the four an admin wants to change. All \
                         absent is refused with a 422 rather than served as a \
                         no-op, so a client sending the wrong field names hears \
                         about it. `display` clears to the login name when sent \
                         empty or blank; the password lives on its own route, \
                         `POST /users/{name}/password`.")]
 pub struct PatchBody {
-    /// The new role.
+    /// The new role: none (sees no engram on a shared domain), viewer,
+    /// editor or admin.
     #[serde(default)]
     #[schema(value_type = Option<super::schemas::Role>)]
     role: Option<Role>,
+    /// The Reflection level on every shared domain: default, reader or
+    /// contributor. Only raises what the role gives; `default` clears it.
+    #[serde(default)]
+    #[schema(value_type = Option<super::schemas::ReflectionLevel>)]
+    reflection: Option<ReflectionLevel>,
     /// Whether the account is disabled. Disabling deletes every session the
     /// account holds, so it is a revocation rather than a flag a later
     /// re-enabling hands back; it also stops any new login.
@@ -298,6 +317,7 @@ impl std::fmt::Debug for CreateBody {
             .field("display", &self.display)
             .field("email", &self.email)
             .field("role", &self.role)
+            .field("reflection", &self.reflection)
             .field("password", &"<redacted>")
             .finish()
     }
@@ -307,6 +327,7 @@ impl std::fmt::Debug for PatchBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PatchBody")
             .field("role", &self.role)
+            .field("reflection", &self.reflection)
             .field("disabled", &self.disabled)
             .field("display", &self.display)
             .finish()
@@ -388,7 +409,7 @@ impl std::fmt::Debug for PasswordBody {
         ),
         (
             status = 422,
-            description = "The body changes nothing: send role, disabled or display.",
+            description = "The body changes nothing: send role, reflection, disabled or display.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -402,9 +423,13 @@ pub async fn update(
 ) -> Result<Json<UserResponse>, ApiError> {
     let caller = identity.require_admin()?;
     refuse_read_only(&state)?;
-    if body.role.is_none() && body.disabled.is_none() && body.display.is_none() {
+    if body.role.is_none()
+        && body.reflection.is_none()
+        && body.disabled.is_none()
+        && body.display.is_none()
+    {
         return Err(ApiError::unprocessable(
-            "this request changes nothing: send role, disabled or display",
+            "this request changes nothing: send role, reflection, disabled or display",
         ));
     }
     if body.disabled == Some(true) {
@@ -414,6 +439,13 @@ pub async fn update(
         state
             .auth
             .set_role(&name, role)
+            .await
+            .map_err(|e| store_error(e, &name))?;
+    }
+    if let Some(level) = body.reflection {
+        state
+            .auth
+            .set_reflection_level(&name, level)
             .await
             .map_err(|e| store_error(e, &name))?;
     }
@@ -805,6 +837,7 @@ mod tests {
             role: Role::Admin,
             disabled: false,
             last_seen: None,
+            reflection: ReflectionLevel::Default,
         });
         for spelling in ["root", "ROOT", "  Root  "] {
             let refused = refuse_self(&caller, spelling, "delete")

@@ -1466,6 +1466,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "chrono",
+ "crystalline-core",
  "crystalline-index",
  "futures",
  "getrandom 0.4.3",

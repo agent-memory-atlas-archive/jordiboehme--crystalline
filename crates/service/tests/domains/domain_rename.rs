@@ -1535,7 +1535,7 @@ async fn add_archive_and_vault(f: &Full) -> String {
     for name in ["archive", "vault"] {
         auth.set_domain_visibility(name, true, "bob").await.unwrap();
     }
-    auth.upsert_domain_member("archive", "ada", MemberLevel::Viewer, "bob")
+    auth.upsert_domain_member("archive", "ada", MemberLevel::Viewer, None, "bob")
         .await
         .unwrap();
     m.engine(true).await.sync(None).await.unwrap();

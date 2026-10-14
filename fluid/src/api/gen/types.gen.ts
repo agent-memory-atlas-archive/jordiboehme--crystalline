@@ -300,8 +300,10 @@ export type CreateBody = {
      * The initial password. Never stored in the clear; the store hashes it.
      */
     password: string;
+    reflection?: ReflectionLevel | null;
     /**
-     * What the new account may do.
+     * What the new account may do: none (sees no engram on a shared
+     * domain), viewer, editor or admin.
      */
     role: Role;
 };
@@ -467,6 +469,10 @@ export type DomainMember = {
      * The member's login name, folded by [`normalize_account_name`].
      */
     principal: string;
+    /**
+     * The Reflection level on this domain.
+     */
+    reflection: ReflectionLevel;
 };
 
 /**
@@ -939,13 +945,14 @@ export type MeResponse = {
 };
 
 /**
- * The level to invite this account at, or to move it to: `viewer` reads, `editor` writes, `manager` also administers the membership.
+ * Two levels side by side. `level` is the knowledge level: `none` sees no engram, `viewer` reads, `editor` writes, `manager` also administers the membership. `reflection` raises the Reflection level: `reader` reads and comments, `contributor` also edits. A member at `none` needs `reader` or `contributor`.
  */
 export type MemberBody = {
     /**
-     * viewer | editor | manager
+     * none | viewer | editor | manager
      */
     level: MemberLevel;
+    reflection?: ReflectionLevel | null;
 };
 
 /**
@@ -959,7 +966,7 @@ export type MemberBody = {
  * someone else: those two stay with the owner (and with an admin), which is
  * what keeps "who can see this at all" a decision the owner made.
  */
-export type MemberLevel = 'viewer' | 'editor' | 'manager';
+export type MemberLevel = 'none' | 'viewer' | 'editor' | 'manager';
 
 /**
  * Who may reach one domain. `visibility` is `private` or `shared`; a shared domain has no owner and no members, because membership only decides anything while a domain is private.
@@ -1183,7 +1190,7 @@ export type PasswordBody = {
 };
 
 /**
- * Whichever of the three an admin wants to change. All absent is refused with a 422 rather than served as a no-op, so a client sending the wrong field names hears about it. `display` clears to the login name when sent empty or blank; the password lives on its own route, `POST /users/{name}/password`.
+ * Whichever of the four an admin wants to change. All absent is refused with a 422 rather than served as a no-op, so a client sending the wrong field names hears about it. `display` clears to the login name when sent empty or blank; the password lives on its own route, `POST /users/{name}/password`.
  */
 export type PatchBody = {
     /**
@@ -1198,6 +1205,7 @@ export type PatchBody = {
      * like a login name: spaces and casing are kept as sent.
      */
     display?: string | null;
+    reflection?: ReflectionLevel | null;
     role?: Role | null;
 };
 
@@ -1319,6 +1327,15 @@ export type ProvisioningView = {
      */
     problems: Array<ManifestProblem>;
 };
+
+/**
+ * The Reflection level an account holds on every shared domain, or a member
+ * on one private domain, beside its knowledge level. It only ever raises
+ * what the knowledge level gives: `Default` is "as knowledge",
+ * stored as SQL NULL so no sentinel value is written. There is no stored
+ * curator: curating follows from writing the engrams.
+ */
+export type ReflectionLevel = 'default' | 'reader' | 'contributor';
 
 /**
  * RFC 7591 client metadata. Members this server does not implement (`application_type`, `scope`, `contacts`, `logo_uri` and the rest) are accepted and ignored.
@@ -1508,7 +1525,7 @@ export type RevokeForm = {
  * What a user may do. Ordered least to most privileged; the REST layer maps
  * each endpoint to the minimum role it accepts.
  */
-export type Role = 'viewer' | 'editor' | 'admin';
+export type Role = 'none' | 'viewer' | 'editor' | 'admin';
 
 /**
  * Which routing section an agent reads.
@@ -1802,6 +1819,10 @@ export type User = {
      * mode provisions against.
      */
     name: string;
+    /**
+     * The Reflection level on every shared domain.
+     */
+    reflection: ReflectionLevel;
     /**
      * What this account may do.
      */
@@ -3897,7 +3918,7 @@ export type SetDomainMemberErrors = {
      */
     415: ProblemDetail;
     /**
-     * An unknown level, or a principal that names no enabled account.
+     * An unknown level, a principal that names no enabled account, or a member with knowledge `none` and no Reflection level.
      */
     422: ProblemDetail;
 };
@@ -6126,7 +6147,7 @@ export type UpdateUserErrors = {
      */
     415: ProblemDetail;
     /**
-     * The body changes nothing: send role, disabled or display.
+     * The body changes nothing: send role, reflection, disabled or display.
      */
     422: ProblemDetail;
 };

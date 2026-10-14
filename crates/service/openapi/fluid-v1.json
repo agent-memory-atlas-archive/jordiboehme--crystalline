@@ -4176,7 +4176,7 @@
             }
           },
           "422": {
-            "description": "An unknown level, or a principal that names no enabled account.",
+            "description": "An unknown level, a principal that names no enabled account, or a member with knowledge `none` and no Reflection level.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8638,7 +8638,7 @@
             }
           },
           "422": {
-            "description": "The body changes nothing: send role, disabled or display.",
+            "description": "The body changes nothing: send role, reflection, disabled or display.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -9352,9 +9352,20 @@
             "description": "The initial password. Never stored in the clear; the store hashes it.",
             "example": "correct horse battery staple"
           },
+          "reflection": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReflectionLevel",
+                "description": "The Reflection level on every shared domain: default, reader or\ncontributor. Only raises what the role gives."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "role": {
             "$ref": "#/components/schemas/Role",
-            "description": "What the new account may do."
+            "description": "What the new account may do: none (sees no engram on a shared\ndomain), viewer, editor or admin."
           }
         }
       },
@@ -9558,6 +9569,7 @@
         "required": [
           "principal",
           "level",
+          "reflection",
           "added_by",
           "added_at"
         ],
@@ -9577,6 +9589,10 @@
           "principal": {
             "type": "string",
             "description": "The member's login name, folded by [`normalize_account_name`]."
+          },
+          "reflection": {
+            "$ref": "#/components/schemas/ReflectionLevel",
+            "description": "The Reflection level on this domain."
           }
         }
       },
@@ -10182,14 +10198,25 @@
       },
       "MemberBody": {
         "type": "object",
-        "description": "The level to invite this account at, or to move it to: `viewer` reads, `editor` writes, `manager` also administers the membership.",
+        "description": "Two levels side by side. `level` is the knowledge level: `none` sees no engram, `viewer` reads, `editor` writes, `manager` also administers the membership. `reflection` raises the Reflection level: `reader` reads and comments, `contributor` also edits. A member at `none` needs `reader` or `contributor`.",
         "required": [
           "level"
         ],
         "properties": {
           "level": {
             "$ref": "#/components/schemas/MemberLevel",
-            "description": "viewer | editor | manager"
+            "description": "none | viewer | editor | manager"
+          },
+          "reflection": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReflectionLevel",
+                "description": "default | reader | contributor, or absent to keep what is stored\n(`default` for a new member). Only raises what `level` gives:\n`default` is \"as knowledge\" (a viewer reads and comments, `none`\nsees nothing). Curating follows from `editor` and above."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -10197,6 +10224,7 @@
         "type": "string",
         "description": "What a member may do on one private domain. Ordered least to most\nprivileged, exactly as [`Role`] is, and deliberately a separate ladder: an\naccount's instance role says what it may do on the installation, this says\nwhat it may do on one domain somebody invited it to.\n\n`Manager` is the level that may invite and change other members' levels. It\nmay not flip the domain back to shared, and it may not hand the domain to\nsomeone else: those two stay with the owner (and with an admin), which is\nwhat keeps \"who can see this at all\" a decision the owner made.",
         "enum": [
+          "none",
           "viewer",
           "editor",
           "manager"
@@ -10506,7 +10534,7 @@
       },
       "PatchBody": {
         "type": "object",
-        "description": "Whichever of the three an admin wants to change. All absent is refused with a 422 rather than served as a no-op, so a client sending the wrong field names hears about it. `display` clears to the login name when sent empty or blank; the password lives on its own route, `POST /users/{name}/password`.",
+        "description": "Whichever of the four an admin wants to change. All absent is refused with a 422 rather than served as a no-op, so a client sending the wrong field names hears about it. `display` clears to the login name when sent empty or blank; the password lives on its own route, `POST /users/{name}/password`.",
         "properties": {
           "disabled": {
             "type": [
@@ -10522,11 +10550,22 @@
             ],
             "description": "The new display name. Empty or blank clears it, resetting the account\nto its folded login name - a row is never nameless. Never normalized\nlike a login name: spaces and casing are kept as sent."
           },
+          "reflection": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReflectionLevel",
+                "description": "The Reflection level on every shared domain: default, reader or\ncontributor. Only raises what the role gives; `default` clears it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "role": {
             "oneOf": [
               {
                 "$ref": "#/components/schemas/Role",
-                "description": "The new role."
+                "description": "The new role: none (sees no engram on a shared domain), viewer,\neditor or admin."
               },
               {
                 "type": "null"
@@ -10698,6 +10737,15 @@
             "description": "The bullets that did not parse, or lost to an earlier duplicate."
           }
         }
+      },
+      "ReflectionLevel": {
+        "type": "string",
+        "description": "The Reflection level an account holds on every shared domain, or a member\non one private domain, beside its knowledge level. It only ever raises\nwhat the knowledge level gives: `Default` is \"as knowledge\",\nstored as SQL NULL so no sentinel value is written. There is no stored\ncurator: curating follows from writing the engrams.",
+        "enum": [
+          "default",
+          "reader",
+          "contributor"
+        ]
       },
       "RegisterBody": {
         "type": "object",
@@ -10965,6 +11013,7 @@
         "type": "string",
         "description": "What a user may do. Ordered least to most privileged; the REST layer maps\neach endpoint to the minimum role it accepts.",
         "enum": [
+          "none",
           "viewer",
           "editor",
           "admin"
@@ -11333,7 +11382,8 @@
           "name",
           "display",
           "role",
-          "disabled"
+          "disabled",
+          "reflection"
         ],
         "properties": {
           "disabled": {
@@ -11365,6 +11415,10 @@
             "type": "string",
             "description": "The login name and primary key. Also the identity the trusted-header\nmode provisions against.",
             "example": "ada"
+          },
+          "reflection": {
+            "$ref": "#/components/schemas/ReflectionLevel",
+            "description": "The Reflection level on every shared domain."
           },
           "role": {
             "$ref": "#/components/schemas/Role",

@@ -765,6 +765,7 @@ async fn screened_origin_fixture() -> Fixture {
         "team",
         "mem",
         crystalline_service::rest::MemberLevel::Editor,
+        None,
         "keeper",
     )
     .await
@@ -2594,6 +2595,7 @@ async fn screened_fixture() -> Fixture {
         "team",
         "alice",
         crystalline_service::rest::MemberLevel::Editor,
+        None,
         "keeper",
     )
     .await

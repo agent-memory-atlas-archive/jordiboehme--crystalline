@@ -204,13 +204,20 @@ pub async fn run(domain: String, command: MembersCommand, json: bool) -> Result<
                 print_members(&domain, acl.is_some(), owner.as_deref(), &members);
             }
         }
-        MembersCommand::Add { user, level, .. } => {
+        MembersCommand::Add {
+            user,
+            level,
+            reflection,
+            ..
+        } => {
             let level: MemberLevel = level.into();
             let user = require_account(&store, &user).await?;
             store
-                .upsert_domain_member(&domain, &user, level, "cli")
+                .upsert_domain_member(&domain, &user, level, reflection.map(Into::into), "cli")
                 .await?;
-            println!("'{user}' is a {level} on domain '{domain}'.");
+            // Read back, since without `--reflection` the stored level stays.
+            let reflection = store.member_reflection(&domain, &user).await?;
+            println!("'{user}' is a {level} on domain '{domain}' with Reflection {reflection}.");
         }
         MembersCommand::Remove { user, .. } => {
             let name = user.trim().to_lowercase();
@@ -393,20 +400,21 @@ fn print_members(domain: &str, private: bool, owner: Option<&str>, members: &[Do
         );
         return;
     }
-    let rows: Vec<[String; 4]> = members
+    let rows: Vec<[String; 5]> = members
         .iter()
         .map(|m| {
             [
                 m.principal.clone(),
                 m.level.to_string(),
+                m.reflection.to_string(),
                 m.added_by.clone(),
                 m.added_at.clone(),
             ]
         })
         .collect();
-    let header = ["NAME", "LEVEL", "ADDED BY", "ADDED AT"];
+    let header = ["NAME", "LEVEL", "REFLECTION", "ADDED BY", "ADDED AT"];
     // The last column is never padded, so no line carries trailing whitespace.
-    let widths: Vec<usize> = (0..3)
+    let widths: Vec<usize> = (0..4)
         .map(|c| {
             rows.iter()
                 .map(|r| r[c].chars().count())
@@ -415,17 +423,17 @@ fn print_members(domain: &str, private: bool, owner: Option<&str>, members: &[Do
                 .unwrap_or(0)
         })
         .collect();
-    let line = |cells: [&str; 4]| {
+    let line = |cells: [&str; 5]| {
         let mut out = String::new();
-        for (c, cell) in cells.iter().enumerate().take(3) {
+        for (c, cell) in cells.iter().enumerate().take(4) {
             out.push_str(&format!("{cell:<width$}  ", width = widths[c]));
         }
-        out.push_str(cells[3]);
+        out.push_str(cells[4]);
         println!("{}", out.trim_end());
     };
     line(header);
     for row in &rows {
-        line([&row[0], &row[1], &row[2], &row[3]]);
+        line([&row[0], &row[1], &row[2], &row[3], &row[4]]);
     }
     println!();
     println!(

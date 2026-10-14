@@ -2420,7 +2420,7 @@ async fn a_reader_of_no_such_domain_does_not_burn_the_link() {
 
     // Bob is made a member, and the link is still his to open.
     f.auth
-        .upsert_domain_member("team", "bob", MemberLevel::Editor, "alice")
+        .upsert_domain_member("team", "bob", MemberLevel::Editor, None, "alice")
         .await
         .unwrap();
     let accepted: serde_json::Value = bob

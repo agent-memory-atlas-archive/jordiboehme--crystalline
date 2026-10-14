@@ -80,6 +80,7 @@ export function userFixture(overrides: Partial<User> = {}): User {
     display: "Ada Lovelace",
     role: "editor",
     disabled: false,
+    reflection: "default",
     ...overrides,
   };
 }

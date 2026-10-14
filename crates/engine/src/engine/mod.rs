@@ -2600,12 +2600,18 @@ impl Engine {
     /// [`Scope::Unrestricted`]. Everything else gets a set to subtract, empty
     /// on an installation where nobody has made a domain private.
     ///
+    /// An account whose instance knowledge level is `none` reads no shared
+    /// domain, so for it the set also holds every registered domain that is
+    /// not private ([`DomainVisibility::shared_hidden`], expanded here because
+    /// only the engine holds the registrations).
+    ///
     /// The privacy answer alone, and it is not the serving screen. A read that
     /// answers from the index takes [`Engine::hidden_for`], which adds the
     /// domains whose rows outlived their registration; this one is for a caller
     /// reasoning about who may see what rather than about what may be served.
     ///
     /// [`Scope::Unrestricted`]: crate::scope::Scope::Unrestricted
+    /// [`DomainVisibility::shared_hidden`]: crate::scope::DomainVisibility::shared_hidden
     pub async fn hidden_domains(
         &self,
         scope: &crate::scope::Scope,
@@ -2620,10 +2626,27 @@ impl Engine {
         let Some(access) = self.domain_access.get() else {
             return Ok(None);
         };
-        access
-            .hidden_domains(scope)
+        if matches!(scope, crate::scope::Scope::Unrestricted) {
+            return Ok(None);
+        }
+        let visibility = access
+            .visibility(scope)
             .await
-            .map_err(|e| EngineError::Internal(e.to_string()))
+            .map_err(|e| EngineError::Internal(e.to_string()))?;
+        let Some(mut hidden) = visibility.hidden else {
+            return Ok(None);
+        };
+        // Knowledge `none` on the instance: no shared domain is an engram
+        // answer for this account. The accounts store cannot list them; the
+        // registrations can.
+        if visibility.shared_hidden {
+            hidden.extend(
+                self.registered_domain_names()
+                    .into_iter()
+                    .filter(|name| !visibility.private.contains(name)),
+            );
+        }
+        Ok(Some(hidden))
     }
 
     /// What `scope` may do on one domain, for a surface that has to refuse a
@@ -2669,6 +2692,42 @@ impl Engine {
         access.write_right(scope, domain).await.map_err(|e| {
             EngineError::Internal(format!("this domain's membership is unreadable: {e:#}"))
         })
+    }
+
+    /// What `scope` may do with `domain`'s Reflection. An engine with no
+    /// access resolver installed (the stdio stack, every CLI engine) curates
+    /// everything, like [`Engine::write_right`] answers `Own`.
+    pub async fn reflection_right(
+        &self,
+        scope: &crate::scope::Scope,
+        domain: &str,
+    ) -> Result<crate::scope::ReflectionRight> {
+        let Some(access) = self.domain_access.get() else {
+            return Ok(crate::scope::ReflectionRight::Curate);
+        };
+        access.reflection_right(scope, domain).await.map_err(|e| {
+            EngineError::Internal(format!("this domain's membership is unreadable: {e:#}"))
+        })
+    }
+
+    /// The account whose write list is why `scope` lacks `need` on
+    /// `domain`'s Reflection, or `None`. `None` with no resolver
+    /// installed, like [`Engine::write_list_refusal`].
+    pub async fn reflection_list_refusal(
+        &self,
+        scope: &crate::scope::Scope,
+        domain: &str,
+        need: crate::scope::ReflectionRight,
+    ) -> Result<Option<String>> {
+        let Some(access) = self.domain_access.get() else {
+            return Ok(None);
+        };
+        access
+            .reflection_list_refuses(scope, domain, need)
+            .await
+            .map_err(|e| {
+                EngineError::Internal(format!("this domain's membership is unreadable: {e:#}"))
+            })
     }
 
     /// The account whose write list keeps `scope` from a step, when the list
@@ -2791,7 +2850,17 @@ impl Engine {
             .visibility(scope)
             .await
             .map_err(|e| EngineError::Internal(e.to_string()))?;
-        Ok((visibility.private, visibility.hidden.unwrap_or_default()))
+        let mut hidden = visibility.hidden.unwrap_or_default();
+        // Knowledge `none` on the instance hides every shared domain, as in
+        // [`Engine::hidden_domains`].
+        if visibility.shared_hidden {
+            hidden.extend(
+                self.registered_domain_names()
+                    .into_iter()
+                    .filter(|name| !visibility.private.contains(name)),
+            );
+        }
+        Ok((visibility.private, hidden))
     }
 
     /// The domain list a scoped store query is given: the caller's own filter

@@ -253,6 +253,7 @@ use crate::scope::{DomainAccess, DomainRight};
         domains_admin::ReviewModeArg,
         domains_admin::VisibilityBody,
         schemas::MemberLevel,
+        schemas::ReflectionLevel,
         schemas::DomainMember,
         members::MembersResponse,
         members::MemberBody,

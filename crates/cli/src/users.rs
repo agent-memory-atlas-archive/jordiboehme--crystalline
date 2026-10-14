@@ -25,7 +25,7 @@ use anyhow::{Context, Result, bail};
 use crystalline_core::config::registration::{
     DOMAIN_NAME_RULE, MAX_DOMAIN_NAME_CHARS, validate_domain_name,
 };
-use crystalline_service::rest::{AuthStore, LINKED_BY_CLI, Role, User};
+use crystalline_service::rest::{AuthStore, LINKED_BY_CLI, ReflectionLevel, Role, User};
 use crystalline_service::write_list_matches;
 
 use crate::UsersCommand;
@@ -47,11 +47,13 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
             password_file,
             mcp_token,
             writes,
+            reflection,
         } => {
             // The login name as typed makes the better default display name:
             // the store folds the login name but keeps this one as given.
             let display = display.unwrap_or_else(|| name.trim().to_string());
             let role: Role = role.into();
+            let reflection: ReflectionLevel = reflection.map(Into::into).unwrap_or_default();
             // Checked before anything is created, so a bad entry leaves no
             // account behind.
             let writes = writes.as_deref().map(parse_write_list).transpose()?;
@@ -93,6 +95,9 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
                 keep_write_list_or_remove(&store, &name, entries).await?;
                 warn_unmatched(entries);
             }
+            if reflection != ReflectionLevel::Default {
+                store.set_reflection_level(&name, reflection).await?;
+            }
             match issued {
                 Some(issued) => {
                     if !json {
@@ -100,6 +105,9 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
                             "Added user '{}' with role {role} and no password.",
                             stored_name(&name)
                         );
+                        if reflection != ReflectionLevel::Default {
+                            println!("Reflection: {reflection}.");
+                        }
                         if let Some(entries) = &writes {
                             println!("Write list: {}.", entries.join(", "));
                         }
@@ -119,12 +127,20 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
                             &serde_json::json!({
                                 "name": stored_name(&name),
                                 "role": role.to_string(),
+                                "reflection": reflection.to_string(),
                                 "writes": writes,
                             }),
                             true,
                         );
                     } else {
-                        println!("Added user '{}' with role {role}.", stored_name(&name));
+                        if reflection == ReflectionLevel::Default {
+                            println!("Added user '{}' with role {role}.", stored_name(&name));
+                        } else {
+                            println!(
+                                "Added user '{}' with role {role} and Reflection {reflection}.",
+                                stored_name(&name)
+                            );
+                        }
                         if let Some(entries) = &writes {
                             println!("Write list: {}.", entries.join(", "));
                         }
@@ -176,6 +192,11 @@ pub async fn run(command: UsersCommand, json: bool) -> Result<()> {
             let role: Role = role.into();
             store.set_role(&name, role).await?;
             println!("'{}' is now {role}.", stored_name(&name));
+        }
+        UsersCommand::Reflection { name, level } => {
+            let level: ReflectionLevel = level.into();
+            store.set_reflection_level(&name, level).await?;
+            println!("'{}' now has Reflection {level}.", stored_name(&name));
         }
         UsersCommand::Disable { name } => {
             store.set_disabled(&name, true).await?;
@@ -576,12 +597,13 @@ fn print_users(
         println!("No users yet. Add one with: crystalline users add <name> --role admin");
         return;
     }
-    let rows: Vec<[String; 7]> = users
+    let rows: Vec<[String; 8]> = users
         .iter()
         .map(|u| {
             [
                 u.name.clone(),
                 u.role.to_string(),
+                u.reflection.to_string(),
                 match (u.disabled, passwordless.contains(&u.name)) {
                     (true, _) => "disabled",
                     (false, true) => "active, no password",
@@ -601,6 +623,7 @@ fn print_users(
     let header = [
         "NAME",
         "ROLE",
+        "REFLECTION",
         "STATUS",
         "WRITES",
         "DISPLAY",
@@ -609,7 +632,7 @@ fn print_users(
     ];
     // The last column is never padded, so a trailing empty last-seen leaves no
     // trailing whitespace behind.
-    let widths: Vec<usize> = (0..6)
+    let widths: Vec<usize> = (0..7)
         .map(|c| {
             rows.iter()
                 .map(|r| r[c].chars().count())
@@ -618,18 +641,18 @@ fn print_users(
                 .unwrap_or(0)
         })
         .collect();
-    let line = |cells: [&str; 7]| {
+    let line = |cells: [&str; 8]| {
         let mut out = String::new();
-        for (c, cell) in cells.iter().enumerate().take(6) {
+        for (c, cell) in cells.iter().enumerate().take(7) {
             out.push_str(&format!("{cell:<width$}  ", width = widths[c]));
         }
-        out.push_str(cells[6]);
+        out.push_str(cells[7]);
         println!("{}", out.trim_end());
     };
     line(header);
     for row in &rows {
         line([
-            &row[0], &row[1], &row[2], &row[3], &row[4], &row[5], &row[6],
+            &row[0], &row[1], &row[2], &row[3], &row[4], &row[5], &row[6], &row[7],
         ]);
     }
     println!();

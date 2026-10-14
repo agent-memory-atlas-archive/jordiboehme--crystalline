@@ -718,6 +718,7 @@ mod tests {
                 role: crate::Role::Viewer,
                 disabled: false,
                 last_seen: None,
+                reflection: crate::ReflectionLevel::Default,
             }),
             csrf: None,
             anonymous: false,
