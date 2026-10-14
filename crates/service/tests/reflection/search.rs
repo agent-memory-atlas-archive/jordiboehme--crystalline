@@ -72,6 +72,42 @@ async fn a_reflection_write_leaves_chunks_the_next_pass_embeds() {
     );
 }
 
+/// R55: `activity.embedding_backlog` is the engram backlog plus the
+/// reflection backlog, while `embedding_backlog()` stays engram only.
+#[tokio::test]
+async fn status_backlog_adds_the_reflection_backlog() {
+    let fx = fixture_with_provider(&[
+        ("MANIFEST.md", &manifest("reflection: on\n")),
+        ("ops.md", &engram("Ops", "ops", "Deploys run at noon.")),
+    ])
+    .await;
+    // One engram and one page waiting at once, so a sum that dropped either
+    // term reads differently.
+    std::fs::write(
+        fx.root.join("ops.md"),
+        engram("Ops", "ops", "Deploys run at night, never at noon."),
+    )
+    .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    fx.engine
+        .write_reflection(
+            &write("guides/a.md", "# A\n\n## Night\n\nDeploys run at night.\n"),
+            &person(),
+        )
+        .await
+        .unwrap();
+    let engram_backlog = fx.engine.embedding_backlog().await.unwrap();
+    let reflection_backlog = fx.engine.reflection_embedding_backlog().await.unwrap();
+    assert!(engram_backlog > 0, "precondition: an engram chunk waits");
+    assert!(reflection_backlog > 0, "precondition: a page chunk waits");
+    let status = fx.engine.status_report().await.unwrap();
+    assert_eq!(
+        status["activity"]["embedding_backlog"],
+        serde_json::json!(engram_backlog + reflection_backlog),
+        "{status}"
+    );
+}
+
 #[tokio::test]
 async fn status_without_a_reflection_carries_no_reflection_keys() {
     let fx = fixture_with_provider(&[]).await;
@@ -127,6 +163,11 @@ async fn tick_refires_the_worker_for_a_reflection_backlog_alone() {
 async fn a_reflection_backlog_never_holds_back_the_contradiction_pass() {
     let (fx, _embed, mut contra_rx) = wired().await;
     while contra_rx.try_recv().is_ok() {}
+    assert_eq!(
+        fx.engine.embedding_backlog().await.unwrap(),
+        0,
+        "precondition: no engram chunk waits"
+    );
     assert!(fx.engine.reflection_embedding_backlog().await.unwrap() > 0);
     // A fresh engine with the check on asks for a pass while its pending
     // count is unknown.

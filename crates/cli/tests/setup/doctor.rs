@@ -377,6 +377,77 @@ fn doctor_counts_reflection_chunks_only_when_there_are_some() {
     );
 }
 
+/// The direct-read `status` (no daemon, so no `activity` block) carries the
+/// two reflection keys only while the index holds a reflection chunk, as the
+/// daemon's report does: without a page its output is what it always was.
+#[test]
+fn direct_status_counts_reflection_chunks_only_when_there_are_some() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let db = work.path().join("index.db");
+    let domain_dir = setup_domain(work.path(), "eng", &config);
+    let manifest = std::fs::read_to_string(domain_dir.join("MANIFEST.md")).unwrap();
+    std::fs::write(
+        domain_dir.join("MANIFEST.md"),
+        manifest.replacen("---\n", "---\nreflection: on\n", 1),
+    )
+    .unwrap();
+    let sync_and_status = || -> Value {
+        bin()
+            .args(["sync", "--config"])
+            .arg(&config)
+            .args(["--db"])
+            .arg(&db)
+            .assert()
+            .success();
+        let out = bin()
+            .args(["--json", "status", "--config"])
+            .arg(&config)
+            .args(["--db"])
+            .arg(&db)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let before = sync_and_status();
+    assert_eq!(before["indexed"], serde_json::json!(true), "{before}");
+    assert!(
+        before.get("activity").is_none(),
+        "the direct read, not a daemon: {before}"
+    );
+    assert!(before["embeddings"].is_object(), "{before}");
+    assert!(
+        before["embeddings"].get("reflection_chunks").is_none(),
+        "{before}"
+    );
+    assert!(
+        before["embeddings"]
+            .get("reflection_embedded_chunks")
+            .is_none(),
+        "{before}"
+    );
+    write(
+        &domain_dir,
+        "reflections/guides/a.md",
+        "# A page for people\n\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n",
+    );
+    let after = sync_and_status();
+    assert!(
+        after["embeddings"]["reflection_chunks"].as_u64().unwrap() > 0,
+        "{after}"
+    );
+    assert_eq!(
+        after["embeddings"]["reflection_embedded_chunks"],
+        serde_json::json!(0),
+        "no provider ran: {after}"
+    );
+}
+
 /// A provisioned artifact folder inside the root holds deployable files,
 /// not engrams: the sync never indexes them, so doctor never lists them as
 /// unindexed.
