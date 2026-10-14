@@ -173,5 +173,56 @@
       "status_flip_budget": 1,
       "forbid_new_engram": true
     }
+  },
+  {
+    "id": "rf-trig-01",
+    "workspace": "lantern",
+    "task_type": "trigger_positive",
+    "question": "What does the lighthouse Reflection need from you right now?",
+    "expect": {
+      "require_reflect": {
+        "domains": [
+          "lighthouse"
+        ]
+      },
+      "forbid_evolve": true,
+      "answer_any": [
+        "sunset",
+        "thirty minutes",
+        "lamp"
+      ]
+    }
+  },
+  {
+    "id": "rf-trig-02",
+    "workspace": "lantern",
+    "task_type": "trigger_positive",
+    "question": "The keepers keep editing the pages for new people. Go through what they changed and fold anything useful into what you know.",
+    "expect": {
+      "require_reflect": {
+        "domains": [
+          "lighthouse"
+        ]
+      },
+      "answer_any": [
+        "lamp",
+        "log"
+      ]
+    }
+  },
+  {
+    "id": "rf-neg-01",
+    "workspace": "lantern",
+    "task_type": "trigger_negative",
+    "question": "When is the lamp lit?",
+    "expect": {
+      "forbid_reflect": true,
+      "forbid_evolve": true,
+      "forbid_any_write": true,
+      "answer_any": [
+        "thirty minutes",
+        "before sunset"
+      ]
+    }
   }
 ]

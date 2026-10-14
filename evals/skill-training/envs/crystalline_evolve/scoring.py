@@ -19,6 +19,9 @@ feed the score, all deterministic:
 The fixture workspace is ``derelict``, which plants exactly one instance
 of each of the fourteen V rules; ``observatory`` carries all of them and
 ``outreach`` is the tidy control domain a sweep must find nothing in.
+The ``lantern`` workspace keeps a Reflection for the ``reflect`` items:
+its one page says the lamp is lit at sunset while the engram says thirty
+minutes before.
 
 Supported ``expect`` keys, in three groups.
 
@@ -38,6 +41,11 @@ keeps the tool description honest in both directions:
   them after the last write-side call and over the same domain scope as
   the first. Nothing is stored between runs, so a shrinking queue is the
   only confirmation the pass landed.
+- ``require_reflect``: a ``reflect`` call must exist, the Reflection's
+  work queue. Optional subkey ``domains`` (the exact set of the domains
+  argument on a matching call).
+- ``forbid_reflect``: no ``reflect`` call at all. A plain recall in a
+  domain that keeps a Reflection must not reach for its queue.
 
 **Protocol and budget.** How much authority a fix was allowed to take:
 
@@ -55,7 +63,8 @@ keeps the tool description honest in both directions:
   off the back of one sweep fails the item.
 - ``forbid_new_engram``: no ``write_engram`` call at all. A queue item
   never licenses inventing an unrequested successor engram.
-- ``forbid_any_write``: no write, edit, delete or move calls.
+- ``forbid_any_write``: no write, edit, delete or move calls, and no
+  ``write_reflection`` or ``discuss`` call.
 - ``edit``: an ``edit_engram`` call whose ``domain`` matches and whose
   identifier resolves to ``identifier``.
 - ``set_frontmatter``: an ``edit_engram`` call with
@@ -97,7 +106,11 @@ __all__ = ["score_item", "snapshot_state", "describe_expectations"]
 
 MCP_PREFIX = "mcp__crystalline__"
 EVOLVE_TOOL = "evolve_engrams"
-MUTATING_TOOLS = ("write_engram", "edit_engram", "delete_engram", "move_engram")
+REFLECT_TOOL = "reflect"
+MUTATING_TOOLS = (
+    "write_engram", "edit_engram", "delete_engram", "move_engram",
+    "write_reflection", "discuss",
+)
 SENTINEL_DATE = re.compile(r"\b9\d{3}-\d{2}-\d{2}\b")
 TAG_IN_CONTENT = re.compile(r"#[a-z0-9][a-z0-9_-]*", re.IGNORECASE)
 
@@ -333,6 +346,17 @@ def score_item(
             "not a maintenance pass)",
         ))
 
+    reflects = _calls(tool_calls, REFLECT_TOOL)
+    if expect.get("require_reflect"):
+        checks.append((bool(reflects), "a reflect call (the Reflection queue is the starting point)"))
+        spec = expect["require_reflect"]
+        want_domains = spec.get("domains") if isinstance(spec, dict) else None
+        if want_domains is not None:
+            want = sorted(str(d) for d in want_domains)
+            checks.append((any(_domains_of(c) == want for c in reflects), f"reflect scoped to domains {want}"))
+    if expect.get("forbid_reflect"):
+        checks.append((not reflects, "no reflect call (this is not about the Reflection)"))
+
     if expect.get("evolve_rerun"):
         ok = len(evolve_idx) >= 2
         if ok and mutating_idx:
@@ -513,6 +537,16 @@ def describe_expectations(expect: dict) -> str:
             "maintenance pass. Calling evolve_engrams here is the failure: "
             "the sweep is deliberate and on demand, never a reflex before a "
             "plain lookup or after a plain capture."
+        )
+    if expect.get("require_reflect"):
+        lines.append(
+            "This asks what a domain's Reflection needs: the correct opening move is "
+            "a reflect call, which returns the Reflection's queue - what people "
+            "changed, what the engrams changed and the threads waiting for the agent."
+        )
+    if expect.get("forbid_reflect"):
+        lines.append(
+            "This is not about the Reflection. Calling reflect here is the failure."
         )
     if expect.get("evolve_rerun"):
         lines.append(

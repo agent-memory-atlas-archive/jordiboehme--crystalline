@@ -327,6 +327,22 @@ flowchart LR
     D --> K[Team domain files]
 ```
 
+## Reflection on a team server
+
+A domain shared through GitHub keeps its [Reflection](reflection.md), its documents for people, on one home instance: the team server whose `service.public_url` is the domain's `reflection_home`. That key is filled in when Reflection is switched on at the team server, so switch it on there and not on a laptop. Every other instance that holds the domain answers "this domain's Reflection lives at <url>", and people and agents work on the Reflection at the home.
+
+The home backs the whole `reflections/` folder up to the branch `crystalline/reflections` of the domain's repository. The branch never carries an engram, and sharing engram changes never carries a file under `reflections/`. A daily agent run on the home instance can work the Reflection's queue; see [A scheduled run](reflection.md#a-scheduled-run) for a cron and a systemd example, and [Restore from the backup](reflection.md#restore-from-the-backup) for the way back.
+
+```mermaid
+flowchart LR
+    people[People, through their agents, the files or the JSON API] -->|edit, comment| home[Team server: the home instance]
+    agents[Agents over MCP] -->|reflect, write_reflection, discuss| home
+    cron[Scheduled agent run] -->|reflect| home
+    home -->|share changes: engrams| main[(GitHub: tracked branch)]
+    home -->|backup: reflections/| backup[(GitHub: crystalline/reflections)]
+    laptop[A laptop subscribed to the domain] -.->|points to the home| home
+```
+
 ## Run in a container
 
 Crystalline publishes a multi-arch OCI image (`linux/amd64` and `linux/arm64`) to GHCR on every release, for Linux server deployments. macOS and Windows have no OCI container runtime worth targeting here, so those platforms run the native binary (see [Get started](../README.md#get-started) in the README); the container covers the Linux server case.
