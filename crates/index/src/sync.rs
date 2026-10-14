@@ -361,11 +361,16 @@ impl FileRows {
 /// What an engram under `reflections/` is, is decided by one predicate,
 /// [`crystalline_core::is_pending_engram`] (R48): a file the walk would index
 /// as an engram that carries no page marker. It is asked of the `recorded`
-/// engram paths under the folder, read from disk. A domain the index has
+/// engram paths under the folder, read from disk; a recorded file that no
+/// longer reads as an engram (frontmatter that does not parse, bytes that
+/// are not UTF-8) keeps the row of its last good version, so it counts as
+/// pending ([`crystalline_core::EngramRow::Recorded`]). A domain the index has
 /// synced always records its `MANIFEST.md`, so no recorded path at all means
 /// the index holds no row of the domain (a wipe and rebuild, a new machine's
 /// first sync, a schema rebuild): then it is asked of every file under
-/// `reflections/` instead, so a rebuild keeps a pending switch pending (R1).
+/// `reflections/` instead, so a rebuild keeps a pending switch pending (R1);
+/// there a file that does not read as an engram is none, since no row of
+/// it exists ([`crystalline_core::EngramRow::Unknown`]).
 pub fn reflection_mode(
     root: &Path,
     recorded: impl Iterator<Item = impl AsRef<str>>,
@@ -420,7 +425,7 @@ fn pending_engrams_up_to(
     }
     let pending = recorded.map(|p| p.as_ref().to_string()).filter(|p| {
         crystalline_core::reflection::is_under_reflections(p)
-            && crystalline_core::is_pending_engram(root, p)
+            && crystalline_core::is_pending_engram(root, p, crystalline_core::EngramRow::Recorded)
     });
     match limit {
         Some(limit) => pending.take(limit).collect(),
@@ -470,7 +475,13 @@ fn pending_engrams_on_disk(root: &Path, limit: Option<usize>) -> Vec<String> {
                 }
             };
             let rel = slash_rel(root, item.path());
-            if item.file_type().is_file() && crystalline_core::is_pending_engram(root, &rel) {
+            if item.file_type().is_file()
+                && crystalline_core::is_pending_engram(
+                    root,
+                    &rel,
+                    crystalline_core::EngramRow::Unknown,
+                )
+            {
                 found.push(rel);
                 if full(&found) {
                     return found;

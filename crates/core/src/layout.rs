@@ -227,6 +227,17 @@ pub fn slash_rel(root: &Path, path: &Path) -> String {
         .join("/")
 }
 
+/// What the caller of [`is_pending_engram`] knows about the index row of
+/// the path it asks about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngramRow {
+    /// The index records an engram row for the path.
+    Recorded,
+    /// No row is known: the index holds nothing of the domain, and the
+    /// files on disk are asked instead.
+    Unknown,
+}
+
 /// Whether the file at `rel` (domain-relative, under `reflections/`) in the
 /// domain at `root` is an engram that waits to move out of the Reflection's
 /// folder: the walk would take it for an engram (the class with the
@@ -240,11 +251,14 @@ pub fn slash_rel(root: &Path, path: &Path) -> String {
 /// heading and no provenance, reads as an engram, which only holds the
 /// switch pending (no file is ever dropped).
 ///
-/// A file that cannot be read counts as pending (fail closed), and so does a
-/// file whose frontmatter does not parse and that carries no page marker:
-/// the walk fails on it and keeps the row of its last good version, which is
-/// an engram row the switch must not drop. A file that is gone or is not
-/// valid UTF-8 is no engram. The class is taken from
+/// A file that cannot be read counts as pending (fail closed). What a file
+/// that no longer reads as an engram (not valid UTF-8, or frontmatter that
+/// does not parse) means depends on `row`: with an engram row recorded for
+/// the path, the walk fails on the file and keeps the row of its last good
+/// version, so the file counts as pending unless it carries a page marker
+/// (a file that is not UTF-8 has none to show); without one (the walk over
+/// the disk when the index holds nothing) it is no engram, as the walk sees
+/// it. A file that is gone is no engram. The class is taken from
 /// [`DomainLayout::bare`], which knows no artifact folder, so a markdown file
 /// in an in-root artifact folder under `reflections/` may be reported
 /// pending although the walk skips it: the safe direction.
@@ -252,7 +266,7 @@ pub fn slash_rel(root: &Path, path: &Path) -> String {
 /// This is the one predicate for "an engram under `reflections/`": the sync
 /// asks it to decide whether the switch is in effect, and the switch-on
 /// screen names exactly the files it calls pending.
-pub fn is_pending_engram(root: &Path, rel: &str) -> bool {
+pub fn is_pending_engram(root: &Path, rel: &str, row: EngramRow) -> bool {
     let rel = rel.trim_start_matches("./");
     let Some((folder, inner)) = rel.split_once('/') else {
         return false;
@@ -269,9 +283,12 @@ pub fn is_pending_engram(root: &Path, rel: &str) -> bool {
         Err(_) => return true,
     };
     let Ok(text) = String::from_utf8(bytes) else {
-        return false;
+        return row == EngramRow::Recorded;
     };
     let text = crate::to_lf(&text);
+    if row == EngramRow::Unknown && crate::parse_engram(&text).is_err() {
+        return false;
+    }
     let folder = root.join(folder);
     match crate::reflection::classify(inner) {
         // A threads file is the page's when its page is a marked page; one
@@ -536,7 +553,7 @@ mod tests {
             ("reflections/prov.md", false),
             ("reflections/twin.md", false),
             ("reflections/twin.threads.md", false),
-            ("reflections/broken.md", true),
+            ("reflections/broken.md", false),
             ("reflections/notes.txt", false),
             ("reflections/gone.md", false),
             ("notes/a.md", false),
@@ -545,7 +562,11 @@ mod tests {
             if rel.starts_with('R') && !root.join(rel).exists() {
                 continue;
             }
-            assert_eq!(is_pending_engram(root, rel), pending, "{rel}");
+            assert_eq!(
+                is_pending_engram(root, rel, EngramRow::Unknown),
+                pending,
+                "{rel}"
+            );
         }
         #[cfg(unix)]
         {
@@ -553,11 +574,42 @@ mod tests {
             let path = root.join("reflections/ids.md");
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
             let unreadable = std::fs::read(&path).is_err();
-            let pending = is_pending_engram(root, "reflections/ids.md");
+            let pending = is_pending_engram(root, "reflections/ids.md", EngramRow::Unknown);
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
             if unreadable {
                 assert!(pending, "a file that cannot be read counts as pending");
             }
+        }
+    }
+
+    /// R48a: a file that no longer reads as an engram (frontmatter that does
+    /// not parse, bytes that are not UTF-8) is pending only where the index
+    /// records an engram row for it; a page marker still clears it.
+    #[test]
+    fn a_file_that_stopped_reading_as_an_engram_is_pending_only_with_a_row() {
+        let dir = domain_with(&[
+            ("reflections/broken.md", "---\n: [\n---\n\n# Broken\n"),
+            (
+                "reflections/marked.md",
+                "---\n: [\n---\n\n# Page\n\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n",
+            ),
+        ]);
+        std::fs::write(dir.path().join("reflections/latin.md"), b"# Caf\xe9\n").unwrap();
+        for (rel, recorded, unknown) in [
+            ("reflections/broken.md", true, false),
+            ("reflections/latin.md", true, false),
+            ("reflections/marked.md", false, false),
+        ] {
+            assert_eq!(
+                is_pending_engram(dir.path(), rel, EngramRow::Recorded),
+                recorded,
+                "{rel} with a row"
+            );
+            assert_eq!(
+                is_pending_engram(dir.path(), rel, EngramRow::Unknown),
+                unknown,
+                "{rel} without one"
+            );
         }
     }
 
@@ -596,7 +648,11 @@ mod tests {
             ("reflections/page.threads.md", false),
             ("reflections/twin.threads.md", false),
         ] {
-            assert_eq!(is_pending_engram(dir.path(), rel), pending, "{rel}");
+            assert_eq!(
+                is_pending_engram(dir.path(), rel, EngramRow::Unknown),
+                pending,
+                "{rel}"
+            );
         }
     }
 
@@ -624,7 +680,11 @@ mod tests {
             ("reflections/loose.md", true),
             ("reflections/page.md", false),
         ] {
-            assert_eq!(is_pending_engram(dir.path(), rel), pending, "{rel}");
+            assert_eq!(
+                is_pending_engram(dir.path(), rel, EngramRow::Unknown),
+                pending,
+                "{rel}"
+            );
         }
     }
 }

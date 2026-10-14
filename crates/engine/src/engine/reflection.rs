@@ -2000,7 +2000,11 @@ mod tests {
         let pact = pact_starter("eng");
         std::fs::write(folder.join("PACT.md"), &pact).unwrap();
         assert!(
-            !crystalline_core::is_pending_engram(tmp.path(), "reflections/PACT.md"),
+            !crystalline_core::is_pending_engram(
+                tmp.path(),
+                "reflections/PACT.md",
+                crystalline_core::EngramRow::Unknown
+            ),
             "{pact}"
         );
         let ids = crystalline_core::reflection::split_sections(&pact)

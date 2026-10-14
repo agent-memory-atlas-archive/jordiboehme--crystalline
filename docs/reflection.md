@@ -26,7 +26,7 @@ Switching it on is refused in these cases, and the refusal says why:
 - The domain is connected to GitHub and the record of the team's copy cannot be read. Repair or remove that record; the next pull writes it again.
 - This instance's `service.public_url` cannot be a Reflection's home, for example because it is not a valid address for that.
 
-A plain editor or a pull can still write `reflection: on` into the MANIFEST. If engrams still live in `reflections/` then, the switch is pending: the folder stays engram content until the last engram has left it, and the Reflection tools answer that they wait for that. A `reflect` call over all domains names such a domain under `scope.pending`. A page written by hand with no hidden section id counts as such an engram too (see the next sections). Two folders that differ only in letter case keep the switch pending the same way, until one of them is gone.
+A plain editor or a pull can still write `reflection: on` into the MANIFEST. If engrams still live in `reflections/` then, the switch is pending: the folder stays engram content until the last engram has left it, and the Reflection tools answer that they wait for that. A `reflect` call over all domains names such a domain under `scope.pending`. A page written by hand with no hidden section id counts as such an engram too (see the next sections). Two folders that differ only in letter case keep the switch pending the same way, until one of them is gone. So does an engram whose frontmatter no longer parses, or that an editor saved in another encoding than UTF-8: Crystalline still holds its last good version, so fix the file, then move it out. A file in the folder that never was an engram does not hold the switch.
 
 ## The pact
 

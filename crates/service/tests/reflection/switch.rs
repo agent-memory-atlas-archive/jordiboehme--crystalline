@@ -310,7 +310,11 @@ async fn a_local_domain_switches_on_with_no_home_key_and_seeds_its_pact() {
     // holds the switch pending (R48): after a switch off and on again, or
     // after a rebuild of the index.
     assert!(
-        !crystalline_core::is_pending_engram(&fx.root, "reflections/PACT.md"),
+        !crystalline_core::is_pending_engram(
+            &fx.root,
+            "reflections/PACT.md",
+            crystalline_core::EngramRow::Unknown
+        ),
         "{pact}"
     );
 }

@@ -8872,6 +8872,67 @@ parity!(
     an_engram_whose_frontmatter_breaks_holds_the_switch
 );
 
+/// R48a, the other side: a file under `reflections/` that never was an
+/// engram (its frontmatter never parsed, so it has no row) does not hold the
+/// switch, neither beside recorded rows nor on the empty-index fallback.
+async fn a_broken_file_without_a_row_does_not_hold_the_switch(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", &manifest_on());
+    write(root, "reflections/a.md", &page("A", "x"));
+    write(root, "reflections/stray.md", "---\n: [\n---\n\n# Stray\n");
+    assert!(
+        crystalline_index::pending_engrams(root, std::iter::empty::<&str>()).is_empty(),
+        "the empty-index fallback calls it no engram"
+    );
+    sync_domain(store, "eng", root).await.unwrap();
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    let recorded = store.file_stamps(did).await.unwrap();
+    assert_eq!(
+        crystalline_index::reflection_mode(root, recorded.keys()),
+        crystalline_core::ReflectionMode::Effective
+    );
+    assert!(
+        reflection_paths(store, "eng")
+            .await
+            .contains(&"a.md".to_string())
+    );
+}
+parity!(
+    a_broken_file_without_a_row_does_not_hold_the_switch_on_both_backends,
+    a_broken_file_without_a_row_does_not_hold_the_switch
+);
+
+/// R48a for bytes: a recorded engram that a plain editor saved in another
+/// encoding keeps its last good row, so it holds the switch like a broken
+/// frontmatter does.
+async fn an_engram_saved_as_latin1_holds_the_switch(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", MANIFEST_OFF);
+    write(root, "reflections/cafe.md", "# Cafe\n\nlatinoneterm\n");
+    sync_domain(store, "eng", root).await.unwrap();
+    std::fs::write(
+        root.join("reflections/cafe.md"),
+        b"# Caf\xe9\n\nlatinoneterm\n",
+    )
+    .unwrap();
+    write(root, "MANIFEST.md", &manifest_on());
+    sync_domain(store, "eng", root).await.unwrap();
+    assert!(
+        reflection_paths(store, "eng").await.is_empty(),
+        "the switch is pending"
+    );
+    assert_eq!(
+        engram_rows_under_reflections(store, "eng").await,
+        ["reflections/cafe.md"]
+    );
+}
+parity!(
+    an_engram_saved_as_latin1_holds_the_switch_on_both_backends,
+    an_engram_saved_as_latin1_holds_the_switch
+);
+
 /// R48: switched off, the pages are indexed as engrams; switched on again,
 /// their id lines say they are pages, so the switch takes effect at once and
 /// the pages are reflection rows again, with no engram row left behind.
