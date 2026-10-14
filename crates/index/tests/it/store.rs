@@ -8549,7 +8549,6 @@ async fn with_the_switch_on_the_folder_has_its_own_index(store: &dyn Store) {
         "reflections/guides/deploying.md",
         &page("Deploying", "reflectiononterm"),
     );
-    write(root, "Reflections/cased.md", &page("Cased", "casedterm"));
     write(root, "reflections/PACT.md", &page("Pact", "pactterm"));
     write(
         root,
@@ -8564,12 +8563,11 @@ async fn with_the_switch_on_the_folder_has_its_own_index(store: &dyn Store) {
     let report = sync_domain(store, "eng", root).await.unwrap();
     let mut rows = reflection_paths(store, "eng").await;
     rows.sort();
-    // On a case-folding filesystem `Reflections/` is the same folder as
-    // `reflections/`; on a case-sensitive one it is a second folder the
-    // classifier still calls the Reflection's. Either way the page is a row
-    // keyed by its path inside the folder.
-    assert_eq!(rows, ["PACT.md", "cased.md", "guides/deploying.md"]);
-    assert_eq!(report.reflections_changed, 3, "{report:?}");
+    // A second spelling of the folder (`Reflections/` beside `reflections/`)
+    // holds the switch on a case-sensitive filesystem, so it has tests of its
+    // own and stays out of this one.
+    assert_eq!(rows, ["PACT.md", "guides/deploying.md"]);
+    assert_eq!(report.reflections_changed, 2, "{report:?}");
     assert!(
         engram_rows_under_reflections(store, "eng").await.is_empty(),
         "nothing in the folder is an engram row"
