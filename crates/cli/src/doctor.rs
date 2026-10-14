@@ -2964,22 +2964,19 @@ fn settle_stray(
 }
 
 /// Every `.md` file under `root`, relative and forward-slashed, skipping
-/// dot-directories, dot-files, the OKF reserved filenames and the Reflection's
+/// dot-directories, dot-files, the OKF reserved filenames, the artifact
+/// folders the MANIFEST provisions from inside the root and the Reflection's
 /// folder while `layout` has it in effect. Mirrors the sync engine's own walk
 /// so orphan and unindexed detection line up with what a sync would compute.
 /// The caller builds `layout` with the Reflection mode it can know: the mode
 /// in effect where it has read the index, the declared switch where not.
 fn markdown_rel_paths(root: &Path, layout: &DomainLayout) -> Vec<String> {
     let mut out = Vec::new();
-    let walker = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
-        if e.depth() == 0 {
-            return true;
-        }
-        let rel = slash_rel(root, e.path());
-        !(layout.classify(&rel) == PathClass::Hidden
-            || (layout.reflection() == ReflectionMode::Effective
-                && crystalline_core::reflection::is_under_reflections(&rel)))
-    });
+    // The prune the sync and verify apply: hidden folders, artifact folders
+    // and an effective Reflection's folder are never entered.
+    let walker = walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| e.depth() == 0 || !layout.prunes_dir(&slash_rel(root, e.path())));
     for entry in walker.filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {
             continue;
@@ -2987,12 +2984,12 @@ fn markdown_rel_paths(root: &Path, layout: &DomainLayout) -> Vec<String> {
         let rel = relative_slash_path(root, entry.path());
         // The OKF reserved names are never indexed (the sync walk skips them),
         // so counting them would report every generated index file as
-        // unindexed. Markdown in an artifact folder or under assets/ is still
-        // counted here, as it always was.
+        // unindexed. Markdown under assets/ is still counted here, as it
+        // always was.
         let markdown = rel.to_lowercase().ends_with(".md");
         match layout.classify(&rel) {
             PathClass::Engram => out.push(rel),
-            PathClass::Artifact | PathClass::EngramAsset if markdown => out.push(rel),
+            PathClass::EngramAsset if markdown => out.push(rel),
             PathClass::Artifact
             | PathClass::EngramAsset
             | PathClass::Reserved

@@ -317,6 +317,53 @@ fn a_reflection_page_is_never_an_unindexed_engram() {
     );
 }
 
+/// A provisioned artifact folder inside the root holds deployable files,
+/// not engrams: the sync never indexes them, so doctor never lists them as
+/// unindexed.
+#[test]
+fn an_artifact_folder_is_never_unindexed() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let db = work.path().join("index.db");
+    let domain_dir = setup_domain(work.path(), "eng", &config);
+    let manifest = std::fs::read_to_string(domain_dir.join("MANIFEST.md")).unwrap();
+    std::fs::write(
+        domain_dir.join("MANIFEST.md"),
+        format!(
+            "{}\n## Provisioning\n\n- skills: skills\n",
+            manifest.trim_end()
+        ),
+    )
+    .unwrap();
+    write(
+        &domain_dir,
+        "skills/tide/SKILL.md",
+        &engram("Tide", "skills/tide/skill"),
+    );
+    bin()
+        .args(["sync", "--config"])
+        .arg(&config)
+        .args(["--db"])
+        .arg(&db)
+        .assert()
+        .success();
+    let out = bin()
+        .args(["--json", "doctor", "--config"])
+        .arg(&config)
+        .args(["--db"])
+        .arg(&db)
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let unindexed = report["domains"][0]["unindexed"].as_array().unwrap();
+    assert!(
+        unindexed
+            .iter()
+            .all(|p| !p.as_str().unwrap().starts_with("skills/")),
+        "{report}"
+    );
+}
+
 /// Reproduces a colleague's real-world report: a file whose frontmatter
 /// does not parse never becomes indexed no matter how many times `sync`
 /// runs, so `doctor` must tell it apart from a file that is merely unsynced.
