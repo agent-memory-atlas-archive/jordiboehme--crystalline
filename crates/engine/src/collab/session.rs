@@ -262,13 +262,18 @@ fn agent_state_json(label: &str) -> String {
 pub enum RoomDoc {
     /// An engram, by the permalink it answers to.
     Engram(String),
+    /// A reflection page, by its path inside `reflections/`. It saves
+    /// straight to its file, so it has no overlay and is never re-keyed.
+    Reflection(String),
 }
 
 impl RoomDoc {
-    /// The name the room's controls carry: an engram's permalink.
+    /// The name the room's controls carry: an engram's permalink, or a
+    /// reflection's path inside `reflections/`.
     pub fn name(&self) -> &str {
         match self {
             RoomDoc::Engram(permalink) => permalink,
+            RoomDoc::Reflection(path) => path,
         }
     }
 }
@@ -319,6 +324,22 @@ impl CollabSessions {
         overlay: Option<&str>,
     ) -> Result<Joined, JoinError> {
         self.join_doc(domain, RoomDoc::Engram(permalink.to_string()), overlay)
+            .await
+    }
+
+    /// Join the room over a reflection page, opening it from the file on the
+    /// first join. A read-only domain opens none. The caller decided that
+    /// the caller may edit the page (`super::ws::join_reflection`).
+    pub async fn join_reflection(
+        self: &Arc<Self>,
+        domain: &str,
+        path: &str,
+    ) -> Result<Joined, JoinError> {
+        self.engine
+            .refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await
+            .map_err(JoinError::Engine)?;
+        self.join_doc(domain, RoomDoc::Reflection(path.to_string()), None)
             .await
     }
 
@@ -522,9 +543,10 @@ impl CollabSessions {
     /// itself, so an entry that was replaced meanwhile is left alone.
     async fn rekey(&self, from: &RoomKey, to_permalink: &str, epoch: &str) {
         // A rename moves an engram's permalink, and only an engram room is
-        // ever re-keyed.
+        // ever re-keyed: a reflection's receipt names the same path.
         let from_permalink = match &from.1 {
             RoomDoc::Engram(permalink) => permalink.as_str(),
+            RoomDoc::Reflection(_) => return,
         };
         if from_permalink == to_permalink {
             return;
@@ -824,6 +846,11 @@ pub struct CollabSession {
     /// Ends the saver loop and makes every save path a no-op, so nothing can
     /// write through a session no one owns any more.
     disposed: AtomicBool,
+    /// The save under way is the room's last one (`last_save`). Set only
+    /// around that save and cleared after it, so a room saved on close and
+    /// kept open by a late joiner does not assign section ids under the next
+    /// cursor. Read by a reflection room, whose ids come with the close.
+    final_pass: AtomicBool,
     state: Mutex<SessionState>,
 }
 
@@ -1004,6 +1031,7 @@ impl CollabSession {
             has_guests: AtomicBool::new(false),
             has_agents: AtomicBool::new(false),
             disposed: AtomicBool::new(false),
+            final_pass: AtomicBool::new(false),
             state: Mutex::new(SessionState {
                 awareness: Awareness::new(doc),
                 path: loaded.path,
@@ -1596,7 +1624,10 @@ impl CollabSession {
             return None; // an unresolved conflict never saves; drafts hold the text
         }
         // The last chance to land this text, so no retry backoff applies.
-        self.save_locked(&mut state, Instant::now()).await
+        self.final_pass.store(true, Ordering::Relaxed);
+        let renamed = self.save_locked(&mut state, Instant::now()).await;
+        self.final_pass.store(false, Ordering::Relaxed);
+        renamed
     }
 
     /// Move the registry entry after a rename, holding no session guard.
@@ -1685,7 +1716,11 @@ impl CollabSession {
         }
         let file = Self::file_text_locked(state);
         state.flush_requested = false;
-        if file == state.last_saved_text {
+        // A reflection room's ids come with its last save, so that save runs
+        // even when nothing new was typed since the one before it.
+        let closing_reflection =
+            matches!(self.doc(), RoomDoc::Reflection(_)) && self.final_pass.load(Ordering::Relaxed);
+        if file == state.last_saved_text && !closing_reflection {
             // Nothing effective changed: never write, never touch the mtime.
             state.dirty = false;
             state.oldest_unsaved = None;
@@ -2308,6 +2343,7 @@ impl CollabSession {
                     .engram_text(&room_address(&key.0, permalink))
                     .await
             }
+            RoomDoc::Reflection(path) => engine.reflection_room_text(&key.0, path).await,
         }
     }
 
@@ -2323,6 +2359,10 @@ impl CollabSession {
                 view.engram_text(&room_address(&self.domain, &state.permalink))
                     .await
             }
+            // No overlay: the view is not consulted.
+            RoomDoc::Reflection(path) => {
+                self.engine.reflection_room_text(&self.domain, &path).await
+            }
         }
     }
 
@@ -2334,6 +2374,13 @@ impl CollabSession {
     ) -> Result<Option<EngramText>, EngineError> {
         match self.doc() {
             RoomDoc::Engram(_) => view.engram_text_at_path(&state.path).await,
+            RoomDoc::Reflection(path) => {
+                match self.engine.reflection_room_text(&self.domain, &path).await {
+                    Ok(text) => Ok(Some(text)),
+                    Err(EngineError::NotFound(_)) => Ok(None),
+                    Err(e) => Err(e),
+                }
+            }
         }
     }
 
@@ -2345,6 +2392,17 @@ impl CollabSession {
                     .normalize_domain_spellings_for(file, &crate::scope::Scope::Unrestricted)
                     .await
             }
+            // A reflection is never parsed as an engram: the body gate splits
+            // off the frontmatter, as a reflection write's does.
+            RoomDoc::Reflection(_) => {
+                self.engine
+                    .normalize_domain_spellings_in(
+                        file,
+                        crystalline_core::relink::BodyGate::Split,
+                        &crate::scope::Scope::Unrestricted,
+                    )
+                    .await
+            }
         }
     }
 
@@ -2352,6 +2410,8 @@ impl CollabSession {
     async fn doc_switches_read_only_on(&self, state: &SessionState, file: &str) -> bool {
         match self.doc() {
             RoomDoc::Engram(_) => self.room_switches_read_only_on(&state.path, file).await,
+            // A reflection is never the MANIFEST.
+            RoomDoc::Reflection(_) => false,
         }
     }
 
@@ -2412,6 +2472,23 @@ impl CollabSession {
                 }
                 receipt
             }
+            // No `record_pending`: a Reflection edit owes no consolidation
+            // sweep.
+            RoomDoc::Reflection(path) => {
+                // Each name in the room is a `changed_by` entry; the existing
+                // participant reader, not a copy of it.
+                let authors = Self::participants_locked(state, None);
+                self.engine
+                    .save_reflection_room(
+                        &self.domain,
+                        &path,
+                        file,
+                        &state.checksum,
+                        &authors,
+                        self.final_pass.load(Ordering::Relaxed),
+                    )
+                    .await
+            }
         }
     }
 
@@ -2450,6 +2527,18 @@ impl CollabSession {
                             .await
                     }
                 }
+            }
+            RoomDoc::Reflection(path) => {
+                // The file is gone or holds exactly the room's last text
+                // (`restore_mine` checked); the save compares against what is
+                // there, or nothing.
+                let expected = match self.engine.reflection_room_text(&self.domain, &path).await {
+                    Ok(text) => text.checksum,
+                    Err(_) => String::new(),
+                };
+                self.engine
+                    .save_reflection_room(&self.domain, &path, file, &expected, &[], false)
+                    .await
             }
         }
     }

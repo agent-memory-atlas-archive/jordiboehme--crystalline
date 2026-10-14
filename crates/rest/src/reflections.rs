@@ -21,7 +21,7 @@ use crate::params::{DiscussParams, WriteReflectionParams};
 use crate::scope::ReflectionCaller;
 
 /// The person behind a request, as a reflection verb sees them.
-fn caller(identity: &Identity) -> ReflectionCaller {
+pub(crate) fn caller(identity: &Identity) -> ReflectionCaller {
     let name = identity
         .user
         .as_ref()
@@ -31,7 +31,7 @@ fn caller(identity: &Identity) -> ReflectionCaller {
 }
 
 /// The anonymous viewer's answer to a page write (save, move, delete).
-const ANONYMOUS_EDIT: &str =
+pub(crate) const ANONYMOUS_EDIT: &str =
     "anonymous visitors read this Reflection and cannot change it; sign in to edit";
 
 /// Refuse a reflection write by the anonymous viewer, before the engine
@@ -41,7 +41,7 @@ const ANONYMOUS_EDIT: &str =
 /// answer is 401 with `sentence`, since signing in is what fixes it, and it
 /// comes whatever the Reflection's state, the answer every other write on
 /// this surface gives the anonymous tier.
-async fn refuse_anonymous(
+pub(crate) async fn refuse_anonymous(
     state: &RestState,
     identity: &Identity,
     domain: &str,
@@ -64,7 +64,7 @@ async fn refuse_anonymous(
 /// checksum, a create over an existing page and a move or delete of a page
 /// somebody is editing are 409 (the shared mapping answers every other
 /// `Conflict` 422); everything else keeps the shared mapping.
-fn reflection_error(e: EngineError) -> ApiError {
+pub(crate) fn reflection_error(e: EngineError) -> ApiError {
     match &e {
         EngineError::Refused(text) if text.starts_with(REFUSED_ELSEWHERE_START) => {
             let url = text[REFUSED_ELSEWHERE_START.len()..].to_string();

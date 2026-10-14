@@ -837,6 +837,141 @@ async fn a_full_room_is_refused_before_the_upgrade_and_frees_its_slot() {
     );
 }
 
+// --- a room over a reflection ------------------------------------------------
+
+/// A served instance whose `eng` has Reflection on, is private to `keeper`,
+/// and holds `reflections/guides/a.md` and `reflections/PACT.md`: `ann` a
+/// member with knowledge `none` and Reflection `contributor`, `vera` a viewer
+/// member, `ed` an editor member. Built like the Reflection suite's `serve`,
+/// which this test crate cannot import.
+async fn serve_reflection() -> (
+    std::net::SocketAddr,
+    support::ScratchStateDir,
+    tempfile::TempDir,
+) {
+    use crystalline_service::rest::{MemberLevel, ReflectionLevel};
+    let scratch = support::ScratchStateDir::acquire();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("eng");
+    std::fs::create_dir_all(dir.join("reflections/guides")).unwrap();
+    std::fs::write(
+        dir.join("MANIFEST.md"),
+        "---\ntype: manifest\ntitle: eng\npermalink: manifest\ntags:\n  - manifest\nstatus: current\nrecorded_at: 2026-01-01\nreflection: on\n---\n\n# eng\n\n## Scope\n\n- Everything about eng\n\n## When to Use\n\n- Route here for eng questions\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("reflections/guides/a.md"),
+        "# A\n\n## One\n<!-- r:aaaa1111 -->\n\nFirst.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("reflections/PACT.md"),
+        "# Pact\n\n## How we work\n<!-- r:cccc3333 -->\n\nWe agree.\n",
+    )
+    .unwrap();
+    let mut cfg = GlobalConfig {
+        auth: Some(AuthConfig {
+            anonymous: Some(false),
+            ..Default::default()
+        }),
+        ..GlobalConfig::default()
+    };
+    cfg.domains
+        .insert("eng".to_string(), DomainEntry::file(dir));
+    let config_path = tmp.path().join("config.yaml");
+    crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
+    let store = TursoStore::open_in_memory().await.unwrap();
+    let engine = Arc::new(Engine::new(
+        Arc::new(Mutex::new(store)),
+        cfg,
+        None,
+        Some(config_path),
+    ));
+    engine.sync(None).await.unwrap();
+    let auth = Arc::new(
+        AuthStore::open(&tmp.path().join("web-auth.db"))
+            .await
+            .unwrap(),
+    );
+    for (name, role) in [
+        ("keeper", Role::Editor),
+        ("ann", Role::Viewer),
+        ("vera", Role::Viewer),
+        ("ed", Role::Editor),
+    ] {
+        auth.add_user(name, name, None, role, "pw12345678")
+            .await
+            .unwrap();
+    }
+    auth.set_domain_visibility("eng", true, "keeper")
+        .await
+        .unwrap();
+    auth.upsert_domain_member(
+        "eng",
+        "ann",
+        MemberLevel::None,
+        Some(ReflectionLevel::Contributor),
+        "keeper",
+    )
+    .await
+    .unwrap();
+    auth.upsert_domain_member("eng", "vera", MemberLevel::Viewer, None, "keeper")
+        .await
+        .unwrap();
+    auth.upsert_domain_member("eng", "ed", MemberLevel::Editor, None, "keeper")
+        .await
+        .unwrap();
+    let router = http_router(engine, Arc::new(AtomicUsize::new(0)), &[], auth, None).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    (addr, scratch, tmp)
+}
+
+/// A reflection room takes the Reflection's edit right, not the engram write
+/// gate: a contributor with no engram access gets in and a viewer does not,
+/// and `PACT.md` takes curate, which an editor holds and a contributor not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_reflection_room_takes_edit_access_not_engram_access() {
+    let (addr, _scratch, _tmp) = serve_reflection().await;
+    let ann = login(addr, "ann", "pw12345678").await;
+    let vera = login(addr, "vera", "pw12345678").await;
+    let ed = login(addr, "ed", "pw12345678").await;
+    let page = "/api/v1/collab-reflection/eng/guides/a.md";
+    let pact = "/api/v1/collab-reflection/eng/PACT.md";
+
+    let socket = connect(addr, page, Some(&ann.0), same_host(addr)).await;
+    assert!(socket.is_ok(), "a contributor opens a reflection room");
+    let err = connect(addr, page, Some(&vera.0), same_host(addr))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refusal_status(&err),
+        Some(403),
+        "a viewer reads, never edits"
+    );
+
+    let err = connect(addr, pact, Some(&ann.0), same_host(addr))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refusal_status(&err),
+        Some(403),
+        "PACT.md takes curate, which a contributor lacks"
+    );
+    let socket = connect(addr, pact, Some(&ed.0), same_host(addr)).await;
+    assert!(socket.is_ok(), "an editor curates and opens PACT.md");
+}
+
 // --- a room over somebody else's draft ---------------------------------------
 
 /// The instance the overlay tests run against: one file domain `team` that

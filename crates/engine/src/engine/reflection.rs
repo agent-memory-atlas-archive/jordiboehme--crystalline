@@ -8,6 +8,7 @@ use crystalline_core::reflection::{ReflectionHome, ReflectionState};
 use crystalline_core::relink::BodyGate;
 
 use super::*;
+use crate::collab::session::RoomDoc;
 use crate::params::WriteReflectionParams;
 use crate::scope::{ReflectionCaller, ReflectionRight, Scope, reflection_right_word};
 
@@ -549,8 +550,7 @@ pub(crate) struct EngramFact {
 /// The absolute path of a file inside a domain's `reflections/`, in the
 /// folder's spelling on disk (see [`reflection_dir`]). A verb that holds a
 /// [`ReflectionAccess`] uses [`ReflectionAccess::abs`], which resolves the
-/// folder once.
-#[allow(dead_code)] // Used by the rooms and the file verbs (Tasks 18, 23).
+/// folder once; a room, which holds none, uses this.
 pub(super) fn reflection_abs(root: &Path, inner: &str) -> PathBuf {
     join_rel(&reflection_dir(root), inner)
 }
@@ -974,6 +974,11 @@ impl Engine {
         }
         self.index_reflection(access.domain_id, &p.path, &final_text, &abs)
             .await?;
+        // The page lock goes before the room is touched: a room's save holds
+        // the room's state and then takes this lock, so the other order
+        // here would deadlock against a person typing. A room save that slips
+        // in between finds the file moved, merges it and lands the same text.
+        drop(_lock);
         let mut receipt = json!({
             "domain": p.domain,
             "path": p.path,
@@ -987,7 +992,176 @@ impl Engine {
             receipt["heading_stripped"] = json!(heading);
             receipt["guidance"] = json!(HEADING_STRIPPED_GUIDANCE);
         }
+        let doc = RoomDoc::Reflection(p.path.clone());
+        if let Some(rooms) = self.collab_rooms()
+            && rooms.has_live_doc(&p.domain, &doc, None).await
+        {
+            // The room never holds the block (contract "Co-editing a
+            // reflection"): the text enters it stripped, and the room's save
+            // re-attaches the stored block.
+            let applied = rooms
+                .apply_doc_text(
+                    &p.domain,
+                    &doc,
+                    None,
+                    without_provenance(&final_text),
+                    &caller.author.name,
+                    None,
+                )
+                .await
+                .map_err(EngineError::Conflict)?;
+            receipt["landed"] = json!("live");
+            receipt["present"] = json!(applied.participants);
+        }
         Ok(receipt)
+    }
+}
+
+impl Engine {
+    /// A reflection as a room reads it: the page without the block that
+    /// names its source engrams, for everyone in the room; the checksum is
+    /// the file's, so every stale check compares file against file.
+    pub async fn reflection_room_text(&self, domain: &str, inner: &str) -> Result<EngramText> {
+        let not_found =
+            || EngineError::NotFound(format!("no reflection '{inner}' in domain '{domain}'"));
+        let ContentSource::File { root } = self.read_source(domain) else {
+            return Err(not_found());
+        };
+        let file = read_opt(&reflection_abs(&root, inner))?.ok_or_else(not_found)?;
+        Ok(EngramText {
+            domain: domain.to_string(),
+            permalink: inner.to_string(),
+            path: r::domain_rel(inner),
+            checksum: sha256_hex(file.as_bytes()),
+            content: without_provenance(&file),
+        })
+    }
+
+    /// A room's save. `authors` are the names in the room; the stored
+    /// bookkeeping wins over whatever the room text carries. Section ids are
+    /// assigned on the `final_save` only. Answers the receipt a room reads
+    /// (`checksum`, `permalink`, `path`); `permalink` is `inner`, so a
+    /// reflection room is never re-keyed.
+    ///
+    /// A page that is gone answers `NotFound` (the room's deletion conflict)
+    /// unless `expected_checksum` is empty, which only the room's restore
+    /// passes, for a page it puts back.
+    pub async fn save_reflection_room(
+        &self,
+        domain: &str,
+        inner: &str,
+        text: &str,
+        expected_checksum: &str,
+        authors: &[String],
+        final_save: bool,
+    ) -> Result<Value> {
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
+        let not_found =
+            || EngineError::NotFound(format!("no reflection '{inner}' in domain '{domain}'"));
+        let ContentSource::File { root } = self.read_source(domain) else {
+            return Err(not_found());
+        };
+        let abs = reflection_abs(&root, inner);
+        let baseline_abs = reflection_abs(&root, &r::baseline_path(inner));
+        let _lock = self.lock_file(&abs).await;
+        let current = read_opt(&abs)?;
+        let receipt = |file: &str| {
+            json!({
+                "checksum": sha256_hex(file.as_bytes()),
+                "permalink": inner,
+                "path": r::domain_rel(inner),
+            })
+        };
+        // An agent's live write already put exactly this text, plus the
+        // stored block, in the file (the live arm of `write_reflection_text`):
+        // the room is only catching up, which is not a conflict. The answer is
+        // the file's checksum, never the room text's, or the room's next save
+        // would be refused as stale.
+        if !final_save
+            && let Some(file) = current.as_deref()
+            && without_provenance(file) == text
+        {
+            return Ok(receipt(file));
+        }
+        match current.as_deref() {
+            None if !expected_checksum.is_empty() => return Err(not_found()),
+            Some(file) if sha256_hex(file.as_bytes()) != expected_checksum => {
+                return Err(EngineError::Conflict(format!(
+                    "stale edit: '{inner}' changed since the room last saved it"
+                )));
+            }
+            _ => {}
+        }
+        // Rule 8 the way a write takes it: the room's text arrives respelled
+        // already (the session's `normalize_doc`), and the stored page and
+        // its baseline get the same respelling as a link rewrite that is no
+        // person's change, so a section nobody touched records nobody.
+        let stored_baseline = read_opt(&baseline_abs)?.unwrap_or_default();
+        let funnel = self
+            .spelling_funnel(
+                &crate::scope::Scope::Unrestricted,
+                &[text, current.as_deref().unwrap_or(""), &stored_baseline],
+                BodyGate::Split,
+            )
+            .await?;
+        let respell = |source: &str| funnel.respell(source);
+        let (incoming, _) = respell(text);
+        let (stored, baseline) = match current.as_deref() {
+            Some(page) => {
+                let out =
+                    r::relink(page, &stored_baseline, &respell).map_err(EngineError::Invalid)?;
+                (Some(out.page), out.baseline)
+            }
+            None => (None, stored_baseline.clone()),
+        };
+        let authors: Vec<String> = if authors.is_empty() {
+            vec!["someone".to_string()]
+        } else {
+            authors.to_vec()
+        };
+        let (composed, _, prov) = compose_reflection(
+            stored.as_deref(),
+            &baseline,
+            &incoming,
+            &authors,
+            final_save,
+            &now(),
+        )?;
+        let final_text = crystalline_core::to_lf(
+            &r::write_provenance(&composed, &prov).map_err(EngineError::Invalid)?,
+        )
+        .into_owned();
+        if baseline != stored_baseline {
+            write_file(&baseline_abs, &baseline)?;
+        }
+        // A close with nothing new to land writes nothing.
+        if current.as_deref() != Some(final_text.as_str()) {
+            write_file(&abs, &final_text)?;
+            let (domain_id, _) = self.domain_source(domain).await?;
+            self.index_reflection(domain_id, inner, &final_text, &abs)
+                .await?;
+        }
+        Ok(receipt(&final_text))
+    }
+
+    /// The right to be in a reflection's room: edit, curate for `PACT.md`
+    /// (as its `PUT` takes). Public because `require_reflection` is
+    /// engine-private.
+    pub async fn require_reflection_edit(
+        &self,
+        domain: &str,
+        path: &str,
+        caller: &ReflectionCaller,
+    ) -> Result<()> {
+        let need = if path == r::PACT_FILE {
+            ReflectionRight::Curate
+        } else {
+            ReflectionRight::Edit
+        };
+        self.require_reflection(domain, caller, need)
+            .await
+            .map(|_| ())
     }
 }
 
@@ -1235,6 +1409,10 @@ impl Engine {
             .await?;
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;
+        // After the gate, so a caller without the right never learns that a
+        // page is open; before the page lock, which a room's save takes.
+        self.refuse_under_live_rooms(domain, &[RoomDoc::Reflection(from.to_string())])
+            .await?;
         for path in [from, to] {
             r::validate_reflection_path(path).map_err(EngineError::Invalid)?;
         }
@@ -1411,6 +1589,9 @@ impl Engine {
             .require_reflection(domain, caller, ReflectionRight::Edit)
             .await?;
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
+        // After the gate, as in `move_reflection`.
+        self.refuse_under_live_rooms(domain, &[RoomDoc::Reflection(inner.to_string())])
             .await?;
         r::validate_reflection_path(inner).map_err(EngineError::Invalid)?;
         if inner == r::PACT_FILE {

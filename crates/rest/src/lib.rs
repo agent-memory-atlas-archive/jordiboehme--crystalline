@@ -188,6 +188,7 @@ use crate::scope::{DomainAccess, DomainRight};
         engrams::remove,
         engrams::validate,
         crate::collab::ws::join,
+        crate::collab::ws::join_reflection,
         discovery::search,
         discovery::vocabulary,
         discovery::context,
@@ -883,6 +884,12 @@ fn routes(state: RestState) -> Router {
         .route(
             "/collab/{domain}/{*permalink}",
             get(crate::collab::ws::join),
+        )
+        // The reflection room: the same protocol, the Reflection's edit
+        // right, enforced in the handler before upgrade.
+        .route(
+            "/collab-reflection/{domain}/{*path}",
+            get(crate::collab::ws::join_reflection),
         )
         .route("/domains/{domain}/retire", post(engrams::retire))
         .route("/domains/{domain}/move", post(engrams::move_action))

@@ -745,6 +745,101 @@
         }
       }
     },
+    "/api/v1/collab-reflection/{domain}/{path}": {
+      "get": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "Upgrade to a real-time co-editing session on one reflection.",
+        "description": "WebSocket upgrade for the same y-sync + awareness protocol the engram room speaks, over a reflection page. The Reflection's edit right is required (curate for `PACT.md`), not engram access, plus a live session cookie and a same-host Origin header; a read-only instance or domain refuses. There is no draft overlay: every save lands in the file. The room text is the page without its `reflection:` frontmatter block, for every participant, and the checksum in `hello` and `save_state` is the file's. Section ids are added when the room closes. Refusals are problem+json.",
+        "operationId": "join_reflection_room",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "The reflection's path inside reflections/; may contain slashes.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching protocols: the session is joined."
+          },
+          "401": {
+            "description": "The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Below edit access (curate for PACT.md), a read-only instance or domain, or a missing/foreign Origin.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such reflection, or no such domain this caller may see.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Reflection is not here.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Not a reflection path.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Session or participant capacity reached.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/collab/{domain}/{permalink}": {
       "get": {
         "tags": [

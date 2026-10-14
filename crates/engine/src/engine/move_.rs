@@ -721,6 +721,11 @@ impl Engine {
                     "'{permalink}' is open in the editor right now, and moving it would change the \
                      address the editor saves to; close the editor and move it again"
                 ),
+                // A reflection room saves straight to its file: a move or a
+                // delete, or a rewrite of its links, would race its next save.
+                RoomDoc::Reflection(path) => {
+                    format!("somebody is editing '{path}'; try again once the page is closed")
+                }
             }));
         }
         Ok(())

@@ -2373,6 +2373,51 @@ export type SetupResponses = {
 
 export type SetupResponse = SetupResponses[keyof SetupResponses];
 
+export type JoinReflectionRoomData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+        /**
+         * The reflection's path inside reflections/; may contain slashes.
+         */
+        path: string;
+    };
+    query?: never;
+    url: '/api/v1/collab-reflection/{domain}/{path}';
+};
+
+export type JoinReflectionRoomErrors = {
+    /**
+     * The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.
+     */
+    401: ProblemDetail;
+    /**
+     * Below edit access (curate for PACT.md), a read-only instance or domain, or a missing/foreign Origin.
+     */
+    403: ProblemDetail;
+    /**
+     * No such reflection, or no such domain this caller may see.
+     */
+    404: ProblemDetail;
+    /**
+     * The Reflection is not here.
+     */
+    409: ProblemDetail;
+    /**
+     * Not a reflection path.
+     */
+    422: ProblemDetail;
+    /**
+     * Session or participant capacity reached.
+     */
+    503: ProblemDetail;
+};
+
+export type JoinReflectionRoomError = JoinReflectionRoomErrors[keyof JoinReflectionRoomErrors];
+
 export type CollabJoinData = {
     body?: never;
     path: {

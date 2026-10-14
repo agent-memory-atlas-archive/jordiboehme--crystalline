@@ -113,6 +113,7 @@ pub const MOUNTED_OPERATIONS: &[&str] = &[
     "GET /api/v1/sync",
     "GET /api/v1/events",
     "GET /api/v1/collab/{domain}/{permalink}",
+    "GET /api/v1/collab-reflection/{domain}/{path}",
     "GET /api/v1/search",
     "GET /api/v1/vocabulary",
     "GET /api/v1/context",

@@ -140,19 +140,29 @@ fn every_domain_walk_asks_the_layout() {
 /// task that adds a caller adds its file here in the same commit.
 #[test]
 fn reflection_variants_stay_in_their_modules() {
-    let allowed: &[(&str, &[&str])] = &[(
-        "list_reflections(",
-        &[
-            "index/src/store.rs",
-            "index/src/turso/mod.rs",
-            "index/src/postgres/mod.rs",
-            "index/src/sync.rs",
-            "engine/src/engine/reflect.rs",
-            "engine/src/engine/reflection.rs",
-            "engine/src/engine/rename_domain.rs",
-            "engine/src/engine/threads.rs",
-        ],
-    )];
+    let allowed: &[(&str, &[&str])] = &[
+        (
+            "list_reflections(",
+            &[
+                "index/src/store.rs",
+                "index/src/turso/mod.rs",
+                "index/src/postgres/mod.rs",
+                "index/src/sync.rs",
+                "engine/src/engine/reflect.rs",
+                "engine/src/engine/reflection.rs",
+                "engine/src/engine/rename_domain.rs",
+                "engine/src/engine/threads.rs",
+            ],
+        ),
+        (
+            "RoomDoc::Reflection",
+            &[
+                "engine/src/collab/session.rs",
+                "engine/src/engine/reflection.rs",
+                "engine/src/engine/move_.rs",
+            ],
+        ),
+    ];
     let mut strays: Vec<(String, String, &str)> = Vec::new();
     for (file, name, body) in fn_bodies() {
         for (needle, files) in allowed {
