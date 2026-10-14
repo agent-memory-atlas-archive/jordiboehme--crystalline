@@ -449,3 +449,47 @@ parity!(
     vector_hits_name_the_closest_section_of_one_domain_on_both_backends,
     vector_hits_name_the_closest_section_of_one_domain
 );
+
+/// A hit read back from the store carries its heading on its own and no
+/// snippet repeats the `## heading` line, in text, semantic and hybrid.
+async fn no_snippet_repeats_the_heading_line(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", &manifest_on());
+    write(
+        root,
+        "reflections/a.md",
+        "# A\n\n## Pager rings\n<!-- r:aaaa1111 -->\n\npager rings loudly\n",
+    );
+    sync_domain(store, "eng", root).await.unwrap();
+    run_embedding_pass(store, &FakeProvider::new("fake"), |_, _| {})
+        .await
+        .unwrap();
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    let rows = store.list_reflections(did).await.unwrap();
+    let vectors = store
+        .reflection_vector_hits(did, &embed_one("pager rings"), "fake")
+        .await
+        .unwrap();
+    for mode in [SearchMode::Text, SearchMode::Semantic, SearchMode::Hybrid] {
+        let page = crystalline_index::reflection::rank_sections(
+            &rows,
+            "pager rings",
+            mode,
+            &vectors,
+            0.78,
+            10,
+            1,
+        );
+        let hit = &page.items[0];
+        assert_eq!(
+            (hit.heading.as_str(), hit.snippet.as_str()),
+            ("Pager rings", "pager rings loudly"),
+            "{mode:?}"
+        );
+    }
+}
+parity!(
+    no_snippet_repeats_the_heading_line_on_both_backends,
+    no_snippet_repeats_the_heading_line
+);

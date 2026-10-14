@@ -12,7 +12,8 @@
 //! salience or the retired fade. Id lines never reach a snippet:
 //! `split_sections` leaves them out of the text. The snippet is the window
 //! the engram search cuts (`crate::snippet`) when the lexical half matched,
-//! else the section's lead.
+//! else the section's lead, both taken from the section without its heading
+//! line (the hit carries the heading on its own).
 //!
 //! It is also where a reflection row is written: [`index_reflection_row`]
 //! puts the row and its chunks in the index together (R53).
@@ -126,10 +127,11 @@ pub fn rank_sections(
         .take(limit)
         .map(|(score, k)| {
             let (row, section) = &sections[&k];
+            let body = snippet_text(section);
             let snippet = if lexical.contains_key(&k) {
-                make_snippet(&section.text, &terms)
+                make_snippet(body, &terms)
             } else {
-                lead(&section.text)
+                lead(body)
             };
             hit(row, section, snippet, score)
         })
@@ -186,6 +188,18 @@ fn semantic_scores<'a>(
                 .map(|(k, _)| (*k, v.similarity.clamp(0.0, 1.0)))
         })
         .collect()
+}
+
+/// The text a section's snippet is cut from: the section without its
+/// `## heading` line, which the hit already carries as `heading`. The heading
+/// words still count for the lexical score, which reads the whole text. The
+/// top section has no heading line and is cut whole.
+fn snippet_text(section: &Section) -> &str {
+    if section.heading.is_empty() {
+        &section.text
+    } else {
+        section.text.split_once('\n').map_or("", |(_, body)| body)
+    }
 }
 
 /// One ranked section as an answer row.
@@ -341,9 +355,9 @@ mod tests {
             ]
         );
         assert_eq!(page.total, 2, "the 0.70 section is under the floor");
-        assert!(
-            page.items[1].snippet.starts_with("## Rollback"),
-            "no lexical match: the section's lead"
+        assert_eq!(
+            page.items[1].snippet, "Roll back with the script.",
+            "no lexical match: the section's lead, without its heading line"
         );
     }
 
@@ -381,6 +395,27 @@ mod tests {
         assert_eq!(
             (paged.total, paged.items.len(), paged.items[0].path.as_str()),
             (3, 1, "guides/deploying.md")
+        );
+    }
+
+    /// The hit carries the heading, so no snippet repeats the `## heading`
+    /// line, in any mode; a term only the heading holds still finds the
+    /// section, and its snippet is then the section's lead.
+    #[test]
+    fn no_snippet_repeats_the_heading_line() {
+        let rows = deploy_rows();
+        for mode in [SearchMode::Text, SearchMode::Hybrid, SearchMode::Semantic] {
+            let vectors = [v("guides/deploying.md", 2, 0.9)];
+            let page = rank_sections(&rows, "rollback", mode, &vectors, 0.78, 10, 1);
+            let hit = &page.items[0];
+            assert_eq!(hit.heading, "Rollback", "{mode:?}");
+            assert_eq!(hit.snippet, "Roll back with the script.", "{mode:?}");
+        }
+        let page = rank_sections(&rows, "night deploys", SearchMode::Text, &[], 0.0, 10, 1);
+        assert!(
+            page.items.iter().all(|h| !h.snippet.contains("##")),
+            "{:?}",
+            page.items
         );
     }
 
