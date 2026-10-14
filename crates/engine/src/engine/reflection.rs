@@ -57,9 +57,6 @@ pub(crate) struct ReflectionAccess {
     /// Whether the caller may read engrams here; source engrams are stripped
     /// from every answer when not.
     pub engrams_visible: bool,
-    /// Where the Reflection lives.
-    #[allow(dead_code)] // Read by the backup job (Task 19).
-    pub home: ReflectionHome,
 }
 
 impl ReflectionAccess {
@@ -407,8 +404,8 @@ impl Engine {
         need: ReflectionRight,
     ) -> Result<ReflectionAccess> {
         let (right, engrams_visible) = self.caller_reflection_right(domain, caller).await?;
-        let home = match self.reflection_state(domain).await? {
-            ReflectionState::On { home } => home,
+        match self.reflection_state(domain).await? {
+            ReflectionState::On { .. } => {}
             ReflectionState::Off => {
                 return Err(EngineError::Refused(format!(
                     "{REFUSED_OFF_START}'{domain}'; its owner switches it on in the domain policies"
@@ -463,7 +460,6 @@ impl Engine {
             domain_id,
             right,
             engrams_visible,
-            home,
         })
     }
 
@@ -504,7 +500,7 @@ impl Engine {
     /// "Reflection is off"; a domain the caller may neither read nor reflect
     /// on answers the same way, so a private domain's existence is not
     /// revealed.
-    async fn caller_reflection_right(
+    pub(super) async fn caller_reflection_right(
         &self,
         domain: &str,
         caller: &ReflectionCaller,
@@ -558,6 +554,25 @@ pub(crate) struct EngramFact {
 /// folder once; a room, which holds none, uses this.
 pub(super) fn reflection_abs(root: &Path, inner: &str) -> PathBuf {
     join_rel(&reflection_dir(root), inner)
+}
+
+/// The pages among `pages` (paths inside the Reflection's folder) whose
+/// text on disk `rewrite` would change (it answers how many links it
+/// rewrites), as the rooms a move screens before anything moves. The disk
+/// decides, not the index, since the relink reads the disk too. A page that
+/// is gone has nothing to rewrite, and one that cannot be read is left to
+/// the relink, which names it in the move's receipt.
+pub(super) fn rooms_to_rewrite<'a>(
+    access: &ReflectionAccess,
+    pages: impl Iterator<Item = &'a str>,
+    rewrite: &dyn Fn(&str, &str) -> usize,
+) -> Vec<RoomDoc> {
+    pages
+        .filter(|inner| {
+            matches!(read_opt(&access.abs(inner)), Ok(Some(text)) if rewrite(&text, inner) > 0)
+        })
+        .map(|inner| RoomDoc::Reflection(inner.to_string()))
+        .collect()
 }
 
 /// The Reflection's folder under `root`: the one on disk when its name is
@@ -915,8 +930,20 @@ impl Engine {
             }
         };
         // An engram attachment is copied into reflections/assets/
-        // first; a page that embeds one is refused, nothing written.
-        r::refuse_engram_attachments(&incoming, &p.path).map_err(EngineError::Invalid)?;
+        // first; a write that adds an embed of one is refused, nothing
+        // written. An embed the stored page already holds (written by hand
+        // or in a room) is the reflect queue's to name, so a change to
+        // another section is not held up by it.
+        let held = current
+            .as_deref()
+            .map(|stored| r::engram_attachment_embeds(stored, &p.path))
+            .unwrap_or_default();
+        if r::engram_attachment_embeds(&incoming, &p.path)
+            .iter()
+            .any(|target| !held.contains(target))
+        {
+            r::refuse_engram_attachments(&incoming, &p.path).map_err(EngineError::Invalid)?;
+        }
         // Rule 8: the canonical spellings, the funnel every engram write's text
         // passes through, over the body after the frontmatter. The stored
         // page and its baseline go through it too, as a link rewrite that is
@@ -1443,26 +1470,6 @@ impl Engine {
             .await?;
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;
-        // After the gate, so a caller without the right never learns that a
-        // page is open; before the page lock, which a room's save takes.
-        self.refuse_under_live_rooms(domain, &[RoomDoc::Reflection(from.to_string())])
-            .await?;
-        // Every other page whose links the move rewrites waits too: a
-        // rewrite under an open room would race its next save. Read before
-        // anything moves, and relinked from this list below.
-        let rows = self
-            .store
-            .lock()
-            .await
-            .list_reflections(access.domain_id)
-            .await?;
-        let linking: Vec<RoomDoc> = rows
-            .iter()
-            .filter(|row| row.path != from && row.path != to)
-            .filter(|row| r::rewrite_links_to(&row.content, &row.path, from, to).1 > 0)
-            .map(|row| RoomDoc::Reflection(row.path.clone()))
-            .collect();
-        self.refuse_under_live_rooms(domain, &linking).await?;
         for path in [from, to] {
             r::validate_reflection_path(path).map_err(EngineError::Invalid)?;
         }
@@ -1471,6 +1478,29 @@ impl Engine {
                 "PACT.md is the domain's agreement; edit it instead of moving it".into(),
             ));
         }
+        // After the gate and the path rules, so a caller without the right
+        // never learns that a page is open; before the page lock, which a
+        // room's save takes.
+        self.refuse_under_live_rooms(domain, &[RoomDoc::Reflection(from.to_string())])
+            .await?;
+        // Every other page whose links the move rewrites waits too: a
+        // rewrite under an open room would race its next save. Screened from
+        // the text on disk before anything moves, and relinked from this list
+        // below.
+        let rows = self
+            .store
+            .lock()
+            .await
+            .list_reflections(access.domain_id)
+            .await?;
+        let others = rows
+            .iter()
+            .map(|row| row.path.as_str())
+            .filter(|path| *path != from && *path != to);
+        let linking = rooms_to_rewrite(&access, others, &|text, inner| {
+            r::rewrite_links_to(text, inner, from, to).1
+        });
+        self.refuse_under_live_rooms(domain, &linking).await?;
         let src = access.abs(from);
         let dst = access.abs(to);
         // Both pages' locks, in byte order, so two crossing moves cannot wait

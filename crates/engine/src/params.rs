@@ -712,7 +712,8 @@ pub struct ReflectParams {
     /// domain: one that is read-only, replaced by a connected server, not
     /// registered, or not in effect, or that the caller cannot work, is
     /// left out instead of refused, and one whose state cannot be read is
-    /// named in `scope.unreadable`. Every domain is still checked with the
+    /// named in `scope.unreadable` (one whose Reflection is pending in
+    /// `scope.pending`). Every domain is still checked with the
     /// caller's own rights; the flag only turns a per-domain refusal into a
     /// skip. Any caller may send it; a connected machine sends it to ask a
     /// server for exactly the domains it mounts from it, so the server's

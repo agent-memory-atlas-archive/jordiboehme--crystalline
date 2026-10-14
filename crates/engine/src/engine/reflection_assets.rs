@@ -8,8 +8,8 @@
 
 use crystalline_core::reflection as r;
 
+use super::reflection::rooms_to_rewrite;
 use super::*;
-use crate::collab::session::RoomDoc;
 use crate::scope::{ReflectionCaller, ReflectionRight, reflection_right_word};
 
 /// What an upload into a Reflection landed as.
@@ -103,21 +103,32 @@ impl Engine {
         let access = self
             .require_reflection(domain, caller, ReflectionRight::Curate)
             .await?;
-        // Every page the move will rewrite, checked against open rooms before
-        // anything moves: a refused move changes nothing.
+        // The paths first, so a move that cannot happen says why rather
+        // than that a page is open.
+        validate_attachment_path(from)?;
+        validate_attachment_path(to)?;
+        if from == to {
+            return Err(EngineError::Invalid(format!(
+                "'{from}' already is at '{to}'"
+            )));
+        }
+        // Every page the move will rewrite, read from disk and checked
+        // against open rooms before anything moves: a refused move changes
+        // nothing.
         let pages = self
             .store
             .lock()
             .await
             .list_reflections(access.domain_id)
             .await?;
-        let linking: Vec<RoomDoc> = pages
-            .iter()
-            .filter(|page| r::rewrite_asset_links(&page.content, &page.path, from, to).1 > 0)
-            .map(|page| RoomDoc::Reflection(page.path.clone()))
-            .collect();
+        let linking = rooms_to_rewrite(
+            &access,
+            pages.iter().map(|p| p.path.as_str()),
+            &|text, inner| r::rewrite_asset_links(text, inner, from, to).1,
+        );
         self.refuse_under_live_rooms(domain, &linking).await?;
-        self.asset_move_in(AssetHome::Reflection, domain, from, to)
+        let row_behind = self
+            .asset_move_in(AssetHome::Reflection, domain, from, to)
             .await?;
         // The file has moved by now, so a page that cannot be relinked is
         // named in the receipt (and the log) instead of failing a move that
@@ -153,6 +164,10 @@ impl Engine {
             json!({ "domain": domain, "from": from, "to": to, "links_rewritten": links });
         if !failed.is_empty() {
             receipt["links_failed"] = json!(failed);
+        }
+        // The file moved and its row did not: said plainly, the sync heals it.
+        if let Some(note) = row_behind {
+            receipt["note"] = json!(note);
         }
         Ok(receipt)
     }

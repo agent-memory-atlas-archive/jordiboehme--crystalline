@@ -493,8 +493,9 @@ pub fn merge_evolve(parts: Vec<Part>, page: usize, limit: usize, missing: &[Miss
 /// a page cut from it and renumbered, and every count added up. A part's
 /// rows arrive ranked with each group contiguous, so a group is a run of
 /// rows of one part with the same domain, path and section. The domains a
-/// part could not read (`scope.unreadable`) stay named, and the key is
-/// there only when one was left out, as in a local answer.
+/// part could not read (`scope.unreadable`) and those whose Reflection is
+/// pending (`scope.pending`) stay named, and each key is there only when
+/// one was left out, as in a local answer.
 pub fn merge_reflect(parts: Vec<Part>, page: usize, limit: usize, missing: &[Missing]) -> Value {
     struct Group {
         oldest: i64,
@@ -515,6 +516,7 @@ pub fn merge_reflect(parts: Vec<Part>, page: usize, limit: usize, missing: &[Mis
     let mut kinds = Map::new();
     let mut domains: Vec<Value> = Vec::new();
     let mut unreadable: Vec<Value> = Vec::new();
+    let mut pending: Vec<Value> = Vec::new();
     let mut total = 0u64;
     let mut guidance = Value::Null;
     let mut scope_kinds = json!([]);
@@ -533,6 +535,7 @@ pub fn merge_reflect(parts: Vec<Part>, page: usize, limit: usize, missing: &[Mis
         for (list, into) in [
             ("/scope/domains", &mut domains),
             ("/scope/unreadable", &mut unreadable),
+            ("/scope/pending", &mut pending),
         ] {
             for domain in answer
                 .pointer(list)
@@ -614,6 +617,9 @@ pub fn merge_reflect(parts: Vec<Part>, page: usize, limit: usize, missing: &[Mis
     });
     if !unreadable.is_empty() {
         merged["scope"]["unreadable"] = Value::Array(unreadable);
+    }
+    if !pending.is_empty() {
+        merged["scope"]["pending"] = Value::Array(pending);
     }
     with_missing(merged, missing)
 }
@@ -702,6 +708,16 @@ mod tests {
         assert_eq!(
             merge_reflect(with_unreadable, 1, 10, &[])["scope"]["unreadable"],
             json!(["broken"])
+        );
+        // So does a domain whose Reflection is pending, and a whole answer
+        // carries no such key.
+        assert!(merged["scope"].get("pending").is_none(), "{merged}");
+        let mut with_pending = parts();
+        with_pending[0].answer["scope"]["pending"] = json!(["waiting"]);
+        with_pending[1].answer["scope"]["pending"] = json!(["waiting"]);
+        assert_eq!(
+            merge_reflect(with_pending, 1, 10, &[])["scope"]["pending"],
+            json!(["waiting"])
         );
     }
 

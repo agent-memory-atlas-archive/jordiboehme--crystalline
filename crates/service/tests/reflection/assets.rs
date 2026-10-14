@@ -600,3 +600,263 @@ async fn an_off_list_contributor_adds_no_file() {
     );
     assert!(!fx.root.join("reflections/assets/flow.png").exists());
 }
+
+/// A `Reflections` folder spelled another way on disk keeps the files: no
+/// second spelling appears beside it (the pages' rule, Task 12).
+#[tokio::test]
+async fn files_live_in_the_reflection_folder_spelling_on_disk() {
+    let fx = reflecting().await;
+    std::fs::create_dir_all(fx.root.join("Reflections")).unwrap();
+    fx.engine
+        .reflection_asset_write("eng", "assets/flow.png", PNG.to_vec(), &person())
+        .await
+        .unwrap();
+    let folders: Vec<String> = std::fs::read_dir(&fx.root)
+        .unwrap()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|n| n.eq_ignore_ascii_case("reflections"))
+        .collect();
+    assert_eq!(folders, ["Reflections"]);
+    assert_eq!(
+        std::fs::read(fx.root.join("Reflections/assets/flow.png")).unwrap(),
+        PNG
+    );
+    let (bytes, _) = fx
+        .engine
+        .reflection_asset_read("eng", "assets/flow.png", &person())
+        .await
+        .unwrap();
+    assert_eq!(bytes, PNG);
+}
+
+/// A move whose rows cannot follow is undone: the file, its row and every
+/// link stay as they were.
+#[tokio::test]
+async fn a_move_whose_rows_fail_is_undone() {
+    let fx = reflecting().await;
+    fx.engine
+        .reflection_asset_write("eng", "assets/a.png", PNG.to_vec(), &person())
+        .await
+        .unwrap();
+    fx.engine
+        .write_reflection(&write("p.md", "# P\n\n![a](assets/a.png)\n"), &person())
+        .await
+        .unwrap();
+    fx.engine.fail_next_asset_move(false);
+    let err = fx
+        .engine
+        .move_reflection_asset("eng", "assets/a.png", "assets/b.png", &agent())
+        .await;
+    assert!(err.is_err(), "{err:?}");
+    assert!(
+        fx.root.join("reflections/assets/a.png").is_file(),
+        "the rename is undone"
+    );
+    assert!(!fx.root.join("reflections/assets/b.png").exists());
+    let paths: Vec<String> = fx
+        .engine
+        .reflection_asset_list("eng", &agent())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.path)
+        .collect();
+    assert_eq!(paths, ["assets/a.png"]);
+    let page = std::fs::read_to_string(fx.root.join("reflections/p.md")).unwrap();
+    assert!(page.contains("![a](assets/a.png)"), "{page}");
+    // The failpoint is spent: the next move goes through.
+    fx.engine
+        .move_reflection_asset("eng", "assets/a.png", "assets/b.png", &agent())
+        .await
+        .unwrap();
+}
+
+/// When the undo fails too, the file stays moved, the links follow it, and
+/// the receipt says plainly that the row is behind until the next sync.
+#[tokio::test]
+async fn a_move_that_cannot_be_undone_says_what_is_left() {
+    let fx = reflecting().await;
+    fx.engine
+        .reflection_asset_write("eng", "assets/a.png", PNG.to_vec(), &person())
+        .await
+        .unwrap();
+    fx.engine
+        .write_reflection(&write("p.md", "# P\n\n![a](assets/a.png)\n"), &person())
+        .await
+        .unwrap();
+    fx.engine.fail_next_asset_move(true);
+    let moved = fx
+        .engine
+        .move_reflection_asset("eng", "assets/a.png", "assets/b.png", &agent())
+        .await
+        .unwrap();
+    assert!(
+        moved["note"].as_str().unwrap().contains("next sync"),
+        "{moved}"
+    );
+    assert_eq!(moved["links_rewritten"], 1, "{moved}");
+    assert!(fx.root.join("reflections/assets/b.png").is_file());
+    let page = std::fs::read_to_string(fx.root.join("reflections/p.md")).unwrap();
+    assert!(page.contains("![a](assets/b.png)"), "{page}");
+    fx.engine.sync(None).await.unwrap();
+    let paths: Vec<String> = fx
+        .engine
+        .reflection_asset_list("eng", &agent())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.path)
+        .collect();
+    assert_eq!(paths, ["assets/b.png"], "the sync heals the row");
+}
+
+#[tokio::test]
+async fn a_move_onto_a_file_or_of_a_missing_file_changes_nothing() {
+    let fx = reflecting().await;
+    fx.engine
+        .reflection_asset_write("eng", "assets/a.png", PNG.to_vec(), &person())
+        .await
+        .unwrap();
+    fx.engine
+        .reflection_asset_write("eng", "assets/b.png", b"bee".to_vec(), &person())
+        .await
+        .unwrap();
+    let err = fx
+        .engine
+        .move_reflection_asset("eng", "assets/a.png", "assets/b.png", &agent())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("already holds a file"), "{err}");
+    assert_eq!(
+        std::fs::read(fx.root.join("reflections/assets/a.png")).unwrap(),
+        PNG
+    );
+    assert_eq!(
+        std::fs::read(fx.root.join("reflections/assets/b.png")).unwrap(),
+        b"bee"
+    );
+    let err = fx
+        .engine
+        .move_reflection_asset("eng", "assets/gone.png", "assets/c.png", &agent())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no file 'assets/gone.png'"), "{err}");
+    assert!(!fx.root.join("reflections/assets/c.png").exists());
+    let err = fx
+        .engine
+        .move_reflection_asset("eng", "assets/a.png", "flow.png", &agent())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("attachment path"),
+        "a bad path is named first: {err}"
+    );
+}
+
+/// A read-only domain freezes the files: no add, replace, move or remove.
+#[tokio::test]
+async fn a_read_only_domain_freezes_the_files() {
+    let fx = reflecting().await;
+    fx.engine
+        .reflection_asset_write("eng", "assets/a.png", PNG.to_vec(), &person())
+        .await
+        .unwrap();
+    std::fs::write(
+        fx.root.join("MANIFEST.md"),
+        manifest("reflection: on\nread_only: on\n"),
+    )
+    .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let frozen = |e: crystalline_service::EngineError| {
+        matches!(e, crystalline_service::EngineError::DomainReadOnly(_))
+    };
+    assert!(frozen(
+        fx.engine
+            .reflection_asset_write("eng", "assets/n.png", PNG.to_vec(), &person())
+            .await
+            .unwrap_err()
+    ));
+    assert!(frozen(
+        fx.engine
+            .reflection_asset_write("eng", "assets/a.png", b"x".to_vec(), &person())
+            .await
+            .unwrap_err()
+    ));
+    assert!(frozen(
+        fx.engine
+            .move_reflection_asset("eng", "assets/a.png", "assets/b.png", &agent())
+            .await
+            .unwrap_err()
+    ));
+    assert!(frozen(
+        fx.engine
+            .reflection_asset_delete("eng", "assets/a.png", &person())
+            .await
+            .unwrap_err()
+    ));
+    assert_eq!(
+        std::fs::read(fx.root.join("reflections/assets/a.png")).unwrap(),
+        PNG
+    );
+    assert!(!fx.root.join("reflections/assets/n.png").exists());
+    assert!(!fx.root.join("reflections/assets/b.png").exists());
+    fx.engine
+        .reflection_asset_read("eng", "assets/a.png", &person())
+        .await
+        .unwrap();
+}
+
+/// The replace check reads the disk: a file no sync has seen yet has no row
+/// and is still not replaced by a contributor.
+#[tokio::test]
+async fn a_contributor_never_replaces_a_file_the_index_has_not_seen() {
+    let (fx, _, nora, _) = three_people().await;
+    std::fs::create_dir_all(fx.root.join("reflections/assets")).unwrap();
+    std::fs::write(fx.root.join("reflections/assets/late.png"), PNG).unwrap();
+    let err = fx
+        .engine
+        .reflection_asset_write("eng", "assets/late.png", b"other".to_vec(), &nora)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("new name"), "{err}");
+    assert_eq!(
+        std::fs::read(fx.root.join("reflections/assets/late.png")).unwrap(),
+        PNG
+    );
+}
+
+/// An engram embed a page already holds (written by hand) does not hold up a
+/// change to another section; a write that adds one is refused.
+#[tokio::test]
+async fn only_an_added_engram_embed_is_refused() {
+    let fx = fixture(&[
+        ("MANIFEST.md", &manifest("reflection: on\n")),
+        ("assets/shot.png", "an engram attachment"),
+        ("reflections/b.md", "# B\n\n## Shot\n<!-- r:aaaa0003 -->\n\n![e](../assets/shot.png)\n\n## Notes\n<!-- r:aaaa0004 -->\n\nFirst.\n"),
+    ])
+    .await;
+    let section = |content: &str| WriteReflectionParams {
+        domain: "eng".into(),
+        path: "b.md".into(),
+        operation: Some("replace_section".into()),
+        section: Some("## Notes".into()),
+        content: Some(content.into()),
+        ..Default::default()
+    };
+    fx.engine
+        .write_reflection(&section("Second.\n"), &person())
+        .await
+        .unwrap();
+    let err = fx
+        .engine
+        .write_reflection(&section("![d](../assets/deck.pdf)\n"), &person())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("engram attachment"), "{err}");
+}

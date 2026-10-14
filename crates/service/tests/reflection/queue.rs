@@ -787,3 +787,56 @@ async fn an_off_list_curator_gets_no_count() {
         "an editor with no list curates and is nudged"
     );
 }
+
+/// A domain whose Reflection is pending is named in an unnamed queue's
+/// `scope.pending` (and left out of the queue); named, it still refuses.
+#[tokio::test]
+async fn a_pending_reflection_is_named_in_the_unnamed_queue() {
+    let fx = fixture(&[
+        ("MANIFEST.md", &manifest("reflection: on\n")),
+        (
+            "reflections/old.md",
+            &engram("Old", "reflections/old", "- [fact] still an engram"),
+        ),
+    ])
+    .await;
+    let unnamed = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        unnamed["scope"]["pending"],
+        serde_json::json!(["eng"]),
+        "{unnamed}"
+    );
+    assert_eq!(
+        unnamed["scope"]["domains"],
+        serde_json::json!([]),
+        "{unnamed}"
+    );
+    assert!(unnamed["scope"].get("unreadable").is_none(), "{unnamed}");
+    let named = ReflectParams {
+        domains: vec!["eng".into()],
+        ..Default::default()
+    };
+    let err = fx
+        .engine
+        .reflect(&named, &agent())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("reflections/"), "{err}");
+}
+
+/// A queue with nothing pending carries no `pending` member.
+#[tokio::test]
+async fn a_queue_with_nothing_pending_names_nothing_pending() {
+    let fx = curated(&[]).await;
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert!(queue["scope"].get("pending").is_none(), "{queue}");
+}

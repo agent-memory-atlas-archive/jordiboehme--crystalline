@@ -42,6 +42,24 @@ impl AssetHome {
         format!("{}{path}", self.kind().root())
     }
 
+    /// The domain-relative path of the file the home names `path`, as it
+    /// stands on disk under `root`: a Reflection's files live in the
+    /// Reflection's folder in its spelling on disk, as its pages do, so a
+    /// write never puts a second spelling of the folder beside the first.
+    pub(crate) fn on_disk_rel(self, root: &Path, path: &str) -> String {
+        match self {
+            AssetHome::Engram => self.domain_rel(path),
+            AssetHome::Reflection => {
+                let folder = super::reflection::reflection_dir(root);
+                let name = folder
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(crystalline_core::reflection::REFLECTIONS_DIR);
+                format!("{name}/{path}")
+            }
+        }
+    }
+
     /// The miss every verb of this home reports, one spelling per home.
     fn missing(self, domain: &str, path: &str) -> String {
         match self {
@@ -122,7 +140,7 @@ impl Engine {
         let (domain_id, source) = self.domain_source(domain).await?;
         match (home, &source) {
             (AssetHome::Engram | AssetHome::Reflection, ContentSource::File { root }) => {
-                let abs = contained_asset_path(root, &home.domain_rel(path))?;
+                let abs = contained_asset_path(root, &home.on_disk_rel(root, path))?;
                 // The stat comes first so an over-cap file is refused without
                 // ever being read: the ceiling is enforced by the walker (which
                 // skips such a file, so it has no row) and by the write, and a
@@ -236,7 +254,7 @@ impl Engine {
         let (domain_id, source) = self.domain_source(domain).await?;
         let written = match (home, &source) {
             (AssetHome::Engram | AssetHome::Reflection, ContentSource::File { root }) => {
-                let abs = contained_asset_path(root, &home.domain_rel(path))?;
+                let abs = contained_asset_path(root, &home.on_disk_rel(root, path))?;
                 // Held across the write and the row upsert, the file lock
                 // before the store lock like every other writer here. See
                 // `Engine::write_lock`.
@@ -342,7 +360,7 @@ impl Engine {
         let mut file_removed = false;
         match (home, &source) {
             (AssetHome::Engram | AssetHome::Reflection, ContentSource::File { root }) => {
-                let abs = contained_asset_path(root, &home.domain_rel(path))?;
+                let abs = contained_asset_path(root, &home.on_disk_rel(root, path))?;
                 let lock = self.write_lock(&abs);
                 let _guard = lock.lock().await;
                 match std::fs::remove_file(&abs) {
@@ -373,15 +391,24 @@ impl Engine {
     /// Move a file of `home` from `from` to `to` (paths inside the home's
     /// root), and its row with it. Refuses a destination that holds a file,
     /// so a move never overwrites. Both file locks are taken in byte order,
-    /// so two crossing moves cannot wait on each other. Links to the file
-    /// are the caller's: the substrate moves bytes and rows only.
+    /// so two crossing moves cannot wait on each other, and held until the
+    /// rows follow, so no write to either path slips in between. Links to
+    /// the file are the caller's: the substrate moves bytes and rows only.
+    ///
+    /// All or nothing where it can be: the row is built before the rename
+    /// (taken over from the stored row when it still describes the file, so
+    /// unchanged bytes are not hashed again), and when the rows cannot follow
+    /// the rename it is undone and the error answered. Only when the undo
+    /// fails too does the file stay at `to` with its row behind: the answer
+    /// is then `Some` sentence saying so (the next sync brings the row up to
+    /// date), and the move still counts as a change of the home.
     pub(crate) async fn asset_move_in(
         &self,
         home: AssetHome,
         domain: &str,
         from: &str,
         to: &str,
-    ) -> Result<AttachmentRow> {
+    ) -> Result<Option<String>> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
@@ -398,60 +425,153 @@ impl Engine {
                 }
             });
         };
-        let src = contained_asset_path(root, &home.domain_rel(from))?;
-        let dst = contained_asset_path(root, &home.domain_rel(to))?;
+        let src = contained_asset_path(root, &home.on_disk_rel(root, from))?;
+        let dst = contained_asset_path(root, &home.on_disk_rel(root, to))?;
         if src == dst {
             return Err(EngineError::Invalid(format!(
                 "'{from}' already is at '{to}'"
             )));
         }
-        let row = {
-            let (first, second) = if src < dst {
-                (&src, &dst)
-            } else {
-                (&dst, &src)
-            };
-            let first = self.write_lock(first);
-            let second = self.write_lock(second);
-            let _first = first.lock().await;
-            // Two spellings of one file (a letter-case rename on a
-            // case-insensitive disk) share one lock: taken once, never twice.
-            let _second = if Arc::ptr_eq(&first, &second) {
-                None
-            } else {
-                Some(second.lock().await)
-            };
-            if !src.is_file() {
+        let (first, second) = if src < dst {
+            (&src, &dst)
+        } else {
+            (&dst, &src)
+        };
+        let first = self.write_lock(first);
+        let second = self.write_lock(second);
+        let _first = first.lock().await;
+        // Two spellings of one file (a letter-case rename on a
+        // case-insensitive disk) share one lock: taken once, never twice.
+        let _second = if Arc::ptr_eq(&first, &second) {
+            None
+        } else {
+            Some(second.lock().await)
+        };
+        let meta = match std::fs::metadata(&src) {
+            Ok(meta) if meta.is_file() => meta,
+            Ok(_) => return Err(EngineError::NotFound(home.missing(domain, from))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(EngineError::NotFound(home.missing(domain, from)));
             }
-            if dst.exists() {
-                return Err(EngineError::Conflict(format!(
-                    "'{to}' already holds a file; remove it first or pick another name"
-                )));
+            Err(source) => {
+                return Err(EngineError::Io {
+                    path: src.display().to_string(),
+                    source,
+                });
             }
-            if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent).map_err(|source| EngineError::Io {
-                    path: parent.display().to_string(),
+        };
+        if dst.exists() {
+            return Err(EngineError::Conflict(format!(
+                "'{to}' already holds a file; remove it first or pick another name"
+            )));
+        }
+        // A rename keeps the modification instant, so a stored row that
+        // matches the file's stat still describes the bytes at `to`.
+        let modified = asset_modified(&src);
+        let stored = self
+            .store
+            .lock()
+            .await
+            .get_asset(home.table(), domain_id, from)
+            .await?;
+        let row = match stored {
+            Some(prior) if prior.size == meta.len() && prior.modified == modified => {
+                moved_row(prior, to)?
+            }
+            _ => {
+                if meta.len() > crystalline_core::MAX_ATTACHMENT_BYTES {
+                    return Err(EngineError::Invalid(over_cap_error(from, meta.len())));
+                }
+                let bytes = std::fs::read(&src).map_err(|source| EngineError::Io {
+                    path: src.display().to_string(),
                     source,
                 })?;
+                attachment_row(to, &bytes, modified)?
             }
-            std::fs::rename(&src, &dst).map_err(|source| EngineError::Io {
-                path: dst.display().to_string(),
-                source,
-            })?;
-            let bytes = std::fs::read(&dst).map_err(|source| EngineError::Io {
-                path: dst.display().to_string(),
-                source,
-            })?;
-            attachment_row(to, &bytes, asset_modified(&dst))?
         };
-        {
-            let store = self.store.lock().await;
-            store.delete_asset(home.table(), domain_id, from).await?;
-            store.upsert_asset(home.table(), domain_id, &row).await?;
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| EngineError::Io {
+                path: parent.display().to_string(),
+                source,
+            })?;
         }
-        self.after_asset_change(home, domain);
-        Ok(row)
+        std::fs::rename(&src, &dst).map_err(|source| EngineError::Io {
+            path: dst.display().to_string(),
+            source,
+        })?;
+        let rows_followed = self.move_asset_rows(home, domain_id, from, &row).await;
+        let Err(e) = rows_followed else {
+            self.after_asset_change(home, domain);
+            return Ok(None);
+        };
+        match self.undo_asset_rename(&dst, &src) {
+            Ok(()) => {
+                // The file is back; a row this move wrote for `to` goes, so
+                // the domain is as the move found it.
+                if let Err(failed) = self
+                    .store
+                    .lock()
+                    .await
+                    .delete_asset(home.table(), domain_id, to)
+                    .await
+                {
+                    tracing::warn!(
+                        "{} '{to}' in '{domain}': the row of an undone move could not be removed: {failed}",
+                        home.noun()
+                    );
+                }
+                Err(e)
+            }
+            Err(undo) => {
+                tracing::warn!(
+                    "{} '{from}' in '{domain}' moved to '{to}', its row could not follow ({e}) and the move could not be undone ({undo})",
+                    home.noun()
+                );
+                self.after_asset_change(home, domain);
+                Ok(Some(format!(
+                    "the file moved to '{to}', and its index row could not follow ({e}); the next sync brings the row up to date"
+                )))
+            }
+        }
+    }
+
+    /// The rows of a move: the new one in, the old one out.
+    async fn move_asset_rows(
+        &self,
+        home: AssetHome,
+        domain_id: DomainId,
+        from: &str,
+        row: &AttachmentRow,
+    ) -> Result<()> {
+        #[cfg(any(test, feature = "testing"))]
+        if self.asset_move_fault.lock().unwrap().is_some() {
+            return Err(EngineError::Internal(
+                "the rows of the move were not written (test failpoint)".into(),
+            ));
+        }
+        let store = self.store.lock().await;
+        store.upsert_asset(home.table(), domain_id, row).await?;
+        store.delete_asset(home.table(), domain_id, from).await?;
+        Ok(())
+    }
+
+    /// Put a moved file back where it was.
+    fn undo_asset_rename(&self, dst: &Path, src: &Path) -> std::io::Result<()> {
+        #[cfg(any(test, feature = "testing"))]
+        if self.asset_move_fault.lock().unwrap().take() == Some(true) {
+            return Err(std::io::Error::other(
+                "the undo was refused (test failpoint)",
+            ));
+        }
+        std::fs::rename(dst, src)
+    }
+
+    /// Arm a failure of the rows of the next asset move, after its rename;
+    /// with `undo_fails` the rename back fails too. Disarmed by the move it
+    /// hits.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn fail_next_asset_move(&self, undo_fails: bool) {
+        *self.asset_move_fault.lock().unwrap() = Some(undo_fails);
     }
 
     /// What a change to a file of `home` owes afterwards.
@@ -467,6 +587,22 @@ impl Engine {
             }
         }
     }
+}
+
+/// The row a moved file gets when its stored row still describes it: the
+/// same bytes at the new path, the mime read off the new name.
+fn moved_row(prior: AttachmentRow, to: &str) -> Result<AttachmentRow> {
+    let name = to.rsplit('/').next().unwrap_or(to);
+    let mime = crystalline_core::attachment_mime(name).ok_or_else(|| {
+        EngineError::Invalid(format!(
+            "attachment path '{to}': an attachment must carry an allowlisted file extension"
+        ))
+    })?;
+    Ok(AttachmentRow {
+        path: to.to_string(),
+        mime: mime.to_string(),
+        ..prior
+    })
 }
 
 #[cfg(test)]
@@ -491,5 +627,24 @@ mod tests {
             "reflections/assets/flow.png"
         );
         assert_eq!(AssetHome::Reflection.kind(), ContentKind::Reflection);
+    }
+
+    #[test]
+    fn a_reflection_file_lives_in_the_folder_spelling_on_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            AssetHome::Reflection.on_disk_rel(tmp.path(), "assets/flow.png"),
+            "reflections/assets/flow.png",
+            "no folder yet: the canonical spelling"
+        );
+        std::fs::create_dir_all(tmp.path().join("Reflections")).unwrap();
+        assert_eq!(
+            AssetHome::Reflection.on_disk_rel(tmp.path(), "assets/flow.png"),
+            "Reflections/assets/flow.png"
+        );
+        assert_eq!(
+            AssetHome::Engram.on_disk_rel(tmp.path(), "assets/flow.png"),
+            "assets/flow.png"
+        );
     }
 }
