@@ -633,13 +633,20 @@ impl Engine {
 
         // A folded MANIFEST draft can switch the Reflection on: the draft was
         // screened when it was written, and the fold is where the switch
-        // lands, so the pact is seeded below the way the policy edit seeds it.
-        let manifest_text = |root: &Option<PathBuf>| {
-            root.as_ref()
-                .and_then(|r| std::fs::read_to_string(r.join("MANIFEST.md")).ok())
-        };
-        let declared_on_before =
-            manifest_text(&root).is_some_and(|text| super::reflection::declares_on(&text));
+        // lands. The pact is seeded first, the way the policy edit seeds it
+        // before it writes the switch. A seed that fails refuses the fold the
+        // way the collision above does: the key goes back on and nothing is
+        // folded, so the same call works once the folder takes the pact.
+        if let Some(root) = &root
+            && folds_switch_on(root, &folding)
+            && let Err(e) = self.seed_pact(domain).await
+        {
+            self.write_review_key(domain, Some(crystalline_core::config::ReviewMode::Overlay))?;
+            return Err(EngineError::Conflict(format!(
+                "a draft of the MANIFEST switches Reflection on, and its PACT.md could not be written ({e}), so nothing was folded and the domain reviews changes again"
+            )));
+        }
+
         let mut folded = Vec::new();
         let mut discarded = Vec::new();
         for held in &drafts {
@@ -688,17 +695,6 @@ impl Engine {
                     "entries": held.entry_count(),
                 })),
             }
-        }
-
-        if !declared_on_before
-            && manifest_text(&root).is_some_and(|text| super::reflection::declares_on(&text))
-            && let Err(e) = self.seed_pact(domain).await
-        {
-            // The drafts are in the folder already; the Reflection works
-            // without its pact, and a person writes one like any page.
-            tracing::warn!(
-                "the folded MANIFEST of '{domain}' switched Reflection on, and its pact could not be seeded: {e}"
-            );
         }
 
         // Rows and mirror together, for every actor, and over the overlay as it
@@ -1497,4 +1493,21 @@ impl Engine {
         }
         Ok(report)
     }
+}
+
+/// Whether folding `folding` (in fold order, the last MANIFEST draft wins)
+/// switches the Reflection of the domain at `root` on: the MANIFEST in the
+/// folder does not say `reflection: on` and the one the fold writes does.
+fn folds_switch_on(root: &Path, folding: &[&ActorDrafts]) -> bool {
+    let landing = folding
+        .iter()
+        .flat_map(|held| held.entries.iter())
+        .rfind(|draft| draft.path == "MANIFEST.md");
+    let Some(draft) = landing else {
+        return false;
+    };
+    let before = std::fs::read_to_string(root.join("MANIFEST.md")).unwrap_or_default();
+    !draft.tombstone
+        && super::reflection::declares_on(&draft.content)
+        && !super::reflection::declares_on(&before)
 }
