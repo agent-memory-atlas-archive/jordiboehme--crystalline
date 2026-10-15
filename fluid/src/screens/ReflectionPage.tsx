@@ -80,6 +80,33 @@ function removeFileText(name: string): string {
 const LINK =
   "text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400";
 
+/**
+ * Whether the text before the first `##` holds the page's own `# Title`
+ * line. Not only the first line: an image or a paragraph may stand above it
+ * (an attach with the cursor at the top puts one there). A `#` line inside a
+ * code fence is code, not a title.
+ */
+function hasOwnTitle(intro: string): boolean {
+  let fence: string | null = null;
+  for (const line of intro.split("\n")) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence !== null) {
+      if (
+        marker !== undefined &&
+        marker[0] === fence[0] &&
+        marker.length >= fence.length
+      ) {
+        fence = null;
+      }
+    } else if (marker !== undefined) {
+      fence = marker;
+    } else if (/^ {0,3}#[ \t]/.test(line)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export default function ReflectionPage(): ReactElement {
   const { domain = "", "*": path = "" } = useParams();
   const status = useReflectionStatus(domain);
@@ -276,7 +303,7 @@ function PageBody({
   const page = doc.data;
   // The page's own `# Title` is its heading when it has one; otherwise the
   // header draws the title, so the page always has exactly one.
-  const ownTitle = /^\s*#[ \t]/.test(sections[0]?.text ?? "");
+  const ownTitle = hasOwnTitle(sections[0]?.text ?? "");
   // Replace, move and remove are curate verbs, offered on the reading page
   // only: a move waits while a linking page is open in a room, the
   // curator's own included.

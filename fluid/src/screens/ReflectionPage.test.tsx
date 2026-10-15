@@ -114,6 +114,41 @@ describe("the reflection page", () => {
     expect(article.querySelector("#s-_top")).not.toBeNull();
   });
 
+  it("draws one h1 when the page's own title is not its first line", async () => {
+    serve("curate", true, {
+      "/domains/eng/reflections/guides/deploying.md": () =>
+        doc({
+          markdown: MARKDOWN.replace(
+            "\n# Deploying\n",
+            "\n![shot.png](../assets/shot.png)\n\n# Deploying\n",
+          ),
+        }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await within(await screen.findByRole("article")).findByText(
+      "Deploys run at night.",
+    );
+    expect(
+      screen.getAllByRole("heading", { name: "Deploying", level: 1 }),
+    ).toHaveLength(1);
+  });
+
+  it("draws the header title when the intro holds a # line only in code", async () => {
+    serve("curate", true, {
+      "/domains/eng/reflections/guides/deploying.md": () =>
+        doc({
+          markdown: MARKDOWN.replace(
+            "\n# Deploying\n",
+            "\n```sh\n# not a title\n```\n",
+          ),
+        }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    expect(
+      await screen.findByRole("heading", { name: "Deploying", level: 1 }),
+    ).toBeVisible();
+  });
+
   it("jumps from a section to its source engrams for a reader of engrams", async () => {
     serve("curate", true);
     renderApp("/d/eng/reflection/guides/deploying.md");
