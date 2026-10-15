@@ -855,6 +855,10 @@ impl crystalline_index::ReindexHooks for DirectReindexHooks<'_> {
         }
     }
 
+    async fn lost_host(&self, _name: &str, why: &str) {
+        eprintln!("skipped: {why}");
+    }
+
     fn walker(&self) -> Option<String> {
         self.host.map(|host| host.instance_id.clone())
     }
@@ -2480,11 +2484,19 @@ async fn sync_targets(
         if let Some(host) = host {
             scan.walked_by(&host.instance_id);
         }
-        let report = {
+        let applied_scan = {
             let store = store.lock().await;
-            apply_scan(&*store, domain, scan)
-                .await
-                .map_err(|e| anyhow!("sync of '{name}' failed: {e}"))?
+            apply_scan(&*store, domain, scan).await
+        };
+        let report = match applied_scan {
+            Ok(report) => report,
+            // Another instance took the domain over while this walk ran:
+            // nothing was written. A named sync fails, a full one goes on.
+            Err(crystalline_index::IndexError::NotHost(why)) if only.is_none() => {
+                eprintln!("skipped: {why}");
+                continue;
+            }
+            Err(e) => bail!("sync of '{name}' failed: {e}"),
         };
         applied.push((domain, report));
     }
@@ -3182,7 +3194,16 @@ pub fn render_status(data: &serde_json::Value, daemon_note: &str) {
             .as_str()
             .or(d["host_instance_id"].as_str())
             .filter(|_| !d["hosted_here"].as_bool().unwrap_or(false));
+        // A host whose heartbeat is older than the stale threshold is gone
+        // for the lock: this instance can take the domain over.
+        let stale_before = crystalline_index::claim_window(crystalline_index::stale_secs()).1;
+        let stale = d["host_heartbeat_at"]
+            .as_str()
+            .is_some_and(|at| at < stale_before.as_str());
         match host {
+            Some(host) if stale => {
+                println!("  '{name}': {}", elsewhere.line_stale_host(host, name))
+            }
             Some(host) => println!("  '{name}': {}", elsewhere.line_elsewhere(host)),
             None => println!("  '{name}': {}", elsewhere.line(name)),
         }
