@@ -21,7 +21,11 @@ import { Link, useParams } from "react-router";
 
 import { problemDetail } from "../api/client";
 import type { QueueItem, ReviewGroup } from "../api/reflection";
-import { fetchReview, reflectionReviewKey } from "../api/reflection";
+import {
+  fetchReview,
+  reflectionAssetUrl,
+  reflectionReviewKey,
+} from "../api/reflection";
 import {
   ReflectionModeSwitch,
   useReflectionStatus,
@@ -30,6 +34,7 @@ import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { ThreadCard, sourceChip } from "../components/ReflectionThreads";
 import { Skeleton } from "../components/Skeleton";
 import { Chip } from "../components/primitives";
+import { plural } from "../format";
 import { engramRoute, reflectionPageRoute } from "../paths";
 import { ageText, stripIdLines } from "../reflectionText";
 
@@ -163,7 +168,7 @@ function Waiting({
 /**
  * The reflect queue, feedback and update rows only. An item with no path
  * (`asset_unreferenced`, `host_moved`) has no page, so it draws no page link.
- * `QueueDetail` is where the file fields of those items get drawn.
+ * `QueueDetail` draws the file fields of those items.
  */
 function Queue({
   domain,
@@ -222,7 +227,11 @@ function Queue({
             {item.count !== null && item.what === "unreflected" && (
               <p className="mt-1">{`${String(item.count)} engrams${item.folder !== null ? ` under ${item.folder}` : ""} have no page yet.`}</p>
             )}
-            <QueueDetail item={item} />
+            <QueueDetail
+              domain={domain}
+              item={item}
+              engramsVisible={engramsVisible}
+            />
             {item.diff !== null && (
               <pre className="mt-1 overflow-x-auto font-mono text-xs whitespace-pre-wrap text-slate-600 dark:text-slate-300">
                 {stripIdLines(item.diff, true)}
@@ -258,10 +267,76 @@ function Queue({
   );
 }
 
+/** `a, b and c` for a list of two or more, the single word for one. */
+function joinWords(parts: string[]): string {
+  return parts.length < 2
+    ? (parts[0] ?? "")
+    : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1] ?? ""}`;
+}
+
 /**
- * The hook for the file fields of an item (`assets`, `targets`, `asset`,
- * the `host_moved` text): drawn by B9-6, nothing yet.
+ * The file fields of an item. Missing files are gone, so plain text; engram
+ * attachment targets name engram files, so they are plain text too and only
+ * for a reader who may see engrams; an unreferenced file opens in a new tab.
  */
-function QueueDetail(_props: { item: QueueItem }): ReactElement | null {
-  return null;
+function QueueDetail({
+  domain,
+  item,
+  engramsVisible,
+}: {
+  domain: string;
+  item: QueueItem;
+  engramsVisible: boolean;
+}): ReactElement | null {
+  const names = (list: string[], label: string) =>
+    list.length > 0 && (
+      <ul aria-label={label} className="mt-1 flex flex-col gap-0.5">
+        {list.map((name) => (
+          <li key={name} className="font-mono text-xs break-all">
+            {name}
+          </li>
+        ))}
+      </ul>
+    );
+  const moved = item.onlyElsewhere;
+  const counts =
+    moved === null
+      ? []
+      : [
+          moved.engrams > 0 && plural(moved.engrams, "engram", "engrams"),
+          moved.attachments > 0 &&
+            plural(moved.attachments, "attachment", "attachments"),
+          moved.pages > 0 && plural(moved.pages, "page", "pages"),
+          moved.files > 0 && plural(moved.files, "file", "files"),
+        ].filter((part): part is string => part !== false);
+  return (
+    <>
+      {names(item.assets ?? [], "Missing files")}
+      {engramsVisible && names(item.targets ?? [], "Engram attachments")}
+      {item.asset !== null && (
+        <p className="mt-1">
+          <a
+            href={reflectionAssetUrl(domain, item.asset)}
+            target="_blank"
+            rel="noreferrer"
+            className={LINK}
+          >
+            {item.asset}
+          </a>
+        </p>
+      )}
+      {moved !== null && (
+        <>
+          <p className="mt-1">
+            {counts.length === 0
+              ? "This instance took over the domain."
+              : `This instance took over the domain. Only on ${moved.previousHost ?? "the previous instance"}: ${joinWords(counts)}.`}
+          </p>
+          <p className="mt-1">
+            {`Copy the domain folder over and sync. If the files are gone for good, run crystalline sync --domain ${domain} --accept-disk.`}
+          </p>
+        </>
+      )}
+    </>
+  );
 }

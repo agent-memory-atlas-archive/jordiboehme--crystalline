@@ -249,6 +249,153 @@ describe("the review screen", () => {
     expect(within(list).queryByRole("link")).toBeNull();
   });
 
+  describe("file items", () => {
+    function serveItem(item: Record<string, unknown>, status = {}) {
+      serve(
+        {
+          ...REVIEW,
+          queue: { ...REVIEW.queue, total: 1, count: 1, queue: [item] },
+        },
+        status,
+      );
+    }
+    async function queueList() {
+      return screen.findByRole("list", { name: "Queue items" });
+    }
+
+    it("a missing file is named under its section", async () => {
+      serveItem({
+        n: 1,
+        kind: "feedback",
+        what: "asset_missing",
+        path: "guides/deploying.md",
+        section: "7f3a9c2e",
+        heading: "Night deploys",
+        age_secs: 60,
+        assets: ["assets/guides/gone.png", "assets/guides/other.pdf"],
+      });
+      renderApp("/d/eng/reflection/review");
+      const list = await queueList();
+      expect(within(list).getByText("asset_missing")).toBeVisible();
+      expect(within(list).getByText("assets/guides/gone.png")).toBeVisible();
+      expect(within(list).getByText("assets/guides/other.pdf")).toBeVisible();
+      expect(within(list).getAllByRole("link")).toHaveLength(1);
+    });
+
+    it("an engram attachment row names the link as written", async () => {
+      serveItem({
+        n: 1,
+        kind: "feedback",
+        what: "engram_attachment",
+        path: "guides/deploying.md",
+        section: null,
+        heading: "",
+        age_secs: 60,
+        targets: ["../../notes/runbook.md"],
+      });
+      renderApp("/d/eng/reflection/review");
+      const list = await queueList();
+      expect(within(list).getByText("../../notes/runbook.md")).toBeVisible();
+      expect(within(list).getAllByRole("link")).toHaveLength(1);
+    });
+
+    it("an engram attachment row hides its targets from a reader who cannot see engrams", async () => {
+      serveItem(
+        {
+          n: 1,
+          kind: "feedback",
+          what: "engram_attachment",
+          path: "guides/deploying.md",
+          section: null,
+          heading: "",
+          age_secs: 60,
+          targets: ["../../notes/runbook.md"],
+        },
+        { engrams_visible: false },
+      );
+      renderApp("/d/eng/reflection/review");
+      const list = await queueList();
+      expect(within(list).getByText("engram_attachment")).toBeVisible();
+      expect(within(list).queryByText("../../notes/runbook.md")).toBeNull();
+    });
+
+    it("an unreferenced file row links the file", async () => {
+      serveItem({
+        n: 1,
+        kind: "update",
+        what: "asset_unreferenced",
+        path: "",
+        section: null,
+        heading: "",
+        age_secs: 60,
+        asset: "assets/guides/old.png",
+      });
+      renderApp("/d/eng/reflection/review");
+      const list = await queueList();
+      const link = within(list).getByRole("link", {
+        name: "assets/guides/old.png",
+      });
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link.getAttribute("href")).toContain(
+        "/domains/eng/reflection/assets/",
+      );
+      expect(within(list).getAllByRole("link")).toHaveLength(1);
+    });
+
+    it("a host move row says what is only on the previous host, with no page link", async () => {
+      serveItem({
+        n: 4,
+        kind: "update",
+        what: "host_moved",
+        domain: "eng",
+        path: "",
+        section: null,
+        heading: "",
+        age_secs: 12,
+        only_elsewhere: {
+          previous_host: "alpha",
+          engrams: 1,
+          attachments: 0,
+          pages: 1,
+          files: 1,
+        },
+      });
+      renderApp("/d/eng/reflection/review");
+      const list = await queueList();
+      expect(
+        within(list).getByText(
+          "This instance took over the domain. Only on alpha: 1 engram, 1 page and 1 file.",
+        ),
+      ).toBeVisible();
+      expect(
+        within(list).getByText(
+          "Copy the domain folder over and sync. If the files are gone for good, run crystalline sync --domain eng --accept-disk.",
+        ),
+      ).toBeVisible();
+      expect(within(list).queryByRole("link")).toBeNull();
+    });
+
+    it("a host move row with no previous host says the previous instance", async () => {
+      serveItem({
+        n: 4,
+        kind: "update",
+        what: "host_moved",
+        path: "",
+        section: null,
+        heading: "",
+        age_secs: 12,
+        only_elsewhere: { previous_host: null, attachments: 2 },
+      });
+      renderApp("/d/eng/reflection/review");
+      const list = await queueList();
+      expect(
+        within(list).getByText(
+          "This instance took over the domain. Only on the previous instance: 2 attachments.",
+        ),
+      ).toBeVisible();
+    });
+  });
+
   it("draws no source engram links or titles for a reader who cannot see engrams", async () => {
     serve(REVIEW, { engrams_visible: false });
     renderApp("/d/eng/reflection/review");

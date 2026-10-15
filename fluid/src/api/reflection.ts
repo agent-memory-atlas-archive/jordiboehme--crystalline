@@ -112,6 +112,22 @@ export interface QueueItem {
   thread: string | null;
   /** `off_structure` only: the pact's Structure globs the page is outside of. */
   structure: string[];
+  /** `asset_missing`: the files the section names that are gone. Null when the server left the field out. */
+  assets: string[] | null;
+  /** `engram_attachment`: the link targets as written, each an engram file. Null when left out. */
+  targets: string[] | null;
+  /** `asset_unreferenced`: the file no page uses. */
+  asset: string | null;
+  /** `host_moved`: what exists only on the previous host. */
+  onlyElsewhere: OnlyElsewhere | null;
+}
+/** What a host move left on the previous host's disk, as counts. */
+export interface OnlyElsewhere {
+  previousHost: string | null;
+  engrams: number;
+  attachments: number;
+  pages: number;
+  files: number;
 }
 export interface ReflectQueue {
   total: number;
@@ -338,6 +354,24 @@ export function readDoc(payload: unknown): ReflectionDoc {
   };
 }
 
+function readStringsOrNull(value: unknown): string[] | null {
+  return Array.isArray(value) ? asStrings(value) : null;
+}
+
+function readOnlyElsewhere(value: unknown): OnlyElsewhere | null {
+  const r = asObject(value);
+  if (r === null) {
+    return null;
+  }
+  return {
+    previousHost: asString(r.previous_host),
+    engrams: asNumber(r.engrams) ?? 0,
+    attachments: asNumber(r.attachments) ?? 0,
+    pages: asNumber(r.pages) ?? 0,
+    files: asNumber(r.files) ?? 0,
+  };
+}
+
 function readItem(value: unknown): QueueItem | null {
   const r = asObject(value);
   const kind = asString(r?.kind);
@@ -360,6 +394,10 @@ function readItem(value: unknown): QueueItem | null {
     count: asNumber(r?.count),
     thread: asString(r?.thread),
     structure: asStrings(r?.structure),
+    assets: readStringsOrNull(r?.assets),
+    targets: readStringsOrNull(r?.targets),
+    asset: asString(r?.asset),
+    onlyElsewhere: readOnlyElsewhere(r?.only_elsewhere),
   };
 }
 
