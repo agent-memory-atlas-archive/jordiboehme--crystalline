@@ -1903,10 +1903,19 @@ fn a_daemonless_sync_refuses_a_domain_another_instance_hosts_on_postgres() {
     let (ok, out, err) = env.run_full(&["sync", "--config", config_arg]);
     assert!(ok, "{out}{err}");
     assert!(err.contains("other-instance"), "the skip is named: {err}");
+    let (ok, out, err) = env.run_full(&["reindex", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        err.contains("other-instance"),
+        "the reindex skips it too: {err}"
+    );
 
-    // A stale holder is taken over; the engram this disk lost stays.
+    // A stale holder is taken over, by a reindex as by a sync; the engram
+    // this disk lost stays, and the sync after it reports it.
     lock_by_other("2000-01-01T00:00:00+00:00");
     std::fs::remove_file(env.dir.join("kb-eng/seed.md")).unwrap();
+    let (ok, out, err) = env.run_full(&["reindex", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
     let (ok, out, err) =
         env.run_full(&["--json", "sync", "--domain", "eng", "--config", config_arg]);
     assert!(ok, "{out}{err}");
@@ -1937,6 +1946,18 @@ fn a_daemonless_sync_refuses_a_domain_another_instance_hosts_on_postgres() {
         ),
         "{out}"
     );
+    // Where another instance hosts the domain, the line names that host
+    // instead of a remedy that would be refused here.
+    lock_by_other("2999-01-01T00:00:00+00:00");
+    let (ok, out, err) = env.run_full(&["status", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        out.contains(
+            "'eng': 1 engram and 0 Reflection files exist only on other-instance; other-instance hosts this domain, so resolve it there"
+        ),
+        "{out}"
+    );
+    assert!(psql(&format!("DELETE FROM {schema}.domain_lock")));
 
     // --accept-disk needs one domain, then drops what this disk lacks.
     let (ok, out, err) = env.run_full(&["sync", "--accept-disk", "--config", config_arg]);

@@ -20,9 +20,9 @@ use crystalline_core::config::{
 use crystalline_core::names::{NameInput, NameTable};
 use crystalline_core::text::plural;
 use crystalline_index::{
-    ChunkParams, DomainKind, HostClaim, NoReindexHooks, RebuildKind, Store, apply_scan,
-    configured_model_id, download_local_model, provider_from_config, reindex_domains,
-    resolve_forward_refs, run_embedding_pass, scan_domain,
+    ChunkParams, DomainKind, HostClaim, RebuildKind, Store, apply_scan, configured_model_id,
+    download_local_model, provider_from_config, reindex_domains, resolve_forward_refs,
+    run_embedding_pass, scan_domain,
 };
 use tokio::sync::Mutex as TokioMutex;
 
@@ -719,7 +719,10 @@ pub(crate) async fn sync_domain_direct(
             let force = crystalline_index::reparse_due(&*store, domain).await?;
             (domain, snapshot, force)
         };
-        let scan = scan_domain(name, root, snapshot, &params, force).await?;
+        let mut scan = scan_domain(name, root, snapshot, &params, force).await?;
+        if let Some(host) = &host {
+            scan.walked_by(&host.instance_id);
+        }
         let store = store.lock().await;
         apply_scan(&*store, domain, scan)
             .await
@@ -808,6 +811,52 @@ impl DirectHost {
                 tracing::debug!("could not release a host lock after the sync: {e}");
             }
         }
+    }
+}
+
+/// The daemonless reindex's per-domain business on a shared database: the
+/// claim [`DirectHost`] makes for a sync, with the same refusal and the same
+/// release. Off a shared database (`host` is `None`) it claims nothing.
+struct DirectReindexHooks<'a> {
+    host: Option<&'a DirectHost>,
+    /// The locks this run took and gives back when it is done.
+    claimed: std::sync::Mutex<Vec<crystalline_index::DomainId>>,
+}
+
+#[async_trait::async_trait]
+impl crystalline_index::ReindexHooks for DirectReindexHooks<'_> {
+    async fn before_domain(
+        &self,
+        store: &dyn Store,
+        name: &str,
+        root: &Path,
+    ) -> crystalline_index::Result<bool> {
+        let Some(host) = self.host else {
+            return Ok(true);
+        };
+        let domain = store
+            .upsert_domain(name, Some(&root.to_string_lossy()), DomainKind::File)
+            .await?;
+        let claim = host
+            .claim(store, domain, false)
+            .await
+            .map_err(|e| crystalline_index::IndexError::Db(e.to_string()))?;
+        match claim {
+            DirectClaim::Taken { release } => {
+                if release {
+                    self.claimed.lock().unwrap().push(domain);
+                }
+                Ok(true)
+            }
+            DirectClaim::Refused(holder) => {
+                eprintln!("skipped: {}", direct_host_refusal(name, &holder));
+                Ok(false)
+            }
+        }
+    }
+
+    fn walker(&self) -> Option<String> {
+        self.host.map(|host| host.instance_id.clone())
     }
 }
 
@@ -2428,6 +2477,9 @@ async fn sync_targets(
         if flags.accept_disk {
             scan.accept_disk();
         }
+        if let Some(host) = host {
+            scan.walked_by(&host.instance_id);
+        }
         let report = {
             let store = store.lock().await;
             apply_scan(&*store, domain, scan)
@@ -2603,8 +2655,20 @@ pub async fn reindex(
     } else {
         None
     };
-    let reports =
-        reindex_domains(&*store, &file_targets, &params, rebuild, &NoReindexHooks).await?;
+    // On a shared database each domain is claimed as the daemon's reindex
+    // claims it: a domain another live instance hosts is left alone, and a
+    // walk applies only while the claim holds.
+    let host = DirectHost::of(&store).await?;
+    let hooks = DirectReindexHooks {
+        host: host.as_ref(),
+        claimed: std::sync::Mutex::new(Vec::new()),
+    };
+    let reindexed = reindex_domains(&*store, &file_targets, &params, rebuild, &hooks).await;
+    if let Some(host) = &host {
+        let claimed = std::mem::take(&mut *hooks.claimed.lock().unwrap());
+        host.release(&store, &claimed).await;
+    }
+    let reports = reindexed?;
 
     // The rebuilt base rows are in; now the rows no file on disk describes. An
     // overlay draft is one actor's private version of a path and it lives
@@ -2800,6 +2864,29 @@ pub async fn status_value(route: IndexRoute, cfg: &GlobalConfig) -> Result<serde
         None => 0,
     };
 
+    // `hosted_here` as the daemon's report carries it, so the status line
+    // offers the remedy only where it would be accepted. Only a shared
+    // database has host locks; this machine's id is read, never created.
+    let this_instance = if store.shares_database() {
+        crystalline_core::config::instance_id_path()
+            .ok()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|id| id.trim().to_string())
+    } else {
+        None
+    };
+    let stats: Vec<serde_json::Value> = stats
+        .iter()
+        .map(|s| {
+            let mut v = serde_json::to_value(s).unwrap_or(serde_json::Value::Null);
+            if let serde_json::Value::Object(map) = &mut v {
+                let hosted_here = this_instance.is_some()
+                    && s.host_instance_id.as_deref() == this_instance.as_deref();
+                map.insert("hosted_here".to_string(), serde_json::json!(hosted_here));
+            }
+            v
+        })
+        .collect();
     let mut report = serde_json::json!({
         "indexed": true,
         "fts_mode": info.fts_mode,
@@ -3088,7 +3175,17 @@ pub fn render_status(data: &serde_json::Value, daemon_note: &str) {
         ) else {
             continue;
         };
-        println!("  '{name}': {}", elsewhere.line(name));
+        // The remedy is the host's: an instance that does not host the
+        // domain names the host instead. A domain nobody hosts now is
+        // claimed by the sync that resolves it, so it gets the remedy.
+        let host = d["host_label"]
+            .as_str()
+            .or(d["host_instance_id"].as_str())
+            .filter(|_| !d["hosted_here"].as_bool().unwrap_or(false));
+        match host {
+            Some(host) => println!("  '{name}': {}", elsewhere.line_elsewhere(host)),
+            None => println!("  '{name}': {}", elsewhere.line(name)),
+        }
     }
 
     // The rebuild markers, printed directly under the coverage figure they

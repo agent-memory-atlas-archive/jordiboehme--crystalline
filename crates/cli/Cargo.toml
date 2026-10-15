@@ -71,6 +71,9 @@ crystalline-core = { workspace = true }
 # linking this crate for its in-process fallback.
 crystalline-remote = { workspace = true }
 clap = { workspace = true }
+# The daemonless reindex's host-lock hooks implement the index's async
+# `ReindexHooks` trait.
+async-trait = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
