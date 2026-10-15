@@ -20,8 +20,13 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 
 import { ApiProblem, problemDetail } from "../api/client";
+import type { AssetResolver } from "../api/files";
 import type { SectionView, SourceState } from "../api/reflection";
-import { fetchReflection, reflectionDocKey } from "../api/reflection";
+import {
+  fetchReflection,
+  reflectionAssetHome,
+  reflectionDocKey,
+} from "../api/reflection";
 import type { ReflectionRight } from "../api/reflectionDomains";
 import { mayEditPage } from "../api/reflectionDomains";
 import { Markdown } from "../components/Markdown";
@@ -102,6 +107,11 @@ function PageBody({
     () => (doc.data ? sectionTexts(doc.data.markdown, doc.data.sections) : []),
     [doc.data],
   );
+  // One resolver per page: images and files load from the Reflection itself.
+  const assets = useMemo(
+    () => reflectionAssetHome(domain, path),
+    [domain, path],
+  );
   // A link to a section or a thread (`#s-<id>`, `#t-<id>`) scrolls there once
   // the page has something to scroll to.
   useEffect(() => {
@@ -178,6 +188,7 @@ function PageBody({
             <PageSection
               key={section.id ?? `h${index}:${section.heading}`}
               domain={domain}
+              assets={assets}
               index={index}
               section={section}
               engramsVisible={engramsVisible}
@@ -196,6 +207,7 @@ function PageBody({
 
 function PageSection({
   domain,
+  assets,
   index,
   section,
   engramsVisible,
@@ -203,6 +215,8 @@ function PageSection({
 }: {
   /** For the source links only; the rendered body takes no domain (see above). */
   domain: string;
+  /** The Reflection's own files: images, file links and refused engram files. */
+  assets: AssetResolver;
   /** Position on the page: makes the DOM id of an id-less section unique. */
   index: number;
   section: SectionText;
@@ -221,9 +235,9 @@ function PageSection({
     >
       {/*
         No `domain`: it would resolve `assets/` links through the engram
-        files route. B9-3 passes the Reflection's own asset resolver here.
+        files route. `assets` resolves them through the Reflection's own.
       */}
-      <Markdown source={section.text} sourceSpans />
+      <Markdown source={section.text} assets={assets} sourceSpans />
       {engramsVisible &&
         view?.sources !== null &&
         view?.sources !== undefined &&

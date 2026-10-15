@@ -45,6 +45,7 @@ import {
 } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
+import { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import { Link, useLocation, useNavigate } from "react-router";
@@ -1099,6 +1100,14 @@ export default function MarkdownBody({
       assets ?? (domain === undefined ? undefined : engramAssetHome(domain)),
     [assets, domain],
   );
+  // react-markdown drops a `crystalline:` address as an unknown protocol, and
+  // with it the target the resolver would refuse. Keep exactly the ones it
+  // refuses, so the words stay and the reason shows; nothing else changes.
+  const urlTransform = useMemo(
+    () => (url: string) =>
+      resolver?.refused(url) == null ? defaultUrlTransform(url) : url,
+    [resolver],
+  );
   const componentMap = useMemo(
     () => componentsFor(resolver, documentName, anchored),
     [resolver, documentName, anchored],
@@ -1175,6 +1184,7 @@ export default function MarkdownBody({
       remarkPlugins={[remarkGfm]}
       rehypePlugins={rehypePlugins}
       components={componentMap}
+      urlTransform={urlTransform}
     >
       {shown}
     </ReactMarkdown>

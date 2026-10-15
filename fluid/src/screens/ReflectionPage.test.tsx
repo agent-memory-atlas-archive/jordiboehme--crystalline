@@ -257,3 +257,62 @@ describe("the reflection page", () => {
     ).toBeVisible();
   });
 });
+
+describe("a reflection's images and files", () => {
+  function servePage(path: string, body: string) {
+    serve("read", false, {
+      [`/domains/eng/reflections/${path}`]: () =>
+        doc({
+          path,
+          markdown: `# Page\n\n${body}\n`,
+          sections: [],
+        }),
+    });
+  }
+
+  it("a reader at knowledge none sees a reflection image from the Reflection's own route", async () => {
+    servePage("guides/deploying.md", "![Flow](../assets/flow.png#right,w=50%)");
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const img = await screen.findByRole("img", { name: "Flow" });
+    const src = img.getAttribute("src") ?? "";
+    expect(src.endsWith("/domains/eng/reflection/assets/flow.png")).toBe(true);
+    expect(src).not.toContain("/files/");
+    const wrapper = img.closest("[style]") as HTMLElement;
+    expect(wrapper.style.float).toBe("right");
+    expect(wrapper.style.width).toBe("50%");
+  });
+
+  it("a root page's assets link is the Reflection's file, not the engram one", async () => {
+    servePage("welcome.md", "![a](assets/a.png)");
+    renderApp("/d/eng/reflection/welcome.md");
+    const img = await screen.findByRole("img", { name: "a" });
+    expect(
+      (img.getAttribute("src") ?? "").endsWith("/reflection/assets/a.png"),
+    ).toBe(true);
+  });
+
+  it("a link to a Reflection file opens its bytes in a new tab", async () => {
+    servePage("guides/deploying.md", "[deck](../assets/deck.pdf)");
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const link = await screen.findByRole("link", { name: "deck" });
+    expect(
+      (link.getAttribute("href") ?? "").endsWith("/reflection/assets/deck.pdf"),
+    ).toBe(true);
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noreferrer");
+  });
+
+  it("an engram attachment in a reflection is never fetched", async () => {
+    servePage(
+      "welcome.md",
+      "![shot](../assets/shot.png)\n\n![x](crystalline://eng/assets/x.png)",
+    );
+    renderApp("/d/eng/reflection/welcome.md");
+    await screen.findAllByText(/This file is not in the Reflection/);
+    const article = screen.getByRole("article");
+    expect(article.querySelector("img")).toBeNull();
+    expect(
+      within(article).getAllByText(/This file is not in the Reflection/),
+    ).toHaveLength(2);
+  });
+});
