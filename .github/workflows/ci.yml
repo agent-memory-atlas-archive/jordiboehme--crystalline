@@ -332,8 +332,10 @@ jobs:
       # the container: the image's init phase runs a socket-only server, so
       # a socket probe could answer before the real server is up. The
       # extension is pre-created in public so the migration's defensive
-      # CREATE EXTENSION is always a no-op and the parallel per-test schema
-      # creation is race free.
+      # CREATE EXTENSION is always a no-op. The migration's advisory lock
+      # already makes parallel first opens race free; the
+      # concurrent_first_opens tests in postgres/migrations.rs reach the
+      # extension leg through a database of their own.
       - name: Start postgres with pgvector
         if: ${{ matrix.os == 'ubuntu-latest' && needs.changes.outputs.tested != 'true' }}
         run: |

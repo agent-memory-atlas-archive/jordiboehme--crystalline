@@ -310,9 +310,11 @@ impl PostgresStore {
         let db_path = sanitize_url(url);
         let mut opts = PgPoolOptions::new().max_connections(4);
         if let Some(s) = schema.clone() {
-            let ident = quote_ident(&s);
-            let setup =
-                format!("CREATE SCHEMA IF NOT EXISTS {ident}; SET search_path TO {ident}, public");
+            // Only the search path: the schema itself is created under the
+            // migration lock below, so two first opens of one schema do not
+            // race on `CREATE SCHEMA`. A search path naming a schema that does
+            // not exist yet is accepted and takes effect once it does.
+            let setup = format!("SET search_path TO {}, public", quote_ident(&s));
             opts = opts.after_connect(move |conn, _meta| {
                 let setup = setup.clone();
                 Box::pin(async move {
@@ -322,9 +324,16 @@ impl PostgresStore {
             });
         }
         let pool = opts.connect(url).await.map_err(IndexError::from)?;
+        // The lock, the steps and the unlock all run on this one connection,
+        // so the session-level migration lock pairs with its release.
         let mut conn = pool.acquire().await.map_err(IndexError::from)?;
-        let schema_version = migrations::apply(&mut conn).await?;
-        drop(conn);
+        let run = migrations::apply_locked(&mut conn, schema.as_deref()).await;
+        if run.tainted {
+            drop(conn.detach());
+        } else {
+            drop(conn);
+        }
+        let schema_version = run.version?;
         Ok(PostgresStore {
             pool,
             tx: TokioMutex::new(None),
@@ -1557,8 +1566,18 @@ pub fn lead_vectors_sql(actor_screen: &str, generation: u64) -> String {
 impl Store for PostgresStore {
     async fn migrate(&self) -> Result<()> {
         let mut conn = self.acquire().await?;
-        migrations::apply(conn.as_mut()).await?;
-        Ok(())
+        let run = migrations::apply_locked(conn.as_mut(), None).await;
+        // A session that may still hold the migration lock is closed rather
+        // than given back to the pool, as `release_work_claim` does. The
+        // pinned transaction connection stays in place: closing it would make
+        // the caller's later commit a silent no-op, and the error below
+        // already tells the caller the run failed.
+        if run.tainted
+            && let Conn::Owned(owned) = conn
+        {
+            drop(owned.detach());
+        }
+        run.version.map(|_| ())
     }
 
     async fn upsert_domain(
