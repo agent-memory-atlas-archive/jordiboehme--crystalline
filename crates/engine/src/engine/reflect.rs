@@ -520,7 +520,13 @@ impl Engine {
             match self.reflection_state(&name).await {
                 Ok(ReflectionState::On { .. }) => out.push(name),
                 Ok(ReflectionState::Pending { .. }) => pending.push(name),
-                Ok(_) => {}
+                // Not served here: another instance's queue, or nobody's yet.
+                Ok(
+                    ReflectionState::Off
+                    | ReflectionState::Homeless
+                    | ReflectionState::Elsewhere { .. }
+                    | ReflectionState::HostedElsewhere { .. },
+                ) => {}
                 Err(e) => {
                     tracing::warn!(
                         "reflect: the Reflection state of '{name}' could not be read: {e}"

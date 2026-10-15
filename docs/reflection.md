@@ -154,7 +154,7 @@ A local domain keeps its Reflection where it is, in its folder.
 
 A domain shared through GitHub has one home: the instance whose `service.public_url` is the domain's `reflection_home`. This key is filled in when Reflection is switched on at that instance, and it is never set by hand. Every other instance answers `this domain's Reflection lives at <url>`. People and agents work on the Reflection at the home.
 
-Several instances can share one Postgres database (see [Shared database collaboration](deployment.md#shared-database-collaboration)). Then let one instance serve a domain's Reflection. Today each instance that has the domain folder acts as the home and indexes the Reflection into the shared rows. Two such instances would write the same rows and back up to the same branch.
+Several instances can share one Postgres database (see [Shared database collaboration](deployment.md#shared-database-collaboration)). Then one instance serves a domain's Reflection: the one that holds the domain's host lock, which also syncs the domain's files. Every other instance answers `this domain's Reflection is served by <label>; move it with crystalline serve --take-over`, and its status says `hosted_elsewhere` and names the host. `crystalline serve --take-over` on another instance moves the lock and the Reflection there. The new host serves at once, and the old one stops at its next heartbeat. For a domain shared through GitHub, the host also needs to be the `reflection_home`.
 
 The home backs the whole `reflections/` folder up to the branch `crystalline/reflections` of the domain's repository, with its own GitHub token:
 

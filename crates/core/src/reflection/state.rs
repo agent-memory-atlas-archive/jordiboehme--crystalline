@@ -30,6 +30,12 @@ pub enum ReflectionState {
         /// The home instance's address.
         url: String,
     },
+    /// Switched on, and another instance on this shared database holds the
+    /// domain's host lock, so that instance serves it (R92).
+    HostedElsewhere {
+        /// The host's label (its `DomainHost.label`).
+        label: String,
+    },
     /// In effect here.
     On {
         /// Where it lives.
@@ -45,6 +51,7 @@ impl ReflectionState {
             ReflectionState::Pending { .. } => "pending",
             ReflectionState::Homeless => "homeless",
             ReflectionState::Elsewhere { .. } => "elsewhere",
+            ReflectionState::HostedElsewhere { .. } => "hosted_elsewhere",
             ReflectionState::On { .. } => "on",
         }
     }

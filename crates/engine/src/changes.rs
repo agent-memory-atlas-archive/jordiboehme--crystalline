@@ -155,7 +155,8 @@ pub enum ReflectionChangeKind {
     /// A file under `reflections/assets/` was added, replaced, removed or
     /// moved; `path` is the file, `from` its old path on a move.
     Files,
-    /// The switch moved; `path` is empty.
+    /// The switch moved, or on a shared database the instance that serves
+    /// the Reflection changed (its host lock moved); `path` is empty.
     Switched,
 }
 

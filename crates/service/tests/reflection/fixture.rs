@@ -165,6 +165,38 @@ pub async fn fixture_on(
     embed_tx: Option<UnboundedSender<()>>,
     contradiction_tx: Option<UnboundedSender<()>>,
 ) -> Fx {
+    build(
+        store,
+        None,
+        files,
+        tweak,
+        provider,
+        embed_tx,
+        contradiction_tx,
+    )
+    .await
+}
+
+/// One instance of a shared database: [`fixture_on`] for an engine with
+/// `instance_id`, so its first sync claims the host lock of `eng` (or finds
+/// it held by another instance and skips the domain).
+pub async fn instance_on(
+    store: Arc<Mutex<dyn Store>>,
+    instance_id: &str,
+    files: &[(&str, &str)],
+) -> Fx {
+    build(store, Some(instance_id), files, |_, _| {}, None, None, None).await
+}
+
+async fn build(
+    store: Arc<Mutex<dyn Store>>,
+    instance_id: Option<&str>,
+    files: &[(&str, &str)],
+    tweak: impl FnOnce(&mut GlobalConfig, &std::path::Path),
+    provider: Option<Arc<dyn EmbeddingProvider>>,
+    embed_tx: Option<UnboundedSender<()>>,
+    contradiction_tx: Option<UnboundedSender<()>>,
+) -> Fx {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path().to_path_buf();
     let root = base.join("eng");
@@ -191,6 +223,9 @@ pub async fn fixture_on(
     }
     if let Some(tx) = contradiction_tx {
         engine = engine.with_contradiction_channel(tx);
+    }
+    if let Some(id) = instance_id {
+        engine = engine.with_instance_id(id.to_string());
     }
     let engine = Arc::new(engine);
     engine.sync(None).await.unwrap();

@@ -4278,7 +4278,7 @@ export type GetReflectionStatusError = GetReflectionStatusErrors[keyof GetReflec
 
 export type GetReflectionStatusResponses = {
     /**
-     * ReflectionStatus. `state` is `off`, `pending` (then `pending_engrams` lists the engrams still under `reflections/` for a caller with `engrams_visible`, and is empty for anyone else), `homeless`, `on` or `elsewhere` (then `home_url` is set). `member` is true when the caller holds a membership row it may leave.
+     * ReflectionStatus. `state` is `off`, `pending` (then `pending_engrams` lists the engrams still under `reflections/` for a caller with `engrams_visible`, and is empty for anyone else), `homeless`, `on`, `elsewhere` (then `home_url` is set) or `hosted_elsewhere` (another instance on this shared database holds the domain's host lock and serves it; then `host_label` names that instance, and it is `null` in every other state). `member` is true when the caller holds a membership row it may leave.
      */
     200: {
         [key: string]: unknown;
@@ -4305,7 +4305,7 @@ export type ListReflectionAssetsErrors = {
      */
     404: ProblemDetail;
     /**
-     * The Reflection is not here (off, pending, homeless or elsewhere, then with `home_url`).
+     * The Reflection is not here (off, pending, homeless, elsewhere, then with `home_url`, or served by another instance on this shared database).
      */
     409: ProblemDetail;
 };
@@ -4873,7 +4873,7 @@ export type GetReflectionTreeErrors = {
      */
     404: ProblemDetail;
     /**
-     * The Reflection is off, pending, homeless or lives elsewhere (then the `home_url` member names where).
+     * The Reflection is off, pending, homeless, lives elsewhere (then the `home_url` member names where) or is served by another instance on this shared database (the text names it).
      */
     409: ProblemDetail;
 };
@@ -4963,7 +4963,7 @@ export type GetReflectionErrors = {
      */
     404: ProblemDetail;
     /**
-     * The Reflection is not here (off, pending, homeless or elsewhere, then with `home_url`).
+     * The Reflection is not here (off, pending, homeless, elsewhere, then with `home_url`, or served by another instance on this shared database).
      */
     409: ProblemDetail;
 };
@@ -6735,7 +6735,7 @@ export type ListReflectionDomainsData = {
 
 export type ListReflectionDomainsResponses = {
     /**
-     * ReflectionDomains: `{ domains: [{ domain, state, right, engrams_visible, home, home_url, open_threads }] }`. `state` is `on`, `pending`, `homeless` or `elsewhere`; `home` is `here`, `local`, `elsewhere` (then `home_url` is set) or `null` (`pending`, `homeless`); `open_threads` is 0 unless `state` is `on`.
+     * ReflectionDomains: `{ domains: [{ domain, state, right, engrams_visible, home, home_url, host_label, open_threads }] }`. `state` is `on`, `pending`, `homeless`, `elsewhere` or `hosted_elsewhere` (another instance on this shared database holds the domain's host lock and serves it); `home` is `here`, `local`, `elsewhere` (then `home_url` is set) or `null` (`pending`, `homeless`, `hosted_elsewhere`); `host_label` names the serving instance for `hosted_elsewhere` and is `null` otherwise; `open_threads` is 0 unless `state` is `on`.
      */
     200: {
         [key: string]: unknown;

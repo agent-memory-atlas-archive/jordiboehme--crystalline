@@ -46,6 +46,10 @@ pub const REFUSED_HOMELESS: &str = "this domain is connected to GitHub and its R
 /// The start of the refusal for a Reflection held by another instance; its
 /// address follows.
 pub const REFUSED_ELSEWHERE_START: &str = "this domain's Reflection lives at ";
+/// The start of the refusal for a Reflection another instance on this
+/// shared database serves, because it holds the domain's host lock; the
+/// host's label and the way to move it follow.
+pub const REFUSED_HOSTED_START: &str = "this domain's Reflection is served by ";
 /// The refusal of a thread write by the anonymous visitor of a public domain.
 pub const ANONYMOUS_COMMENT: &str =
     "anonymous visitors read this Reflection and cannot comment; sign in to comment";
@@ -499,6 +503,11 @@ impl Engine {
         let ContentSource::File { root } = self.read_source(domain) else {
             return Ok(ReflectionState::Off);
         };
+        // The host lock first (R92): on a shared database only its holder
+        // serves the Reflection, whatever the rows say.
+        if let Some(label) = self.reflection_host_elsewhere(domain).await? {
+            return Ok(ReflectionState::HostedElsewhere { label });
+        }
         let engrams = self.pending_engrams(domain).await?;
         if !engrams.is_empty() {
             return Ok(ReflectionState::Pending { engrams });
@@ -516,6 +525,46 @@ impl Engine {
                 home: ReflectionHome::Local,
             }),
         }
+    }
+
+    /// The label of the instance that serves `domain`'s Reflection, when
+    /// that is another instance on this shared database (R92): the one that
+    /// holds the domain's host lock, with a live heartbeat. `None` when this
+    /// instance serves it.
+    ///
+    /// Read fresh on every call, never through the gate's remembered rows:
+    /// the instance's own hosts are asked first, in memory, so the host (and
+    /// every engine without an instance id) answers without the store lock;
+    /// only a non-host locks the store, to learn whether the database is
+    /// shared and who holds the lock. A database that is not shared (Turso)
+    /// is one instance's own, so its Reflection is always served here. A
+    /// lock nobody holds, or one whose holder stopped heartbeating, is the
+    /// one this instance's next claim takes, so the Reflection is served
+    /// here meanwhile: the liveness rule is the claim's
+    /// ([`Engine::held_elsewhere`]). A new host serves at once; the instance
+    /// it took the lock from steps down when its heartbeat finds the lock
+    /// gone ([`Engine::renew_hosts`]).
+    async fn reflection_host_elsewhere(&self, domain: &str) -> Result<Option<String>> {
+        if self.instance_id.is_empty() || self.hosted.read().unwrap().contains_key(domain) {
+            return Ok(None);
+        }
+        let store = self.store.lock().await;
+        if !store.shares_database() {
+            return Ok(None);
+        }
+        let Some(id) = store.domain_id(domain).await? else {
+            return Ok(None);
+        };
+        let host = store.domain_host(id).await?;
+        drop(store);
+        Ok(host.and_then(|host| {
+            self.held_elsewhere(
+                Some(&host.instance_id),
+                Some(&host.heartbeat_at),
+                Utc::now(),
+            )
+            .then_some(host.label)
+        }))
     }
 
     /// The one gate of every reflection verb: right, then state, then the
@@ -561,6 +610,11 @@ impl Engine {
                     "{REFUSED_ELSEWHERE_START}{url}"
                 )));
             }
+            ReflectionState::HostedElsewhere { label } => {
+                return Err(EngineError::Refused(format!(
+                    "{REFUSED_HOSTED_START}{label}; move it with crystalline serve --take-over"
+                )));
+            }
         };
         if right < need {
             // When the write list is why the right fell short, say so and
@@ -604,14 +658,22 @@ impl Engine {
     ) -> Result<Value> {
         let (right, engrams_visible) = self.caller_reflection_right(domain, caller).await?;
         let state = self.reflection_state(domain).await?;
-        let (home, home_url) = match &state {
-            ReflectionState::On { home } => (Some(home.as_str()), None),
-            ReflectionState::Elsewhere { url } => (Some("elsewhere"), Some(url.clone())),
-            _ => (None, None),
+        let (home, home_url, host_label) = match &state {
+            ReflectionState::On { home } => (Some(home.as_str()), None, None),
+            ReflectionState::Elsewhere { url } => (Some("elsewhere"), Some(url.clone()), None),
+            ReflectionState::HostedElsewhere { label } => (None, None, Some(label.clone())),
+            ReflectionState::Off | ReflectionState::Pending { .. } | ReflectionState::Homeless => {
+                (None, None, None)
+            }
         };
         let pending: Vec<String> = match &state {
             ReflectionState::Pending { engrams } if engrams_visible => engrams.clone(),
-            _ => Vec::new(),
+            ReflectionState::Pending { .. }
+            | ReflectionState::Off
+            | ReflectionState::Homeless
+            | ReflectionState::Elsewhere { .. }
+            | ReflectionState::HostedElsewhere { .. }
+            | ReflectionState::On { .. } => Vec::new(),
         };
         Ok(json!({
             "domain": domain,
@@ -619,6 +681,7 @@ impl Engine {
             "state": state.word(),
             "home": home,
             "home_url": home_url,
+            "host_label": host_label,
             "right": reflection_right_word(right),
             "engrams_visible": engrams_visible,
             "pending_engrams": pending,

@@ -11,6 +11,7 @@ mod backup;
 mod docs;
 mod fixture;
 mod guards;
+mod hosts;
 mod nudges;
 mod queue;
 mod rest;

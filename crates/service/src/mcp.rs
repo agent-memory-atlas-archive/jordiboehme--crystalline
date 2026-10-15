@@ -1947,7 +1947,8 @@ impl McpServer {
     }
 
     /// A reflection verb's error as MCP answers it: the gate's refusals (the
-    /// Reflection is off, pending, homeless or lives elsewhere, a right too
+    /// Reflection is off, pending, homeless, lives elsewhere or is served by
+    /// the instance that holds the domain's host lock, a right too
     /// low or capped by the write list) and a read-only domain are call-time
     /// refusals the agent reads (V1); every other error maps as `to_error`
     /// maps it.

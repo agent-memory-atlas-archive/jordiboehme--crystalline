@@ -4060,15 +4060,37 @@ impl Engine {
                 take_over,
             )
             .await?;
-        match &claim {
-            HostClaim::Acquired => {
-                self.hosted.write().unwrap().insert(name.to_string(), id);
-            }
-            HostClaim::HeldByOther(_) => {
-                self.hosted.write().unwrap().remove(name);
-            }
+        let moved = match &claim {
+            HostClaim::Acquired => self
+                .hosted
+                .write()
+                .unwrap()
+                .insert(name.to_string(), id)
+                .is_none(),
+            HostClaim::HeldByOther(_) => self.hosted.write().unwrap().remove(name).is_some(),
+        };
+        if moved {
+            self.announce_host_moved(name);
         }
         Ok(claim)
+    }
+
+    /// Tell the domain's listeners that the instance serving its Reflection
+    /// changed (R92): on a shared database the host lock decides which
+    /// instance serves it, so gaining or losing the lock moves the Reflection
+    /// to or from here as a switch does. Announced as `switched`, the event
+    /// a Reflection reader already re-reads the status on, and only when the
+    /// switch is on, since an off Reflection is served nowhere.
+    fn announce_host_moved(&self, name: &str) {
+        if self.reflection_switch(name) != crystalline_core::ReflectionSwitch::Off {
+            self.announce_reflection(
+                name,
+                "",
+                crate::changes::ReflectionChangeKind::Switched,
+                None,
+                None,
+            );
+        }
     }
 
     /// Whether another instance holds this domain's host lock and is still
@@ -4165,6 +4187,7 @@ impl Engine {
                         "lost the host lock for domain '{name}'; another instance took over"
                     );
                     self.hosted.write().unwrap().remove(&name);
+                    self.announce_host_moved(&name);
                 }
                 Err(e) => tracing::warn!("failed to renew the host lock for '{name}': {e}"),
             }
@@ -6085,9 +6108,10 @@ pub use reflect::REFLECT_GUIDANCE;
 mod reflection;
 mod reflection_assets;
 pub use reflection::{
-    ANONYMOUS_COMMENT, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_OFF_START,
-    REFUSED_PENDING, REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED,
-    REFUSED_PENDING_UNREADABLE, ROOM_WAITING_NOTE, ReflectionSearch, SectionAuthors,
+    ANONYMOUS_COMMENT, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_HOSTED_START,
+    REFUSED_OFF_START, REFUSED_PENDING, REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS,
+    REFUSED_PENDING_UNOPENED, REFUSED_PENDING_UNREADABLE, ROOM_WAITING_NOTE, ReflectionSearch,
+    SectionAuthors,
 };
 pub use reflection_assets::WrittenReflectionAsset;
 mod rename_domain;

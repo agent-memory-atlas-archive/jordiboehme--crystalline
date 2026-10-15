@@ -79,6 +79,29 @@ pub async fn serve_opts(opts: Opts) -> Served {
         },
     )
     .await;
+    let mut p = crate::docs::write(
+        "guides/deploying.md",
+        "# Deploying\n\n## Night deploys\n\nDeploys run at night.\n",
+    );
+    p.sources = std::collections::BTreeMap::from([
+        ("_top".to_string(), Vec::new()),
+        (
+            "Night deploys".to_string(),
+            vec!["runbooks/deploy".to_string()],
+        ),
+    ]);
+    if !origin {
+        fx.engine
+            .write_reflection(&p, &crystalline_service::ReflectionCaller::owner())
+            .await
+            .unwrap();
+    }
+    serve_fx(fx, private).await
+}
+
+/// Serve `fx`'s engine with [`serve`]'s accounts: `keeper`, `ann`, `vera`,
+/// `ed` and `nora`, and with `private` the members of a private `eng`.
+pub async fn serve_fx(fx: Fx, private: bool) -> Served {
     let auth = Arc::new(
         AuthStore::open(&fx.tmp.path().join("web-auth.db"))
             .await
@@ -115,23 +138,6 @@ pub async fn serve_opts(opts: Opts) -> Served {
             .await
             .unwrap();
         auth.upsert_domain_member("eng", "ed", MemberLevel::Editor, None, "keeper")
-            .await
-            .unwrap();
-    }
-    let mut p = crate::docs::write(
-        "guides/deploying.md",
-        "# Deploying\n\n## Night deploys\n\nDeploys run at night.\n",
-    );
-    p.sources = std::collections::BTreeMap::from([
-        ("_top".to_string(), Vec::new()),
-        (
-            "Night deploys".to_string(),
-            vec!["runbooks/deploy".to_string()],
-        ),
-    ]);
-    if !origin {
-        fx.engine
-            .write_reflection(&p, &crystalline_service::ReflectionCaller::owner())
             .await
             .unwrap();
     }

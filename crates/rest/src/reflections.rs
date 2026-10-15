@@ -16,8 +16,9 @@ use super::auth::Identity;
 use super::{ApiError, ApiJson, ApiPath, ApiQuery, ProblemDetail, RestState, refuse_read_only};
 use crate::engine::{
     ANONYMOUS_COMMENT, EngineError, MOVE_ONTO_A_FILE, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS,
-    REFUSED_OFF_START, REFUSED_PENDING, REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS,
-    REFUSED_PENDING_UNOPENED, REFUSED_PENDING_UNREADABLE, ReflectionSearch,
+    REFUSED_HOSTED_START, REFUSED_OFF_START, REFUSED_PENDING, REFUSED_PENDING_NAMED,
+    REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED, REFUSED_PENDING_UNREADABLE,
+    ReflectionSearch,
 };
 use crate::files::{AttachmentView, attachment_response};
 use crate::params::{DiscussParams, WriteReflectionParams};
@@ -61,7 +62,7 @@ pub(crate) async fn refuse_anonymous(
     Err(ApiError::unauthorized(sentence))
 }
 
-/// Engine errors as this surface answers them: the four Reflection states a
+/// Engine errors as this surface answers them: the five Reflection states a
 /// verb refuses on are 409 (the request is fine, the Reflection is not where
 /// it could serve it), with `home_url` when it lives elsewhere; a stale
 /// checksum, a create over an existing page, a move or delete of a page
@@ -76,6 +77,7 @@ pub(crate) fn reflection_error(e: EngineError) -> ApiError {
         }
         EngineError::Refused(text)
             if text.starts_with(REFUSED_OFF_START)
+                || text.starts_with(REFUSED_HOSTED_START)
                 || text.contains(REFUSED_PENDING_NAMED)
                 || text.contains(REFUSED_PENDING)
                 || text.contains(REFUSED_PENDING_UNREADABLE)
@@ -121,16 +123,21 @@ pub(crate) fn reflection_error(e: EngineError) -> ApiError {
         (
             status = 200,
             description = "ReflectionDomains: `{ domains: [{ domain, state, right, \
-                           engrams_visible, home, home_url, open_threads }] }`. \
-                           `state` is `on`, `pending`, `homeless` or `elsewhere`; \
-                           `home` is `here`, `local`, `elsewhere` (then \
-                           `home_url` is set) or `null` (`pending`, \
-                           `homeless`); `open_threads` is 0 unless `state` is \
+                           engrams_visible, home, home_url, host_label, \
+                           open_threads }] }`. `state` is `on`, `pending`, \
+                           `homeless`, `elsewhere` or `hosted_elsewhere` \
+                           (another instance on this shared database holds \
+                           the domain's host lock and serves it); `home` is \
+                           `here`, `local`, `elsewhere` (then `home_url` is \
+                           set) or `null` (`pending`, `homeless`, \
+                           `hosted_elsewhere`); `host_label` names the serving \
+                           instance for `hosted_elsewhere` and is `null` \
+                           otherwise; `open_threads` is 0 unless `state` is \
                            `on`.",
             body = Object,
             example = json!({ "domains": [ { "domain": "eng", "state": "on",
                 "right": "edit", "engrams_visible": false, "home": "here",
-                "home_url": null, "open_threads": 3 } ] }),
+                "home_url": null, "host_label": null, "open_threads": 3 } ] }),
         ),
     ),
 )]
@@ -169,6 +176,7 @@ pub async fn domains(
             "engrams_visible": status["engrams_visible"],
             "home": status["home"],
             "home_url": status["home_url"],
+            "host_label": status["host_label"],
             "open_threads": open,
         }));
     }
@@ -191,13 +199,17 @@ pub async fn domains(
             description = "ReflectionStatus. `state` is `off`, `pending` (then \
                            `pending_engrams` lists the engrams still under \
                            `reflections/` for a caller with `engrams_visible`, \
-                           and is empty for anyone else), `homeless`, `on` or \
-                           `elsewhere` (then `home_url` is set). `member` is \
-                           true when the caller holds a membership row it may \
+                           and is empty for anyone else), `homeless`, `on`, \
+                           `elsewhere` (then `home_url` is set) or \
+                           `hosted_elsewhere` (another instance on this shared \
+                           database holds the domain's host lock and serves \
+                           it; then `host_label` names that instance, and it \
+                           is `null` in every other state). `member` is true \
+                           when the caller holds a membership row it may \
                            leave.",
             body = Object,
             example = json!({ "domain": "eng", "enabled": true, "state": "on",
-                "home": "here", "home_url": null, "right": "curate",
+                "home": "here", "home_url": null, "host_label": null, "right": "curate",
                 "engrams_visible": true, "member": false, "pending_engrams": [] }),
         ),
         (
@@ -266,8 +278,10 @@ pub async fn status(
         ),
         (
             status = 409,
-            description = "The Reflection is off, pending, homeless or lives \
-                           elsewhere (then the `home_url` member names where).",
+            description = "The Reflection is off, pending, homeless, lives \
+                           elsewhere (then the `home_url` member names where) \
+                           or is served by another instance on this shared \
+                           database (the text names it).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -327,8 +341,9 @@ pub async fn tree(
         ),
         (
             status = 409,
-            description = "The Reflection is not here (off, pending, homeless or \
-                           elsewhere, then with `home_url`).",
+            description = "The Reflection is not here (off, pending, homeless, \
+                           elsewhere, then with `home_url`, or served by \
+                           another instance on this shared database).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -1216,8 +1231,9 @@ pub struct MoveReflectionAssetBody {
         ),
         (
             status = 409,
-            description = "The Reflection is not here (off, pending, homeless or \
-                           elsewhere, then with `home_url`).",
+            description = "The Reflection is not here (off, pending, homeless, \
+                           elsewhere, then with `home_url`, or served by \
+                           another instance on this shared database).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -1562,7 +1578,7 @@ mod tests {
 
     use super::*;
 
-    /// The four "not here" states are 409, and only the elsewhere one names
+    /// The five "not here" states are 409, and only the elsewhere one names
     /// the home.
     #[test]
     fn the_reflection_states_are_conflicts_and_elsewhere_names_its_home() {
@@ -1582,6 +1598,7 @@ mod tests {
             format!("Reflection for 'eng' {REFUSED_PENDING_UNOPENED}: reflections/y.md"),
             format!("Reflection for 'eng' {REFUSED_PENDING_SPELLINGS}: Reflections/, reflections/"),
             REFUSED_HOMELESS.to_string(),
+            format!("{REFUSED_HOSTED_START}alpha; move it with crystalline serve --take-over"),
         ] {
             let e = reflection_error(EngineError::Refused(text.clone()));
             assert_eq!(e.status, StatusCode::CONFLICT, "{text}");

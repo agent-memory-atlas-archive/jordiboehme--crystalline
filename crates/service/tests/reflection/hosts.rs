@@ -1,0 +1,225 @@
+//! One instance serves a domain's Reflection on a shared database: the one
+//! that holds the domain's host lock (R92). Every other instance answers
+//! `hosted_elsewhere` and names the host; a takeover moves it.
+
+use std::sync::Arc;
+
+use crystalline_index::{Store, TursoStore};
+use crystalline_service::{ReflectionCaller, ReflectionHome, ReflectionState};
+use tokio::sync::Mutex;
+
+use crate::fixture::{Fx, engram, instance_on, manifest};
+
+fn files() -> Vec<(&'static str, String)> {
+    vec![
+        ("MANIFEST.md", manifest("reflection: on\n")),
+        (
+            "runbooks/deploy.md",
+            engram("Deploy", "runbooks/deploy", "- [fact] deploys run at night"),
+        ),
+    ]
+}
+
+async fn instance(store: Arc<Mutex<dyn Store>>, id: &str) -> Fx {
+    let files = files();
+    let files: Vec<(&str, &str)> = files.iter().map(|(p, b)| (*p, b.as_str())).collect();
+    instance_on(store, id, &files).await
+}
+
+const LOCAL: ReflectionState = ReflectionState::On {
+    home: ReflectionHome::Local,
+};
+
+fn hosted_by(label: &str) -> ReflectionState {
+    ReflectionState::HostedElsewhere {
+        label: label.to_string(),
+    }
+}
+
+/// The refusal a non-host answers, in R92's words.
+fn refusal(label: &str) -> String {
+    format!(
+        "this domain's Reflection is served by {label}; move it with crystalline serve --take-over"
+    )
+}
+
+/// Two instances on one Postgres schema: the first claims `eng`'s host lock
+/// and serves its Reflection; the second refuses every write with 409, says
+/// `hosted_elsewhere` with the host's label in its status and its listing,
+/// and serves the Reflection once it takes the lock over.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_reflection_on_a_shared_database_is_served_by_its_host_only_on_postgres() {
+    use crate::fixture::{pg_url, unique_schema};
+    use crate::rest::{Session, serve_fx};
+
+    let Some(url) = pg_url() else { return };
+    let schema = unique_schema();
+    let open = || async {
+        let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .expect("open the postgres test schema");
+        Arc::new(Mutex::new(store)) as Arc<Mutex<dyn Store>>
+    };
+    let a = instance(open().await, "alpha").await;
+    let b = instance(open().await, "beta").await;
+    assert_eq!(a.engine.reflection_state("eng").await.unwrap(), LOCAL);
+    assert_eq!(
+        b.engine.reflection_state("eng").await.unwrap(),
+        hosted_by("alpha")
+    );
+    // The host knows it hosts without the store: a long sync holding the
+    // lock does not stall its Reflection polls (Task 38's lock-free answer).
+    {
+        let store = a.engine.store();
+        let _held = store.lock().await;
+        let state = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            a.engine.reflection_state("eng"),
+        )
+        .await
+        .expect("the host answers while the store lock is held")
+        .unwrap();
+        assert_eq!(state, LOCAL);
+    }
+    let host = a
+        .engine
+        .reflection_status("eng", &ReflectionCaller::owner())
+        .await
+        .unwrap();
+    assert_eq!(host["state"], "on", "{host}");
+    assert!(host["host_label"].is_null(), "{host}");
+
+    let s = serve_fx(b, false).await;
+    let ed = Session::login(s.addr, "ed").await;
+    let (status, body) = ed.get("/api/v1/domains/eng/reflection").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["state"], "hosted_elsewhere", "{body}");
+    assert_eq!(body["host_label"], "alpha", "{body}");
+    assert!(body["home"].is_null(), "{body}");
+    assert!(body["home_url"].is_null(), "{body}");
+    assert_eq!(body["enabled"], true, "{body}");
+    let (status, listing) = ed.get("/api/v1/reflection/domains").await;
+    assert_eq!(status, 200, "{listing}");
+    let row = &listing["domains"][0];
+    assert_eq!(row["domain"], "eng", "{listing}");
+    assert_eq!(row["state"], "hosted_elsewhere", "{listing}");
+    assert_eq!(row["host_label"], "alpha", "{listing}");
+    assert!(row["home"].is_null(), "{listing}");
+    assert!(row["home_url"].is_null(), "{listing}");
+    assert_eq!(row["open_threads"], 0, "{listing}");
+
+    const PAGE: &str = "/api/v1/domains/eng/reflections/guides/new.md";
+    let page = serde_json::json!({ "markdown": "# New\n", "create": true });
+    let (status, err) = ed
+        .send(reqwest::Method::PUT, PAGE, Some(page.clone()))
+        .await;
+    assert_eq!(status, 409, "{err}");
+    assert_eq!(err["detail"], refusal("alpha"), "{err}");
+    const FILE: &str = "/api/v1/domains/eng/reflection/assets/diagrams/flow.png";
+    let (status, err) = ed.put_bytes(FILE, crate::assets::PNG).await;
+    assert_eq!(status, 409, "{err}");
+    assert_eq!(err["detail"], refusal("alpha"), "{err}");
+    assert!(
+        !s.fx.root.join("reflections/guides/new.md").exists()
+            && !s
+                .fx
+                .root
+                .join("reflections/assets/diagrams/flow.png")
+                .exists(),
+        "a non-host writes nothing"
+    );
+
+    // A takeover moves the Reflection: the new host serves it at once, the
+    // old one steps down at its next heartbeat. Each side announces the move
+    // once, as `switched`, so a reader re-reads the status.
+    let mut new_host = s.fx.engine.changes().subscribe();
+    let mut old_host = a.engine.changes().subscribe();
+    assert_eq!(
+        s.fx.engine.claim_host("eng", true).await.unwrap(),
+        crystalline_index::HostClaim::Acquired
+    );
+    s.fx.engine.claim_host("eng", false).await.unwrap();
+    assert_eq!(
+        switched(&mut new_host),
+        1,
+        "a renewed claim announces nothing"
+    );
+    assert_eq!(s.fx.engine.reflection_state("eng").await.unwrap(), LOCAL);
+    let (status, body) = ed.get("/api/v1/domains/eng/reflection").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["state"], "on", "{body}");
+    assert!(body["host_label"].is_null(), "{body}");
+    let (status, made) = ed.send(reqwest::Method::PUT, PAGE, Some(page)).await;
+    assert_eq!(status, 200, "the new host serves the write: {made}");
+    let (status, up) = ed.put_bytes(FILE, crate::assets::PNG).await;
+    assert_eq!(status, 200, "and the file: {up}");
+    a.engine.renew_hosts().await;
+    assert_eq!(switched(&mut old_host), 1);
+    assert_eq!(
+        a.engine.reflection_state("eng").await.unwrap(),
+        hosted_by("beta")
+    );
+    let err = a
+        .engine
+        .write_reflection(
+            &crate::docs::write("guides/old.md", "# Old\n"),
+            &ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), refusal("beta"));
+
+    crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+        .await
+        .unwrap()
+        .drop_schema()
+        .await
+        .unwrap();
+}
+
+/// How many `switched` events for `eng` the bus holds.
+#[cfg(feature = "postgres")]
+fn switched(
+    rx: &mut tokio::sync::broadcast::Receiver<crystalline_service::changes::Envelope>,
+) -> usize {
+    use crystalline_service::changes::{Change, ReflectionChangeKind};
+    let mut heard = 0;
+    while let Ok(envelope) = rx.try_recv() {
+        if let Change::Reflection(change) = envelope.change
+            && change.kind == ReflectionChangeKind::Switched
+        {
+            assert_eq!((change.domain.as_str(), change.path.as_str()), ("eng", ""));
+            heard += 1;
+        }
+    }
+    heard
+}
+
+/// On Turso a database is one instance's own, so the host lock never moves a
+/// Reflection away: an engine that does not hold the lock (here a second
+/// engine on the same store) still serves it.
+#[tokio::test]
+async fn a_turso_instance_always_serves_its_reflection() {
+    let store: Arc<Mutex<dyn Store>> =
+        Arc::new(Mutex::new(TursoStore::open_in_memory().await.unwrap()));
+    let a = instance(store.clone(), "alpha").await;
+    let b = instance(store, "beta").await;
+    for (fx, page) in [(&a, "guides/a.md"), (&b, "guides/b.md")] {
+        assert_eq!(fx.engine.reflection_state("eng").await.unwrap(), LOCAL);
+        let status = fx
+            .engine
+            .reflection_status("eng", &ReflectionCaller::owner())
+            .await
+            .unwrap();
+        assert_eq!(status["state"], "on", "{status}");
+        assert!(status["host_label"].is_null(), "{status}");
+        fx.engine
+            .write_reflection(
+                &crate::docs::write(page, "# Page\n"),
+                &ReflectionCaller::owner(),
+            )
+            .await
+            .unwrap();
+    }
+}
