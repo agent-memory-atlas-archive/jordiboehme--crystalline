@@ -953,3 +953,45 @@ async fn a_026_server_reads_without_links_and_refuses_a_file_naming_the_version(
     );
     assert!(refused.contains("acme"), "{refused}");
 }
+
+/// R85 under a local name of its own: a mount renamed here links its files
+/// under this machine's name, and reading a link asks the server under its
+/// own name.
+#[tokio::test]
+async fn a_renamed_mount_links_and_reads_its_files_under_the_local_name() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    server.with_files_in_open().await;
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount().rename_local("open", "acme-open").unwrap();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    let (_, links) = call_with_links(
+        client.peer(),
+        "read_engram",
+        json!({ "identifier": "shot-note", "domain": "acme-open" }),
+    )
+    .await;
+    let engram_uri = "crystalline://acme-open/assets/shot.png";
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert_eq!(links[0]["uri"], engram_uri);
+    let (_, links) = call_with_links(
+        client.peer(),
+        "read_reflection",
+        json!({ "domain": "acme-open", "path": "guides/a.md" }),
+    )
+    .await;
+    let page_uri = "crystalline://acme-open/reflections/assets/pic.png";
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert_eq!(links[0]["uri"], page_uri);
+    assert_eq!(read_bytes(client.peer(), engram_uri).await.unwrap(), SHOT);
+    assert_eq!(read_bytes(client.peer(), page_uri).await.unwrap(), PIC);
+    assert!(
+        server
+            .ctl_requests()
+            .iter()
+            .filter(|r| r["cmd"] == "file")
+            .all(|r| r["domain"] == "open"),
+        "the server is asked under its own name: {:?}",
+        server.ctl_requests()
+    );
+}
