@@ -181,7 +181,8 @@ describe("source spans", () => {
     expect(texts).toEqual(
       expect.arrayContaining(["em", "strong", "under", "gone", "code", "link"]),
     );
-    // The highlighter rebuilds a fenced block, so none of it is stamped.
+    // The parser gives a fenced block's text no position, so none of it is
+    // stamped.
     expect(container.querySelector("pre [data-src]")).toBeNull();
   });
 });

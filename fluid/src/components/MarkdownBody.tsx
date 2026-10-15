@@ -275,9 +275,10 @@ function element(resolution: WikilinkResolution, literal: string): HastNode {
  * source, for the reflection page: a selection's ends read the offsets back
  * and become a quote of the source text a comment anchors on
  * (`reflectionQuotes.ts`). First in the chain, so the positions are the
- * parser's own; a later pass that rebuilds a subtree (the highlighter over
- * code) drops the stamps there, and a selection in such a subtree becomes a
- * section comment rather than a guessed quote.
+ * parser's own. Text the parser gives no position (a fenced code block) or
+ * whose words are not one piece of the source (an escape, an entity, a
+ * continuation line) stays unstamped, and a selection that ends there becomes
+ * a section comment rather than a guessed quote.
  *
  * A section id comment is dropped on the way: it is bookkeeping, and the
  * renderer would otherwise draw it as the text it was written as.
