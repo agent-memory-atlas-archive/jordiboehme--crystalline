@@ -3064,6 +3064,17 @@ impl Engine {
         self.pending_cache.lock().unwrap().remove(domain);
     }
 
+    /// Bump `domain`'s generation once a sync's apply has committed rows,
+    /// before anything else runs: the index files' refresh and the overlay
+    /// restore ask the Reflection mode, and must not be answered from rows
+    /// remembered before the apply. [`Engine::announce_report`] bumps again
+    /// afterwards, which costs a refill and also covers its other callers.
+    pub(crate) fn bump_after_apply(&self, domain: &str, report: &SyncReport) {
+        if !report.changes.is_empty() {
+            self.bump_reflection_generation(domain);
+        }
+    }
+
     /// How many times a Reflection path has loaded more of a domain's engram
     /// rows than the gate's probe since this engine was built: every file
     /// stamp of the domain (`engram_facts`, which a page citing engrams, a
@@ -8891,6 +8902,7 @@ impl ReindexHooks for DaemonReindexHooks<'_> {
     /// no store lock held; the refresh takes it once, briefly, to read the
     /// Reflection mode in effect.
     async fn after_apply(&self, name: &str, report: &SyncReport) {
+        self.engine.bump_after_apply(name, report);
         if changed_anything(report) {
             self.engine.refresh_index_files(name).await;
         }
@@ -10828,9 +10840,7 @@ mod pending_cache_tests {
         assert!(ask(&root).is_some());
         engine.bump_reflection_generation("eng");
         assert!(ask(&root).is_none(), "a bump forgets the entry");
-        let mut stale = entry(&root, false, std::time::Duration::ZERO);
-        stale.generation = 0;
-        put(stale);
+        put(entry(&root, false, std::time::Duration::ZERO));
         assert!(
             ask(&root).is_none(),
             "an entry filled under the old generation never matches again"

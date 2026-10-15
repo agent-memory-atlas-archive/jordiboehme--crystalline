@@ -195,6 +195,7 @@ impl Engine {
                     .await
                     .map_err(|e| EngineError::Internal(format!("sync of '{name}' failed: {e}")))?
             };
+            self.bump_after_apply(name, &report);
             // Files changed under us, so the generated index files follow.
             if changed_anything(&report) {
                 self.refresh_index_files(name).await;
@@ -322,6 +323,7 @@ impl Engine {
                 EngineError::Internal(format!("targeted sync of '{name}' failed: {e}"))
             })?
         };
+        self.bump_after_apply(name, &report);
         // An out-of-band edit the watcher caught changes what the folder's
         // generated index should say.
         if changed_anything(&report) {
