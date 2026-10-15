@@ -114,7 +114,8 @@ const TAKEN_STATUSES = new Set([403, 409]);
  * the path, never by the refusal's words: a 403 or 409 for any other reason
  * (no right to add, a path the server will not take) is reported as the
  * server sent it. A home that replaces (an engram's) never refuses a taken
- * name, so for it this only ever adds one listing after a refusal.
+ * name, so for it this only ever adds one listing after a refusal. A fresh
+ * listing goes to `onListed`, so the rest of the batch is named against it.
  */
 async function uploadOnce(
   home: AssetHome,
@@ -122,6 +123,7 @@ async function uploadOnce(
   path: string,
   taken: readonly string[],
   now: Date | undefined,
+  onListed: (paths: readonly string[]) => void,
 ) {
   try {
     return await home.upload(path, file);
@@ -135,6 +137,7 @@ async function uploadOnce(
     } catch {
       throw cause;
     }
+    onListed(fresh);
     const wanted = path.toLowerCase();
     if (!fresh.some((held) => held.toLowerCase() === wanted)) {
       throw cause;
@@ -192,7 +195,16 @@ export async function uploadAttachments(
     // name dropped together must not both claim one path.
     const path = freeAttachmentPath(file.name, taken, request.now);
     try {
-      const uploaded = await uploadOnce(home, file, path, taken, request.now);
+      const uploaded = await uploadOnce(
+        home,
+        file,
+        path,
+        taken,
+        request.now,
+        (fresh) => {
+          taken = [...taken, ...fresh];
+        },
+      );
       taken = [...taken, uploaded.path];
       stored.push(uploaded.path);
       lines.push(attachmentMarkdown(file.name, home.linkTo(uploaded.path)));

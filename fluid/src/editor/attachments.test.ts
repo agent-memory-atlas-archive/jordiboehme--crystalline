@@ -546,6 +546,34 @@ describe("uploadAttachments when a name is taken meanwhile", () => {
     expect(errors).toEqual([null]);
   });
 
+  it("names the rest of the batch against the fresh listing too", async () => {
+    listMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        SHOT,
+        { ...SHOT, path: "assets/2026/08/shot-2.png" },
+      ]);
+    uploadMock
+      .mockRejectedValueOnce(new ApiProblem(409, "conflict", "taken"))
+      .mockImplementation((_domain, path) => stored(path));
+    const target = mount();
+
+    const inserted = await uploadAttachments({
+      domain: "eng",
+      files: [fileOf("shot.png"), fileOf("shot.png")],
+      view: target,
+      onError: () => undefined,
+      now: new Date(2026, 7, 3),
+    });
+
+    expect(inserted).toBe(2);
+    expect(uploadMock.mock.calls.map((call) => call[1])).toEqual([
+      "assets/2026/08/shot.png",
+      "assets/2026/08/shot-3.png",
+      "assets/2026/08/shot-4.png",
+    ]);
+  });
+
   it("matches the fresh listing without regard to case", async () => {
     listMock
       .mockResolvedValueOnce([])
