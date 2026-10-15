@@ -210,6 +210,27 @@ describe("the reflection editor", () => {
     expect(screen.queryByText(/session ended|was deleted/)).toBeNull();
   });
 
+  it("claims no save when the switch-off's last save was refused", async () => {
+    serve("edit");
+    sessionMock.mockReturnValue({
+      ...room(PAGE),
+      saveState: "failed",
+      saveDetail: "the page could not be written",
+      closed: true,
+      closedReason: "switched_off",
+    });
+    renderApp("/d/eng/reflection-edit/guides/a.md");
+    expect(
+      await screen.findByText(
+        "The session ended; your text is kept as a draft",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/saved first/)).toBeNull();
+    expect(readDraft("ann", "eng", "reflection:guides/a.md")?.content).toBe(
+      PAGE,
+    );
+  });
+
   it("says a failed room is failed and offers a retry, with no second save path", async () => {
     serve("edit");
     sessionMock.mockReturnValue(soloCollabSession());

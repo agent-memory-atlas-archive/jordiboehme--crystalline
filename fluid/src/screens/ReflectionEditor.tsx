@@ -163,16 +163,23 @@ function Room({
   );
 }
 
-/** What the banner says once the room has closed, by the server's reason. */
-function closedSentence(reason: string | null): string {
-  switch (reason) {
-    case "deleted":
-      return "This page was deleted; your text is kept as a draft";
-    case "switched_off":
-      return "The Reflection was switched off. Your text was saved first.";
-    default:
-      return "The session ended; your text is kept as a draft";
+/**
+ * What the banner says once the room has closed, by the server's reason. A
+ * switch-off saves the room before it closes it, but that last save can be
+ * refused too (the server then announces the refusal first), and a banner
+ * must not claim a save that did not land.
+ */
+function closedSentence(
+  reason: string | null,
+  saveState: CollabSession["saveState"],
+): string {
+  if (reason === "deleted") {
+    return "This page was deleted; your text is kept as a draft";
   }
+  if (reason === "switched_off" && saveState !== "failed") {
+    return "The Reflection was switched off. Your text was saved first.";
+  }
+  return "The session ended; your text is kept as a draft";
 }
 
 /**
@@ -293,7 +300,7 @@ function Surface({
       )}
       {collab.closed && (
         <p role="status" className={AMBER_BANNER}>
-          {closedSentence(collab.closedReason)}
+          {closedSentence(collab.closedReason, collab.saveState)}
         </p>
       )}
       {kept !== null && (
