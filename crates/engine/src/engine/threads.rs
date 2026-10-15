@@ -410,12 +410,60 @@ impl Engine {
         }))
     }
 
+    /// How many open threads a domain's Reflection holds, for a caller who
+    /// reads it: the domain listing's count. Refused like every other
+    /// reflection read.
+    pub async fn reflection_open_threads(
+        &self,
+        domain: &str,
+        caller: &ReflectionCaller,
+    ) -> Result<usize> {
+        let access = self
+            .require_reflection(domain, caller, ReflectionRight::Read)
+            .await?;
+        self.open_thread_count(&access).await
+    }
+
+    /// How many open threads the Reflection behind `access` holds: the pages
+    /// from the stamps listing, then each page's threads file, never a
+    /// page's text. The files are read on the blocking pool, with no store
+    /// lock held.
+    pub(crate) async fn open_thread_count(&self, access: &ReflectionAccess) -> Result<usize> {
+        let pages = self
+            .store
+            .lock()
+            .await
+            .list_reflection_stamps(access.domain_id)
+            .await?;
+        let files: Vec<PathBuf> = pages
+            .iter()
+            .map(|page| access.abs(&r::threads_path(&page.path)))
+            .collect();
+        tokio::task::spawn_blocking(move || {
+            let mut open = 0;
+            for file in files {
+                if let Some(text) = read_opt(&file)? {
+                    open += th::parse_threads(&text)
+                        .iter()
+                        .filter(|t| t.status == ThreadStatus::Open)
+                        .count();
+                }
+            }
+            Ok(open)
+        })
+        .await
+        .map_err(|e| EngineError::Internal(format!("the threads files could not be read: {e}")))?
+    }
+
     /// Every thread of a domain's Reflection with its reflection's path and
     /// current text.
     pub(crate) async fn all_threads(
         &self,
         access: &ReflectionAccess,
     ) -> Result<Vec<(String, Thread, String)>> {
+        #[cfg(any(test, feature = "testing"))]
+        self.reflection_text_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let rows = self
             .store
             .lock()

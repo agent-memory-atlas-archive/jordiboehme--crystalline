@@ -19,6 +19,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use tokio::sync::broadcast;
 
+/// How long an answer read from records another instance may change is
+/// trusted before it is read again. The event stream re-resolves who may see
+/// a domain after it; the Reflection gate re-reads the engram rows it
+/// remembers after it on a database other instances share, whose writes this
+/// instance never hears announced. What can leak inside the window on the
+/// stream is a domain name and a path, never content.
+pub const VISIBILITY_TTL: Duration = Duration::from_secs(10);
+
 /// How many events the ring keeps for replay. A tab away for a larger burst
 /// gets a `reset` (one refetch of every active query), which is the soft
 /// failure this whole design prefers.

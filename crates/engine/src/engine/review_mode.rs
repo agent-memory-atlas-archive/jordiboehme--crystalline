@@ -1067,6 +1067,8 @@ impl Engine {
         let store = self.store.lock().await;
         let domain_id = store.upsert_domain(name, path_str.as_deref(), kind).await?;
         store.clear_domain(domain_id).await?;
+        // Its rows are gone: what the Reflection gate remembered of them too.
+        self.bump_reflection_generation(name);
         // Then the row itself, so the name is free for a rename or an
         // adoption onto it - unless another live instance on a shared index
         // still hosts the domain, whose registration is a registration. The
@@ -1404,6 +1406,9 @@ impl Engine {
                     let id = store.upsert_domain(&row.name, path, row.kind).await?;
                     store.clear_domain(id).await?;
                     drop(store);
+                    // No announce follows a collection, so the rows the
+                    // Reflection gate may remember of the name go here.
+                    self.bump_reflection_generation(&row.name);
                     // Its contradiction rows went with the clear, so the
                     // pass must not remember the domain as settled.
                     self.forget_contradiction_domain(&row.name);

@@ -156,9 +156,8 @@ pub async fn domains(
         let open = if status["state"] == "on" {
             state
                 .engine
-                .list_reflection_threads(&name, None, "open", &caller)
+                .reflection_open_threads(&name, &caller)
                 .await
-                .map(|v| v["threads"].as_array().map(Vec::len).unwrap_or(0))
                 .unwrap_or(0)
         } else {
             0

@@ -1048,13 +1048,31 @@ async fn reflection_gate_timing() {
             let status = fx.engine.reflection_status(&name, &caller).await.unwrap();
             if status["state"] == "on" {
                 fx.engine
-                    .list_reflection_threads(&name, None, "open", &caller)
+                    .reflection_open_threads(&name, &caller)
                     .await
                     .unwrap();
             }
         }
     }
     let domains = started.elapsed();
+
+    // The two halves of the open threads count: the stamps listing alone,
+    // and the whole count behind its gate.
+    let started = Instant::now();
+    for _ in 0..50 {
+        let store = store.lock().await;
+        let did = store.domain_id("eng").await.unwrap().unwrap();
+        store.list_reflection_stamps(did).await.unwrap();
+    }
+    let stamps = started.elapsed();
+    let started = Instant::now();
+    for _ in 0..50 {
+        fx.engine
+            .reflection_open_threads("eng", &caller)
+            .await
+            .unwrap();
+    }
+    let threads = started.elapsed();
     eprintln!("index probes x500: {probes:?} ({:?} each)", probes / 500);
     eprintln!("reflection_state x500: {state:?} ({:?} each)", state / 500);
     eprintln!(
@@ -1064,6 +1082,11 @@ async fn reflection_gate_timing() {
     eprintln!(
         "GET /reflection/domains x50 (engine calls): {domains:?} ({:?} each)",
         domains / 50
+    );
+    eprintln!("stamps listing x50: {stamps:?} ({:?} each)", stamps / 50);
+    eprintln!(
+        "reflection_open_threads x50: {threads:?} ({:?} each)",
+        threads / 50
     );
 }
 
@@ -1308,4 +1331,196 @@ async fn a_page_citing_an_engram_still_reads_its_sources() {
         .unwrap();
     assert_eq!(doc["sections"][0]["sources"][0]["state"], "current");
     assert_eq!(fx.engine.recorded_path_loads(), before + 1);
+}
+
+/// The engrams the gate remembers per domain follow the rows. The switch
+/// screen asks for them while the Reflection is off, so an engram a verb
+/// moves into the folder after a refused switch is named by the next one,
+/// and the one that moved out is not (R83).
+#[tokio::test]
+async fn a_cached_state_follows_an_engram_moved_into_the_folder() {
+    let notes = engram("N", "notes/n", "- [fact] n");
+    let fx = fixture(&[PENDING_FILES[0], ("notes/n.md", &notes)]).await;
+    follows_an_engram_moved_in(fx).await;
+}
+
+/// The same on a database other instances may share, where a remembered
+/// entry also ages out: an announced change still forgets it at once.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_cached_state_follows_an_engram_moved_into_the_folder_on_postgres() {
+    use crate::fixture::{fixture_on, pg_url, unique_schema};
+
+    let Some(url) = pg_url() else { return };
+    let schema = unique_schema();
+    let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+        .await
+        .expect("open the postgres test schema");
+    let notes = engram("N", "notes/n", "- [fact] n");
+    let fx = fixture_on(
+        std::sync::Arc::new(tokio::sync::Mutex::new(store)),
+        &[PENDING_FILES[0], ("notes/n.md", &notes)],
+        |_, _| {},
+        None,
+        None,
+        None,
+    )
+    .await;
+    follows_an_engram_moved_in(fx).await;
+    crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+        .await
+        .unwrap()
+        .drop_schema()
+        .await
+        .unwrap();
+}
+
+async fn follows_an_engram_moved_in(fx: crate::fixture::Fx) {
+    let policies = on();
+    let switch_on = || {
+        fx.engine
+            .set_manifest_policies("eng", &policies, &Scope::Unrestricted)
+    };
+    let err = switch_on().await.unwrap_err().to_string();
+    assert!(err.contains("reflections/old.md"), "{err}");
+    fx.engine
+        .move_engram(
+            &crate::fixture::move_params("notes/n", "reflections/n.md"),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    fx.engine
+        .move_engram(
+            &crate::fixture::move_params("reflections/old", "old.md"),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let err = switch_on().await.unwrap_err().to_string();
+    assert!(
+        err.contains("reflections/n.md") && !err.contains("reflections/old.md"),
+        "the engram moved in is named, the one moved out is not: {err}"
+    );
+    fx.engine
+        .move_engram(
+            &crate::fixture::move_params("reflections/n", "n.md"),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    switch_on().await.unwrap();
+    assert_eq!(
+        fx.engine.reflection_state("eng").await.unwrap(),
+        ReflectionState::On {
+            home: crystalline_service::ReflectionHome::Local
+        }
+    );
+    assert!(fx.engine.reflection_effective("eng").await.unwrap());
+}
+
+/// An engram a plain editor drops into the folder of a pending Reflection is
+/// named as soon as a sync has indexed it, though the gate read the state
+/// before (R83).
+#[tokio::test]
+async fn a_cached_state_follows_an_engram_synced_into_the_folder() {
+    let fx = fixture(&[PENDING_FILES[0]]).await;
+    std::fs::write(fx.root.join("MANIFEST.md"), manifest("reflection: on\n")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    assert_eq!(
+        fx.engine.reflection_state("eng").await.unwrap(),
+        ReflectionState::Pending {
+            engrams: vec!["reflections/old.md".to_string()]
+        },
+        "read once, so the gate remembers it"
+    );
+    std::fs::write(
+        fx.root.join("reflections/new.md"),
+        engram("New", "reflections/new", "- [fact] new"),
+    )
+    .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    assert_eq!(
+        fx.engine.reflection_state("eng").await.unwrap(),
+        ReflectionState::Pending {
+            engrams: vec![
+                "reflections/new.md".to_string(),
+                "reflections/old.md".to_string()
+            ]
+        },
+        "the synced engram is named"
+    );
+}
+
+/// The switch is read fresh on every gate, never remembered: a MANIFEST
+/// rewritten by hand to `reflection: off` (same length, same modification
+/// time, no sync) turns the Reflection off at once (R83).
+#[tokio::test]
+async fn a_cached_state_follows_a_manifest_edit_outside_crystalline() {
+    let on = manifest("reflection: on \n");
+    let off = manifest("reflection: off\n");
+    assert_eq!(on.len(), off.len(), "the rewrite keeps the length");
+    let fx = fixture(&[
+        ("MANIFEST.md", &on),
+        (
+            "runbooks/deploy.md",
+            &engram("Deploy", "runbooks/deploy", "- [fact] deploys run at night"),
+        ),
+    ])
+    .await;
+    assert_eq!(
+        fx.engine.reflection_state("eng").await.unwrap(),
+        ReflectionState::On {
+            home: crystalline_service::ReflectionHome::Local
+        }
+    );
+    let path = fx.root.join("MANIFEST.md");
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::fs::write(&path, &off).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().modified().unwrap(),
+        modified
+    );
+    assert_eq!(
+        fx.engine.reflection_state("eng").await.unwrap(),
+        ReflectionState::Off
+    );
+}
+
+/// Once the gate remembers a domain's rows, the state and the mode answer
+/// without the store lock: a long sync or embedding pass holding it does
+/// not stall every Reflection poll behind it.
+#[tokio::test]
+async fn the_cache_answers_without_the_store_lock() {
+    let fx = fixture(&[
+        ("MANIFEST.md", &manifest("reflection: on\n")),
+        (
+            "runbooks/deploy.md",
+            &engram("Deploy", "runbooks/deploy", "- [fact] deploys run at night"),
+        ),
+    ])
+    .await;
+    let on = ReflectionState::On {
+        home: crystalline_service::ReflectionHome::Local,
+    };
+    assert_eq!(fx.engine.reflection_state("eng").await.unwrap(), on);
+    let store = fx.engine.store();
+    let _held = store.lock().await;
+    let budget = std::time::Duration::from_millis(200);
+    let state = tokio::time::timeout(budget, fx.engine.reflection_state("eng"))
+        .await
+        .expect("the state answers while the store lock is held")
+        .unwrap();
+    assert_eq!(state, on);
+    let effective = tokio::time::timeout(budget, fx.engine.reflection_effective("eng"))
+        .await
+        .expect("the mode answers while the store lock is held")
+        .unwrap();
+    assert!(effective);
 }

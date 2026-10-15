@@ -369,8 +369,9 @@ impl Engine {
         // engram rows), nothing can be pending and no file is read, unless
         // the folder is spelled twice, which holds the switch whatever the
         // files are. The spelling check lists the root: blocking, like the
-        // predicate's file reads.
-        let recorded = self.recorded_paths(domain).await?;
+        // predicate's file reads. The rows are remembered per domain until
+        // a change of them is announced (R83); the files are read fresh.
+        let recorded = self.recorded_paths(domain, &root).await?;
         tokio::task::spawn_blocking(move || {
             if recorded.nothing_pending(&root) {
                 Vec::new()

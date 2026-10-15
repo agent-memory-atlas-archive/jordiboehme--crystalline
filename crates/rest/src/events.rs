@@ -57,9 +57,9 @@ use crate::scope::{DomainScreen, ReflectionRight, Scope, overlay_actor};
 pub const HEARTBEAT: Duration = Duration::from_secs(15);
 
 /// How long a resolved visibility answer is trusted before the next event
-/// re-resolves it. What can leak inside the window is a domain name and a
-/// path, never content.
-pub const VISIBILITY_TTL: Duration = Duration::from_secs(10);
+/// re-resolves it: the engine's constant, which the Reflection gate's
+/// remembered rows share.
+pub use crate::changes::VISIBILITY_TTL;
 
 /// How many streams one account may hold open at once: a tab keeps one, so
 /// this is a generous number of tabs and devices, and a runaway client is

@@ -758,7 +758,7 @@ pub(crate) const UNDER_REFLECTIONS_PROBE: usize = 64;
 /// rows under the folder are the ones the predicate is asked of, which gives
 /// the answer the whole stamp map gave, since only paths under the folder
 /// were ever asked.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct RecordedPaths {
     /// Whether the index holds any base engram row of the domain.
     pub any: bool,
@@ -778,6 +778,41 @@ impl RecordedPaths {
             && self.under_reflections.is_empty()
             && crystalline_core::reflection::reflection_folders(root).len() < 2
     }
+}
+
+/// What a Reflection gate remembers of one domain's engram rows (R83): the
+/// index-derived part only, [`RecordedPaths`]. The switch, the folder's
+/// spellings, the files' bytes, the home and the public URL are read fresh
+/// on every gate. An entry answers while the domain's generation, its root
+/// and its MANIFEST's length and modification time are the ones it was
+/// filled under, and, on a database other instances share, for
+/// [`crate::changes::VISIBILITY_TTL`] at most.
+#[derive(Debug)]
+struct PendingEntry {
+    /// The domain's generation read before the rows were: a write announced
+    /// while they were read has moved it on already, so the entry is stale
+    /// from the start rather than wrong.
+    generation: u64,
+    root: PathBuf,
+    /// The MANIFEST's `(len, mtime_ns)`, `None` when it could not be read.
+    manifest: Option<(u64, i64)>,
+    at: std::time::Instant,
+    /// Whether the store is shared with other instances, read with the rows.
+    shared: bool,
+    recorded: RecordedPaths,
+}
+
+/// The MANIFEST's length and modification time in nanoseconds, the key a
+/// remembered entry is held to. One `stat`.
+fn manifest_stamp(root: &Path) -> Option<(u64, i64)> {
+    let meta = std::fs::metadata(root.join("MANIFEST.md")).ok()?;
+    let nanos = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some((meta.len(), i64::try_from(nanos).unwrap_or(i64::MAX)))
 }
 
 /// The two signals of `Engine::hold_next_room_screen_until`.
@@ -869,6 +904,19 @@ pub struct Engine {
     // probe. See `Engine::recorded_path_loads`.
     #[cfg(any(test, feature = "testing"))]
     recorded_path_loads: std::sync::atomic::AtomicU64,
+    // The same for every load of a Reflection's pages with their text, the
+    // rows `Engine::all_threads` reads. See `Engine::reflection_text_loads`.
+    #[cfg(any(test, feature = "testing"))]
+    reflection_text_loads: std::sync::atomic::AtomicU64,
+    // Per domain, a number every announced change of its base engram rows
+    // (an `engram` event that is no draft, a `domain` event) and every
+    // registration change moves on. Never reset or removed, so an entry
+    // filled under an old number can never match again. See
+    // `Engine::bump_reflection_generation`.
+    reflection_generations: std::sync::Mutex<HashMap<String, u64>>,
+    // What the Reflection gate read of each domain's engram rows, under the
+    // generation above (R83). See `PendingEntry`.
+    pending_cache: std::sync::Mutex<HashMap<String, PendingEntry>>,
     // What the contradiction walk parsed of each engram, per domain and path,
     // keyed by the content sha it was read at, so a walk reads only the
     // engrams whose stamp moved. Memory only, never written to the database;
@@ -2177,6 +2225,10 @@ impl Engine {
             contradiction_fact_loads: std::sync::atomic::AtomicU64::new(0),
             #[cfg(any(test, feature = "testing"))]
             recorded_path_loads: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(any(test, feature = "testing"))]
+            reflection_text_loads: std::sync::atomic::AtomicU64::new(0),
+            reflection_generations: std::sync::Mutex::default(),
+            pending_cache: std::sync::Mutex::default(),
             contradiction_facts_cache: std::sync::Mutex::default(),
             #[cfg(any(test, feature = "testing"))]
             contradiction_walks: std::sync::atomic::AtomicU64::new(0),
@@ -2888,7 +2940,7 @@ impl Engine {
         if crystalline_core::reflection_at(&root) == crystalline_core::ReflectionSwitch::Off {
             return Ok(crystalline_core::ReflectionMode::Off);
         }
-        let recorded = self.recorded_paths(domain).await?;
+        let recorded = self.recorded_paths(domain, &root).await?;
         // The spelling check and the predicate read the disk (the root's
         // entries, the recorded files, or the folder on an empty index):
         // blocking IO, so off the runtime's workers.
@@ -2914,27 +2966,102 @@ impl Engine {
     /// domain with that many engrams under the folder (a pending switch,
     /// whose refusal names them all) reads the rest. The store lock is held
     /// for these reads only.
-    pub(crate) async fn recorded_paths(&self, domain: &str) -> Result<RecordedPaths> {
-        let store = self.store.lock().await;
-        let Some(id) = store.domain_id(domain).await? else {
-            return Ok(RecordedPaths::default());
-        };
-        let mut under_reflections = store
-            .engram_rows_under_reflections(id, UNDER_REFLECTIONS_PROBE)
-            .await?;
-        if under_reflections.len() >= UNDER_REFLECTIONS_PROBE {
-            #[cfg(any(test, feature = "testing"))]
-            self.recorded_path_loads
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            under_reflections = store.engram_rows_under_reflections(id, usize::MAX).await?;
+    ///
+    /// Remembered per domain (R83, [`PendingEntry`]): an entry filled under
+    /// the domain's current generation, its `root` and its MANIFEST's stamp
+    /// answers without the store lock. The generation is read before
+    /// anything else, so rows that changed while they were read are stored
+    /// under a number the change's announce has already moved past.
+    pub(crate) async fn recorded_paths(&self, domain: &str, root: &Path) -> Result<RecordedPaths> {
+        let generation = self.reflection_generation(domain);
+        let manifest = manifest_stamp(root);
+        if let Some(recorded) = self.remembered_paths(domain, generation, root, manifest) {
+            return Ok(recorded);
         }
-        // A row under the folder is a row: the second question only when
-        // there is none.
-        let any = !under_reflections.is_empty() || store.has_engram_rows(id).await?;
-        Ok(RecordedPaths {
-            any,
-            under_reflections,
-        })
+        let (recorded, shared) = {
+            let store = self.store.lock().await;
+            let shared = store.shares_database();
+            let Some(id) = store.domain_id(domain).await? else {
+                return Ok(RecordedPaths::default());
+            };
+            let mut under_reflections = store
+                .engram_rows_under_reflections(id, UNDER_REFLECTIONS_PROBE)
+                .await?;
+            if under_reflections.len() >= UNDER_REFLECTIONS_PROBE {
+                #[cfg(any(test, feature = "testing"))]
+                self.recorded_path_loads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                under_reflections = store.engram_rows_under_reflections(id, usize::MAX).await?;
+            }
+            // A row under the folder is a row: the second question only when
+            // there is none.
+            let any = !under_reflections.is_empty() || store.has_engram_rows(id).await?;
+            (
+                RecordedPaths {
+                    any,
+                    under_reflections,
+                },
+                shared,
+            )
+        };
+        self.pending_cache.lock().unwrap().insert(
+            domain.to_string(),
+            PendingEntry {
+                generation,
+                root: root.to_path_buf(),
+                manifest,
+                at: std::time::Instant::now(),
+                shared,
+                recorded: recorded.clone(),
+            },
+        );
+        Ok(recorded)
+    }
+
+    /// The rows [`Engine::recorded_paths`] remembers of `domain`, when its
+    /// entry still holds: the same generation, root and MANIFEST stamp, and
+    /// on a shared database younger than [`crate::changes::VISIBILITY_TTL`].
+    fn remembered_paths(
+        &self,
+        domain: &str,
+        generation: u64,
+        root: &Path,
+        manifest: Option<(u64, i64)>,
+    ) -> Option<RecordedPaths> {
+        let cache = self.pending_cache.lock().unwrap();
+        let entry = cache.get(domain)?;
+        let fresh = entry.generation == generation
+            && entry.root == root
+            && manifest.is_some()
+            && entry.manifest == manifest
+            && (!entry.shared || entry.at.elapsed() < crate::changes::VISIBILITY_TTL);
+        fresh.then(|| entry.recorded.clone())
+    }
+
+    /// The domain's generation: see [`Engine::bump_reflection_generation`].
+    fn reflection_generation(&self, domain: &str) -> u64 {
+        self.reflection_generations
+            .lock()
+            .unwrap()
+            .get(domain)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Move `domain`'s generation on and forget the rows the Reflection gate
+    /// remembers of it. [`Engine::announce`] calls it for every change of the
+    /// domain's base engram rows; a path that writes or clears those rows
+    /// without an announce of that domain calls it itself (a removal, the
+    /// orphan collector). The number only grows, so an entry filled before
+    /// a bump never matches again, however the fills and bumps interleave.
+    pub(crate) fn bump_reflection_generation(&self, domain: &str) {
+        *self
+            .reflection_generations
+            .lock()
+            .unwrap()
+            .entry(domain.to_string())
+            .or_default() += 1;
+        self.pending_cache.lock().unwrap().remove(domain);
     }
 
     /// How many times a Reflection path has loaded more of a domain's engram
@@ -2949,6 +3076,16 @@ impl Engine {
     #[cfg(any(test, feature = "testing"))]
     pub fn recorded_path_loads(&self) -> u64 {
         self.recorded_path_loads
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many times a Reflection's pages were loaded with their text to
+    /// walk its threads (`Engine::all_threads`) since this engine was built.
+    /// Counting open threads needs only the threads files, so the domain
+    /// listing that moves it is a regression.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn reflection_text_loads(&self) -> u64 {
+        self.reflection_text_loads
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
@@ -3663,6 +3800,15 @@ impl Engine {
     /// bus takes only its own short mutex), at every place a change lands in
     /// the store and nowhere else.
     pub(crate) fn announce(&self, change: Change) {
+        // The rows the Reflection gate remembers go stale first, before any
+        // subscriber hears of the change (R83). A draft is no base row.
+        match &change {
+            Change::Engram(engram) if engram.draft_of.is_none() => {
+                self.bump_reflection_generation(&engram.domain)
+            }
+            Change::Domain(changed) => self.bump_reflection_generation(&changed.domain),
+            Change::Engram(_) | Change::Reflection(_) => {}
+        }
         if let Some(id) = self.changes.announce(change) {
             tracing::trace!(%id, "announced a change");
         }
@@ -3674,6 +3820,10 @@ impl Engine {
     /// regeneration by `refresh_index_files` that the watcher then sees
     /// announces nothing.
     pub(crate) fn announce_report(&self, name: &str, report: &SyncReport, actor: Option<&str>) {
+        // A generated listing's row is a row too, though no event names it.
+        if !report.changes.is_empty() {
+            self.bump_reflection_generation(name);
+        }
         let changes: Vec<&PathChange> = report
             .changes
             .iter()
@@ -5444,6 +5594,7 @@ impl Engine {
     /// daemon's sweep. A reindex is never the remedy for a row.
     pub fn forget_domain(&self, name: &str) {
         self.forget_contradiction_domain(name);
+        self.bump_reflection_generation(name);
         self.discovered_domains.write().unwrap().remove(name);
         self.mark_names_stale();
         if let Some(tx) = &self.watch_tx {
@@ -10602,6 +10753,87 @@ mod hidden_copy_tests {
         assert!(
             matches!(refused, EngineError::UnknownDomain { .. }),
             "{refused}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pending_cache_tests {
+    use super::*;
+    use crystalline_index::TursoStore;
+
+    fn entry(root: &Path, shared: bool, age: std::time::Duration) -> PendingEntry {
+        PendingEntry {
+            generation: 0,
+            root: root.to_path_buf(),
+            manifest: manifest_stamp(root),
+            at: std::time::Instant::now().checked_sub(age).unwrap(),
+            shared,
+            recorded: RecordedPaths {
+                any: true,
+                under_reflections: Vec::new(),
+            },
+        }
+    }
+
+    /// A remembered entry answers only under the key it was filled under:
+    /// the generation, the root and the MANIFEST's stamp; on a database
+    /// other instances share, for `VISIBILITY_TTL` at most, since their
+    /// writes are never announced here (R83).
+    #[tokio::test]
+    async fn a_remembered_entry_holds_only_under_its_key_and_its_age() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("MANIFEST.md"), "---\ntitle: eng\n---\n").unwrap();
+        let store = TursoStore::open_in_memory().await.unwrap();
+        let engine = Engine::new(
+            Arc::new(Mutex::new(store)),
+            GlobalConfig::default(),
+            None,
+            None,
+        );
+        let ttl = crate::changes::VISIBILITY_TTL;
+        let past_ttl = ttl + std::time::Duration::from_secs(1);
+        let ask = |root: &Path| {
+            engine.remembered_paths(
+                "eng",
+                engine.reflection_generation("eng"),
+                root,
+                manifest_stamp(root),
+            )
+        };
+        let put = |e: PendingEntry| {
+            engine
+                .pending_cache
+                .lock()
+                .unwrap()
+                .insert("eng".to_string(), e)
+        };
+
+        put(entry(&root, false, past_ttl));
+        assert!(ask(&root).is_some(), "a store of its own: no age limit");
+        assert!(ask(&tmp.path().join("other")).is_none(), "another root");
+
+        put(entry(&root, true, std::time::Duration::ZERO));
+        assert!(ask(&root).is_some(), "a shared store, young");
+        put(entry(&root, true, past_ttl));
+        assert!(ask(&root).is_none(), "a shared store, past the window");
+
+        put(entry(&root, false, std::time::Duration::ZERO));
+        std::fs::write(root.join("MANIFEST.md"), "---\ntitle: eng, longer\n---\n").unwrap();
+        assert!(ask(&root).is_none(), "the MANIFEST changed");
+
+        put(entry(&root, false, std::time::Duration::ZERO));
+        assert!(ask(&root).is_some());
+        engine.bump_reflection_generation("eng");
+        assert!(ask(&root).is_none(), "a bump forgets the entry");
+        let mut stale = entry(&root, false, std::time::Duration::ZERO);
+        stale.generation = 0;
+        put(stale);
+        assert!(
+            ask(&root).is_none(),
+            "an entry filled under the old generation never matches again"
         );
     }
 }

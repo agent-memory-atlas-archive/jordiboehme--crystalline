@@ -1544,3 +1544,46 @@ async fn a_contributor_hears_the_switch_go_off() {
         "the switch, never the MANIFEST's engram event: {heard:?}"
     );
 }
+
+/// The domain listing counts each Reflection's open threads from its threads
+/// files alone: twenty listings read no page text and no engram row past
+/// the gate's probe.
+#[tokio::test]
+async fn the_domain_listing_counts_open_threads_without_page_text() {
+    let s = serve().await;
+    let ed = Session::login(s.addr, "ed").await;
+    let mut ids = Vec::new();
+    for text in ["Still?", "Who runs them?", "Since when?"] {
+        let (status, thread) = ed
+            .send(
+                reqwest::Method::POST,
+                "/api/v1/domains/eng/reflection/threads",
+                Some(json!({ "path": "guides/deploying.md", "section": "Night deploys", "text": text })),
+            )
+            .await;
+        assert_eq!(status, 201, "{thread}");
+        ids.push(thread["id"].as_str().unwrap().to_string());
+    }
+    let (status, _) = ed
+        .send(
+            reqwest::Method::POST,
+            &format!("/api/v1/domains/eng/reflection/threads/{}/resolve", ids[0]),
+            Some(json!({ "path": "guides/deploying.md", "outcome": "Yes." })),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let texts = s.fx.engine.reflection_text_loads();
+    let paths = s.fx.engine.recorded_path_loads();
+    for _ in 0..20 {
+        let (status, listing) = ed.get("/api/v1/reflection/domains").await;
+        assert_eq!(status, 200);
+        assert_eq!(listing["domains"][0]["domain"], "eng");
+        assert_eq!(listing["domains"][0]["open_threads"], 2, "{listing}");
+    }
+    assert_eq!(
+        s.fx.engine.reflection_text_loads(),
+        texts,
+        "no page text is read to count threads"
+    );
+    assert_eq!(s.fx.engine.recorded_path_loads(), paths);
+}
