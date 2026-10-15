@@ -878,6 +878,11 @@ pub struct Engine {
     // `Engine::hold_next_draft_edit`, and the same compile-out applies.
     #[cfg(any(test, feature = "testing"))]
     hold_next_draft_edit: std::sync::atomic::AtomicU64,
+    // The third stopwatch: when armed, the next move or delete of a Reflection
+    // sleeps this many milliseconds after its live-room screen and before it
+    // takes the page lock. See `Engine::hold_next_room_screen`.
+    #[cfg(any(test, feature = "testing"))]
+    hold_next_room_screen: std::sync::atomic::AtomicU64,
     // The effective `skills.serve` value, snapshotted while this engine is
     // built and never re-read. See `Engine::skills_serve` for why it is frozen
     // and `Engine::with_env_overlay` for why the snapshot is taken twice.
@@ -2140,6 +2145,8 @@ impl Engine {
             fail_next_source_edit: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "testing"))]
             hold_next_draft_edit: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(any(test, feature = "testing"))]
+            hold_next_room_screen: std::sync::atomic::AtomicU64::new(0),
             skills_serve,
             instance_id: String::new(),
             label: String::new(),
@@ -2266,6 +2273,37 @@ impl Engine {
         {
             let millis = self
                 .hold_next_draft_edit
+                .swap(0, std::sync::atomic::Ordering::Relaxed);
+            if millis > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
+            }
+        }
+    }
+
+    /// Hold the next move or delete of a Reflection open between its screen for
+    /// live rooms and its page lock, once, so a test can open a room inside
+    /// that window.
+    ///
+    /// R81: the window is pinned, not closed. Closing it would mean screening
+    /// under the page lock, which takes the registry lock after the file lock
+    /// and reverses the order (registry, then session, then file). A room that
+    /// opens inside the window meets the deletion as a conflict and keeps its
+    /// text, and the tests built on this pin exactly that.
+    ///
+    /// Armed for ONE verb and consumed by it, and compiled out of a released
+    /// binary like the seams above.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn hold_next_room_screen(&self, millis: u64) {
+        self.hold_next_room_screen
+            .store(millis, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The hold above, consuming the arming. Does nothing outside a test build.
+    async fn take_room_screen_hold(&self) {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            let millis = self
+                .hold_next_room_screen
                 .swap(0, std::sync::atomic::Ordering::Relaxed);
             if millis > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
@@ -5782,7 +5820,7 @@ mod reflection_assets;
 pub use reflection::{
     ANONYMOUS_COMMENT, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_OFF_START,
     REFUSED_PENDING, REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED,
-    REFUSED_PENDING_UNREADABLE, ReflectionSearch, SectionAuthors,
+    REFUSED_PENDING_UNREADABLE, ROOM_WAITING_NOTE, ReflectionSearch, SectionAuthors,
 };
 pub use reflection_assets::WrittenReflectionAsset;
 mod rename_domain;

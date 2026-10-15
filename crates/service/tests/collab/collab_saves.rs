@@ -2366,6 +2366,183 @@ async fn an_agent_write_into_a_room_in_conflict_is_reported_as_waiting() {
     );
 }
 
+/// The agent caller the room-path tests below write and move as.
+fn room_agent() -> crystalline_service::ReflectionCaller {
+    crystalline_service::ReflectionCaller::agent(
+        crystalline_service::Scope::Unrestricted,
+        "claude-code",
+        false,
+    )
+}
+
+/// An agent's write into a room whose own save failed lands in the file only:
+/// the room is `Failed`, takes nothing in, and the receipt says it is waiting.
+#[tokio::test]
+async fn an_agent_write_into_a_room_with_a_failed_save_is_deferred() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed by a person.").await;
+    engine.fail_next_reflection_index();
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    assert!(
+        matches!(
+            next_control(&mut joined.rx).await,
+            Control::SaveFailed { .. }
+        ),
+        "the room's save fails"
+    );
+    let p = crystalline_service::params::WriteReflectionParams {
+        domain: "eng".into(),
+        path: "guides/a.md".into(),
+        operation: Some("replace_section".into()),
+        section: Some("## Two".into()),
+        content: Some("Second, from the agent.\n".into()),
+        ..Default::default()
+    };
+    let receipt = engine.write_reflection(&p, &room_agent()).await.unwrap();
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    assert_eq!(receipt["room"], "waiting", "{receipt}");
+    assert_eq!(
+        receipt["room_note"],
+        crystalline_service::engine::ROOM_WAITING_NOTE,
+        "{receipt}"
+    );
+    let (live, _) = joined.session.snapshot().await;
+    assert!(
+        live.contains("Typed by a person.") && !live.contains("Second, from the agent."),
+        "the room took nothing in: {live}"
+    );
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("Second, from the agent.")
+    );
+}
+
+/// A room whose page is already gone defers an absorb instead of failing it,
+/// and its next save raises the deletion conflict.
+#[tokio::test]
+async fn a_room_whose_page_is_gone_defers_the_change() {
+    use crystalline_service::collab::session::{Absorbed, RoomDoc};
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed before the delete.").await;
+    std::fs::remove_file(&path).unwrap();
+    let outcome = sessions
+        .absorb_doc_change("eng", &RoomDoc::Reflection("guides/a.md".into()), None)
+        .await
+        .unwrap();
+    assert_eq!(outcome.absorbed, Absorbed::Deferred);
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    match next_control(&mut joined.rx).await {
+        Control::Conflict { conflict_kind, .. } => assert_eq!(conflict_kind, "deleted"),
+        other => panic!("a deletion conflict, not {other:?}"),
+    }
+    assert!(!path.exists(), "no save brought the page back");
+}
+
+/// R81: a room that opens after a delete's screen and before its page lock is
+/// not refused; it meets the deletion as a conflict and keeps its text.
+#[tokio::test]
+async fn a_room_opened_inside_the_delete_window_meets_the_deletion() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    engine.hold_next_room_screen(300);
+    let deleting = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .delete_reflection("eng", "guides/a.md", &room_agent())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed inside the window.").await;
+    deleting.await.unwrap().unwrap();
+    assert!(!path.exists(), "the delete went through");
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    match next_control(&mut joined.rx).await {
+        Control::Conflict { conflict_kind, .. } => assert_eq!(conflict_kind, "deleted"),
+        other => panic!("a deletion conflict, not {other:?}"),
+    }
+    assert!(!path.exists(), "the save did not bring the page back");
+    let (live, _) = joined.session.snapshot().await;
+    assert!(live.contains("Typed inside the window."), "{live}");
+}
+
+/// The same window for a move: the room at the old path meets the deletion,
+/// and the moved page holds the text that moved, not the typed line.
+#[tokio::test]
+async fn a_room_opened_inside_the_move_window_meets_the_deletion() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let old = tmp.path().join("eng/reflections/guides/a.md");
+    let new = tmp.path().join("eng/reflections/guides/b.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    engine.hold_next_room_screen(300);
+    let moving = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .move_reflection("eng", "guides/a.md", "guides/b.md", &room_agent())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed inside the window.").await;
+    moving.await.unwrap().unwrap();
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    match next_control(&mut joined.rx).await {
+        Control::Conflict { conflict_kind, .. } => assert_eq!(conflict_kind, "deleted"),
+        other => panic!("a deletion conflict, not {other:?}"),
+    }
+    assert!(!old.exists(), "the old path stays empty");
+    let moved = std::fs::read_to_string(&new).unwrap();
+    assert!(
+        moved.contains("First.") && !moved.contains("Typed inside the window."),
+        "{moved}"
+    );
+    let (live, _) = joined.session.snapshot().await;
+    assert!(live.contains("Typed inside the window."), "{live}");
+}
+
 /// Publish a display name in awareness, as a browser's provider does.
 async fn publish_name(joined: &Joined, doc: &Doc, name: &str) {
     let mut awareness = yrs::sync::Awareness::new(doc.clone());
