@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { EngramChange } from "../api/events";
-import { keysFor, keysForDomain, keysForEngram } from "./invalidation";
+import {
+  keysFor,
+  keysForDomain,
+  keysForEngram,
+  keysForReflection,
+} from "./invalidation";
 
 function change(overrides: Partial<EngramChange> = {}): EngramChange {
   return {
@@ -103,5 +108,37 @@ describe("the invalidation table", () => {
 
   it("a reset is everything", () => {
     expect(keysFor({ event: "reset" })).toBe("everything");
+  });
+
+  it("a reflection event reaches the whole Reflection of its domain and the listing", () => {
+    const keys = keysForReflection({
+      domain: "eng",
+      path: "guides/a.md",
+      kind: "threads",
+      from: null,
+      actor: null,
+    });
+    expect(has(keys, ["reflection", "eng"])).toBe(true);
+    expect(has(keys, ["reflection-status", "eng"])).toBe(true);
+    expect(has(keys, ["reflection-domains"])).toBe(true);
+    expect(has(keys, ["reflection", "ops"])).toBe(false);
+    const moved = {
+      domain: "eng",
+      path: "a.md",
+      kind: "moved" as const,
+      from: "b.md",
+      actor: null,
+    };
+    expect(keysFor({ event: "reflection", change: moved })).toEqual(
+      keysForReflection(moved),
+    );
+  });
+
+  it("a MANIFEST.md change also reaches the Reflection status and listing, so a switch made elsewhere shows", () => {
+    const keys = keysForEngram(
+      change({ permalink: "manifest", path: "MANIFEST.md", kind: "modified" }),
+    );
+    expect(has(keys, ["reflection-status", "eng"])).toBe(true);
+    expect(has(keys, ["reflection-domains"])).toBe(true);
   });
 });

@@ -1,7 +1,7 @@
 /**
- * The three frames `GET /api/v1/events` sends, read tolerantly like every
- * payload in this folder. The generated `EngramChanged`, `DomainChanged` and
- * `ChangeKind` in `types.ts` document the wire; the readers here are what
+ * The four frames `GET /api/v1/events` sends, read tolerantly like every
+ * payload in this folder. The generated `EngramChanged`, `DomainChanged`,
+ * `ReflectionChanged` and `ChangeKind` in `gen/types.gen.ts` document the wire; the readers here are what
  * the app trusts.
  */
 
@@ -36,9 +36,33 @@ export interface DomainChange {
   actor: string | null;
 }
 
+export type ReflectionChangeKind =
+  "changed" | "moved" | "deleted" | "threads" | "files" | "switched";
+const REFLECTION_KINDS: ReadonlySet<string> = new Set([
+  "changed",
+  "moved",
+  "deleted",
+  "threads",
+  "files",
+  "switched",
+]);
+
+/** One reflection changed (core Task 21): a path and a kind, never text. */
+export interface ReflectionChange {
+  domain: string;
+  /** Inside `reflections/`, after the change (`assets/...` for `files`); empty for `switched`. */
+  path: string;
+  /** A kind this client does not know reads as `changed`: it still refreshes. */
+  kind: ReflectionChangeKind;
+  /** `moved`, and `files` on a file move: the path before. */
+  from: string | null;
+  actor: string | null;
+}
+
 export type ChangeEvent =
   | { event: "engram"; change: EngramChange }
   | { event: "domain"; change: DomainChange }
+  | { event: "reflection"; change: ReflectionChange }
   | { event: "reset" };
 
 export function readEngramChange(value: unknown): EngramChange | null {
@@ -74,6 +98,26 @@ export function readDomainChange(value: unknown): DomainChange | null {
   return domain ? { domain, actor: asString(record?.actor) } : null;
 }
 
+export function readReflectionChange(value: unknown): ReflectionChange | null {
+  const record = asObject(value);
+  const domain = asString(record?.domain);
+  // A string, possibly empty: a domain-wide event (a switch) names no page.
+  const path = typeof record?.path === "string" ? record.path : null;
+  if (!domain || path === null) {
+    return null;
+  }
+  const kind = asString(record?.kind) ?? "";
+  return {
+    domain,
+    path,
+    kind: REFLECTION_KINDS.has(kind)
+      ? (kind as ReflectionChangeKind)
+      : "changed",
+    from: asString(record?.from),
+    actor: asString(record?.actor),
+  };
+}
+
 /**
  * One frame, from its `event` name and `data` text. A frame that does not
  * parse is dropped with a warning in development and never thrown: a bad
@@ -95,6 +139,9 @@ export function parseFrame(event: string, data: string): ChangeEvent | null {
     if (change) return { event, change };
   } else if (event === "domain") {
     const change = readDomainChange(value);
+    if (change) return { event, change };
+  } else if (event === "reflection") {
+    const change = readReflectionChange(value);
     if (change) return { event, change };
   }
   warn(event, data);
