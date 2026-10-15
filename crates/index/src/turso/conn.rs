@@ -180,9 +180,10 @@ impl Conn {
         }
     }
 
-    /// The engine's connection, for the migrations and for tests, and only
-    /// outside a transaction: a write on it inside one would be missing from
-    /// the journal, and a replay would come back without it.
+    /// The engine's connection, for tests, and only outside a transaction:
+    /// a write on it inside one would be missing from the journal, and a
+    /// replay would come back without it.
+    #[cfg(test)]
     pub(crate) fn raw(&self) -> &Connection {
         debug_assert!(
             self.conn.is_autocommit().unwrap_or(true),

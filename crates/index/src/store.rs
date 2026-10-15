@@ -2393,9 +2393,6 @@ pub fn merge_vocabularies(parts: Vec<Vocabulary>) -> Vocabulary {
 /// backend can implement the same trait.
 #[async_trait]
 pub trait Store: Send + Sync {
-    /// Apply any pending schema migrations. Idempotent.
-    async fn migrate(&self) -> Result<()>;
-
     /// Register or update a domain by name, root path and kind, returning its
     /// id. A file domain passes `Some(path)`; a virtual domain passes `None`,
     /// since its engrams live in the database with no filesystem root. The name

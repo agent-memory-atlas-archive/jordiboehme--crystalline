@@ -1576,11 +1576,6 @@ async fn probe_fts(conn: &Connection) -> bool {
 
 #[async_trait]
 impl Store for TursoStore {
-    async fn migrate(&self) -> Result<()> {
-        migrations::apply(self.conn.raw()).await?;
-        Ok(())
-    }
-
     async fn upsert_domain(
         &self,
         name: &str,

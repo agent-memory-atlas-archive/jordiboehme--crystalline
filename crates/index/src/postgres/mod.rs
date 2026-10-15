@@ -1564,22 +1564,6 @@ pub fn lead_vectors_sql(actor_screen: &str, generation: u64) -> String {
 
 #[async_trait]
 impl Store for PostgresStore {
-    async fn migrate(&self) -> Result<()> {
-        let mut conn = self.acquire().await?;
-        let run = migrations::apply_locked(conn.as_mut(), None).await;
-        // A session that may still hold the migration lock is closed rather
-        // than given back to the pool, as `release_work_claim` does. The
-        // pinned transaction connection stays in place: closing it would make
-        // the caller's later commit a silent no-op, and the error below
-        // already tells the caller the run failed.
-        if run.tainted
-            && let Conn::Owned(owned) = conn
-        {
-            drop(owned.detach());
-        }
-        run.version.map(|_| ())
-    }
-
     async fn upsert_domain(
         &self,
         name: &str,
