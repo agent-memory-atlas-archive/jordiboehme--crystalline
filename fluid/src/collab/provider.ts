@@ -115,6 +115,21 @@ export function collabUrl(
 }
 
 /**
+ * The key a reflection room's drafts are kept under: `reflection:` plus the
+ * path inside `reflections/`. A client key only: the server keys the room by
+ * the reflection's path and greets with the bare path. It can never be an
+ * engram's draft key, because a permalink never holds `:`.
+ */
+export function reflectionRoomKey(path: string): string {
+  return `reflection:${path}`;
+}
+
+/** The socket path of one reflection's room. */
+export function reflectionCollabUrl(domain: string, path: string): string {
+  return `${API_BASE}/collab-reflection/${encodeSegment(domain)}/${encodePermalink(path)}`;
+}
+
+/**
  * The absolute socket URL for a same-origin path: the page's own host with
  * its scheme swapped for the WebSocket one, so a page served over TLS keeps
  * its session encrypted. An already absolute URL is returned untouched.

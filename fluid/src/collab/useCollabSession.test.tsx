@@ -24,6 +24,8 @@ import {
   CONNECT_TIMEOUT_MS,
   MESSAGE_AWARENESS,
   TEXT_NAME,
+  reflectionCollabUrl,
+  reflectionRoomKey,
 } from "./provider";
 import {
   FakeSocket,
@@ -756,5 +758,93 @@ describe("useCollabSession reconnecting", () => {
     expect(session().mode).toBe("solo");
     expect(session().ytext).toBeNull();
     expect(session().status).toBe("failed");
+  });
+});
+
+describe("a room over a reflection", () => {
+  function mountRoom(readCurrent: () => Promise<string>) {
+    mounted = renderHook(() =>
+      useCollabSession({
+        domain: "eng",
+        permalink: reflectionRoomKey("guides/a.md"),
+        account: "ada",
+        displayName: "Ada Lovelace",
+        enabled: true,
+        room: { url: reflectionCollabUrl("eng", "guides/a.md"), readCurrent },
+        socketFactory: fakeSocketFactory,
+      }),
+    );
+  }
+
+  function joinReflection(
+    readCurrent: () => Promise<string>,
+    hello: Partial<CollabHello> = {},
+  ) {
+    mountRoom(readCurrent);
+    const socket = socketAt(0);
+    const server = new Y.Doc();
+    server.getText(TEXT_NAME).insert(0, SESSION_TEXT);
+    act(() => {
+      socket.open();
+      // The server greets with the inner path; the draft key is the hook's own option.
+      socket.receive(helloFrame("e1", { permalink: "guides/a.md", ...hello }));
+    });
+    act(() => {
+      answerStep1(socket, server);
+    });
+    return { socket, server };
+  }
+
+  it("opens the reflection's own socket", () => {
+    mountRoom(() => Promise.resolve(""));
+    expect(socketAt(0).url).toBe("/api/v1/collab-reflection/eng/guides/a.md");
+  });
+
+  it("re-derives a joiner's conflict from the room's own reader, never the engram read", async () => {
+    const readCurrent = vi.fn(() => Promise.resolve("THEIR page"));
+    joinReflection(readCurrent, { save_state: "conflict" });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(readCurrent).toHaveBeenCalledTimes(1);
+    expect(detailMock).not.toHaveBeenCalled();
+    expect(session().conflict?.theirs).toBe("THEIR page");
+    expect(session().conflict?.detail).toBe(
+      "This page changed outside the session before you joined it.",
+    );
+  });
+
+  it("keeps the reason a room closed, and none while it is open", () => {
+    const { socket } = joinReflection(() => Promise.resolve(""));
+    expect(session().closedReason).toBeNull();
+    act(() => {
+      socket.receive(controlFrame({ kind: "closed", reason: "switched_off" }));
+    });
+    expect(session().closed).toBe(true);
+    expect(session().closedReason).toBe("switched_off");
+  });
+
+  it("an epoch gap keeps the reflection text under its own draft key", () => {
+    const { socket } = joinReflection(() => Promise.resolve(""));
+    act(() => {
+      session().ytext?.insert(0, "typed offline\n");
+    });
+    act(() => {
+      socket.dropWith(1006);
+    });
+    act(() => {
+      vi.advanceTimersByTime(BACKOFF_CAP_MS);
+    });
+    const fresh = new Y.Doc();
+    fresh.getText(TEXT_NAME).insert(0, "saved with ids\n");
+    const retry = socketAt(1);
+    act(() => {
+      retry.open();
+      retry.receive(concat(helloFrame("e2"), serverStep1(fresh)));
+    });
+    expect(readDraft("ada", "eng", "reflection:guides/a.md")?.content).toBe(
+      `typed offline\n${SESSION_TEXT}`,
+    );
+    expect(readDraft("ada", "eng", "alpha")).toBeNull();
   });
 });

@@ -40,20 +40,24 @@ export const MERGE_NOTICE_MS = 4000;
  * The greeting carries `save_state: "conflict"` but no conflict body: the
  * Conflict broadcast that carried the other side's bytes went out before this
  * socket was subscribed, and the session has no way to be asked for it again.
- * So the body is re-derived from the engram's own read - the file as it
- * stands is exactly what the room is being asked to choose against - and the
- * wording says which way that read went. A 404 is the deletion; anything else
+ * So the body is re-derived from the document's own read - the engram's
+ * detail, or a room target's `readCurrent` - because the file as it stands is
+ * exactly what the room is being asked to choose against, and the wording
+ * says which way that read went. A 404 is the deletion; anything else
  * unreadable is admitted as unknown rather than guessed at, because "the file
  * is empty" and "I could not look" are different facts and one of them would
- * be a lie told beside a button that overwrites.
+ * be a lie told beside a button that overwrites. `noun` is what the document
+ * is called on its screen: "engram", or "page" for a reflection.
  */
-const JOINED_EDIT_DETAIL =
-  "This engram changed outside the session before you joined it.";
-const JOINED_DELETED_DETAIL =
-  "This engram's file was deleted outside the session before you joined it.";
-const JOINED_UNREADABLE_DETAIL =
-  "This engram changed outside the session before you joined it, and its " +
-  "current text could not be read from here.";
+function joinedEditDetail(noun: string): string {
+  return `This ${noun} changed outside the session before you joined it.`;
+}
+function joinedDeletedDetail(noun: string): string {
+  return `This ${noun}'s file was deleted outside the session before you joined it.`;
+}
+function joinedUnreadableDetail(noun: string): string {
+  return `This ${noun} changed outside the session before you joined it, and its current text could not be read from here.`;
+}
 
 /** What a participant's awareness state carries about them. */
 interface PresenceUser {
@@ -100,8 +104,12 @@ export interface CollabSession {
   permalink: string;
   flush: () => void;
   resolve: (choice: "mine" | "theirs") => void;
-  /** True after the room accepted an external deletion: leave the editor. */
+  /** True once the room has closed for good (the `closed` control): an
+   *  external deletion, a switched-off Reflection, a server shutting down. */
   closed: boolean;
+  /** Why the room closed, from the `closed` control: `deleted` means the
+   *  document is gone; null while open. */
+  closedReason: string | null;
   /** True briefly after a merged control: an outside change was folded into
    *  the session (the spec's room toast). Auto-clears after a few seconds. */
   mergeNotice: boolean;
@@ -123,8 +131,25 @@ export interface CollabSessionOptions {
    * own page under a header naming the other person.
    */
   overlay?: string | undefined;
+  /**
+   * A room over a reflection rather than an engram. `permalink` is then the
+   * client's key for the room, which is what an epoch gap's draft is kept
+   * under; the server greets with the bare path.
+   */
+  room?: CollabRoomTarget | undefined;
   /** Test seam, threaded to the provider; production callers omit it. */
   socketFactory?: SocketFactory;
+}
+
+/**
+ * A room over something other than an engram: where its socket is, and how
+ * to read the document as it stands for a tab that joins during a conflict.
+ * Absent, the room is the engram's own (`collabUrl`, `fetchEngramDetail`).
+ */
+export interface CollabRoomTarget {
+  url: string;
+  /** The document's current text; rejects with a 404 `ApiProblem` when it is gone. */
+  readCurrent: () => Promise<string>;
 }
 
 /**
@@ -144,8 +169,10 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
     displayName,
     enabled,
     overlay,
+    room,
     socketFactory,
   } = options;
+  const roomUrl = room?.url ?? null;
   // One doc/awareness/provider generation per (address, epoch-reset). The
   // counter is what forces a rebuild after an epoch gap.
   const [generation, setGeneration] = useState(0);
@@ -156,6 +183,7 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
   const [saveDetail, setSaveDetail] = useState<string | null>(null);
   const [conflict, setConflict] = useState<CollabConflict | null>(null);
   const [closed, setClosed] = useState(false);
+  const [closedReason, setClosedReason] = useState<string | null>(null);
   const [mergeNotice, setMergeNotice] = useState(false);
   const [permalink, setPermalink] = useState(address);
   const [participants, setParticipants] = useState<CollabParticipant[]>([]);
@@ -173,6 +201,9 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
   // ABOVE the one that builds the generation, so a rebuild always sees the
   // current identity while a render never writes a ref.
   const identity = useRef({ account, displayName });
+  // The room's reader, mirrored the same way: a caller that builds a new
+  // target object per render must not rebuild the generation for it.
+  const readCurrent = useRef(room?.readCurrent ?? null);
   const separatorRef = useRef<"\r\n" | "\n">("\n");
   const checksumRef = useRef("");
   /**
@@ -191,6 +222,9 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
   useEffect(() => {
     identity.current = { account, displayName };
   }, [account, displayName]);
+  useEffect(() => {
+    readCurrent.current = room?.readCurrent ?? null;
+  }, [room]);
 
   useEffect(() => {
     if (!enabled) {
@@ -347,6 +381,7 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
           }
           case "closed": {
             setClosed(true);
+            setClosedReason(control.reason);
             break;
           }
         }
@@ -418,7 +453,7 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
       },
     };
     const provider = new CollabProvider(
-      collabUrl(domain, address, overlay),
+      roomUrl ?? collabUrl(domain, address, overlay),
       doc,
       awareness,
       handlers,
@@ -451,9 +486,10 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
     // `overlay` among the dependencies because it is part of WHICH document
     // this generation is bound to: an owner that changed is a different room,
     // and a live session over the old one would keep saving into it.
-  }, [generation, domain, address, enabled, overlay, socketFactory]);
+    // `roomUrl` likewise: a different target is a different room.
+  }, [generation, domain, address, enabled, overlay, roomUrl, socketFactory]);
 
-  // The mid-conflict joiner (see the JOINED_* details above): a greeting that
+  // The mid-conflict joiner (see the joined* details above): a greeting that
   // says "conflict" with nothing on screen to resolve is a dead banner, so
   // the body is fetched once per greeting.
   useEffect(() => {
@@ -466,19 +502,32 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
     const at = hello.permalink;
     let cancelled = false;
     void (async () => {
+      const reader = readCurrent.current;
+      const noun = reader !== null ? "page" : "engram";
       let derived: CollabConflict;
       try {
-        const theirs = await fetchEngramDetail(domain, at);
+        const theirs =
+          reader !== null
+            ? await reader()
+            : (await fetchEngramDetail(domain, at)).content;
         derived = {
           kind: "edit",
-          theirs: theirs.content,
-          detail: JOINED_EDIT_DETAIL,
+          theirs,
+          detail: joinedEditDetail(noun),
         };
       } catch (error) {
         derived =
           error instanceof ApiProblem && error.status === 404
-            ? { kind: "deleted", theirs: null, detail: JOINED_DELETED_DETAIL }
-            : { kind: "edit", theirs: null, detail: JOINED_UNREADABLE_DETAIL };
+            ? {
+                kind: "deleted",
+                theirs: null,
+                detail: joinedDeletedDetail(noun),
+              }
+            : {
+                kind: "edit",
+                theirs: null,
+                detail: joinedUnreadableDetail(noun),
+              };
       }
       // Judged as the room stands NOW, not as it stood when the read was
       // asked for: somebody else may have resolved the whole thing while this
@@ -531,6 +580,7 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
     flush,
     resolve,
     closed,
+    closedReason,
     mergeNotice,
   };
 }

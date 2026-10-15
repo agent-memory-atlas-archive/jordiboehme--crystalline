@@ -331,6 +331,7 @@ export function soloCollabSession(): CollabSession {
     flush: () => undefined,
     resolve: () => undefined,
     closed: false,
+    closedReason: null,
     mergeNotice: false,
   };
 }

@@ -103,6 +103,7 @@ const GrantedDraft = lazyChunk(() => import("./screens/GrantedDraft"));
  */
 const ReflectionHome = lazyChunk(() => import("./screens/ReflectionHome"));
 const ReflectionPage = lazyChunk(() => import("./screens/ReflectionPage"));
+const ReflectionEditor = lazyChunk(() => import("./screens/ReflectionEditor"));
 
 /**
  * The station itself, every place in it under one splat, `/π/*`, lazy like
@@ -331,6 +332,18 @@ export function AppRoutes() {
             element={
               <LazyBoundary fallback={REFLECTION_FALLBACK}>
                 <ReflectionPage />
+              </LazyBoundary>
+            }
+          />
+          {/*
+            The live editor over one page: `reflection-edit` is its own
+            segment ahead of the splat, the way `edit` is for engrams.
+          */}
+          <Route
+            path="/d/:domain/reflection-edit/*"
+            element={
+              <LazyBoundary fallback={EDITOR_FALLBACK}>
+                <ReflectionEditor />
               </LazyBoundary>
             }
           />
