@@ -12,6 +12,8 @@ import {
   MESSAGE_SYNC,
   collabSocketUrl,
   collabUrl,
+  reflectionOfferKey,
+  reflectionRoomKey,
 } from "./provider";
 import {
   FakeSocket,
@@ -65,6 +67,24 @@ describe("collabUrl", () => {
     );
     expect(collabUrl("eng", "alpha", "a b")).toBe(
       "/api/v1/collab/eng/alpha?overlay=a%20b",
+    );
+  });
+});
+
+describe("the reflection draft keys", () => {
+  it("never meet an engram's draft key or each other", () => {
+    // A permalink never holds ":", so neither key can be an engram's.
+    for (const path of ["guides/a.md", "PACT.md", "offer:x.md"]) {
+      expect(reflectionRoomKey(path)).toContain(":");
+      expect(reflectionOfferKey(path)).toContain(":");
+    }
+    // The prefixes differ before the path starts, so no two paths give the
+    // same key across the two kinds.
+    expect(reflectionRoomKey("offer:x.md")).not.toBe(
+      reflectionOfferKey("x.md"),
+    );
+    expect(reflectionOfferKey("guides/a.md")).toBe(
+      "reflection-offer:guides/a.md",
     );
   });
 });

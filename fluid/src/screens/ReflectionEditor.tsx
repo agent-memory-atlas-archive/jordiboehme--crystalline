@@ -38,7 +38,11 @@ import { useAuth } from "../auth/AuthContext";
 import { CollabConflictDialog } from "../collab/CollabConflictDialog";
 import { normalizePastedEndings } from "../collab/pastedEndings";
 import { PresenceChips } from "../collab/PresenceChips";
-import { reflectionCollabUrl, reflectionRoomKey } from "../collab/provider";
+import {
+  reflectionCollabUrl,
+  reflectionOfferKey,
+  reflectionRoomKey,
+} from "../collab/provider";
 import type { CollabSession } from "../collab/useCollabSession";
 import { useCollabSession } from "../collab/useCollabSession";
 import { useReflectionStatus } from "../components/ReflectionModeSwitch";
@@ -266,7 +270,11 @@ function Surface({
   const queryClient = useQueryClient();
   const ytext = collab.ytext as Y.Text;
   const awareness = collab.awareness as NonNullable<CollabSession["awareness"]>;
+  // Two keys, two jobs: `key` is the copy that follows the live text (the
+  // hook's epoch-gap draft lands there too), `offerKey` holds text set aside
+  // for a later mount, which that copy can therefore never overwrite.
   const key = reflectionRoomKey(path);
+  const offerKey = reflectionOfferKey(path);
 
   /*
    * The room has ended: closed by the server, or a connection refused for
@@ -317,19 +325,31 @@ function Surface({
     setRefusal(collab.saveDetail);
   }
 
-  const [kept, setKept] = useState<Draft | null>(() => {
-    const draft = readDraft(account, domain, key);
-    return draft !== null && differsFromRoom(draft, ytext.toJSON())
-      ? draft
-      : null;
+  /*
+   * What this mount finds: a copy left under `key` by an earlier mount (a
+   * refusal, a lost connection, an epoch gap) and an offer under `offerKey`.
+   * Either is offered when it says something the room does not; the copy is
+   * the newer work, so it wins and moves to the offer key (an older offer
+   * that differs as well is then replaced). Read here, moved by the effect
+   * below, so a render stays free of storage writes.
+   */
+  const [found] = useState(() => {
+    const room = ytext.toJSON();
+    const copy = readDraft(account, domain, key);
+    const offered = readDraft(account, domain, offerKey);
+    const copyDiffers = copy !== null && differsFromRoom(copy, room);
+    const offerDiffers = offered !== null && differsFromRoom(offered, room);
+    return {
+      copy,
+      offered,
+      copyDiffers,
+      offer: copyDiffers ? copy : offerDiffers ? offered : null,
+    };
   });
-  // Whether the stored draft is this mount's own copy (not an offered one).
+  const [kept, setKept] = useState<Draft | null>(found.offer);
+  // Whether the copy under `key` is this mount's own.
   const wrote = useRef(false);
   const [resolving, setResolving] = useState(false);
-  // "Theirs" was taken over this tab's text, which was kept as a draft just
-  // before: it is then an offer for the next mount, not this mount's copy,
-  // so the text that follows (theirs) must not overwrite it.
-  const [parked, setParked] = useState(false);
   const [mountText] = useState(() => ytext.toJSON());
   const [mountEnded] = useState(ended);
   const [view, setView] = useState<EditorView | null>(null);
@@ -366,11 +386,25 @@ function Surface({
     [account, domain, key, ytext],
   );
 
+  // Declared before the copy below, so a copy this mount writes at once is
+  // never the one moved away here.
+  useEffect(() => {
+    if (found.copy !== null) {
+      clearDraft(account, domain, key);
+      if (found.copyDiffers) {
+        writeDraft(account, domain, offerKey, found.copy);
+      }
+    }
+    if (found.offer === null && found.offered !== null) {
+      clearDraft(account, domain, offerKey); // only repeats the room
+    }
+  }, [found, account, domain, key, offerKey]);
+
   // While the latch holds, the draft follows the text: the server's refusal
   // tells the person "this tab keeps a copy", and the reconnect line says
   // edits are kept locally.
   useEffect(() => {
-    if (!owed || parked) {
+    if (!owed) {
       return undefined;
     }
     keep();
@@ -378,51 +412,39 @@ function Surface({
     return () => {
       ytext.unobserve(keep);
     };
-  }, [owed, parked, keep, ytext]);
+  }, [owed, keep, ytext]);
 
   // The latch released by a landed save: this mount's own copy is no longer
-  // needed. Never a draft still on offer, and never one this mount did not
-  // write.
+  // needed. The offer key is never touched here.
   useEffect(() => {
-    if (!owed && kept === null && wrote.current) {
+    if (!owed && wrote.current) {
       clearDraft(account, domain, key);
       wrote.current = false;
     }
-  }, [owed, kept, account, domain, key]);
-
-  // A kept draft that only repeats the room is offered to nobody; drop it.
-  const [stale] = useState(() => {
-    const draft = readDraft(account, domain, key);
-    return draft !== null && !differsFromRoom(draft, mountText);
-  });
-  useEffect(() => {
-    if (stale) {
-      clearDraft(account, domain, key);
-    }
-  }, [stale, account, domain, key]);
+  }, [owed, account, domain, key]);
 
   // Text still owed when the screen goes ("Done", any navigation, a status
-  // change above) is kept as a draft on the way out.
+  // change above) is kept as a draft on the way out. Owed means the latch: a
+  // plain "pending" on a connected room is text the room already holds and
+  // saves on its own, and a draft of it would come back as a false offer.
   const owedSave =
     owed ||
     collab.saveState === "pending" ||
     collab.saveState === "failed" ||
     collab.saveState === "conflict";
-  const leaving = useRef(owedSave);
-  const parkedRef = useRef(parked);
+  const leaving = useRef(owed);
   useEffect(() => {
-    leaving.current = owedSave;
-    parkedRef.current = parked;
-  }, [owedSave, parked]);
+    leaving.current = owed;
+  }, [owed]);
   useEffect(
     () => () => {
-      if (leaving.current && !parkedRef.current) {
+      if (leaving.current) {
         keep();
       }
     },
     [keep],
   );
-  // And the browser asks before a tab with owed text unloads, as the engram
+  // And the browser asks before a tab with unsaved text unloads, as the engram
   // editor does.
   useEffect(() => {
     if (!owedSave) {
@@ -509,7 +531,8 @@ function Surface({
                   ytext.delete(0, ytext.length);
                   ytext.insert(0, text);
                 });
-                // Owed until the room saves it: the draft stays and follows.
+                // Owed until the room saves it: the copy follows it there.
+                clearDraft(account, domain, offerKey);
                 setOwed(true);
                 setKept(null);
                 view?.focus();
@@ -522,9 +545,7 @@ function Surface({
             type="button"
             className={BANNER_BUTTON}
             onClick={() => {
-              if (!wrote.current) {
-                clearDraft(account, domain, key);
-              }
+              clearDraft(account, domain, offerKey);
               setKept(null);
               view?.focus();
             }}
@@ -566,11 +587,13 @@ function Surface({
           mine={ytext.toJSON()}
           onResolve={(choice) => {
             if (choice === "theirs") {
-              // Taking their text drops this tab's: keep it as a draft
-              // first, for the next mount to offer back.
-              keep();
-              wrote.current = false;
-              setParked(true);
+              // Taking their text drops this tab's: set it aside for the
+              // next mount to offer back.
+              writeDraft(account, domain, offerKey, {
+                content: ytext.toJSON(),
+                baseChecksum: "",
+                savedAt: new Date().toISOString(),
+              });
             }
             collab.resolve(choice);
             setResolving(false);

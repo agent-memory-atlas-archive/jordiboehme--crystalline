@@ -315,6 +315,7 @@ function type(session: CollabSession, text: string) {
 }
 
 const KEY = "reflection:guides/a.md";
+const OFFER = "reflection-offer:guides/a.md";
 const REFUSAL = "the Reflection of 'eng' is not on here any more";
 
 afterEach(() => {
@@ -363,14 +364,17 @@ describe("the reflection editor keeps what is owed", () => {
     expect(readDraft("ann", "eng", KEY)?.content).toBe(`${PAGE}offline\n`);
   });
 
-  it("keeps a pending text as a draft when the editor is left", async () => {
+  it("keeps no draft of a pending text left on a connected room", async () => {
+    // The room already holds it and saves it on its own schedule; a draft
+    // here would come back later as a false offer of older text.
     serve("edit");
     const session = live(room(PAGE));
     await openEditor();
     type(session.get(), "typed\n");
     session.set({ saveState: "pending" });
     await userEvent.click(screen.getByRole("link", { name: "Done" }));
-    expect(readDraft("ann", "eng", KEY)?.content).toBe(`${PAGE}typed\n`);
+    expect(readDraft("ann", "eng", KEY)).toBeNull();
+    expect(readDraft("ann", "eng", OFFER)).toBeNull();
   });
 
   it("keeps the text under a conflict", async () => {
@@ -419,7 +423,31 @@ describe("the reflection editor taking the file version", () => {
       ytext.insert(0, PAGE);
     });
     session.set({ saveState: "ok", conflict: null });
-    expect(readDraft("ann", "eng", KEY)?.content).toBe(`${PAGE}mine\n`);
+    expect(readDraft("ann", "eng", OFFER)?.content).toBe(`${PAGE}mine\n`);
+  });
+
+  it("still keeps a copy when a refusal follows", async () => {
+    serve("edit");
+    const session = live({
+      ...room(`${PAGE}mine\n`),
+      saveState: "conflict",
+      conflict: { kind: "edit", theirs: PAGE, detail: "d" },
+    });
+    await openEditor();
+    await userEvent.click(screen.getByRole("button", { name: "Resolve" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Take the file version" }),
+    );
+    act(() => {
+      const ytext = session.get().ytext as Y.Text;
+      ytext.delete(0, ytext.length);
+      ytext.insert(0, PAGE);
+    });
+    session.set({ saveState: "ok", conflict: null });
+    session.set({ saveState: "failed", saveDetail: REFUSAL });
+    type(session.get(), "after\n");
+    expect(readDraft("ann", "eng", KEY)?.content).toBe(`${PAGE}after\n`);
+    expect(readDraft("ann", "eng", OFFER)?.content).toBe(`${PAGE}mine\n`);
   });
 });
 
@@ -545,6 +573,24 @@ describe("the reflection editor's kept text", () => {
     expect(readDraft("ann", "eng", KEY)).toBeNull();
   });
 
+  it("leaves an offer intact in storage when a refusal comes", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    writeDraft("ann", "eng", KEY, {
+      content: "older\n",
+      baseChecksum: "",
+      savedAt: "",
+    });
+    await openEditor();
+    session.set({ saveState: "failed", saveDetail: REFUSAL });
+    type(session.get(), "more\n");
+    expect(readDraft("ann", "eng", OFFER)?.content).toBe("older\n");
+    expect(readDraft("ann", "eng", KEY)?.content).toBe(`${PAGE}more\n`);
+    expect(
+      screen.getByText("Text from an earlier session was kept."),
+    ).toBeVisible();
+  });
+
   it("discards only the offered text, never this tab's own copy", async () => {
     serve("edit");
     const session = live(room(PAGE));
@@ -557,6 +603,7 @@ describe("the reflection editor's kept text", () => {
     session.set({ saveState: "failed", saveDetail: REFUSAL });
     await userEvent.click(screen.getByRole("button", { name: "Discard" }));
     expect(readDraft("ann", "eng", KEY)?.content).toBe(PAGE);
+    expect(readDraft("ann", "eng", OFFER)).toBeNull();
     expect(screen.getByRole("textbox", { name: "Page source" })).toHaveFocus();
   });
 
