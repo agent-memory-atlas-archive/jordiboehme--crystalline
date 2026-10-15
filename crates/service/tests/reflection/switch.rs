@@ -1009,12 +1009,29 @@ async fn reflection_gate_timing() {
         .map(|(p, c)| (p.as_str(), c.as_str()))
         .collect();
     let built = Instant::now();
-    let fx = fixture(&refs).await;
+    let (fx, store) = fixture_holding_the_store(&refs).await;
     eprintln!("fixture: {:?}", built.elapsed());
     assert!(
         fx.engine.reflection_effective("eng").await.unwrap(),
         "the timing is taken on an effective Reflection"
     );
+
+    // The two index questions alone, as the gate asks them under the lock.
+    let started = Instant::now();
+    for _ in 0..500 {
+        let store = store.lock().await;
+        let did = store.domain_id("eng").await.unwrap().unwrap();
+        let under = store.engram_rows_under_reflections(did, 64).await.unwrap();
+        assert!(under.is_empty() && store.has_engram_rows(did).await.unwrap());
+    }
+    let probes = started.elapsed();
+
+    // The gate without the caller's rights: the state alone.
+    let started = Instant::now();
+    for _ in 0..500 {
+        fx.engine.reflection_state("eng").await.unwrap();
+    }
+    let state = started.elapsed();
 
     let caller = person();
     let started = Instant::now();
@@ -1038,6 +1055,8 @@ async fn reflection_gate_timing() {
         }
     }
     let domains = started.elapsed();
+    eprintln!("index probes x500: {probes:?} ({:?} each)", probes / 500);
+    eprintln!("reflection_state x500: {state:?} ({:?} each)", state / 500);
     eprintln!(
         "reflection_status x500: {status:?} ({:?} each)",
         status / 500
