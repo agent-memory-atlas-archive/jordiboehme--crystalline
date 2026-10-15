@@ -775,7 +775,9 @@ pub struct DomainScan {
 impl DomainScan {
     /// Apply this complete walk as an ordinary one even while the domain
     /// carries an unresolved host move: the rows it did not see are deleted
-    /// and the move is cleared (`crystalline sync --accept-disk`). Without
+    /// and the move is cleared (`crystalline sync --accept-disk`). Only a
+    /// move a walk already counted and reported is ended this way; on a
+    /// move marked since, this walk counts and keeps as any other. Without
     /// it, the apply of a complete walk keeps every row it did not see while
     /// a move is unresolved and counts them. A targeted scan is unaffected.
     pub fn accept_disk(&mut self) {
@@ -1429,7 +1431,11 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
     } else {
         None
     };
-    let keep_unseen = host_move.is_some() && !accept_disk;
+    // Accepting the disk drops only rows a walk already reported: a move
+    // marked since the last walk (a take-over sync run with --accept-disk)
+    // is counted and reported first, and the next --accept-disk drops them.
+    let accepted = accept_disk && host_move.as_ref().is_some_and(|m| m.walked);
+    let keep_unseen = host_move.is_some() && !accepted;
     let mut elsewhere = crate::OnlyElsewhere::default();
     let apply = apply_changes(
         store,
@@ -1528,7 +1534,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
     // nothing.
     if let Some(mut host_move) = host_move {
         elsewhere.previous_host = host_move.only_elsewhere.previous_host.take();
-        let resolved = accept_disk || (elsewhere.total() == 0 && reflections_complete);
+        let resolved = accepted || (elsewhere.total() == 0 && reflections_complete);
         let next = if resolved {
             None
         } else {

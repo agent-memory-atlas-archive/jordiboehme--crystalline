@@ -1929,6 +1929,14 @@ fn a_daemonless_sync_refuses_a_domain_another_instance_hosts_on_postgres() {
             && out.contains("crystalline sync --domain eng --accept-disk"),
         "{out}"
     );
+    let (ok, out, err) = env.run_full(&["status", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        out.contains(
+            "'eng': 1 engram and 0 Reflection files exist only on other-instance; copy the domain folder over or restore it, then sync, or drop them with: crystalline sync --domain eng --accept-disk"
+        ),
+        "{out}"
+    );
 
     // --accept-disk needs one domain, then drops what this disk lacks.
     let (ok, out, err) = env.run_full(&["sync", "--accept-disk", "--config", config_arg]);

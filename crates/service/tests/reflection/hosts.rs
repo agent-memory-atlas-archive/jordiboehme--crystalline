@@ -583,9 +583,10 @@ async fn a_restart_of_the_same_host_deletes_a_hand_deleted_file_on_postgres() {
 }
 
 /// What exists only on the previous host is reported until it is resolved:
-/// a walk after a person copied a file over drops it from the counts, and
-/// `crystalline sync --domain eng --accept-disk` runs one ordinary walk
-/// that deletes the rows still missing and ends the report.
+/// a take-over sync run with `--accept-disk` still reports first, a walk
+/// after a person copied a file over drops it from the counts, and
+/// `crystalline sync --domain eng --accept-disk` then runs one ordinary
+/// walk that deletes the rows still missing and ends the report.
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn accept_disk_drops_the_rows_only_elsewhere_on_postgres() {
@@ -594,7 +595,15 @@ async fn accept_disk_drops_the_rows_only_elsewhere_on_postgres() {
     let beta = instance(db.open().await, "beta").await;
     alpha_writes(&alpha).await;
     alpha.engine.release_hosts().await;
-    beta.engine.sync(Some("eng")).await.unwrap();
+    // A take-over sync run with --accept-disk at once drops nothing it never
+    // reported: the move is new, so this walk counts and keeps.
+    let first = beta
+        .engine
+        .sync_with(Some("eng"), true, true)
+        .await
+        .unwrap();
+    assert_eq!(first["reports"][0]["only_elsewhere"], only_on_alpha());
+    assert_eq!(alpha_rows(&beta).await, (true, true, true));
     assert_eq!(eng_stats(&beta).await["only_elsewhere"], only_on_alpha());
 
     // The page is copied over, with its baseline.

@@ -258,7 +258,8 @@ enum Command {
         take_over: bool,
         /// After a host move on a shared database, delete the rows of the
         /// files this disk does not have instead of keeping and reporting
-        /// them as only on the previous host. Needs --domain.
+        /// them as only on the previous host. Drops only what a sync already
+        /// reported. Needs --domain.
         #[arg(long)]
         accept_disk: bool,
         /// Load the global config from this file instead of the default path.
