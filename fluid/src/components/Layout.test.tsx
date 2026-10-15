@@ -5,16 +5,22 @@
  */
 
 import {
+  act,
   cleanup,
   fireEvent,
+  render,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useEffect } from "react";
+import { MemoryRouter, useNavigate } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import App from "../App";
 import { ApiProblem, api, setCsrfToken } from "../api/client";
+import { FOCUS_HEADING } from "../focusHeading";
 import { defined } from "../test/assert";
 import {
   answersFor,
@@ -241,6 +247,33 @@ describe("the layout", () => {
     await waitFor(() => {
       expect(document.activeElement).toBe(screen.getByRole("main"));
     });
+  });
+
+  it("leaves focus to the screen when a navigation asks to focus its heading", async () => {
+    serveInDomain();
+    let go: (to: string, state: unknown) => void = () => undefined;
+    function Capture() {
+      const navigate = useNavigate();
+      useEffect(() => {
+        go = (to, state) => void navigate(to, { state });
+      }, [navigate]);
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <App />
+        <Capture />
+      </MemoryRouter>,
+    );
+    await screen.findByRole("navigation", { name: "Domains" });
+    act(() => {
+      go("/d/eng", FOCUS_HEADING);
+    });
+    await screen.findByRole("heading", { name: "eng", level: 1 });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(document.activeElement).not.toBe(screen.getByRole("main"));
   });
 
   it("lists the instance's domains in the sidebar", async () => {

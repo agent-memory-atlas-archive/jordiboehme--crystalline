@@ -394,11 +394,12 @@ describe("after a create, move or delete", () => {
     await userEvent.click(
       screen.getByRole("button", { name: "Confirm delete" }),
     );
-    const h1 = await screen.findByRole("heading", { name: "eng", level: 1 });
     await waitFor(() => {
       expect(calls("/domains/eng/reflection", "GET")).toBeGreaterThan(status);
+      expect(document.activeElement).toBe(
+        screen.getByRole("heading", { name: "eng", level: 1 }),
+      );
     });
-    expect(document.activeElement).toBe(h1);
     // The deleted page is dropped, never refetched into a 404.
     expect(calls("/domains/eng/reflections/guides/a.md", "GET")).toBe(1);
   });
@@ -454,9 +455,10 @@ describe("after a create, move or delete", () => {
     serve("edit", MOVED);
     renderApp("/d/eng/reflection/guides/a.md");
     await move("howto/a.md");
-    const h1 = await screen.findByRole("heading", { name: "A", level: 1 });
     await waitFor(() => {
-      expect(document.activeElement).toBe(h1);
+      expect(document.activeElement).toBe(
+        screen.getByRole("heading", { name: "A", level: 1 }),
+      );
     });
     for (const key of A("howto/a.md")) {
       expect(readDraft("ann", "eng", key)).toEqual(DRAFT);
@@ -512,9 +514,10 @@ describe("after a create, move or delete", () => {
       expect(document.activeElement).toBe(close);
     });
     await userEvent.click(close);
-    const h1 = await screen.findByRole("heading", { name: "A", level: 1 });
     await waitFor(() => {
-      expect(document.activeElement).toBe(h1);
+      expect(document.activeElement).toBe(
+        screen.getByRole("heading", { name: "A", level: 1 }),
+      );
     });
   });
 

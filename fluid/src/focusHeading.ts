@@ -11,19 +11,25 @@ import { useLocation } from "react-router";
 
 export const FOCUS_HEADING = { focusHeading: true } as const;
 
-/** Make the page's first-level heading the focused element. */
-export function focusPageHeading(): void {
+/**
+ * Make the page's first-level heading the focused element. False when the
+ * screen has not drawn one yet.
+ */
+export function focusPageHeading(): boolean {
   const heading = document.querySelector("main h1");
-  if (heading instanceof HTMLElement) {
-    heading.tabIndex = -1;
-    heading.focus();
+  if (!(heading instanceof HTMLElement)) {
+    return false;
   }
+  heading.tabIndex = -1;
+  heading.focus();
+  return true;
 }
 
 /**
- * `ready` is true once the screen has drawn its heading. The focus is
- * deferred one tick: the frame moves focus to the main region in an effect of
- * its own on every route change, which runs after this screen's.
+ * `ready` is true once the screen has drawn its heading. The frame's own
+ * route-change focus on the main region stands aside for a location that
+ * carries {@link FOCUS_HEADING} (`RouteFocus` in `Layout.tsx`), so the two do
+ * not race.
  */
 export function useHeadingFocusRequest(ready: boolean): void {
   const { state, key } = useLocation() as {
@@ -36,12 +42,21 @@ export function useHeadingFocusRequest(ready: boolean): void {
     if (!ready || !wanted || done.current === key) {
       return;
     }
-    const timer = setTimeout(() => {
+    if (focusPageHeading()) {
       done.current = key;
-      focusPageHeading();
-    }, 0);
+      return;
+    }
+    // The page's own heading can come from a part that is still loading;
+    // wait for it to be drawn rather than give up.
+    const watch = new MutationObserver(() => {
+      if (focusPageHeading()) {
+        done.current = key;
+        watch.disconnect();
+      }
+    });
+    watch.observe(document.body, { childList: true, subtree: true });
     return () => {
-      clearTimeout(timer);
+      watch.disconnect();
     };
   }, [ready, wanted, key]);
 }

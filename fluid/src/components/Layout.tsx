@@ -964,14 +964,25 @@ export function Layout() {
  * The first render is exempt: the browser's own document focus is right.
  */
 function RouteFocus({ target }: { target: RefObject<HTMLElement | null> }) {
-  const { pathname } = useLocation();
+  const location = useLocation();
+  const pathname = location.pathname;
   const first = useRef(true);
+  // A screen reached by an action (a move, a delete) asks to focus its own
+  // heading once it has drawn it (`useHeadingFocusRequest`); the frame stays
+  // out of its way rather than racing it.
+  const screenFocuses =
+    (location.state as { focusHeading?: boolean } | null)?.focusHeading ===
+    true;
   useEffect(() => {
     if (first.current) {
       first.current = false;
       return;
     }
-    target.current?.focus();
+    if (!screenFocuses) {
+      target.current?.focus();
+    }
+    // Only a change of route moves focus, not a change of its state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname, target]);
   return null;
 }
