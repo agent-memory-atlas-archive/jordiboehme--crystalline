@@ -526,3 +526,209 @@ describe("the Reflection home", () => {
     ).toBeNull();
   });
 });
+
+describe("the Reflection home, fix round 1", () => {
+  /** One page of a long answer: `total` hits, 20 a page, one drawn. */
+  function longAnswer(
+    total: number,
+    hits: unknown[] = [
+      {
+        path: "a.md",
+        title: "A",
+        section: "_top",
+        heading: "",
+        snippet: "Intro.",
+      },
+    ],
+  ) {
+    return () => ({
+      domain: "eng",
+      query: "night",
+      mode: "hybrid",
+      total,
+      page: 1,
+      limit: 20,
+      count: hits.length,
+      hits,
+    });
+  }
+
+  it("says what a pending Reflection waits for when it may not name the engrams", async () => {
+    asContributor({
+      "/domains/eng/reflection": () =>
+        status({
+          state: "pending",
+          right: "edit",
+          engrams_visible: false,
+          member: true,
+          pending_engrams: [],
+        }),
+    });
+    renderApp("/d/eng/reflection");
+    expect(
+      await screen.findByText(
+        "The Reflection waits until some engrams are moved out of reflections/. A curator does that.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/leave reflections\/:/)).toBeNull();
+    expect(screen.queryByRole("list")).toBeNull();
+  });
+
+  it("lets a contributor leave while the Reflection is not open", async () => {
+    asContributor({
+      "/domains/eng/reflection": () =>
+        status({
+          state: "homeless",
+          home: null,
+          right: "edit",
+          engrams_visible: false,
+          member: true,
+        }),
+    });
+    renderApp("/d/eng/reflection");
+    expect(await screen.findByText(/Reflection has no home yet/)).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Leave this domain" }),
+    ).toBeVisible();
+  });
+
+  it("says domain not found only when the status is not found", async () => {
+    asEditor({ "/domains/eng/reflection": missing });
+    renderApp("/d/eng/reflection");
+    expect(
+      await screen.findByRole("heading", { name: "Domain not found" }),
+    ).toBeVisible();
+  });
+
+  it("shows any other failure as the server's own words", async () => {
+    asEditor({
+      "/domains/eng/reflection": () => {
+        throw new ApiProblem(500, "internal", "the index is not open");
+      },
+    });
+    renderApp("/d/eng/reflection");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "the index is not open",
+    );
+    expect(
+      screen.queryByRole("heading", { name: "Domain not found" }),
+    ).toBeNull();
+  });
+
+  it("says the Reflection is off and who switches it on", async () => {
+    asEditor({
+      "/domains/eng/reflection": () => status({ state: "off", enabled: false }),
+    });
+    renderApp("/d/eng/reflection");
+    expect(
+      await screen.findByText(
+        "The Reflection is off for this domain. Its owner switches it on in the domain policies.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("searchbox", { name: "Search the Reflection" }),
+    ).toBeNull();
+  });
+
+  it("says no page matches when the answer is empty", async () => {
+    asEditor({ "/domains/eng/reflection/search": longAnswer(0, []) });
+    renderApp("/d/eng/reflection?q=night");
+    expect(await screen.findByText("No page matches.")).toBeVisible();
+    expect(screen.queryByText(/hits?, ranked by/)).toBeNull();
+  });
+
+  it("offers no previous page on the first page and no next page on the last", async () => {
+    asEditor({ "/domains/eng/reflection/search": longAnswer(25) });
+    renderApp("/d/eng/reflection?q=night");
+    expect(
+      await screen.findByRole("button", { name: "Next page" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Previous page" })).toBeNull();
+  });
+
+  it("goes back a page and offers no next page on the last one", async () => {
+    asEditor({ "/domains/eng/reflection/search": longAnswer(25) });
+    renderApp("/d/eng/reflection?q=night&page=2");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Previous page" }),
+    );
+    await waitFor(() => {
+      expect(apiMock).toHaveBeenCalledWith(
+        "/domains/eng/reflection/search?q=night&limit=20",
+      );
+    });
+  });
+
+  it("draws the last page without a next page", async () => {
+    asEditor({ "/domains/eng/reflection/search": longAnswer(25) });
+    renderApp("/d/eng/reflection?q=night&page=2");
+    expect(
+      await screen.findByRole("button", { name: "Previous page" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Next page" })).toBeNull();
+  });
+
+  it("says one thing on a page past the last one, and offers the way back", async () => {
+    asEditor({ "/domains/eng/reflection/search": longAnswer(25, []) });
+    renderApp("/d/eng/reflection?q=night&page=9");
+    expect(await screen.findByText("No page matches.")).toBeVisible();
+    expect(screen.queryByText("25 hits, ranked by hybrid.")).toBeNull();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Previous page" }),
+    );
+    await waitFor(() => {
+      expect(apiMock).toHaveBeenCalledWith(
+        "/domains/eng/reflection/search?q=night&limit=20&page=2",
+      );
+    });
+  });
+
+  it("draws two hits on one path without a section id apart", async () => {
+    const hit = {
+      path: "a.md",
+      title: "A",
+      section: null,
+      heading: "",
+      snippet: "One.",
+    };
+    asEditor({
+      "/domains/eng/reflection/search": longAnswer(2, [
+        hit,
+        { ...hit, snippet: "Two." },
+      ]),
+    });
+    const errors = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    renderApp("/d/eng/reflection?q=night");
+    expect(await screen.findAllByRole("link", { name: "A" })).toHaveLength(2);
+    expect(
+      errors.mock.calls.some((call) => String(call[0]).includes("same key")),
+    ).toBe(false);
+    errors.mockRestore();
+  });
+
+  it("keeps the search box in step with the address when it changes under it", async () => {
+    asEditor({ "/domains/eng/reflection/search": longAnswer(1) });
+    renderApp("/d/eng/reflection?q=night&search_type=text");
+    const field = await screen.findByRole("searchbox", {
+      name: "Search the Reflection",
+    });
+    expect(field).toHaveValue("night");
+    expect(screen.getByLabelText("Mode")).toHaveValue("text");
+    // The switch's own link is a new address on the same screen, as a step
+    // back or forward in the history is.
+    await userEvent.click(
+      within(screen.getByRole("navigation", { name: "Domain view" })).getByRole(
+        "link",
+        { name: "Reflection" },
+      ),
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByRole("searchbox", { name: "Search the Reflection" }),
+      ).toHaveValue("");
+    });
+    expect(screen.getByLabelText("Mode")).toHaveValue("hybrid");
+  });
+});

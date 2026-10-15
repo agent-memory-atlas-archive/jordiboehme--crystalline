@@ -28,6 +28,17 @@ export function ReflectionStateNotice({
     case "elsewhere":
       return <HomeElsewhere url={status.homeUrl} />;
     case "pending":
+      // A reader who cannot see engrams is never told their paths: the
+      // status answers an empty list then, and a colon over nothing would
+      // promise names that never come.
+      if (status.pendingEngrams.length === 0) {
+        return (
+          <p className="text-sm">
+            The Reflection waits until some engrams are moved out of
+            reflections/. A curator does that.
+          </p>
+        );
+      }
       return (
         <div className="flex flex-col gap-1 text-sm">
           <p>The Reflection waits until these engrams leave reflections/:</p>

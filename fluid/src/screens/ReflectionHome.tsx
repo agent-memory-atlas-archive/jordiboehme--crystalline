@@ -13,7 +13,7 @@ import type { ReactElement } from "react";
 import { useId, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 
-import { problemDetail } from "../api/client";
+import { ApiProblem, problemDetail } from "../api/client";
 import { DOMAINS_QUERY_KEY } from "../api/domains";
 import { removeMember } from "../api/members";
 import type {
@@ -50,6 +50,10 @@ import {
 } from "../paths";
 import { stripIdLines } from "../reflectionText";
 
+/** The refusal face, the one `DomainPoliciesCard` announces a problem in. */
+const ALERT =
+  "rounded bg-red-50 px-2 py-1 text-sm text-red-800 dark:bg-red-950 dark:text-red-200";
+
 const LINK =
   "text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400";
 
@@ -71,10 +75,20 @@ export default function ReflectionHome(): ReactElement {
     return <Skeleton label="Loading the Reflection" rows={4} />;
   }
   if (status.error) {
+    // Only a 404 is a wrong address; any other failure is the server's own
+    // words, never dressed up as a missing domain.
     return (
       <div className="flex flex-col items-start gap-3">
-        <h1 className="text-display">Domain not found</h1>
-        <p className="text-sm">{problemDetail(status.error)}</p>
+        <h1 className="text-display">
+          {isMissing(status.error) ? "Domain not found" : domain}
+        </h1>
+        {isMissing(status.error) ? (
+          <p className="text-sm">{problemDetail(status.error)}</p>
+        ) : (
+          <p role="alert" className={ALERT}>
+            {problemDetail(status.error)}
+          </p>
+        )}
       </div>
     );
   }
@@ -93,20 +107,15 @@ export default function ReflectionHome(): ReactElement {
         </div>
         <ReflectionStateNotice status={s} />
       </header>
-      {s.state === "on" && (
-        <OnHome domain={domain} leavable={s.member && !s.engramsVisible} />
-      )}
+      {s.state === "on" && <OnHome domain={domain} />}
+      {/* In every state, not only while it is on: a member must be able to
+          leave a domain whose Reflection is pending or paused too. */}
+      {s.member && !s.engramsVisible && <LeaveDomain domain={domain} />}
     </div>
   );
 }
 
-function OnHome({
-  domain,
-  leavable,
-}: {
-  domain: string;
-  leavable: boolean;
-}): ReactElement {
+function OnHome({ domain }: { domain: string }): ReactElement {
   const tree = useQuery({
     queryKey: reflectionTreeKey(domain),
     queryFn: () => fetchReflectionTree(domain),
@@ -114,10 +123,7 @@ function OnHome({
   return (
     <>
       {tree.error && (
-        <p
-          role="alert"
-          className="rounded bg-red-50 px-2 py-1 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
-        >
+        <p role="alert" className={ALERT}>
           {problemDetail(tree.error)}
         </p>
       )}
@@ -145,7 +151,6 @@ function OnHome({
         </section>
       )}
       <SearchSection domain={domain} />
-      {leavable && <LeaveDomain domain={domain} />}
     </>
   );
 }
@@ -178,6 +183,15 @@ function SearchSection({ domain }: { domain: string }): ReactElement {
   const page = Math.max(1, Number(params.get("page") ?? "1") || 1);
   const [draft, setDraft] = useState(asked);
   const [picked, setPicked] = useState<ReflectionSearchMode>(mode);
+  // The field and the select follow the address when it changes under them
+  // (back, forward, a link to this screen), adjusted while rendering rather
+  // than in an effect so no frame shows the old words.
+  const [shown, setShown] = useState({ asked, mode });
+  if (shown.asked !== asked || shown.mode !== mode) {
+    setShown({ asked, mode });
+    setDraft(asked);
+    setPicked(mode);
+  }
   const fieldId = useId();
   const modeId = useId();
   const search = useQuery({
@@ -197,7 +211,12 @@ function SearchSection({ domain }: { domain: string }): ReactElement {
   const lastPage = answer
     ? Math.max(1, Math.ceil(answer.total / Math.max(answer.limit, 1)))
     : 1;
-  const status = answer ? searchStatus(answer.mode, mode, answer.total) : null;
+  // An empty page says one thing: a count beside "No page matches." would
+  // contradict it on a page past the last one.
+  const status =
+    hits !== undefined && hits.length > 0 && answer
+      ? searchStatus(answer.mode, mode, answer.total)
+      : null;
   return (
     <section
       aria-labelledby="reflection-search"
@@ -273,8 +292,10 @@ function SearchSection({ domain }: { domain: string }): ReactElement {
       )}
       {hits && hits.length > 0 && (
         <ul className="flex flex-col gap-3">
-          {hits.map((hit) => (
-            <li key={`${hit.path}#${hit.section ?? ""}`}>
+          {hits.map((hit, index) => (
+            // The rank keeps two hits apart that share a path and have no
+            // section id yet; the list is redrawn whole on every answer.
+            <li key={`${String(index)}:${hit.path}#${hit.section ?? ""}`}>
               <Link
                 to={`${reflectionPageRoute(domain, hit.path)}${hit.section !== null ? `#s-${hit.section}` : ""}`}
                 className={LINK}
@@ -290,13 +311,14 @@ function SearchSection({ domain }: { domain: string }): ReactElement {
           ))}
         </ul>
       )}
-      {answer && lastPage > 1 && (
+      {answer && (lastPage > 1 || page > 1) && (
         <div className="flex gap-2">
           {page > 1 && (
             <button
               type="button"
               onClick={() => {
-                go(asked, mode, page - 1);
+                // From past the end, back to the last page there is.
+                go(asked, mode, Math.min(page - 1, lastPage));
               }}
               className={BUTTON.secondary}
             >
@@ -363,4 +385,9 @@ function LeaveDomain({ domain }: { domain: string }): ReactElement {
       )}
     </section>
   );
+}
+
+/** Whether this failure is the server saying there is nothing at that address. */
+function isMissing(error: unknown): boolean {
+  return error instanceof ApiProblem && error.status === 404;
 }
