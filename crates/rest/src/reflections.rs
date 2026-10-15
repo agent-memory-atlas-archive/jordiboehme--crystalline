@@ -954,9 +954,15 @@ pub struct QueueQuery {
                            Reflection waits for engrams to leave \
                            `reflections/`. An update item's `what` may also \
                            be `asset_missing` (per section, with `assets`), \
-                           `engram_attachment` (per section, with `targets`) \
-                           or `asset_unreferenced` (`path` empty, with \
-                           `asset`).",
+                           `engram_attachment` (per section, with `targets`), \
+                           `asset_unreferenced` (`path` empty, with \
+                           `asset`) or `host_moved` (`path` empty, one per \
+                           domain, after the domain moved to this instance \
+                           on a shared database and this disk lacks files \
+                           the previous host wrote: `only_elsewhere` is \
+                           `{ previous_host, engrams, attachments, pages, \
+                           files }`, counts only, `previous_host` null when \
+                           unknown).",
             body = Object,
             example = json!({ "domain": "eng", "total": 1, "page": 1, "limit": 10,
                 "count": 1, "kinds": { "feedback": 0, "update": 1, "review": 0 },

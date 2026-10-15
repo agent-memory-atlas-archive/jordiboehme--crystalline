@@ -146,6 +146,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "engram rows under the Reflection folder",
         sql: SCHEMA_V24,
     },
+    Migration {
+        version: 25,
+        label: "domain host move",
+        sql: SCHEMA_V25,
+    },
 ];
 
 // The whole current schema in one step. The temporal columns stay TEXT ISO
@@ -738,6 +743,22 @@ DROP INDEX IF EXISTS idx_reflection_chunk_model;
 // prefix of this index. Guarded, so a replay converges.
 const SCHEMA_V24: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_engram_reflection_head ON engram((lower(substr(path, 1, 12) COLLATE "C")), domain_id, actor);
+"#;
+
+// The host move of a file domain on a shared database (Task 50): which
+// instance last took the domain's host lock, kept on the domain row because
+// a release deletes the lock row and a take-over overwrites it, and the
+// mark an instance sets when it takes a domain over from another (or an
+// unknown) holder. While the mark is set, a complete walk keeps the rows it
+// does not see and counts them; `host_move` is the mark and those counts as
+// JSON, NULL when no move is unresolved. Nullable, no default, no backfill:
+// every domain row that predates this migration reads "no last host" and
+// "no move", and converging on a retry as every migration in this dialect
+// does.
+const SCHEMA_V25: &str = r#"
+ALTER TABLE domain ADD COLUMN IF NOT EXISTS last_host_id TEXT;
+ALTER TABLE domain ADD COLUMN IF NOT EXISTS last_host_label TEXT;
+ALTER TABLE domain ADD COLUMN IF NOT EXISTS host_move TEXT;
 "#;
 
 const SCHEMA_V8: &str = r#"

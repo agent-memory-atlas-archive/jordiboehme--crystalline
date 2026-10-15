@@ -142,6 +142,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "engram rows under the Reflection folder",
         sql: SCHEMA_V24,
     },
+    Migration {
+        version: 25,
+        label: "domain host move",
+        sql: SCHEMA_V25,
+    },
 ];
 
 const SCHEMA_V1: &str = r#"
@@ -831,6 +836,17 @@ DROP INDEX IF EXISTS idx_reflection_chunk_model;
 // changes nothing.
 const SCHEMA_V24: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_engram_reflection_head ON engram(lower(substr(path, 1, 12)), domain_id, actor);
+"#;
+
+// The host move of a file domain on a shared database (Task 50), the
+// Postgres v25 columns: the instance that last took the domain's host lock,
+// and the unresolved move as JSON, NULL when there is none. A Turso index
+// belongs to one instance, so nothing writes them here; the columns keep the
+// two schemas the same shape. Nullable, no default, no backfill.
+const SCHEMA_V25: &str = r#"
+ALTER TABLE domain ADD COLUMN last_host_id TEXT;
+ALTER TABLE domain ADD COLUMN last_host_label TEXT;
+ALTER TABLE domain ADD COLUMN host_move TEXT;
 "#;
 
 const SCHEMA_V9: &str = r#"
@@ -2431,7 +2447,10 @@ mod tests {
         let started = std::time::Instant::now();
         let store = crate::TursoStore::open(&db_path).await.unwrap();
         let ms = started.elapsed().as_millis();
-        assert_eq!(store.store_info().await.unwrap().schema_version, 24);
+        assert_eq!(
+            store.store_info().await.unwrap().schema_version,
+            MIGRATIONS.last().unwrap().version
+        );
         let rows = store.meta_values().await.unwrap().len();
         assert_eq!(rows, 5 * ENGRAMS as usize, "five rows an engram");
         eprintln!(
@@ -2500,7 +2519,10 @@ mod tests {
             }
         }
         let store = crate::TursoStore::open(&db_path).await.unwrap();
-        assert_eq!(store.store_info().await.unwrap().schema_version, 24);
+        assert_eq!(
+            store.store_info().await.unwrap().schema_version,
+            MIGRATIONS.last().unwrap().version
+        );
 
         let base_rows = meta_rows(store.conn.raw(), 7).await;
         assert_eq!(base_rows, crate::store::meta_value_rows(&base));

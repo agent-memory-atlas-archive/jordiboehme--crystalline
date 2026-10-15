@@ -210,6 +210,28 @@ pub async fn instance_watched(
     (fx, rx)
 }
 
+/// The instance `old` was, started again on the same folder, config and
+/// state directory: a daemon restart. The old engine is dropped first, and
+/// the new one runs the startup sync, which claims the host lock again.
+pub async fn restart_on(store: Arc<Mutex<dyn Store>>, instance_id: &str, old: Fx) -> Fx {
+    let Fx { tmp, engine, root } = old;
+    drop(engine);
+    let base = tmp.path().to_path_buf();
+    let config_path = base.join("config.yaml");
+    let cfg: GlobalConfig = crystalline_core::config::load_yaml(&config_path).unwrap();
+    // Nobody listens: the restarted engine's hand-offs to a watcher go
+    // nowhere, as a test that does not watch wants.
+    let (watch, _) = tokio::sync::mpsc::unbounded_channel();
+    let engine = Engine::new(store, cfg, None, Some(config_path))
+        .with_state_dir(base.join("state"))
+        .with_origins_dir(base.join("origins"))
+        .with_instance_id(instance_id.to_string())
+        .with_watch_channel(watch);
+    let engine = Arc::new(engine);
+    engine.sync(None).await.unwrap();
+    Fx { tmp, engine, root }
+}
+
 async fn build(
     store: Arc<Mutex<dyn Store>>,
     instance: Option<(&str, UnboundedSender<WatchEvent>)>,

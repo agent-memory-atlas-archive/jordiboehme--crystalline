@@ -515,6 +515,52 @@ async fn reflect_names_unreferenced_and_missing_files_and_engram_attachments() {
     );
 }
 
+/// A file row whose bytes are not on this disk (a row a new host kept from
+/// the previous host's disk, or a file deleted while nothing watched) is a
+/// broken image here: the queue asks for it as missing, because the disk
+/// is checked, not only the row (R26).
+#[tokio::test]
+async fn a_kept_asset_row_without_bytes_is_reported_missing() {
+    let fx = with_findings().await;
+    let used = fx.root.join("reflections/assets/used.png");
+    std::fs::remove_file(&used).unwrap();
+    let store = fx.engine.store();
+    {
+        let store = store.lock().await;
+        let did = store.domain_id("eng").await.unwrap().unwrap();
+        assert!(
+            store
+                .get_asset(
+                    crystalline_index::AssetTable::Reflection,
+                    did,
+                    "assets/used.png"
+                )
+                .await
+                .unwrap()
+                .is_some(),
+            "the row is still there"
+        );
+    }
+    let p = ReflectParams {
+        kinds: vec!["update".into()],
+        limit: Some(100),
+        ..Default::default()
+    };
+    let queue = fx.engine.reflect(&p, &agent()).await.unwrap();
+    let missing = queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["what"] == "asset_missing" && r["path"] == "guides/a.md")
+        .cloned()
+        .expect("the section's missing files");
+    assert_eq!(
+        missing["assets"],
+        serde_json::json!(["assets/used.png", "assets/missing.png"]),
+        "{missing}"
+    );
+}
+
 #[tokio::test]
 async fn the_engram_orphan_check_never_sees_a_reflection_file() {
     let fx = with_findings().await;

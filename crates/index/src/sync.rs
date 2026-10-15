@@ -184,6 +184,12 @@ pub struct SyncReport {
     /// Rows of the Reflection's tables this apply wrote or deleted.
     #[serde(default)]
     pub reflections_changed: usize,
+    /// The rows this complete walk kept although it did not see their files,
+    /// because the domain moved to this instance on a shared database and
+    /// the move is unresolved ([`crate::HostMove`]). `None` when it kept
+    /// none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub only_elsewhere: Option<crate::OnlyElsewhere>,
     /// Wall-clock duration in milliseconds.
     pub duration_ms: u64,
     /// Every path this apply changed, in apply order. Skipped by serde on
@@ -745,9 +751,9 @@ pub struct DomainScan {
     /// row it did not see - which is also how a switch turned off (or
     /// pending) clears the table.
     reflections_complete: bool,
-    /// Whether the apply keeps the Reflection file rows the walk did not see
-    /// even on a complete walk: [`DomainScan::keep_unseen_reflection_assets`].
-    keep_reflection_assets: bool,
+    /// Whether this complete walk ends an unresolved host move by deleting
+    /// the rows it did not see: [`DomainScan::accept_disk`].
+    accept_disk: bool,
     /// The Reflection mode the scan classified with. While it is in effect,
     /// an engram row under `reflections/` the walk no longer saw is deleted
     /// even though its file is on disk: the file is the Reflection's now.
@@ -767,15 +773,13 @@ pub struct DomainScan {
 }
 
 impl DomainScan {
-    /// Keep every Reflection file row this walk does not see, even when the
-    /// walk is complete. For the first walk of an instance that just took a
-    /// domain's host lock on a shared database: a file domain keeps a
-    /// Reflection file's bytes on its host's disk only, so a file the
-    /// previous host added is a row here and no file, and a complete walk
-    /// would drop the row. The page rows are written back to disk before the
-    /// walk instead; the file rows have no bytes to write back.
-    pub fn keep_unseen_reflection_assets(&mut self) {
-        self.keep_reflection_assets = true;
+    /// Apply this complete walk as an ordinary one even while the domain
+    /// carries an unresolved host move: the rows it did not see are deleted
+    /// and the move is cleared (`crystalline sync --accept-disk`). Without
+    /// it, the apply of a complete walk keeps every row it did not see while
+    /// a move is unresolved and counts them. A targeted scan is unaffected.
+    pub fn accept_disk(&mut self) {
+        self.accept_disk = true;
     }
 }
 
@@ -1341,7 +1345,7 @@ async fn classify_changes(
         reflection_assets: Vec::new(),
         reflection_asset_deletes: Vec::new(),
         reflections_complete: false,
-        keep_reflection_assets: false,
+        accept_disk: false,
         reflection: ReflectionMode::Off,
         // The caller decides: only a forced full scan ends a rebuild.
         ends_rebuild: false,
@@ -1398,7 +1402,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         reflection_assets,
         reflection_asset_deletes,
         reflections_complete,
-        keep_reflection_assets,
+        accept_disk,
         reflection,
         ends_rebuild,
         mut report,
@@ -1406,6 +1410,27 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
     } = scan;
 
     store.begin().await?;
+    // A complete walk (only a full walk sees every attachment) of a domain
+    // that moved to this instance on a shared database keeps every row it
+    // does not see while the move is unresolved: this disk may lack files
+    // the previous host wrote. The move is read here, inside the apply's
+    // own transaction, so a second walk that started while it was set
+    // keeps those rows too, and it is cleared only below, in the same
+    // transaction, by a walk that saw every row or was told to accept the
+    // disk.
+    let host_move = if assets_complete && store.shares_database() {
+        match store.host_move(domain).await {
+            Ok(host_move) => host_move,
+            Err(e) => {
+                let _ = store.rollback().await;
+                return Err(e);
+            }
+        }
+    } else {
+        None
+    };
+    let keep_unseen = host_move.is_some() && !accept_disk;
+    let mut elsewhere = crate::OnlyElsewhere::default();
     let apply = apply_changes(
         store,
         domain,
@@ -1416,6 +1441,8 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         &snapshot,
         &root,
         reflection,
+        keep_unseen,
+        &mut elsewhere.engrams,
         &mut report,
         slab_files.max(1),
     )
@@ -1425,21 +1452,24 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         return Err(e);
     }
 
-    if let Err(e) = reconcile_rows(
+    match reconcile_rows(
         store,
         domain,
         FileRows::Assets(AssetTable::Engram),
         assets,
         asset_deletes,
-        assets_complete,
+        Completeness::of(assets_complete, keep_unseen),
         &chunk_params,
         false,
         &mut report,
     )
     .await
     {
-        let _ = store.rollback().await;
-        return Err(e);
+        Ok(reconciled) => elsewhere.attachments = reconciled.unseen,
+        Err(e) => {
+            let _ = store.rollback().await;
+            return Err(e);
+        }
     }
 
     match reconcile_rows(
@@ -1448,14 +1478,17 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         FileRows::Reflections,
         reflections,
         reflection_deletes,
-        reflections_complete,
+        Completeness::of(reflections_complete, keep_unseen),
         &chunk_params,
         ends_rebuild,
         &mut report,
     )
     .await
     {
-        Ok(changed) => report.reflections_changed += changed,
+        Ok(reconciled) => {
+            report.reflections_changed += reconciled.changed;
+            elsewhere.pages = reconciled.unseen;
+        }
         Err(e) => {
             let _ = store.rollback().await;
             return Err(e);
@@ -1471,17 +1504,44 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         FileRows::Assets(AssetTable::Reflection),
         reflection_assets,
         reflection_asset_deletes,
-        reflections_complete && !keep_reflection_assets,
+        Completeness::of(reflections_complete, keep_unseen),
         &chunk_params,
         false,
         &mut report,
     )
     .await
     {
-        Ok(changed) => report.reflections_changed += changed,
+        Ok(reconciled) => {
+            report.reflections_changed += reconciled.changed;
+            elsewhere.files = reconciled.unseen;
+        }
         Err(e) => {
             let _ = store.rollback().await;
             return Err(e);
+        }
+    }
+
+    // The move ends with a walk that saw every row (a person copied the
+    // folder over) or one told to accept the disk; otherwise it stays, with
+    // what this walk did not see. A walk that could not read all of the
+    // Reflection's folder does not know what it missed there, so it ends
+    // nothing.
+    if let Some(mut host_move) = host_move {
+        elsewhere.previous_host = host_move.only_elsewhere.previous_host.take();
+        let resolved = accept_disk || (elsewhere.total() == 0 && reflections_complete);
+        let next = if resolved {
+            None
+        } else {
+            host_move.walked = true;
+            host_move.only_elsewhere = elsewhere.clone();
+            Some(host_move)
+        };
+        if let Err(e) = store.set_host_move(domain, next.as_ref()).await {
+            let _ = store.rollback().await;
+            return Err(e);
+        }
+        if !resolved && elsewhere.total() > 0 {
+            report.only_elsewhere = Some(elsewhere);
         }
     }
 
@@ -1566,14 +1626,6 @@ pub trait ReindexHooks: Send + Sync {
     /// resolution pass.
     async fn before_domain(&self, _store: &dyn Store, _name: &str, _root: &Path) -> Result<bool> {
         Ok(true)
-    }
-
-    /// Called after the first lock window of a domain the driver will walk,
-    /// with no store lock held, before the walk. Answers whether the walk
-    /// keeps the Reflection file rows it does not see
-    /// ([`DomainScan::keep_unseen_reflection_assets`]).
-    async fn before_walk(&self, _name: &str, _root: &Path) -> Result<bool> {
-        Ok(false)
     }
 
     /// Called after a domain's apply committed, with no store lock held.
@@ -1677,16 +1729,9 @@ pub async fn reindex_domains(
         if force && let Some(hold) = rebuild_hold() {
             tokio::time::sleep(hold).await;
         }
-        let keep_assets = hooks
-            .before_walk(name, root)
+        let scan = scan_domain(name, root, snapshot, chunk_params, force_domain)
             .await
             .map_err(|e| in_domain("reindex", name, e))?;
-        let mut scan = scan_domain(name, root, snapshot, chunk_params, force_domain)
-            .await
-            .map_err(|e| in_domain("reindex", name, e))?;
-        if keep_assets {
-            scan.keep_unseen_reflection_assets();
-        }
         let report = {
             let store = store.lock().await;
             apply_scan(&*store, domain, scan)
@@ -1854,9 +1899,10 @@ pub async fn resolve_forward_refs<S: Store + ?Sized>(
 /// one of them moving, so it is skipped without reading a byte, unless `force`
 /// is set.
 ///
-/// A full walk (`complete`) reconciles domain-wide, deleting every row it did
-/// not see; a targeted pass deletes only the paths it was asked about and looked
-/// for in vain, so a one-file watcher event never touches another row.
+/// A full walk reconciles domain-wide, deleting every row it did not see,
+/// unless it keeps them for an unresolved host move and only counts them; a
+/// targeted pass deletes only the paths it was asked about and looked for in
+/// vain, so a one-file watcher event never touches another row.
 #[allow(clippy::too_many_arguments)]
 async fn reconcile_rows<S: Store + ?Sized>(
     store: &S,
@@ -1864,13 +1910,14 @@ async fn reconcile_rows<S: Store + ?Sized>(
     rows: FileRows,
     found: Vec<FileCandidate>,
     deletes: Vec<String>,
-    complete: bool,
+    completeness: Completeness,
     chunk_params: &ChunkParams,
     force: bool,
     report: &mut SyncReport,
-) -> Result<usize> {
+) -> Result<Reconciled> {
+    let complete = completeness != Completeness::Partial;
     if !complete && found.is_empty() && deletes.is_empty() {
-        return Ok(0);
+        return Ok(Reconciled::default());
     }
     let existing = rows.stamps(store, domain).await?;
     let mut seen: HashSet<String> = HashSet::new();
@@ -1909,17 +1956,53 @@ async fn reconcile_rows<S: Store + ?Sized>(
                 .push((rows.report_path(&candidate.rel), e.to_string())),
         }
     }
-    let gone: Vec<String> = if complete {
-        existing.into_keys().filter(|p| !seen.contains(p)).collect()
-    } else {
-        deletes
+    let gone: Vec<String> = match completeness {
+        Completeness::Complete => existing.into_keys().filter(|p| !seen.contains(p)).collect(),
+        Completeness::KeepUnseen => {
+            let unseen = existing.keys().filter(|p| !seen.contains(*p)).count();
+            return Ok(Reconciled {
+                changed,
+                unseen: unseen as u64,
+            });
+        }
+        Completeness::Partial => deletes,
     };
     for path in gone {
         if rows.delete(store, domain, &path).await? {
             changed += 1;
         }
     }
-    Ok(changed)
+    Ok(Reconciled { changed, unseen: 0 })
+}
+
+/// How much of a file table a walk saw, for [`reconcile_rows`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Completeness {
+    /// A targeted pass: only the paths it names.
+    Partial,
+    /// A full walk: every row it did not see goes.
+    Complete,
+    /// A full walk of a domain whose host move is unresolved: every row it
+    /// did not see stays, and is counted.
+    KeepUnseen,
+}
+
+impl Completeness {
+    fn of(complete: bool, keep_unseen: bool) -> Completeness {
+        match (complete, keep_unseen) {
+            (false, _) => Completeness::Partial,
+            (true, false) => Completeness::Complete,
+            (true, true) => Completeness::KeepUnseen,
+        }
+    }
+}
+
+/// What [`reconcile_rows`] did: the rows it wrote or deleted, and the rows
+/// it kept unseen.
+#[derive(Debug, Default)]
+struct Reconciled {
+    changed: usize,
+    unseen: u64,
 }
 
 /// Refresh a domain's derived tag-alias rows from its MANIFEST. Reads the stored
@@ -1947,6 +2030,8 @@ async fn apply_changes<S: Store + ?Sized>(
     snapshot: &HashMap<String, FileStamp>,
     root: &Path,
     reflection: ReflectionMode,
+    keep_unseen: bool,
+    unseen: &mut u64,
     report: &mut SyncReport,
     slab_files: usize,
 ) -> Result<()> {
@@ -2019,6 +2104,13 @@ async fn apply_changes<S: Store + ?Sized>(
         if !never_engram && root.join(&path).exists() {
             report.deferred += 1;
             tracing::debug!(path = %path, "sync: deferring a delete whose file reappeared on disk");
+            continue;
+        }
+        // A domain whose host move is unresolved keeps the row: the file may
+        // be on the previous host's disk only. A move above is applied as on
+        // any walk, since its content was seen at the new path.
+        if keep_unseen && !never_engram {
+            *unseen += 1;
             continue;
         }
         store.delete_engram(domain, &path).await?;

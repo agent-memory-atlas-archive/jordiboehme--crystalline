@@ -109,6 +109,26 @@ impl Engine {
     /// named one and `take_over` forces the claim. Outside collaboration mode
     /// (standalone, single-instance) nothing is claimed and every target syncs.
     pub async fn sync_take_over(&self, only: Option<&str>, take_over: bool) -> Result<Value> {
+        self.sync_with(only, take_over, false).await
+    }
+
+    /// [`Engine::sync_take_over`], and with `accept_disk` the walk of the
+    /// one named domain ends an unresolved host move (Task 50): it deletes
+    /// the rows of files this disk does not have, as an ordinary walk does,
+    /// instead of keeping and reporting them (`crystalline sync --domain
+    /// <name> --accept-disk`). Refused without a named domain, so dropping
+    /// rows is always asked of one domain at a time.
+    pub async fn sync_with(
+        &self,
+        only: Option<&str>,
+        take_over: bool,
+        accept_disk: bool,
+    ) -> Result<Value> {
+        if accept_disk && only.is_none() {
+            return Err(EngineError::Invalid(
+                crystalline_index::ACCEPT_DISK_NEEDS_DOMAIN.to_string(),
+            ));
+        }
         let _activity = ActivityState::begin(&self.activity, "sync", only);
         let targets = self.sync_targets(only)?;
         // The virtual domains have no files to walk, but an older parser may
@@ -177,21 +197,10 @@ impl Engine {
                 let force = crystalline_index::reparse_due(&*store, domain).await?;
                 (domain, snapshot, force)
             };
-            // A domain this instance just took over gets its Reflection pages
-            // back on disk first, so this walk does not drop the rows of pages
-            // only the previous host's disk had.
-            if let Err(e) = self.restore_reflection_rows(name, root).await {
-                if only.is_some() {
-                    return Err(e);
-                }
-                tracing::warn!("sync of '{name}' skipped: {e}");
-                failed.push(json!({ "domain": name, "error": e.to_string() }));
-                continue;
-            }
             let scan = match scan_domain(name, root, snapshot, &self.chunk_params, force).await {
                 Ok(mut scan) => {
-                    if self.take_kept_reflection_assets(name) {
-                        scan.keep_unseen_reflection_assets();
+                    if accept_disk {
+                        scan.accept_disk();
                     }
                     scan
                 }
@@ -332,9 +341,6 @@ impl Engine {
             (domain, snapshot)
         };
         let manifest_touched = Self::touches_manifest(&paths);
-        // A watcher pass can be the first after this instance took the host
-        // lock: the Reflection pages go back on disk before anything is read.
-        self.restore_reflection_rows(name, &root).await?;
         let scan = scan_paths(name, &root, snapshot, paths, &self.chunk_params).await;
         let report = {
             let store = self.store.lock().await;

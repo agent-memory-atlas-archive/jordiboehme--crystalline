@@ -13,7 +13,7 @@ use super::*;
 use crate::scope::{ReflectionCaller, ReflectionRight};
 
 /// How an agent works the queue, returned with every page.
-pub const REFLECT_GUIDANCE: &str = "Work feedback items first: read what the person changed and decide - take it into the engrams (change them, then write_reflection the section with its sources), keep it as their text (write_reflection action=settle outcome=kept), or answer it in a thread (discuss with answers_feedback). Then update items: bring changed engrams into their sections and write them with sources; cover unreflected engrams with a new section or reflection; move pages the pact's structure does not fit; apply a changed pact to the pages it affects. Files under reflections/assets/: link an unreferenced file from the section it belongs to, or remove it with write_reflection action=delete_asset (ask first: removing is irreversible); for a missing file, ask a person to add it or correct the link; an engram attachment cannot be embedded, so ask a person to copy the file into reflections/assets/ and point the link there. Answer review threads in plain words - the people reading them may not see engrams.";
+pub const REFLECT_GUIDANCE: &str = "Work feedback items first: read what the person changed and decide - take it into the engrams (change them, then write_reflection the section with its sources), keep it as their text (write_reflection action=settle outcome=kept), or answer it in a thread (discuss with answers_feedback). Then update items: bring changed engrams into their sections and write them with sources; cover unreflected engrams with a new section or reflection; move pages the pact's structure does not fit; apply a changed pact to the pages it affects. Files under reflections/assets/: link an unreferenced file from the section it belongs to, or remove it with write_reflection action=delete_asset (ask first: removing is irreversible); for a missing file, ask a person to add it or correct the link; an engram attachment cannot be embedded, so ask a person to copy the file into reflections/assets/ and point the link there. A host_moved item means this instance took the domain over on a shared database and its disk lacks files the previous host wrote: their rows are kept and counted, never written here, so do not rewrite or delete those pages and files; ask a person to copy the domain folder over (or restore it) and sync, or to run the sync with --accept-disk if the files are gone for good. Answer review threads in plain words - the people reading them may not see engrams.";
 
 const DEFAULT_LIMIT: usize = 10;
 const MAX_LIMIT: usize = 100;
@@ -147,12 +147,13 @@ impl Engine {
         detail: Detail,
     ) -> Result<Vec<Item>> {
         let full = detail == Detail::Full;
-        let rows = self
-            .store
-            .lock()
-            .await
-            .list_reflections(access.domain_id)
-            .await?;
+        let (rows, host_move) = {
+            let store = self.store.lock().await;
+            (
+                store.list_reflections(access.domain_id).await?,
+                store.host_move(access.domain_id).await?,
+            )
+        };
         let facts = self.engram_facts(access.domain_id, domain).await?;
         let threads = self.all_threads(access).await?;
         let open_thread = |id: &str| {
@@ -170,12 +171,21 @@ impl Engine {
         let mut cited: HashSet<String> = HashSet::new();
         let mut items = Vec::new();
         for row in &rows {
-            let baseline = std::fs::read_to_string(access.abs(&r::baseline_path(&row.path)))
-                .unwrap_or_default();
+            let baseline = std::fs::read_to_string(access.abs(&r::baseline_path(&row.path))).ok();
+            // While a host move is unresolved, a page whose baseline is not on
+            // this disk is one the previous host reflected: without the
+            // baseline every section would read as a person's change, so the
+            // move's one item stands in for that feedback.
+            let no_feedback = baseline.is_none() && host_move.is_some();
+            let baseline = baseline.unwrap_or_default();
             let row_age = secs_since_rfc3339(Some(&row.modified)).unwrap_or(0);
             let prov = r::read_provenance(&row.content);
             if row.path == r::PACT_FILE {
-                let changes = r::feedback_changes(&row.content, &baseline);
+                let changes = if no_feedback {
+                    Vec::new()
+                } else {
+                    r::feedback_changes(&row.content, &baseline)
+                };
                 if !changes.is_empty() {
                     let extra = if full {
                         let sections = r::split_sections(&row.content);
@@ -200,7 +210,12 @@ impl Engine {
                 }
                 continue;
             }
-            for change in r::feedback_changes(&row.content, &baseline) {
+            let changes = if no_feedback {
+                Vec::new()
+            } else {
+                r::feedback_changes(&row.content, &baseline)
+            };
+            for change in changes {
                 let record = change.id.as_deref().and_then(|id| prov.get(id));
                 if record
                     .and_then(|rec| rec.answered_by.as_deref())
@@ -296,18 +311,17 @@ impl Engine {
         // editor, a room), and a file no page links. Reflections and
         // PACT.md are the pages that count; threads and the baseline never do.
         let assets = self.asset_list_in(AssetHome::Reflection, domain).await?;
-        let stored: HashSet<&str> = assets.iter().map(|a| a.path.as_str()).collect();
         let mut referenced: HashSet<String> = HashSet::new();
         for row in &rows {
             let row_age = secs_since_rfc3339(Some(&row.modified)).unwrap_or(0);
             for section in r::split_sections(&row.content) {
                 let mut missing: Vec<String> = Vec::new();
                 for asset in r::reflection_asset_refs(&section.text, &row.path) {
-                    // The disk too, so a file the walker has not indexed yet
-                    // is not reported.
-                    let there = stored.contains(asset.as_str())
-                        || reflection_abs(&access.root, &asset).is_file();
-                    if !there {
+                    // The disk, not the row: a file the walker has not indexed
+                    // yet is there, and a row whose bytes are not on this disk
+                    // (kept through a host move, or deleted while nothing
+                    // watched) is a broken image here (R26).
+                    if !reflection_abs(&access.root, &asset).is_file() {
                         missing.push(asset.clone());
                     }
                     referenced.insert(asset);
@@ -336,7 +350,11 @@ impl Engine {
             }
         }
         for asset in &assets {
-            if referenced.contains(&asset.path) {
+            // A file the previous host's disk keeps is the move's to report;
+            // nobody is asked to link or remove what is not here.
+            if referenced.contains(&asset.path)
+                || (host_move.is_some() && !reflection_abs(&access.root, &asset.path).is_file())
+            {
                 continue;
             }
             items.push(Item {
@@ -348,6 +366,23 @@ impl Engine {
                 heading: String::new(),
                 age_secs: secs_since_rfc3339(Some(&asset.modified)).unwrap_or(0),
                 extra: json!({ "asset": asset.path }),
+            });
+        }
+        // An unresolved host move with rows this disk lacks: one item for
+        // the domain, counts only (Task 50).
+        if let Some(host_move) = host_move
+            .as_ref()
+            .filter(|m| m.walked && m.only_elsewhere.total() > 0)
+        {
+            items.push(Item {
+                kind: "update",
+                what: "host_moved",
+                domain: domain.to_string(),
+                path: String::new(),
+                section: None,
+                heading: String::new(),
+                age_secs: secs_since_rfc3339(Some(&host_move.at)).unwrap_or(0),
+                extra: json!({ "only_elsewhere": host_move.only_elsewhere }),
             });
         }
         let mut loose: BTreeMap<String, Vec<&EngramFact>> = BTreeMap::new();

@@ -298,10 +298,6 @@ pub(crate) fn stamped_model(actor: &str, model: Option<&str>) -> Option<String> 
 /// The default host-lock heartbeat interval, seconds. Overridable via
 /// `CRYSTALLINE_HEARTBEAT_SECS` (used to drive fast multi-instance verification).
 const DEFAULT_HEARTBEAT_SECS: i64 = 30;
-/// The default host-lock stale threshold, seconds (three missed heartbeats). A
-/// lock whose last heartbeat is older than this is takeable by another instance.
-/// Overridable via `CRYSTALLINE_STALE_SECS`.
-const DEFAULT_STALE_SECS: i64 = 90;
 
 /// The probability of following an edge rather than teleporting back to a
 /// seed during context ranking; the standard PageRank damping factor.
@@ -995,15 +991,6 @@ pub struct Engine {
     // successful `claim_domain_host` and renewed by the heartbeat timer. Drives
     // embed scoping, heartbeat renewal and graceful release.
     hosted: std::sync::RwLock<HashMap<String, DomainId>>,
-    // The domains whose host lock this instance took on a shared database
-    // since it last wrote their Reflection rows back to disk: the rows may
-    // name pages only the previous host's disk has, which the first complete
-    // walk here would drop (`Engine::restore_reflection_rows`).
-    reflection_rows_due: std::sync::Mutex<HashSet<String>>,
-    // The same domains, until their first complete walk here: that walk
-    // keeps the Reflection file rows it does not see, since a file domain
-    // keeps those bytes on the previous host's disk only.
-    reflection_assets_kept: std::sync::Mutex<HashSet<String>>,
     // The heartbeat interval and stale threshold, seconds. Defaults 30 and 90,
     // overridable via `CRYSTALLINE_HEARTBEAT_SECS`/`CRYSTALLINE_STALE_SECS` (a
     // short threshold makes multi-instance stale-takeover verification fast).
@@ -2262,10 +2249,8 @@ impl Engine {
             instance_id: String::new(),
             label: String::new(),
             hosted: std::sync::RwLock::new(HashMap::new()),
-            reflection_rows_due: std::sync::Mutex::new(HashSet::new()),
-            reflection_assets_kept: std::sync::Mutex::new(HashSet::new()),
             heartbeat_secs: env_secs("CRYSTALLINE_HEARTBEAT_SECS", DEFAULT_HEARTBEAT_SECS),
-            stale_secs: env_secs("CRYSTALLINE_STALE_SECS", DEFAULT_STALE_SECS),
+            stale_secs: crystalline_index::stale_secs(),
             origin_locks: std::sync::Mutex::new(HashMap::new()),
             write_locks: std::sync::Mutex::new(HashMap::new()),
             origin_provider_override: None,
@@ -3688,8 +3673,9 @@ impl Engine {
     /// Whether this instance backs up `domain`'s Reflection: it is its home
     /// (`On { home: Here }`), the domain is connected to a repository, the
     /// domain is not read-only, and on a shared database this instance still
-    /// holds the domain's host lock. A Reflection never goes to a repository
-    /// its domain is not connected to.
+    /// holds the domain's host lock and no host move of the domain is
+    /// unresolved. A Reflection never goes to a repository its domain is not
+    /// connected to.
     async fn backs_up_reflection_here(&self, domain: &str) -> bool {
         let home = matches!(
             self.reflection_state(domain).await,
@@ -3704,6 +3690,26 @@ impl Engine {
             // A takeover stops the old host's backup at once, not at its
             // next heartbeat.
             && matches!(self.confirm_reflection_host(domain).await, Ok(None))
+            // A new host whose disk lacks pages the previous host wrote would
+            // push a folder without them, and the backup branch is one way to
+            // get them back: it waits until the move is resolved.
+            && !self.host_move_unresolved(domain).await
+    }
+
+    /// Whether `domain` carries an unresolved host move on a shared
+    /// database (Task 50): its rows may name files only the previous host's
+    /// disk has. A move that could not be read counts as unresolved, so
+    /// what waits on it waits for the next try.
+    async fn host_move_unresolved(&self, domain: &str) -> bool {
+        let store = self.store.lock().await;
+        if !store.shares_database() {
+            return false;
+        }
+        match store.domain_id(domain).await {
+            Ok(Some(id)) => !matches!(store.host_move(id).await, Ok(None)),
+            Ok(None) => false,
+            Err(_) => true,
+        }
     }
 
     /// The GitHub login the injected provider acts as, for tests that need a
@@ -4065,16 +4071,20 @@ impl Engine {
             .await?;
         let now = now_offset().to_rfc3339();
         let stale_before = (now_offset() - Duration::seconds(self.stale_secs)).to_rfc3339();
-        let claim = store
-            .claim_domain_host(
-                id,
-                &self.instance_id,
-                &self.label,
-                &now,
-                &stale_before,
-                take_over,
-            )
-            .await?;
+        // On a shared database a claim that takes the domain from another
+        // instance, or from no known one, also marks a host move: this disk
+        // may lack files the previous host wrote, so the complete walks keep
+        // the rows they do not see until that is resolved (Task 50).
+        let claim = crystalline_index::claim_host_marking_moves(
+            store,
+            id,
+            &self.instance_id,
+            &self.label,
+            &now,
+            &stale_before,
+            take_over,
+        )
+        .await?;
         let moved = match &claim {
             HostClaim::Acquired => self
                 .hosted
@@ -4085,20 +4095,6 @@ impl Engine {
             HostClaim::HeldByOther(_) => self.hosted.write().unwrap().remove(name).is_some(),
         };
         if moved {
-            if matches!(claim, HostClaim::Acquired) && store.shares_database() {
-                // The previous host may have written pages this disk does
-                // not have: they go back to disk before the first walk here
-                // (any claim that acquired: the startup sync, the watcher, a
-                // named sync, --take-over or a Reflection request).
-                self.reflection_rows_due
-                    .lock()
-                    .unwrap()
-                    .insert(name.to_string());
-                self.reflection_assets_kept
-                    .lock()
-                    .unwrap()
-                    .insert(name.to_string());
-            }
             self.announce_host_moved(name);
         }
         Ok(claim)
@@ -8949,17 +8945,6 @@ impl ReindexHooks for DaemonReindexHooks<'_> {
                 Ok(false)
             }
         }
-    }
-
-    /// A domain this instance just took the host lock of gets its Reflection
-    /// pages back on disk before the walk, which then keeps the Reflection
-    /// file rows it does not see (see [`Engine::restore_reflection_rows`]).
-    async fn before_walk(&self, name: &str, root: &Path) -> crystalline_index::Result<bool> {
-        self.engine
-            .restore_reflection_rows(name, root)
-            .await
-            .map_err(|e| IndexError::Db(e.to_string()))?;
-        Ok(self.engine.take_kept_reflection_assets(name))
     }
 
     /// Files changed under us, so the generated index files follow. Runs with

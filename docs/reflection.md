@@ -105,6 +105,7 @@ crystalline domain members eng add ada --level none --reflection reader
 | update | `asset_missing` | A page links a file in `reflections/assets/` that is not there. |
 | update | `engram_attachment` | A page embeds an engram attachment instead of a file of its own. |
 | update | `asset_unreferenced` | A file in `reflections/assets/` that no page links. |
+| update | `host_moved` | The domain moved to this instance on a shared database, and this disk lacks files the previous host wrote. One item per domain, with the counts in `only_elsewhere`. See [One home, one backup](#one-home-one-backup). |
 | review | `thread` | A thread waits for the agent. |
 
 Items about the same section stay together. Groups come oldest first, and inside a group feedback comes before update and update before review. So the agent reads a person's change before it rewrites the section.
@@ -155,6 +156,8 @@ A local domain keeps its Reflection where it is, in its folder.
 A domain shared through GitHub has one home: the instance whose `service.public_url` is the domain's `reflection_home`. This key is filled in when Reflection is switched on at that instance, and it is never set by hand. Every other instance answers `this domain's Reflection lives at <url>`. People and agents work on the Reflection at the home.
 
 Several instances can share one Postgres database (see [Shared database collaboration](deployment.md#shared-database-collaboration)). Then one instance serves a domain's Reflection: the one that holds the domain's host lock, which also syncs the domain's files. Every other instance answers `this domain's Reflection is served by <label>; move it with crystalline serve --take-over`, and its status says `hosted_elsewhere` and names the host. `crystalline serve --take-over` on another instance moves the lock and the Reflection there. The new host serves at once, and the old one refuses from its next request. When the host shuts down cleanly, the next instance that is asked for the Reflection takes the lock and serves it. For a domain shared through GitHub, the host also needs to be the `reflection_home`.
+
+Each instance keeps the Reflection's files on its own disk: the pages, the threads, the hidden baselines and the files under `reflections/assets/`. The files on disk are the truth, so when the Reflection moves to another instance, copy the domain folder to the new host, or keep it on a volume both instances share. For a domain shared through GitHub, the Reflection can also come back from the `crystalline/reflections` branch (see [Restore from the backup](#restore-from-the-backup)). A new host never writes a page from the database to its disk, and never deletes the row of a page it does not have. It keeps those rows, its queue shows one `host_moved` item with the counts, and it does not back up the Reflection. Pages without their baseline raise no feedback while the item is open. The item goes away when a sync finds every file, or when a person runs `crystalline sync --domain <name> --accept-disk`, which deletes the rows of the files that are still missing.
 
 The home backs the whole `reflections/` folder up to the branch `crystalline/reflections` of the domain's repository, with its own GitHub token:
 

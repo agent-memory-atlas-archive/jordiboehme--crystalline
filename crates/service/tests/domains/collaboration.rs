@@ -278,7 +278,35 @@ async fn collaboration_flow(store: Arc<Mutex<dyn Store>>) {
     );
 
     // B migrates hosting with --take-over and acquires the file domain.
-    engine_b.sync_take_over(Some("eng"), true).await.unwrap();
+    let taken = engine_b.sync_take_over(Some("eng"), true).await.unwrap();
+    // alpha.md is gone from the disk B walks. On a shared database B's disk
+    // may simply lack what A wrote, so the row stays and is reported as only
+    // on A until a person copies the folder over or accepts the disk (Task
+    // 50); on Turso one instance owns the database and the walk deletes it.
+    let report = &taken["reports"][0];
+    let status = engine_b.status_report().await.unwrap();
+    let eng_stats = status["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "eng")
+        .unwrap();
+    if engine_b.store().lock().await.shares_database() {
+        assert_eq!(report["deleted"], 0, "{report}");
+        let elsewhere = serde_json::json!({
+            "previous_host": "inst-a",
+            "engrams": 1,
+            "attachments": 0,
+            "pages": 0,
+            "files": 0,
+        });
+        assert_eq!(report["only_elsewhere"], elsewhere, "{report}");
+        assert_eq!(eng_stats["only_elsewhere"], elsewhere, "{status}");
+    } else {
+        assert_eq!(report["deleted"], 1, "{report}");
+        assert!(report["only_elsewhere"].is_null(), "{report}");
+        assert!(eng_stats["only_elsewhere"].is_null(), "{status}");
+    }
     let b_domains = engine_b
         .list_domains(&ListDomainsParams::default(), &Scope::Unrestricted)
         .await

@@ -267,7 +267,15 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
                 .get("take_over")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            match shared.engine.sync_take_over(domain, take_over).await {
+            let accept_disk = req
+                .get("accept_disk")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            match shared
+                .engine
+                .sync_with(domain, take_over, accept_disk)
+                .await
+            {
                 Ok(mut data) => {
                     // After the sync has returned: a synced MANIFEST may
                     // declare a new name, and a pre-0.20.0 entry is caught up.

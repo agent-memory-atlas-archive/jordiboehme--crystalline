@@ -114,11 +114,11 @@ use crate::store::{
     AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ChunkTable, ContentMention,
     ContradictionRow, DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage,
     EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode,
-    GraphSlice, HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector,
-    NamedCount, NewChunk, NewReflectionChunk, OBSERVATION_VECTOR_CHUNK, ObservationVector,
-    OutboundRef, Page, RebuildKind, RecentFilter, ReferenceCandidates, ReflectionRow,
-    ReflectionStamp, ScoredPair, SearchHit, SearchMode, SearchQuery, SectionVector, SpellingPlan,
-    Store, StoreInfo, StoredEngram, Vocabulary, build_vocabulary, changed_spellings,
+    GraphSlice, HostClaim, HostMove, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO,
+    LeadVector, NamedCount, NewChunk, NewReflectionChunk, OBSERVATION_VECTOR_CHUNK,
+    ObservationVector, OutboundRef, Page, RebuildKind, RecentFilter, ReferenceCandidates,
+    ReflectionRow, ReflectionStamp, ScoredPair, SearchHit, SearchMode, SearchQuery, SectionVector,
+    SpellingPlan, Store, StoreInfo, StoredEngram, Vocabulary, build_vocabulary, changed_spellings,
     count_references_to_sql, domain_url_needles, folder_slash, in_transaction, names_a_domain_url,
     page_window, reference_match, referencing_domains_sql, rename_onto_taken_row,
     reset_spelled_references_sql, resolve_references_to_sql, resolve_spelled_references_sql,
@@ -4014,7 +4014,7 @@ impl Store for PostgresStore {
              (SELECT count(*) FROM link l JOIN engram e ON e.id=l.engram_id \
               WHERE l.domain_id=d.id AND l.to_id IS NULL AND e.actor = ''), \
              dl.holder_instance_id, dl.holder_label, dl.heartbeat_at, \
-             d.last_registered, d.rebuild_started, d.rebuild_kind \
+             d.last_registered, d.rebuild_started, d.rebuild_kind, d.host_move \
              FROM domain d LEFT JOIN domain_lock dl ON dl.domain_id=d.id ORDER BY d.id",
         )
         .fetch_all(conn.as_mut())
@@ -4039,6 +4039,7 @@ impl Store for PostgresStore {
                 last_registered: cell_text(r, 14),
                 rebuild_started: cell_text(r, 15),
                 rebuild_kind: cell_text(r, 16),
+                only_elsewhere: crate::store::reported_elsewhere(cell_text(r, 17).as_deref()),
             })
             .collect())
     }
@@ -4321,6 +4322,60 @@ impl Store for PostgresStore {
             label: cell_text(&r, 1).unwrap_or_default(),
             heartbeat_at: cell_text(&r, 2).unwrap_or_default(),
         }))
+    }
+
+    async fn last_domain_host(&self, domain: DomainId) -> Result<Option<(String, String)>> {
+        let mut conn = self.acquire().await?;
+        let row = sqlx::query("SELECT last_host_id, last_host_label FROM domain WHERE id=$1")
+            .bind(domain.0)
+            .fetch_optional(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
+        Ok(row.and_then(|r| {
+            let id = cell_text(&r, 0)?;
+            Some((id, cell_text(&r, 1).unwrap_or_default()))
+        }))
+    }
+
+    async fn set_last_domain_host(
+        &self,
+        domain: DomainId,
+        instance_id: &str,
+        label: &str,
+    ) -> Result<()> {
+        let mut conn = self.acquire().await?;
+        sqlx::query("UPDATE domain SET last_host_id=$1, last_host_label=$2 WHERE id=$3")
+            .bind(instance_id)
+            .bind(label)
+            .bind(domain.0)
+            .execute(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
+        Ok(())
+    }
+
+    async fn host_move(&self, domain: DomainId) -> Result<Option<HostMove>> {
+        let mut conn = self.acquire().await?;
+        let row = sqlx::query("SELECT host_move FROM domain WHERE id=$1")
+            .bind(domain.0)
+            .fetch_optional(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
+        Ok(row
+            .and_then(|r| cell_text(&r, 0))
+            .and_then(|text| crate::store::parse_host_move(&text)))
+    }
+
+    async fn set_host_move(&self, domain: DomainId, host_move: Option<&HostMove>) -> Result<()> {
+        let text = host_move.map(crate::store::host_move_text);
+        let mut conn = self.acquire().await?;
+        sqlx::query("UPDATE domain SET host_move=$1 WHERE id=$2")
+            .bind(text)
+            .bind(domain.0)
+            .execute(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
+        Ok(())
     }
 
     async fn upsert_asset(

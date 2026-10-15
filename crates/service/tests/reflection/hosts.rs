@@ -325,34 +325,68 @@ async fn a_released_host_lock_goes_to_exactly_one_instance_on_postgres() {
         .unwrap();
 }
 
-/// The pages a host wrote live on its own disk and in the shared rows.
-/// When another instance takes the lock over, its first complete walk must
-/// not drop the rows of those pages: they go back to the new host's disk
-/// first, so the new host serves them. A file under `reflections/assets/`
-/// keeps its bytes on the old host's disk only, so its row is kept through
-/// that walk. Both the claim of a Reflection request and the claim of a
-/// sync (the startup path) write the pages back.
+/// A Postgres schema of its own, and an opener for one store on it per
+/// instance.
 #[cfg(feature = "postgres")]
-#[tokio::test]
-async fn a_new_host_keeps_the_pages_the_old_host_wrote_on_postgres() {
-    use crate::fixture::{pg_url, unique_schema};
+struct Shared {
+    url: String,
+    schema: String,
+}
 
-    let Some(url) = pg_url() else { return };
-    let schema = unique_schema();
-    let open = || async {
-        let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+#[cfg(feature = "postgres")]
+impl Shared {
+    fn new() -> Option<Shared> {
+        let url = crate::fixture::pg_url()?;
+        Some(Shared {
+            url,
+            schema: crate::fixture::unique_schema(),
+        })
+    }
+
+    async fn open(&self) -> Arc<Mutex<dyn Store>> {
+        let store = crystalline_index::PostgresStore::open_in_schema(&self.url, &self.schema)
             .await
             .expect("open the postgres test schema");
         Arc::new(Mutex::new(store)) as Arc<Mutex<dyn Store>>
-    };
-    let alpha = instance(open().await, "alpha").await;
-    let beta = instance(open().await, "beta").await;
-    let gamma = instance(open().await, "gamma").await;
-    let page = "# Kept\n\nWritten on alpha.\n";
+    }
+
+    async fn drop_schema(self) {
+        crystalline_index::PostgresStore::open_in_schema(&self.url, &self.schema)
+            .await
+            .unwrap()
+            .drop_schema()
+            .await
+            .unwrap();
+    }
+}
+
+/// The engram, the page and the file only alpha's disk has.
+#[cfg(feature = "postgres")]
+const ALPHA_ENGRAM: &str = "runbooks/only-on-alpha.md";
+#[cfg(feature = "postgres")]
+const ALPHA_PAGE: &str = "guides/kept.md";
+#[cfg(feature = "postgres")]
+const ALPHA_FILE: &str = "assets/flow.png";
+
+/// Alpha writes an engram, a Reflection page (a section with an id, so a
+/// missing baseline would read as feedback) and a Reflection file: rows in
+/// the shared database, files on alpha's disk only.
+#[cfg(feature = "postgres")]
+async fn alpha_writes(alpha: &Fx) {
+    alpha
+        .engine
+        .write_engram(&crate::fixture::write_params(
+            "Only On Alpha",
+            Some("runbooks"),
+            "- [fact] written on alpha",
+        ))
+        .await
+        .unwrap();
+    assert!(alpha.root.join(ALPHA_ENGRAM).is_file());
     alpha
         .engine
         .write_reflection(
-            &crate::docs::write("guides/kept.md", page),
+            &crate::docs::write(ALPHA_PAGE, &crate::fixture::page("Kept")),
             &ReflectionCaller::owner(),
         )
         .await
@@ -361,67 +395,239 @@ async fn a_new_host_keeps_the_pages_the_old_host_wrote_on_postgres() {
         .engine
         .reflection_asset_write(
             "eng",
-            "assets/flow.png",
+            ALPHA_FILE,
             crate::assets::PNG.to_vec(),
             &ReflectionCaller::owner(),
         )
         .await
         .unwrap();
-    let store = alpha.engine.store();
-    let did = store.lock().await.domain_id("eng").await.unwrap().unwrap();
-    let rows = || async {
-        let store = store.lock().await;
-        (
-            store.get_reflection(did, "guides/kept.md").await.unwrap(),
-            store
-                .get_asset(
-                    crystalline_index::AssetTable::Reflection,
-                    did,
-                    "assets/flow.png",
-                )
-                .await
-                .unwrap(),
-        )
-    };
+}
 
-    // A Reflection request claims the free lock; the daemon's watcher then
-    // syncs the domain, a complete walk of the new host's disk.
-    alpha.engine.release_hosts().await;
-    assert_eq!(beta.engine.reflection_state("eng").await.unwrap(), LOCAL);
-    let on_beta = beta.root.join("reflections/guides/kept.md");
-    assert!(on_beta.exists(), "the page is back on beta's disk");
-    beta.engine.sync(Some("eng")).await.unwrap();
-    let (kept, file) = rows().await;
-    assert!(
-        kept.expect("the page row survives the walk")
-            .content
-            .contains("Written on alpha."),
-        "the page keeps alpha's text"
-    );
-    assert!(file.is_some(), "the file row survives the first walk");
-    let read = beta
-        .engine
-        .read_reflection("eng", "guides/kept.md", &ReflectionCaller::owner())
-        .await
-        .unwrap();
-    assert!(read.to_string().contains("Written on alpha."), "{read}");
-
-    // A sync's claim (the startup path, and --take-over) does the same.
-    beta.engine.release_hosts().await;
-    let on_gamma = gamma.root.join("reflections/guides/kept.md");
-    assert!(!on_gamma.exists());
-    gamma.engine.sync(Some("eng")).await.unwrap();
-    assert!(on_gamma.exists(), "the page is back on gamma's disk");
-    let (kept, file) = rows().await;
-    assert!(kept.is_some(), "the page row survives gamma's first walk");
-    assert!(file.is_some(), "and the file row");
-
-    crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+/// Whether the shared rows still hold alpha's engram, page and file.
+#[cfg(feature = "postgres")]
+async fn alpha_rows(fx: &Fx) -> (bool, bool, bool) {
+    let store = fx.engine.store();
+    let store = store.lock().await;
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    let engram = store
+        .file_stamps(did)
         .await
         .unwrap()
-        .drop_schema()
+        .contains_key(ALPHA_ENGRAM);
+    let page = store
+        .get_reflection(did, ALPHA_PAGE)
+        .await
+        .unwrap()
+        .is_some();
+    let file = store
+        .get_asset(crystalline_index::AssetTable::Reflection, did, ALPHA_FILE)
+        .await
+        .unwrap()
+        .is_some();
+    (engram, page, file)
+}
+
+/// The domain's whole queue, every kind, one page.
+#[cfg(feature = "postgres")]
+async fn queue_of(fx: &Fx) -> Vec<serde_json::Value> {
+    let p = crystalline_service::params::ReflectParams {
+        limit: Some(100),
+        ..Default::default()
+    };
+    fx.engine.reflect(&p, &crate::docs::agent()).await.unwrap()["queue"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+/// The `host_moved` items of a queue.
+#[cfg(feature = "postgres")]
+fn host_moved(queue: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+    queue.iter().filter(|i| i["what"] == "host_moved").collect()
+}
+
+/// `eng`'s row of the status report.
+#[cfg(feature = "postgres")]
+async fn eng_stats(fx: &Fx) -> serde_json::Value {
+    let status = fx.engine.status_report().await.unwrap();
+    status["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "eng")
+        .cloned()
+        .expect("eng has a row")
+}
+
+/// The counts alpha's writes leave behind on another instance's disk.
+#[cfg(feature = "postgres")]
+fn only_on_alpha() -> serde_json::Value {
+    serde_json::json!({
+        "previous_host": "alpha",
+        "engrams": 1,
+        "attachments": 0,
+        "pages": 1,
+        "files": 1,
+    })
+}
+
+/// Disk stays the truth on a shared database (Task 50). Alpha writes an
+/// engram, a page and a file and shuts down cleanly; beta takes the free
+/// lock on a Reflection request and syncs. Beta's disk has none of the
+/// three, so its walk keeps their rows and writes nothing to its disk, and
+/// the domain reports them as only on alpha: in the sync report, in the
+/// status and as one `host_moved` queue item that stands in for the
+/// feedback a page without a baseline would otherwise raise. A later walk
+/// keeps them too.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_new_host_keeps_the_rows_it_cannot_see_and_reports_them_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    let beta = instance(db.open().await, "beta").await;
+    alpha_writes(&alpha).await;
+    alpha.engine.release_hosts().await;
+
+    assert_eq!(beta.engine.reflection_state("eng").await.unwrap(), LOCAL);
+    let synced = beta.engine.sync(Some("eng")).await.unwrap();
+    let report = &synced["reports"][0];
+    assert_eq!(report["only_elsewhere"], only_on_alpha(), "{report}");
+    assert_eq!(report["deleted"], 0, "{report}");
+    assert_eq!(alpha_rows(&beta).await, (true, true, true));
+    for rel in [
+        ALPHA_ENGRAM.to_string(),
+        format!("reflections/{ALPHA_PAGE}"),
+        format!("reflections/{ALPHA_FILE}"),
+    ] {
+        assert!(!beta.root.join(&rel).exists(), "nothing is written: {rel}");
+    }
+
+    let queue = queue_of(&beta).await;
+    let moved = host_moved(&queue);
+    assert_eq!(moved.len(), 1, "{queue:?}");
+    assert_eq!(moved[0]["kind"], "update");
+    assert_eq!(moved[0]["domain"], "eng");
+    assert_eq!(moved[0]["only_elsewhere"], only_on_alpha());
+    assert!(
+        !queue
+            .iter()
+            .any(|i| i["kind"] == "feedback" && i["path"] == ALPHA_PAGE),
+        "no feedback for a page whose baseline is on alpha's disk: {queue:?}"
+    );
+    assert_eq!(eng_stats(&beta).await["only_elsewhere"], only_on_alpha());
+
+    // A second walk, the watcher's catch-up or the next startup, keeps them.
+    let again = beta.engine.sync(Some("eng")).await.unwrap();
+    assert_eq!(again["reports"][0]["only_elsewhere"], only_on_alpha());
+    assert_eq!(alpha_rows(&beta).await, (true, true, true));
+
+    db.drop_schema().await;
+}
+
+/// Two complete walks that race right after a take-over both keep the rows
+/// they did not see: the mark is read where each walk applies and cleared
+/// only by a walk that found nothing missing.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_concurrent_walk_during_a_take_over_deletes_nothing_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    let beta = instance(db.open().await, "beta").await;
+    alpha_writes(&alpha).await;
+    alpha.engine.release_hosts().await;
+
+    assert_eq!(
+        beta.engine.claim_host("eng", false).await.unwrap(),
+        crystalline_index::HostClaim::Acquired
+    );
+    let (sync, reindex, other) = tokio::join!(
+        beta.engine.sync(Some("eng")),
+        beta.engine.reindex(false),
+        beta.engine.sync(None),
+    );
+    sync.unwrap();
+    reindex.unwrap();
+    other.unwrap();
+    assert_eq!(alpha_rows(&beta).await, (true, true, true));
+    assert_eq!(eng_stats(&beta).await["only_elsewhere"], only_on_alpha());
+
+    db.drop_schema().await;
+}
+
+/// The normal restart of the one host is not a take-over: a page and an
+/// engram deleted by hand while it was down lose their rows on its startup
+/// sync, after a clean shutdown (the lock row is gone, the domain row names
+/// alpha as the last host) and after a crash (the lock row still names it).
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_restart_of_the_same_host_deletes_a_hand_deleted_file_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    alpha_writes(&alpha).await;
+
+    // A clean shutdown releases the lock.
+    alpha.engine.release_hosts().await;
+    std::fs::remove_file(alpha.root.join(ALPHA_ENGRAM)).unwrap();
+    std::fs::remove_file(alpha.root.join("reflections").join(ALPHA_PAGE)).unwrap();
+    let alpha = crate::fixture::restart_on(db.open().await, "alpha", alpha).await;
+    assert_eq!(alpha_rows(&alpha).await, (false, false, true));
+    assert!(eng_stats(&alpha).await["only_elsewhere"].is_null());
+
+    // A crash leaves the lock row naming alpha.
+    std::fs::remove_file(alpha.root.join("reflections").join(ALPHA_FILE)).unwrap();
+    let alpha = crate::fixture::restart_on(db.open().await, "alpha", alpha).await;
+    assert_eq!(alpha_rows(&alpha).await, (false, false, false));
+    assert!(host_moved(&queue_of(&alpha).await).is_empty());
+
+    db.drop_schema().await;
+}
+
+/// What exists only on the previous host is reported until it is resolved:
+/// a walk after a person copied a file over drops it from the counts, and
+/// `crystalline sync --domain eng --accept-disk` runs one ordinary walk
+/// that deletes the rows still missing and ends the report.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn accept_disk_drops_the_rows_only_elsewhere_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    let beta = instance(db.open().await, "beta").await;
+    alpha_writes(&alpha).await;
+    alpha.engine.release_hosts().await;
+    beta.engine.sync(Some("eng")).await.unwrap();
+    assert_eq!(eng_stats(&beta).await["only_elsewhere"], only_on_alpha());
+
+    // The page is copied over, with its baseline.
+    let from = alpha.root.join("reflections");
+    let to = beta.root.join("reflections");
+    std::fs::create_dir_all(to.join("guides")).unwrap();
+    std::fs::copy(from.join(ALPHA_PAGE), to.join(ALPHA_PAGE)).unwrap();
+    let synced = beta.engine.sync(Some("eng")).await.unwrap();
+    let mut left = only_on_alpha();
+    left["pages"] = serde_json::json!(0);
+    assert_eq!(synced["reports"][0]["only_elsewhere"], left);
+    assert_eq!(
+        host_moved(&queue_of(&beta).await)[0]["only_elsewhere"],
+        left
+    );
+
+    let accepted = beta
+        .engine
+        .sync_with(Some("eng"), false, true)
         .await
         .unwrap();
+    let report = &accepted["reports"][0];
+    assert!(report["only_elsewhere"].is_null(), "{report}");
+    assert_eq!(report["deleted"], 1, "{report}");
+    assert_eq!(alpha_rows(&beta).await, (false, true, false));
+    assert!(host_moved(&queue_of(&beta).await).is_empty());
+    assert!(eng_stats(&beta).await["only_elsewhere"].is_null());
+    // The next walk deletes as any walk does.
+    std::fs::remove_file(to.join(ALPHA_PAGE)).unwrap();
+    beta.engine.sync(Some("eng")).await.unwrap();
+    assert_eq!(alpha_rows(&beta).await, (false, false, false));
+
+    db.drop_schema().await;
 }
 
 /// How many `switched` events for `eng` the bus holds.

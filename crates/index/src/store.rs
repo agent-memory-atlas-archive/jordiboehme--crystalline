@@ -2085,6 +2085,11 @@ pub struct DomainStats {
     /// about what is in the rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rebuild_kind: Option<String>,
+    /// The rows a walk kept after a host move on a shared database because
+    /// this instance's disk does not have them, while that is unresolved
+    /// and the count is not zero ([`HostMove`]). `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub only_elsewhere: Option<OnlyElsewhere>,
 }
 
 /// Which rebuild verb is stamping a domain's marker: `reindex --full`, which
@@ -2133,6 +2138,96 @@ pub enum HostClaim {
     /// Another instance holds it and the claim did not qualify for takeover
     /// (not stale, no `take_over`).
     HeldByOther(DomainHost),
+}
+
+/// The rows of a file domain that the last complete walk did not see on
+/// the disk of the instance that hosts it now, kept because the domain was
+/// taken over on a shared database and the previous host's disk may have
+/// them (see [`HostMove`]). Counts only, never content.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct OnlyElsewhere {
+    /// The label of the instance that held the domain before, when known.
+    pub previous_host: Option<String>,
+    /// Engram rows.
+    pub engrams: u64,
+    /// Engram attachment rows (files under `assets/`).
+    pub attachments: u64,
+    /// Reflection page rows, the pact included.
+    pub pages: u64,
+    /// Reflection file rows (files under `reflections/assets/`).
+    pub files: u64,
+}
+
+impl OnlyElsewhere {
+    /// Every row counted, of every kind.
+    pub fn total(&self) -> u64 {
+        self.engrams + self.attachments + self.pages + self.files
+    }
+
+    /// The one line a person reads for `domain`, in the sync report and in
+    /// `crystalline status`, with the two ways to end it.
+    pub fn line(&self, domain: &str) -> String {
+        let count =
+            |n: u64, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let engrams = if self.attachments > 0 {
+            format!(
+                "{}, {}",
+                count(self.engrams, "engram", "engrams"),
+                count(self.attachments, "attachment", "attachments")
+            )
+        } else {
+            count(self.engrams, "engram", "engrams")
+        };
+        let reflection = count(
+            self.pages + self.files,
+            "Reflection file",
+            "Reflection files",
+        );
+        let host = self.previous_host.as_deref().unwrap_or("another instance");
+        format!(
+            "{engrams} and {reflection} exist only on {host}; copy the domain folder over or restore it, then sync, or drop them with: crystalline sync --domain {domain} --accept-disk"
+        )
+    }
+}
+
+/// The stored text of a [`HostMove`], the JSON both backends keep in
+/// `domain.host_move`.
+pub(crate) fn host_move_text(host_move: &HostMove) -> String {
+    serde_json::to_string(host_move).unwrap_or_default()
+}
+
+/// A [`HostMove`] read back from `domain.host_move`. Text that does not
+/// read as one (a newer binary's shape) counts as a move with nothing
+/// counted yet, so a walk keeps rows rather than dropping them.
+pub(crate) fn parse_host_move(text: &str) -> Option<HostMove> {
+    Some(serde_json::from_str(text).unwrap_or_else(|_| HostMove {
+        at: String::new(),
+        walked: false,
+        only_elsewhere: OnlyElsewhere::default(),
+    }))
+}
+
+/// What a domain's stats report from its stored host move: the counts once
+/// a walk found rows missing, else nothing.
+pub(crate) fn reported_elsewhere(text: Option<&str>) -> Option<OnlyElsewhere> {
+    let host_move = parse_host_move(text?)?;
+    (host_move.walked && host_move.only_elsewhere.total() > 0).then_some(host_move.only_elsewhere)
+}
+
+/// An unresolved host move of a file domain on a shared database: this
+/// instance took the domain's host lock from another instance, or from no
+/// known one, and its disk may lack files the previous host wrote. While a
+/// domain carries one, a complete walk keeps every row it does not see and
+/// counts them into [`HostMove::only_elsewhere`]; a complete walk that sees
+/// every row, or one run with `--accept-disk`, clears it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct HostMove {
+    /// When the move was marked, RFC 3339.
+    pub at: String,
+    /// Whether a complete walk has counted the rows since.
+    pub walked: bool,
+    /// What that walk did not see.
+    pub only_elsewhere: OnlyElsewhere,
 }
 
 /// One binary attachment's metadata: an asset stored under a domain's `assets/`
@@ -3589,6 +3684,26 @@ pub trait Store: Send + Sync {
 
     /// The current holder of a file domain's host lock, or `None` when unheld.
     async fn domain_host(&self, domain: DomainId) -> Result<Option<DomainHost>>;
+
+    /// The instance that last acquired a file domain's host lock, as
+    /// `(instance id, label)`, or `None` when none was recorded. Kept on the
+    /// domain row, so it outlives a release, which deletes the lock row.
+    async fn last_domain_host(&self, domain: DomainId) -> Result<Option<(String, String)>>;
+
+    /// Record the instance that just acquired a file domain's host lock.
+    async fn set_last_domain_host(
+        &self,
+        domain: DomainId,
+        instance_id: &str,
+        label: &str,
+    ) -> Result<()>;
+
+    /// The domain's unresolved host move, or `None`.
+    async fn host_move(&self, domain: DomainId) -> Result<Option<HostMove>>;
+
+    /// Set or (with `None`) clear the domain's host move. Inside an open
+    /// write transaction it commits or rolls back with it.
+    async fn set_host_move(&self, domain: DomainId, host_move: Option<&HostMove>) -> Result<()>;
 
     // --- batch control -------------------------------------------------------
     // These let the sync engine wrap its whole write phase in one transaction
