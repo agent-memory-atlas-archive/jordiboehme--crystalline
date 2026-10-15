@@ -32,7 +32,12 @@ import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import * as Y from "yjs";
 
 import { problemDetail } from "../api/client";
-import { fetchReflection, reflectionKey } from "../api/reflection";
+import {
+  fetchReflection,
+  reflectionAssetHome,
+  reflectionAssetsKey,
+  reflectionKey,
+} from "../api/reflection";
 import { mayEditPage } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { CollabConflictDialog } from "../collab/CollabConflictDialog";
@@ -49,13 +54,16 @@ import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { BUTTON } from "../components/primitives";
 import { Skeleton } from "../components/Skeleton";
+import { AttachButton } from "../editor/AttachButton";
 import CmEditor from "../editor/CmEditor";
 import type { Draft } from "../editor/drafts";
 import { clearDraft, readDraft, writeDraft } from "../editor/drafts";
 import { frontmatterFold } from "../editor/frontmatterFold";
 import { hiddenIdLines } from "../editor/hiddenIdLines";
+import { imagePreviews } from "../editor/imagePreviews";
 import { livePreview } from "../editor/preview";
 import { baseExtensions } from "../editor/setup";
+import { useAttachmentUploads } from "../editor/useAttachmentUploads";
 import { reflectionPageRoute } from "../paths";
 import { stripIdLines, stripProvenance } from "../reflectionText";
 import { useTheme } from "../theme/context";
@@ -353,6 +361,29 @@ function Surface({
   const [mountText] = useState(() => ytext.toJSON());
   const [mountEnded] = useState(ended);
   const [view, setView] = useState<EditorView | null>(null);
+  /*
+   * Files: pasted, dropped or picked, stored in the Reflection's own files
+   * under a name nobody holds, and linked relative to this page. A refusal
+   * gets its own line: it is not a failed save, and it never keeps a draft.
+   * The link lands in the room's text like any typing; a block inserted from
+   * a heading line goes below the heading's id (`hiddenIdLines`), so nothing
+   * has to place it first. A ref for the view, because the paste and drop
+   * handlers are read once at mount and must reach the live buffer.
+   */
+  const home = useMemo(() => reflectionAssetHome(domain, path), [domain, path]);
+  const uploadView = useRef<EditorView | null>(null);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const uploads = useAttachmentUploads({
+    domain,
+    home,
+    view: () => uploadView.current,
+    onError: setAttachError,
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: reflectionAssetsKey(domain),
+      });
+    },
+  });
   const editable = useMemo(() => new Compartment(), []);
   const extensions = useMemo(
     () => [
@@ -366,9 +397,11 @@ function Surface({
       livePreview(),
       frontmatterFold(),
       hiddenIdLines(),
+      uploads.extension,
+      imagePreviews(home),
       editable.of(readOnly(mountEnded)),
     ],
-    [ytext, awareness, resolved, editable, mountEnded],
+    [ytext, awareness, resolved, editable, mountEnded, uploads.extension, home],
   );
   useEffect(() => {
     view?.dispatch({ effects: editable.reconfigure(readOnly(ended)) });
@@ -484,6 +517,16 @@ function Surface({
             participants={collab.participants}
             offline={collab.status !== "connected"}
           />
+          {/*
+            Off while the room is away or over: the bytes would not wait for
+            it, but a person should not start what the page cannot take now.
+            A paste while reconnecting still uploads, and the room merges the
+            link on its return.
+          */}
+          <AttachButton
+            onAttach={uploads.attach}
+            disabled={view === null || ended || collab.status !== "connected"}
+          />
           <Link
             to={reflectionPageRoute(domain, path)}
             onClick={() => {
@@ -515,6 +558,11 @@ function Surface({
       {refusal !== null && (
         <p role="alert" className={ALERT}>
           {refusal}
+        </p>
+      )}
+      {attachError !== null && (
+        <p role="alert" className={ALERT}>
+          {attachError}
         </p>
       )}
       {/*
@@ -590,6 +638,7 @@ function Surface({
           extensions={extensions}
           ariaLabel="Page source"
           onReady={(ready) => {
+            uploadView.current = ready;
             setView(ready);
             if (focusOnReady) {
               ready.focus();

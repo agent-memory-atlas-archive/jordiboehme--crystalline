@@ -1,6 +1,7 @@
+import { EditorView } from "@codemirror/view";
 import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { focusManager } from "@tanstack/react-query";
+import { QueryClient, focusManager } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Awareness } from "y-protocols/awareness";
@@ -680,5 +681,269 @@ describe("the reflection editor's way in", () => {
     expect(
       await screen.findByRole("textbox", { name: "Page source" }),
     ).toHaveFocus();
+  });
+});
+
+/**
+ * Files in the live editor: paste, drop and "Attach a file" run one upload
+ * flow into the Reflection's own files, under a name nobody holds yet, and
+ * the link lands in the room's text relative to the page.
+ */
+describe("the reflection editor takes files", () => {
+  const ASSETS = "/domains/eng/reflection/assets";
+  const SHOT_ROW = {
+    path: "assets/2026/10/shot.png",
+    mime: "image/png",
+    size: 1,
+    modified: "2026-10-01T00:00:00Z",
+    sha256: "a",
+  };
+
+  /**
+   * The editor's routes plus the Reflection's files: each listing call takes
+   * the next answer (the last one repeats), each PUT the next verdict.
+   */
+  function serveFiles(
+    listings: unknown[][],
+    puts: ((path: string) => unknown)[] = [],
+  ) {
+    serve("edit");
+    const base = apiMock.getMockImplementation();
+    const lists = [...listings];
+    const verdicts = [...puts];
+    apiMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === ASSETS) {
+        const rows = lists.length > 1 ? lists.shift() : lists[0];
+        return { assets: rows ?? [] };
+      }
+      if (path.startsWith(`${ASSETS}/`) && init?.method === "PUT") {
+        const stored = `assets/${path.slice(ASSETS.length + 1)}`;
+        const verdict = verdicts.shift();
+        return verdict === undefined
+          ? { path: stored, mime: "image/png", size: 8, sha256: "b" }
+          : await verdict(stored);
+      }
+      return await base?.(path, init);
+    });
+  }
+
+  function puts(): string[] {
+    return apiMock.mock.calls
+      .filter(([, init]) => init?.method === "PUT")
+      .map(([path]) => path);
+  }
+
+  function carrying(type: "paste" | "drop", files: File[]): Event {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(
+      event,
+      type === "paste" ? "clipboardData" : "dataTransfer",
+      { value: { files, types: ["Files"], getData: () => "" } },
+    );
+    return event;
+  }
+
+  function png(name = "shot.png"): File {
+    return new File(["x"], name, { type: "image/png" });
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 15, 12));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("a contributor's paste uploads under a free name and inserts a relative link", async () => {
+    serveFiles([[SHOT_ROW]]);
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    editor.dispatchEvent(carrying("paste", [png()]));
+    await waitFor(() => {
+      expect(session.get().ytext?.toJSON()).toContain(
+        "![shot.png](../assets/2026/10/shot-2.png)",
+      );
+    });
+    expect(puts()).toEqual([
+      "/domains/eng/reflection/assets/2026/10/shot-2.png",
+    ]);
+  });
+
+  it("a file dropped on a heading line lands below its id line", async () => {
+    serveFiles([[]]);
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    const view = EditorView.findFromDOM(editor);
+    act(() => {
+      view?.dispatch({ selection: { anchor: PAGE.indexOf("## One") + 6 } });
+    });
+    const event = carrying("drop", [png()]);
+    editor.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => {
+      expect(session.get().ytext?.toJSON()).toContain(
+        "## One\n<!-- r:aaaa1111 -->\n\n![shot.png](../assets/2026/10/shot.png)\n",
+      );
+    });
+  });
+
+  it("the picker attaches through the same flow", async () => {
+    serveFiles([[]]);
+    const session = live(room(PAGE));
+    await openEditor();
+    const button = screen.getByRole("button", { name: "Attach a file" });
+    expect(button).toBeEnabled();
+    const input =
+      document.querySelector<HTMLInputElement>('input[type="file"]');
+    // Once: nothing opens a real dialog in jsdom, and the upload below clicks
+    // the input too.
+    input?.addEventListener(
+      "click",
+      (event) => {
+        event.preventDefault();
+      },
+      { once: true },
+    );
+    await userEvent.click(button);
+    await userEvent.upload(input as HTMLInputElement, png());
+    await waitFor(() => {
+      expect(session.get().ytext?.toJSON()).toContain(
+        "![shot.png](../assets/2026/10/shot.png)",
+      );
+    });
+  });
+
+  it("a name taken between listing and upload is tried once more under the next free name", async () => {
+    serveFiles(
+      [[], [SHOT_ROW]],
+      [
+        () => {
+          throw new ApiProblem(403, "forbidden", "a file is already there");
+        },
+      ],
+    );
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    editor.dispatchEvent(carrying("paste", [png()]));
+    await waitFor(() => {
+      expect(session.get().ytext?.toJSON()).toContain(
+        "![shot.png](../assets/2026/10/shot-2.png)",
+      );
+    });
+    expect(puts()).toEqual([
+      "/domains/eng/reflection/assets/2026/10/shot.png",
+      "/domains/eng/reflection/assets/2026/10/shot-2.png",
+    ]);
+    expect(screen.queryByText("a file is already there")).toBeNull();
+  });
+
+  it("the server's refusal is shown as it was sent, and is no failed save", async () => {
+    const detail = "the attachment is larger than 10 MiB";
+    serveFiles(
+      [[]],
+      [
+        () => {
+          throw new ApiProblem(413, "too large", detail);
+        },
+      ],
+    );
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    editor.dispatchEvent(carrying("paste", [png()]));
+    expect(await screen.findByRole("alert")).toHaveTextContent(detail);
+    expect(session.get().ytext?.toJSON()).toBe(PAGE);
+    expect(readDraft("ann", "eng", KEY)).toBeNull();
+    expect(readDraft("ann", "eng", OFFER)).toBeNull();
+    expect(screen.queryByText(/kept as a draft/)).toBeNull();
+    // A later batch clears the line.
+    editor.dispatchEvent(carrying("paste", [png()]));
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+  });
+
+  it("a file off the allowlist is refused before any upload", async () => {
+    serveFiles([[]]);
+    live(room(PAGE));
+    const editor = await openEditor();
+    editor.dispatchEvent(
+      carrying("paste", [new File(["x"], "tool.exe", { type: "" })]),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "tool.exe is not a kind of file Crystalline stores.",
+    );
+    expect(puts()).toEqual([]);
+  });
+
+  it("refreshes the Reflection's file list after a batch", async () => {
+    const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    serveFiles([[]]);
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    editor.dispatchEvent(carrying("paste", [png()]));
+    await waitFor(() => {
+      expect(session.get().ytext?.toJSON()).toContain("shot.png");
+    });
+    await waitFor(() => {
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: ["reflection", "eng", "assets"],
+      });
+    });
+  });
+
+  it("turns the button off while reconnecting, and a paste still uploads", async () => {
+    serveFiles([[]]);
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    session.set({ status: "reconnecting" });
+    expect(
+      screen.getByRole("button", { name: "Attach a file" }),
+    ).toBeDisabled();
+    editor.dispatchEvent(carrying("paste", [png()]));
+    await waitFor(() => {
+      expect(session.get().ytext?.toJSON()).toContain(
+        "![shot.png](../assets/2026/10/shot.png)",
+      );
+    });
+  });
+
+  it("takes no file into a room that has ended", async () => {
+    serveFiles([[]]);
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    session.set({ closed: true, closedReason: "left", saveState: "ok" });
+    expect(
+      screen.getByRole("button", { name: "Attach a file" }),
+    ).toBeDisabled();
+    editor.dispatchEvent(carrying("paste", [png()]));
+    const drop = carrying("drop", [png()]);
+    editor.dispatchEvent(drop);
+    expect(drop.defaultPrevented).toBe(true);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      apiMock.mock.calls.filter(([path]) => path.startsWith(ASSETS)),
+    ).toEqual([]);
+    expect(session.get().ytext?.toJSON()).toBe(PAGE);
+  });
+
+  it("takes no file into a room whose connection failed for good", async () => {
+    serveFiles([[]]);
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    session.set({ status: "failed" });
+    expect(
+      screen.getByRole("button", { name: "Attach a file" }),
+    ).toBeDisabled();
+    editor.dispatchEvent(carrying("paste", [png()]));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      apiMock.mock.calls.filter(([path]) => path.startsWith(ASSETS)),
+    ).toEqual([]);
   });
 });

@@ -32,6 +32,11 @@ export interface AttachmentUploadOptions {
   view: () => EditorView | null;
   /** A refusal in words an author can act on; null clears a standing one. */
   onError: (message: string | null) => void;
+  /**
+   * Runs once a batch has finished, whatever it stored: a screen that shows
+   * the home's listing refreshes it here.
+   */
+  onSettled?: () => void;
 }
 
 /** The two halves a screen wires: into the buffer, and onto the toolbar. */
@@ -52,7 +57,7 @@ export function useAttachmentUploads(
     latest.current = options;
   });
   const attach = useCallback((files: File[]) => {
-    const { domain, home, place, view, onError } = latest.current;
+    const { domain, home, place, view, onError, onSettled } = latest.current;
     const target = view();
     if (target === null) {
       return;
@@ -63,6 +68,8 @@ export function useAttachmentUploads(
       files,
       view: target,
       onError,
+    }).finally(() => {
+      onSettled?.();
     });
   }, []);
   const extension = useMemo(
