@@ -10,9 +10,10 @@ use std::sync::Arc;
 use crystalline_core::config::{DomainEntry, EmbeddingsConfig, GlobalConfig};
 use crystalline_index::{EmbeddingProvider, Store, TursoStore};
 use crystalline_service::Engine;
+use crystalline_service::engine::WatchEvent;
 use crystalline_service::params::{DeleteParams, MoveParams, WriteParams};
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 pub struct Fx {
     pub tmp: tempfile::TempDir,
@@ -185,12 +186,33 @@ pub async fn instance_on(
     instance_id: &str,
     files: &[(&str, &str)],
 ) -> Fx {
-    build(store, Some(instance_id), files, |_, _| {}, None, None, None).await
+    instance_watched(store, instance_id, files).await.0
+}
+
+/// [`instance_on`] with the daemon's watch channel wired, so a test sees the
+/// domains the engine hands its watcher.
+pub async fn instance_watched(
+    store: Arc<Mutex<dyn Store>>,
+    instance_id: &str,
+    files: &[(&str, &str)],
+) -> (Fx, UnboundedReceiver<WatchEvent>) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let fx = build(
+        store,
+        Some((instance_id, tx)),
+        files,
+        |_, _| {},
+        None,
+        None,
+        None,
+    )
+    .await;
+    (fx, rx)
 }
 
 async fn build(
     store: Arc<Mutex<dyn Store>>,
-    instance_id: Option<&str>,
+    instance: Option<(&str, UnboundedSender<WatchEvent>)>,
     files: &[(&str, &str)],
     tweak: impl FnOnce(&mut GlobalConfig, &std::path::Path),
     provider: Option<Arc<dyn EmbeddingProvider>>,
@@ -224,8 +246,10 @@ async fn build(
     if let Some(tx) = contradiction_tx {
         engine = engine.with_contradiction_channel(tx);
     }
-    if let Some(id) = instance_id {
-        engine = engine.with_instance_id(id.to_string());
+    if let Some((id, watch)) = instance {
+        engine = engine
+            .with_instance_id(id.to_string())
+            .with_watch_channel(watch);
     }
     let engine = Arc::new(engine);
     engine.sync(None).await.unwrap();

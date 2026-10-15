@@ -8,7 +8,7 @@ use crystalline_index::{Store, TursoStore};
 use crystalline_service::{ReflectionCaller, ReflectionHome, ReflectionState};
 use tokio::sync::Mutex;
 
-use crate::fixture::{Fx, engram, instance_on, manifest};
+use crate::fixture::{Fx, engram, instance_on, instance_watched, manifest};
 
 fn files() -> Vec<(&'static str, String)> {
     vec![
@@ -226,6 +226,95 @@ async fn a_reflection_on_a_shared_database_is_served_by_its_host_only_on_postgre
     assert_eq!(
         s.fx.engine.reflection_state("eng").await.unwrap(),
         hosted_by("gamma")
+    );
+
+    crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+        .await
+        .unwrap()
+        .drop_schema()
+        .await
+        .unwrap();
+}
+
+/// A host that shuts down gracefully releases its lock. The instances left
+/// do not all serve the Reflection then: the first that is asked claims the
+/// free lock and serves it, hands the domain to its watcher, and every other
+/// instance answers `hosted_elsewhere` naming it, even when two ask at once.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_released_host_lock_goes_to_exactly_one_instance_on_postgres() {
+    use crate::fixture::{pg_url, unique_schema};
+
+    let Some(url) = pg_url() else { return };
+    let schema = unique_schema();
+    let open = || async {
+        let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .expect("open the postgres test schema");
+        Arc::new(Mutex::new(store)) as Arc<Mutex<dyn Store>>
+    };
+    let files = files();
+    let files: Vec<(&str, &str)> = files.iter().map(|(p, b)| (*p, b.as_str())).collect();
+    let alpha = instance(open().await, "alpha").await;
+    let (beta, mut beta_watch) = instance_watched(open().await, "beta", &files).await;
+    let (gamma, mut gamma_watch) = instance_watched(open().await, "gamma", &files).await;
+    assert_eq!(
+        beta.engine.reflection_state("eng").await.unwrap(),
+        hosted_by("alpha")
+    );
+    alpha.engine.release_hosts().await;
+
+    let (b, g) = tokio::join!(
+        beta.engine.reflection_state("eng"),
+        gamma.engine.reflection_state("eng")
+    );
+    let (b, g) = (b.unwrap(), g.unwrap());
+    let (winner, loser, winner_watch, loser_watch, winner_name) = match (&b, &g) {
+        (ReflectionState::On { .. }, _) => {
+            (&beta, &gamma, &mut beta_watch, &mut gamma_watch, "beta")
+        }
+        (_, ReflectionState::On { .. }) => {
+            (&gamma, &beta, &mut gamma_watch, &mut beta_watch, "gamma")
+        }
+        _ => panic!("one of the two serves: beta {b:?}, gamma {g:?}"),
+    };
+    assert_eq!(
+        (b.clone(), g.clone()),
+        if winner_name == "beta" {
+            (LOCAL, hosted_by("beta"))
+        } else {
+            (hosted_by("gamma"), LOCAL)
+        },
+        "exactly one serves and the other names it"
+    );
+    match winner_watch.try_recv() {
+        Ok(crystalline_service::engine::WatchEvent::Add(name, root)) => {
+            assert_eq!((name.as_str(), root), ("eng", winner.root.clone()));
+        }
+        other => panic!("the winner hands eng to its watcher: {other:?}"),
+    }
+    assert!(loser_watch.try_recv().is_err(), "the loser arms nothing");
+    winner
+        .engine
+        .write_reflection(
+            &crate::docs::write("guides/won.md", "# Won\n"),
+            &ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+    let err = loser
+        .engine
+        .write_reflection(
+            &crate::docs::write("guides/lost.md", "# Lost\n"),
+            &ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), refusal(winner_name));
+    assert_eq!(
+        alpha.engine.reflection_state("eng").await.unwrap(),
+        hosted_by(winner_name),
+        "the released host does not take it back by asking"
     );
 
     crystalline_index::PostgresStore::open_in_schema(&url, &schema)

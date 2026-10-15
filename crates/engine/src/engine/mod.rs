@@ -3675,8 +3675,9 @@ impl Engine {
     }
 
     /// Whether this instance backs up `domain`'s Reflection: it is its home
-    /// (`On { home: Here }`), the domain is connected to a repository, and
-    /// the domain is not read-only. A Reflection never goes to a repository
+    /// (`On { home: Here }`), the domain is connected to a repository, the
+    /// domain is not read-only, and on a shared database this instance still
+    /// holds the domain's host lock. A Reflection never goes to a repository
     /// its domain is not connected to.
     async fn backs_up_reflection_here(&self, domain: &str) -> bool {
         let home = matches!(
@@ -3689,6 +3690,9 @@ impl Engine {
             .domain_entry(domain)
             .is_ok_and(|entry| entry.origin.is_some())
             && !self.domain_is_read_only(domain).await
+            // A takeover stops the old host's backup at once, not at its
+            // next heartbeat.
+            && matches!(self.confirm_reflection_host(domain).await, Ok(None))
     }
 
     /// The GitHub login the injected provider acts as, for tests that need a

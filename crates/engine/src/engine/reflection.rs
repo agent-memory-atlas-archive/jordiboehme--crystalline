@@ -513,7 +513,7 @@ impl Engine {
         };
         // The host lock first (R92): on a shared database only its holder
         // serves the Reflection, whatever the rows say.
-        if let Some(label) = self.reflection_host_elsewhere(domain).await? {
+        if let Some(label) = self.reflection_host_elsewhere(domain, &root).await? {
             return Ok(ReflectionState::HostedElsewhere { label });
         }
         let engrams = self.pending_engrams(domain).await?;
@@ -543,57 +543,93 @@ impl Engine {
     /// the instance's own hosts are asked first, in memory, so the host (and
     /// every engine without an instance id) answers without the store lock;
     /// only a non-host locks the store, to learn whether the database is
-    /// shared and who holds the lock ([`Engine::foreign_reflection_host`]).
+    /// shared and who holds the lock. A database that is not shared (Turso)
+    /// is one instance's own, so its Reflection is always served here.
+    ///
+    /// Another instance's holder counts live or stale: nothing claims a lock
+    /// until an instance syncs the domain or starts with `--take-over`, and
+    /// the refusal names that way out. A lock nobody holds (none yet, or the
+    /// host released it on a graceful shutdown) or one recorded under this
+    /// instance's own id (a restart before its first claim) is claimed here
+    /// and now, under the store lock, the way a sync claims it: two
+    /// instances that ask at once resolve to one holder, since the claim is
+    /// one conditional upsert. An acquired domain is handed to the daemon's
+    /// watcher, which arms it and syncs it like any domain this instance
+    /// hosts. The claim touches the store, the hosts map and the event bus,
+    /// never a room or a file lock, so a room's save may ask it.
+    ///
     /// A host that took the lock from this instance is seen here once the
     /// gate ([`Engine::confirm_reflection_host`]) or the heartbeat
     /// ([`Engine::renew_hosts`]) drops the domain from this instance's hosts.
-    async fn reflection_host_elsewhere(&self, domain: &str) -> Result<Option<String>> {
+    async fn reflection_host_elsewhere(
+        &self,
+        domain: &str,
+        root: &std::path::Path,
+    ) -> Result<Option<String>> {
         if self.instance_id.is_empty() || self.hosted.read().unwrap().contains_key(domain) {
             return Ok(None);
         }
-        self.foreign_reflection_host(domain).await
-    }
-
-    /// The label the domain's host lock records when another instance holds
-    /// it on a shared database, live or stale. A stale holder still counts:
-    /// nothing claims its lock until an instance syncs the domain or starts
-    /// with `--take-over`, and the refusal names that way out. A database
-    /// that is not shared (Turso) is one instance's own, so it answers
-    /// `None`, as do a domain with no lock row yet and a lock this instance
-    /// holds (a restart before its first claim).
-    async fn foreign_reflection_host(&self, domain: &str) -> Result<Option<String>> {
         let store = self.store.lock().await;
         if !store.shares_database() {
             return Ok(None);
         }
-        let Some(id) = store.domain_id(domain).await? else {
-            return Ok(None);
+        let host = match store.domain_id(domain).await? {
+            Some(id) => store.domain_host(id).await?,
+            None => None,
         };
-        let host = store.domain_host(id).await?;
-        drop(store);
-        Ok(host
-            .filter(|host| !host.instance_id.is_empty() && host.instance_id != self.instance_id)
-            .map(|host| host.label))
-    }
-
-    /// The host check of a gated verb and of a room's save on a domain this
-    /// instance remembers hosting: on a shared database the lock is read
-    /// again, so a takeover by another instance takes effect here at once
-    /// rather than at the next heartbeat. A lost lock drops the domain from
-    /// this instance's hosts, announces the move, and answers the new host's
-    /// label. Turso and an engine without an instance id never ask the store.
-    pub(crate) async fn confirm_reflection_host(&self, domain: &str) -> Result<Option<String>> {
-        if self.instance_id.is_empty() || !self.hosted.read().unwrap().contains_key(domain) {
+        if let Some(host) = host.filter(|host| self.foreign_holder(host)) {
+            return Ok(Some(host.label));
+        }
+        // A domain a rename has paused is claimed by the sync that ends the
+        // rename, under the name it ends with (as `Engine::claim_host`).
+        if self.is_renaming(domain) {
             return Ok(None);
         }
-        let Some(label) = self.foreign_reflection_host(domain).await? else {
+        match self.claim_file_host(&*store, domain, root, false).await? {
+            HostClaim::Acquired => {
+                drop(store);
+                if let Some(tx) = &self.watch_tx {
+                    let _ = tx.send(WatchEvent::Add(domain.to_string(), root.to_path_buf()));
+                }
+                Ok(None)
+            }
+            HostClaim::HeldByOther(host) => Ok(Some(host.label)),
+        }
+    }
+
+    /// Whether `host` records another instance than this one as the holder.
+    fn foreign_holder(&self, host: &crystalline_index::DomainHost) -> bool {
+        !host.instance_id.is_empty() && host.instance_id != self.instance_id
+    }
+
+    /// The host check of a gated verb, a room's save and a backup pass on a
+    /// domain this instance remembers hosting: on a shared database the lock
+    /// is read again (one query, by the id the hosts map keeps), so a
+    /// takeover by another instance takes effect here at once rather than at
+    /// the next heartbeat. A lost lock drops the domain from this instance's
+    /// hosts, announces the move, and answers the new host's label. Turso
+    /// and an engine without an instance id never ask the store.
+    pub(crate) async fn confirm_reflection_host(&self, domain: &str) -> Result<Option<String>> {
+        if self.instance_id.is_empty() {
+            return Ok(None);
+        }
+        let Some(id) = self.hosted.read().unwrap().get(domain).copied() else {
+            return Ok(None);
+        };
+        let store = self.store.lock().await;
+        if !store.shares_database() {
+            return Ok(None);
+        }
+        let host = store.domain_host(id).await?;
+        drop(store);
+        let Some(host) = host.filter(|host| self.foreign_holder(host)) else {
             return Ok(None);
         };
         tracing::warn!("lost the host lock for domain '{domain}'; another instance took over");
         if self.hosted.write().unwrap().remove(domain).is_some() {
             self.announce_host_moved(domain);
         }
-        Ok(Some(label))
+        Ok(Some(host.label))
     }
 
     /// The one gate of every reflection verb: right, then state, then the
