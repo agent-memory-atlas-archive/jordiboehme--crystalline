@@ -478,3 +478,120 @@ export function paintQuotes(
     registry.delete(ACTIVE_HIGHLIGHT);
   };
 }
+
+/** Whether the character at `i` is whitespace or past either end. */
+function blank(text: string, i: number): boolean {
+  return i < 0 || i >= text.length || /\s/.test(text.charAt(i));
+}
+
+/** Whether the character at `i` is a letter or digit. */
+function wordChar(text: string, i: number): boolean {
+  return /[\p{L}\p{N}]/u.test(text.charAt(i));
+}
+
+/**
+ * The index ranges of emphasis, strike and code markers in `quote` that have
+ * no partner inside it: what a selection edge left behind when it started or
+ * ended inside `**...**`. A run opens when a word follows it and closes when
+ * a word precedes it; an underscore between two letters is part of a word,
+ * as in `snake_case`, and a backtick both opens and closes.
+ */
+function strayMarkers(quote: string): [number, number][] {
+  const stray: [number, number][] = [];
+  const open: { run: string; at: number }[] = [];
+  for (const match of quote.matchAll(/([*_~`])\1*/g)) {
+    const run = match[0];
+    const at = match.index;
+    const end = at + run.length;
+    let opens = !blank(quote, end);
+    let closes = !blank(quote, at - 1);
+    if (
+      run.startsWith("_") &&
+      wordChar(quote, at - 1) &&
+      wordChar(quote, end)
+    ) {
+      continue;
+    }
+    if (run.startsWith("`")) {
+      opens = true;
+      closes = true;
+    }
+    const partner = open.findLastIndex((o) => o.run === run);
+    if (closes && partner >= 0) {
+      // Openers between the pair never closed inside it.
+      for (const inner of open.splice(partner).slice(1)) {
+        stray.push([inner.at, inner.at + inner.run.length]);
+      }
+    } else if (opens) {
+      open.push({ run, at });
+    } else if (closes) {
+      stray.push([at, end]);
+    }
+  }
+  for (const o of open) {
+    stray.push([o.at, o.at + o.run.length]);
+  }
+  return stray;
+}
+
+/**
+ * The index ranges of link brackets in `quote` that a selection edge cut
+ * from their partner: a `[` with no `]`, a `]` with no `[` (with the
+ * `(destination)` after it), and a destination cut before its `)` (with its
+ * `[`).
+ */
+function strayBrackets(quote: string): [number, number][] {
+  const stray: [number, number][] = [];
+  const open: number[] = [];
+  for (let i = 0; i < quote.length; i += 1) {
+    const c = quote.charAt(i);
+    if (c === "[") {
+      open.push(i);
+    } else if (c === "]") {
+      const partner = open.pop();
+      const close =
+        quote.charAt(i + 1) === "(" ? quote.indexOf(")", i + 2) : -1;
+      if (partner === undefined) {
+        const end =
+          quote.charAt(i + 1) === "("
+            ? close < 0
+              ? quote.length
+              : close + 1
+            : i + 1;
+        stray.push([i, end]);
+        i = end - 1;
+      } else if (quote.charAt(i + 1) === "(" && close < 0) {
+        stray.push([partner, partner + 1], [i, quote.length]);
+        i = quote.length;
+      } else if (close >= 0) {
+        i = close;
+      }
+    }
+  }
+  for (const at of open) {
+    stray.push([at, at + 1]);
+  }
+  return stray;
+}
+
+/**
+ * A stored quote as a person is shown it: the source text, with the markers
+ * a selection edge cut from their partner left out (`at** night` reads `at
+ * night`). For display only: the stored quote is what the engine finds, so
+ * it is never changed. A quote that would show nothing is shown as it is.
+ */
+export function displayQuote(quote: string): string {
+  const cut = [...strayMarkers(quote), ...strayBrackets(quote)].sort(
+    (a, b) => a[0] - b[0],
+  );
+  let out = "";
+  let at = 0;
+  for (const [start, end] of cut) {
+    if (start >= at) {
+      out += quote.slice(at, start);
+    }
+    at = Math.max(at, end);
+  }
+  out += quote.slice(at);
+  return out.trim() === "" ? quote : out;
+}

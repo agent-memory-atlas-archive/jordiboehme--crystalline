@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ACTIVE_HIGHLIGHT,
   QUOTE_HIGHLIGHT,
+  displayQuote,
   domRange,
   paintQuotes,
   selectionAnchor,
@@ -310,5 +311,38 @@ describe("paintQuotes", () => {
     expect(() => {
       paintQuotes([], [])();
     }).not.toThrow();
+  });
+});
+
+describe("displayQuote", () => {
+  it("drops the markers a selection edge cut off from their partner", () => {
+    expect(displayQuote("at** night")).toBe("at night");
+    expect(displayQuote("Deploys run **at")).toBe("Deploys run at");
+    expect(displayQuote("at* and _so")).toBe("at and so");
+    expect(displayQuote("run `x")).toBe("run x");
+    expect(displayQuote("gone~~ now")).toBe("gone now");
+    expect(displayQuote("**a _b** c")).toBe("**a b** c");
+  });
+
+  it("drops what is left of a link cut in two", () => {
+    expect(displayQuote("see [the docs")).toBe("see the docs");
+    expect(displayQuote("docs](https://x) for")).toBe("docs for");
+    expect(displayQuote("[text](http")).toBe("text");
+  });
+
+  it("keeps markup that is whole, and plain stars and underscores", () => {
+    for (const quote of [
+      "Deploys run **at** night",
+      "`code` here",
+      "snake_case_name",
+      "2 * 3",
+      "see [the docs](https://x) now",
+    ]) {
+      expect(displayQuote(quote)).toBe(quote);
+    }
+  });
+
+  it("never leaves nothing to show", () => {
+    expect(displayQuote("**")).toBe("**");
   });
 });
