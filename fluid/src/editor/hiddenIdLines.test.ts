@@ -124,6 +124,20 @@ describe("hiddenIdLines keeps an id with its heading", () => {
     );
   });
 
+  it.each([
+    ["start", "## One\n".length],
+    ["end", "## One\n<!-- r:aaaa1111 -->".length],
+  ])(
+    "lands a block below the id from a caret at the id line's %s",
+    (_, pos) => {
+      const v = at(SPACED, pos);
+      insertBlock(v, ["![a](assets/a.png)"]);
+      expect(v.state.doc.toString()).toBe(
+        "## One\n<!-- r:aaaa1111 -->\n\n![a](assets/a.png)\n\n\nFirst.\n",
+      );
+    },
+  );
+
   it("keeps a selection the block asked for when it moves below the id", () => {
     const v = at(SPACED, "## One".length);
     insertBlock(v, ["```", "code", "```"], { line: 1, from: 0, to: 4 });
