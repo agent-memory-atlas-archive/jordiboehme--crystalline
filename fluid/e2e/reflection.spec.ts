@@ -343,10 +343,8 @@ test.describe.serial("the Reflection journeys", () => {
     await page.getByRole("link", { name: "Edit", exact: true }).click();
     const editor = page.getByRole("textbox", { name: "Page source" });
     await expect(editor).toContainText("Written in the smoke.");
-    // The link lands where the cursor is: at the end, as a person would put it.
-    await editor.click();
-    await page.keyboard.press("ControlOrMeta+A");
-    await page.keyboard.press("ArrowRight");
+    // No caret placed: the link goes to the end of the text, not above the
+    // title where the untouched caret sits.
     const attach = page.getByRole("button", { name: "Attach a file" });
     await expect(attach).toBeEnabled();
     const chooser = page.waitForEvent("filechooser");
@@ -359,6 +357,9 @@ test.describe.serial("the Reflection journeys", () => {
       buffer: readFileSync(FLOW_PNG),
     });
     await expect(editor).toContainText(/\.\.\/assets\/\S*sketch\.png/);
+    await expect
+      .poll(() => pageSource(page, "guides/welcome.md"))
+      .toMatch(/Written in the smoke\.\n\n!\[sketch\.png\]\([^)]*\)\n$/);
     await page.getByRole("link", { name: "Done", exact: true }).click();
     await expectLoaded(page.getByRole("img", { name: "sketch.png" }));
   });
@@ -534,7 +535,10 @@ test.describe.serial("the Reflection journeys", () => {
     await expect(
       page
         .getByRole("navigation", { name: `Reflection of ${OFF_DOMAIN}` })
-        .getByRole("link", { name: /PACT|How we write/ }),
+        .getByRole("link", {
+          name: `How we write about ${OFF_DOMAIN}`,
+          exact: true,
+        }),
     ).toBeVisible();
   });
 

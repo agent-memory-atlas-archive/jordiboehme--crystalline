@@ -38,7 +38,11 @@ const OUTSIDER = process.env.FLUID_E2E_OUTSIDER ?? "outsider";
 const OUTSIDER_PASSWORD =
   process.env.FLUID_E2E_OUTSIDER_PASSWORD ?? "outsider-password";
 
-/** The domain the same script registers and closes to `USER`. */
+/**
+ * The domain the same script registers and closes to `USER`. reflection.spec.ts
+ * later turns its Reflection on, so a rerun of this file alone against the
+ * same daemon finds it on.
+ */
 const DOMAIN = process.env.FLUID_E2E_PRIVATE_DOMAIN ?? "smoke-vault";
 
 /** A private domain the peer owns, which the peer unregisters. */
