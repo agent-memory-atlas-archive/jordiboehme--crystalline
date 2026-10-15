@@ -36,6 +36,7 @@ import { Fragment, useEffect, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   Link,
+  Navigate,
   useLocation,
   useNavigate,
   useParams,
@@ -58,6 +59,10 @@ import type {
   StarterStanza,
 } from "../api/domain";
 import { DOMAINS_QUERY_KEY, fetchDomains } from "../api/domains";
+import {
+  REFLECTION_DOMAINS_KEY,
+  fetchReflectionDomains,
+} from "../api/reflectionDomains";
 import { DomainLockChip } from "../components/DomainLockChip";
 import { useDomainWritable } from "../domainWritable";
 import type { EngramFilters, EngramPage, ListingOrder } from "../api/engrams";
@@ -91,6 +96,7 @@ import { InlineMarkdown } from "../components/InlineMarkdown";
 import { Markdown } from "../components/Markdown";
 import { MembersCard } from "../components/MembersCard";
 import { ProposalsCard } from "../components/ProposalsCard";
+import { ReflectionModeSwitch } from "../components/ReflectionModeSwitch";
 import { RenameDomainDialog } from "../components/RenameDomainDialog";
 import { ReviewModeCard } from "../components/ReviewModeCard";
 import { Skeleton } from "../components/Skeleton";
@@ -104,6 +110,7 @@ import {
   domainRoute,
   folderRoute,
   manifestEditRoute,
+  reflectionRoute,
 } from "../paths";
 import { prefetchManifestEditor } from "../prefetch";
 
@@ -116,7 +123,7 @@ export default function DomainHome() {
   // both pages are drawn from. Read here, once, so neither page asks twice.
   const tree = useQuery(treeQuery(domain, path));
   if (isMissing(tree.error)) {
-    return <DomainNotFound domain={domain} />;
+    return <MissingOrReflection domain={domain} />;
   }
   const folders = tree.data?.folders ?? [];
   return path === "" ? (
@@ -508,6 +515,7 @@ function DomainPage({
               Rename domain
             </button>
           )}
+          <ReflectionModeSwitch domain={domain} current="engrams" />
         </div>
         {own && renameDisabledReason !== undefined && (
           <span id={renameReasonId} className="sr-only">
@@ -1601,6 +1609,40 @@ function FilterBar({
       />
     </div>
   );
+}
+
+/**
+ * A domain whose engrams this caller cannot read. For a person with
+ * knowledge `none` that is every domain it works on: the engram tree answers
+ * 404 exactly as for a stranger, and the Reflection listing is what tells the
+ * two apart. A listed domain goes to its Reflection; anything else is the
+ * wrong address it always was, and nothing here says more than that.
+ */
+function MissingOrReflection({ domain }: { domain: string }) {
+  const listing = useQuery({
+    queryKey: REFLECTION_DOMAINS_KEY,
+    queryFn: fetchReflectionDomains,
+  });
+  if (listing.isPending) {
+    return <Skeleton label="Loading the domain" rows={3} />;
+  }
+  // A pending, homeless or hosted_elsewhere Reflection still goes to its
+  // home, which shows the notice. One that lives elsewhere stays here: this
+  // instance has neither its engrams nor its Reflection, and Home's
+  // Reflection listing is where the home link is shown. A row whose engrams
+  // the caller reads never redirects: for that caller the 404 is a missing
+  // folder or domain, not a door to the Reflection.
+  if (
+    listing.data?.some(
+      (row) =>
+        row.domain === domain &&
+        !row.engramsVisible &&
+        row.state !== "elsewhere",
+    )
+  ) {
+    return <Navigate to={reflectionRoute(domain)} replace />;
+  }
+  return <DomainNotFound domain={domain} />;
 }
 
 /** The wrong-address screen, which is not the same thing as an empty domain. */

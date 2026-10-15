@@ -452,6 +452,13 @@ export interface PolicyWrite {
   sections: ManifestSections | null;
   /** True in a domain that reviews changes: the write is the caller's draft of the MANIFEST. */
   draft: boolean;
+  /**
+   * What the switch changed besides the line, to show as given: today only a
+   * Reflection switched off on a GitHub-connected domain says something
+   * ("share changes" then offers the files in `reflections/` as engram
+   * changes). Never set together with `draft`.
+   */
+  note: string | null;
 }
 
 /**
@@ -480,5 +487,6 @@ export async function setDomainPolicies(
     // Said only when the server said it: an ordinary domain's answer carries
     // no such key, and the write landed in the domain itself.
     draft: record?.draft === true,
+    note: asString(record?.note),
   };
 }

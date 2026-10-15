@@ -83,6 +83,13 @@ const Profile = lazy(() => import("./screens/Profile"));
 const GrantedDraft = lazy(() => import("./screens/GrantedDraft"));
 
 /**
+ * The Reflection's screens, lazy for the reason the engram screens are: a
+ * domain's pages for people carry the markdown renderer, the co-editing
+ * client and the review lists, and the app shell is paid for by everybody.
+ */
+const ReflectionHome = lazy(() => import("./screens/ReflectionHome"));
+
+/**
  * The station itself, every place in it under one splat, `/π/*`, lazy like
  * the screens above so the app shell never pays for it.
  *
@@ -167,6 +174,10 @@ const PROFILE_FALLBACK = (
  * two different loading shapes in a row would say otherwise.
  */
 const ENGRAM_FALLBACK = <Skeleton label="Loading the engram" rows={6} />;
+
+const REFLECTION_FALLBACK = (
+  <Skeleton label="Loading the Reflection" rows={4} />
+);
 
 const GRANTED_DRAFT_FALLBACK = (
   <p className="text-sm text-slate-500 dark:text-slate-400">
@@ -268,6 +279,14 @@ export function AppRoutes() {
             element={
               <Suspense fallback={EDITOR_FALLBACK}>
                 <ManifestEditor />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/d/:domain/reflection"
+            element={
+              <Suspense fallback={REFLECTION_FALLBACK}>
+                <ReflectionHome />
               </Suspense>
             }
           />

@@ -253,6 +253,8 @@ describe("the manifest policies", () => {
     // The write landed in the caller's own draft, which is a different
     // sentence from the write landing in the domain.
     expect(written.draft).toBe(true);
+    // A draft and the switch-off note never come together.
+    expect(written.note).toBeNull();
     expect(written.checksum).toBe("def456");
     expect(written.sections?.policies[0]?.declared).toBe("direct");
   });

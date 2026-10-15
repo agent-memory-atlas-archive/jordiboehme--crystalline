@@ -16,13 +16,14 @@
  * make, and the reason `canWrite` is not consulted here (it folds `readOnly`
  * in, which would take the shut door away instead of showing it).
  *
- * Two values ask before they change: `sharing: direct` removes the review step
- * for everybody, and `read_only: on` refuses every change for everybody.
- * Either arms the two-step confirmation, and the select goes back to the held
- * value on Keep. While `read_only` is on, its row is the one row that can
- * change: every other select is disabled with the read-only sentence as its
- * description. Either press ends the question, so either press hands the
- * focus back to the select it came from. Every other change posts at once.
+ * Three values ask before they change: `sharing: direct` removes the review
+ * step for everybody, `read_only: on` refuses every change for everybody, and
+ * `reflection: on` changes what `reflections/` is. Each arms the two-step
+ * confirmation, and the select goes back to the held value on Keep. While
+ * `read_only` is on, its row is the one row that can change: every other
+ * select is disabled with the read-only sentence as its description. Either
+ * press ends the question, so either press hands the focus back to the
+ * select it came from. Every other change posts at once.
  * After a write the answer's `policies` go straight into the manifest
  * query, so the card holds the new values without a second read.
  *
@@ -53,6 +54,10 @@ import type { ManifestView, PolicyView } from "../api/domain";
 import { DOMAINS_QUERY_KEY } from "../api/domains";
 import { domainEngramsRoot } from "../api/engrams";
 import { fetchMembers, membersKey, sameAccount } from "../api/members";
+import {
+  REFLECTION_DOMAINS_KEY,
+  reflectionStatusKey,
+} from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { policiesLocked } from "../domainWritable";
 import {
@@ -89,6 +94,12 @@ const ASKS: Record<
     label: "Turn on read-only",
     say: () =>
       "Read-only refuses every change to this domain through Crystalline, for everybody, until its owner switches it off. Updates from the team still arrive. Turn it on?",
+  },
+  reflection: {
+    value: "on",
+    label: "Turn on the Reflection",
+    say: () =>
+      "The Reflection keeps pages for people under reflections/ in this domain. Crystalline stops reading that folder as engrams, agents get the Reflection tools for it, and members get a Reflection mode. It waits while engrams still live in reflections/. Turn it on?",
   },
 };
 
@@ -135,8 +146,8 @@ export function DomainPoliciesCard({
   const locked = policiesLocked(policies);
   const [problem, setProblem] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<Record<string, string>>({});
-  // The pending switch that needs a confirmation (direct sharing or
-  // read_only): the row whose select shows the asked value while the
+  // The pending switch that needs a confirmation (direct sharing, read_only
+  // or the Reflection): the row whose select shows the asked value while the
   // confirmation is up, or null.
   const [arming, setArming] = useState<string | null>(null);
   const selects = useRef<Record<string, HTMLSelectElement | null>>({});
@@ -146,7 +157,10 @@ export function DomainPoliciesCard({
       setDomainPolicies(domain, { [change[0]]: change[1] }),
     onSuccess: (written, [key]) => {
       setProblem((p) => ({ ...p, [key]: "" }));
-      setNotice((n) => ({ ...n, [key]: written.draft ? DRAFT_LINE : "" }));
+      setNotice((n) => ({
+        ...n,
+        [key]: written.draft ? DRAFT_LINE : (written.note ?? ""),
+      }));
       // The answer is the manifest as it now reads, so it goes into the query
       // this card's rows come from rather than being read back.
       queryClient.setQueryData<ManifestView>(manifestKey(domain), {
@@ -161,6 +175,16 @@ export function DomainPoliciesCard({
         queryKey: manifestDetailKey(domain),
       });
       void queryClient.invalidateQueries({ queryKey: syncStatusKey(domain) });
+      if (key === "reflection") {
+        // Switching the Reflection on or off moves the mode switch on the
+        // page above and the Reflection listing every screen reads.
+        void queryClient.invalidateQueries({
+          queryKey: reflectionStatusKey(domain),
+        });
+        void queryClient.invalidateQueries({
+          queryKey: REFLECTION_DOMAINS_KEY,
+        });
+      }
       if (key === "read_only") {
         // Every row's `read_only` and every write gate move with the chip,
         // which the manifest write above already moved.

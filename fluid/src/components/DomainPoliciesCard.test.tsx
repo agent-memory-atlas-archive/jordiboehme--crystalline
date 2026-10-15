@@ -24,6 +24,7 @@ import {
   domainsResponse,
   manifestSectionsResponse,
   meResponse,
+  policyRow,
   renderApp,
   userFixture,
 } from "../test/harness";
@@ -615,5 +616,116 @@ describe("the domain policies card", () => {
     expect(
       within(card).queryByRole("combobox", { name: "read_only" }),
     ).toBeNull();
+  });
+  it("brings the mode switch up once the reflection policy is switched on", async () => {
+    let on = false;
+    serve({
+      "/domains/eng/manifest": (_path, init) => {
+        if (init?.method === "PATCH") {
+          on = true;
+        }
+        return {
+          ...manifestWith({}),
+          sections: manifestSectionsResponse({
+            // The harness already carries a `reflection` row (0.26.0): swap
+            // it, never add a second row with the same key.
+            policies: defaultPolicyRows().map((row) =>
+              row.key === "reflection"
+                ? policyRow(
+                    "reflection",
+                    on ? "on" : null,
+                    on ? "on" : "off",
+                    ["off", "on"],
+                    "off",
+                    row.meaning,
+                  )
+                : row,
+            ),
+          }),
+        };
+      },
+      "/domains/eng/reflection": () => ({
+        domain: "eng",
+        enabled: on,
+        state: on ? "on" : "off",
+        home: "local",
+        home_url: null,
+        right: "curate",
+        engrams_visible: true,
+        pending_engrams: [],
+      }),
+      "/reflection/domains": () => ({ domains: [] }),
+    });
+
+    renderApp("/d/eng");
+    const card = await policiesCard();
+    expect(
+      screen.queryByRole("navigation", { name: "Domain view" }),
+    ).toBeNull();
+    await userEvent.selectOptions(
+      within(card).getByRole("combobox", { name: "reflection" }),
+      "on",
+    );
+    // Ruling (Step 7, approved 2026-10-14): the switch-on asks first.
+    expect(
+      within(card).getByText(/pages for people under reflections\//),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      within(card).getByRole("button", { name: "Turn on the Reflection" }),
+    );
+    expect(
+      await screen.findByRole("navigation", { name: "Domain view" }),
+    ).toBeVisible();
+  });
+
+  it("shows the note a switch-off answers with", async () => {
+    serve({
+      "/domains/eng/manifest": (_path, init) =>
+        init?.method === "PATCH"
+          ? {
+              ...manifestWith({}),
+              note: "Reflection is off. Share changes now offers the files in reflections/ as engram changes.",
+            }
+          : {
+              ...manifestWith({}),
+              sections: manifestSectionsResponse({
+                policies: defaultPolicyRows().map((row) =>
+                  row.key === "reflection"
+                    ? policyRow(
+                        "reflection",
+                        "on",
+                        "on",
+                        ["off", "on"],
+                        "off",
+                        row.meaning,
+                      )
+                    : row,
+                ),
+              }),
+            },
+      "/domains/eng/reflection": () => ({
+        domain: "eng",
+        enabled: true,
+        state: "on",
+        home: "here",
+        home_url: null,
+        right: "curate",
+        engrams_visible: true,
+        member: false,
+        pending_engrams: [],
+      }),
+      "/reflection/domains": () => ({ domains: [] }),
+    });
+    renderApp("/d/eng");
+    const card = await policiesCard();
+    await userEvent.selectOptions(
+      within(card).getByRole("combobox", { name: "reflection" }),
+      "off",
+    );
+    expect(
+      await within(card).findByText(
+        /offers the files in reflections\/ as engram changes/,
+      ),
+    ).toBeVisible();
   });
 });
