@@ -218,6 +218,43 @@ describe("the members card", () => {
     });
   });
 
+  it("resets a chosen Reflection level when the invite level curates", async () => {
+    serve(
+      {
+        "/domains/eng/members": () =>
+          membersResponse({ owner: "ada", visibility: "private", members: [] }),
+        "/domains/eng/members/ann": () => undefined,
+      },
+      "ada",
+      "editor",
+    );
+
+    renderApp("/d/eng");
+    const card = await membersCard();
+    await userEvent.type(
+      within(card).getByRole("textbox", { name: "Account" }),
+      "ann",
+    );
+    await userEvent.selectOptions(
+      within(card).getByRole("combobox", { name: "Reflection" }),
+      "contributor",
+    );
+    await userEvent.selectOptions(
+      within(card).getByRole("combobox", { name: "Level" }),
+      "editor",
+    );
+    expect(within(card).getByLabelText("Reflection")).toHaveTextContent(
+      "curator",
+    );
+    await userEvent.click(within(card).getByRole("button", { name: "Invite" }));
+    await waitFor(() => {
+      expect(sentBody("/domains/eng/members/ann", "PUT")).toEqual({
+        level: "editor",
+        reflection: "default",
+      });
+    });
+  });
+
   it("invites at knowledge none with a Reflection level, never with nothing", async () => {
     serve(
       {

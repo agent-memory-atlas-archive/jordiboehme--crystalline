@@ -13,60 +13,7 @@ import type { ReactElement } from "react";
 
 import type { ReflectionLevel } from "../api/model";
 import { FIELD } from "./primitives";
-
-/** Every stored Reflection level, least to most. */
-// eslint-disable-next-line react-refresh/only-export-components
-export const REFLECTION_LEVELS: ReflectionLevel[] = [
-  "default",
-  "reader",
-  "contributor",
-];
-
-const WORDS: Record<ReflectionLevel, string> = {
-  default: "as knowledge",
-  reader: "reader",
-  contributor: "contributor",
-};
-
-/** Whether a knowledge level curates the Reflection, so the choice is implied. */
-// eslint-disable-next-line react-refresh/only-export-components
-export function curates(knowledge: string): boolean {
-  return (
-    knowledge === "editor" || knowledge === "manager" || knowledge === "admin"
-  );
-}
-
-/**
- * The Reflection levels worth offering beside `knowledge`. Knowledge `none`
- * with "as knowledge" would grant nothing at all, and the server refuses such
- * a membership, so it is not offered there.
- */
-// eslint-disable-next-line react-refresh/only-export-components
-export function levelsFor(knowledge: string): ReflectionLevel[] {
-  return knowledge === "none"
-    ? REFLECTION_LEVELS.filter((level) => level !== "default")
-    : REFLECTION_LEVELS;
-}
-
-/** The Reflection level to send when the knowledge level becomes `knowledge`. */
-// eslint-disable-next-line react-refresh/only-export-components
-export function raiseForNone(
-  knowledge: string,
-  reflection: ReflectionLevel,
-): ReflectionLevel {
-  return knowledge === "none" && reflection === "default"
-    ? "reader"
-    : reflection;
-}
-
-/** The words a stored Reflection level reads as, for a row that may not change it. */
-// eslint-disable-next-line react-refresh/only-export-components
-export function reflectionWords(
-  knowledge: string,
-  reflection: ReflectionLevel,
-): string {
-  return curates(knowledge) ? "curator" : WORDS[reflection];
-}
+import { WORDS, curates, levelsFor, raiseForNone } from "./reflectionLevels";
 
 export function ReflectionLevelSelect({
   id,
@@ -88,7 +35,10 @@ export function ReflectionLevelSelect({
   const selectId = id ?? own;
   const reasonId = useId();
   if (curates(knowledge)) {
-    return <span>curator</span>;
+    // An `output`, not a `span`: it is labelable, so the form `Field`'s
+    // visible "Reflection" label still points at something a screen reader
+    // reads when the choice is implied.
+    return <output id={id}>curator</output>;
   }
   return (
     <>

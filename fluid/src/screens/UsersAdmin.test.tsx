@@ -176,6 +176,34 @@ describe("the user admin screen", () => {
     });
   });
 
+  it("resets a chosen Reflection level when the new account's role curates", async () => {
+    serveAs("admin", {
+      "/users": (_path, init) =>
+        init?.method === "POST"
+          ? { user: usersListing().users[1] }
+          : usersListing(),
+    });
+    renderApp("/users");
+
+    await rowFor("nora");
+    await userEvent.type(screen.getByLabelText("Login name"), "kim");
+    await userEvent.type(screen.getByLabelText("Password"), "pw");
+    await userEvent.selectOptions(
+      screen.getByLabelText("Reflection"),
+      "contributor",
+    );
+    await userEvent.selectOptions(screen.getByLabelText("Role"), "editor");
+    expect(screen.getByLabelText("Reflection")).toHaveTextContent("curator");
+    await userEvent.click(screen.getByRole("button", { name: "Add user" }));
+    await waitFor(() => {
+      expect(sentBody("/users", "POST")).toEqual({
+        name: "kim",
+        password: "pw",
+        role: "editor",
+      });
+    });
+  });
+
   it("adds an account at none with a Reflection level, never with nothing", async () => {
     serveAs("admin", {
       "/users": (_path, init) =>

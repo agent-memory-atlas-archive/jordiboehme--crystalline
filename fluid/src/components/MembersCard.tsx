@@ -72,11 +72,12 @@ import { useAuth } from "../auth/AuthContext";
 import { formatDay } from "../format";
 import { DestructiveAction, READ_ONLY_REASON } from "./DestructiveAction";
 import { BUTTON, FIELD, Field } from "./primitives";
+import { ReflectionLevelSelect } from "./ReflectionLevelSelect";
 import {
-  ReflectionLevelSelect,
   raiseForNone,
+  reflectionAfter,
   reflectionWords,
-} from "./ReflectionLevelSelect";
+} from "./reflectionLevels";
 
 /**
  * Every knowledge level a member can be invited at, or moved to, least to
@@ -707,7 +708,7 @@ function InviteForm({
             }
             const next = event.target.value as MemberLevel;
             setLevel(next);
-            setReflection((current) => raiseForNone(next, current));
+            setReflection((current) => reflectionAfter(next, current));
           }}
           className={`${FIELD} aria-disabled:cursor-default aria-disabled:opacity-50`}
         >

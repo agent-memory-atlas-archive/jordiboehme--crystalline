@@ -27,10 +27,8 @@ import {
 } from "../api/users";
 import { useAuth } from "../auth/AuthContext";
 import { BUTTON, CONTROL_HEIGHT, FIELD } from "../components/primitives";
-import {
-  ReflectionLevelSelect,
-  raiseForNone,
-} from "../components/ReflectionLevelSelect";
+import { ReflectionLevelSelect } from "../components/ReflectionLevelSelect";
+import { raiseForNone, reflectionAfter } from "../components/reflectionLevels";
 import { formatDay } from "../format";
 import NotFound from "./NotFound";
 
@@ -647,7 +645,7 @@ function CreateForm({
             onChange={(event) => {
               const next = event.target.value as Role;
               setRole(next);
-              setReflection((current) => raiseForNone(next, current));
+              setReflection((current) => reflectionAfter(next, current));
             }}
             className={FIELD}
           >

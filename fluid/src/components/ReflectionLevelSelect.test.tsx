@@ -2,12 +2,13 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
+import { ReflectionLevelSelect } from "./ReflectionLevelSelect";
 import {
-  ReflectionLevelSelect,
   curates,
   levelsFor,
   raiseForNone,
-} from "./ReflectionLevelSelect";
+  reflectionAfter,
+} from "./reflectionLevels";
 
 describe("the Reflection level beside a knowledge level", () => {
   it("is implied for every knowledge editor and above", () => {
@@ -55,5 +56,27 @@ describe("the Reflection level beside a knowledge level", () => {
     ).toEqual(["as knowledge", "reader", "contributor"]);
     await userEvent.selectOptions(select, "contributor");
     expect(onChange).toHaveBeenCalledWith("contributor");
+  });
+
+  it("drops a stale choice when the knowledge level curates", () => {
+    expect(reflectionAfter("editor", "contributor")).toBe("default");
+    expect(reflectionAfter("viewer", "contributor")).toBe("contributor");
+    expect(reflectionAfter("none", "default")).toBe("reader");
+  });
+
+  it("keeps a form label tied to the curator text", () => {
+    render(
+      <>
+        <label htmlFor="r">Reflection</label>
+        <ReflectionLevelSelect
+          id="r"
+          label="Reflection"
+          knowledge="manager"
+          value="default"
+          onChange={vi.fn()}
+        />
+      </>,
+    );
+    expect(screen.getByLabelText("Reflection")).toHaveTextContent("curator");
   });
 });
