@@ -47,7 +47,12 @@ afterEach(() => {
 
 /** A live buffer with the caret on its one line. */
 function mount(doc = "Body line\n"): EditorView {
-  view = new EditorView({ state: EditorState.create({ doc }) });
+  // In the document, as a buffer on a screen is: a view that left it (the
+  // screen went) takes no reference.
+  view = new EditorView({
+    state: EditorState.create({ doc }),
+    parent: document.body,
+  });
   view.dispatch({ selection: { anchor: doc.indexOf("\n") } });
   return view;
 }
@@ -291,7 +296,6 @@ describe("uploadAttachments", () => {
 
   it("reports a refused file and never uploads it", async () => {
     const target = mount();
-    listMock.mockResolvedValueOnce([]);
     const errors: (string | null)[] = [];
 
     const inserted = await uploadAttachments({
@@ -303,6 +307,8 @@ describe("uploadAttachments", () => {
     });
 
     expect(inserted).toBe(0);
+    // Nothing left to upload, so not even the listing is read.
+    expect(listMock).not.toHaveBeenCalled();
     expect(uploadMock).not.toHaveBeenCalled();
     expect(errors.at(-1)).toContain("tool.exe");
     expect(target.state.doc.toString()).toBe("Body line\n");
@@ -372,6 +378,7 @@ describe("uploadAttachments", () => {
         selection: EditorSelection.single(0, doc.length),
         extensions: [frontmatterFold()],
       }),
+      parent: document.body,
     });
     const target = view;
     listMock.mockResolvedValueOnce([]);
@@ -723,6 +730,7 @@ describe("a read-only buffer", () => {
         doc: "Body line\n",
         extensions: [lock.of([])],
       }),
+      parent: document.body,
     });
     const target = view;
     listMock.mockResolvedValueOnce([]);
@@ -744,7 +752,58 @@ describe("a read-only buffer", () => {
 
     expect(inserted).toBe(0);
     expect(target.state.doc.toString()).toBe("Body line\n");
-    // Named, so the stored file can be linked later or deleted.
-    expect(errors.at(-1)).toContain("assets/2026/08/shot.png");
+    // Named, so the stored file can be linked when the page is edited again.
+    expect(errors.at(-1)).toBe(
+      "Uploaded to assets/2026/08/shot.png. The session ended, so no link was added. Add it when you edit the page again.",
+    );
+  });
+
+  it("starts nothing when the buffer is read-only already", async () => {
+    const seen: File[][] = [];
+    const target = readOnlyView(seen);
+    const errors: (string | null)[] = [];
+
+    const inserted = await uploadAttachments({
+      domain: "eng",
+      files: [fileOf("shot.png")],
+      view: target,
+      onError: (message) => errors.push(message),
+    });
+
+    expect(inserted).toBe(0);
+    expect(listMock).not.toHaveBeenCalled();
+    expect(uploadMock).not.toHaveBeenCalled();
+    expect(errors.at(-1)).toBe("The session ended, so the file was not added.");
+  });
+});
+
+describe("a buffer that is gone when the upload ends", () => {
+  beforeEach(() => {
+    listMock.mockReset();
+    uploadMock.mockReset();
+  });
+
+  it("names the stored file instead of claiming a link", async () => {
+    const target = mount();
+    listMock.mockResolvedValueOnce([]);
+    uploadMock.mockImplementation((_domain, path) => {
+      // The screen went (a remount, Done, a navigation) while the bytes flew.
+      target.destroy();
+      return Promise.resolve({ path, mime: "image/png", size: 8, sha256: "a" });
+    });
+    const errors: (string | null)[] = [];
+
+    const inserted = await uploadAttachments({
+      domain: "eng",
+      files: [fileOf("shot.png")],
+      view: target,
+      onError: (message) => errors.push(message),
+      now: new Date(2026, 7, 3),
+    });
+
+    expect(inserted).toBe(0);
+    expect(errors.at(-1)).toBe(
+      "Uploaded to assets/2026/08/shot.png, but the reference could not be inserted here: put the caret in the body and link it.",
+    );
   });
 });

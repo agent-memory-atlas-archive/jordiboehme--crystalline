@@ -946,6 +946,46 @@ describe("the reflection editor takes files", () => {
     });
   });
 
+  it("adds no link when the room ends while the file is on its way", async () => {
+    let land: (value: unknown) => void = () => undefined;
+    serveFiles(
+      [[]],
+      [
+        (stored) =>
+          new Promise((resolve) => {
+            land = () => {
+              resolve({
+                path: stored,
+                mime: "image/png",
+                size: 8,
+                sha256: "b",
+              });
+            };
+          }),
+      ],
+    );
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    editor.dispatchEvent(carrying("paste", [png()]));
+    await waitFor(() => {
+      expect(puts()).toHaveLength(1);
+    });
+    session.set({ closed: true, closedReason: "left", saveState: "ok" });
+    await act(async () => {
+      land(undefined);
+      await Promise.resolve();
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Uploaded to assets/2026/10/shot.png. The session ended, so no link was added. Add it when you edit the page again.",
+    );
+    expect(session.get().ytext?.toJSON()).toBe(PAGE);
+    for (const key of [KEY, OFFER]) {
+      expect(readDraft("ann", "eng", key)?.content ?? "").not.toContain(
+        "shot.png",
+      );
+    }
+  });
+
   it("takes no file into a room whose connection failed for good", async () => {
     serveFiles([[]]);
     const session = live(room(PAGE));

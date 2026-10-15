@@ -1,6 +1,7 @@
 /**
- * Attaching a file to the engram being edited: the pre-check, the upload and
- * the reference that lands in the buffer.
+ * Attaching a file to the document being edited, an engram or a reflection:
+ * the pre-check, the upload and the reference that lands in the buffer. Where
+ * the bytes go and how the buffer links to them is the asset home's business.
  *
  * Three ways in - paste, drop and the toolbar's file picker - and one flow
  * behind them, because they differ only in where the `File` objects come from.
@@ -29,6 +30,9 @@ import {
 } from "../api/files";
 import { engramAssetHome } from "./imageFormat";
 import { insertBlock } from "./toolbar";
+
+/** Said when a file arrives at a buffer whose session has ended. */
+const SESSION_ENDED = "The session ended, so the file was not added.";
 
 /** The ceiling in the words an author reads, matching the server's own. */
 const CEILING = "10 MiB";
@@ -153,10 +157,13 @@ async function uploadOnce(
  * Upload every file and insert one reference per stored file, at the cursor.
  *
  * The home's listing is read once up front, because a free path has to be
- * free against what is already there: uploading is a create-or-REPLACE, so a
- * collision that went unnoticed would silently overwrite somebody's file. A
- * listing that cannot be read is therefore fatal to the batch rather than
- * treated as an empty domain.
+ * free against what is already there: an engram's upload replaces, and so
+ * does a Reflection curator's, so a collision that went unnoticed would
+ * silently overwrite somebody's file (a Reflection contributor's upload is
+ * refused instead, which `uploadOnce` answers). A listing that cannot be read
+ * is therefore fatal to the batch rather than treated as an empty domain. A
+ * batch whose every file is refused here reads no listing at all, and a
+ * buffer that is read-only (a room that has ended) starts nothing.
  *
  * Everything that went wrong is reported once at the end rather than one call
  * per failure: the screen holds a single line, so five dropped files with two
@@ -174,7 +181,24 @@ export async function uploadAttachments(
   if (files.length === 0) {
     return 0;
   }
+  if (view.state.readOnly) {
+    onError(SESSION_ENDED);
+    return 0;
+  }
   const problems: string[] = [];
+  const wanted: File[] = [];
+  for (const file of files) {
+    const refusal = refuseAttachment(file);
+    if (refusal === null) {
+      wanted.push(file);
+    } else {
+      problems.push(refusal);
+    }
+  }
+  if (wanted.length === 0) {
+    onError(problems.join(" "));
+    return 0;
+  }
   let taken: string[];
   try {
     taken = (await home.list()).map((row) => row.path);
@@ -185,12 +209,7 @@ export async function uploadAttachments(
 
   const lines: string[] = [];
   const stored: string[] = [];
-  for (const file of files) {
-    const refusal = refuseAttachment(file);
-    if (refusal !== null) {
-      problems.push(refusal);
-      continue;
-    }
+  for (const file of wanted) {
     // Against this batch as well as against the domain: two files of the same
     // name dropped together must not both claim one path.
     const path = freeAttachmentPath(file.name, taken, request.now);
@@ -214,25 +233,33 @@ export async function uploadAttachments(
   }
 
   let inserted = lines.length;
-  // The bytes are already stored by the time this runs, so a refused insertion
-  // is not a no-op the author can shrug off: it leaves a file in the domain
-  // that no engram references, which is the orphan the maintenance sweep would
-  // otherwise raise days later. `insertBlock` refuses over a folded
-  // frontmatter block, and a dispatch into a view that has been destroyed -
-  // the buffer was rebuilt while the upload was in flight - lands nowhere
-  // either. Both end here, naming the paths so they can be linked by hand or
-  // deleted.
-  // A buffer that turned read-only while the bytes were on their way (a room
-  // that ended) takes nothing either: the same orphan, the same sentence.
-  const writable = !view.state.readOnly;
-  if (lines.length > 0 && writable) {
-    request.place?.(view);
-  }
-  if (lines.length > 0 && (!writable || !insertBlock(view, lines))) {
-    inserted = 0;
-    problems.push(
-      `Uploaded to ${stored.join(", ")}, but the reference could not be inserted here: put the caret in the body and link it, or delete the file.`,
-    );
+  // The bytes are already stored by the time this runs, so a reference that
+  // cannot land is not a no-op the author can shrug off: it leaves a file
+  // nothing references, the orphan the maintenance sweep would otherwise
+  // raise days later. So every such case ends in a sentence naming the paths.
+  // A buffer that turned read-only on the way (a room that ended) gets its
+  // own: nobody can link there now. `insertBlock` refuses over a folded
+  // frontmatter block, and a view that was destroyed on the way (its screen
+  // remounted or went) would take the dispatch and show nothing; both get
+  // the general sentence, which a screen that has gone never shows.
+  if (lines.length > 0) {
+    if (view.state.readOnly) {
+      inserted = 0;
+      problems.push(
+        `Uploaded to ${stored.join(", ")}. The session ended, so no link was added. Add it when you edit the page again.`,
+      );
+    } else {
+      const live = view.dom.isConnected;
+      if (live) {
+        request.place?.(view);
+      }
+      if (!live || !insertBlock(view, lines)) {
+        inserted = 0;
+        problems.push(
+          `Uploaded to ${stored.join(", ")}, but the reference could not be inserted here: put the caret in the body and link it.`,
+        );
+      }
+    }
   }
   if (problems.length > 0) {
     onError(problems.join(" "));
