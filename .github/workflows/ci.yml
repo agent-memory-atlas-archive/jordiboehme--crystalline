@@ -636,8 +636,8 @@ jobs:
         working-directory: fluid
 
       # Stands up the daemon on a scratch state directory with the fixture
-      # domains and three accounts (one of those domains private to the first
-      # of them), checks the UI the daemon serves out of the binary, rebuilds
+      # domains and four accounts (three of those domains private), checks
+      # the UI the daemon serves out of the binary, rebuilds
       # the bundle and runs Playwright against `vite preview`.
       # The script is the whole sequence, so a local run is the same run.
       - name: Run the browser smoke
