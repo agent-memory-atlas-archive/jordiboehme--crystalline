@@ -815,6 +815,59 @@ describe("the reflection editor takes files", () => {
     });
   });
 
+  /** Pick `file` through "Attach a file", as the toolbar's picker hands it on. */
+  async function pick(file: File): Promise<void> {
+    const input =
+      document.querySelector<HTMLInputElement>('input[type="file"]');
+    input?.addEventListener(
+      "click",
+      (event) => {
+        event.preventDefault();
+      },
+      { once: true },
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Attach a file" }),
+    );
+    await userEvent.upload(input as HTMLInputElement, file);
+  }
+
+  it("the picker puts the file at the end when no caret was placed", async () => {
+    serveFiles([[]]);
+    const session = live(room(PAGE));
+    await openEditor();
+    await pick(png());
+    // Not above the title, where the untouched caret sits: at the end, on a
+    // line of its own.
+    await waitFor(() => {
+      expect(session.get().ytext?.toJSON()).toBe(
+        `${PAGE}\n![shot.png](../assets/2026/10/shot.png)\n`,
+      );
+    });
+  });
+
+  it("the picker puts the file below the line where the caret was placed", async () => {
+    serveFiles([[]]);
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    const view = EditorView.findFromDOM(editor);
+    act(() => {
+      view?.dispatch({
+        selection: { anchor: "# A".length },
+        userEvent: "select.pointer",
+      });
+    });
+    await pick(png());
+    await waitFor(() => {
+      expect(session.get().ytext?.toJSON()).toBe(
+        PAGE.replace(
+          "# A\n",
+          "# A\n\n![shot.png](../assets/2026/10/shot.png)\n\n",
+        ),
+      );
+    });
+  });
+
   it("a name taken between listing and upload is tried once more under the next free name", async () => {
     serveFiles(
       [[], [SHOT_ROW]],

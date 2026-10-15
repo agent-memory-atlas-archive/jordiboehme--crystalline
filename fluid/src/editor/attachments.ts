@@ -17,6 +17,7 @@
  */
 
 import type { Extension } from "@codemirror/state";
+import { StateEffect, StateField } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 
 import { ApiProblem, problemDetail } from "../api/client";
@@ -73,6 +74,27 @@ export function transferFiles(
 ): File[] {
   return Array.from(transfer?.files ?? []);
 }
+
+/** Sent by a paste or a drop of files: the person chose where they go. */
+const placeCaret = StateEffect.define<null>();
+
+/** The user events that mean the person put the caret somewhere. */
+const CARET_EVENTS = ["select", "input", "delete", "move", "undo", "redo"];
+
+/**
+ * Whether the person has placed a caret or made a selection in this buffer
+ * yet: a click, a key that moves or selects, typing, or a paste or drop of
+ * files. A buffer that has only been opened has its caret at the very start,
+ * above the page's title, which nobody chose. Changes from the room or from
+ * code carry no user event and leave it as it is.
+ */
+export const caretPlaced = StateField.define<boolean>({
+  create: () => false,
+  update: (placed, tr) =>
+    placed ||
+    tr.effects.some((effect) => effect.is(placeCaret)) ||
+    CARET_EVENTS.some((event) => tr.isUserEvent(event)),
+});
 
 /** What one batch of files needs to become references in one buffer. */
 interface UploadBatch {
@@ -250,10 +272,18 @@ export async function uploadAttachments(
       );
     } else {
       const live = view.dom.isConnected;
-      if (live) {
+      // Nobody chose a place yet (the file picker on a buffer only opened):
+      // the end of the text, on a line of its own, rather than above the
+      // title where the untouched caret sits. A buffer without the field (no
+      // paste and drop handlers) keeps the caret it has.
+      const atEnd = view.state.field(caretPlaced, false) === false;
+      if (live && !atEnd) {
         request.place?.(view);
       }
-      if (!live || !insertBlock(view, lines)) {
+      if (
+        !live ||
+        !(atEnd ? appendBlock(view, lines) : insertBlock(view, lines))
+      ) {
         inserted = 0;
         problems.push(
           `Uploaded to ${stored.join(", ")}, but the reference could not be inserted here: put the caret in the body and link it.`,
@@ -268,6 +298,32 @@ export async function uploadAttachments(
 }
 
 /**
+ * Add `lines` at the end of the text, after one blank line, as one input
+ * step, and leave the caret at the end of the first of them. The text keeps
+ * ending in one line break. Positions count a line break as one, whatever
+ * the separator, as in `insertBlock`.
+ */
+function appendBlock(view: EditorView, lines: readonly string[]): boolean {
+  const { doc, lineBreak } = view.state;
+  const last = doc.line(doc.lines);
+  const before = doc.lines > 1 ? doc.line(doc.lines - 1) : null;
+  // Breaks still needed for a blank line between the text and the block.
+  const breaks =
+    last.length > 0 ? 2 : before === null || before.length === 0 ? 0 : 1;
+  const from = doc.length;
+  view.dispatch({
+    changes: {
+      from,
+      insert: `${lineBreak.repeat(breaks)}${lines.join(lineBreak)}${lineBreak}`,
+    },
+    selection: { anchor: from + breaks + (lines[0]?.length ?? 0) },
+    userEvent: "input",
+  });
+  view.focus();
+  return true;
+}
+
+/**
  * The two ways a file reaches the buffer without a button: pasted from the
  * clipboard, and dropped onto the text.
  *
@@ -278,6 +334,10 @@ export async function uploadAttachments(
  * a browser fires no `drop` at all unless the dragover was prevented.
  */
 export function attachmentUploads(onFiles: (files: File[]) => void): Extension {
+  return [caretPlaced, handlers(onFiles)];
+}
+
+function handlers(onFiles: (files: File[]) => void): Extension {
   return EditorView.domEventHandlers({
     paste(event, view) {
       const files = transferFiles(event.clipboardData);
@@ -286,6 +346,8 @@ export function attachmentUploads(onFiles: (files: File[]) => void): Extension {
         return false;
       }
       event.preventDefault();
+      // A paste goes where the caret is, so the caret counts as chosen.
+      view.dispatch({ effects: placeCaret.of(null) });
       onFiles(files);
       return true;
     },
@@ -315,9 +377,10 @@ export function attachmentUploads(onFiles: (files: File[]) => void): Extension {
         Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
           ? view.posAtCoords({ x: event.clientX, y: event.clientY })
           : null;
-      if (at !== null) {
-        view.dispatch({ selection: { anchor: at } });
-      }
+      view.dispatch({
+        ...(at === null ? {} : { selection: { anchor: at } }),
+        effects: placeCaret.of(null),
+      });
       onFiles(files);
       return true;
     },

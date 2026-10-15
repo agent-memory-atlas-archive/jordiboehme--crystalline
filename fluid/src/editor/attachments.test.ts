@@ -494,6 +494,141 @@ describe("uploadAttachments through a home", () => {
 });
 
 /**
+ * Where a file goes when nobody chose a place: the picker on a buffer that
+ * was only opened has its caret at the very start, above the title, so the
+ * reference goes to the end instead. A caret the person placed, a paste and
+ * a drop keep the place they name.
+ */
+describe("uploadAttachments and the caret nobody placed", () => {
+  const DOC = "# Title\n\nBody line.\n";
+  const LINK = "![shot.png](../assets/2026/10/shot.png)";
+  const home: AssetHome = {
+    key: ["fake"],
+    list: () => Promise.resolve([]),
+    upload: (path) =>
+      Promise.resolve({ path, mime: "image/png", size: 8, sha256: "a" }),
+    remove: () => Promise.resolve(),
+    url: (path) => `/fake/${path}`,
+    resolve: () => null,
+    refused: () => null,
+    linkTo: (path) => `../${path}`,
+  };
+
+  /** A buffer as a screen mounts it: the upload handlers in, caret at 0. */
+  function opened(
+    doc = DOC,
+    onFiles: (files: File[]) => void = () => undefined,
+  ) {
+    view = new EditorView({
+      state: EditorState.create({
+        doc,
+        extensions: [attachmentUploads(onFiles)],
+      }),
+      parent: document.body,
+    });
+    return view;
+  }
+
+  function upload(target: EditorView) {
+    return uploadAttachments({
+      home,
+      files: [fileOf("shot.png")],
+      view: target,
+      onError: () => undefined,
+      now: new Date(2026, 9, 15),
+    });
+  }
+
+  function carrying(type: "paste" | "drop", files: File[]): Event {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(
+      event,
+      type === "paste" ? "clipboardData" : "dataTransfer",
+      { value: { files, types: ["Files"], getData: () => "" } },
+    );
+    return event;
+  }
+
+  it("puts the file at the end, after a blank line, when no caret was placed", async () => {
+    const target = opened();
+    expect(await upload(target)).toBe(1);
+    expect(target.state.doc.toString()).toBe(`${DOC}\n${LINK}\n`);
+    expect(target.state.selection.main.head).toBe(DOC.length + 1 + LINK.length);
+  });
+
+  it("adds the blank line itself when the text ends without a line break", async () => {
+    const target = opened("Body line.");
+    await upload(target);
+    expect(target.state.doc.toString()).toBe(`Body line.\n\n${LINK}\n`);
+  });
+
+  it("takes an empty buffer as it is", async () => {
+    const target = opened("");
+    await upload(target);
+    expect(target.state.doc.toString()).toBe(`${LINK}\n`);
+  });
+
+  // The two blank lines below the reference in the next cases are
+  // `insertBlock`'s own spacing, unchanged by this rule.
+  it("puts the file below the caret's line once the person placed it", async () => {
+    const target = opened();
+    target.dispatch({
+      selection: { anchor: "# Title".length },
+      userEvent: "select.pointer",
+    });
+    await upload(target);
+    expect(target.state.doc.toString()).toBe(
+      `# Title\n\n${LINK}\n\n\nBody line.\n`,
+    );
+  });
+
+  it("counts typing as a placed caret", async () => {
+    const target = opened();
+    target.dispatch({
+      changes: { from: 0, insert: "x" },
+      selection: { anchor: 1 },
+      userEvent: "input.type",
+    });
+    await upload(target);
+    expect(target.state.doc.toString()).toBe(
+      `x# Title\n\n${LINK}\n\n\nBody line.\n`,
+    );
+  });
+
+  it("leaves a caret moved by code alone, as a room or a draft moves it", async () => {
+    const target = opened();
+    target.dispatch({ selection: { anchor: "# Title".length } });
+    await upload(target);
+    expect(target.state.doc.toString()).toBe(`${DOC}\n${LINK}\n`);
+  });
+
+  it("puts a pasted file at the caret, even one nobody moved", async () => {
+    const batches: File[][] = [];
+    const target = opened(DOC, (files) => {
+      batches.push(files);
+    });
+    target.contentDOM.dispatchEvent(carrying("paste", [fileOf("shot.png")]));
+    expect(batches).toHaveLength(1);
+    await upload(target);
+    expect(target.state.doc.toString()).toBe(
+      `# Title\n\n${LINK}\n\n\nBody line.\n`,
+    );
+  });
+
+  it("puts a dropped file where it was dropped", async () => {
+    const target = opened();
+    // A synthetic drop has no coordinates, so the caret stays where code put
+    // it; the drop itself is what names the place.
+    target.dispatch({ selection: { anchor: "# Title".length } });
+    target.contentDOM.dispatchEvent(carrying("drop", [fileOf("shot.png")]));
+    await upload(target);
+    expect(target.state.doc.toString()).toBe(
+      `# Title\n\n${LINK}\n\n\nBody line.\n`,
+    );
+  });
+});
+
+/**
  * The name race: the listing said a path was free, and by the time the PUT
  * arrived somebody had stored a file there. Only a refusal (403, 409) whose
  * path a fresh listing now holds is tried again, once, under the next free

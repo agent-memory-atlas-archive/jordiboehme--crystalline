@@ -501,6 +501,102 @@ describe("the engram editor", () => {
     expect(docText(view.state)).toBe(CONTENT);
   });
 
+  /**
+   * The format bar's "Attach a file" against a domain with no files yet:
+   * the PUT stores the file where it was asked to.
+   */
+  async function attachThroughPicker(): Promise<void> {
+    const input =
+      document.querySelector<HTMLInputElement>('input[type="file"]');
+    // Nothing opens a real dialog in jsdom, and the upload clicks it too.
+    input?.addEventListener(
+      "click",
+      (event) => {
+        event.preventDefault();
+      },
+      { once: true },
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Attach a file" }),
+    );
+    await userEvent.upload(
+      input as HTMLInputElement,
+      new File(["x"], "shot.png", { type: "image/png" }),
+    );
+  }
+
+  function serveFiles() {
+    serveEditor({
+      "/domains/eng/attachments": () => ({ attachments: [] }),
+    });
+    const base = apiMock.getMockImplementation();
+    apiMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path.startsWith("/domains/eng/files/") && init?.method === "PUT") {
+        const stored = path.slice("/domains/eng/files/".length);
+        return { path: stored, mime: "image/png", size: 1, sha256: "a" };
+      }
+      return await base?.(path, init);
+    });
+  }
+
+  it("attaches a file at the end when no caret was placed", async () => {
+    serveFiles();
+    renderApp("/d/eng/edit/alpha");
+    const view = mountedView(await openBuffer());
+    // The untouched caret sits at the top of the file, in the frontmatter.
+    expect(view.state.selection.main.head).toBe(0);
+    await attachThroughPicker();
+    await waitFor(() => {
+      expect(docText(view.state)).toMatch(
+        /# Alpha\n\nA rule\.\n\n!\[shot\.png\]\([^)]*shot\.png\)\n$/,
+      );
+    });
+  });
+
+  it("attaches a file below the line where the caret was placed", async () => {
+    serveFiles();
+    renderApp("/d/eng/edit/alpha");
+    const view = mountedView(await openBuffer());
+    act(() => {
+      view.dispatch({
+        selection: { anchor: CONTENT.indexOf("# Alpha") + "# Alpha".length },
+        userEvent: "select.pointer",
+      });
+    });
+    await attachThroughPicker();
+    await waitFor(() => {
+      expect(docText(view.state)).toMatch(
+        /# Alpha\n\n!\[shot\.png\]\([^)]*shot\.png\)\n\n\nA rule\.\n$/,
+      );
+    });
+  });
+
+  it("attaches a dropped file where it was dropped", async () => {
+    serveFiles();
+    renderApp("/d/eng/edit/alpha");
+    const editor = await openBuffer();
+    const view = mountedView(editor);
+    act(() => {
+      view.dispatch({
+        selection: { anchor: CONTENT.indexOf("# Alpha") + "# Alpha".length },
+      });
+    });
+    const event = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", {
+      value: {
+        files: [new File(["x"], "shot.png", { type: "image/png" })],
+        types: ["Files"],
+        getData: () => "",
+      },
+    });
+    editor.dispatchEvent(event);
+    await waitFor(() => {
+      expect(docText(view.state)).toMatch(
+        /# Alpha\n\n!\[shot\.png\]\([^)]*shot\.png\)\n\n\nA rule\.\n$/,
+      );
+    });
+  });
+
   it("shows the table verbs only while the caret is in a table", async () => {
     // The wiring, end to end: the listener inside `surfaceExtensions`, the
     // state it writes and the prop the bar is given. The verbs themselves are
