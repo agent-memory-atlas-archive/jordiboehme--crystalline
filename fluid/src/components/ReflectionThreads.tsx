@@ -370,8 +370,8 @@ export function ReflectionThreads({
 
   return (
     <>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 ref={threadsHeading} tabIndex={-1} className="text-section">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 ref={threadsHeading} tabIndex={-1} className="mr-auto text-section">
           Threads
         </h2>
         <button
@@ -384,38 +384,38 @@ export function ReflectionThreads({
         >
           Show resolved threads
         </button>
+        {mayComment && drafting === null && (
+          <>
+            <button
+              ref={commentButton}
+              type="button"
+              aria-disabled={captured === null}
+              aria-describedby={captured === null ? hint : undefined}
+              // Keep the page's selection: a press that took focus would
+              // collapse it before the click is handled.
+              onMouseDown={(event) => {
+                event.preventDefault();
+              }}
+              onClick={() => {
+                if (captured !== null) {
+                  comment.reset();
+                  setDrafting(captured);
+                }
+              }}
+              className={`${BUTTON.secondary} aria-disabled:cursor-default aria-disabled:opacity-50`}
+            >
+              Comment
+            </button>
+            <span id={hint} className="sr-only">
+              Select text on the page to comment on it.
+            </span>
+          </>
+        )}
       </div>
       {showResolved && resolved.error && (
         <p role="alert" className={`text-sm ${ALERT}`}>
           {problemDetail(resolved.error)}
         </p>
-      )}
-      {mayComment && drafting === null && (
-        <>
-          <button
-            ref={commentButton}
-            type="button"
-            aria-disabled={captured === null}
-            aria-describedby={captured === null ? hint : undefined}
-            // Keep the page's selection: a press that took focus would
-            // collapse it before the click is handled.
-            onMouseDown={(event) => {
-              event.preventDefault();
-            }}
-            onClick={() => {
-              if (captured !== null) {
-                comment.reset();
-                setDrafting(captured);
-              }
-            }}
-            className={`${BUTTON.secondary} aria-disabled:cursor-default aria-disabled:opacity-50`}
-          >
-            Comment
-          </button>
-          <span id={hint} className="sr-only">
-            Select text on the page to comment on it.
-          </span>
-        </>
       )}
       {drafting !== null && (
         <CommentForm
@@ -569,60 +569,78 @@ function CommentForm({
   );
 }
 
-/** One labelled field and its button, for a step that takes words. */
+/**
+ * One labelled field, its send button and Cancel, for a step that takes
+ * words. The field takes focus when the form opens.
+ */
 function StepForm({
   label,
   button,
   pending,
   error,
   onSend,
+  onCancel,
 }: {
   label: string;
   button: string;
   pending: boolean;
   error: Error | null;
-  /** Sends the words, with a way to clear the field once they landed. */
-  onSend: (text: string, clear: () => void) => void;
+  /** Sends the words; the caller closes the form once they landed. */
+  onSend: (text: string) => void;
+  onCancel: () => void;
 }): ReactElement {
   const [value, setValue] = useState("");
   const id = useId();
+  const field = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    field.current?.focus();
+  }, []);
   return (
     <form
       className="flex flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();
         if (value.trim() !== "" && !pending) {
-          onSend(value.trim(), () => {
-            setValue("");
-          });
+          onSend(value.trim());
         }
       }}
     >
       <label htmlFor={id} className="text-caption">
         {label}
       </label>
-      <div className="flex items-end gap-2">
-        <input
-          id={id}
-          value={value}
-          onChange={(event) => {
-            setValue(event.target.value);
-          }}
-          className={`min-w-0 flex-1 ${FIELD}`}
-        />
-        <button type="submit" disabled={pending} className={BUTTON.secondary}>
-          {button}
-        </button>
-      </div>
+      <input
+        ref={field}
+        id={id}
+        value={value}
+        onChange={(event) => {
+          setValue(event.target.value);
+        }}
+        className={`min-w-0 ${FIELD}`}
+      />
       {error && (
         <p role="alert" className={ALERT}>
           {problemDetail(error)}
         </p>
       )}
+      <div className="flex gap-2">
+        <button type="submit" disabled={pending} className={BUTTON.secondary}>
+          {button}
+        </button>
+        <button type="button" onClick={onCancel} className={BUTTON.ghost}>
+          Cancel
+        </button>
+      </div>
     </form>
   );
 }
 
+type Step = "answer" | "resolve";
+
+/**
+ * The write actions of an open thread: a quiet row of two buttons, each
+ * opening its own form on demand. One form is open at a time, and closing it
+ * (Cancel or a send that landed) returns focus to the button that opened it.
+ */
 function OpenActions({
   domain,
   path,
@@ -636,6 +654,22 @@ function OpenActions({
   onAnswered: () => Promise<unknown>;
   onResolved: () => Promise<unknown>;
 }): ReactElement {
+  const [form, setForm] = useState<Step | null>(null);
+  const answerButton = useRef<HTMLButtonElement | null>(null);
+  const resolveButton = useRef<HTMLButtonElement | null>(null);
+  // Set when a form closes, so focus goes back once its button is drawn again.
+  const backTo = useRef<Step | null>(null);
+  useEffect(() => {
+    if (form === null && backTo.current !== null) {
+      const button = backTo.current === "answer" ? answerButton : resolveButton;
+      backTo.current = null;
+      button.current?.focus();
+    }
+  }, [form]);
+  const close = (step: Step) => {
+    backTo.current = step;
+    setForm(null);
+  };
   const answer = useMutation({
     mutationFn: (text: string) =>
       stepThread(domain, thread.id, "answer", { path, text }),
@@ -644,36 +678,77 @@ function OpenActions({
     mutationFn: (outcome: string) =>
       stepThread(domain, thread.id, "resolve", { path, outcome }),
   });
-  return (
-    <div className="flex flex-col gap-2">
+  const openForm = (step: Step) => {
+    answer.reset();
+    resolve.reset();
+    setForm(step);
+  };
+  if (form === "answer") {
+    return (
       <StepForm
         label="Your answer"
         button="Answer"
         pending={answer.isPending}
         error={answer.error}
-        onSend={(text, clear) => {
+        onSend={(text) => {
           answer.mutate(text, {
             onSuccess: () => {
-              clear();
+              close("answer");
               void onAnswered();
             },
           });
         }}
+        onCancel={() => {
+          close("answer");
+        }}
       />
+    );
+  }
+  if (form === "resolve") {
+    return (
       <StepForm
         label="Outcome"
         button="Resolve"
         pending={resolve.isPending}
         error={resolve.error}
-        onSend={(text, clear) => {
+        onSend={(text) => {
           resolve.mutate(text, {
             onSuccess: () => {
-              clear();
+              // The thread moves out of this list, so focus goes to the
+              // column's heading (set by `onResolved`), not back here.
+              setForm(null);
               void onResolved();
             },
           });
         }}
+        onCancel={() => {
+          close("resolve");
+        }}
       />
+    );
+  }
+  return (
+    <div className="flex gap-2">
+      <button
+        ref={answerButton}
+        type="button"
+        onClick={() => {
+          openForm("answer");
+        }}
+        className={BUTTON.secondary}
+      >
+        Answer
+      </button>
+      <button
+        ref={resolveButton}
+        type="button"
+        onClick={() => {
+          openForm("resolve");
+        }}
+        className={BUTTON.secondary}
+      >
+        Resolve
+      </button>
     </div>
   );
 }

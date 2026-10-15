@@ -499,6 +499,9 @@ describe("comments on a reflection", () => {
     const card = await screen.findByRole("article", {
       name: "Thread on Night deploys",
     });
+    await userEvent.click(
+      within(card).getByRole("button", { name: "Resolve" }),
+    );
     await userEvent.type(
       within(card).getByRole("textbox", { name: "Outcome" }),
       "Yes, still at night.",
@@ -535,7 +538,7 @@ describe("comments on a reflection", () => {
     });
     await waitFor(() => {
       expect(
-        screen.getByRole("textbox", { name: "Outcome" }),
+        screen.getByRole("button", { name: "Resolve" }),
       ).toBeInTheDocument();
     });
     // Reopened: listed once, as an open thread.
@@ -560,6 +563,7 @@ describe("comments on a reflection", () => {
       name: "Thread on Night deploys",
     });
     const reads = docRoute.mock.calls.length;
+    await userEvent.click(within(card).getByRole("button", { name: "Answer" }));
     await userEvent.type(
       within(card).getByRole("textbox", { name: "Your answer" }),
       "Yes.",
@@ -575,9 +579,146 @@ describe("comments on a reflection", () => {
     await waitFor(() => {
       expect(docRoute.mock.calls.length).toBeGreaterThan(reads);
     });
+    // The form closes once the answer landed, and focus goes back to the
+    // button that opened it.
+    await waitFor(() => {
+      expect(
+        within(card).queryByRole("textbox", { name: "Your answer" }),
+      ).toBeNull();
+    });
+    expect(within(card).getByRole("button", { name: "Answer" })).toHaveFocus();
+  });
+
+  it("shows an open thread with two quiet buttons and no form", async () => {
+    serve([thread("t-00000001")]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    expect(within(card).getByRole("button", { name: "Answer" })).toBeVisible();
+    expect(within(card).getByRole("button", { name: "Resolve" })).toBeVisible();
+    expect(within(card).queryByRole("textbox")).toBeNull();
+    expect(within(card).queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+
+  it("opens only the pressed form, with focus in its field", async () => {
+    serve([thread("t-00000001")]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    await userEvent.click(
+      within(card).getByRole("button", { name: "Resolve" }),
+    );
     expect(
-      within(card).getByRole("textbox", { name: "Your answer" }),
-    ).toHaveValue("");
+      within(card).getByRole("textbox", { name: "Outcome" }),
+    ).toHaveFocus();
+    expect(
+      within(card).queryByRole("textbox", { name: "Your answer" }),
+    ).toBeNull();
+    expect(within(card).getAllByRole("textbox")).toHaveLength(1);
+    expect(within(card).getByRole("button", { name: "Resolve" })).toBeVisible();
+    expect(within(card).getByRole("button", { name: "Cancel" })).toBeVisible();
+  });
+
+  it("closes the form on Cancel and returns focus to the button that opened it", async () => {
+    serve([thread("t-00000001")]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    await userEvent.click(within(card).getByRole("button", { name: "Answer" }));
+    await userEvent.click(within(card).getByRole("button", { name: "Cancel" }));
+    expect(within(card).queryByRole("textbox")).toBeNull();
+    expect(within(card).getByRole("button", { name: "Answer" })).toHaveFocus();
+    await userEvent.click(
+      within(card).getByRole("button", { name: "Resolve" }),
+    );
+    await userEvent.click(within(card).getByRole("button", { name: "Cancel" }));
+    expect(within(card).getByRole("button", { name: "Resolve" })).toHaveFocus();
+  });
+
+  it("opens one form at a time in a card and leaves other cards alone", async () => {
+    serve([
+      thread("t-00000001"),
+      thread("t-00000002", {
+        anchor: {
+          section: "7f3a9c2e",
+          quote: null,
+          occurrence: 1,
+          state: "found",
+        },
+      }),
+    ]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const cards = await screen.findAllByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    expect(cards).toHaveLength(2);
+    await userEvent.click(
+      within(cards[0] as HTMLElement).getByRole("button", { name: "Answer" }),
+    );
+    // Within a card the opened form replaces the row, so Resolve is not
+    // offered beside an open Answer form.
+    expect(
+      within(cards[0] as HTMLElement).queryByRole("button", {
+        name: "Resolve",
+      }),
+    ).toBeNull();
+    expect(
+      within(cards[1] as HTMLElement).getByRole("button", { name: "Resolve" }),
+    ).toBeVisible();
+  });
+
+  it("keeps the form open with the server's text when a send fails", async () => {
+    serve([thread("t-00000001")], {
+      "/domains/eng/reflection/threads/t-00000001/resolve": () => {
+        throw new ApiProblem(
+          409,
+          "Conflict",
+          "Someone else resolved this thread.",
+        );
+      },
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    await userEvent.click(
+      within(card).getByRole("button", { name: "Resolve" }),
+    );
+    await userEvent.type(
+      within(card).getByRole("textbox", { name: "Outcome" }),
+      "Done.",
+    );
+    await userEvent.click(
+      within(card).getByRole("button", { name: "Resolve" }),
+    );
+    expect(await within(card).findByRole("alert")).toHaveTextContent(
+      "Someone else resolved this thread.",
+    );
+    expect(within(card).getByRole("textbox", { name: "Outcome" })).toHaveValue(
+      "Done.",
+    );
+  });
+
+  it("puts the Comment button in the header row beside the heading and keeps the selection on press", async () => {
+    serve([]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const button = await screen.findByRole("button", { name: "Comment" });
+    const heading = screen.getByRole("heading", { name: "Threads" });
+    expect(button.parentElement).toBe(heading.parentElement);
+    select(textNode("Deploys run"), textNode("Deploys run"), 6);
+    await waitFor(() => {
+      expect(button).toHaveAttribute("aria-disabled", "false");
+    });
+    const down = new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+    });
+    button.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
+    expect(window.getSelection()?.toString()).not.toBe("");
   });
 
   it("paints the thread under the pointer a second time, and clears it all on leaving", async () => {
