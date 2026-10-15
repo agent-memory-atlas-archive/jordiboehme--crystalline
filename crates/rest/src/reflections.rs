@@ -131,7 +131,8 @@ pub(crate) fn reflection_error(e: EngineError) -> ApiError {
                            `here`, `local`, `elsewhere` (then `home_url` is \
                            set) or `null` (`pending`, `homeless`, \
                            `hosted_elsewhere`); `host_label` names the serving \
-                           instance for `hosted_elsewhere` and is `null` \
+                           instance for `hosted_elsewhere` (`null` while a \
+                           rename pauses a domain nobody holds) and is `null` \
                            otherwise; `open_threads` is 0 unless `state` is \
                            `on`.",
             body = Object,
@@ -203,8 +204,10 @@ pub async fn domains(
                            `elsewhere` (then `home_url` is set) or \
                            `hosted_elsewhere` (another instance on this shared \
                            database holds the domain's host lock and serves \
-                           it; then `host_label` names that instance, and it \
-                           is `null` in every other state). `member` is true \
+                           it; then `host_label` names that instance, or is \
+                           `null` while a rename pauses a domain whose lock \
+                           nobody holds, and it is `null` in every other \
+                           state). `member` is true \
                            when the caller holds a membership row it may \
                            leave.",
             body = Object,

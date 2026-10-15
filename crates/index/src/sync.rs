@@ -745,6 +745,9 @@ pub struct DomainScan {
     /// row it did not see - which is also how a switch turned off (or
     /// pending) clears the table.
     reflections_complete: bool,
+    /// Whether the apply keeps the Reflection file rows the walk did not see
+    /// even on a complete walk: [`DomainScan::keep_unseen_reflection_assets`].
+    keep_reflection_assets: bool,
     /// The Reflection mode the scan classified with. While it is in effect,
     /// an engram row under `reflections/` the walk no longer saw is deleted
     /// even though its file is on disk: the file is the Reflection's now.
@@ -761,6 +764,19 @@ pub struct DomainScan {
     report: SyncReport,
     /// When the scan began, so the apply can report the total duration.
     started: Instant,
+}
+
+impl DomainScan {
+    /// Keep every Reflection file row this walk does not see, even when the
+    /// walk is complete. For the first walk of an instance that just took a
+    /// domain's host lock on a shared database: a file domain keeps a
+    /// Reflection file's bytes on its host's disk only, so a file the
+    /// previous host added is a row here and no file, and a complete walk
+    /// would drop the row. The page rows are written back to disk before the
+    /// walk instead; the file rows have no bytes to write back.
+    pub fn keep_unseen_reflection_assets(&mut self) {
+        self.keep_reflection_assets = true;
+    }
 }
 
 /// Scan one domain against a stamp snapshot: walk, prefilter, hash and classify,
@@ -1325,6 +1341,7 @@ async fn classify_changes(
         reflection_assets: Vec::new(),
         reflection_asset_deletes: Vec::new(),
         reflections_complete: false,
+        keep_reflection_assets: false,
         reflection: ReflectionMode::Off,
         // The caller decides: only a forced full scan ends a rebuild.
         ends_rebuild: false,
@@ -1381,6 +1398,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         reflection_assets,
         reflection_asset_deletes,
         reflections_complete,
+        keep_reflection_assets,
         reflection,
         ends_rebuild,
         mut report,
@@ -1453,7 +1471,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         FileRows::Assets(AssetTable::Reflection),
         reflection_assets,
         reflection_asset_deletes,
-        reflections_complete,
+        reflections_complete && !keep_reflection_assets,
         &chunk_params,
         false,
         &mut report,
@@ -1548,6 +1566,14 @@ pub trait ReindexHooks: Send + Sync {
     /// resolution pass.
     async fn before_domain(&self, _store: &dyn Store, _name: &str, _root: &Path) -> Result<bool> {
         Ok(true)
+    }
+
+    /// Called after the first lock window of a domain the driver will walk,
+    /// with no store lock held, before the walk. Answers whether the walk
+    /// keeps the Reflection file rows it does not see
+    /// ([`DomainScan::keep_unseen_reflection_assets`]).
+    async fn before_walk(&self, _name: &str, _root: &Path) -> Result<bool> {
+        Ok(false)
     }
 
     /// Called after a domain's apply committed, with no store lock held.
@@ -1651,9 +1677,16 @@ pub async fn reindex_domains(
         if force && let Some(hold) = rebuild_hold() {
             tokio::time::sleep(hold).await;
         }
-        let scan = scan_domain(name, root, snapshot, chunk_params, force_domain)
+        let keep_assets = hooks
+            .before_walk(name, root)
             .await
             .map_err(|e| in_domain("reindex", name, e))?;
+        let mut scan = scan_domain(name, root, snapshot, chunk_params, force_domain)
+            .await
+            .map_err(|e| in_domain("reindex", name, e))?;
+        if keep_assets {
+            scan.keep_unseen_reflection_assets();
+        }
         let report = {
             let store = store.lock().await;
             apply_scan(&*store, domain, scan)

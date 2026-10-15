@@ -32,9 +32,11 @@ pub enum ReflectionState {
     },
     /// Switched on, and another instance on this shared database holds the
     /// domain's host lock, so that instance serves it (R92).
+    /// `label` is `None` while a rename pauses a domain whose lock nobody
+    /// holds: no instance serves it until the rename ends and claims it.
     HostedElsewhere {
         /// The host's label (its `DomainHost.label`).
-        label: String,
+        label: Option<String>,
     },
     /// In effect here.
     On {

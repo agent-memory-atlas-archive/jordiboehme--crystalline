@@ -177,8 +177,24 @@ impl Engine {
                 let force = crystalline_index::reparse_due(&*store, domain).await?;
                 (domain, snapshot, force)
             };
+            // A domain this instance just took over gets its Reflection pages
+            // back on disk first, so this walk does not drop the rows of pages
+            // only the previous host's disk had.
+            if let Err(e) = self.restore_reflection_rows(name, root).await {
+                if only.is_some() {
+                    return Err(e);
+                }
+                tracing::warn!("sync of '{name}' skipped: {e}");
+                failed.push(json!({ "domain": name, "error": e.to_string() }));
+                continue;
+            }
             let scan = match scan_domain(name, root, snapshot, &self.chunk_params, force).await {
-                Ok(scan) => scan,
+                Ok(mut scan) => {
+                    if self.take_kept_reflection_assets(name) {
+                        scan.keep_unseen_reflection_assets();
+                    }
+                    scan
+                }
                 Err(e) if only.is_none() => {
                     // One denied domain must not block the rest of the
                     // sweep; its error is carried in the result and the
@@ -316,6 +332,9 @@ impl Engine {
             (domain, snapshot)
         };
         let manifest_touched = Self::touches_manifest(&paths);
+        // A watcher pass can be the first after this instance took the host
+        // lock: the Reflection pages go back on disk before anything is read.
+        self.restore_reflection_rows(name, &root).await?;
         let scan = scan_paths(name, &root, snapshot, paths, &self.chunk_params).await;
         let report = {
             let store = self.store.lock().await;

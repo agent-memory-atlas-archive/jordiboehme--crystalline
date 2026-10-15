@@ -4597,7 +4597,7 @@
         ],
         "responses": {
           "200": {
-            "description": "ReflectionStatus. `state` is `off`, `pending` (then `pending_engrams` lists the engrams still under `reflections/` for a caller with `engrams_visible`, and is empty for anyone else), `homeless`, `on`, `elsewhere` (then `home_url` is set) or `hosted_elsewhere` (another instance on this shared database holds the domain's host lock and serves it; then `host_label` names that instance, and it is `null` in every other state). `member` is true when the caller holds a membership row it may leave.",
+            "description": "ReflectionStatus. `state` is `off`, `pending` (then `pending_engrams` lists the engrams still under `reflections/` for a caller with `engrams_visible`, and is empty for anyone else), `homeless`, `on`, `elsewhere` (then `home_url` is set) or `hosted_elsewhere` (another instance on this shared database holds the domain's host lock and serves it; then `host_label` names that instance, or is `null` while a rename pauses a domain whose lock nobody holds, and it is `null` in every other state). `member` is true when the caller holds a membership row it may leave.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9565,7 +9565,7 @@
         "operationId": "list_reflection_domains",
         "responses": {
           "200": {
-            "description": "ReflectionDomains: `{ domains: [{ domain, state, right, engrams_visible, home, home_url, host_label, open_threads }] }`. `state` is `on`, `pending`, `homeless`, `elsewhere` or `hosted_elsewhere` (another instance on this shared database holds the domain's host lock and serves it); `home` is `here`, `local`, `elsewhere` (then `home_url` is set) or `null` (`pending`, `homeless`, `hosted_elsewhere`); `host_label` names the serving instance for `hosted_elsewhere` and is `null` otherwise; `open_threads` is 0 unless `state` is `on`.",
+            "description": "ReflectionDomains: `{ domains: [{ domain, state, right, engrams_visible, home, home_url, host_label, open_threads }] }`. `state` is `on`, `pending`, `homeless`, `elsewhere` or `hosted_elsewhere` (another instance on this shared database holds the domain's host lock and serves it); `home` is `here`, `local`, `elsewhere` (then `home_url` is set) or `null` (`pending`, `homeless`, `hosted_elsewhere`); `host_label` names the serving instance for `hosted_elsewhere` (`null` while a rename pauses a domain nobody holds) and is `null` otherwise; `open_threads` is 0 unless `state` is `on`.",
             "content": {
               "application/json": {
                 "schema": {

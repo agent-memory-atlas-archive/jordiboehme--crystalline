@@ -995,6 +995,15 @@ pub struct Engine {
     // successful `claim_domain_host` and renewed by the heartbeat timer. Drives
     // embed scoping, heartbeat renewal and graceful release.
     hosted: std::sync::RwLock<HashMap<String, DomainId>>,
+    // The domains whose host lock this instance took on a shared database
+    // since it last wrote their Reflection rows back to disk: the rows may
+    // name pages only the previous host's disk has, which the first complete
+    // walk here would drop (`Engine::restore_reflection_rows`).
+    reflection_rows_due: std::sync::Mutex<HashSet<String>>,
+    // The same domains, until their first complete walk here: that walk
+    // keeps the Reflection file rows it does not see, since a file domain
+    // keeps those bytes on the previous host's disk only.
+    reflection_assets_kept: std::sync::Mutex<HashSet<String>>,
     // The heartbeat interval and stale threshold, seconds. Defaults 30 and 90,
     // overridable via `CRYSTALLINE_HEARTBEAT_SECS`/`CRYSTALLINE_STALE_SECS` (a
     // short threshold makes multi-instance stale-takeover verification fast).
@@ -2253,6 +2262,8 @@ impl Engine {
             instance_id: String::new(),
             label: String::new(),
             hosted: std::sync::RwLock::new(HashMap::new()),
+            reflection_rows_due: std::sync::Mutex::new(HashSet::new()),
+            reflection_assets_kept: std::sync::Mutex::new(HashSet::new()),
             heartbeat_secs: env_secs("CRYSTALLINE_HEARTBEAT_SECS", DEFAULT_HEARTBEAT_SECS),
             stale_secs: env_secs("CRYSTALLINE_STALE_SECS", DEFAULT_STALE_SECS),
             origin_locks: std::sync::Mutex::new(HashMap::new()),
@@ -4074,6 +4085,20 @@ impl Engine {
             HostClaim::HeldByOther(_) => self.hosted.write().unwrap().remove(name).is_some(),
         };
         if moved {
+            if matches!(claim, HostClaim::Acquired) && store.shares_database() {
+                // The previous host may have written pages this disk does
+                // not have: they go back to disk before the first walk here
+                // (any claim that acquired: the startup sync, the watcher, a
+                // named sync, --take-over or a Reflection request).
+                self.reflection_rows_due
+                    .lock()
+                    .unwrap()
+                    .insert(name.to_string());
+                self.reflection_assets_kept
+                    .lock()
+                    .unwrap()
+                    .insert(name.to_string());
+            }
             self.announce_host_moved(name);
         }
         Ok(claim)
@@ -8924,6 +8949,17 @@ impl ReindexHooks for DaemonReindexHooks<'_> {
                 Ok(false)
             }
         }
+    }
+
+    /// A domain this instance just took the host lock of gets its Reflection
+    /// pages back on disk before the walk, which then keeps the Reflection
+    /// file rows it does not see (see [`Engine::restore_reflection_rows`]).
+    async fn before_walk(&self, name: &str, root: &Path) -> crystalline_index::Result<bool> {
+        self.engine
+            .restore_reflection_rows(name, root)
+            .await
+            .map_err(|e| IndexError::Db(e.to_string()))?;
+        Ok(self.engine.take_kept_reflection_assets(name))
     }
 
     /// Files changed under us, so the generated index files follow. Runs with

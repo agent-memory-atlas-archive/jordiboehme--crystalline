@@ -32,7 +32,7 @@ const LOCAL: ReflectionState = ReflectionState::On {
 
 fn hosted_by(label: &str) -> ReflectionState {
     ReflectionState::HostedElsewhere {
-        label: label.to_string(),
+        label: Some(label.to_string()),
     }
 }
 
@@ -316,6 +316,105 @@ async fn a_released_host_lock_goes_to_exactly_one_instance_on_postgres() {
         hosted_by(winner_name),
         "the released host does not take it back by asking"
     );
+
+    crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+        .await
+        .unwrap()
+        .drop_schema()
+        .await
+        .unwrap();
+}
+
+/// The pages a host wrote live on its own disk and in the shared rows.
+/// When another instance takes the lock over, its first complete walk must
+/// not drop the rows of those pages: they go back to the new host's disk
+/// first, so the new host serves them. A file under `reflections/assets/`
+/// keeps its bytes on the old host's disk only, so its row is kept through
+/// that walk. Both the claim of a Reflection request and the claim of a
+/// sync (the startup path) write the pages back.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_new_host_keeps_the_pages_the_old_host_wrote_on_postgres() {
+    use crate::fixture::{pg_url, unique_schema};
+
+    let Some(url) = pg_url() else { return };
+    let schema = unique_schema();
+    let open = || async {
+        let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .expect("open the postgres test schema");
+        Arc::new(Mutex::new(store)) as Arc<Mutex<dyn Store>>
+    };
+    let alpha = instance(open().await, "alpha").await;
+    let beta = instance(open().await, "beta").await;
+    let gamma = instance(open().await, "gamma").await;
+    let page = "# Kept\n\nWritten on alpha.\n";
+    alpha
+        .engine
+        .write_reflection(
+            &crate::docs::write("guides/kept.md", page),
+            &ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+    alpha
+        .engine
+        .reflection_asset_write(
+            "eng",
+            "assets/flow.png",
+            crate::assets::PNG.to_vec(),
+            &ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+    let store = alpha.engine.store();
+    let did = store.lock().await.domain_id("eng").await.unwrap().unwrap();
+    let rows = || async {
+        let store = store.lock().await;
+        (
+            store.get_reflection(did, "guides/kept.md").await.unwrap(),
+            store
+                .get_asset(
+                    crystalline_index::AssetTable::Reflection,
+                    did,
+                    "assets/flow.png",
+                )
+                .await
+                .unwrap(),
+        )
+    };
+
+    // A Reflection request claims the free lock; the daemon's watcher then
+    // syncs the domain, a complete walk of the new host's disk.
+    alpha.engine.release_hosts().await;
+    assert_eq!(beta.engine.reflection_state("eng").await.unwrap(), LOCAL);
+    let on_beta = beta.root.join("reflections/guides/kept.md");
+    assert!(on_beta.exists(), "the page is back on beta's disk");
+    beta.engine.sync(Some("eng")).await.unwrap();
+    let (kept, file) = rows().await;
+    assert!(
+        kept.expect("the page row survives the walk")
+            .content
+            .contains("Written on alpha."),
+        "the page keeps alpha's text"
+    );
+    assert!(file.is_some(), "the file row survives the first walk");
+    let read = beta
+        .engine
+        .read_reflection("eng", "guides/kept.md", &ReflectionCaller::owner())
+        .await
+        .unwrap();
+    assert!(read.to_string().contains("Written on alpha."), "{read}");
+
+    // A sync's claim (the startup path, and --take-over) does the same.
+    beta.engine.release_hosts().await;
+    let on_gamma = gamma.root.join("reflections/guides/kept.md");
+    assert!(!on_gamma.exists());
+    gamma.engine.sync(Some("eng")).await.unwrap();
+    assert!(on_gamma.exists(), "the page is back on gamma's disk");
+    let (kept, file) = rows().await;
+    assert!(kept.is_some(), "the page row survives gamma's first walk");
+    assert!(file.is_some(), "and the file row");
 
     crystalline_index::PostgresStore::open_in_schema(&url, &schema)
         .await

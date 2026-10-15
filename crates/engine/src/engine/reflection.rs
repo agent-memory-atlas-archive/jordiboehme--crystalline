@@ -537,7 +537,9 @@ impl Engine {
 
     /// The label of the instance that serves `domain`'s Reflection, when
     /// that is another instance on this shared database (R92): the one whose
-    /// id the domain's host lock records. `None` when this instance serves it.
+    /// id the domain's host lock records, or `Some(None)` while a rename
+    /// pauses a domain whose lock nobody holds. `None` when this instance
+    /// serves it.
     ///
     /// Read fresh on every call, never through the gate's remembered rows:
     /// the instance's own hosts are asked first, in memory, so the host (and
@@ -565,7 +567,7 @@ impl Engine {
         &self,
         domain: &str,
         root: &std::path::Path,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<Option<String>>> {
         if self.instance_id.is_empty() || self.hosted.read().unwrap().contains_key(domain) {
             return Ok(None);
         }
@@ -578,23 +580,116 @@ impl Engine {
             None => None,
         };
         if let Some(host) = host.filter(|host| self.foreign_holder(host)) {
-            return Ok(Some(host.label));
+            return Ok(Some(Some(host.label)));
         }
         // A domain a rename has paused is claimed by the sync that ends the
-        // rename, under the name it ends with (as `Engine::claim_host`).
+        // rename, under the name it ends with (as `Engine::claim_host`). Until
+        // then nobody holds the lock, so nobody serves the Reflection.
         if self.is_renaming(domain) {
-            return Ok(None);
+            return Ok(Some(None));
         }
         match self.claim_file_host(&*store, domain, root, false).await? {
             HostClaim::Acquired => {
                 drop(store);
+                // The pages the previous host wrote are on its disk only:
+                // they go back to this disk before this instance serves them.
+                // A failure leaves them due for the sync the watcher runs.
+                if let Err(e) = self.restore_reflection_rows(domain, root).await {
+                    tracing::warn!(
+                        "the Reflection pages of '{domain}' could not be written back yet: {e}"
+                    );
+                }
                 if let Some(tx) = &self.watch_tx {
                     let _ = tx.send(WatchEvent::Add(domain.to_string(), root.to_path_buf()));
                 }
                 Ok(None)
             }
-            HostClaim::HeldByOther(host) => Ok(Some(host.label)),
+            HostClaim::HeldByOther(host) => Ok(Some(Some(host.label))),
         }
+    }
+
+    /// Write back to disk every Reflection page and pact whose row the
+    /// shared database holds and this disk does not, once after this
+    /// instance took `domain`'s host lock (see `Engine::claim_file_host`).
+    /// On a shared database each host keeps the Reflection's files on its
+    /// own disk while the rows are shared, so the pages the previous host
+    /// wrote are rows here and no files, and the first complete walk would
+    /// delete their rows. A row carries the whole file; threads files and
+    /// the hidden baselines are files only, so they stay with the previous
+    /// host's disk. A file already on this disk is left as it is (the walk
+    /// then takes it as this host's text).
+    ///
+    /// Each file is written under its own file lock, with the store lock
+    /// taken only to read a row, the order every reflection write takes. A
+    /// Reflection switched off on this disk writes nothing: its walk clears
+    /// the rows as a switch-off does. A failure leaves the domain due, so
+    /// the next walk tries again before it reads anything.
+    pub(crate) async fn restore_reflection_rows(&self, domain: &str, root: &Path) -> Result<()> {
+        if !self.reflection_rows_due.lock().unwrap().remove(domain) {
+            return Ok(());
+        }
+        let restored = self.write_back_reflection_rows(domain, root).await;
+        if restored.is_err() {
+            self.reflection_rows_due
+                .lock()
+                .unwrap()
+                .insert(domain.to_string());
+        }
+        restored
+    }
+
+    async fn write_back_reflection_rows(&self, domain: &str, root: &Path) -> Result<()> {
+        if crystalline_core::reflection_at(root) == crystalline_core::ReflectionSwitch::Off {
+            return Ok(());
+        }
+        let (id, stamps) = {
+            let store = self.store.lock().await;
+            let Some(id) = store.domain_id(domain).await? else {
+                return Ok(());
+            };
+            (id, store.list_reflection_stamps(id).await?)
+        };
+        let mut written = 0usize;
+        for stamp in stamps {
+            // A row names a path inside the folder; anything else is not
+            // written outside it.
+            if !Path::new(&stamp.path)
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+            {
+                continue;
+            }
+            let abs = reflection_abs(root, &stamp.path);
+            if abs.symlink_metadata().is_ok() {
+                continue;
+            }
+            let _lock = self.lock_file(&abs).await;
+            if abs.symlink_metadata().is_ok() {
+                continue;
+            }
+            let row = self
+                .store
+                .lock()
+                .await
+                .get_reflection(id, &stamp.path)
+                .await?;
+            if let Some(row) = row {
+                write_file(&abs, &row.content)?;
+                written += 1;
+            }
+        }
+        if written > 0 {
+            tracing::info!(
+                "wrote {written} Reflection page(s) of '{domain}' the previous host kept back to disk"
+            );
+        }
+        Ok(())
+    }
+
+    /// Whether the next complete walk of `domain` keeps the Reflection file
+    /// rows it does not see, once after this instance took its host lock.
+    pub(crate) fn take_kept_reflection_assets(&self, domain: &str) -> bool {
+        self.reflection_assets_kept.lock().unwrap().remove(domain)
     }
 
     /// Whether `host` records another instance than this one as the holder.
@@ -675,8 +770,13 @@ impl Engine {
                     "{REFUSED_ELSEWHERE_START}{url}"
                 )));
             }
-            ReflectionState::HostedElsewhere { label } => {
+            ReflectionState::HostedElsewhere { label: Some(label) } => {
                 return Err(hosted_refusal(&label));
+            }
+            ReflectionState::HostedElsewhere { label: None } => {
+                return Err(EngineError::Refused(format!(
+                    "{REFUSED_HOSTED_START}no instance while '{domain}' is being renamed; try again when the rename is done"
+                )));
             }
         };
         if let Some(label) = self.confirm_reflection_host(domain).await? {
@@ -727,7 +827,7 @@ impl Engine {
         let (home, home_url, host_label) = match &state {
             ReflectionState::On { home } => (Some(home.as_str()), None, None),
             ReflectionState::Elsewhere { url } => (Some("elsewhere"), Some(url.clone()), None),
-            ReflectionState::HostedElsewhere { label } => (None, None, Some(label.clone())),
+            ReflectionState::HostedElsewhere { label } => (None, None, label.clone()),
             ReflectionState::Off | ReflectionState::Pending { .. } | ReflectionState::Homeless => {
                 (None, None, None)
             }
