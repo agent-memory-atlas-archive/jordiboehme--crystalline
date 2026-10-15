@@ -489,111 +489,138 @@ function wordChar(text: string, i: number): boolean {
   return /[\p{L}\p{N}]/u.test(text.charAt(i));
 }
 
+/** Whether the character at `i` follows an odd number of backslashes. */
+function escaped(text: string, i: number): boolean {
+  let n = 0;
+  for (let j = i - 1; j >= 0 && text.charAt(j) === "\\"; j -= 1) {
+    n += 1;
+  }
+  return n % 2 === 1;
+}
+
+/** Two delimiters that belong together: each a `[start, end)` range. */
+type Pair = [[number, number], [number, number]];
+
 /**
- * The index ranges of emphasis, strike and code markers in `quote` that have
- * no partner inside it: what a selection edge left behind when it started or
- * ended inside `**...**`. A run opens when a word follows it and closes when
- * a word precedes it. Plain text is left alone: a single `~` (strike takes
- * two), and an underscore or a single star between two letters or digits,
- * as in `snake_case` or `a*b`. A backtick both opens and closes.
+ * The markup pairs of a section text, found the simple way: code spans
+ * (backtick runs of one length), emphasis and strike (`*`, `_` and `~~`
+ * runs, one opening where a word follows and closing where a word
+ * precedes; `_` between two letters is part of a word) and links and
+ * images (`[` or `![` with `](destination)`). Nothing inside a code span
+ * and nothing after an odd number of backslashes counts. A marker with no
+ * partner is text.
  */
-function strayMarkers(quote: string): [number, number][] {
-  const stray: [number, number][] = [];
-  const open: { run: string; at: number }[] = [];
-  for (const match of quote.matchAll(/([*_~`])\1*/g)) {
+function markupPairs(text: string): Pair[] {
+  const pairs: Pair[] = [];
+  const code: [number, number][] = [];
+  const ticks = [...text.matchAll(/`+/g)].filter(
+    (m) => !escaped(text, m.index),
+  );
+  for (let i = 0; i < ticks.length; i += 1) {
+    const open = ticks[i];
+    const j = ticks.findIndex(
+      (m, k) => k > i && open !== undefined && m[0].length === open[0].length,
+    );
+    const close = ticks[j];
+    if (open === undefined || close === undefined) {
+      continue;
+    }
+    const a: [number, number] = [open.index, open.index + open[0].length];
+    const b: [number, number] = [close.index, close.index + close[0].length];
+    pairs.push([a, b]);
+    code.push([a[0], b[1]]);
+    i = j;
+  }
+  const inCode = (at: number) => code.some(([a, b]) => at >= a && at < b);
+
+  const stack: { run: string; at: number }[] = [];
+  for (const match of text.matchAll(/([*_~])\1*/g)) {
     const run = match[0];
     const at = match.index;
     const end = at + run.length;
-    let opens = !blank(quote, end);
-    let closes = !blank(quote, at - 1);
-    if (
-      run === "~" ||
-      ((run.startsWith("_") || run === "*") &&
-        wordChar(quote, at - 1) &&
-        wordChar(quote, end))
-    ) {
+    if (inCode(at) || escaped(text, at)) {
       continue;
     }
-    if (run.startsWith("`")) {
-      opens = true;
-      closes = true;
+    if (run.startsWith("~") && run.length !== 2) {
+      continue;
     }
-    const partner = open.findLastIndex((o) => o.run === run);
-    if (closes && partner >= 0) {
-      // Openers between the pair never closed inside it.
-      for (const inner of open.splice(partner).slice(1)) {
-        stray.push([inner.at, inner.at + inner.run.length]);
-      }
+    if (run.startsWith("_") && wordChar(text, at - 1) && wordChar(text, end)) {
+      continue;
+    }
+    const opens = !blank(text, end);
+    const closes = !blank(text, at - 1);
+    const partner = stack.findLastIndex((o) => o.run === run);
+    const open = stack[partner];
+    if (closes && open !== undefined) {
+      // Openers between the two never closed: they are text.
+      stack.splice(partner);
+      pairs.push([
+        [open.at, open.at + run.length],
+        [at, end],
+      ]);
     } else if (opens) {
-      open.push({ run, at });
-    } else if (closes) {
-      stray.push([at, end]);
+      stack.push({ run, at });
     }
   }
-  for (const o of open) {
-    stray.push([o.at, o.at + o.run.length]);
+
+  const brackets: number[] = [];
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text.charAt(i);
+    if ((c !== "[" && c !== "]") || inCode(i) || escaped(text, i)) {
+      continue;
+    }
+    if (c === "[") {
+      brackets.push(i);
+      continue;
+    }
+    const open = brackets.pop();
+    const close = text.charAt(i + 1) === "(" ? text.indexOf(")", i + 2) : -1;
+    if (open === undefined || close < 0) {
+      continue;
+    }
+    const image =
+      open > 0 && text.charAt(open - 1) === "!" && !escaped(text, open - 1);
+    pairs.push([
+      [image ? open - 1 : open, open + 1],
+      [i, close + 1],
+    ]);
   }
-  return stray;
+  return pairs;
 }
 
 /**
- * The index ranges of link brackets in `quote` that a selection edge cut
- * from their partner: a `[` with no `]`, a `]` with no `[` (with the
- * `(destination)` after it), and a destination cut before its `)` (with its
- * `[`).
+ * The quote at `[start, end)` of `text` (the section text it was found in)
+ * as a person is shown it: a marker or link part whose partner the quote
+ * cut off is left out (`at** night` reads `at night`). Markup the quote
+ * holds whole, code spans, escapes and markers with no partner stay as
+ * they are. For display only: the stored quote is what the engine finds,
+ * so it is never changed. A quote that would show nothing is shown as is.
  */
-function strayBrackets(quote: string): [number, number][] {
-  const stray: [number, number][] = [];
-  const open: number[] = [];
-  for (let i = 0; i < quote.length; i += 1) {
-    const c = quote.charAt(i);
-    if (c === "[") {
-      open.push(i);
-    } else if (c === "]") {
-      const partner = open.pop();
-      const close =
-        quote.charAt(i + 1) === "(" ? quote.indexOf(")", i + 2) : -1;
-      if (partner === undefined) {
-        const end =
-          quote.charAt(i + 1) === "("
-            ? close < 0
-              ? quote.length
-              : close + 1
-            : i + 1;
-        stray.push([i, end]);
-        i = end - 1;
-      } else if (quote.charAt(i + 1) === "(" && close < 0) {
-        stray.push([partner, partner + 1], [i, quote.length]);
-        i = quote.length;
-      } else if (close >= 0) {
-        i = close;
+export function displayQuote(text: string, start: number, end: number): string {
+  const raw = text.slice(start, end);
+  const inside = ([a, b]: [number, number]) => a >= start && b <= end;
+  const cut: [number, number][] = [];
+  for (const pair of markupPairs(text)) {
+    if (pair.every(inside)) {
+      continue;
+    }
+    for (const [a, b] of pair) {
+      const from = Math.max(a, start);
+      const to = Math.min(b, end);
+      if (from < to) {
+        cut.push([from, to]);
       }
     }
   }
-  for (const at of open) {
-    stray.push([at, at + 1]);
-  }
-  return stray;
-}
-
-/**
- * A stored quote as a person is shown it: the source text, with the markers
- * a selection edge cut from their partner left out (`at** night` reads `at
- * night`). For display only: the stored quote is what the engine finds, so
- * it is never changed. A quote that would show nothing is shown as it is.
- */
-export function displayQuote(quote: string): string {
-  const cut = [...strayMarkers(quote), ...strayBrackets(quote)].sort(
-    (a, b) => a[0] - b[0],
-  );
+  cut.sort((x, y) => x[0] - y[0]);
   let out = "";
-  let at = 0;
-  for (const [start, end] of cut) {
-    if (start >= at) {
-      out += quote.slice(at, start);
+  let at = start;
+  for (const [from, to] of cut) {
+    if (from > at) {
+      out += text.slice(at, from);
     }
-    at = Math.max(at, end);
+    at = Math.max(at, to);
   }
-  out += quote.slice(at);
-  return out.trim() === "" ? quote : out;
+  out += text.slice(at, end);
+  return out.trim() === "" ? raw : out;
 }

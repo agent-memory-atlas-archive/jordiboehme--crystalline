@@ -113,7 +113,8 @@ function PageBody({
     () => reflectionAssetHome(domain, path),
     [domain, path],
   );
-  // A link to a section or a thread (`#s-<id>`, `#t-<id>`) scrolls there once
+  // A link to a section (`#s-<id>`) or a thread (`#<thread id>`, which is
+  // t-<hex> already: add no prefix) scrolls there once
   // the page has something to scroll to.
   useEffect(() => {
     if (!doc.data || hash.length < 2) {

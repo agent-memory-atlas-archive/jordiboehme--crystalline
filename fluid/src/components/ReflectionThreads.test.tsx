@@ -1,8 +1,14 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "../api/client";
+import { ApiProblem, api } from "../api/client";
 import type { Answer } from "../test/harness";
 import {
   answersFor,
@@ -10,7 +16,7 @@ import {
   renderApp,
   userFixture,
 } from "../test/harness";
-import { QUOTE_HIGHLIGHT } from "../reflectionQuotes";
+import { ACTIVE_HIGHLIGHT, QUOTE_HIGHLIGHT } from "../reflectionQuotes";
 
 vi.setConfig({ testTimeout: 15000 });
 vi.mock("../api/client", async (importOriginal) => {
@@ -48,7 +54,11 @@ function thread(id: string, overrides: Record<string, unknown> = {}) {
   };
 }
 
-function serve(threads: unknown[], routes: Record<string, Answer> = {}) {
+function serve(
+  threads: unknown[],
+  routes: Record<string, Answer> = {},
+  markdown = MARKDOWN,
+) {
   apiMock.mockImplementation(
     answersFor({
       "/auth/me": () =>
@@ -75,7 +85,7 @@ function serve(threads: unknown[], routes: Record<string, Answer> = {}) {
         domain: "eng",
         path: "guides/deploying.md",
         title: "Deploying",
-        markdown: MARKDOWN,
+        markdown,
         checksum: "c1",
         sections: [
           {
@@ -91,6 +101,27 @@ function serve(threads: unknown[], routes: Record<string, Answer> = {}) {
       ...routes,
     }),
   );
+}
+
+/** The page's answer, with the threads `threads()` gives at the time. */
+function docWith(threads: () => unknown[]): Answer {
+  return () => ({
+    domain: "eng",
+    path: "guides/deploying.md",
+    title: "Deploying",
+    markdown: MARKDOWN,
+    checksum: "c1",
+    sections: [
+      {
+        id: "7f3a9c2e",
+        heading: "Night deploys",
+        line: 3,
+        changed: false,
+        sources: [],
+      },
+    ],
+    threads: threads(),
+  });
 }
 
 /** A request's JSON body. */
@@ -158,6 +189,7 @@ describe("comments on a reflection", () => {
     select(textNode("Deploys run "), textNode(" night."), 6);
     await userEvent.click(screen.getByRole("button", { name: "Comment" }));
     expect(screen.getByText("Deploys run **at** night")).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Your comment" })).toHaveFocus();
     await userEvent.type(
       screen.getByRole("textbox", { name: "Your comment" }),
       "Still true?",
@@ -178,16 +210,90 @@ describe("comments on a reflection", () => {
       occurrence: 1,
       text: "Still true?",
     });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Comment" })).toHaveFocus();
+    });
+  });
+
+  it("returns focus to the Comment button when the comment is cancelled", async () => {
+    serve([]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await screen.findByText("at");
+    select(textNode("Deploys run "), textNode(" night."), 6);
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("form", { name: "New comment" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Comment" })).toHaveFocus();
+  });
+
+  it("puts a passage it cannot pin on the section", async () => {
+    const opened = vi.fn((_path: string, _init?: RequestInit) =>
+      thread("t-00000001"),
+    );
+    serve(
+      [],
+      {
+        "/domains/eng/reflection/threads": (path, init) => opened(path, init),
+      },
+      "# Deploying\n\n## Night deploys\n<!-- r:7f3a9c2e -->\n\nTom &amp; Jerry deploy.\n",
+    );
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const words = await screen.findByText(/Jerry deploy/);
+    const text = words.firstChild as Text;
+    select(text, text, 3);
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    expect(
+      screen.getByText(
+        "This passage cannot be pinned exactly, so the comment goes on the section.",
+      ),
+    ).toBeVisible();
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Your comment" }),
+      "Who?",
+    );
+    await userEvent.click(
+      within(screen.getByRole("form", { name: "New comment" })).getByRole(
+        "button",
+        { name: "Comment" },
+      ),
+    );
+    await waitFor(() => {
+      expect(opened).toHaveBeenCalledTimes(1);
+    });
+    expect(bodyOf(opened.mock.calls[0]?.[1])).toEqual({
+      path: "guides/deploying.md",
+      section: "7f3a9c2e",
+      text: "Who?",
+    });
   });
 
   it("shows the anonymous visitor every thread and no way to write one", async () => {
     serve([thread("t-00000001")], {
       "/auth/me": () => meResponse({ user: null, anonymous: true }),
+      "/domains/eng/reflection/threads": () => ({
+        threads: [
+          thread("t-00000002", {
+            status: "resolved",
+            entries: [
+              {
+                at: "2026-09-30T11:00:00Z",
+                kind: "resolve",
+                author: { name: "ann", agent: false },
+                text: "Done.",
+              },
+            ],
+          }),
+        ],
+      }),
     });
     renderApp("/d/eng/reflection/guides/deploying.md");
     expect(
       await screen.findByRole("article", { name: "Thread on Night deploys" }),
     ).toBeVisible();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show resolved threads" }),
+    );
+    expect(await screen.findByText("Resolved: Done.")).toBeVisible();
     for (const name of ["Comment", "Answer", "Resolve", "Reopen"]) {
       expect(screen.queryByRole("button", { name })).toBeNull();
     }
@@ -200,11 +306,30 @@ describe("comments on a reflection", () => {
           user: userFixture({ name: "vera", role: "viewer" }),
           read_only: true,
         }),
+      "/domains/eng/reflection/threads": () => ({
+        threads: [
+          thread("t-00000002", {
+            status: "resolved",
+            entries: [
+              {
+                at: "2026-09-30T11:00:00Z",
+                kind: "resolve",
+                author: { name: "ann", agent: false },
+                text: "Done.",
+              },
+            ],
+          }),
+        ],
+      }),
     });
     renderApp("/d/eng/reflection/guides/deploying.md");
     expect(
       await screen.findByRole("article", { name: "Thread on Night deploys" }),
     ).toBeVisible();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show resolved threads" }),
+    );
+    expect(await screen.findByText("Resolved: Done.")).toBeVisible();
     for (const name of ["Comment", "Answer", "Resolve", "Reopen"]) {
       expect(screen.queryByRole("button", { name })).toBeNull();
     }
@@ -318,34 +443,42 @@ describe("comments on a reflection", () => {
 
   it("resolves with a short outcome and reopens visibly", async () => {
     const steps: { url: string; body: unknown }[] = [];
-    serve([thread("t-00000001")], {
+    // The server's state: the page lists the thread while it is open, the
+    // resolved list while it is resolved.
+    let status: "open" | "resolved" = "open";
+    const resolvedThread = thread("t-00000001", {
+      status: "resolved",
+      entries: [
+        {
+          at: "2026-09-30T10:00:00Z",
+          kind: "comment",
+          author: { name: "vera", agent: false },
+          text: "Still true?",
+        },
+        {
+          at: "2026-09-30T11:00:00Z",
+          kind: "resolve",
+          author: { name: "claude-code", agent: true },
+          text: "Yes, still at night.",
+        },
+      ],
+    });
+    const docRoute = docWith(() =>
+      status === "open" ? [thread("t-00000001")] : [],
+    );
+    serve([], {
+      "/domains/eng/reflections/guides/deploying.md": docRoute,
       "/domains/eng/reflection/threads/t-00000001/resolve": (url, init) => {
         steps.push({ url, body: bodyOf(init) });
-        return thread("t-00000001", { status: "resolved" });
+        status = "resolved";
+        return resolvedThread;
       },
       "/domains/eng/reflection/threads": () => ({
-        threads: [
-          thread("t-00000001", {
-            status: "resolved",
-            entries: [
-              {
-                at: "2026-09-30T10:00:00Z",
-                kind: "comment",
-                author: { name: "vera", agent: false },
-                text: "Still true?",
-              },
-              {
-                at: "2026-09-30T11:00:00Z",
-                kind: "resolve",
-                author: { name: "claude-code", agent: true },
-                text: "Yes, still at night.",
-              },
-            ],
-          }),
-        ],
+        threads: status === "resolved" ? [resolvedThread] : [],
       }),
       "/domains/eng/reflection/threads/t-00000001/reopen": (url, init) => {
         steps.push({ url, body: bodyOf(init) });
+        status = "open";
         return thread("t-00000001");
       },
     });
@@ -366,22 +499,209 @@ describe("comments on a reflection", () => {
         body: { path: "guides/deploying.md", outcome: "Yes, still at night." },
       });
     });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("article", { name: "Thread on Night deploys" }),
+      ).toBeNull();
+    });
+    expect(screen.getByRole("heading", { name: "Threads" })).toHaveFocus();
     await userEvent.click(
       screen.getByRole("button", { name: "Show resolved threads" }),
     );
     const resolved = await screen.findByText("Resolved: Yes, still at night.");
-    expect(
-      within(resolved.closest("article") as HTMLElement).getByText("(agent)"),
-    ).toBeVisible();
+    const resolvedCard = resolved.closest("article") as HTMLElement;
+    expect(resolvedCard).toHaveAccessibleName("Thread on Night deploys");
+    expect(within(resolvedCard).getByText("(agent)")).toBeVisible();
     await userEvent.click(
-      within(resolved.closest("article") as HTMLElement).getByRole("button", {
-        name: "Reopen",
-      }),
+      within(resolvedCard).getByRole("button", { name: "Reopen" }),
     );
     await waitFor(() => {
       expect(steps[1]?.url).toBe(
         "/domains/eng/reflection/threads/t-00000001/reopen",
       );
     });
+    await waitFor(() => {
+      expect(
+        screen.getByRole("textbox", { name: "Outcome" }),
+      ).toBeInTheDocument();
+    });
+    // Reopened: listed once, as an open thread.
+    expect(
+      screen.getAllByRole("article", { name: "Thread on Night deploys" }),
+    ).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: "Threads" })).toHaveFocus();
+  });
+
+  it("answers with the text and reads the page again", async () => {
+    const answered = vi.fn((_path: string, _init?: RequestInit) =>
+      thread("t-00000001"),
+    );
+    const docRoute = vi.fn(docWith(() => [thread("t-00000001")]));
+    serve([], {
+      "/domains/eng/reflections/guides/deploying.md": docRoute,
+      "/domains/eng/reflection/threads/t-00000001/answer": (path, init) =>
+        answered(path, init),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    const reads = docRoute.mock.calls.length;
+    await userEvent.type(
+      within(card).getByRole("textbox", { name: "Your answer" }),
+      "Yes.",
+    );
+    await userEvent.click(within(card).getByRole("button", { name: "Answer" }));
+    await waitFor(() => {
+      expect(answered).toHaveBeenCalledTimes(1);
+    });
+    expect(bodyOf(answered.mock.calls[0]?.[1])).toEqual({
+      path: "guides/deploying.md",
+      text: "Yes.",
+    });
+    await waitFor(() => {
+      expect(docRoute.mock.calls.length).toBeGreaterThan(reads);
+    });
+    expect(
+      within(card).getByRole("textbox", { name: "Your answer" }),
+    ).toHaveValue("");
+  });
+
+  it("paints the thread under the pointer a second time, and clears it all on leaving", async () => {
+    serve([thread("t-00000001")]);
+    const view = renderApp("/d/eng/reflection/guides/deploying.md");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    await waitFor(() => {
+      expect(registry.get(QUOTE_HIGHLIGHT)?.ranges ?? []).toHaveLength(1);
+    });
+    expect(registry.get(ACTIVE_HIGHLIGHT)?.ranges ?? []).toHaveLength(0);
+    fireEvent.mouseEnter(card.parentElement as HTMLElement);
+    await waitFor(() => {
+      expect(
+        (registry.get(ACTIVE_HIGHLIGHT)?.ranges ?? []).map((r) => r.toString()),
+      ).toEqual(["Deploys run at night"]);
+    });
+    fireEvent.mouseLeave(card.parentElement as HTMLElement);
+    await waitFor(() => {
+      expect(registry.get(ACTIVE_HIGHLIGHT)?.ranges ?? []).toHaveLength(0);
+    });
+    view.unmount();
+    expect(registry.size).toBe(0);
+  });
+
+  it("gives a thread its own id as the address, and a link to it scrolls there", async () => {
+    const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
+    serve([thread("t-00000001")]);
+    renderApp("/d/eng/reflection/guides/deploying.md#t-00000001");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    expect(card).toHaveAttribute("id", "t-00000001");
+    await waitFor(() => {
+      expect(scrolled.mock.contexts).toContain(card);
+    });
+    scrolled.mockRestore();
+  });
+
+  it("says a reopen with no words was reopened", async () => {
+    serve([
+      thread("t-00000001", {
+        entries: [
+          {
+            at: "2026-09-30T10:00:00Z",
+            kind: "reopen",
+            author: { name: "vera", agent: false },
+            text: "",
+          },
+        ],
+      }),
+    ]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    expect(within(card).getByText("Reopened")).toBeVisible();
+  });
+
+  it("shows a quote it cannot find on the page as it was stored", async () => {
+    serve([
+      thread("t-00000001", {
+        anchor: {
+          section: "7f3a9c2e",
+          quote: "at** dawn",
+          occurrence: 1,
+          state: "text_changed",
+        },
+      }),
+    ]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    expect(within(card).getByText("at** dawn")).toBeVisible();
+  });
+
+  it("treats an empty quote as a comment on the section", async () => {
+    serve([
+      thread("t-00000001", {
+        anchor: {
+          section: "7f3a9c2e",
+          quote: "",
+          occurrence: 1,
+          state: "found",
+        },
+      }),
+    ]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    expect(card.querySelector("blockquote")).toBeNull();
+    expect(within(card).queryByText("The text changed.")).toBeNull();
+  });
+
+  it("lists resolved threads per section, a gone one under its own heading", async () => {
+    serve([], {
+      "/domains/eng/reflection/threads": () => ({
+        threads: [
+          thread("t-00000003", {
+            status: "resolved",
+            anchor: {
+              section: "0b1c2d3e",
+              quote: "Old text",
+              occurrence: 1,
+              state: "section_gone",
+            },
+          }),
+        ],
+      }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Show resolved threads" }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Not on the page any more" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("article", { name: "Thread on the page" }),
+    ).toBeVisible();
+  });
+
+  it("says when the resolved threads cannot be read", async () => {
+    serve([], {
+      "/domains/eng/reflection/threads": () => {
+        throw new ApiProblem(500, "Internal Server Error", "the index is busy");
+      },
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Show resolved threads" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "the index is busy",
+    );
   });
 });

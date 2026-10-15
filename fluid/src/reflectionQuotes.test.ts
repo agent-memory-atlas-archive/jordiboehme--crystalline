@@ -314,37 +314,73 @@ describe("paintQuotes", () => {
   });
 });
 
+/** `quote` as shown, located at its first match in `source`. */
+function shown(source: string, quote: string): string {
+  const start = source.indexOf(quote);
+  if (start < 0) {
+    throw new Error(`"${quote}" is not in "${source}"`);
+  }
+  return displayQuote(source, start, start + quote.length);
+}
+
 describe("displayQuote", () => {
-  it("drops the markers a selection edge cut off from their partner", () => {
-    expect(displayQuote("at** night")).toBe("at night");
-    expect(displayQuote("Deploys run **at")).toBe("Deploys run at");
-    expect(displayQuote("at* and _so")).toBe("at and so");
-    expect(displayQuote("run `x")).toBe("run x");
-    expect(displayQuote("gone~~ now")).toBe("gone now");
-    expect(displayQuote("**a _b** c")).toBe("**a b** c");
+  it("drops the markers whose partner the quote cut off", () => {
+    expect(shown("Deploys run **at** night.", "at** night")).toBe("at night");
+    expect(shown("Deploys run **at** night.", "Deploys run **at")).toBe(
+      "Deploys run at",
+    );
+    expect(shown("It is *so* _very_ true.", "so* _very")).toBe("so very");
+    expect(shown("a ~~gone~~ now", "gone~~ now")).toBe("gone now");
+    expect(shown("run `x` now", "run `x")).toBe("run x");
   });
 
-  it("drops what is left of a link cut in two", () => {
-    expect(displayQuote("see [the docs")).toBe("see the docs");
-    expect(displayQuote("docs](https://x) for")).toBe("docs for");
-    expect(displayQuote("[text](http")).toBe("text");
+  it("drops what the quote left of a link or image", () => {
+    const link = "see [the docs](https://x) now";
+    expect(shown(link, "see [the docs")).toBe("see the docs");
+    expect(shown(link, "docs](https://x) now")).toBe("docs now");
+    expect(shown(link, "[the docs](http")).toBe("the docs");
+    expect(shown("an ![logo](a.png) here", "an ![logo")).toBe("an logo");
   });
 
-  it("keeps markup that is whole, and plain stars and underscores", () => {
+  it("keeps code spans, escapes and markers that have no partner", () => {
+    const kept: [string, string][] = [
+      ["Pass `**kwargs` on.", "`**kwargs`"],
+      ["Then call `f(*args)` now.", "call `f(*args)` now"],
+      ["Then see `[` key.", "see `[` key"],
+      ["Use `*` here.", "`*`"],
+      ["Write a \\* b here.", "a \\* b"],
+      ["Write a \\* b here.", "* b"],
+      ["*nix systems", "*nix"],
+      ["a rated 5* hotel", "rated 5* hotel"],
+      ["the _id field is", "the _id field"],
+      ["arr[0] and arr[1] here", "arr[0] and arr[1"],
+      ["~~~code\nx\n", "~~~code"],
+      ["x `` y", "x `` y"],
+    ];
+    for (const [source, quote] of kept) {
+      expect(shown(source, quote)).toBe(quote);
+    }
+  });
+
+  it("keeps markup the quote holds whole", () => {
     for (const quote of [
-      "Deploys run **at** night",
-      "`code` here",
+      "Deploys run ***at*** night",
+      "**bold _and_ more**",
       "snake_case_name",
-      "2 * 3",
-      "see [the docs](https://x) now",
-      "takes ~10 minutes",
+      "__init__",
       "a*b",
+      "2 * 3",
+      "takes ~10 min",
+      "see [the docs](https://x) now",
+      "an ![logo](a.png) here",
+      "**__**",
+      "*a **b* c**",
     ]) {
-      expect(displayQuote(quote)).toBe(quote);
+      expect(shown(`Before ${quote} after.`, quote)).toBe(quote);
     }
   });
 
   it("never leaves nothing to show", () => {
-    expect(displayQuote("**")).toBe("**");
+    expect(displayQuote("**x**", 0, 2)).toBe("**");
   });
 });

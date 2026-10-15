@@ -12,8 +12,9 @@
  * against the text on screen rather than trusted from the answer: the page
  * and its threads arrive together, but the page is what a reader sees. Once
  * the passage is gone, the thread says so and shows the old quote as text.
- * A quote is shown without the markers its edges cut from their partner
- * (`displayQuote`); what is stored and sent is the source text as it is.
+ * A quote found on the page is shown without the markers whose partner it
+ * cut off (`displayQuote`); one that is not found is shown as stored. What
+ * is stored and sent is always the source text as it is.
  *
  * Every call to the threads routes is made here, built from the domain and
  * the path alone, so another thread target can reuse the column later.
@@ -21,10 +22,10 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactElement, ReactNode, RefObject } from "react";
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { problemDetail } from "../api/client";
-import type { ReflectionDoc, ThreadView } from "../api/reflection";
+import type { AnchorState, ReflectionDoc, ThreadView } from "../api/reflection";
 import {
   fetchThreads,
   openThread,
@@ -48,7 +49,12 @@ import type { SectionText } from "../reflectionText";
 import { TOP_SECTION, locateQuote } from "../reflectionText";
 import { BUTTON, FIELD, TOGGLE } from "./primitives";
 
-type Where = "found" | "text_changed" | "section_gone";
+const ALERT = "text-red-800 dark:text-red-200";
+
+/** A quote, with an empty one read as none, as the server reads it. */
+function quoteOf(quote: string | null): string | null {
+  return quote === "" ? null : quote;
+}
 
 /**
  * The section a thread is anchored on: by id, or by heading for a section
@@ -57,10 +63,10 @@ type Where = "found" | "text_changed" | "section_gone";
  * the engine's `find_section` does.
  */
 function sectionOf(
-  thread: ThreadView,
+  key: string,
   sections: readonly SectionText[],
 ): SectionText | undefined {
-  return sections.find((s) => (s.id ?? s.heading) === thread.anchor.section);
+  return sections.find((s) => (s.id ?? s.heading) === key);
 }
 
 /** Where a thread stands on the text on screen. */
@@ -68,19 +74,16 @@ function sectionOf(
 export function effectiveAnchor(
   thread: ThreadView,
   sections: readonly SectionText[],
-): Where {
-  const section = sectionOf(thread, sections);
+): AnchorState {
+  const section = sectionOf(thread.anchor.section, sections);
   if (section === undefined) {
     return "section_gone";
   }
-  if (thread.anchor.quote === null) {
+  const quote = quoteOf(thread.anchor.quote);
+  if (quote === null) {
     return "found";
   }
-  return locateQuote(
-    section.text,
-    thread.anchor.quote,
-    thread.anchor.occurrence,
-  ) === null
+  return locateQuote(section.text, quote, thread.anchor.occurrence) === null
     ? "text_changed"
     : "found";
 }
@@ -90,10 +93,25 @@ function headingOf(
   thread: ThreadView,
   sections: readonly SectionText[],
 ): string | null {
-  const section = sectionOf(thread, sections);
+  const section = sectionOf(thread.anchor.section, sections);
   return section === undefined || section.id === TOP_SECTION
     ? null
     : section.heading;
+}
+
+/**
+ * A quote as a person is shown it: cleaned of cut markup where it is found
+ * in `source` (the text of its section), else exactly as stored.
+ */
+function shownQuote(
+  quote: string,
+  occurrence: number,
+  source: string | null,
+): string {
+  const at = source === null ? null : locateQuote(source, quote, occurrence);
+  return source === null || at === null
+    ? quote
+    : displayQuote(source, at.start, at.end);
 }
 
 export function ThreadCard({
@@ -101,22 +119,26 @@ export function ThreadCard({
   heading,
   state,
   actions,
+  source = null,
 }: {
   thread: ThreadView;
   heading: string | null;
-  state: Where;
+  state: AnchorState;
   actions: ReactNode;
+  /** The text of the thread's section; without it the quote shows as stored. */
+  source?: string | null;
 }): ReactElement {
   const now = new Date();
+  const quote = quoteOf(thread.anchor.quote);
   return (
     <article
-      id={`t-${thread.id}`}
+      id={thread.id}
       aria-label={`Thread on ${heading ?? "the page"}`}
       className="flex flex-col gap-2 rounded border border-slate-200 p-3 text-sm dark:border-slate-800"
     >
-      {thread.anchor.quote !== null && (
+      {quote !== null && (
         <blockquote className="border-l-2 border-amber-300 pl-2 text-slate-600 dark:border-amber-700 dark:text-slate-300">
-          {displayQuote(thread.anchor.quote)}
+          {shownQuote(quote, thread.anchor.occurrence, source)}
         </blockquote>
       )}
       {state === "text_changed" && (
@@ -149,6 +171,13 @@ export function ThreadCard({
   );
 }
 
+interface Listed {
+  thread: ThreadView;
+  state: AnchorState;
+  heading: string | null;
+  source: string | null;
+}
+
 export function ReflectionThreads({
   domain,
   path,
@@ -178,16 +207,35 @@ export function ReflectionThreads({
   const [active, setActive] = useState<string | null>(null);
   const [showResolved, setShowResolved] = useState(false);
   const hint = useId();
+  const commentButton = useRef<HTMLButtonElement | null>(null);
+  const threadsHeading = useRef<HTMLHeadingElement | null>(null);
+  // Set when the form closes, so focus goes back to the button once it is
+  // drawn again.
+  const backToComment = useRef(false);
 
-  // What is selected on the page, read on every change of the selection.
+  useEffect(() => {
+    if (drafting === null && backToComment.current) {
+      backToComment.current = false;
+      commentButton.current?.focus();
+    }
+  }, [drafting]);
+
+  // What is selected on the page. A selection elsewhere (typing in a form
+  // here) is not the page's and changes nothing; a collapse on the page
+  // clears it.
   useEffect(() => {
     const read = () => {
       const root = articleRef.current;
       const selection = window.getSelection();
+      if (root === null || selection === null || selection.rangeCount === 0) {
+        return;
+      }
+      const range = selection.getRangeAt(0);
+      if (!root.contains(range.commonAncestorContainer)) {
+        return;
+      }
       setCaptured(
-        root === null || selection === null || selection.rangeCount === 0
-          ? null
-          : selectionAnchor(root, selection.getRangeAt(0), sections),
+        range.collapsed ? null : selectionAnchor(root, range, sections),
       );
     };
     document.addEventListener("selectionchange", read);
@@ -202,14 +250,20 @@ export function ReflectionThreads({
     enabled: showResolved,
   });
 
+  const list = (thread: ThreadView): Listed => ({
+    thread,
+    state: effectiveAnchor(thread, sections),
+    heading: headingOf(thread, sections),
+    source: sectionOf(thread.anchor.section, sections)?.text ?? null,
+  });
+
   const open = useMemo(
     () =>
       doc.threads
         .filter((t) => t.status === "open")
-        .map((t) => ({
-          thread: t,
-          state: effectiveAnchor(t, sections),
-          heading: headingOf(t, sections),
+        .map((thread) => ({
+          thread,
+          state: effectiveAnchor(thread, sections),
         })),
     [doc.threads, sections],
   );
@@ -227,10 +281,11 @@ export function ReflectionThreads({
       const all: Range[] = [];
       const current: Range[] = [];
       for (const { thread, state } of open) {
-        if (state !== "found" || thread.anchor.quote === null) {
+        const quote = quoteOf(thread.anchor.quote);
+        if (state !== "found" || quote === null) {
           continue;
         }
-        const section = sectionOf(thread, sections);
+        const section = sectionOf(thread.anchor.section, sections);
         // Compared by attribute rather than by selector, so a heading used
         // as a key (a section with no id yet) needs no escaping.
         const scope =
@@ -238,11 +293,7 @@ export function ReflectionThreads({
             (el) => el.getAttribute(SECTION_ATTR) === thread.anchor.section,
           ) ?? null;
         const at = section
-          ? locateQuote(
-              section.text,
-              thread.anchor.quote,
-              thread.anchor.occurrence,
-            )
+          ? locateQuote(section.text, quote, thread.anchor.occurrence)
           : null;
         const range =
           scope && section && at
@@ -271,20 +322,38 @@ export function ReflectionThreads({
       openThread(domain, {
         path,
         section: anchor.section,
-        ...(anchor.quote !== null
-          ? { quote: anchor.quote, occurrence: anchor.occurrence ?? 1 }
+        ...(quoteOf(anchor.quote) !== null
+          ? { quote: anchor.quote ?? "", occurrence: anchor.occurrence ?? 1 }
           : {}),
         text,
       }),
     onSuccess: () => {
+      backToComment.current = true;
       setDrafting(null);
+      setCaptured(null);
       window.getSelection()?.removeAllRanges();
       void refresh();
     },
   });
 
-  const bySection = new Map<string, typeof open>();
-  for (const item of open) {
+  // A thread a resolve or reopen moves is drawn elsewhere: focus waits on
+  // the column's heading rather than on a control that is gone.
+  const afterMove = () => {
+    threadsHeading.current?.focus();
+    return refresh();
+  };
+
+  // Open threads, then the resolved ones when asked for; a thread both
+  // lists hold for a moment (between a step and the refetch) shows once.
+  const openIds = new Set(open.map((o) => o.thread.id));
+  const listed: Listed[] = [
+    ...open.map((o) => list(o.thread)),
+    ...(showResolved ? (resolved.data ?? []) : [])
+      .filter((t) => t.status === "resolved" && !openIds.has(t.id))
+      .map(list),
+  ];
+  const bySection = new Map<string, Listed[]>();
+  for (const item of listed) {
     const key = item.state === "section_gone" ? "" : item.thread.anchor.section;
     bySection.set(key, [...(bySection.get(key) ?? []), item]);
   }
@@ -294,7 +363,9 @@ export function ReflectionThreads({
   return (
     <>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-section">Threads</h2>
+        <h2 ref={threadsHeading} tabIndex={-1} className="text-section">
+          Threads
+        </h2>
         <button
           type="button"
           aria-pressed={showResolved}
@@ -306,9 +377,15 @@ export function ReflectionThreads({
           Show resolved threads
         </button>
       </div>
+      {showResolved && resolved.error && (
+        <p role="alert" className={`text-sm ${ALERT}`}>
+          {problemDetail(resolved.error)}
+        </p>
+      )}
       {mayComment && drafting === null && (
         <>
           <button
+            ref={commentButton}
             type="button"
             aria-disabled={captured === null}
             aria-describedby={captured === null ? hint : undefined}
@@ -319,6 +396,7 @@ export function ReflectionThreads({
             }}
             onClick={() => {
               if (captured !== null) {
+                comment.reset();
                 setDrafting(captured);
               }
             }}
@@ -334,9 +412,12 @@ export function ReflectionThreads({
       {drafting !== null && (
         <CommentForm
           anchor={drafting}
+          source={sectionOf(drafting.section, sections)?.text ?? null}
           pending={comment.isPending}
           error={comment.error}
           onCancel={() => {
+            comment.reset();
+            backToComment.current = true;
             setDrafting(null);
           }}
           onSubmit={(text) => {
@@ -356,29 +437,46 @@ export function ReflectionThreads({
                 Not on the page any more
               </h3>
             )}
-            {items.map(({ thread, state, heading }) => (
+            {items.map(({ thread, state, heading, source }) => (
               <div
                 key={thread.id}
                 onFocusCapture={() => {
                   setActive(thread.id);
                 }}
+                onBlurCapture={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget)) {
+                    setActive((now) => (now === thread.id ? null : now));
+                  }
+                }}
                 onMouseEnter={() => {
                   setActive(thread.id);
+                }}
+                onMouseLeave={() => {
+                  setActive((now) => (now === thread.id ? null : now));
                 }}
               >
                 <ThreadCard
                   thread={thread}
                   heading={heading}
                   state={state}
+                  source={source}
                   actions={
-                    mayComment ? (
+                    !mayComment ? null : thread.status === "open" ? (
                       <OpenActions
                         domain={domain}
                         path={path}
                         thread={thread}
-                        onDone={refresh}
+                        onAnswered={refresh}
+                        onResolved={afterMove}
                       />
-                    ) : null
+                    ) : (
+                      <ReopenAction
+                        domain={domain}
+                        path={path}
+                        thread={thread}
+                        onDone={afterMove}
+                      />
+                    )
                   }
                 />
               </div>
@@ -386,37 +484,20 @@ export function ReflectionThreads({
           </div>
         );
       })}
-      {showResolved &&
-        (resolved.data ?? []).map((thread) => (
-          <ThreadCard
-            key={thread.id}
-            thread={thread}
-            heading={headingOf(thread, sections)}
-            state={effectiveAnchor(thread, sections)}
-            actions={
-              mayComment ? (
-                <ReopenAction
-                  domain={domain}
-                  path={path}
-                  thread={thread}
-                  onDone={refresh}
-                />
-              ) : null
-            }
-          />
-        ))}
     </>
   );
 }
 
 function CommentForm({
   anchor,
+  source,
   pending,
   error,
   onCancel,
   onSubmit,
 }: {
   anchor: SelectionAnchor;
+  source: string | null;
   pending: boolean;
   error: Error | null;
   onCancel: () => void;
@@ -424,6 +505,11 @@ function CommentForm({
 }): ReactElement {
   const [text, setText] = useState("");
   const field = useId();
+  const box = useRef<HTMLTextAreaElement | null>(null);
+  const quote = quoteOf(anchor.quote);
+  useEffect(() => {
+    box.current?.focus();
+  }, []);
   return (
     <form
       aria-label="New comment"
@@ -435,9 +521,9 @@ function CommentForm({
         }
       }}
     >
-      {anchor.quote !== null ? (
+      {quote !== null ? (
         <blockquote className="border-l-2 border-amber-300 pl-2 dark:border-amber-700">
-          {displayQuote(anchor.quote)}
+          {shownQuote(quote, anchor.occurrence ?? 1, source)}
         </blockquote>
       ) : (
         <p className="text-caption">
@@ -449,6 +535,7 @@ function CommentForm({
         Your comment
       </label>
       <textarea
+        ref={box}
         id={field}
         value={text}
         rows={3}
@@ -458,7 +545,7 @@ function CommentForm({
         className="rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-900"
       />
       {error && (
-        <p role="alert" className="text-red-800 dark:text-red-200">
+        <p role="alert" className={ALERT}>
           {problemDetail(error)}
         </p>
       )}
@@ -474,100 +561,111 @@ function CommentForm({
   );
 }
 
+/** One labelled field and its button, for a step that takes words. */
+function StepForm({
+  label,
+  button,
+  pending,
+  error,
+  onSend,
+}: {
+  label: string;
+  button: string;
+  pending: boolean;
+  error: Error | null;
+  /** Sends the words, with a way to clear the field once they landed. */
+  onSend: (text: string, clear: () => void) => void;
+}): ReactElement {
+  const [value, setValue] = useState("");
+  const id = useId();
+  return (
+    <form
+      className="flex flex-col gap-1"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (value.trim() !== "" && !pending) {
+          onSend(value.trim(), () => {
+            setValue("");
+          });
+        }
+      }}
+    >
+      <label htmlFor={id} className="text-caption">
+        {label}
+      </label>
+      <div className="flex items-end gap-2">
+        <input
+          id={id}
+          value={value}
+          onChange={(event) => {
+            setValue(event.target.value);
+          }}
+          className={`min-w-0 flex-1 ${FIELD}`}
+        />
+        <button type="submit" disabled={pending} className={BUTTON.secondary}>
+          {button}
+        </button>
+      </div>
+      {error && (
+        <p role="alert" className={ALERT}>
+          {problemDetail(error)}
+        </p>
+      )}
+    </form>
+  );
+}
+
 function OpenActions({
   domain,
   path,
   thread,
-  onDone,
+  onAnswered,
+  onResolved,
 }: {
   domain: string;
   path: string;
   thread: ThreadView;
-  onDone: () => Promise<unknown>;
+  onAnswered: () => Promise<unknown>;
+  onResolved: () => Promise<unknown>;
 }): ReactElement {
-  const [answer, setAnswer] = useState("");
-  const [outcome, setOutcome] = useState("");
-  const answerId = useId();
-  const outcomeId = useId();
-  const step = useMutation({
-    mutationFn: (input: { action: "answer" | "resolve"; text: string }) =>
-      stepThread(
-        domain,
-        thread.id,
-        input.action,
-        input.action === "resolve"
-          ? { path, outcome: input.text }
-          : { path, text: input.text },
-      ),
-    onSuccess: () => {
-      setAnswer("");
-      setOutcome("");
-      void onDone();
-    },
+  const answer = useMutation({
+    mutationFn: (text: string) =>
+      stepThread(domain, thread.id, "answer", { path, text }),
+  });
+  const resolve = useMutation({
+    mutationFn: (outcome: string) =>
+      stepThread(domain, thread.id, "resolve", { path, outcome }),
   });
   return (
     <div className="flex flex-col gap-2">
-      <form
-        className="flex items-end gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (answer.trim() !== "") {
-            step.mutate({ action: "answer", text: answer.trim() });
-          }
+      <StepForm
+        label="Your answer"
+        button="Answer"
+        pending={answer.isPending}
+        error={answer.error}
+        onSend={(text, clear) => {
+          answer.mutate(text, {
+            onSuccess: () => {
+              clear();
+              void onAnswered();
+            },
+          });
         }}
-      >
-        <label htmlFor={answerId} className="sr-only">
-          Your answer
-        </label>
-        <input
-          id={answerId}
-          value={answer}
-          onChange={(e) => {
-            setAnswer(e.target.value);
-          }}
-          className={`min-w-0 flex-1 ${FIELD}`}
-        />
-        <button
-          type="submit"
-          disabled={step.isPending}
-          className={BUTTON.secondary}
-        >
-          Answer
-        </button>
-      </form>
-      <form
-        className="flex items-end gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (outcome.trim() !== "") {
-            step.mutate({ action: "resolve", text: outcome.trim() });
-          }
+      />
+      <StepForm
+        label="Outcome"
+        button="Resolve"
+        pending={resolve.isPending}
+        error={resolve.error}
+        onSend={(text, clear) => {
+          resolve.mutate(text, {
+            onSuccess: () => {
+              clear();
+              void onResolved();
+            },
+          });
         }}
-      >
-        <label htmlFor={outcomeId} className="sr-only">
-          Outcome
-        </label>
-        <input
-          id={outcomeId}
-          value={outcome}
-          onChange={(e) => {
-            setOutcome(e.target.value);
-          }}
-          className={`min-w-0 flex-1 ${FIELD}`}
-        />
-        <button
-          type="submit"
-          disabled={step.isPending}
-          className={BUTTON.secondary}
-        >
-          Resolve
-        </button>
-      </form>
-      {step.error && (
-        <p role="alert" className="text-red-800 dark:text-red-200">
-          {problemDetail(step.error)}
-        </p>
-      )}
+      />
     </div>
   );
 }
@@ -602,7 +700,7 @@ function ReopenAction({
         Reopen
       </button>
       {reopen.error && (
-        <p role="alert" className="text-red-800 dark:text-red-200">
+        <p role="alert" className={ALERT}>
           {problemDetail(reopen.error)}
         </p>
       )}
