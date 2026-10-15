@@ -65,6 +65,11 @@ export interface MarkdownProps {
    * link into should not offer to be linked into.
    */
   anchors?: MarkdownAnchors;
+  /**
+   * Stamp positioned text with its source offset, for comments on selected
+   * text. Only the reflection page sets it.
+   */
+  sourceSpans?: boolean;
 }
 
 export function Markdown({
@@ -75,6 +80,7 @@ export function Markdown({
   assets,
   documentName,
   anchors,
+  sourceSpans,
 }: MarkdownProps) {
   return (
     <Suspense
@@ -114,6 +120,7 @@ export function Markdown({
         {...(assets === undefined ? {} : { assets })}
         {...(documentName === undefined ? {} : { documentName })}
         {...(anchors === undefined ? {} : { anchors })}
+        {...(sourceSpans ? { sourceSpans } : {})}
       />
     </Suspense>
   );

@@ -210,6 +210,31 @@
   }
 
   /*
+   * Comment quotes on a reflection page, painted with the CSS Custom
+   * Highlight API (`reflectionQuotes.ts`). The active quote is the thread a
+   * reader picked, painted on top of the rest.
+   */
+  ::highlight(reflection-quote) {
+    background-color: var(--color-amber-100);
+    color: var(--color-slate-900);
+  }
+
+  ::highlight(reflection-quote-active) {
+    background-color: var(--color-accent-200);
+    color: var(--color-slate-900);
+  }
+
+  [data-theme="dark"] ::highlight(reflection-quote) {
+    background-color: var(--color-amber-900);
+    color: var(--color-slate-100);
+  }
+
+  [data-theme="dark"] ::highlight(reflection-quote-active) {
+    background-color: var(--color-accent-800);
+    color: var(--color-slate-100);
+  }
+
+  /*
    * The reading measure: prose is capped at about 70 characters, while
    * anything marked .breakout (tables, diagrams, the graph) keeps the full
    * column. Applied to the container of a rendered document.

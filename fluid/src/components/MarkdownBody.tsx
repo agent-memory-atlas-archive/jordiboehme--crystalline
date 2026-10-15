@@ -64,6 +64,8 @@ import {
   imageStyle,
   parseImageFragment,
 } from "../editor/imageFormat";
+import { SOURCE_ATTR, spanBase } from "../reflectionQuotes";
+import { isIdLine } from "../reflectionText";
 import { WIKILINK, referenceState } from "../wikilinks";
 import type { WikilinkResolution, WikilinkResolver } from "../wikilinks";
 import DiagramOverlay from "./DiagramOverlay";
@@ -132,6 +134,8 @@ interface HastNode {
   properties?: Record<string, unknown>;
   children?: HastNode[];
   value?: string;
+  /** Where the parser found the node, for the source-span stamp. */
+  position?: { start?: { offset?: number }; end?: { offset?: number } };
 }
 
 /** Every character inside a node, in order. */
@@ -266,6 +270,61 @@ function element(resolution: WikilinkResolution, literal: string): HastNode {
   };
 }
 
+/**
+ * Stamp every text node the parser positioned with its offset into the
+ * source, for the reflection page: a selection's ends read the offsets back
+ * and become a quote of the source text a comment anchors on
+ * (`reflectionQuotes.ts`). First in the chain, so the positions are the
+ * parser's own; a later pass that rebuilds a subtree (the highlighter over
+ * code) drops the stamps there, and a selection in such a subtree becomes a
+ * section comment rather than a guessed quote.
+ *
+ * A section id comment is dropped on the way: it is bookkeeping, and the
+ * renderer would otherwise draw it as the text it was written as.
+ */
+function sourceSpanStamp(source: string) {
+  return function plugin() {
+    return function transform(tree: unknown) {
+      stamp(tree as HastNode, source);
+    };
+  };
+}
+
+/** Wrap each positioned text child of `node` in a stamped span, all the way down. */
+function stamp(node: HastNode, source: string): void {
+  if (!node.children) {
+    return;
+  }
+  node.children = node.children
+    .filter((child) => !(child.type === "raw" && isIdLine(child.value ?? "")))
+    .map((child) => {
+      if (child.type === "text") {
+        const base = spanBase(
+          source,
+          child.position?.start?.offset,
+          child.position?.end?.offset,
+          child.value ?? "",
+        );
+        return base === null
+          ? child
+          : {
+              type: "element",
+              tagName: "span",
+              properties: { [SOURCE_ATTR]: String(base) },
+              children: [child],
+            };
+      }
+      stamp(child, source);
+      return child;
+    });
+}
+
+/** The source offset a stamped span carries, or undefined for any other span. */
+function sourceStamp(node: unknown): string | undefined {
+  const value = (node as HastNode | undefined)?.properties?.[SOURCE_ATTR];
+  return typeof value === "string" ? value : undefined;
+}
+
 /** The language a fenced code block declared, or null when it declared none. */
 function languageOf(node: HastNode | undefined): string | null {
   const names = node?.properties?.className;
@@ -371,14 +430,16 @@ const components: Components = {
   ),
   li: ({ children }) => <li className="my-1">{structuredBullet(children)}</li>,
   span: ({ children, className, node }) =>
-    // Two sources make spans in this tree, both plugin-generated rather than
-    // raw HTML an engram could write: the wikilink rewrite's own markers, and
+    // Three sources make spans in this tree, all plugin-generated rather than
+    // raw HTML an engram could write: the wikilink rewrite's own markers,
     // rehype-highlight's per-token spans inside a fenced code block (the
-    // `.hljs-string` etc. classes `index.css`'s syntax palette styles). The
-    // wikilink case gets its own fixed look; everything else has to keep
-    // whatever class it arrived with; passing an incoming `className` through
-    // unconditionally, rather than dropping it, is what makes a code fence
-    // render in color instead of the page's plain text color.
+    // `.hljs-string` etc. classes `index.css`'s syntax palette styles), and
+    // the source-span stamp. The wikilink case gets its own fixed look;
+    // everything else has to keep whatever class it arrived with; passing an
+    // incoming `className` through unconditionally, rather than dropping it,
+    // is what makes a code fence render in color instead of the page's plain
+    // text color. A stamp keeps its offset, and a span without one renders
+    // exactly as before, because an undefined attribute is never written.
     wikilinkKind(node) === "unresolved" ? (
       <span
         title="not resolved"
@@ -387,7 +448,9 @@ const components: Components = {
         {children}
       </span>
     ) : (
-      <span className={className}>{children}</span>
+      <span className={className} data-src={sourceStamp(node)}>
+        {children}
+      </span>
     ),
   blockquote: ({ children }) => (
     <blockquote className="my-3 border-l-2 border-slate-300 pl-4 text-slate-600 dark:border-slate-700 dark:text-slate-300">
@@ -984,6 +1047,7 @@ export default function MarkdownBody({
   assets,
   documentName,
   anchors,
+  sourceSpans,
 }: {
   source: string;
   wikilinks?: WikilinkResolver;
@@ -1011,8 +1075,15 @@ export default function MarkdownBody({
    * the document is drawn exactly as it always was.
    */
   anchors?: MarkdownAnchors;
+  /**
+   * Stamp positioned text with its source offset, for comments on selected
+   * text. Only the reflection page sets it.
+   */
+  sourceSpans?: boolean;
 }) {
   const anchored = anchors !== undefined;
+  // What the parser is handed, and so what every stamped offset counts into.
+  const shown = foldLeadingTitle(source.replace(FRONTMATTER, ""), foldTitle);
   const rootRef = useRef<HTMLDivElement>(null);
   const { hash } = useLocation();
   // Memoized on its inputs so the component map below is too: a new map
@@ -1028,6 +1099,8 @@ export default function MarkdownBody({
   );
   const rehypePlugins = useMemo<RehypePlugins>(
     () => [
+      // First, so the positions it reads are the parser's own.
+      ...(sourceSpans ? [sourceSpanStamp(shown)] : []),
       // `plainText` keeps the highlighter's hands off a mermaid fence, whose
       // text this file reads back out to draw the diagram from.
       [rehypeHighlight, { plainText: ["mermaid"] }],
@@ -1040,7 +1113,7 @@ export default function MarkdownBody({
       // rewrite skips code either way.
       ...(wikilinks ? [wikilinkRewrite(wikilinks)] : []),
     ],
-    [anchored, wikilinks],
+    [anchored, wikilinks, sourceSpans, shown],
   );
   // Arriving at a section: scroll it into view and point it out for a moment.
   // It runs on the hash rather than on a navigation, which is what makes a
@@ -1093,7 +1166,7 @@ export default function MarkdownBody({
       rehypePlugins={rehypePlugins}
       components={componentMap}
     >
-      {foldLeadingTitle(source.replace(FRONTMATTER, ""), foldTitle)}
+      {shown}
     </ReactMarkdown>
   );
   return (

@@ -89,6 +89,103 @@ async function renderMarkdown(
   return result;
 }
 
+/**
+ * Render with source spans, the way the reflection page does: the same router
+ * and theme as {@link renderMarkdown}, and the same wait for the chunk.
+ */
+async function renderSpans(source: string) {
+  const result = render(
+    <MemoryRouter>
+      <ThemeProvider>
+        <Markdown source={source} sourceSpans />
+      </ThemeProvider>
+    </MemoryRouter>,
+  );
+  await waitFor(() => {
+    expect(screen.queryByText("crystallizing")).toBeNull();
+  });
+  return result;
+}
+
+/** Every stamped span reads exactly what the source holds at its offset. */
+function expectSpansMatch(container: HTMLElement, source: string) {
+  const stamped = Array.from(container.querySelectorAll("[data-src]"));
+  for (const span of stamped) {
+    const offset = Number(span.getAttribute("data-src"));
+    expect(source.slice(offset, offset + (span.textContent ?? "").length)).toBe(
+      span.textContent,
+    );
+  }
+  return stamped;
+}
+
+describe("source spans", () => {
+  it("stamps positioned text with its source offset when asked, and only then", async () => {
+    const source = "## Night deploys\n\nDeploys run **at** night.";
+    const { container, unmount } = await renderSpans(source);
+    const at = await screen.findByText("at");
+    expect(at.getAttribute("data-src")).toBe("32");
+    expectSpansMatch(container, source);
+    const stampedHtml = container.innerHTML;
+    unmount();
+    const plain = await renderMarkdown(source);
+    await screen.findByText("at");
+    expect(plain.container.querySelector("[data-src]")).toBeNull();
+    // Nothing but the stamps differs.
+    expect(
+      stampedHtml.replace(/<span data-src="\d+">([^<]*)<\/span>/g, "$1"),
+    ).toBe(plain.container.innerHTML);
+  });
+
+  it("never renders a section id comment", async () => {
+    const { container } = await renderSpans(
+      "## A\n<!-- r:7f3a9c2e -->\n\nText.",
+    );
+    await screen.findByText("Text.");
+    expect(container.innerHTML).not.toContain("r:7f3a9c2e");
+  });
+
+  it("keeps every stamp true to the source across the whole syntax", async () => {
+    const source = [
+      "## Rich section",
+      "",
+      "Plain *em* and **strong** and _under_ and ~~gone~~ and `code` here.",
+      "A [link](https://example.com) and a ![picture](assets/x.png) too.",
+      "Line one",
+      "line two.",
+      "",
+      "> quoted line",
+      "> second quoted line",
+      "",
+      "- item one",
+      "- item **two**",
+      "  continued",
+      "",
+      "1. first",
+      "",
+      "| a | b |",
+      "| - | - |",
+      "| *c* | d |",
+      "",
+      "Inline <b>raw</b> html, a &amp; b, and \\*escaped\\*.",
+      "",
+      "```js",
+      "const x = 1;",
+      "```",
+      "",
+    ].join("\n");
+    const { container } = await renderSpans(source);
+    await screen.findByText("Rich section");
+    const stamped = expectSpansMatch(container, source);
+    const texts = stamped.map((span) => span.textContent);
+    expect(texts).toEqual(
+      expect.arrayContaining(["em", "strong", "under", "gone", "code", "link"]),
+    );
+    // The highlighter rebuilds a fenced block, so none of it is stamped.
+    expect(container.querySelector("pre [data-src]")).toBeNull();
+  });
+});
+
 /** Where the router stands, for the tests that care what a click did to it. */
 function LocationProbe() {
   const { search, hash } = useLocation();
