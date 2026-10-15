@@ -19,7 +19,9 @@ import { Navigate, Route, Routes, useParams } from "react-router";
 import LoginPage from "./auth/LoginPage";
 import { RequireAuth } from "./auth/RequireAuth";
 import { Layout } from "./components/Layout";
+import { LazyBoundary } from "./components/LazyBoundary";
 import { Skeleton } from "./components/Skeleton";
+import { lazyChunk } from "./lazyChunk";
 import { domainRoute } from "./paths";
 import DomainHome from "./screens/DomainHome";
 import Home from "./screens/Home";
@@ -37,9 +39,9 @@ import OauthConsent from "./screens/OauthConsent";
  * wait; search and the graph have no loading state of their own, so each
  * waits behind a plain labelled skeleton.
  */
-const Search = lazy(() => import("./screens/Search"));
-const GraphView = lazy(() => import("./screens/GraphView"));
-const Maintenance = lazy(() => import("./screens/Maintenance"));
+const Search = lazyChunk(() => import("./screens/Search"));
+const GraphView = lazyChunk(() => import("./screens/GraphView"));
+const Maintenance = lazyChunk(() => import("./screens/Maintenance"));
 
 /**
  * The two editors: everything CodeMirror rides in these chunks, so the
@@ -51,8 +53,8 @@ const Maintenance = lazy(() => import("./screens/Maintenance"));
  * than a flash; the MANIFEST editor shares it rather than inventing a second
  * one.
  */
-const EngramEditor = lazy(() => import("./screens/EngramEditor"));
-const ManifestEditor = lazy(() => import("./screens/ManifestEditor"));
+const EngramEditor = lazyChunk(() => import("./screens/EngramEditor"));
+const ManifestEditor = lazyChunk(() => import("./screens/ManifestEditor"));
 
 /**
  * The reading screen, lazy for a third reason again.
@@ -68,7 +70,7 @@ const ManifestEditor = lazy(() => import("./screens/ManifestEditor"));
  * screen shows itself while its own two requests are in flight, so a reader
  * sees one loading shape rather than a chunk fetch followed by a screen.
  */
-const EngramPage = lazy(() => import("./screens/EngramPage"));
+const EngramPage = lazyChunk(() => import("./screens/EngramPage"));
 
 /**
  * And the two admin screens, which are lazy for a different reason: they weigh
@@ -76,14 +78,14 @@ const EngramPage = lazy(() => import("./screens/EngramPage"));
  * app shell is paid for by everybody who opens the app at all. The accounts
  * table is the larger of the two and takes the most off the eager path.
  */
-const GithubSettings = lazy(() => import("./screens/GithubSettings"));
-const UsersAdmin = lazy(() => import("./screens/UsersAdmin"));
+const GithubSettings = lazyChunk(() => import("./screens/GithubSettings"));
+const UsersAdmin = lazyChunk(() => import("./screens/UsersAdmin"));
 
 /**
  * And the profile, lazy for the third of those reasons: it is a screen a reader
  * opens once, to connect the identity they share as, and never again.
  */
-const Profile = lazy(() => import("./screens/Profile"));
+const Profile = lazyChunk(() => import("./screens/Profile"));
 
 /**
  * Where a draft share-link lands. Lazy for the reason the two admin screens
@@ -92,14 +94,14 @@ const Profile = lazy(() => import("./screens/Profile"));
  * draft is one page handed over by its author - so the chunk is small and the
  * wait is one request on a screen that is itself the arrival.
  */
-const GrantedDraft = lazy(() => import("./screens/GrantedDraft"));
+const GrantedDraft = lazyChunk(() => import("./screens/GrantedDraft"));
 
 /**
  * The Reflection's screens, lazy for the reason the engram screens are: a
  * domain's pages for people carry the markdown renderer, the co-editing
  * client and the review lists, and the app shell is paid for by everybody.
  */
-const ReflectionHome = lazy(() => import("./screens/ReflectionHome"));
+const ReflectionHome = lazyChunk(() => import("./screens/ReflectionHome"));
 
 /**
  * The station itself, every place in it under one splat, `/π/*`, lazy like
@@ -160,6 +162,12 @@ function ManifestRedirect() {
   return <Navigate to={domainRoute(domain)} replace />;
 }
 
+/*
+ * Every Fluid route below that loads on demand waits behind `LazyBoundary`
+ * with one of these fallbacks: the loading shape while its chunk is on the
+ * way, and a reload prompt if the chunk never arrives (a tab left open across
+ * a deploy). The station's routes keep their plain `Suspense`.
+ */
 const EDITOR_FALLBACK = (
   <p className="text-sm text-slate-500 dark:text-slate-400">
     Loading the editor
@@ -281,9 +289,9 @@ export function AppRoutes() {
           <Route
             path="/d/:domain/edit/*"
             element={
-              <Suspense fallback={EDITOR_FALLBACK}>
+              <LazyBoundary fallback={EDITOR_FALLBACK}>
                 <EngramEditor />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           {/*
@@ -299,25 +307,25 @@ export function AppRoutes() {
           <Route
             path="/d/:domain/manifest/edit"
             element={
-              <Suspense fallback={EDITOR_FALLBACK}>
+              <LazyBoundary fallback={EDITOR_FALLBACK}>
                 <ManifestEditor />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           <Route
             path="/d/:domain/reflection"
             element={
-              <Suspense fallback={REFLECTION_FALLBACK}>
+              <LazyBoundary fallback={REFLECTION_FALLBACK}>
                 <ReflectionHome />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           <Route
             path="/d/:domain/e/*"
             element={
-              <Suspense fallback={ENGRAM_FALLBACK}>
+              <LazyBoundary fallback={ENGRAM_FALLBACK}>
                 <EngramPage />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           {/*
@@ -331,25 +339,25 @@ export function AppRoutes() {
           <Route
             path="/draft/:token"
             element={
-              <Suspense fallback={GRANTED_DRAFT_FALLBACK}>
+              <LazyBoundary fallback={GRANTED_DRAFT_FALLBACK}>
                 <GrantedDraft />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           <Route
             path="/search"
             element={
-              <Suspense fallback={SEARCH_FALLBACK}>
+              <LazyBoundary fallback={SEARCH_FALLBACK}>
                 <Search />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           <Route
             path="/graph"
             element={
-              <Suspense fallback={GRAPH_FALLBACK}>
+              <LazyBoundary fallback={GRAPH_FALLBACK}>
                 <GraphView />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           {/*
@@ -368,9 +376,9 @@ export function AppRoutes() {
           <Route
             path="/maintenance"
             element={
-              <Suspense fallback={MAINTENANCE_FALLBACK}>
+              <LazyBoundary fallback={MAINTENANCE_FALLBACK}>
                 <Maintenance />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           {/*
@@ -384,9 +392,9 @@ export function AppRoutes() {
           <Route
             path="/users"
             element={
-              <Suspense fallback={USERS_FALLBACK}>
+              <LazyBoundary fallback={USERS_FALLBACK}>
                 <UsersAdmin />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           {/*
@@ -397,9 +405,9 @@ export function AppRoutes() {
           <Route
             path="/settings/github"
             element={
-              <Suspense fallback={SETTINGS_FALLBACK}>
+              <LazyBoundary fallback={SETTINGS_FALLBACK}>
                 <GithubSettings />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           {/*
@@ -410,9 +418,9 @@ export function AppRoutes() {
           <Route
             path="/profile"
             element={
-              <Suspense fallback={PROFILE_FALLBACK}>
+              <LazyBoundary fallback={PROFILE_FALLBACK}>
                 <Profile />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           <Route path="*" element={<NotFound />} />

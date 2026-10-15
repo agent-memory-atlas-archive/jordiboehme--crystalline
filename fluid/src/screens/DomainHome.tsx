@@ -32,15 +32,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import {
-  Fragment,
-  Suspense,
-  lazy,
-  useEffect,
-  useId,
-  useMemo,
-  useState,
-} from "react";
+import { Fragment, useEffect, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   Link,
@@ -100,6 +92,7 @@ import { EngramsOrderMenu } from "../components/EngramsOrderMenu";
 import { FilterFields, TagChips } from "../components/FilterControls";
 import { ImportArchiveDialog } from "../components/ImportArchiveDialog";
 import { InlineMarkdown } from "../components/InlineMarkdown";
+import { LazyBoundary } from "../components/LazyBoundary";
 import { Markdown } from "../components/Markdown";
 import { ProposalsCard } from "../components/ProposalsCard";
 import { ReflectionModeSwitch } from "../components/ReflectionModeSwitch";
@@ -117,6 +110,7 @@ import {
   manifestEditRoute,
   reflectionRoute,
 } from "../paths";
+import { lazyChunk } from "../lazyChunk";
 import { prefetchManifestEditor } from "../prefetch";
 
 /**
@@ -127,15 +121,15 @@ import { prefetchManifestEditor } from "../prefetch";
  * are drawn after the engrams section, so nothing above them moves while
  * they arrive.
  */
-const MembersCard = lazy(() =>
+const MembersCard = lazyChunk(() =>
   import("../components/MembersCard").then((m) => ({ default: m.MembersCard })),
 );
-const ReviewModeCard = lazy(() =>
+const ReviewModeCard = lazyChunk(() =>
   import("../components/ReviewModeCard").then((m) => ({
     default: m.ReviewModeCard,
   })),
 );
-const DomainPoliciesCard = lazy(() =>
+const DomainPoliciesCard = lazyChunk(() =>
   import("../components/DomainPoliciesCard").then((m) => ({
     default: m.DomainPoliciesCard,
   })),
@@ -843,9 +837,11 @@ function DomainPage({
         no card, and no skeleton that shows and then goes away either.
       */}
       {members.data !== undefined && (
-        <Suspense fallback={<Skeleton label="Loading the members" rows={2} />}>
+        <LazyBoundary
+          fallback={<Skeleton label="Loading the members" rows={2} />}
+        >
           <MembersCard domain={domain} />
-        </Suspense>
+        </LazyBoundary>
       )}
 
       {/*
@@ -857,9 +853,11 @@ function DomainPage({
         too, where the button answers 409 in the server's own words.
       */}
       {capabilities.canShare && summary !== undefined && (
-        <Suspense fallback={<Skeleton label="Loading review mode" rows={2} />}>
+        <LazyBoundary
+          fallback={<Skeleton label="Loading review mode" rows={2} />}
+        >
           <ReviewModeCard domain={domain} reviewing={summary.review !== null} />
-        </Suspense>
+        </LazyBoundary>
       )}
 
       {/*
@@ -874,7 +872,7 @@ function DomainPage({
       {manifest.data?.sections !== null &&
         manifest.data?.sections !== undefined &&
         manifest.data.sections.policies.length > 0 && (
-          <Suspense
+          <LazyBoundary
             fallback={<Skeleton label="Loading the policies" rows={2} />}
           >
             <DomainPoliciesCard
@@ -886,7 +884,7 @@ function DomainPage({
               }}
               renaming={isRenaming}
             />
-          </Suspense>
+          </LazyBoundary>
         )}
 
       {/*
