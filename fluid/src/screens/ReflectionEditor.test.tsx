@@ -930,6 +930,22 @@ describe("the reflection editor takes files", () => {
     expect(session.get().ytext?.toJSON()).toBe(PAGE);
   });
 
+  it("draws a Reflection file's image under its link, and no engram file", async () => {
+    serveFiles([[]]);
+    live(
+      room(`${PAGE}\n![a](../assets/2026/10/a.png)\n\n![x](assets/x.png)\n`),
+    );
+    const editor = await openEditor();
+    const root = editor.closest(".cm-editor") as HTMLElement;
+    await waitFor(() => {
+      expect(
+        [...root.querySelectorAll(".cm-image-preview img")].map((img) =>
+          img.getAttribute("src"),
+        ),
+      ).toEqual(["/api/v1/domains/eng/reflection/assets/2026/10/a.png"]);
+    });
+  });
+
   it("takes no file into a room whose connection failed for good", async () => {
     serveFiles([[]]);
     const session = live(room(PAGE));
