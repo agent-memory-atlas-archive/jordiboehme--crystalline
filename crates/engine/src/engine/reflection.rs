@@ -777,12 +777,18 @@ pub struct SectionAuthors {
     pub changed: Vec<String>,
     /// The names a room carries for a heading typed without an id yet,
     /// recorded by the section that gets its id under that heading: the
-    /// room's typists have usually left by the close that mints it.
-    pub new_by_heading: BTreeMap<String, BTreeSet<String>>,
+    /// room's typists have usually left by the close that mints it. Keyed by
+    /// the heading text and the section's place, from 0, among the sections
+    /// under that heading text that have no id yet, so two new sections
+    /// with one heading each name their own typist.
+    pub new_by_heading: BTreeMap<(String, usize), BTreeSet<String>>,
     /// Record "someone" for a changed or newly id'd section whose list
     /// comes out empty. A room sets it when nobody is connected.
     pub someone_if_empty: bool,
 }
+
+/// The name a section records when it changed and nobody can be named.
+pub(crate) const SOMEONE: &str = "someone";
 
 impl SectionAuthors {
     /// `names` for every changed section, nothing carried by heading, and
@@ -848,19 +854,29 @@ pub(super) fn compose_reflection(
         })
         .unwrap_or_default();
     let mut prov = r::Provenance::new();
+    // How many new sections each heading text has had so far, for the key
+    // into `new_by_heading`.
+    let mut new_seen: HashMap<String, usize> = HashMap::new();
     for section in r::split_sections(&text) {
         let Some(id) = section.id.clone() else {
             continue;
         };
         // A section that just got its id: no record and nothing before it.
         let new = !stored.contains_key(&id) && !before.contains_key(&id);
+        let place = new.then(|| {
+            let seen = new_seen.entry(section.heading.clone()).or_default();
+            *seen += 1;
+            *seen - 1
+        });
         let mut record = stored.get(&id).cloned().unwrap_or_default();
         if before.get(&id) != Some(&r::section_hash(&section.text)) {
             record.changed_at = Some(now.to_string());
-            let carried = authors
-                .new_by_heading
-                .get(&section.heading)
-                .filter(|_| new)
+            let carried = place
+                .and_then(|place| {
+                    authors
+                        .new_by_heading
+                        .get(&(section.heading.clone(), place))
+                })
                 .into_iter()
                 .flatten();
             let mut names: Vec<&String> = Vec::new();
@@ -869,7 +885,7 @@ pub(super) fn compose_reflection(
                     names.push(name);
                 }
             }
-            let someone = "someone".to_string();
+            let someone = SOMEONE.to_string();
             if names.is_empty() && authors.someone_if_empty {
                 names.push(&someone);
             }
@@ -2394,7 +2410,7 @@ mod tests {
         let authors = SectionAuthors {
             changed: vec![],
             new_by_heading: BTreeMap::from([(
-                "Three".to_string(),
+                ("Three".to_string(), 0),
                 BTreeSet::from(["ada".to_string()]),
             )]),
             someone_if_empty: false,

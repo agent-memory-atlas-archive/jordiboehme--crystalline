@@ -993,7 +993,9 @@ struct SessionState {
     /// its id only with the room's close, when its typists have usually
     /// left and `editors` no longer names them; the close records these for
     /// the section it mints, then they are dropped. Empty in an engram room.
-    new_heading_authors: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// Keyed as [`SectionAuthors::new_by_heading`] is.
+    new_heading_authors:
+        std::collections::BTreeMap<(String, usize), std::collections::BTreeSet<String>>,
     /// The agents standing in this room, keyed by (account, label).
     ///
     /// Beside `conns` and never in it, which is the whole shape of the
@@ -2031,15 +2033,7 @@ impl CollabSession {
                 // token for exactly this text, and it is also what a
                 // reconnecting client is greeted with.
                 state.checksum = checksum.clone();
-                let previous = std::mem::replace(&mut state.last_saved_text, file);
-                if matches!(self.doc(), RoomDoc::Reflection(_)) {
-                    if closing_reflection {
-                        // This save minted the ids and recorded these names.
-                        state.new_heading_authors.clear();
-                    } else {
-                        Self::carry_new_heading_authors(state, &previous);
-                    }
-                }
+                self.land_text(state, file, closing_reflection);
                 state.permalink = permalink.clone();
                 // The path a rename can move too (the receipt is the authority
                 // on where the engram now lives), so Task 7's idle probe never
@@ -2047,7 +2041,6 @@ impl CollabSession {
                 if let Some(path) = receipt["path"].as_str() {
                     state.path = path.to_string();
                 }
-                state.editors.clear();
                 state.dirty = false;
                 state.oldest_unsaved = None;
                 state.save_state = SaveStateTag::Ok;
@@ -2393,12 +2386,12 @@ impl CollabSession {
                     .to_string();
                 let renamed = (permalink != state.permalink).then(|| permalink.clone());
                 state.checksum = checksum.clone();
-                state.last_saved_text = file;
+                // A restore never mints ids.
+                self.land_text(state, file, false);
                 state.permalink = permalink.clone();
                 if let Some(path) = receipt["path"].as_str() {
                     state.path = path.to_string();
                 }
-                state.editors.clear();
                 state.dirty = false;
                 state.oldest_unsaved = None;
                 state.save_state = SaveStateTag::Ok;
@@ -2817,20 +2810,41 @@ impl CollabSession {
         }
     }
 
+    /// Record `file` as the text that just landed, by a save or a restore,
+    /// and clear `editors`, whose change it holds now. In a reflection room
+    /// the names of who typed a heading without an id are carried first
+    /// ([`CollabSession::carry_new_heading_authors`]), or dropped when this
+    /// landing `minted` the ids and so recorded them. One place for both
+    /// landings, so they cannot drift apart.
+    fn land_text(&self, state: &mut SessionState, file: String, minted: bool) {
+        let previous = std::mem::replace(&mut state.last_saved_text, file);
+        if matches!(self.doc(), RoomDoc::Reflection(_)) {
+            if minted {
+                state.new_heading_authors.clear();
+            } else {
+                Self::carry_new_heading_authors(state, &previous);
+            }
+        }
+        state.editors.clear();
+    }
+
     /// After a reflection room's save landed and before `editors` is
     /// cleared: every heading without an id whose section is new or changed
     /// against `previous` (the text saved before) gains the names in
-    /// `editors`. A heading the saved text no longer holds without an id is
-    /// dropped, so a name is never carried onto a later heading of the same
-    /// name that somebody else typed.
+    /// `editors`. Sections are matched by heading text and their place among
+    /// the id-less sections under that heading text. A key the saved text no
+    /// longer holds is dropped, so a name is never carried onto a later
+    /// heading of the same name that somebody else typed.
     fn carry_new_heading_authors(state: &mut SessionState, previous: &str) {
         use crystalline_core::reflection::split_sections;
-        let idless = |text: &str| -> std::collections::BTreeMap<String, String> {
+        let idless = |text: &str| -> std::collections::BTreeMap<(String, usize), String> {
             let mut out = std::collections::BTreeMap::new();
-            for section in split_sections(text) {
-                if section.id.is_none() && !section.heading.is_empty() {
-                    out.entry(section.heading).or_insert(section.text);
-                }
+            let mut seen: HashMap<String, usize> = HashMap::new();
+            // The top section always has an id, so only headings get here.
+            for section in split_sections(text).into_iter().filter(|s| s.id.is_none()) {
+                let place = seen.entry(section.heading.clone()).or_default();
+                out.insert((section.heading, *place), section.text);
+                *place += 1;
             }
             out
         };
@@ -2838,12 +2852,12 @@ impl CollabSession {
         let now = idless(&state.last_saved_text);
         state
             .new_heading_authors
-            .retain(|heading, _| now.contains_key(heading));
-        for (heading, text) in &now {
-            if before.get(heading) != Some(text) {
+            .retain(|key, _| now.contains_key(key));
+        for (key, text) in &now {
+            if before.get(key) != Some(text) {
                 state
                     .new_heading_authors
-                    .entry(heading.clone())
+                    .entry(key.clone())
                     .or_default()
                     .extend(state.editors.iter().cloned());
             }

@@ -2563,6 +2563,93 @@ async fn a_heading_taken_out_again_carries_no_name_onto_a_later_one() {
     assert_eq!(prov[&id].changed_by, vec!["bob".to_string()], "{saved}");
 }
 
+/// A room that puts its deleted page back carries who typed a new heading
+/// the same way a save does: the close names the typist, not "someone".
+#[tokio::test]
+async fn a_heading_typed_before_a_restore_names_its_typist_when_it_gets_its_id() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "\n## Three\n\nThird.").await;
+    std::fs::remove_file(&path).unwrap();
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    match next_control(&mut joined.rx).await {
+        Control::Conflict { conflict_kind, .. } => assert_eq!(conflict_kind, "deleted"),
+        other => panic!("a deletion conflict, not {other:?}"),
+    }
+    joined
+        .session
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Resolve {
+                choice: "mine".into(),
+            }),
+        )
+        .await;
+    until_saved(&mut joined.rx).await;
+    assert!(path.exists(), "the room put the page back");
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    let saved = std::fs::read_to_string(&path).unwrap();
+    let sections = crystalline_core::reflection::split_sections(&saved);
+    let three = sections.iter().find(|s| s.heading == "Three").unwrap();
+    let id = three.id.clone().expect("the close gave it an id");
+    let prov = crystalline_core::reflection::provenance::read_provenance(&saved);
+    assert_eq!(prov[&id].changed_by, vec!["ada".to_string()], "{saved}");
+}
+
+/// Two new sections under the same heading, typed by two people, each name
+/// their own typist when the close gives them ids.
+#[tokio::test]
+async fn two_new_sections_under_one_heading_each_name_their_own_typist() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    let mut ada = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let ada_doc = sync_client(&ada).await;
+    let later = || Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100);
+    append_line(&ada, &ada_doc, "\n## Notes\n\nA.").await;
+    ada.session.tick_save(later()).await;
+    until_saved(&mut ada.rx).await;
+    let bob = sessions
+        .join_reflection("eng", "guides/a.md", "bob")
+        .await
+        .unwrap();
+    let bob_doc = sync_client(&bob).await;
+    append_line(&bob, &bob_doc, "\n## Notes\n\nB.").await;
+    bob.session.tick_save(later()).await;
+    until_saved(&mut ada.rx).await;
+    assert!(!ada.session.remove_conn(ada.conn).await);
+    assert!(bob.session.remove_conn(bob.conn).await);
+    bob.session.final_save().await;
+    let saved = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    let prov = crystalline_core::reflection::provenance::read_provenance(&saved);
+    let notes: Vec<Vec<String>> = crystalline_core::reflection::split_sections(&saved)
+        .into_iter()
+        .filter(|s| s.heading == "Notes")
+        .map(|s| {
+            prov[&s.id.expect("the close gave it an id")]
+                .changed_by
+                .clone()
+        })
+        .collect();
+    assert_eq!(
+        notes,
+        vec![vec!["ada".to_string()], vec!["bob".to_string()]],
+        "{saved}"
+    );
+}
+
 /// A room open across a switch-off writes nothing into what is engram
 /// content now: the save is refused, the file stays as it was and the
 /// room keeps its text.
