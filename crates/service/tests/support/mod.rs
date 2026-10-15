@@ -33,6 +33,25 @@ use flate2::write::GzEncoder;
 use sha2::{Digest, Sha256};
 use tar::Header;
 
+/// The instance id every engine of one test takes on a shared database,
+/// as one machine's daemon and its commands share theirs. An engine with no
+/// instance id walks no file domain there (`REFUSED_ANONYMOUS_WALK`), so a
+/// test that runs one engine as "the daemon" on Postgres gives it this id.
+pub const THIS_MACHINE: &str = "this-machine";
+
+/// `engine` with [`THIS_MACHINE`] as its instance id when `store` is shared
+/// by several instances (Postgres), else unchanged.
+pub async fn as_this_machine(
+    engine: crystalline_service::Engine,
+    store: &Arc<tokio::sync::Mutex<dyn crystalline_index::Store>>,
+) -> crystalline_service::Engine {
+    if store.lock().await.shares_database() {
+        engine.with_instance_id(THIS_MACHINE.to_string())
+    } else {
+        engine
+    }
+}
+
 /// Every operation the `/api/v1` router mounts, as `METHOD path`, spelled the
 /// way the OpenAPI document spells it (the engram wildcard becomes an ordinary
 /// `{permalink}` template, which is the only notation OpenAPI has for it).

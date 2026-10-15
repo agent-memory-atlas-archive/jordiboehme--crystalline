@@ -257,7 +257,7 @@ async fn build(
     tweak(&mut cfg, &base);
     let config_path = base.join("config.yaml");
     crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
-    let mut engine = Engine::new(store, cfg, provider, Some(config_path))
+    let mut engine = Engine::new(store.clone(), cfg, provider, Some(config_path))
         .with_state_dir(base.join("state"))
         // Origin state (base snapshots, the backup state) lands in the
         // temp dir, never in the developer's own state directory.
@@ -272,6 +272,8 @@ async fn build(
         engine = engine
             .with_instance_id(id.to_string())
             .with_watch_channel(watch);
+    } else {
+        engine = crate::support::as_this_machine(engine, &store).await;
     }
     let engine = Arc::new(engine);
     engine.sync(None).await.unwrap();

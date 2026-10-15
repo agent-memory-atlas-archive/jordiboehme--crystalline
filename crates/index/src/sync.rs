@@ -1439,7 +1439,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
     if let Some(walker) = walker.as_deref()
         && store.shares_database()
     {
-        let holder = match store.domain_host(domain).await {
+        let holder = match store.domain_host_held(domain).await {
             Ok(holder) => holder,
             Err(e) => {
                 let _ = store.rollback().await;
@@ -1487,6 +1487,13 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         .is_none_or(|m| m.claimant.is_none() || m.claimant.as_deref() == walker.as_deref());
     let accepted = claimant && accept_disk && host_move.as_ref().is_some_and(|m| m.walked);
     let keep_unseen = host_move.is_some() && !accepted;
+    // What the move was when this apply read it: the write below only lands
+    // on that value.
+    let read_move = host_move.clone();
+    #[cfg(test)]
+    if let Some(walker) = walker.as_deref() {
+        apply_seam::hold(walker).await;
+    }
     let mut elsewhere = crate::OnlyElsewhere::default();
     let apply = apply_changes(
         store,
@@ -1586,16 +1593,33 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
     if let Some(mut host_move) = host_move {
         elsewhere.previous_host = host_move.only_elsewhere.previous_host.take();
         let resolved = accepted || (claimant && elsewhere.total() == 0 && reflections_complete);
-        let next = if resolved {
-            None
-        } else {
-            host_move.walked = true;
-            host_move.only_elsewhere = elsewhere.clone();
-            Some(host_move)
-        };
-        if let Err(e) = store.set_host_move(domain, next.as_ref()).await {
-            let _ = store.rollback().await;
-            return Err(e);
+        // Only the claimant's walk writes the move: another walk keeps and
+        // counts, and leaves the mark as the claimant set it.
+        if claimant {
+            let next = if resolved {
+                None
+            } else {
+                host_move.walked = true;
+                host_move.only_elsewhere = elsewhere.clone();
+                Some(host_move)
+            };
+            match store
+                .swap_host_move(domain, read_move.as_ref(), next.as_ref())
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    let _ = store.rollback().await;
+                    return Err(IndexError::NotHost(format!(
+                        "the walk of '{}' was not applied: its host move changed while it ran",
+                        report.domain
+                    )));
+                }
+                Err(e) => {
+                    let _ = store.rollback().await;
+                    return Err(e);
+                }
+            }
         }
         if !resolved && elsewhere.total() > 0 {
             report.only_elsewhere = Some(elsewhere);
@@ -1662,6 +1686,44 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
     Ok(report)
 }
 
+/// A hold inside the apply, after the walker check and the read of the host
+/// move and before any row is written, for the tests that land a claim or a
+/// mark write in that window. Keyed by walker, so tests side by side never
+/// meet it.
+#[cfg(test)]
+pub(crate) mod apply_seam {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
+
+    type Gate = (Arc<Notify>, Arc<Notify>);
+    static HOLDS: Mutex<Option<HashMap<String, Gate>>> = Mutex::new(None);
+
+    /// Arm the hold for the next apply walked by `walker`: it signals the
+    /// first `Notify` there and waits for the second.
+    pub(crate) fn arm(walker: &str) -> Gate {
+        let gate = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+        HOLDS
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .insert(walker.to_string(), gate.clone());
+        gate
+    }
+
+    pub(super) async fn hold(walker: &str) {
+        let gate = HOLDS
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|h| h.remove(walker));
+        if let Some((entered, release)) = gate {
+            entered.notify_one();
+            release.notified().await;
+        }
+    }
+}
+
 /// Per-domain callbacks a multi-domain driver runs for its caller.
 ///
 /// [`reindex_domains`] owns the loop, and the two callers of it need different
@@ -1688,6 +1750,11 @@ pub trait ReindexHooks: Send + Sync {
 
     /// Called after a domain's apply committed, with no store lock held.
     async fn after_apply(&self, _name: &str, _report: &SyncReport) {}
+
+    /// Called, with no store lock held, when a walk of `name` was not applied
+    /// because another instance took the domain over while it ran
+    /// ([`IndexError::NotHost`]); `why` says so. The run goes on.
+    async fn lost_host(&self, _name: &str, _why: &str) {}
 
     /// The instance that claims the domains this run walks, when it claims
     /// any: each walk is applied only while the claim holds
@@ -1802,9 +1869,25 @@ pub async fn reindex_domains(
         }
         let report = {
             let store = store.lock().await;
-            apply_scan(&*store, domain, scan)
-                .await
-                .map_err(|e| in_domain("reindex", name, e))?
+            match apply_scan(&*store, domain, scan).await {
+                Ok(report) => report,
+                // Another instance took the domain over while this run walked
+                // it: nothing of the walk was written, the run goes on with
+                // the next domain, and the rebuild marker this run stamped is
+                // cleared, since the domain is the new host's to rebuild.
+                Err(IndexError::NotHost(why)) => {
+                    if rebuild.is_some() {
+                        store
+                            .end_rebuild(domain)
+                            .await
+                            .map_err(|e| in_domain("reindex", name, e))?;
+                    }
+                    drop(store);
+                    hooks.lost_host(name, &why).await;
+                    continue;
+                }
+                Err(e) => return Err(in_domain("reindex", name, e)),
+            }
         };
         hooks.after_apply(name, &report).await;
         applied.push((domain, report));

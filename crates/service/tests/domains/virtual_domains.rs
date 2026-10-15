@@ -666,7 +666,8 @@ async fn full_reindex_preserves_virtual(store: Arc<Mutex<dyn Store>>) {
         .insert("docs".to_string(), DomainEntry::file(docs.clone()));
     cfg.domains
         .insert("notes".to_string(), DomainEntry::virtual_domain());
-    let engine = Engine::new(store, cfg, None, None);
+    let engine =
+        crate::support::as_this_machine(Engine::new(store.clone(), cfg, None, None), &store).await;
 
     // Index the file domain and capture a virtual engram.
     engine.sync(None).await.unwrap();

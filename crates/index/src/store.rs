@@ -2184,6 +2184,16 @@ impl OnlyElsewhere {
         )
     }
 
+    /// The line on an instance that does not host the domain while the host
+    /// sends no heartbeat: the lock is stale, so this instance can take the
+    /// domain over and resolve it here.
+    pub fn line_stale_host(&self, host: &str, domain: &str) -> String {
+        format!(
+            "{}; {host} hosts this domain but sends no heartbeat, so take it over with: crystalline sync --domain {domain} --take-over",
+            self.what()
+        )
+    }
+
     /// "1 engram and 2 Reflection files exist only on alpha".
     fn what(&self) -> String {
         let count =
@@ -3706,6 +3716,23 @@ pub trait Store: Send + Sync {
 
     /// The current holder of a file domain's host lock, or `None` when unheld.
     async fn domain_host(&self, domain: DomainId) -> Result<Option<DomainHost>>;
+
+    /// [`Store::domain_host`] read for a walk about to apply: inside the
+    /// caller's write transaction the lock row stays as read until it ends
+    /// (`FOR SHARE` on Postgres), so a claim of the domain waits for the
+    /// apply to commit instead of landing in the middle of it. A Turso
+    /// database belongs to one instance, so the plain read is the same.
+    async fn domain_host_held(&self, domain: DomainId) -> Result<Option<DomainHost>>;
+
+    /// Write the domain's host move only when it still is `expected`, the
+    /// value the caller read: `false` and nothing written when another
+    /// writer changed it in between.
+    async fn swap_host_move(
+        &self,
+        domain: DomainId,
+        expected: Option<&HostMove>,
+        next: Option<&HostMove>,
+    ) -> Result<bool>;
 
     /// The instance that last acquired a file domain's host lock, as
     /// `(instance id, label)`, or `None` when none was recorded. Kept on the

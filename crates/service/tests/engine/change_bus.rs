@@ -141,9 +141,9 @@ async fn engine_fixture_on(
         .insert("oak".to_string(), DomainEntry::file(oak));
     let config_path = root.join("config.yaml");
     crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
-    let engine = Arc::new(
-        Engine::new(store, cfg, None, Some(config_path)).with_state_dir(root.join("state")),
-    );
+    let engine =
+        Engine::new(store.clone(), cfg, None, Some(config_path)).with_state_dir(root.join("state"));
+    let engine = Arc::new(crate::support::as_this_machine(engine, &store).await);
     engine.sync(None).await.unwrap();
     (tmp, engine, scratch)
 }

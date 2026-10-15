@@ -198,11 +198,15 @@ mod tests {
             counts.line_elsewhere("beta"),
             "1 engram, 2 attachments and 1 Reflection file exist only on another instance; beta hosts this domain, so resolve it there"
         );
+        assert_eq!(
+            counts.line_stale_host("beta", "eng"),
+            "1 engram, 2 attachments and 1 Reflection file exist only on another instance; beta hosts this domain but sends no heartbeat, so take it over with: crystalline sync --domain eng --take-over"
+        );
     }
 
-    /// A Postgres store on a schema of its own, or `None` with no URL.
+    /// The URL and a fresh schema name, or `None` with no URL.
     #[cfg(feature = "postgres")]
-    async fn shared_store() -> Option<crate::PostgresStore> {
+    fn shared_schema() -> Option<(String, String)> {
         let url = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL").ok()?;
         if url.is_empty() {
             return None;
@@ -215,11 +219,194 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         );
+        Some((url, schema))
+    }
+
+    /// A Postgres store on a schema of its own, or `None` with no URL.
+    #[cfg(feature = "postgres")]
+    async fn shared_store() -> Option<crate::PostgresStore> {
+        let (url, schema) = shared_schema()?;
         Some(
             crate::PostgresStore::open_in_schema(&url, &schema)
                 .await
                 .unwrap(),
         )
+    }
+
+    /// A domain folder with one engram.
+    #[cfg(feature = "postgres")]
+    fn domain_folder() -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("a.md"),
+            "---\ntype: engram\ntitle: A\npermalink: a\nstatus: stable\n---\n\n# A\n",
+        )
+        .unwrap();
+        (tmp, root)
+    }
+
+    /// One complete walk of `root` applied as `walker`.
+    #[cfg(feature = "postgres")]
+    async fn walk_as(
+        store: &dyn Store,
+        domain: DomainId,
+        root: &std::path::Path,
+        walker: &str,
+    ) -> crate::error::Result<crate::SyncReport> {
+        let stamps = store.file_stamps(domain).await.unwrap();
+        let mut scan =
+            crate::scan_domain("eng", root, stamps, &crate::ChunkParams::default(), false)
+                .await
+                .unwrap();
+        scan.walked_by(walker);
+        crate::apply_scan(store, domain, scan).await
+    }
+
+    /// A take-over that lands while the host's apply runs waits for that
+    /// apply to commit, then marks: the apply cannot end or overwrite the
+    /// new host's move.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn a_claim_waits_for_an_apply_in_flight() {
+        let Some((url, schema)) = shared_schema() else {
+            return;
+        };
+        let open = || async {
+            std::sync::Arc::new(
+                crate::PostgresStore::open_in_schema(&url, &schema)
+                    .await
+                    .unwrap(),
+            )
+        };
+        let (a, b) = (open().await, open().await);
+        let (_tmp, root) = domain_folder();
+        let domain = a
+            .upsert_domain(
+                "eng",
+                Some(&root.to_string_lossy()),
+                crate::DomainKind::File,
+            )
+            .await
+            .unwrap();
+        let (now, stale_before) = claim_window(90);
+        claim_host_marking_moves(
+            &*a,
+            domain,
+            "alpha-w",
+            "alpha-w",
+            &now,
+            &stale_before,
+            false,
+        )
+        .await
+        .unwrap();
+        walk_as(&*a, domain, &root, "alpha-w").await.unwrap();
+        assert!(
+            a.host_move(domain).await.unwrap().is_none(),
+            "alpha's own walk ended its first mark"
+        );
+
+        let (entered, release) = crate::sync::apply_seam::arm("alpha-w");
+        let applying = tokio::spawn({
+            let (a, root) = (a.clone(), root.clone());
+            async move { walk_as(&*a, domain, &root, "alpha-w").await }
+        });
+        entered.notified().await;
+        let claiming = tokio::spawn({
+            let (b, now, stale_before) = (b.clone(), now.clone(), stale_before.clone());
+            async move {
+                claim_host_marking_moves(&*b, domain, "beta-w", "beta-w", &now, &stale_before, true)
+                    .await
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            !claiming.is_finished(),
+            "the claim waits for the apply in flight"
+        );
+        release.notify_one();
+        applying.await.unwrap().unwrap();
+        assert_eq!(claiming.await.unwrap().unwrap(), HostClaim::Acquired);
+        let mark = a
+            .host_move(domain)
+            .await
+            .unwrap()
+            .expect("beta's move stands");
+        assert_eq!(mark.claimant.as_deref(), Some("beta-w"));
+        assert!(!mark.walked);
+        a.drop_schema().await.unwrap();
+    }
+
+    /// A move written by someone else while an apply runs is not overwritten:
+    /// the apply's write lands only on the value it read, else nothing of the
+    /// apply is kept.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn a_move_changed_during_an_apply_refuses_the_apply() {
+        let Some((url, schema)) = shared_schema() else {
+            return;
+        };
+        let a = std::sync::Arc::new(
+            crate::PostgresStore::open_in_schema(&url, &schema)
+                .await
+                .unwrap(),
+        );
+        let b = crate::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .unwrap();
+        let (_tmp, root) = domain_folder();
+        let domain = a
+            .upsert_domain(
+                "eng",
+                Some(&root.to_string_lossy()),
+                crate::DomainKind::File,
+            )
+            .await
+            .unwrap();
+        let (now, stale_before) = claim_window(90);
+        claim_host_marking_moves(
+            &*a,
+            domain,
+            "alpha-c",
+            "alpha-c",
+            &now,
+            &stale_before,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(
+            a.host_move(domain).await.unwrap().is_some(),
+            "alpha's first claim marks"
+        );
+
+        let (entered, release) = crate::sync::apply_seam::arm("alpha-c");
+        let applying = tokio::spawn({
+            let (a, root) = (a.clone(), root.clone());
+            async move { walk_as(&*a, domain, &root, "alpha-c").await }
+        });
+        entered.notified().await;
+        let other = HostMove {
+            at: now.clone(),
+            claimant: Some("gamma-c".to_string()),
+            walked: false,
+            only_elsewhere: OnlyElsewhere::default(),
+        };
+        b.set_host_move(domain, Some(&other)).await.unwrap();
+        release.notify_one();
+        let refused = applying.await.unwrap().unwrap_err();
+        assert!(
+            matches!(refused, crate::IndexError::NotHost(_)),
+            "{refused}"
+        );
+        assert_eq!(a.host_move(domain).await.unwrap(), Some(other));
+        assert!(
+            a.file_stamps(domain).await.unwrap().is_empty(),
+            "nothing of the refused apply is kept"
+        );
+        a.drop_schema().await.unwrap();
     }
 
     /// A claim whose mark write fails leaves no claim behind: the lock still
@@ -301,7 +488,8 @@ mod tests {
         claim_host_marking_moves(&store, domain, "gamma", "gamma", &now, &stale_before, true)
             .await
             .unwrap();
-        assert!(store.host_move(domain).await.unwrap().is_some(), "marked");
+        let marked = store.host_move(domain).await.unwrap();
+        assert!(marked.is_some(), "marked");
         let walk = |walker: Option<&'static str>| {
             let (store, root) = (&store, root.clone());
             async move {
@@ -317,9 +505,10 @@ mod tests {
             }
         };
         walk(None).await.unwrap();
-        assert!(
-            store.host_move(domain).await.unwrap().is_some(),
-            "a walk that names no walker leaves the move standing"
+        assert_eq!(
+            store.host_move(domain).await.unwrap(),
+            marked,
+            "a walk that names no walker leaves the move exactly as the claimant set it"
         );
         let refused = walk(Some("delta")).await.unwrap_err();
         assert!(
@@ -330,5 +519,104 @@ mod tests {
         assert!(report.host_move_resolved);
         assert!(store.host_move(domain).await.unwrap().is_none());
         store.drop_schema().await.unwrap();
+    }
+
+    /// The hooks of a reindex during which another instance takes `eng`
+    /// over right after this run claimed it.
+    #[cfg(feature = "postgres")]
+    struct TakenMeanwhile {
+        other: std::sync::Arc<crate::PostgresStore>,
+        lost: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[cfg(feature = "postgres")]
+    #[async_trait::async_trait]
+    impl crate::ReindexHooks for TakenMeanwhile {
+        async fn before_domain(
+            &self,
+            store: &dyn Store,
+            name: &str,
+            root: &std::path::Path,
+        ) -> crate::error::Result<bool> {
+            let domain = store
+                .upsert_domain(name, Some(&root.to_string_lossy()), crate::DomainKind::File)
+                .await?;
+            let (now, stale_before) = claim_window(90);
+            claim_host_marking_moves(
+                store,
+                domain,
+                "alpha-r",
+                "alpha-r",
+                &now,
+                &stale_before,
+                false,
+            )
+            .await?;
+            if name == "eng" {
+                claim_host_marking_moves(
+                    &*self.other,
+                    domain,
+                    "beta-r",
+                    "beta-r",
+                    &now,
+                    &stale_before,
+                    true,
+                )
+                .await?;
+            }
+            Ok(true)
+        }
+
+        async fn lost_host(&self, name: &str, _why: &str) {
+            self.lost.lock().unwrap().push(name.to_string());
+        }
+
+        fn walker(&self) -> Option<String> {
+            Some("alpha-r".to_string())
+        }
+    }
+
+    /// A reindex whose domain is taken over while it walks skips that
+    /// domain, names it, clears the rebuild marker it stamped there and goes
+    /// on with the next domain.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn a_deposed_reindex_skips_the_domain_and_goes_on() {
+        let Some((url, schema)) = shared_schema() else {
+            return;
+        };
+        let a = crate::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .unwrap();
+        let other = std::sync::Arc::new(
+            crate::PostgresStore::open_in_schema(&url, &schema)
+                .await
+                .unwrap(),
+        );
+        let (_eng_tmp, eng) = domain_folder();
+        let (_ops_tmp, ops) = domain_folder();
+        let store: std::sync::Arc<tokio::sync::Mutex<dyn Store>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(a));
+        let hooks = TakenMeanwhile {
+            other: other.clone(),
+            lost: std::sync::Mutex::new(Vec::new()),
+        };
+        let reports = crate::reindex_domains(
+            &*store,
+            &[("eng".to_string(), eng), ("ops".to_string(), ops)],
+            &crate::ChunkParams::default(),
+            Some(crate::RebuildKind::Full),
+            &hooks,
+        )
+        .await
+        .unwrap();
+        let applied: Vec<&str> = reports.iter().map(|r| r.domain.as_str()).collect();
+        assert_eq!(applied, ["ops"]);
+        assert_eq!(*hooks.lost.lock().unwrap(), ["eng"]);
+        let stats = other.domain_stats().await.unwrap();
+        let eng_stats = stats.iter().find(|d| d.name == "eng").unwrap();
+        assert!(eng_stats.rebuild_started.is_none(), "{eng_stats:?}");
+        assert_eq!(eng_stats.engrams, 0, "nothing of the walk was written");
+        other.drop_schema().await.unwrap();
     }
 }

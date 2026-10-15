@@ -138,6 +138,7 @@ impl Engine {
         // never holds up the others or the file domains.
         let mut failed = self.reparse_virtual_domains(only).await?;
         let collab = !self.instance_id.is_empty();
+        let anonymous = self.walks_no_file_domain().await;
         // Each domain this run applied, paired with the report its apply
         // produced, for the final cross-domain resolution pass. A domain that
         // was skipped (hosted elsewhere) or failed to scan wrote nothing and is
@@ -164,6 +165,13 @@ impl Engine {
                 skipped.push(json!({ "domain": name, "renaming": true }));
                 continue;
             };
+            if let Some(reason) = &anonymous {
+                if only.is_some() {
+                    return Err(EngineError::Conflict(reason.clone()));
+                }
+                skipped.push(json!({ "domain": name, "reason": reason }));
+                continue;
+            }
             let (domain, snapshot, force) = {
                 let store = self.store.lock().await;
                 if collab {
@@ -404,10 +412,23 @@ impl Engine {
         Ok(report)
     }
 
+    /// Why this engine walks no file domain completely, or `None` when it
+    /// may. The one guard every complete walk of the engine asks (the sync
+    /// and the reindex): on a shared database an engine with no instance id
+    /// (the embedded MCP stack, a daemonless origin update, a standalone
+    /// review-mode, rename or transfer sync) cannot hold a domain's host lock,
+    /// and its walk would delete the rows of files only the host's disk has
+    /// and end a host move that is not its own. The daemonless `crystalline
+    /// sync` and `reindex` claim as this machine's instance and walk.
+    pub(super) async fn walks_no_file_domain(&self) -> Option<String> {
+        (self.instance_id.is_empty() && self.store.lock().await.shares_database())
+            .then(|| REFUSED_ANONYMOUS_WALK.to_string())
+    }
+
     /// A walk of `name` found its host lock taken by another instance: this
     /// instance stops hosting the domain at once, as the Reflection gate's
     /// confirm does, rather than at its next heartbeat.
-    fn lost_host(&self, name: &str) {
+    pub(super) fn lost_host(&self, name: &str) {
         if self.hosted.write().unwrap().remove(name).is_some() {
             self.announce_host_moved(name);
         }
@@ -448,6 +469,8 @@ impl Engine {
         let hooks = DaemonReindexHooks {
             engine: self,
             collab: !self.instance_id.is_empty(),
+            anonymous: self.walks_no_file_domain().await,
+            lost: std::sync::Mutex::new(Vec::new()),
         };
         let reports = reindex_domains(
             &*self.store,
@@ -457,9 +480,11 @@ impl Engine {
             &hooks,
         )
         .await?;
+        let lost = std::mem::take(&mut *hooks.lost.lock().unwrap());
         Ok(json!({
             "full": full,
             "reports": serde_json::to_value(&reports).unwrap_or(Value::Null),
+            "failed": lost,
         }))
     }
 

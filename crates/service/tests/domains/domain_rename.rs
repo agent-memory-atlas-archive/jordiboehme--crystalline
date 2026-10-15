@@ -166,6 +166,7 @@ impl Machine {
             .with_state_dir(self.state())
             .with_origins_dir(self.state().join("origins"))
             .with_env_overlay(overlay);
+        let engine = crate::support::as_this_machine(engine, &self.store).await;
         if with_access {
             let auth = AuthStore::open(&self.state().join("web-auth.db"))
                 .await
@@ -1142,6 +1143,19 @@ both_backends!(
 /// step.
 async fn a_shared_index_another_instance_uses_refuses_body(store: Arc<Mutex<dyn Store>>) {
     let m = machine(store).await;
+    // The fixture's engine ran as this machine and holds the locks on a
+    // shared database; the two instances of this test are others.
+    {
+        let store = m.store.lock().await;
+        for name in [&m.eng, &m.ops] {
+            if let Some(id) = store.domain_id(name).await.unwrap() {
+                store
+                    .release_domain_host(id, crate::support::THIS_MACHINE)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
     let cfg = crystalline_service::overlay::load_file(&m.config_path()).unwrap();
     let other = Engine::new(m.store.clone(), cfg.clone(), None, None)
         .with_instance_id("inst-b".to_string());

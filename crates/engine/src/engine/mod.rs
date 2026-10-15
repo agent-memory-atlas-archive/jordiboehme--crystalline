@@ -580,6 +580,11 @@ impl From<crystalline_index::IndexError> for EngineError {
             crystalline_index::IndexError::NotFound(m) => EngineError::NotFound(m),
             crystalline_index::IndexError::Invalid(m) => EngineError::Invalid(m),
             crystalline_index::IndexError::NotHost(m) => EngineError::Conflict(m),
+            crystalline_index::IndexError::InDomain { source, .. }
+                if matches!(*source, crystalline_index::IndexError::NotHost(_)) =>
+            {
+                EngineError::Conflict(source.to_string())
+            }
             // A stale compare-and-swap surfaces as a conflict, mirroring the
             // expected_replacements ergonomics: re-read and retry.
             crystalline_index::IndexError::StaleEdit { expected, found } => {
@@ -6998,6 +7003,10 @@ fn yaml_number(value: Option<&YamlValue>) -> Option<f64> {
     }
 }
 
+/// Why an engine with no instance id walks no file domain of a shared
+/// database (see `Engine::walks_no_file_domain`).
+pub const REFUSED_ANONYMOUS_WALK: &str = "this process does not sync file domains on a shared database: it has no instance id, so it cannot hold a domain's host lock. Start the daemon (crystalline serve), or run crystalline sync";
+
 /// The refusal message for a named sync of a file domain hosted by another live
 /// instance: names the host and its last heartbeat and points at `--take-over`.
 fn host_refusal(name: &str, host: &DomainHost) -> String {
@@ -8962,6 +8971,11 @@ fn json_to_yaml(v: &Value) -> YamlValue {
 struct DaemonReindexHooks<'a> {
     engine: &'a Engine,
     collab: bool,
+    /// The domains whose walk was not applied because another instance took
+    /// them over meanwhile, with the reason, for the run's answer.
+    lost: std::sync::Mutex<Vec<Value>>,
+    /// [`Engine::walks_no_file_domain`]'s reason, when this engine walks none.
+    anonymous: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -8978,6 +8992,10 @@ impl ReindexHooks for DaemonReindexHooks<'_> {
         name: &str,
         root: &Path,
     ) -> crystalline_index::Result<bool> {
+        if let Some(reason) = &self.anonymous {
+            tracing::info!("reindex of '{name}' skipped: {reason}");
+            return Ok(false);
+        }
         if !self.collab {
             return Ok(true);
         }
@@ -9012,6 +9030,17 @@ impl ReindexHooks for DaemonReindexHooks<'_> {
         }
         self.engine.announce_report(name, report, None);
         self.engine.after_host_move_resolved(name, report);
+    }
+
+    /// Another instance took `name` over while this run walked it: this
+    /// instance stops hosting it at once, and the run's answer names it.
+    async fn lost_host(&self, name: &str, why: &str) {
+        tracing::warn!("{why}");
+        self.engine.lost_host(name);
+        self.lost
+            .lock()
+            .unwrap()
+            .push(json!({ "domain": name, "error": why }));
     }
 
     /// This instance, when it claims: a walk applies only while it holds the

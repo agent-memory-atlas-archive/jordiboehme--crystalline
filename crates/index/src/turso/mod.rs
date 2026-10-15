@@ -4203,6 +4203,25 @@ impl Store for TursoStore {
         }))
     }
 
+    async fn domain_host_held(&self, domain: DomainId) -> Result<Option<DomainHost>> {
+        // One instance owns a Turso database, and its write transaction is
+        // the only writer: nothing can claim in between.
+        self.domain_host(domain).await
+    }
+
+    async fn swap_host_move(
+        &self,
+        domain: DomainId,
+        expected: Option<&HostMove>,
+        next: Option<&HostMove>,
+    ) -> Result<bool> {
+        if self.host_move(domain).await?.as_ref() != expected {
+            return Ok(false);
+        }
+        self.set_host_move(domain, next).await?;
+        Ok(true)
+    }
+
     async fn last_domain_host(&self, domain: DomainId) -> Result<Option<(String, String)>> {
         let row = query_first(
             &self.conn,

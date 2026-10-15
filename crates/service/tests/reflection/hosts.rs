@@ -718,6 +718,45 @@ async fn the_walk_that_ends_a_move_marks_the_backup_on_postgres() {
     db.drop_schema().await;
 }
 
+/// An engine with no instance id (the embedded MCP stack, a daemonless
+/// origin update, a standalone rename or review-mode sync) cannot hold a
+/// host lock, so on a shared database it walks no file domain: a full sync
+/// and a reindex leave the domain out with the reason, a named sync is
+/// refused, and the host's move and the rows only the old host has stay.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn an_engine_without_an_instance_id_walks_no_file_domain_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    let beta = instance(db.open().await, "beta").await;
+    alpha_writes(&alpha).await;
+    alpha.engine.release_hosts().await;
+    beta.engine.sync(Some("eng")).await.unwrap();
+    let store = beta.engine.store();
+    let did = store.lock().await.domain_id("eng").await.unwrap().unwrap();
+    let marked = store.lock().await.host_move(did).await.unwrap();
+    assert!(marked.is_some());
+
+    let config_path = beta.tmp.path().join("config.yaml");
+    let cfg = crystalline_core::config::load_yaml(&config_path).unwrap();
+    let anonymous = crystalline_service::Engine::new(db.open().await, cfg, None, Some(config_path));
+    let full = anonymous.sync(None).await.unwrap();
+    let skipped = full["skipped"].to_string();
+    assert!(
+        skipped.contains("\"eng\"") && skipped.contains("no instance id"),
+        "{full}"
+    );
+    let named = anonymous.sync(Some("eng")).await.unwrap_err().to_string();
+    assert!(named.contains("crystalline serve"), "{named}");
+    let reindexed = anonymous.reindex(false).await.unwrap();
+    assert_eq!(reindexed["reports"], serde_json::json!([]), "{reindexed}");
+
+    assert_eq!(store.lock().await.host_move(did).await.unwrap(), marked);
+    assert_eq!(alpha_rows(&beta).await, (true, true, true));
+
+    db.drop_schema().await;
+}
+
 /// How many `switched` events for `eng` the bus holds.
 #[cfg(feature = "postgres")]
 fn switched(

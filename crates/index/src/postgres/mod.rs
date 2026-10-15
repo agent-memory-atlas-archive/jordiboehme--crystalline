@@ -4333,6 +4333,43 @@ impl Store for PostgresStore {
         }))
     }
 
+    async fn domain_host_held(&self, domain: DomainId) -> Result<Option<DomainHost>> {
+        let mut conn = self.acquire().await?;
+        let row = sqlx::query(
+            "SELECT holder_instance_id, holder_label, heartbeat_at FROM domain_lock WHERE domain_id=$1 FOR SHARE",
+        )
+        .bind(domain.0)
+        .fetch_optional(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(row.map(|r| DomainHost {
+            instance_id: cell_text(&r, 0).unwrap_or_default(),
+            label: cell_text(&r, 1).unwrap_or_default(),
+            heartbeat_at: cell_text(&r, 2).unwrap_or_default(),
+        }))
+    }
+
+    async fn swap_host_move(
+        &self,
+        domain: DomainId,
+        expected: Option<&HostMove>,
+        next: Option<&HostMove>,
+    ) -> Result<bool> {
+        let expected = expected.map(crate::store::host_move_text);
+        let next = next.map(crate::store::host_move_text);
+        let mut conn = self.acquire().await?;
+        let done = sqlx::query(
+            "UPDATE domain SET host_move=$1 WHERE id=$2 AND host_move IS NOT DISTINCT FROM $3",
+        )
+        .bind(next)
+        .bind(domain.0)
+        .bind(expected)
+        .execute(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(done.rows_affected() > 0)
+    }
+
     async fn last_domain_host(&self, domain: DomainId) -> Result<Option<(String, String)>> {
         let mut conn = self.acquire().await?;
         let row = sqlx::query("SELECT last_host_id, last_host_label FROM domain WHERE id=$1")
