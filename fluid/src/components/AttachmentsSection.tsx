@@ -29,7 +29,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderInput, Replace, Trash2 } from "lucide-react";
 import type { ChangeEvent, ReactElement } from "react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { problemDetail } from "../api/client";
 import type { AssetHome, AttachmentRow } from "../api/files";
@@ -66,6 +66,19 @@ export interface AttachmentsSectionProps {
 type Asking =
   | { kind: "remove"; path: string }
   | { kind: "replace"; path: string; file: File };
+
+/**
+ * Where focus goes once a question closes: back to the row's button that
+ * asked (a no), or to the file's link (a done; the heading if it is gone).
+ */
+type FocusAfter =
+  { kind: "opener"; label: string } | { kind: "file"; path: string };
+
+/** The row button that opened a question, by its accessible name. */
+function openerOf(question: Asking): string {
+  const name = nameOf(question.path);
+  return question.kind === "remove" ? `Remove ${name}` : `Replace ${name}`;
+}
 
 /** What removing an engram's file leaves behind, said before it happens. */
 function engramConfirmText(name: string): string {
@@ -113,6 +126,35 @@ export function AttachmentsSection({
   const [asking, setAsking] = useState<Asking | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
+  const answerRef = useRef<HTMLButtonElement | null>(null);
+  /** Set with the close of a question, read by the render that closes it. */
+  const focusAfter = useRef<FocusAfter | null>(null);
+  // A question that opens takes focus to its answer, also when it opens as
+  // the file picker closes. One that closes hands it on, after the render
+  // that brings the row's controls (and the refreshed listing) back.
+  useEffect(() => {
+    if (asking !== null) {
+      answerRef.current?.focus();
+      return;
+    }
+    const after = focusAfter.current;
+    focusAfter.current = null;
+    const root = sectionRef.current;
+    if (after === null || root === null) {
+      return;
+    }
+    const target =
+      after.kind === "opener"
+        ? [...root.querySelectorAll("button")].find(
+            (b) => b.getAttribute("aria-label") === after.label,
+          )
+        : [...root.querySelectorAll("a")].find(
+            (a) => a.getAttribute("title") === after.path,
+          );
+    (target ?? headingRef.current)?.focus();
+  }, [asking]);
 
   if (referenced.length === 0) {
     return null;
@@ -141,6 +183,7 @@ export function AttachmentsSection({
         // picks a free path against, so it is refreshed rather than patched
         // in place.
         await queryClient.invalidateQueries({ queryKey: home.key });
+        focusAfter.current = { kind: "file", path: question.path };
         setAsking(null);
       } catch (cause) {
         setFailure(
@@ -165,8 +208,12 @@ export function AttachmentsSection({
   };
 
   return (
-    <section aria-label="Attachments" className="text-sm">
-      <h2 className="mb-3 text-caption font-semibold text-slate-500 dark:text-slate-400">
+    <section ref={sectionRef} aria-label="Attachments" className="text-sm">
+      <h2
+        ref={headingRef}
+        tabIndex={-1}
+        className={`mb-3 rounded text-caption font-semibold text-slate-500 dark:text-slate-400 ${FOCUS_RING}`}
+      >
         Attachments
       </h2>
       {failure !== null && (
@@ -261,6 +308,7 @@ export function AttachmentsSection({
                   <span className="flex flex-wrap gap-2">
                     <button
                       type="button"
+                      ref={answerRef}
                       className={
                         asking.kind === "remove"
                           ? BUTTON.destructive
@@ -278,6 +326,10 @@ export function AttachmentsSection({
                       className={BUTTON.ghost}
                       disabled={busy}
                       onClick={() => {
+                        focusAfter.current = {
+                          kind: "opener",
+                          label: openerOf(asking),
+                        };
                         setAsking(null);
                       }}
                     >
@@ -322,6 +374,7 @@ function ReplacePicker({
         ref={picker}
         type="file"
         accept={`.${kind}`}
+        aria-label={`Replace ${name}: pick a file`}
         className="hidden"
         onChange={(event: ChangeEvent<HTMLInputElement>) => {
           const file = event.target.files?.[0];

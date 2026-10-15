@@ -23,7 +23,7 @@ import type { Extension } from "@codemirror/state";
 import { Compartment, EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { EditorView as View, keymap } from "@codemirror/view";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check } from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -33,7 +33,9 @@ import * as Y from "yjs";
 
 import { problemDetail } from "../api/client";
 import {
+  assetVersions,
   fetchReflection,
+  fetchReflectionAssets,
   reflectionAssetHome,
   reflectionAssetsKey,
   reflectionKey,
@@ -57,6 +59,7 @@ import { Skeleton } from "../components/Skeleton";
 import { AttachButton } from "../editor/AttachButton";
 import CmEditor from "../editor/CmEditor";
 import type { Draft } from "../editor/drafts";
+import { assetRefsIn } from "../editor/imageFormat";
 import { clearDraft, readDraft, writeDraft } from "../editor/drafts";
 import { frontmatterFold } from "../editor/frontmatterFold";
 import { hiddenIdLines } from "../editor/hiddenIdLines";
@@ -371,6 +374,26 @@ function Surface({
    * handlers are read once at mount and must reach the live buffer.
    */
   const home = useMemo(() => reflectionAssetHome(domain, path), [domain, path]);
+  // The listing's sha256 per file makes a preview's address name its current
+  // bytes, so a file replaced elsewhere is drawn anew. Read once a page
+  // links a file: at mount, or after the first upload of this session (its
+  // onSettled below refreshes it). A page without files asks nothing. The
+  // previews sit in a compartment of their own: the editor takes its
+  // extensions once, at mount.
+  const [linksFiles, setLinksFiles] = useState(
+    () => assetRefsIn(mountText, home.resolve).length > 0,
+  );
+  const listing = useQuery({
+    queryKey: reflectionAssetsKey(domain),
+    queryFn: () => fetchReflectionAssets(domain),
+    enabled: linksFiles,
+  });
+  const versions = useMemo(() => assetVersions(listing.data), [listing.data]);
+  const previewHome = useMemo(
+    () => reflectionAssetHome(domain, path, versions),
+    [domain, path, versions],
+  );
+  const previews = useMemo(() => new Compartment(), []);
   const uploadView = useRef<EditorView | null>(null);
   const [attachError, setAttachError] = useState<string | null>(null);
   const uploads = useAttachmentUploads({
@@ -379,6 +402,7 @@ function Surface({
     view: () => uploadView.current,
     onError: setAttachError,
     onSettled: () => {
+      setLinksFiles(true);
       void queryClient.invalidateQueries({
         queryKey: reflectionAssetsKey(domain),
       });
@@ -398,11 +422,25 @@ function Surface({
       frontmatterFold(),
       hiddenIdLines(),
       uploads.extension,
-      imagePreviews(home),
+      previews.of(imagePreviews(home)),
       editable.of(readOnly(mountEnded)),
     ],
-    [ytext, awareness, resolved, editable, mountEnded, uploads.extension, home],
+    [
+      ytext,
+      awareness,
+      resolved,
+      editable,
+      mountEnded,
+      uploads.extension,
+      home,
+      previews,
+    ],
   );
+  useEffect(() => {
+    view?.dispatch({
+      effects: previews.reconfigure(imagePreviews(previewHome)),
+    });
+  }, [view, previews, previewHome]);
   useEffect(() => {
     view?.dispatch({ effects: editable.reconfigure(readOnly(ended)) });
   }, [view, editable, ended]);

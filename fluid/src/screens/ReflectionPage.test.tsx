@@ -372,18 +372,73 @@ describe("a reflection's attachments", () => {
     return apiMock.mock.calls.filter(([path]) => path === route).length;
   }
 
-  it("a contributor sees the page's files and no curate controls", async () => {
-    serveFiles("edit");
+  it.each(["edit", "read"])(
+    "a contributor or reader (%s) sees the page's files and no curate controls",
+    async (right) => {
+      serveFiles(right);
+      renderApp("/d/eng/reflection/guides/deploying.md");
+      const region = await screen.findByRole("region", { name: "Attachments" });
+      expect(await within(region).findByText("2.0 KiB")).toBeVisible();
+      expect(within(region).getByText("flow.png")).toBeVisible();
+      for (const name of [
+        "Replace flow.png",
+        "Move flow.png",
+        "Remove flow.png",
+      ]) {
+        expect(screen.queryByRole("button", { name })).toBeNull();
+      }
+    },
+  );
+
+  it("a replaced image is drawn from its new bytes, and no version reaches the text", async () => {
+    const OLD = "1111111111111111aaaa";
+    const NEW = "2222222222222222bbbb";
+    let sha = OLD;
+    serveFiles("curate", {
+      [ASSETS]: () => ({
+        assets: [{ ...LISTING.assets[0], sha256: sha }],
+      }),
+      [`${ASSETS}/flow.png`]: () => {
+        sha = NEW;
+        return {
+          path: "assets/flow.png",
+          mime: "image/png",
+          size: 3,
+          sha256: NEW,
+        };
+      },
+    });
     renderApp("/d/eng/reflection/guides/deploying.md");
-    const region = await screen.findByRole("region", { name: "Attachments" });
-    expect(await within(region).findByText("2.0 KiB")).toBeVisible();
-    expect(within(region).getByText("flow.png")).toBeVisible();
-    for (const name of [
-      "Replace flow.png",
-      "Move flow.png",
-      "Remove flow.png",
-    ]) {
-      expect(screen.queryByRole("button", { name })).toBeNull();
+    const article = await screen.findByRole("article");
+    await waitFor(() => {
+      expect(
+        within(article).getByRole("img", { name: "Flow" }).getAttribute("src"),
+      ).toMatch(/\/reflection\/assets\/flow\.png\?v=111111111111$/);
+    });
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Replace flow.png" }),
+    );
+    await user.upload(
+      screen.getByLabelText("Replace flow.png: pick a file"),
+      new File(["new"], "flow.png", { type: "image/png" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Replace" }));
+    await waitFor(() => {
+      expect(
+        within(article).getByRole("img", { name: "Flow" }).getAttribute("src"),
+      ).toMatch(/\?v=222222222222$/);
+    });
+    // The version is an address for the browser only: no section id, no
+    // source span and no text of the page carries it.
+    expect(article.textContent).not.toContain("?v=");
+    for (const el of article.querySelectorAll("*")) {
+      for (const attr of el.attributes) {
+        if (attr.name === "src" || attr.name === "href") {
+          continue;
+        }
+        expect(attr.value).not.toContain("?v=");
+      }
     }
   });
 

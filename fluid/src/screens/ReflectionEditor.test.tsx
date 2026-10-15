@@ -946,6 +946,37 @@ describe("the reflection editor takes files", () => {
     });
   });
 
+  it("draws a preview from the listing's version and follows a new one, never writing it", async () => {
+    const A_ROW = {
+      path: "assets/2026/10/a.png",
+      mime: "image/png",
+      size: 1,
+      modified: "2026-10-01T00:00:00Z",
+      sha256: "1111111111111111",
+    };
+    serveFiles([[A_ROW], [{ ...A_ROW, sha256: "2222222222222222" }]]);
+    const session = live(room(`${PAGE}\n![a](../assets/2026/10/a.png)\n`));
+    const editor = await openEditor();
+    const root = editor.closest(".cm-editor") as HTMLElement;
+    const srcs = () =>
+      [...root.querySelectorAll(".cm-image-preview img")].map((img) =>
+        img.getAttribute("src"),
+      );
+    await waitFor(() => {
+      expect(srcs()).toEqual([
+        "/api/v1/domains/eng/reflection/assets/2026/10/a.png?v=111111111111",
+      ]);
+    });
+    // An upload refreshes the listing; the preview follows its new version.
+    editor.dispatchEvent(carrying("paste", [png()]));
+    await waitFor(() => {
+      expect(srcs()).toContain(
+        "/api/v1/domains/eng/reflection/assets/2026/10/a.png?v=222222222222",
+      );
+    });
+    expect(session.get().ytext?.toJSON()).not.toContain("?v=");
+  });
+
   it("adds no link when the room ends while the file is on its way", async () => {
     let land: (value: unknown) => void = () => undefined;
     serveFiles(

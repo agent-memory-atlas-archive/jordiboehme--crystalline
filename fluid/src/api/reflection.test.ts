@@ -513,3 +513,22 @@ describe("replacing a Reflection file", () => {
     ).toMatchObject({ path: "assets/flow.png" });
   });
 });
+
+describe("a Reflection file's address carries its version", () => {
+  it("only the URL gets the version, never a link or a resolved path", () => {
+    const home = reflectionAssetHome(
+      "eng",
+      "guides/deploying.md",
+      new Map([["assets/flow.png", "0123456789abcdef0123"]]),
+    );
+    expect(home.url("assets/flow.png")).toBe(
+      `${API_BASE}/domains/eng/reflection/assets/flow.png?v=0123456789ab`,
+    );
+    // A file the listing does not know is addressed plainly.
+    expect(home.url("assets/new.png")).toBe(
+      `${API_BASE}/domains/eng/reflection/assets/new.png`,
+    );
+    expect(home.linkTo("assets/flow.png")).toBe("../assets/flow.png");
+    expect(home.resolve("../assets/flow.png")).toBe("assets/flow.png");
+  });
+});

@@ -751,14 +751,27 @@ export async function moveReflectionAsset(
 export const ENGRAM_FILE =
   "This file is not in the Reflection. A curator copies it into the Reflection's files.";
 
+/** How much of a file's sha256 its URL carries: enough to tell versions apart. */
+const VERSION_CHARS = 12;
+
+/** Path to sha256 for every file a listing holds, for {@link reflectionAssetHome}. */
+export function assetVersions(
+  rows: readonly AttachmentRow[] | undefined,
+): ReadonlyMap<string, string> {
+  return new Map((rows ?? []).map((row) => [row.path, row.sha256]));
+}
+
 /**
  * The Reflection's file store for the page at `pagePath`: its listing, the
  * routes, and the page-relative links core's `classify_target` reads. Callers
  * pass a memoized home. Lazy only: the link rules are not in the entry bundle.
+ * `versions` (path to sha256, {@link assetVersions} of the listing) makes
+ * `url` name each file's current bytes.
  */
 export function reflectionAssetHome(
   domain: string,
   pagePath: string,
+  versions?: ReadonlyMap<string, string>,
 ): AssetHome {
   return {
     key: reflectionAssetsKey(domain),
@@ -766,7 +779,17 @@ export function reflectionAssetHome(
     upload: (path, file) => uploadReflectionAsset(domain, path, file),
     replace: (path, file) => replaceReflectionAsset(domain, path, file),
     remove: (path) => deleteReflectionAsset(domain, path),
-    url: (path) => reflectionAssetUrl(domain, path),
+    // The version is for the browser only: a replaced file keeps its path,
+    // so without it an <img> and the editor's preview keep the old picture.
+    // Only the URL carries it; `linkTo` and `resolve` never do, so no
+    // document is ever written with it.
+    url: (path) => {
+      const sha = versions?.get(path);
+      const plain = reflectionAssetUrl(domain, path);
+      return sha === undefined || sha === ""
+        ? plain
+        : `${plain}?v=${encodeURIComponent(sha.slice(0, VERSION_CHARS))}`;
+    },
     resolve: (target) => {
       const r = reflectionTargetOf(target, pagePath);
       return r.kind === "reflection" ? r.path : null;

@@ -23,8 +23,10 @@ import { ApiProblem, problemDetail } from "../api/client";
 import type { AssetResolver } from "../api/files";
 import type { SectionView, SourceState } from "../api/reflection";
 import {
+  assetVersions,
   deleteReflection,
   fetchReflection,
+  fetchReflectionAssets,
   reflectionAssetHome,
   reflectionAssetsKey,
   reflectionDocKey,
@@ -50,6 +52,7 @@ import { ReflectionThreads } from "../components/ReflectionThreads";
 import { BUTTON, Chip } from "../components/primitives";
 import { Skeleton } from "../components/Skeleton";
 import { engramRoute, reflectionEditRoute, reflectionRoute } from "../paths";
+import { assetRefsIn } from "../editor/imageFormat";
 import { FOCUS_HEADING, useHeadingFocusRequest } from "../focusHeading";
 import { lazyChunk } from "../lazyChunk";
 import { discardPageDrafts } from "../reflectionPageDrafts";
@@ -224,10 +227,27 @@ function PageBody({
     () => (doc.data ? sectionTexts(doc.data.markdown, doc.data.sections) : []),
     [doc.data],
   );
+  // The Reflection's file listing: the same cache entry the attachments
+  // section reads, so this adds no request. Its sha256 per file is the
+  // version an image's address carries, so a replaced file is drawn anew.
+  // A page that links no file asks nothing, the same rule the section keeps.
+  const linksAFile = useMemo(
+    () =>
+      doc.data !== undefined &&
+      assetRefsIn(doc.data.markdown, reflectionAssetHome(domain, path).resolve)
+        .length > 0,
+    [doc.data, domain, path],
+  );
+  const listing = useQuery({
+    queryKey: reflectionAssetsKey(domain),
+    queryFn: () => fetchReflectionAssets(domain),
+    enabled: linksAFile,
+  });
+  const versions = useMemo(() => assetVersions(listing.data), [listing.data]);
   // One resolver per page: images and files load from the Reflection itself.
   const assets = useMemo(
-    () => reflectionAssetHome(domain, path),
-    [domain, path],
+    () => reflectionAssetHome(domain, path, versions),
+    [domain, path, versions],
   );
   // A link to a section (`#s-<id>`) or a thread (`#<thread id>`, which is
   // t-<hex> already: add no prefix) scrolls there once

@@ -25,6 +25,39 @@ function movedText(links: number): string {
   return `Moved. ${links} ${links === 1 ? "link" : "links"} updated.`;
 }
 
+/** The extension, lowercase, or "". */
+function extensionOf(path: string): string {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+/**
+ * Why a new path is not sent, or null. A path that leaves `assets/` or has
+ * an empty part is refused here, before any request; the server would
+ * refuse it too. A file keeps its extension: the server serves the bytes
+ * under the type the extension names, so PNG bytes moved to `.jpg` would be
+ * served as a JPEG.
+ */
+function refusalOf(target: string, from: string): string | null {
+  if (target === "") {
+    return null;
+  }
+  if (
+    target.startsWith("/") ||
+    target.split("/").some((part) => part === "" || part === "..")
+  ) {
+    return "Write a path like diagrams/flow.png.";
+  }
+  const kept = extensionOf(from);
+  if (extensionOf(target) !== kept) {
+    return kept === ""
+      ? "Keep the name without an extension."
+      : `Keep the .${kept} extension.`;
+  }
+  return null;
+}
+
 export function MoveAssetDialog({
   domain,
   path,
@@ -64,6 +97,8 @@ export function MoveAssetDialog({
     }
   }, [receipt]);
   const target = to.trim();
+  const refusal = refusalOf(target, from);
+  const sendable = target !== "" && target !== from && refusal === null;
   return (
     <Dialog.Root
       open
@@ -94,12 +129,7 @@ export function MoveAssetDialog({
             className="mt-3 flex flex-col gap-3"
             onSubmit={(event) => {
               event.preventDefault();
-              if (
-                receipt === null &&
-                target !== "" &&
-                target !== from &&
-                !move.isPending
-              ) {
+              if (receipt === null && sendable && !move.isPending) {
                 move.mutate();
               }
             }}
@@ -117,10 +147,17 @@ export function MoveAssetDialog({
                 readOnly={receipt !== null}
                 onChange={(e) => {
                   setTo(e.target.value);
+                  // The last refusal was about another path.
+                  move.reset();
                 }}
                 className={`${FIELD} min-w-0 flex-1`}
               />
             </span>
+            {refusal !== null && (
+              <p className="text-sm text-slate-600 dark:text-slate-300">
+                {refusal}
+              </p>
+            )}
             {move.error && (
               <p
                 role="alert"
@@ -167,9 +204,7 @@ export function MoveAssetDialog({
                   </button>
                   <button
                     type="submit"
-                    disabled={
-                      move.isPending || target === "" || target === from
-                    }
+                    disabled={move.isPending || !sendable}
                     className={BUTTON.primary}
                   >
                     Move file
