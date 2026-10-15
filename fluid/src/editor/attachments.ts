@@ -19,15 +19,15 @@ import type { Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 
 import { problemDetail } from "../api/client";
+import type { AssetHome } from "../api/files";
 import {
   ALLOWED_ATTACHMENT_EXTENSIONS,
   MAX_ATTACHMENT_BYTES,
   freeAttachmentPath,
   isAllowedAttachment,
   isImageAttachment,
-  listAttachments,
-  uploadAttachment,
 } from "../api/files";
+import { engramAssetHome } from "./imageFormat";
 import { insertBlock } from "./toolbar";
 
 /** The ceiling in the words an author reads, matching the server's own. */
@@ -71,15 +71,27 @@ export function transferFiles(
 }
 
 /** What one batch of files needs to become references in one buffer. */
-export interface UploadRequest {
-  domain: string;
+interface UploadBatch {
   files: readonly File[];
   view: EditorView;
   /** A refusal in words an author can act on; null clears a standing one. */
   onError: (message: string | null) => void;
   /** The instant the dated folder is derived from. Tests pin it. */
   now?: Date;
+  /**
+   * Runs right before the references are inserted, and may move the caret:
+   * a document with lines the reference must not land on steps past them
+   * here. Not run when nothing is inserted.
+   */
+  place?: (view: EditorView) => void;
 }
+
+/**
+ * One batch and where its files are stored: a home, or the domain whose
+ * engram files they become, which is the engram home of that domain.
+ */
+export type UploadRequest = UploadBatch &
+  ({ home: AssetHome } | { domain: string });
 
 /**
  * Why something failed, in words: the server's own where the failure came from
@@ -94,7 +106,7 @@ function reasonOf(cause: unknown): string {
 /**
  * Upload every file and insert one reference per stored file, at the cursor.
  *
- * The domain's listing is read once up front, because a free path has to be
+ * The home's listing is read once up front, because a free path has to be
  * free against what is already there: uploading is a create-or-REPLACE, so a
  * collision that went unnoticed would silently overwrite somebody's file. A
  * listing that cannot be read is therefore fatal to the batch rather than
@@ -109,7 +121,9 @@ function reasonOf(cause: unknown): string {
 export async function uploadAttachments(
   request: UploadRequest,
 ): Promise<number> {
-  const { domain, files, view, onError } = request;
+  const { files, view, onError } = request;
+  const home =
+    "home" in request ? request.home : engramAssetHome(request.domain);
   onError(null);
   if (files.length === 0) {
     return 0;
@@ -117,7 +131,7 @@ export async function uploadAttachments(
   const problems: string[] = [];
   let taken: string[];
   try {
-    taken = (await listAttachments(domain)).map((row) => row.path);
+    taken = (await home.list()).map((row) => row.path);
   } catch (cause) {
     onError(reasonOf(cause));
     return 0;
@@ -135,10 +149,10 @@ export async function uploadAttachments(
     // name dropped together must not both claim one path.
     const path = freeAttachmentPath(file.name, taken, request.now);
     try {
-      const uploaded = await uploadAttachment(domain, path, file);
+      const uploaded = await home.upload(path, file);
       taken = [...taken, uploaded.path];
       stored.push(uploaded.path);
-      lines.push(attachmentMarkdown(file.name, uploaded.path));
+      lines.push(attachmentMarkdown(file.name, home.linkTo(uploaded.path)));
     } catch (cause) {
       problems.push(reasonOf(cause));
     }
@@ -153,6 +167,9 @@ export async function uploadAttachments(
   // the buffer was rebuilt while the upload was in flight - lands nowhere
   // either. Both end here, naming the paths so they can be linked by hand or
   // deleted.
+  if (lines.length > 0) {
+    request.place?.(view);
+  }
   if (lines.length > 0 && !insertBlock(view, lines)) {
     inserted = 0;
     problems.push(

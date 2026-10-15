@@ -58,7 +58,16 @@
  * VALIDATOR would never let be stored.
  */
 
-import { ASSETS_PREFIX, isImageAttachment } from "../api/files";
+import type { AssetHome } from "../api/files";
+import {
+  ASSETS_PREFIX,
+  attachmentUrl,
+  attachmentsKey,
+  deleteAttachment,
+  isImageAttachment,
+  listAttachments,
+  uploadAttachment,
+} from "../api/files";
 
 /** Where an image stands in the column of prose around it. */
 export type ImageAlign = "center" | "full" | "left" | "right";
@@ -149,6 +158,32 @@ export function assetPath(target: string): string | null {
     return null;
   }
   return path;
+}
+
+/**
+ * The engram kind's file store: the domain's files route, resolved by
+ * {@link assetPath}, linked by the stored path itself and never refusing a
+ * target.
+ *
+ * It lives here rather than in `api/files.ts`, which owns the routes, for two
+ * reasons the build shows. That module is in the entry bundle (the
+ * maintenance screen imports it eagerly) and this one is a lazy chunk, so
+ * importing {@link assetPath} there would pull this whole module into the
+ * entry; and this module already imports that one, so the import would be a
+ * cycle. `editor/attachments.ts` is no home either: it carries CodeMirror,
+ * which the reading view must not load.
+ */
+export function engramAssetHome(domain: string): AssetHome {
+  return {
+    key: attachmentsKey(domain),
+    list: () => listAttachments(domain),
+    upload: (path, file) => uploadAttachment(domain, path, file),
+    remove: (path) => deleteAttachment(domain, path),
+    url: (path) => attachmentUrl(domain, path),
+    resolve: assetPath,
+    refused: () => null,
+    linkTo: (path) => path,
+  };
 }
 
 /**
@@ -462,12 +497,19 @@ function eachLiveLine(
  * One divergence is left, stated where it is made: {@link assetPath} refuses a
  * `.` or `..` segment the core's scanner would count and its validator would
  * refuse.
+ *
+ * `resolve` is what turns a target into a stored path. The default is the
+ * engram kind's {@link assetPath}, which is what the corpus pins; another
+ * kind of document passes its own home's `resolve`.
  */
-export function assetRefsIn(text: string): string[] {
+export function assetRefsIn(
+  text: string,
+  resolve: (target: string) => string | null = assetPath,
+): string[] {
   const paths = new Set<string>();
   eachLiveLine(text, (line) => {
     for (const ref of lineRefs(line)) {
-      const path = assetPath(ref.token);
+      const path = resolve(ref.token);
       if (path !== null) {
         paths.add(path);
       }
@@ -484,12 +526,18 @@ export function assetRefsIn(text: string): string[] {
  * preview or a format menu. Offsets are relative to the text handed in, so a
  * caller working line by line adds the line's own start and a caller scanning
  * a whole document adds nothing.
+ *
+ * `resolve` is the same question {@link assetRefsIn} takes, with the same
+ * engram default.
  */
-export function imageRefsIn(text: string): ImageRef[] {
+export function imageRefsIn(
+  text: string,
+  resolve: (target: string) => string | null = assetPath,
+): ImageRef[] {
   const refs: ImageRef[] = [];
   eachLiveLine(text, (line, offset) => {
     for (const ref of lineRefs(line)) {
-      const path = assetPath(ref.token);
+      const path = resolve(ref.token);
       if (!ref.image || path === null || !isImageAttachment(path)) {
         continue;
       }

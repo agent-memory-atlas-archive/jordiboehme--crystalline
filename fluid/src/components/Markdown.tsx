@@ -15,6 +15,7 @@
 
 import { Suspense, lazy } from "react";
 
+import type { AssetResolver } from "../api/files";
 import type { WikilinkResolver } from "../wikilinks";
 import type { MarkdownAnchors } from "./MarkdownBody";
 
@@ -44,6 +45,12 @@ export interface MarkdownProps {
    */
   domain?: string;
   /**
+   * What a relative link target resolves against and where its bytes are
+   * read, for a document whose files are not its domain's engram files. It
+   * wins over {@link domain}.
+   */
+  assets?: AssetResolver;
+  /**
    * What this document is called, for the name on a file a reader takes out
    * of it: a diagram or an image saved from the full window is named after
    * the document it came from. Absent, such a download is named after the
@@ -65,6 +72,7 @@ export function Markdown({
   wikilinks,
   foldTitle,
   domain,
+  assets,
   documentName,
   anchors,
 }: MarkdownProps) {
@@ -103,6 +111,7 @@ export function Markdown({
         {...(wikilinks ? { wikilinks } : {})}
         {...(foldTitle === undefined ? {} : { foldTitle })}
         {...(domain === undefined ? {} : { domain })}
+        {...(assets === undefined ? {} : { assets })}
         {...(documentName === undefined ? {} : { documentName })}
         {...(anchors === undefined ? {} : { anchors })}
       />

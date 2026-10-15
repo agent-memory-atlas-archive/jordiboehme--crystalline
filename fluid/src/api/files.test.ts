@@ -25,6 +25,7 @@ import {
   sanitizeAttachmentName,
   uploadAttachment,
 } from "./files";
+import { engramAssetHome } from "../editor/imageFormat";
 
 /** August 2026, built from local parts so no test depends on a time zone. */
 const AUGUST = new Date(2026, 7, 3, 12, 0, 0);
@@ -345,5 +346,17 @@ describe("listAttachments", () => {
         sha256: "9f2a",
       },
     ]);
+  });
+});
+
+describe("engramAssetHome", () => {
+  it("the engram asset home is today's routes and paths", () => {
+    const home = engramAssetHome("eng");
+    expect(home.url("assets/a b.png")).toBe(
+      attachmentUrl("eng", "assets/a b.png"),
+    );
+    expect(home.resolve("./assets/x.png#left")).toBe("assets/x.png");
+    expect(home.linkTo("assets/x.png")).toBe("assets/x.png");
+    expect(home.refused("assets/x.png")).toBeNull();
   });
 });

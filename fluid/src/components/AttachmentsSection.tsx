@@ -26,14 +26,8 @@ import { useState } from "react";
 import { useMemo } from "react";
 
 import { problemDetail } from "../api/client";
-import type { AttachmentRow } from "../api/files";
-import {
-  attachmentUrl,
-  attachmentsKey,
-  deleteAttachment,
-  listAttachments,
-} from "../api/files";
-import { assetRefsIn } from "../editor/imageFormat";
+import type { AssetHome, AttachmentRow } from "../api/files";
+import { assetRefsIn, engramAssetHome } from "../editor/imageFormat";
 import { formatBytes } from "../format";
 import { BUTTON, Chip, FOCUS_RING, IconButton } from "./primitives";
 
@@ -44,6 +38,18 @@ export interface AttachmentsSectionProps {
   body: string;
   /** Whether this session may remove a file. A reader is offered no control. */
   canDelete?: boolean;
+  /**
+   * Where the files live and how the body names them. Absent, it is the
+   * engram home of {@link domain}.
+   */
+  home?: AssetHome;
+  /** The question a remove asks, by file name. Absent, the engram one. */
+  confirmText?: (name: string) => string;
+}
+
+/** What removing an engram's file leaves behind, said before it happens. */
+function engramConfirmText(name: string): string {
+  return `Remove ${name}? Engrams keep their references until edited; evolve will flag them.`;
 }
 
 /** The file's own name, which is what a reader knows it by. */
@@ -62,12 +68,21 @@ export function AttachmentsSection({
   domain,
   body,
   canDelete = false,
+  home: givenHome,
+  confirmText = engramConfirmText,
 }: AttachmentsSectionProps) {
-  const referenced = useMemo(() => assetRefsIn(body), [body]);
+  const home = useMemo(
+    () => givenHome ?? engramAssetHome(domain),
+    [givenHome, domain],
+  );
+  const referenced = useMemo(
+    () => assetRefsIn(body, home.resolve),
+    [body, home],
+  );
   const queryClient = useQueryClient();
   const attachments = useQuery({
-    queryKey: attachmentsKey(domain),
-    queryFn: () => listAttachments(domain),
+    queryKey: home.key,
+    queryFn: () => home.list(),
     // An engram that references no file asks the server nothing: the listing
     // would answer a question this panel is not going to draw.
     enabled: referenced.length > 0,
@@ -90,13 +105,11 @@ export function AttachmentsSection({
       setRemoving(true);
       setFailure(null);
       try {
-        await deleteAttachment(domain, path);
+        await home.remove(path);
         // The listing this panel drew is stale the moment the file is gone,
         // and it is the same listing the upload flow picks a free path
         // against, so it is refreshed rather than patched in place.
-        await queryClient.invalidateQueries({
-          queryKey: attachmentsKey(domain),
-        });
+        await queryClient.invalidateQueries({ queryKey: home.key });
         setAsking(null);
       } catch (cause) {
         setFailure(
@@ -142,7 +155,7 @@ export function AttachmentsSection({
                   </span>
                 ) : (
                   <a
-                    href={attachmentUrl(domain, path)}
+                    href={home.url(path)}
                     target="_blank"
                     rel="noreferrer"
                     title={path}
@@ -176,7 +189,7 @@ export function AttachmentsSection({
               {asking === path && (
                 <span className="flex flex-col gap-2">
                   <span className="text-caption text-slate-600 dark:text-slate-300">
-                    {`Remove ${name}? Engrams keep their references until edited; evolve will flag them.`}
+                    {confirmText(name)}
                   </span>
                   <span className="flex flex-wrap gap-2">
                     <button

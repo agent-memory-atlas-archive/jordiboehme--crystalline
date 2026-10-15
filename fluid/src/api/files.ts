@@ -313,3 +313,37 @@ export async function listAttachments(
 export function attachmentsKey(domain: string): readonly unknown[] {
   return ["attachments", domain];
 }
+
+/**
+ * Where a written link target points and where its bytes are read: the half
+ * of a file store that drawing a document needs.
+ *
+ * Engrams and reflections keep their files in different places and spell the
+ * links to them differently, so the code that draws, previews and lists
+ * attachments asks one of these rather than knowing either kind. The engram
+ * instance is `engramAssetHome` in `editor/imageFormat.ts`, beside the
+ * `assetPath` it resolves with: this module is in the entry bundle and that
+ * one is not, so the instance lives there and only the types live here.
+ */
+export interface AssetResolver {
+  /** The stored path a target names (engram: `assets/...` from the domain root), or null. */
+  resolve: (target: string) => string | null;
+  /** The URL the browser reads the bytes at, for a stored path. */
+  url: (path: string) => string;
+  /**
+   * Why a target must not be fetched at all, or null. Engram: always null.
+   * The Reflection answers a sentence for an engram attachment.
+   */
+  refused: (target: string) => string | null;
+}
+
+/** One kind's file store: the resolver plus the verbs the upload flow and the rail need. */
+export interface AssetHome extends AssetResolver {
+  /** The listing's cache key. */
+  key: readonly unknown[];
+  list: () => Promise<AttachmentRow[]>;
+  upload: (path: string, file: Blob) => Promise<UploadedAttachment>;
+  remove: (path: string) => Promise<void>;
+  /** The text a document writes to point at a stored path (engram: the path itself). */
+  linkTo: (path: string) => string;
+}

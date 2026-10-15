@@ -56,11 +56,11 @@ import {
   headingIds,
   sectionUrl,
 } from "../anchors";
-import { attachmentUrl } from "../api/files";
+import type { AssetResolver } from "../api/files";
 import { documentHref } from "../base";
 import {
-  assetPath,
   decodeTarget,
+  engramAssetHome,
   imageStyle,
   parseImageFragment,
 } from "../editor/imageFormat";
@@ -480,20 +480,31 @@ function preFor(
 }
 
 /**
- * The files-route URL a target names, or null when it names no file of this
- * domain - which includes every case where the caller has no domain to resolve
- * against.
+ * The URL a target's bytes are read at, or null when it names no stored file
+ * - which includes every case where the caller has no resolver to ask.
  *
  * The single place the reading view turns a written target into an address,
- * asked by the image and the anchor alike, and it asks {@link assetPath} the
- * same question the rail asks so the two can never disagree about a file.
+ * asked by the image and the anchor alike, and it asks the resolver the same
+ * question the rail asks (for an engram, `assetPath`) so the two can never
+ * disagree about a file.
  */
-function assetHref(domain: string | undefined, target: string): string | null {
-  if (domain === undefined) {
+function assetHref(
+  assets: AssetResolver | undefined,
+  target: string,
+): string | null {
+  if (assets === undefined) {
     return null;
   }
-  const path = assetPath(target);
-  return path === null ? null : attachmentUrl(domain, path);
+  const path = assets.resolve(target);
+  return path === null ? null : assets.url(path);
+}
+
+/** Why the resolver will not have this target fetched, or null. */
+function refusalOf(
+  assets: AssetResolver | undefined,
+  target: string,
+): string | null {
+  return assets === undefined ? null : assets.refused(target);
 }
 
 /** The classes every link in a document wears, wherever it points. */
@@ -512,6 +523,11 @@ const LINK_CLASSES =
  * downloads is the server's disposition to decide, not this anchor's.
  * Everything else is what it was written as.
  *
+ * Before any of that but the wikilink, the resolver may refuse a target: a
+ * file this document must not read from (a reflection pointing at an engram
+ * attachment). Then the words stay and the address goes, with the reason on
+ * hover, so nothing is fetched and nothing navigates.
+ *
  * react-markdown's own URL transform has already dropped the protocols a link
  * may not carry (`javascript:` among them). What is left to decide is where it
  * opens: a link out of the app leaves this tab alone and gets no handle on it,
@@ -521,14 +537,14 @@ function MarkdownAnchor({
   children,
   href,
   node,
-  domain,
+  assets,
 }: {
   children?: ReactNode;
   /** Undefined is spelled out: react-markdown hands a link with no target on. */
   href?: string | undefined;
   node?: unknown;
-  /** The domain a relative `assets/` target resolves against, when known. */
-  domain?: string;
+  /** What a relative target resolves against, when known. */
+  assets?: AssetResolver;
 }) {
   if (wikilinkKind(node) === "resolved" && typeof href === "string") {
     return (
@@ -537,11 +553,15 @@ function MarkdownAnchor({
       </Link>
     );
   }
+  const refusal = refusalOf(assets, href ?? "");
+  if (refusal !== null) {
+    return <span title={refusal}>{children}</span>;
+  }
   // One question decides it, and the rail asks the same one: does this target
   // name a file of this domain? A `./` prefix is stripped, the fragment is
   // dropped - the files route never sees one - and an address that is somebody
   // else's, or a path the core would refuse, answers null.
-  const file = assetHref(domain, href ?? "");
+  const file = assetHref(assets, href ?? "");
   if (file !== null) {
     return (
       <a href={file} target="_blank" rel="noreferrer" className={LINK_CLASSES}>
@@ -582,18 +602,23 @@ function MarkdownAnchor({
  * click on the picture, which is what a reader tries first. A `span` and not
  * a `figure`, because the wrapper stands where the image stood and an image
  * lives inside a paragraph, where only phrasing content may go.
+ *
+ * A target the resolver refuses is not drawn at all, so its bytes are never
+ * asked for: the alt text stands where the picture would, with the reason
+ * under it.
  */
 function MarkdownImage({
   src,
   alt,
-  domain,
+  assets,
 }: {
   src?: string;
   alt?: string;
-  domain?: string;
+  assets?: AssetResolver;
 }) {
   const written = typeof src === "string" ? src : "";
-  const file = assetHref(domain, written);
+  const refusal = refusalOf(assets, written);
+  const file = assetHref(assets, written);
   // The directives are read off the decoded target for the same reason the
   // path is: micromark hands `w=50%` over as `w=50%25`, which is no width at
   // all. Decoding happens once, here and in `assetPath`, never in sequence.
@@ -612,6 +637,16 @@ function MarkdownImage({
     const wrapper = wrapperRef.current;
     setLinked(wrapper !== null && wrapper.closest("a") !== null);
   }, []);
+  if (refusal !== null) {
+    return (
+      <span>
+        {alt}
+        <span className="block text-caption text-slate-500 dark:text-slate-400">
+          {refusal}
+        </span>
+      </span>
+    );
+  }
   // Ours is rebuilt from the decoded path, which re-encodes exactly once;
   // anything else keeps the URL the renderer produced, escapes and all.
   const shown = file ?? written;
@@ -894,13 +929,13 @@ const HEADING_SIZES = [
 ] as const;
 
 /**
- * The component map for one domain: everything above, plus the three elements
- * that need to know more than the markdown says - which domain a relative
- * `assets/` target belongs to, and which document a picture taken out of the
+ * The component map for one document: everything above, plus the three
+ * elements that need to know more than the markdown says - what a relative
+ * target resolves against, and which document a picture taken out of the
  * full window is named after.
  */
 function componentsFor(
-  domain: string | undefined,
+  assets: AssetResolver | undefined,
   documentName: string | undefined,
   anchored: boolean,
 ): Components {
@@ -917,7 +952,7 @@ function componentsFor(
       <MarkdownAnchor
         href={href}
         node={node}
-        {...(domain === undefined ? {} : { domain })}
+        {...(assets === undefined ? {} : { assets })}
       >
         {children}
       </MarkdownAnchor>
@@ -926,7 +961,7 @@ function componentsFor(
       <MarkdownImage
         {...(typeof src === "string" ? { src } : {})}
         {...(typeof alt === "string" ? { alt } : {})}
-        {...(domain === undefined ? {} : { domain })}
+        {...(assets === undefined ? {} : { assets })}
       />
     ),
   };
@@ -946,6 +981,7 @@ export default function MarkdownBody({
   wikilinks,
   foldTitle,
   domain,
+  assets,
   documentName,
   anchors,
 }: {
@@ -958,6 +994,11 @@ export default function MarkdownBody({
    * attachment path means nothing without the domain holding it.
    */
   domain?: string;
+  /**
+   * What a relative target resolves against and where its bytes are read.
+   * It wins over {@link domain}, which stands for the domain's engram files.
+   */
+  assets?: AssetResolver;
   /**
    * What this document is called, for the name on a file a reader takes out
    * of it. Absent, a diagram's download is named after the drawing alone.
@@ -974,9 +1015,16 @@ export default function MarkdownBody({
   const anchored = anchors !== undefined;
   const rootRef = useRef<HTMLDivElement>(null);
   const { hash } = useLocation();
+  // Memoized on its inputs so the component map below is too: a new map
+  // every render would remount every image and close an open full window.
+  const resolver = useMemo(
+    () =>
+      assets ?? (domain === undefined ? undefined : engramAssetHome(domain)),
+    [assets, domain],
+  );
   const componentMap = useMemo(
-    () => componentsFor(domain, documentName, anchored),
-    [domain, documentName, anchored],
+    () => componentsFor(resolver, documentName, anchored),
+    [resolver, documentName, anchored],
   );
   const rehypePlugins = useMemo<RehypePlugins>(
     () => [

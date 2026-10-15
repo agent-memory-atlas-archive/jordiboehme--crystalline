@@ -14,12 +14,20 @@ import type { Extension } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
+import type { AssetHome } from "../api/files";
 import { attachmentUploads, uploadAttachments } from "./attachments";
 
 /** What a screen needs to offer uploads on its buffer. */
 export interface AttachmentUploadOptions {
   /** The domain the files are stored in. */
   domain: string;
+  /**
+   * Where the files are stored and how the buffer links to them. Absent, it
+   * is the engram home of {@link domain}.
+   */
+  home?: AssetHome;
+  /** Runs right before the references are inserted, and may move the caret. */
+  place?: (view: EditorView) => void;
   /** The live buffer, read at the moment of the upload rather than at mount. */
   view: () => EditorView | null;
   /** A refusal in words an author can act on; null clears a standing one. */
@@ -44,12 +52,18 @@ export function useAttachmentUploads(
     latest.current = options;
   });
   const attach = useCallback((files: File[]) => {
-    const { domain, view, onError } = latest.current;
+    const { domain, home, place, view, onError } = latest.current;
     const target = view();
     if (target === null) {
       return;
     }
-    void uploadAttachments({ domain, files, view: target, onError });
+    void uploadAttachments({
+      ...(home === undefined ? { domain } : { home }),
+      ...(place === undefined ? {} : { place }),
+      files,
+      view: target,
+      onError,
+    });
   }, []);
   const extension = useMemo(
     // `attachmentUploads` only stores this callback in the DOM handlers

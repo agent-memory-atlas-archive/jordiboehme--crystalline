@@ -11,6 +11,7 @@ import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiProblem } from "../api/client";
+import type { AssetHome } from "../api/files";
 import { listAttachments, uploadAttachment } from "../api/files";
 import {
   attachmentMarkdown,
@@ -431,5 +432,56 @@ describe("uploadAttachments", () => {
     });
 
     expect(errors[0]).toBeNull();
+  });
+});
+
+describe("uploadAttachments through a home", () => {
+  it("an upload through a home writes the home's link and runs place first", async () => {
+    const target = mount();
+    const order: string[] = [];
+    const home: AssetHome = {
+      key: ["fake"],
+      list: () => Promise.resolve([]),
+      upload: (path) => {
+        order.push("upload");
+        return Promise.resolve({
+          path,
+          mime: "image/png",
+          size: 8,
+          sha256: "a",
+        });
+      },
+      remove: () => Promise.resolve(),
+      url: (path) => `/fake/${path}`,
+      resolve: () => null,
+      refused: () => null,
+      linkTo: (path) => `../${path}`,
+    };
+    const carets: number[] = [];
+
+    const inserted = await uploadAttachments({
+      home,
+      files: [fileOf("shot.png")],
+      view: target,
+      onError: () => undefined,
+      now: new Date(2026, 9, 15),
+      place: (placed) => {
+        order.push("place");
+        carets.push(placed.state.selection.main.head);
+        // The insert has not happened yet: the buffer is still the bare body.
+        expect(placed.state.doc.toString()).toBe("Body line\n");
+      },
+    });
+
+    expect(inserted).toBe(1);
+    expect(order).toEqual(["upload", "place"]);
+    expect(carets).toEqual(["Body line".length]);
+    // The link text is the file's own name, as for an engram; only the
+    // target is the home's spelling.
+    expect(target.state.doc.toString().trimEnd()).toMatch(
+      /!\[shot\.png\]\(\.\.\/assets\/2026\/10\/shot\.png\)$/,
+    );
+    expect(listMock).not.toHaveBeenCalled();
+    expect(uploadMock).not.toHaveBeenCalled();
   });
 });

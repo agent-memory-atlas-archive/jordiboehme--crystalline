@@ -17,6 +17,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 
+import type { AssetResolver } from "../api/files";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { Markdown } from "./Markdown";
 
@@ -273,5 +274,38 @@ describe("attachments in the reading view", () => {
     expect(
       screen.queryByRole("button", { name: "Open in full window" }),
     ).toBeNull();
+  });
+});
+
+describe("attachments a resolver refuses", () => {
+  it("a refused target is drawn as text and never fetched", async () => {
+    const assets: AssetResolver = {
+      resolve: () => "assets/x.png",
+      url: (path) => `/fake/${path}`,
+      refused: () => "Not here.",
+    };
+    const { container } = render(
+      <MemoryRouter>
+        <ThemeProvider>
+          <Markdown
+            source={
+              "![A diagram](../assets/x.png)\n\n[The deck](../assets/q3.pdf)"
+            }
+            domain={DOMAIN}
+            assets={assets}
+          />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(screen.queryByText("crystallizing")).toBeNull();
+    });
+
+    expect(container.querySelector("img")).toBeNull();
+    expect(screen.getByText("A diagram")).toBeInTheDocument();
+    expect(screen.getByText("Not here.")).toBeInTheDocument();
+    // The link keeps its words and loses its address.
+    expect(screen.queryByRole("link", { name: "The deck" })).toBeNull();
+    expect(screen.getByText("The deck")).toHaveAttribute("title", "Not here.");
   });
 });
