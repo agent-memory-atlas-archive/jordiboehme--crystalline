@@ -4352,10 +4352,9 @@ impl Store for PostgresStore {
     async fn swap_host_move(
         &self,
         domain: DomainId,
-        expected: Option<&HostMove>,
+        expected: Option<&str>,
         next: Option<&HostMove>,
     ) -> Result<bool> {
-        let expected = expected.map(crate::store::host_move_text);
         let next = next.map(crate::store::host_move_text);
         let mut conn = self.acquire().await?;
         let done = sqlx::query(
@@ -4400,16 +4399,27 @@ impl Store for PostgresStore {
         Ok(())
     }
 
-    async fn host_move(&self, domain: DomainId) -> Result<Option<HostMove>> {
+    async fn host_move_text(&self, domain: DomainId) -> Result<Option<String>> {
         let mut conn = self.acquire().await?;
         let row = sqlx::query(HOST_MOVE_SQL)
             .bind(domain.0)
             .fetch_optional(conn.as_mut())
             .await
             .map_err(IndexError::from)?;
-        Ok(row
-            .and_then(|r| cell_text(&r, 0))
-            .and_then(|text| crate::store::parse_host_move(&text)))
+        Ok(row.and_then(|r| cell_text(&r, 0)))
+    }
+
+    async fn end_rebuild_stamped(&self, domain: DomainId, started: &str) -> Result<()> {
+        let mut conn = self.acquire().await?;
+        sqlx::query(
+            "UPDATE domain SET rebuild_started=NULL, rebuild_kind=NULL WHERE id=$1 AND rebuild_started=$2",
+        )
+        .bind(domain.0)
+        .bind(started)
+        .execute(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(())
     }
 
     async fn set_host_move(&self, domain: DomainId, host_move: Option<&HostMove>) -> Result<()> {

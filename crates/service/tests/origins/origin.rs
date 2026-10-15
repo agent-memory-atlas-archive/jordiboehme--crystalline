@@ -6765,3 +6765,207 @@ async fn a_conflict_takes_the_teams_side_on_a_read_only_domain() {
             .contains("line one UPSTREAM")
     );
 }
+
+// --- standalone engines on a shared database ---------------------------------
+
+/// A standalone engine (`open_standalone`, what every daemonless command
+/// opens) over a Postgres schema of its own, as this machine, wired to the
+/// mock forge. `None` with no Postgres URL.
+#[cfg(feature = "postgres")]
+async fn standalone_on_postgres(
+    tmp: &Path,
+    mock: Arc<MockProvider>,
+) -> Option<(Engine, String, String)> {
+    let url = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL").ok()?;
+    if url.is_empty() {
+        return None;
+    }
+    let schema = format!(
+        "standalone_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    // Creates and migrates the schema the engine's URL points into.
+    crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+        .await
+        .unwrap();
+    let sep = if url.contains('?') { '&' } else { '?' };
+    let mut cfg = config(true);
+    cfg.database = Some(crystalline_core::config::DatabaseConfig {
+        backend: crystalline_core::config::DatabaseBackend::Postgres,
+        url: Some(format!(
+            "{url}{sep}options=-c%20search_path%3D{schema},public"
+        )),
+    });
+    let config_path = tmp.join("config.yaml");
+    crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
+    let loaded = crystalline_service::LoadedConfig {
+        path: config_path,
+        file: cfg.clone(),
+        effective: cfg,
+        overlay: EnvOverlay::default(),
+    };
+    let engine =
+        crystalline_service::engine::open_standalone(loaded, &tmp.join("unused.db"), false)
+            .await
+            .unwrap()
+            .with_origin_provider(mock)
+            .with_origins_dir(tmp.join("origins"))
+            .with_state_dir(tmp.join("state"));
+    Some((engine, url, schema))
+}
+
+/// An origin update through a standalone engine on a shared database acts
+/// as this machine: it claims the domain, indexes what it pulled and gives
+/// the lock back. With another live instance holding the domain, the
+/// update leaves the domain unindexed and says why in its answer.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_standalone_origin_update_on_postgres_indexes_what_it_pulled() {
+    let _scratch = crate::support::ScratchStateDir::acquire();
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(MockProvider::new());
+    let c1 = mock.add_commit(commit_files(&[
+        ("MANIFEST.md", manifest()),
+        ("notes/alpha.md", engram("Alpha", "alpha", "version one")),
+    ]));
+    mock.set_branch("main", &c1);
+    let Some((eng, url, schema)) = standalone_on_postgres(tmp.path(), mock.clone()).await else {
+        return;
+    };
+    assert!(
+        !eng.instance_id().is_empty(),
+        "a standalone engine is this machine"
+    );
+    let root = tmp.path().join("brand-knowledge");
+    eng.origin_add(
+        "acme/brand-knowledge",
+        Some("brand"),
+        None,
+        None,
+        Some(root.to_str().unwrap()),
+    )
+    .await
+    .unwrap();
+
+    let c2 = mock.add_commit(commit_files(&[
+        ("MANIFEST.md", manifest()),
+        (
+            "notes/alpha.md",
+            engram("Alpha", "alpha", "version two, revised upstream"),
+        ),
+    ]));
+    mock.set_branch("main", &c2);
+    let result = eng
+        .origin_update(Some("brand"), &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(result["errors"].as_array().unwrap().len(), 0, "{result}");
+    let hits = eng
+        .search_engrams(
+            &SearchParams {
+                query: Some("revised upstream".to_string()),
+                ..SearchParams::default()
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(hits["total"], 1, "the pulled file is indexed: {hits}");
+    let other = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+        .await
+        .unwrap();
+    let did = {
+        use crystalline_index::Store;
+        let did = other.domain_id("brand").await.unwrap().unwrap();
+        assert!(
+            other.domain_host(did).await.unwrap().is_none(),
+            "the one-shot gave its lock back"
+        );
+        did
+    };
+
+    // This machine's daemon holding the lock live (a command with --config
+    // runs beside it): the command walks under it and leaves it held.
+    {
+        use crystalline_index::Store;
+        other
+            .claim_domain_host(
+                did,
+                eng.instance_id(),
+                eng.instance_id(),
+                "2999-01-01T00:00:00+00:00",
+                "2000-01-01T00:00:00+00:00",
+                false,
+            )
+            .await
+            .unwrap();
+    }
+    let c_daemon = mock.add_commit(commit_files(&[
+        ("MANIFEST.md", manifest()),
+        (
+            "notes/alpha.md",
+            engram("Alpha", "alpha", "version beside the daemon"),
+        ),
+    ]));
+    mock.set_branch("main", &c_daemon);
+    let result = eng
+        .origin_update(Some("brand"), &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(result["errors"].as_array().unwrap().len(), 0, "{result}");
+    let did = {
+        use crystalline_index::Store;
+        assert_eq!(
+            other.domain_host(did).await.unwrap().unwrap().instance_id,
+            eng.instance_id(),
+            "the daemon's lock stays held"
+        );
+        other
+            .release_domain_host(did, eng.instance_id())
+            .await
+            .unwrap();
+        // Another live instance hosts the domain now.
+        other
+            .claim_domain_host(
+                did,
+                "other-instance",
+                "other-instance",
+                "2999-01-01T00:00:00+00:00",
+                "2000-01-01T00:00:00+00:00",
+                false,
+            )
+            .await
+            .unwrap();
+        did
+    };
+
+    let c3 = mock.add_commit(commit_files(&[
+        ("MANIFEST.md", manifest()),
+        (
+            "notes/alpha.md",
+            engram("Alpha", "alpha", "version three from upstream"),
+        ),
+    ]));
+    mock.set_branch("main", &c3);
+    let result = eng
+        .origin_update(Some("brand"), &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert!(
+        result["errors"].to_string().contains("other-instance"),
+        "the reason is in the answer: {result}"
+    );
+    {
+        use crystalline_index::Store;
+        assert_eq!(
+            other.domain_host(did).await.unwrap().unwrap().instance_id,
+            "other-instance",
+            "the other instance keeps its lock"
+        );
+    }
+    other.drop_schema().await.unwrap();
+}

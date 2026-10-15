@@ -855,7 +855,7 @@ impl crystalline_index::ReindexHooks for DirectReindexHooks<'_> {
         }
     }
 
-    async fn lost_host(&self, _name: &str, why: &str) {
+    async fn not_applied(&self, _name: &str, why: &str, _host_lost: bool) {
         eprintln!("skipped: {why}");
     }
 
@@ -2492,8 +2492,11 @@ async fn sync_targets(
             Ok(report) => report,
             // Another instance took the domain over while this walk ran:
             // nothing was written. A named sync fails, a full one goes on.
-            Err(crystalline_index::IndexError::NotHost(why)) if only.is_none() => {
-                eprintln!("skipped: {why}");
+            Err(
+                e @ (crystalline_index::IndexError::NotHost(_)
+                | crystalline_index::IndexError::HostMoveChanged(_)),
+            ) if only.is_none() => {
+                eprintln!("skipped: {e}");
                 continue;
             }
             Err(e) => bail!("sync of '{name}' failed: {e}"),

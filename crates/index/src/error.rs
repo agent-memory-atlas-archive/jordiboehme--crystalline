@@ -72,6 +72,12 @@ pub enum IndexError {
     /// write. The message names the holder.
     #[error("{0}")]
     NotHost(String),
+    /// A walk was not applied because the domain's host move changed while
+    /// it ran (another walk of the same instance, for example a `crystalline
+    /// sync` beside the daemon, wrote it first). The walker still holds the
+    /// lock; the next walk applies.
+    #[error("{0}")]
+    HostMoveChanged(String),
     /// A multi-domain run failed while working on one named domain.
     ///
     /// The name is otherwise lost: a driver rebuilding five domains that

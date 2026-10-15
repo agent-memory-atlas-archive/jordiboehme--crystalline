@@ -2648,7 +2648,11 @@ async fn health() -> axum::Json<Value> {
 /// Renew this instance's host locks every `secs` seconds until shutdown, so a
 /// live host is never mistaken for stale. The first tick is consumed so renewal
 /// starts one interval in, after the startup claims have settled.
-async fn run_heartbeat(engine: Arc<Engine>, secs: u64, mut shutdown: watch::Receiver<bool>) {
+pub(crate) async fn run_heartbeat(
+    engine: Arc<Engine>,
+    secs: u64,
+    mut shutdown: watch::Receiver<bool>,
+) {
     let mut ticker = tokio::time::interval(Duration::from_secs(secs.max(1)));
     ticker.tick().await;
     loop {

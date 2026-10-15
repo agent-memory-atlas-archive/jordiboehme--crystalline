@@ -3724,15 +3724,25 @@ pub trait Store: Send + Sync {
     /// database belongs to one instance, so the plain read is the same.
     async fn domain_host_held(&self, domain: DomainId) -> Result<Option<DomainHost>>;
 
-    /// Write the domain's host move only when it still is `expected`, the
-    /// value the caller read: `false` and nothing written when another
-    /// writer changed it in between.
+    /// Write the domain's host move only when its stored text still is
+    /// `expected`, the text the caller read ([`Store::host_move_text`]):
+    /// `false` and nothing written when another writer changed it in
+    /// between. The stored text is compared as stored, so a mark in an older
+    /// or newer shape matches the read of it.
     async fn swap_host_move(
         &self,
         domain: DomainId,
-        expected: Option<&HostMove>,
+        expected: Option<&str>,
         next: Option<&HostMove>,
     ) -> Result<bool>;
+
+    /// The domain's host move as stored, JSON text, or `None`.
+    async fn host_move_text(&self, domain: DomainId) -> Result<Option<String>>;
+
+    /// Clear the domain's rebuild marker only when it still is the one
+    /// stamped at `started` ([`Store::begin_rebuild`]): a marker another
+    /// run stamped since stays.
+    async fn end_rebuild_stamped(&self, domain: DomainId, started: &str) -> Result<()>;
 
     /// The instance that last acquired a file domain's host lock, as
     /// `(instance id, label)`, or `None` when none was recorded. Kept on the
@@ -3748,7 +3758,12 @@ pub trait Store: Send + Sync {
     ) -> Result<()>;
 
     /// The domain's unresolved host move, or `None`.
-    async fn host_move(&self, domain: DomainId) -> Result<Option<HostMove>>;
+    async fn host_move(&self, domain: DomainId) -> Result<Option<HostMove>> {
+        Ok(self
+            .host_move_text(domain)
+            .await?
+            .and_then(|text| parse_host_move(&text)))
+    }
 
     /// Set or (with `None`) clear the domain's host move. Inside an open
     /// write transaction it commits or rolls back with it.

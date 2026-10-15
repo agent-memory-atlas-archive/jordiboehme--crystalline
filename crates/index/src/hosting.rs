@@ -398,7 +398,7 @@ mod tests {
         release.notify_one();
         let refused = applying.await.unwrap().unwrap_err();
         assert!(
-            matches!(refused, crate::IndexError::NotHost(_)),
+            matches!(refused, crate::IndexError::HostMoveChanged(_)),
             "{refused}"
         );
         assert_eq!(a.host_move(domain).await.unwrap(), Some(other));
@@ -521,17 +521,72 @@ mod tests {
         store.drop_schema().await.unwrap();
     }
 
-    /// The hooks of a reindex during which another instance takes `eng`
-    /// over right after this run claimed it.
+    /// A move stored in an older shape (no `claimant`) is matched as stored:
+    /// the claimant's walk ends it as it ends any other.
     #[cfg(feature = "postgres")]
-    struct TakenMeanwhile {
-        other: std::sync::Arc<crate::PostgresStore>,
+    #[tokio::test]
+    async fn a_move_in_an_older_shape_resolves() {
+        use sqlx::Connection;
+        let Some((url, schema)) = shared_schema() else {
+            return;
+        };
+        let store = crate::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .unwrap();
+        let (_tmp, root) = domain_folder();
+        let domain = store
+            .upsert_domain(
+                "eng",
+                Some(&root.to_string_lossy()),
+                crate::DomainKind::File,
+            )
+            .await
+            .unwrap();
+        let (now, stale_before) = claim_window(90);
+        claim_host_marking_moves(
+            &store,
+            domain,
+            "alpha-o",
+            "alpha-o",
+            &now,
+            &stale_before,
+            false,
+        )
+        .await
+        .unwrap();
+        walk_as(&store, domain, &root, "alpha-o").await.unwrap();
+        assert!(store.host_move(domain).await.unwrap().is_none());
+
+        let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "UPDATE {schema}.domain SET host_move = '{{\"at\":\"2026-01-01T00:00:00+00:00\",\"walked\":true,\"only_elsewhere\":{{\"previous_host\":\"old\",\"engrams\":1,\"attachments\":0,\"pages\":0,\"files\":0}}}}' WHERE id={}",
+            domain.0
+        )))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let legacy = store.host_move(domain).await.unwrap().expect("read back");
+        assert_eq!(legacy.claimant, None);
+
+        let report = walk_as(&store, domain, &root, "alpha-o").await.unwrap();
+        assert!(report.host_move_resolved, "{report:?}");
+        assert!(store.host_move(domain).await.unwrap().is_none());
+        store.drop_schema().await.unwrap();
+    }
+
+    /// When the new host of `eng` stamped its own rebuild marker.
+    #[cfg(feature = "postgres")]
+    const BETA_REBUILD: &str = "2030-01-01T00:00:00+00:00";
+
+    /// The hooks of a reindex that claims as `alpha-r`.
+    #[cfg(feature = "postgres")]
+    struct ClaimsAsAlpha {
         lost: std::sync::Mutex<Vec<String>>,
     }
 
     #[cfg(feature = "postgres")]
     #[async_trait::async_trait]
-    impl crate::ReindexHooks for TakenMeanwhile {
+    impl crate::ReindexHooks for ClaimsAsAlpha {
         async fn before_domain(
             &self,
             store: &dyn Store,
@@ -552,22 +607,11 @@ mod tests {
                 false,
             )
             .await?;
-            if name == "eng" {
-                claim_host_marking_moves(
-                    &*self.other,
-                    domain,
-                    "beta-r",
-                    "beta-r",
-                    &now,
-                    &stale_before,
-                    true,
-                )
-                .await?;
-            }
             Ok(true)
         }
 
-        async fn lost_host(&self, name: &str, _why: &str) {
+        async fn not_applied(&self, name: &str, _why: &str, host_lost: bool) {
+            assert!(host_lost);
             self.lost.lock().unwrap().push(name.to_string());
         }
 
@@ -577,8 +621,9 @@ mod tests {
     }
 
     /// A reindex whose domain is taken over while it walks skips that
-    /// domain, names it, clears the rebuild marker it stamped there and goes
-    /// on with the next domain.
+    /// domain, names it and goes on with the next domain. It clears the
+    /// rebuild marker it stamped there, unless the new host stamped its own
+    /// since, which stays.
     #[cfg(feature = "postgres")]
     #[tokio::test]
     async fn a_deposed_reindex_skips_the_domain_and_goes_on() {
@@ -588,35 +633,79 @@ mod tests {
         let a = crate::PostgresStore::open_in_schema(&url, &schema)
             .await
             .unwrap();
-        let other = std::sync::Arc::new(
-            crate::PostgresStore::open_in_schema(&url, &schema)
-                .await
-                .unwrap(),
-        );
+        let other = crate::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .unwrap();
         let (_eng_tmp, eng) = domain_folder();
         let (_ops_tmp, ops) = domain_folder();
+        let (_web_tmp, web) = domain_folder();
         let store: std::sync::Arc<tokio::sync::Mutex<dyn Store>> =
             std::sync::Arc::new(tokio::sync::Mutex::new(a));
-        let hooks = TakenMeanwhile {
-            other: other.clone(),
+        let hooks = std::sync::Arc::new(ClaimsAsAlpha {
             lost: std::sync::Mutex::new(Vec::new()),
-        };
-        let reports = crate::reindex_domains(
-            &*store,
-            &[("eng".to_string(), eng), ("ops".to_string(), ops)],
-            &crate::ChunkParams::default(),
-            Some(crate::RebuildKind::Full),
-            &hooks,
-        )
-        .await
-        .unwrap();
+        });
+        let gates = [
+            ("eng", crate::sync::apply_seam::arm("reindex:eng")),
+            ("web", crate::sync::apply_seam::arm("reindex:web")),
+        ];
+        let run = tokio::spawn({
+            let (store, hooks) = (store.clone(), hooks.clone());
+            async move {
+                crate::reindex_domains(
+                    &*store,
+                    &[
+                        ("eng".to_string(), eng),
+                        ("ops".to_string(), ops),
+                        ("web".to_string(), web),
+                    ],
+                    &crate::ChunkParams::default(),
+                    Some(crate::RebuildKind::Full),
+                    &*hooks,
+                )
+                .await
+            }
+        });
+        // Beta takes each over once this run stamped its marker; on `eng`
+        // beta then starts a rebuild of its own.
+        for (name, (entered, release)) in gates {
+            entered.notified().await;
+            let domain = other.domain_id(name).await.unwrap().unwrap();
+            let (now, stale_before) = claim_window(90);
+            claim_host_marking_moves(
+                &other,
+                domain,
+                "beta-r",
+                "beta-r",
+                &now,
+                &stale_before,
+                true,
+            )
+            .await
+            .unwrap();
+            if name == "eng" {
+                other
+                    .begin_rebuild(domain, BETA_REBUILD, crate::RebuildKind::Full)
+                    .await
+                    .unwrap();
+            }
+            release.notify_one();
+        }
+        let reports = run.await.unwrap().unwrap();
         let applied: Vec<&str> = reports.iter().map(|r| r.domain.as_str()).collect();
         assert_eq!(applied, ["ops"]);
-        assert_eq!(*hooks.lost.lock().unwrap(), ["eng"]);
+        assert_eq!(*hooks.lost.lock().unwrap(), ["eng", "web"]);
         let stats = other.domain_stats().await.unwrap();
-        let eng_stats = stats.iter().find(|d| d.name == "eng").unwrap();
-        assert!(eng_stats.rebuild_started.is_none(), "{eng_stats:?}");
-        assert_eq!(eng_stats.engrams, 0, "nothing of the walk was written");
+        let of = |name: &str| stats.iter().find(|d| d.name == name).unwrap().clone();
+        assert_eq!(
+            of("eng").rebuild_started.as_deref(),
+            Some(BETA_REBUILD),
+            "the new host's marker stays"
+        );
+        assert!(
+            of("web").rebuild_started.is_none(),
+            "this run's marker goes"
+        );
+        assert_eq!(of("eng").engrams, 0, "nothing of the walk was written");
         other.drop_schema().await.unwrap();
     }
 }

@@ -129,6 +129,19 @@ impl Engine {
                 crystalline_index::ACCEPT_DISK_NEEDS_DOMAIN.to_string(),
             ));
         }
+        let walked = self.sync_walk(only, take_over, accept_disk).await;
+        // A one-shot command gives back the locks it took, success or not.
+        self.release_taken_hosts().await;
+        walked
+    }
+
+    /// The body of [`Engine::sync_with`].
+    async fn sync_walk(
+        &self,
+        only: Option<&str>,
+        take_over: bool,
+        accept_disk: bool,
+    ) -> Result<Value> {
         let _activity = ActivityState::begin(&self.activity, "sync", only);
         let targets = self.sync_targets(only)?;
         // The virtual domains have no files to walk, but an older parser may
@@ -235,8 +248,14 @@ impl Engine {
                 // Another instance took the domain over while this walk ran:
                 // nothing was written. A full sweep reports it and goes on, a
                 // named sync is refused.
-                Err(IndexError::NotHost(why)) => {
-                    self.lost_host(name);
+                Err(e @ (IndexError::NotHost(_) | IndexError::HostMoveChanged(_))) => {
+                    // Only a lock another instance holds now ends hosting
+                    // here; a move another walk of this instance wrote first
+                    // leaves this instance the host.
+                    if matches!(e, IndexError::NotHost(_)) {
+                        self.lost_host(name);
+                    }
+                    let why = e.to_string();
                     if only.is_some() {
                         return Err(EngineError::Conflict(why));
                     }
@@ -333,6 +352,19 @@ impl Engine {
         paths: Vec<String>,
         actor: Option<&str>,
     ) -> Result<SyncReport> {
+        let walked = self.sync_paths_walk(name, paths, actor).await;
+        // A one-shot command gives back the lock it took, success or not.
+        self.release_taken_hosts().await;
+        walked
+    }
+
+    /// The body of [`Engine::sync_paths_as`].
+    async fn sync_paths_walk(
+        &self,
+        name: &str,
+        paths: Vec<String>,
+        actor: Option<&str>,
+    ) -> Result<SyncReport> {
         let ContentSource::File { root } = self.content_source(name)? else {
             // A virtual domain has no files on disk; there is nothing to scan.
             return Ok(SyncReport {
@@ -340,6 +372,11 @@ impl Engine {
                 ..SyncReport::default()
             });
         };
+        // An engine with no instance id on a shared database walks no file
+        // domain, a targeted pass as little as a complete one.
+        if let Some(reason) = self.walks_no_file_domain().await {
+            return Err(EngineError::Conflict(reason));
+        }
         // Skipped while a rename has the domain paused; see `sync_take_over`.
         let Some(_pass) = self.try_enter_sync(name) else {
             return Ok(SyncReport {
@@ -386,6 +423,7 @@ impl Engine {
                 self.lost_host(name);
                 return Err(EngineError::Conflict(why));
             }
+            Err(IndexError::HostMoveChanged(why)) => return Err(EngineError::Conflict(why)),
             Err(e) => {
                 return Err(EngineError::Internal(format!(
                     "targeted sync of '{name}' failed: {e}"
@@ -412,14 +450,15 @@ impl Engine {
         Ok(report)
     }
 
-    /// Why this engine walks no file domain completely, or `None` when it
-    /// may. The one guard every complete walk of the engine asks (the sync
-    /// and the reindex): on a shared database an engine with no instance id
-    /// (the embedded MCP stack, a daemonless origin update, a standalone
-    /// review-mode, rename or transfer sync) cannot hold a domain's host lock,
-    /// and its walk would delete the rows of files only the host's disk has
-    /// and end a host move that is not its own. The daemonless `crystalline
-    /// sync` and `reindex` claim as this machine's instance and walk.
+    /// Why this engine walks no file domain, or `None` when it may. The one
+    /// guard every walk of the engine asks (the sync, the targeted sync and
+    /// the reindex): on a shared database an engine with no instance id
+    /// cannot hold a domain's host lock, and its walk would delete the rows
+    /// of files only the host's disk has and end a host move that is not its
+    /// own. Every production opener on a shared database gives its engine
+    /// this machine's id (the daemon, the embedded MCP stack, the standalone
+    /// opener and the daemonless `crystalline sync` and `reindex`), so this
+    /// guards an engine built without one.
     pub(super) async fn walks_no_file_domain(&self) -> Option<String> {
         (self.instance_id.is_empty() && self.store.lock().await.shares_database())
             .then(|| REFUSED_ANONYMOUS_WALK.to_string())
@@ -471,20 +510,26 @@ impl Engine {
             collab: !self.instance_id.is_empty(),
             anonymous: self.walks_no_file_domain().await,
             lost: std::sync::Mutex::new(Vec::new()),
+            skipped: std::sync::Mutex::new(Vec::new()),
         };
-        let reports = reindex_domains(
+        let reindexed = reindex_domains(
             &*self.store,
             &targets,
             &self.chunk_params,
             full.then_some(RebuildKind::Full),
             &hooks,
         )
-        .await?;
+        .await;
+        // A one-shot command gives back the locks it took, success or not.
+        self.release_taken_hosts().await;
+        let reports = reindexed?;
         let lost = std::mem::take(&mut *hooks.lost.lock().unwrap());
+        let skipped = std::mem::take(&mut *hooks.skipped.lock().unwrap());
         Ok(json!({
             "full": full,
             "reports": serde_json::to_value(&reports).unwrap_or(Value::Null),
             "failed": lost,
+            "skipped": skipped,
         }))
     }
 

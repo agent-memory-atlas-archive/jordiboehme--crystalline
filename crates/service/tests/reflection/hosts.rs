@@ -718,11 +718,11 @@ async fn the_walk_that_ends_a_move_marks_the_backup_on_postgres() {
     db.drop_schema().await;
 }
 
-/// An engine with no instance id (the embedded MCP stack, a daemonless
-/// origin update, a standalone rename or review-mode sync) cannot hold a
-/// host lock, so on a shared database it walks no file domain: a full sync
-/// and a reindex leave the domain out with the reason, a named sync is
-/// refused, and the host's move and the rows only the old host has stay.
+/// An engine built with no instance id cannot hold a host lock, so on a
+/// shared database it walks no file domain: a full sync and a reindex leave
+/// the domain out with the reason in their answer, a named and a targeted
+/// sync are refused, and the host's move and the rows only the old host has
+/// stay. (Every production opener gives its engine this machine's id.)
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn an_engine_without_an_instance_id_walks_no_file_domain_on_postgres() {
@@ -748,8 +748,19 @@ async fn an_engine_without_an_instance_id_walks_no_file_domain_on_postgres() {
     );
     let named = anonymous.sync(Some("eng")).await.unwrap_err().to_string();
     assert!(named.contains("crystalline serve"), "{named}");
+    let targeted = anonymous
+        .sync_paths("eng", vec![ALPHA_ENGRAM.to_string()])
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(targeted.contains("no instance id"), "{targeted}");
     let reindexed = anonymous.reindex(false).await.unwrap();
     assert_eq!(reindexed["reports"], serde_json::json!([]), "{reindexed}");
+    let skipped = reindexed["skipped"].to_string();
+    assert!(
+        skipped.contains("\"eng\"") && skipped.contains("no instance id"),
+        "the reason is in the answer: {reindexed}"
+    );
 
     assert_eq!(store.lock().await.host_move(did).await.unwrap(), marked);
     assert_eq!(alpha_rows(&beta).await, (true, true, true));

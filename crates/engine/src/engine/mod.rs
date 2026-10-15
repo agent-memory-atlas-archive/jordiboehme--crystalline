@@ -579,9 +579,14 @@ impl From<crystalline_index::IndexError> for EngineError {
             crystalline_index::IndexError::Constraint(m) => EngineError::Conflict(m),
             crystalline_index::IndexError::NotFound(m) => EngineError::NotFound(m),
             crystalline_index::IndexError::Invalid(m) => EngineError::Invalid(m),
-            crystalline_index::IndexError::NotHost(m) => EngineError::Conflict(m),
+            crystalline_index::IndexError::NotHost(m)
+            | crystalline_index::IndexError::HostMoveChanged(m) => EngineError::Conflict(m),
             crystalline_index::IndexError::InDomain { source, .. }
-                if matches!(*source, crystalline_index::IndexError::NotHost(_)) =>
+                if matches!(
+                    *source,
+                    crystalline_index::IndexError::NotHost(_)
+                        | crystalline_index::IndexError::HostMoveChanged(_)
+                ) =>
             {
                 EngineError::Conflict(source.to_string())
             }
@@ -1003,6 +1008,15 @@ pub struct Engine {
     // successful `claim_domain_host` and renewed by the heartbeat timer. Drives
     // embed scoping, heartbeat renewal and graceful release.
     hosted: std::sync::RwLock<HashMap<String, DomainId>>,
+    // Whether this engine gives back, after each walk, the host locks it
+    // took for it: a one-shot command on a shared database, which sends no
+    // heartbeat (`Engine::with_one_shot_instance_id`). A daemon and the
+    // embedded MCP stack keep theirs and heartbeat them.
+    releases_after_walk: bool,
+    // The domains whose lock this engine took itself, as opposed to a lock
+    // this machine's live daemon already held under the same id: only these
+    // are given back after a walk.
+    taken: std::sync::Mutex<HashSet<String>>,
     // The heartbeat interval and stale threshold, seconds. Defaults 30 and 90,
     // overridable via `CRYSTALLINE_HEARTBEAT_SECS`/`CRYSTALLINE_STALE_SECS` (a
     // short threshold makes multi-instance stale-takeover verification fast).
@@ -2263,6 +2277,8 @@ impl Engine {
             instance_id: String::new(),
             label: String::new(),
             hosted: std::sync::RwLock::new(HashMap::new()),
+            releases_after_walk: false,
+            taken: std::sync::Mutex::new(HashSet::new()),
             heartbeat_secs: env_secs("CRYSTALLINE_HEARTBEAT_SECS", DEFAULT_HEARTBEAT_SECS),
             stale_secs: crystalline_index::stale_secs(),
             origin_locks: std::sync::Mutex::new(HashMap::new()),
@@ -3506,6 +3522,44 @@ impl Engine {
         self
     }
 
+    /// [`Engine::with_instance_id`] for a one-shot command on a shared
+    /// database: it claims each file domain before a walk as this machine,
+    /// the id this machine's daemon uses, walks under the host-move rules
+    /// and gives back after the walk every lock it took itself. A lock this
+    /// machine's daemon holds live is used and left held. It sends no
+    /// heartbeat, so it holds nothing past a walk.
+    pub fn with_one_shot_instance_id(mut self, instance_id: String) -> Engine {
+        self = self.with_instance_id(instance_id);
+        self.releases_after_walk = true;
+        self
+    }
+
+    /// Give back the host locks this engine took for its walks, when it is
+    /// a one-shot command ([`Engine::with_one_shot_instance_id`]); nothing
+    /// otherwise. Best effort: a lock left behind goes stale.
+    pub(super) async fn release_taken_hosts(&self) {
+        if !self.releases_after_walk {
+            return;
+        }
+        let taken: Vec<String> = self.taken.lock().unwrap().drain().collect();
+        if taken.is_empty() {
+            return;
+        }
+        let store = self.store.lock().await;
+        for name in taken {
+            let id = self.hosted.write().unwrap().remove(&name);
+            let id = match id {
+                Some(id) => Some(id),
+                None => store.domain_id(&name).await.ok().flatten(),
+            };
+            if let Some(id) = id
+                && let Err(e) = store.release_domain_host(id, &self.instance_id).await
+            {
+                tracing::debug!("could not give back the host lock of '{name}': {e}");
+            }
+        }
+    }
+
     /// Install the channel the daemon's watcher listens on for domains
     /// discovered after startup. Only wired by `run_serve`.
     pub fn with_watch_channel(
@@ -4131,6 +4185,12 @@ impl Engine {
             .await?;
         let now = now_offset().to_rfc3339();
         let stale_before = (now_offset() - Duration::seconds(self.stale_secs)).to_rfc3339();
+        // A one-shot command gives back only what it took: a lock this
+        // machine's daemon holds live under the same id stays the daemon's.
+        let daemon_holds = self.releases_after_walk
+            && store.domain_host(id).await?.is_some_and(|holder| {
+                holder.instance_id == self.instance_id && holder.heartbeat_at >= stale_before
+            });
         // On a shared database a claim that takes the domain from another
         // instance, or from no known one, also marks a host move: this disk
         // may lack files the previous host wrote, so the complete walks keep
@@ -4145,6 +4205,9 @@ impl Engine {
             take_over,
         )
         .await?;
+        if self.releases_after_walk && claim == HostClaim::Acquired && !daemon_holds {
+            self.taken.lock().unwrap().insert(name.to_string());
+        }
         let moved = match &claim {
             HostClaim::Acquired => self
                 .hosted
@@ -6793,6 +6856,14 @@ pub async fn open_standalone(
     // does; the service's opener sets this while it takes the lock for a
     // recovery.
     engine.set_holds_state_dir(false);
+    // On a database other instances share, a command acts as this machine:
+    // it claims a file domain before a walk, as the daemon would, and gives
+    // the lock back after it. Without an id it would walk no file domain.
+    if engine.store.lock().await.shares_database() {
+        let id = crystalline_core::config::read_or_create_instance_id()
+            .map_err(|e| anyhow::anyhow!("could not read this machine's instance id: {e}"))?;
+        engine = engine.with_one_shot_instance_id(id);
+    }
     // The daemonless engine is told where this machine's state directory is,
     // rather than leaving [`Engine::journal_state_dir`] to resolve it. Both
     // halves matter. In production it is the same path either way, and saying
@@ -8974,6 +9045,8 @@ struct DaemonReindexHooks<'a> {
     /// The domains whose walk was not applied because another instance took
     /// them over meanwhile, with the reason, for the run's answer.
     lost: std::sync::Mutex<Vec<Value>>,
+    /// The domains this run left out before walking them, with the reason.
+    skipped: std::sync::Mutex<Vec<Value>>,
     /// [`Engine::walks_no_file_domain`]'s reason, when this engine walks none.
     anonymous: Option<String>,
 }
@@ -8994,6 +9067,10 @@ impl ReindexHooks for DaemonReindexHooks<'_> {
     ) -> crystalline_index::Result<bool> {
         if let Some(reason) = &self.anonymous {
             tracing::info!("reindex of '{name}' skipped: {reason}");
+            self.skipped
+                .lock()
+                .unwrap()
+                .push(json!({ "domain": name, "reason": reason }));
             return Ok(false);
         }
         if !self.collab {
@@ -9032,11 +9109,14 @@ impl ReindexHooks for DaemonReindexHooks<'_> {
         self.engine.after_host_move_resolved(name, report);
     }
 
-    /// Another instance took `name` over while this run walked it: this
-    /// instance stops hosting it at once, and the run's answer names it.
-    async fn lost_host(&self, name: &str, why: &str) {
+    /// A walk of `name` was not applied: the run's answer names it, and when
+    /// another instance took the domain over, this instance stops hosting it
+    /// at once.
+    async fn not_applied(&self, name: &str, why: &str, host_lost: bool) {
         tracing::warn!("{why}");
-        self.engine.lost_host(name);
+        if host_lost {
+            self.engine.lost_host(name);
+        }
         self.lost
             .lock()
             .unwrap()

@@ -764,6 +764,15 @@ async fn build_embedded(
     if let Ok(state) = crystalline_core::config::state_dir() {
         engine = engine.with_state_dir(state);
     }
+    // On a database other instances share, this stack is this machine's
+    // instance, as the daemon it stands in for would be: it claims the file
+    // domains it walks and serves, heartbeats those claims and releases them
+    // when the session ends. It holds the state directory a daemon holds, so
+    // this machine's daemon is not running beside it.
+    let shared_database = engine.store().lock().await.shares_database();
+    if shared_database {
+        engine = engine.with_instance_id(crystalline_core::config::read_or_create_instance_id()?);
+    }
     let engine = Arc::new(engine);
     tokio::spawn(crate::engine::run_embed_worker(engine.clone(), embed_rx));
     // A rename a stopped daemon left half done is finished before the first
@@ -779,6 +788,14 @@ async fn build_embedded(
     // look, and the routing caches refresh on the poll as they do in a
     // daemon. Its own task, so the start never waits on a server.
     let (stop_sources, stopped) = tokio::sync::watch::channel(false);
+    if shared_database {
+        let (e, rx, secs) = (
+            engine.clone(),
+            stop_sources.subscribe(),
+            engine.heartbeat_secs(),
+        );
+        tokio::spawn(async move { crate::daemon::run_heartbeat(e, secs, rx).await });
+    }
     if use_daemon(db, config_path) {
         crate::route::install_sources(&engine);
         let e = engine.clone();
@@ -850,6 +867,9 @@ where
         SHUTDOWN_DEADLINE.as_secs()
     );
     let _ = stack.stop_sources.send(true);
+    // The host locks this stack claimed go back, as a daemon's do at its
+    // shutdown, so another instance can take the domains at once.
+    stack.engine.release_hosts().await;
     let departure = Departure::begin(stack.ownership, SHUTDOWN_DEADLINE);
     // Held to the exit, as in the daemon: an operation already inside the
     // store finishes and no new one starts.

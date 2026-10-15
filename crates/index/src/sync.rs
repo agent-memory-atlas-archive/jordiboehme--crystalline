@@ -1466,9 +1466,11 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
     // keeps those rows too, and it is cleared only below, in the same
     // transaction, by a walk that saw every row or was told to accept the
     // disk.
-    let host_move = if assets_complete && store.shares_database() {
-        match store.host_move(domain).await {
-            Ok(host_move) => host_move,
+    // The move's text as stored: the write below compares against exactly
+    // this, so a mark in any shape matches the read of it.
+    let read_text = if assets_complete && store.shares_database() {
+        match store.host_move_text(domain).await {
+            Ok(text) => text,
             Err(e) => {
                 let _ = store.rollback().await;
                 return Err(e);
@@ -1477,6 +1479,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
     } else {
         None
     };
+    let host_move = read_text.as_deref().and_then(crate::store::parse_host_move);
     // Accepting the disk drops only rows a walk already reported: a move
     // marked since the last walk (a take-over sync run with --accept-disk)
     // is counted and reported first, and the next --accept-disk drops them.
@@ -1487,9 +1490,6 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         .is_none_or(|m| m.claimant.is_none() || m.claimant.as_deref() == walker.as_deref());
     let accepted = claimant && accept_disk && host_move.as_ref().is_some_and(|m| m.walked);
     let keep_unseen = host_move.is_some() && !accepted;
-    // What the move was when this apply read it: the write below only lands
-    // on that value.
-    let read_move = host_move.clone();
     #[cfg(test)]
     if let Some(walker) = walker.as_deref() {
         apply_seam::hold(walker).await;
@@ -1604,14 +1604,14 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
                 Some(host_move)
             };
             match store
-                .swap_host_move(domain, read_move.as_ref(), next.as_ref())
+                .swap_host_move(domain, read_text.as_deref(), next.as_ref())
                 .await
             {
                 Ok(true) => {}
                 Ok(false) => {
                     let _ = store.rollback().await;
-                    return Err(IndexError::NotHost(format!(
-                        "the walk of '{}' was not applied: its host move changed while it ran",
+                    return Err(IndexError::HostMoveChanged(format!(
+                        "the walk of '{}' was not applied: another walk changed its host move meanwhile; the next sync applies",
                         report.domain
                     )));
                 }
@@ -1689,7 +1689,8 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
 /// A hold inside the apply, after the walker check and the read of the host
 /// move and before any row is written, for the tests that land a claim or a
 /// mark write in that window. Keyed by walker, so tests side by side never
-/// meet it.
+/// meet it. A reindex also holds under `reindex:<domain>` once its first
+/// window (the claim and the rebuild marker) is done, before the walk.
 #[cfg(test)]
 pub(crate) mod apply_seam {
     use std::collections::HashMap;
@@ -1751,10 +1752,12 @@ pub trait ReindexHooks: Send + Sync {
     /// Called after a domain's apply committed, with no store lock held.
     async fn after_apply(&self, _name: &str, _report: &SyncReport) {}
 
-    /// Called, with no store lock held, when a walk of `name` was not applied
-    /// because another instance took the domain over while it ran
-    /// ([`IndexError::NotHost`]); `why` says so. The run goes on.
-    async fn lost_host(&self, _name: &str, _why: &str) {}
+    /// Called, with no store lock held, when a walk of `name` was not
+    /// applied; `why` says why. `host_lost` when another instance took the
+    /// domain over while it ran ([`IndexError::NotHost`]), not when another
+    /// walk only changed its host move ([`IndexError::HostMoveChanged`]).
+    /// The run goes on.
+    async fn not_applied(&self, _name: &str, _why: &str, _host_lost: bool) {}
 
     /// The instance that claims the domains this run walks, when it claims
     /// any: each walk is applied only while the claim holds
@@ -1816,7 +1819,7 @@ pub async fn reindex_domains(
     let mut applied: Vec<(DomainId, SyncReport)> = Vec::new();
 
     for (name, root) in targets {
-        let Some((domain, snapshot, force_domain)) = ({
+        let Some((domain, snapshot, force_domain, stamped)) = ({
             let store = store.lock().await;
             let claimed = hooks
                 .before_domain(&*store, name, root)
@@ -1827,13 +1830,17 @@ pub async fn reindex_domains(
                     .upsert_domain(name, Some(&root.to_string_lossy()), DomainKind::File)
                     .await
                     .map_err(|e| in_domain("reindex", name, e))?;
-                if let Some(kind) = rebuild {
-                    let now = chrono::Utc::now().to_rfc3339();
-                    store
-                        .begin_rebuild(domain, &now, kind)
-                        .await
-                        .map_err(|e| in_domain("reindex", name, e))?;
-                }
+                let stamped = match rebuild {
+                    Some(kind) => {
+                        let now = chrono::Utc::now().to_rfc3339();
+                        store
+                            .begin_rebuild(domain, &now, kind)
+                            .await
+                            .map_err(|e| in_domain("reindex", name, e))?;
+                        Some(now)
+                    }
+                    None => None,
+                };
                 // The real stamps, not an empty map: delete detection is the
                 // recorded paths absent from the walk, so a forced run that
                 // cleared first could not prune anything at all - it would see
@@ -1847,7 +1854,7 @@ pub async fn reindex_domains(
                 let due = reparse_due(&*store, domain)
                     .await
                     .map_err(|e| in_domain("reindex", name, e))?;
-                Some((domain, snapshot, force || due))
+                Some((domain, snapshot, force || due, stamped))
             } else {
                 None
             }
@@ -1861,6 +1868,8 @@ pub async fn reindex_domains(
         if force && let Some(hold) = rebuild_hold() {
             tokio::time::sleep(hold).await;
         }
+        #[cfg(test)]
+        apply_seam::hold(&format!("reindex:{name}")).await;
         let mut scan = scan_domain(name, root, snapshot, chunk_params, force_domain)
             .await
             .map_err(|e| in_domain("reindex", name, e))?;
@@ -1872,18 +1881,20 @@ pub async fn reindex_domains(
             match apply_scan(&*store, domain, scan).await {
                 Ok(report) => report,
                 // Another instance took the domain over while this run walked
-                // it: nothing of the walk was written, the run goes on with
-                // the next domain, and the rebuild marker this run stamped is
-                // cleared, since the domain is the new host's to rebuild.
-                Err(IndexError::NotHost(why)) => {
-                    if rebuild.is_some() {
+                // it, or another walk changed its host move: nothing of the
+                // walk was written, the run goes on with the next domain, and
+                // the rebuild marker this run stamped is cleared unless a run
+                // stamped a newer one meanwhile.
+                Err(e @ (IndexError::NotHost(_) | IndexError::HostMoveChanged(_))) => {
+                    if let Some(started) = &stamped {
                         store
-                            .end_rebuild(domain)
+                            .end_rebuild_stamped(domain, started)
                             .await
                             .map_err(|e| in_domain("reindex", name, e))?;
                     }
                     drop(store);
-                    hooks.lost_host(name, &why).await;
+                    let host_lost = matches!(e, IndexError::NotHost(_));
+                    hooks.not_applied(name, &e.to_string(), host_lost).await;
                     continue;
                 }
                 Err(e) => return Err(in_domain("reindex", name, e)),

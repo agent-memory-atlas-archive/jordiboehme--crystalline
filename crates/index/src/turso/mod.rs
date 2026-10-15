@@ -4212,10 +4212,10 @@ impl Store for TursoStore {
     async fn swap_host_move(
         &self,
         domain: DomainId,
-        expected: Option<&HostMove>,
+        expected: Option<&str>,
         next: Option<&HostMove>,
     ) -> Result<bool> {
-        if self.host_move(domain).await?.as_ref() != expected {
+        if self.host_move_text(domain).await?.as_deref() != expected {
             return Ok(false);
         }
         self.set_host_move(domain, next).await?;
@@ -4254,11 +4254,19 @@ impl Store for TursoStore {
         Ok(())
     }
 
-    async fn host_move(&self, domain: DomainId) -> Result<Option<HostMove>> {
+    async fn host_move_text(&self, domain: DomainId) -> Result<Option<String>> {
         let row = query_first(&self.conn, HOST_MOVE_SQL, vec![Value::Integer(domain.0)]).await?;
-        Ok(row
-            .and_then(|r| cell_text(&r, 0))
-            .and_then(|text| crate::store::parse_host_move(&text)))
+        Ok(row.and_then(|r| cell_text(&r, 0)))
+    }
+
+    async fn end_rebuild_stamped(&self, domain: DomainId, started: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE domain SET rebuild_started=NULL, rebuild_kind=NULL WHERE id=?1 AND rebuild_started=?2",
+                vec![Value::Integer(domain.0), Value::Text(started.to_string())],
+            )
+            .await?;
+        Ok(())
     }
 
     async fn set_host_move(&self, domain: DomainId, host_move: Option<&HostMove>) -> Result<()> {
