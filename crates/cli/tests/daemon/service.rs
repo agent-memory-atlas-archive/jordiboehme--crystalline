@@ -1811,6 +1811,143 @@ fn two_openers_of_one_postgres_index_never_both_run_a_rename() {
     assert!(cfg.domains.contains_key("platform") && !cfg.domains.contains_key("eng"));
 }
 
+/// A sync without a daemon on a shared Postgres database follows the host
+/// lock as the daemon does: it refuses a domain another live instance hosts
+/// and names that instance, a full sync leaves that domain out, and once
+/// the other instance's lock is stale the sync takes it over, keeps the
+/// rows this disk does not have and reports them, until `--accept-disk`
+/// drops them. Skipped with a note unless `CRYSTALLINE_TEST_POSTGRES_URL`
+/// is set and `psql` runs.
+#[test]
+fn a_daemonless_sync_refuses_a_domain_another_instance_hosts_on_postgres() {
+    let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+        eprintln!("note: skipping the postgres leg (CRYSTALLINE_TEST_POSTGRES_URL is unset)");
+        return;
+    };
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("hostpg_{nanos}");
+    let psql = |sql: &str| {
+        Command::new("psql")
+            .args(["-v", "ON_ERROR_STOP=1", "-q", "-d", &url, "-c", sql])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    if !psql(&format!("CREATE SCHEMA {schema}")) {
+        eprintln!("note: skipping the postgres leg (psql could not create a schema)");
+        return;
+    }
+    struct DropSchema<'a>(&'a dyn Fn(&str) -> bool, String);
+    impl Drop for DropSchema<'_> {
+        fn drop(&mut self) {
+            (self.0)(&format!("DROP SCHEMA IF EXISTS {} CASCADE", self.1));
+        }
+    }
+    let _cleanup = DropSchema(&psql, schema.clone());
+
+    let env = Env::new("hostpg");
+    let sep = if url.contains('?') { '&' } else { '?' };
+    let db_url = format!("{url}{sep}options=-c%20search_path%3D{schema},public");
+    std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();
+    std::fs::write(
+        env.config_path(),
+        format!(
+            "database:\n  backend: postgres\n  url: \"{db_url}\"\nservice:\n  response_format: json\n"
+        ),
+    )
+    .unwrap();
+    env.setup_domain("eng");
+    let config_path = env.config_path();
+    let config_arg = config_path.to_str().unwrap();
+    // Another instance's lock on `eng`, heartbeating at `at`.
+    let lock_by_other = |at: &str| {
+        assert!(psql(&format!(
+            "INSERT INTO {schema}.domain_lock(domain_id, holder_instance_id, holder_label, acquired_at, heartbeat_at) \
+             SELECT id, 'other-instance', 'other-instance', '{at}', '{at}' FROM {schema}.domain WHERE name='eng' \
+             ON CONFLICT(domain_id) DO UPDATE SET holder_instance_id=EXCLUDED.holder_instance_id, \
+             holder_label=EXCLUDED.holder_label, heartbeat_at=EXCLUDED.heartbeat_at"
+        )));
+    };
+
+    // This machine's own daemon holding the lock live (a sync with --config
+    // runs beside it): the sync walks and leaves the daemon's lock held.
+    let me = std::fs::read_to_string(env.state_dir().join("instance-id"))
+        .expect("domain add claimed as this machine's instance");
+    let me = me.trim();
+    assert!(psql(&format!(
+        "UPDATE {schema}.domain_lock SET holder_instance_id='{me}', heartbeat_at='2999-01-01T00:00:00+00:00' \
+         WHERE domain_id=(SELECT id FROM {schema}.domain WHERE name='eng'); \
+         INSERT INTO {schema}.domain_lock(domain_id, holder_instance_id, holder_label, acquired_at, heartbeat_at) \
+         SELECT id, '{me}', '{me}', '2999-01-01T00:00:00+00:00', '2999-01-01T00:00:00+00:00' FROM {schema}.domain \
+         WHERE name='eng' ON CONFLICT(domain_id) DO NOTHING"
+    )));
+    let (ok, out, err) = env.run_full(&["sync", "--domain", "eng", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        psql(&format!(
+            "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM {schema}.domain_lock WHERE holder_instance_id='{me}') \
+             THEN RAISE EXCEPTION 'the daemon''s lock was released'; END IF; END $$"
+        )),
+        "the running daemon keeps its lock"
+    );
+
+    // A live holder: a named sync is refused with its name, a full one
+    // leaves the domain out.
+    lock_by_other("2999-01-01T00:00:00+00:00");
+    let (ok, out, err) = env.run_full(&["sync", "--domain", "eng", "--config", config_arg]);
+    assert!(!ok, "{out}{err}");
+    assert!(err.contains("other-instance"), "{err}");
+    let (ok, out, err) = env.run_full(&["sync", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    assert!(err.contains("other-instance"), "the skip is named: {err}");
+
+    // A stale holder is taken over; the engram this disk lost stays.
+    lock_by_other("2000-01-01T00:00:00+00:00");
+    std::fs::remove_file(env.dir.join("kb-eng/seed.md")).unwrap();
+    let (ok, out, err) =
+        env.run_full(&["--json", "sync", "--domain", "eng", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    let reports: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(
+        reports[0]["only_elsewhere"],
+        serde_json::json!({
+            "previous_host": "other-instance",
+            "engrams": 1,
+            "attachments": 0,
+            "pages": 0,
+            "files": 0,
+        }),
+        "{out}"
+    );
+    let (ok, out, err) = env.run_full(&["sync", "--domain", "eng", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        out.contains("1 engram and 0 Reflection files exist only on other-instance")
+            && out.contains("crystalline sync --domain eng --accept-disk"),
+        "{out}"
+    );
+
+    // --accept-disk needs one domain, then drops what this disk lacks.
+    let (ok, out, err) = env.run_full(&["sync", "--accept-disk", "--config", config_arg]);
+    assert!(!ok, "{out}{err}");
+    let (ok, out, err) = env.run_full(&[
+        "--json",
+        "sync",
+        "--domain",
+        "eng",
+        "--accept-disk",
+        "--config",
+        config_arg,
+    ]);
+    assert!(ok, "{out}{err}");
+    let reports: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(reports[0]["deleted"], 1, "{out}");
+    assert!(reports[0]["only_elsewhere"].is_null(), "{out}");
+}
+
 /// A sync that names its index with `--config` does not line a domain's
 /// name up with a new MANIFEST name: an adoption renames this machine's own
 /// state and configuration, which only a sync of the machine's own index may

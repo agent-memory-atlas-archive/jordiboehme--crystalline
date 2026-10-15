@@ -253,9 +253,14 @@ enum Command {
         embed: bool,
         /// Force the host-lock claim in a shared database, migrating hosting of
         /// the synced domain to this instance even when another holds a live
-        /// lock. Only meaningful when a daemon owns the shared index.
+        /// lock. Only meaningful on a shared database.
         #[arg(long)]
         take_over: bool,
+        /// After a host move on a shared database, delete the rows of the
+        /// files this disk does not have instead of keeping and reporting
+        /// them as only on the previous host. Needs --domain.
+        #[arg(long)]
+        accept_disk: bool,
         /// Load the global config from this file instead of the default path.
         #[arg(long)]
         config: Option<PathBuf>,
@@ -951,6 +956,10 @@ enum CtlCommand {
         /// this daemon in a shared database.
         #[arg(long)]
         take_over: bool,
+        /// After a host move on a shared database, delete the rows of the
+        /// files this disk does not have. Needs --domain.
+        #[arg(long)]
+        accept_disk: bool,
     },
     /// Ask the daemon to reindex. `--full` re-reads every file and destroys
     /// nothing; the wipe is a daemonless command (`crystalline reindex --wipe`),
@@ -2034,8 +2043,21 @@ fn run() -> anyhow::Result<()> {
             domain,
             embed,
             take_over,
+            accept_disk,
             config,
-        }) => on_runtime(move || sync_dispatch(domain, embed, take_over, config, cli.db, cli.json)),
+        }) => on_runtime(move || {
+            sync_dispatch(
+                domain,
+                cmd::SyncFlags {
+                    embed,
+                    take_over,
+                    accept_disk,
+                },
+                config,
+                cli.db,
+                cli.json,
+            )
+        }),
         Some(Command::Reindex {
             full,
             wipe,
@@ -2514,24 +2536,37 @@ fn format_uptime(secs: u64) -> String {
 /// `--config`/`--db` override was given, else sync directly. An override names
 /// an exact config and index the running daemon may not serve, so it always
 /// takes the direct path (see [`crystalline_service::use_daemon`]).
-/// `take_over` forces the daemon's host-lock claim for a shared-database host
-/// migration; it is meaningless without a daemon (standalone sync holds no host
-/// lock), so the direct path ignores it.
+/// `take_over` forces the host-lock claim for a shared-database host
+/// migration and `accept_disk` ends an unresolved host move of the named
+/// domain; both work on either path, since the direct path claims the host
+/// lock on a shared database too (see [`cmd::sync`]).
 async fn sync_dispatch(
     domain: Option<String>,
-    embed: bool,
-    take_over: bool,
+    flags: cmd::SyncFlags,
     config: Option<PathBuf>,
     db: Option<PathBuf>,
     json: bool,
 ) -> anyhow::Result<()> {
     use serde_json::json;
+    let cmd::SyncFlags {
+        embed,
+        take_over,
+        accept_disk,
+    } = flags;
+    if accept_disk && domain.is_none() {
+        anyhow::bail!(crystalline_index::ACCEPT_DISK_NEEDS_DOMAIN);
+    }
     let loaded = cmd::load(config.as_deref())?;
     let cfg = &loaded.effective;
     let route = cmd::reach_index(
-        Some(
-            json!({ "v": 1, "cmd": "sync", "domain": domain, "embed": embed, "take_over": take_over }),
-        ),
+        Some(json!({
+            "v": 1,
+            "cmd": "sync",
+            "domain": domain,
+            "embed": embed,
+            "take_over": take_over,
+            "accept_disk": accept_disk,
+        })),
         cfg,
         config.as_deref(),
         db.as_deref(),
@@ -2559,6 +2594,15 @@ async fn sync_dispatch(
             .map(serde_json::from_value)
             .transpose()?
             .unwrap_or_default();
+        // What a host move left only on another instance, in the words the
+        // direct path prints, under the daemon's JSON.
+        if !json {
+            for report in &reports {
+                if let Some(elsewhere) = &report.only_elsewhere {
+                    println!("{}: {}", report.domain, elsewhere.line(&report.domain));
+                }
+            }
+        }
         let scan_failed: Vec<(String, String)> = data
             .get("failed")
             .and_then(serde_json::Value::as_array)
@@ -2588,7 +2632,7 @@ async fn sync_dispatch(
     let resolved_domain = domain
         .as_deref()
         .map(|d| loaded.name_table().resolve(d).unwrap_or(d).to_string());
-    cmd::sync(store.clone(), cfg, resolved_domain.as_deref(), embed, json).await?;
+    cmd::sync(store.clone(), cfg, resolved_domain.as_deref(), flags, json).await?;
     // Once the sync has returned cleanly, as the daemon's ctl `sync` does: a
     // synced MANIFEST may declare a new name. A sync that failed says so and
     // adopts nothing. The adoption cannot fail the sync that landed: its own
@@ -3650,8 +3694,16 @@ async fn run_ctl(command: CtlCommand, json: bool) -> anyhow::Result<()> {
             domain,
             embed,
             take_over,
+            accept_disk,
         } => {
-            json!({ "v": 1, "cmd": "sync", "domain": domain, "embed": embed, "take_over": take_over })
+            json!({
+                "v": 1,
+                "cmd": "sync",
+                "domain": domain,
+                "embed": embed,
+                "take_over": take_over,
+                "accept_disk": accept_disk,
+            })
         }
         CtlCommand::Reindex { full, embed } => {
             json!({ "v": 1, "cmd": "reindex", "full": full, "embed": embed })

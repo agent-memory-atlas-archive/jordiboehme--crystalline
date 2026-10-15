@@ -20,9 +20,9 @@ use crystalline_core::config::{
 use crystalline_core::names::{NameInput, NameTable};
 use crystalline_core::text::plural;
 use crystalline_index::{
-    ChunkParams, DomainKind, NoReindexHooks, RebuildKind, Store, apply_scan, configured_model_id,
-    download_local_model, provider_from_config, reindex_domains, resolve_forward_refs,
-    run_embedding_pass, scan_domain,
+    ChunkParams, DomainKind, HostClaim, NoReindexHooks, RebuildKind, Store, apply_scan,
+    configured_model_id, download_local_model, provider_from_config, reindex_domains,
+    resolve_forward_refs, run_embedding_pass, scan_domain,
 };
 use tokio::sync::Mutex as TokioMutex;
 
@@ -693,23 +693,140 @@ pub(crate) async fn sync_domain_direct(
     let route = reach_index(None, &cfg, config_override, db_override, OpenAs::Write).await?;
     let store = local_store(route, "domain add")?;
     let params = chunk_params(&cfg);
-    // First lock window: resolve the domain id and snapshot its stamps. The scan
-    // then runs with no lock held; the second window applies transactionally.
-    let (domain, snapshot, force) = {
+    let host = DirectHost::of(&store).await?;
+    let mut claimed = Vec::new();
+    let applied = async {
+        // First lock window: resolve the domain id, claim the host lock on a
+        // shared database and snapshot its stamps. The scan then runs with no
+        // lock held; the second window applies transactionally.
+        let (domain, snapshot, force) = {
+            let store = store.lock().await;
+            let domain = store
+                .upsert_domain(name, Some(&root.to_string_lossy()), DomainKind::File)
+                .await?;
+            if let Some(host) = &host {
+                match host.claim(&*store, domain, false).await? {
+                    DirectClaim::Taken { release } => {
+                        if release {
+                            claimed.push(domain);
+                        }
+                    }
+                    DirectClaim::Refused(holder) => bail!(direct_host_refusal(name, &holder)),
+                }
+            }
+            let snapshot = store.file_stamps(domain).await?;
+            // A domain an older parser derived is walked whole, once.
+            let force = crystalline_index::reparse_due(&*store, domain).await?;
+            (domain, snapshot, force)
+        };
+        let scan = scan_domain(name, root, snapshot, &params, force).await?;
         let store = store.lock().await;
-        let domain = store
-            .upsert_domain(name, Some(&root.to_string_lossy()), DomainKind::File)
-            .await?;
-        let snapshot = store.file_stamps(domain).await?;
-        // A domain an older parser derived is walked whole, once.
-        let force = crystalline_index::reparse_due(&*store, domain).await?;
-        (domain, snapshot, force)
-    };
-    let scan = scan_domain(name, root, snapshot, &params, force).await?;
-    let store = store.lock().await;
-    apply_scan(&*store, domain, scan)
-        .await
-        .map_err(|e| anyhow!("sync of '{name}' failed: {e}"))
+        apply_scan(&*store, domain, scan)
+            .await
+            .map_err(|e| anyhow!("sync of '{name}' failed: {e}"))
+    }
+    .await;
+    if let Some(host) = &host {
+        host.release(&store, &claimed).await;
+    }
+    applied
+}
+
+/// The host lock a sync without a daemon takes on a shared database, as
+/// this machine's instance: the id this machine's daemon claims under too,
+/// so a daemon and a one-shot command here are one instance to the lock
+/// and to the host move it marks. `None` off a shared database, where one
+/// instance owns the index and nothing is claimed.
+///
+/// A one-shot command sends no heartbeat, so it releases the locks it took
+/// when its walk is done: the domain row keeps this instance as the last
+/// host, and this machine's daemon claims the free lock again without
+/// marking a move. A lock this instance already held live before the
+/// claim is this machine's running daemon's (a sync with `--db` or
+/// `--config` runs here even while one runs), and it is left held.
+pub(crate) struct DirectHost {
+    instance_id: String,
+    stale_secs: i64,
+}
+
+impl DirectHost {
+    pub(crate) async fn of(store: &Arc<TokioMutex<dyn Store>>) -> Result<Option<DirectHost>> {
+        if !store.lock().await.shares_database() {
+            return Ok(None);
+        }
+        let instance_id = crystalline_core::config::read_or_create_instance_id()
+            .map_err(|e| anyhow!("could not read this machine's instance id: {e}"))?;
+        Ok(Some(DirectHost {
+            instance_id,
+            stale_secs: crystalline_index::stale_secs(),
+        }))
+    }
+
+    /// Claim `domain` as the daemon's sync claims it, marking a host move
+    /// when the domain comes from another instance or from none known.
+    pub(crate) async fn claim(
+        &self,
+        store: &dyn Store,
+        domain: crystalline_index::DomainId,
+        take_over: bool,
+    ) -> Result<DirectClaim> {
+        let (now, stale_before) = crystalline_index::claim_window(self.stale_secs);
+        // This machine's daemon holds it, heartbeating: the claim renews
+        // nothing it would not renew itself, and the release must not take
+        // the lock away from under it.
+        let daemon_holds = store.domain_host(domain).await?.is_some_and(|holder| {
+            holder.instance_id == self.instance_id && holder.heartbeat_at >= stale_before
+        });
+        let claim = crystalline_index::claim_host_marking_moves(
+            store,
+            domain,
+            &self.instance_id,
+            &self.instance_id,
+            &now,
+            &stale_before,
+            take_over,
+        )
+        .await?;
+        Ok(match claim {
+            HostClaim::Acquired => DirectClaim::Taken {
+                release: !daemon_holds,
+            },
+            HostClaim::HeldByOther(holder) => DirectClaim::Refused(holder),
+        })
+    }
+
+    /// Release the locks this command took. Best effort: a lock left behind
+    /// goes stale and is taken over by the next claim.
+    pub(crate) async fn release(
+        &self,
+        store: &Arc<TokioMutex<dyn Store>>,
+        domains: &[crystalline_index::DomainId],
+    ) {
+        let store = store.lock().await;
+        for domain in domains {
+            if let Err(e) = store.release_domain_host(*domain, &self.instance_id).await {
+                tracing::debug!("could not release a host lock after the sync: {e}");
+            }
+        }
+    }
+}
+
+/// What [`DirectHost::claim`] found.
+pub(crate) enum DirectClaim {
+    /// This instance holds the lock; `release` when this command took it
+    /// and gives it back after its walk.
+    Taken { release: bool },
+    /// Another live instance hosts the domain.
+    Refused(crystalline_index::DomainHost),
+}
+
+/// Why a sync without a daemon leaves `name` alone: another live instance
+/// hosts it on this shared database.
+pub(crate) fn direct_host_refusal(name: &str, holder: &crystalline_index::DomainHost) -> String {
+    format!(
+        "domain '{name}' is hosted by instance {} (last heartbeat {}); sync it there, or pass --take-over to move hosting to this instance",
+        holder.label, holder.heartbeat_at
+    )
 }
 
 /// Print `domain add`'s combined registration-and-index output. `shadowed`
@@ -2151,14 +2268,99 @@ pub async fn domain_list(
 /// the opened store rather than opening one keeps the daemon-or-direct
 /// decision in `main.rs`'s dispatch layer, where `reindex` and `status` make
 /// the same one.
+/// What a `crystalline sync` was asked for beside the domain.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SyncFlags {
+    /// Embed new chunks after the sync.
+    pub embed: bool,
+    /// Take the host lock over from another live instance (shared database).
+    pub take_over: bool,
+    /// End an unresolved host move by deleting the rows this disk lacks.
+    pub accept_disk: bool,
+}
+
 pub async fn sync(
     store: Arc<TokioMutex<dyn Store>>,
     cfg: &GlobalConfig,
     only: Option<&str>,
-    embed: bool,
+    flags: SyncFlags,
     json: bool,
 ) -> Result<()> {
     let targets = select_domains(cfg, only)?;
+    let host = DirectHost::of(&store).await?;
+    let mut claimed: Vec<crystalline_index::DomainId> = Vec::new();
+    let walked = sync_targets(
+        &store,
+        cfg,
+        only,
+        targets,
+        flags,
+        host.as_ref(),
+        &mut claimed,
+        json,
+    )
+    .await;
+    if let Some(host) = &host {
+        host.release(&store, &claimed).await;
+    }
+    let reports = walked?;
+
+    if json {
+        println!("{}", serde_json::to_string(&reports)?);
+    } else {
+        for r in &reports {
+            print_report(r);
+        }
+    }
+
+    if flags.embed {
+        let store = store.lock().await;
+        embed_pass(&*store, cfg).await?;
+    }
+
+    // Any sync, not just a full reindex, is a snapshot-preparation verb: a
+    // downstream pipeline may ship index.db as a single file (sidecars
+    // deleted), so the delta this sync just wrote must not sit stranded in
+    // the WAL. Merge and shrink it now rather than waiting for a natural
+    // checkpoint. A no-op on Postgres (no local WAL file).
+    {
+        let store = store.lock().await;
+        store.checkpoint_wal().await?;
+    }
+
+    // A file that failed to read, parse or upsert is a real failure, not a
+    // shrug: `doctor` exits 1 on a problem and `verify` exits 2, so a sync
+    // that printed a `failed:` line and still exited 0 was the outlier, and a
+    // CI step piping through it could not see the partial failure at all.
+    // The full report (JSON included) has already printed above, so a
+    // `--json` consumer still gets the complete document before this fails
+    // the process. The direct path has no equivalent of a whole domain
+    // skipped by a scan error: `scan_domain` above is called with `?`, so
+    // that class already aborts the whole command immediately rather than
+    // being collected here - `scan_failed` is always empty on this path, and
+    // only the daemon-routed path in `sync_dispatch` (`main.rs`) passes one.
+    if let Some(err) = sync_failure(&reports, &[]) {
+        return Err(err);
+    }
+    Ok(())
+}
+
+/// The walk of every target of [`sync`], with the cross-domain pass at the
+/// end. On a shared database each file domain is claimed first, as the
+/// daemon's sync claims it: a domain another live instance hosts is refused
+/// when it was named and left out of a full sync, and every lock taken is
+/// pushed onto `claimed` for the caller to release, error or not.
+#[allow(clippy::too_many_arguments)]
+async fn sync_targets(
+    store: &Arc<TokioMutex<dyn Store>>,
+    cfg: &GlobalConfig,
+    only: Option<&str>,
+    targets: Vec<(String, DomainEntry)>,
+    flags: SyncFlags,
+    host: Option<&DirectHost>,
+    claimed: &mut Vec<crystalline_index::DomainId>,
+    json: bool,
+) -> Result<Vec<crystalline_index::SyncReport>> {
     let params = chunk_params(cfg);
 
     // Each domain this run applied, paired with the report its apply produced,
@@ -2200,12 +2402,32 @@ pub async fn sync(
             let domain = store
                 .upsert_domain(&name, Some(&path.to_string_lossy()), DomainKind::File)
                 .await?;
+            if let Some(host) = host {
+                match host.claim(&*store, domain, flags.take_over).await? {
+                    DirectClaim::Taken { release } => {
+                        if release {
+                            claimed.push(domain);
+                        }
+                    }
+                    DirectClaim::Refused(holder) => {
+                        let refusal = direct_host_refusal(&name, &holder);
+                        if only.is_some() {
+                            bail!(refusal);
+                        }
+                        eprintln!("skipped: {refusal}");
+                        continue;
+                    }
+                }
+            }
             let snapshot = store.file_stamps(domain).await?;
             // A domain an older parser derived is walked whole, once.
             let force = crystalline_index::reparse_due(&*store, domain).await?;
             (domain, snapshot, force)
         };
-        let scan = scan_domain(&name, &path, snapshot, &params, force).await?;
+        let mut scan = scan_domain(&name, &path, snapshot, &params, force).await?;
+        if flags.accept_disk {
+            scan.accept_disk();
+        }
         let report = {
             let store = store.lock().await;
             apply_scan(&*store, domain, scan)
@@ -2224,47 +2446,7 @@ pub async fn sync(
             .await
             .map_err(|e| anyhow!("resolving forward references failed: {e}"))?;
     }
-    let reports: Vec<crystalline_index::SyncReport> =
-        applied.into_iter().map(|(_, report)| report).collect();
-
-    if json {
-        println!("{}", serde_json::to_string(&reports)?);
-    } else {
-        for r in &reports {
-            print_report(r);
-        }
-    }
-
-    if embed {
-        let store = store.lock().await;
-        embed_pass(&*store, cfg).await?;
-    }
-
-    // Any sync, not just a full reindex, is a snapshot-preparation verb: a
-    // downstream pipeline may ship index.db as a single file (sidecars
-    // deleted), so the delta this sync just wrote must not sit stranded in
-    // the WAL. Merge and shrink it now rather than waiting for a natural
-    // checkpoint. A no-op on Postgres (no local WAL file).
-    {
-        let store = store.lock().await;
-        store.checkpoint_wal().await?;
-    }
-
-    // A file that failed to read, parse or upsert is a real failure, not a
-    // shrug: `doctor` exits 1 on a problem and `verify` exits 2, so a sync
-    // that printed a `failed:` line and still exited 0 was the outlier, and a
-    // CI step piping through it could not see the partial failure at all.
-    // The full report (JSON included) has already printed above, so a
-    // `--json` consumer still gets the complete document before this fails
-    // the process. The direct path has no equivalent of a whole domain
-    // skipped by a scan error: `scan_domain` above is called with `?`, so
-    // that class already aborts the whole command immediately rather than
-    // being collected here - `scan_failed` is always empty on this path, and
-    // only the daemon-routed path in `sync_dispatch` (`main.rs`) passes one.
-    if let Some(err) = sync_failure(&reports, &[]) {
-        return Err(err);
-    }
-    Ok(())
+    Ok(applied.into_iter().map(|(_, report)| report).collect())
 }
 
 /// The error `sync` fails with when either failure class is present, or
@@ -2893,6 +3075,21 @@ pub fn render_status(data: &serde_json::Value, daemon_note: &str) {
         data["fts_mode"].as_str().unwrap_or("unknown")
     );
     println!("{}", embeddings_line(&data["embeddings"]));
+
+    // What a host move left only on another instance of a shared
+    // database: one line per domain, until a walk finds the files or a
+    // sync with --accept-disk drops their rows.
+    for d in data["domains"].as_array().into_iter().flatten() {
+        let (Some(name), Some(elsewhere)) = (
+            d["name"].as_str(),
+            d.get("only_elsewhere")
+                .cloned()
+                .and_then(|v| serde_json::from_value::<crystalline_index::OnlyElsewhere>(v).ok()),
+        ) else {
+            continue;
+        };
+        println!("  '{name}': {}", elsewhere.line(name));
+    }
 
     // The rebuild markers, printed directly under the coverage figure they
     // qualify: a number read as normal in the middle of a rebuild is the
@@ -3849,6 +4046,9 @@ fn print_report(r: &crystalline_index::SyncReport) {
     );
     for (path, err) in &r.failed {
         println!("  failed: {path}: {err}");
+    }
+    if let Some(elsewhere) = &r.only_elsewhere {
+        println!("  {}", elsewhere.line(&r.domain));
     }
 }
 
