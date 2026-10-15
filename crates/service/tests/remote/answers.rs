@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 
-use crate::fixture::{Options, RemoteServer};
+use crate::fixture::{Options, PIC, RemoteServer, SHOT};
 
 fn cmd(name: &str) -> Value {
     json!({ "v": 1, "cmd": name })
@@ -395,4 +395,94 @@ async fn the_reflect_counts_reach_only_the_curators() {
         "a new count is a new etag: {changed}"
     );
     assert_eq!(changed["data"]["reflect"]["domains"]["open"], 3);
+}
+
+/// R85: the remote `file` command answers a file's bytes as base64 with its
+/// mime and size, under the account's own right for the kind of the file:
+/// engram rights for an attachment, the Reflection read right for a
+/// Reflection's file. A domain the account may not see is refused as an
+/// unknown one, and a path that names no file is refused.
+#[tokio::test]
+async fn a_remote_file_command_answers_the_bytes_the_account_may_read() {
+    use base64::Engine as _;
+    use crystalline_service::rest::{MemberLevel, ReflectionLevel};
+
+    let server = RemoteServer::start(Options::TOKENS).await;
+    server.with_files_in_open().await;
+    let file =
+        |domain: &str, path: &str| json!({ "v": 1, "cmd": "file", "domain": domain, "path": path });
+    let decoded = |reply: &Value| {
+        base64::engine::general_purpose::STANDARD
+            .decode(reply["data"]["base64"].as_str().unwrap())
+            .unwrap()
+    };
+    let keeper = server.token_for("keeper").await;
+    let (status, reply) = server
+        .ctl(Some(&keeper), file("open", "assets/shot.png"))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["data"]["mime"], "image/png");
+    assert_eq!(reply["data"]["size"], SHOT.len());
+    assert_eq!(decoded(&reply), SHOT);
+    let (_, reply) = server
+        .ctl(Some(&keeper), file("open", "reflections/assets/pic.png"))
+        .await;
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(decoded(&reply), PIC);
+
+    // A path that names no file of either kind.
+    let (_, reply) = server
+        .ctl(Some(&keeper), file("open", "open-note.md"))
+        .await;
+    assert_eq!(reply["ok"], false, "{reply}");
+
+    // A private domain the account may not see reads as an unknown one.
+    std::fs::create_dir_all(server.file("lab", "assets")).unwrap();
+    std::fs::write(server.file("lab", "assets/secret.png"), b"secret").unwrap();
+    server.engine.sync(None).await.unwrap();
+    let out = server.token_for("out").await;
+    let (_, hidden) = server
+        .ctl(Some(&out), file("lab", "assets/secret.png"))
+        .await;
+    let (_, unknown) = server
+        .ctl(Some(&out), file("nowhere", "assets/secret.png"))
+        .await;
+    assert_eq!(hidden["ok"], false, "{hidden}");
+    assert_eq!(
+        hidden["error"].as_str().unwrap().replace("lab", "X"),
+        unknown["error"].as_str().unwrap().replace("nowhere", "X"),
+        "the same refusal as for a domain that does not exist"
+    );
+    assert!(!hidden.to_string().contains("c2VjcmV0"), "{hidden}");
+
+    // Knowledge none, Reflection reader on a private `open`: the
+    // Reflection's file, never the engram attachment.
+    server
+        .auth
+        .set_domain_visibility("open", true, "boss")
+        .await
+        .unwrap();
+    server
+        .auth
+        .upsert_domain_member(
+            "open",
+            "looker",
+            MemberLevel::None,
+            Some(ReflectionLevel::Reader),
+            "boss",
+        )
+        .await
+        .unwrap();
+    let looker = server.token_for("looker").await;
+    let (_, refused) = server
+        .ctl(Some(&looker), file("open", "assets/shot.png"))
+        .await;
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(refused.get("data").is_none(), "{refused}");
+    let (_, reply) = server
+        .ctl(Some(&looker), file("open", "reflections/assets/pic.png"))
+        .await;
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(decoded(&reply), PIC);
 }

@@ -10,11 +10,11 @@ use crystalline_service::join::IDLE_JOIN_LIMIT;
 use crystalline_service::mcp::McpServer;
 use rmcp::RoleClient;
 use rmcp::RoleServer;
-use rmcp::model::{CallToolRequestParams, GetPromptRequestParams};
+use rmcp::model::{CallToolRequestParams, GetPromptRequestParams, ReadResourceRequestParams};
 use rmcp::service::{Peer, RunningService};
 use serde_json::{Value, json};
 
-use crate::fixture::{Options, RemoteServer};
+use crate::fixture::{Options, PIC, RemoteServer, SHOT};
 use crate::local::LocalMachine;
 
 async fn connect(
@@ -722,4 +722,234 @@ async fn a_routed_reflect_refuses_its_local_part_at_call_time() {
         .and_then(Value::as_str)
         .unwrap_or_default();
     assert!(text.contains("Reflection is off for 'notes'"), "{text}");
+}
+
+// --- files of a mounted domain, both kinds (R85) ------------------------------
+
+/// The resource links of a tool result and its JSON body, for a call that
+/// must succeed.
+async fn call_with_links(peer: &Peer<RoleClient>, tool: &str, args: Value) -> (Value, Vec<Value>) {
+    let mut params = CallToolRequestParams::new(tool.to_string());
+    if let Value::Object(map) = args {
+        params = params.with_arguments(map);
+    }
+    let result = serde_json::to_value(peer.call_tool(params).await.unwrap()).unwrap();
+    assert_ne!(result["isError"], true, "{result}");
+    let blocks = result["content"].as_array().unwrap();
+    let body: Value = serde_json::from_str(blocks[0]["text"].as_str().unwrap()).unwrap();
+    let links = blocks
+        .iter()
+        .filter(|b| b["type"] == "resource_link")
+        .cloned()
+        .collect();
+    (body, links)
+}
+
+/// The bytes of one `resources/read` answer, base64 decoded.
+async fn read_bytes(peer: &Peer<RoleClient>, uri: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine as _;
+    let read = peer
+        .read_resource(ReadResourceRequestParams::new(uri))
+        .await
+        .map_err(|e| e.to_string())?;
+    let contents = serde_json::to_value(&read.contents[0]).unwrap();
+    assert_eq!(contents["uri"], uri, "{contents}");
+    assert_eq!(contents["mimeType"], "image/png", "{contents}");
+    Ok(base64::engine::general_purpose::STANDARD
+        .decode(contents["blob"].as_str().unwrap())
+        .unwrap())
+}
+
+/// Whether the server was asked for a file through the ctl `file` command.
+fn asked_for_a_file(server: &RemoteServer) -> bool {
+    server.ctl_requests().iter().any(|r| r["cmd"] == "file")
+}
+
+/// R85: a page of a mounted Reflection carries a resource link for each file
+/// it shows, as a local page does, and the routed answer keeps no `files`.
+#[tokio::test]
+async fn a_mounted_read_reflection_carries_resource_links_for_its_assets() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    server.with_files_in_open().await;
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    let (page, links) = call_with_links(
+        client.peer(),
+        "read_reflection",
+        json!({ "domain": "open", "path": "guides/a.md" }),
+    )
+    .await;
+    assert!(page.get("files").is_none(), "{page}");
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert_eq!(
+        links[0]["uri"],
+        "crystalline://open/reflections/assets/pic.png"
+    );
+    assert_eq!(links[0]["name"], "pic.png");
+    assert_eq!(links[0]["mimeType"], "image/png");
+    assert_eq!(links[0]["size"], PIC.len());
+}
+
+/// R85: a mounted engram carries a resource link for each attachment it
+/// shows, as a local engram does.
+#[tokio::test]
+async fn a_mounted_read_engram_carries_resource_links_for_its_attachments() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    server.with_files_in_open().await;
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    let (engram, links) = call_with_links(
+        client.peer(),
+        "read_engram",
+        json!({ "identifier": "shot-note", "domain": "open" }),
+    )
+    .await;
+    assert!(engram.get("files").is_none(), "{engram}");
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert_eq!(links[0]["uri"], "crystalline://open/assets/shot.png");
+    assert_eq!(links[0]["name"], "shot.png");
+    assert_eq!(links[0]["mimeType"], "image/png");
+    assert_eq!(links[0]["size"], SHOT.len());
+}
+
+/// R85: `resources/read` of a mounted Reflection's file is forwarded to the
+/// server and answers its bytes.
+#[tokio::test]
+async fn resources_read_of_a_mounted_reflection_asset_returns_the_servers_bytes() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    server.with_files_in_open().await;
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    let bytes = read_bytes(
+        client.peer(),
+        "crystalline://open/reflections/assets/pic.png",
+    )
+    .await
+    .unwrap();
+    assert_eq!(bytes, PIC);
+    assert!(asked_for_a_file(&server), "{:?}", server.ctl_requests());
+}
+
+/// R85: `resources/read` of a mounted engram attachment is forwarded to the
+/// server and answers its bytes.
+#[tokio::test]
+async fn resources_read_of_a_mounted_engram_attachment_returns_the_servers_bytes() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    server.with_files_in_open().await;
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    let bytes = read_bytes(client.peer(), "crystalline://open/assets/shot.png")
+        .await
+        .unwrap();
+    assert_eq!(bytes, SHOT);
+    assert!(asked_for_a_file(&server), "{:?}", server.ctl_requests());
+}
+
+/// R85: the server decides with the account's own rights, by the kind of the
+/// file. An account that loses its engram rights on a mounted domain (it
+/// keeps reading the Reflection) is refused the engram attachment by the
+/// server, and still gets the Reflection's file.
+#[tokio::test]
+async fn a_mounted_file_read_is_refused_where_the_account_may_not_read() {
+    use crystalline_service::rest::{MemberLevel, ReflectionLevel};
+
+    let server = RemoteServer::start(Options::TOKENS).await;
+    server.with_files_in_open().await;
+    // A private `open` that looker reads as a member, engrams included.
+    server
+        .auth
+        .set_domain_visibility("open", true, "boss")
+        .await
+        .unwrap();
+    server
+        .auth
+        .upsert_domain_member("open", "looker", MemberLevel::Viewer, None, "boss")
+        .await
+        .unwrap();
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "looker").await;
+    let sources = machine.mount();
+    assert!(sources.table().mount("open").is_some(), "open is mounted");
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    // A member viewer reads both kinds.
+    assert_eq!(
+        read_bytes(client.peer(), "crystalline://open/assets/shot.png")
+            .await
+            .unwrap(),
+        SHOT
+    );
+    server
+        .auth
+        .upsert_domain_member(
+            "open",
+            "looker",
+            MemberLevel::None,
+            Some(ReflectionLevel::Reader),
+            "boss",
+        )
+        .await
+        .unwrap();
+    server.clear_ctl_log();
+    let refused = read_bytes(client.peer(), "crystalline://open/assets/shot.png")
+        .await
+        .unwrap_err();
+    assert!(
+        asked_for_a_file(&server),
+        "the server refused it, not this machine: {:?}",
+        server.ctl_requests()
+    );
+    assert!(!refused.contains("shot"), "{refused}");
+    assert!(refused.contains("open"), "{refused}");
+    assert_eq!(
+        read_bytes(
+            client.peer(),
+            "crystalline://open/reflections/assets/pic.png"
+        )
+        .await
+        .unwrap(),
+        PIC,
+        "the Reflection right reads the Reflection's file"
+    );
+}
+
+/// R85 against a 0.26 server: a read still succeeds, without links, and a
+/// file read names the version the server needs.
+#[tokio::test]
+async fn a_026_server_reads_without_links_and_refuses_a_file_naming_the_version() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    server.with_files_in_open().await;
+    server.answer_as_026();
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    let (engram, links) = call_with_links(
+        client.peer(),
+        "read_engram",
+        json!({ "identifier": "shot-note", "domain": "open" }),
+    )
+    .await;
+    assert!(
+        engram["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("assets/shot.png")),
+        "{engram}"
+    );
+    assert!(links.is_empty(), "{links:?}");
+    let refused = read_bytes(client.peer(), "crystalline://open/assets/shot.png")
+        .await
+        .unwrap_err();
+    assert!(
+        refused.contains("needs Crystalline 0.27 or newer"),
+        "{refused}"
+    );
+    assert!(refused.contains("acme"), "{refused}");
 }

@@ -94,6 +94,16 @@ pub const CTL_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long a source that failed to answer is skipped.
 pub const DOWN_WINDOW: Duration = Duration::from_secs(30);
 
+/// The ctl command that reads one file of a mounted domain (0.27.0).
+pub const FILE_COMMAND: &str = "file";
+
+/// The largest answer to a [`FILE_COMMAND`] this client reads: the base64 of
+/// the largest file a domain holds ([`crystalline_core::MAX_ATTACHMENT_BYTES`],
+/// which is also the JSON API's body ceiling) plus room for the envelope.
+/// Every other answer is read whole, as before.
+pub const FILE_ANSWER_CAP: usize =
+    (crystalline_core::MAX_ATTACHMENT_BYTES as usize).div_ceil(3) * 4 + 64 * 1024;
+
 /// Whose limit a call runs within, which decides what a timeout says about
 /// the source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -966,6 +976,22 @@ impl Connection {
         self.ctl_data_within(request, limit, budget).await
     }
 
+    /// One file of a domain on the server, by its domain-relative path
+    /// (`assets/...` or `reflections/assets/...`), within `limit`: the
+    /// server's `{mime, size, base64}`, read with [`FILE_ANSWER_CAP`] as the
+    /// ceiling. The server reads it under the account's own right for the
+    /// kind of the file. A server older than 0.27.0 refuses the command
+    /// ([`RemoteFailure::Refused`], in its words).
+    pub async fn file_within(
+        &self,
+        domain: &str,
+        path: &str,
+        limit: Duration,
+    ) -> Result<Value, RemoteFailure> {
+        let request = json!({ "v": 1, "cmd": FILE_COMMAND, "domain": domain, "path": path });
+        self.ctl_data_within(request, limit, Budget::Own).await
+    }
+
     async fn post_ctl(
         &self,
         request: &Value,
@@ -1003,8 +1029,15 @@ impl Connection {
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Ok(Posted::Unauthorized);
         }
-        // The request's own timeout runs until the body has finished.
-        let text = response.text().await.map_err(|e| peer.failure(&e, limit))?;
+        // The request's own timeout runs until the body has finished. A file
+        // answer is read up to its ceiling, never whole.
+        let text = if request.get("cmd").and_then(Value::as_str) == Some(FILE_COMMAND) {
+            read_capped(response, FILE_ANSWER_CAP, &self.source.url)
+                .await
+                .map_err(|e| e.into_failure(&peer, limit))?
+        } else {
+            response.text().await.map_err(|e| peer.failure(&e, limit))?
+        };
         if status == reqwest::StatusCode::NOT_FOUND
             || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
         {
@@ -1049,6 +1082,48 @@ impl Connection {
             etag,
         }))
     }
+}
+
+/// Why a capped read stopped.
+#[derive(Debug)]
+enum CappedRead {
+    /// The network failed while the body came in.
+    Network(reqwest::Error),
+    /// The body is over the ceiling, or not text.
+    Refused(String),
+}
+
+impl CappedRead {
+    fn into_failure(self, peer: &Peer, limit: Duration) -> RemoteFailure {
+        match self {
+            CappedRead::Network(e) => peer.failure(&e, limit),
+            CappedRead::Refused(text) => RemoteFailure::Refused(text),
+        }
+    }
+}
+
+/// The body of `response` as text, refused once it grows past `cap` bytes:
+/// a declared length over the cap is refused before anything is read, and a
+/// body without one is read in chunks and stopped at the cap.
+async fn read_capped(
+    mut response: reqwest::Response,
+    cap: usize,
+    url: &str,
+) -> Result<String, CappedRead> {
+    let too_large =
+        || CappedRead::Refused(format!("{url} answered more than {cap} bytes for one file"));
+    if response.content_length().is_some_and(|n| n > cap as u64) {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(CappedRead::Network)? {
+        if body.len() + chunk.len() > cap {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body)
+        .map_err(|_| CappedRead::Refused(format!("{url} did not answer in the control protocol")))
 }
 
 /// Whether `credential` is somebody else's finished refresh: no longer the
@@ -1355,6 +1430,67 @@ mod tests {
             url: fresh.source.url.clone(),
         }));
         assert_eq!(fresh.down(), None, "and a local outcome never marks");
+    }
+
+    /// One HTTP answer on a loopback port: `head` is the status line and
+    /// headers, `body` follows them.
+    async fn answering(head: &'static str, body: Vec<u8>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = socket.read(&mut buf).await;
+            let _ = socket.write_all(head.as_bytes()).await;
+            let _ = socket.write_all(&body).await;
+        });
+        url
+    }
+
+    /// A file answer is read up to its ceiling: a declared length over it is
+    /// refused at once, a body without one is stopped at the ceiling, and a
+    /// body under it is read whole.
+    #[tokio::test]
+    async fn a_file_answer_is_read_up_to_its_ceiling() {
+        let client = reqwest::Client::new();
+        let url = answering(
+            "HTTP/1.1 200 OK\r\ncontent-length: 20\r\nconnection: close\r\n\r\n",
+            vec![b'a'; 20],
+        )
+        .await;
+        let response = client.get(&url).send().await.unwrap();
+        let refused = read_capped(response, 10, &url).await.unwrap_err();
+        assert!(
+            matches!(refused, CappedRead::Refused(ref t) if t.contains("more than 10 bytes")),
+            "{refused:?}"
+        );
+
+        let url = answering(
+            "HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n",
+            vec![b'a'; 20],
+        )
+        .await;
+        let response = client.get(&url).send().await.unwrap();
+        let refused = read_capped(response, 10, &url).await.unwrap_err();
+        assert!(matches!(refused, CappedRead::Refused(_)), "{refused:?}");
+
+        let url = answering(
+            "HTTP/1.1 200 OK\r\ncontent-length: 5\r\nconnection: close\r\n\r\n",
+            b"hello".to_vec(),
+        )
+        .await;
+        let response = client.get(&url).send().await.unwrap();
+        assert_eq!(read_capped(response, 10, &url).await.unwrap(), "hello");
+    }
+
+    /// The ceiling holds the largest file a domain keeps, as base64.
+    #[test]
+    fn the_file_ceiling_holds_the_largest_file_as_base64() {
+        use base64::Engine as _;
+        let largest = vec![0u8; crystalline_core::MAX_ATTACHMENT_BYTES as usize];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&largest);
+        assert!(encoded.len() + 1024 < FILE_ANSWER_CAP);
     }
 
     fn connection_with_no_mark() -> Connection {

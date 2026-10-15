@@ -187,7 +187,8 @@ fn the_remote_allow_lists_are_pinned() {
             "routing_bullets",
             "hook_status",
             "origin_status",
-            "origin_changes"
+            "origin_changes",
+            "file"
         ]
     );
     assert_eq!(
