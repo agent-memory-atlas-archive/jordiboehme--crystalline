@@ -355,7 +355,14 @@ export interface AssetHome extends AssetResolver {
   /** The listing's cache key. */
   key: readonly unknown[];
   list: () => Promise<AttachmentRow[]>;
+  /** Store a new file under a free path (the upload flow). */
   upload: (path: string, file: Blob) => Promise<UploadedAttachment>;
+  /**
+   * Overwrite the file at a path that is already taken, on purpose. Its own
+   * verb so a create-only precondition on {@link upload} never reaches it.
+   * Absent, this home offers no replace (engrams: shared design D11).
+   */
+  replace?: (path: string, file: Blob) => Promise<UploadedAttachment>;
   remove: (path: string) => Promise<void>;
   /** The text a document writes to point at a stored path (engram: the path itself). */
   linkTo: (path: string) => string;

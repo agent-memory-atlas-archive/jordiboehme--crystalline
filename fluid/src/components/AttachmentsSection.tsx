@@ -18,12 +18,18 @@
  * edited somebody's prose on a delete would be rewriting knowledge to keep its
  * own bookkeeping tidy. The confirm names that consequence and names who will
  * point at it afterwards.
+ *
+ * A home that can do more (the Reflection's, for a curator) also offers
+ * Replace, which puts new bytes under the same path through the home's own
+ * `replace` verb, and Move, which the owner opens because a move rewrites
+ * other pages and its dialog outlives this list. An engram rail passes
+ * neither, so it shows neither.
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
-import { useState } from "react";
-import { useMemo } from "react";
+import { FolderInput, Replace, Trash2 } from "lucide-react";
+import type { ChangeEvent, ReactElement } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { problemDetail } from "../api/client";
 import type { AssetHome, AttachmentRow } from "../api/files";
@@ -45,7 +51,21 @@ export interface AttachmentsSectionProps {
   home?: AssetHome;
   /** The question a remove asks, by file name. Absent, the engram one. */
   confirmText?: (name: string) => string;
+  /**
+   * Whether this session may put new bytes under a file's own path. Needs a
+   * home with a `replace` verb as well; an engram home has none.
+   */
+  canReplace?: boolean;
+  /** Opens the owner's move dialog for a stored path. Absent, no Move. */
+  onMove?: ((path: string) => void) | undefined;
+  /** Called after a file is removed, for whatever else the owner refreshes. */
+  onRemoved?: (path: string) => void;
 }
+
+/** The question this section has open, about one file by path. */
+type Asking =
+  | { kind: "remove"; path: string }
+  | { kind: "replace"; path: string; file: File };
 
 /** What removing an engram's file leaves behind, said before it happens. */
 function engramConfirmText(name: string): string {
@@ -70,6 +90,9 @@ export function AttachmentsSection({
   canDelete = false,
   home: givenHome,
   confirmText = engramConfirmText,
+  canReplace = false,
+  onMove,
+  onRemoved,
 }: AttachmentsSectionProps) {
   const home = useMemo(
     () => givenHome ?? engramAssetHome(domain),
@@ -87,9 +110,8 @@ export function AttachmentsSection({
     // would answer a question this panel is not going to draw.
     enabled: referenced.length > 0,
   });
-  /** Which file the question is open about, by path. */
-  const [asking, setAsking] = useState<string | null>(null);
-  const [removing, setRemoving] = useState(false);
+  const [asking, setAsking] = useState<Asking | null>(null);
+  const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
   if (referenced.length === 0) {
@@ -100,15 +122,24 @@ export function AttachmentsSection({
     (attachments.data ?? []).map((row) => [row.path, row]),
   );
 
-  const remove = (path: string) => {
+  const replace = canReplace ? home.replace : undefined;
+
+  /** Runs the answered question; a failure is the server's sentence. */
+  const settle = (question: Asking) => {
     void (async () => {
-      setRemoving(true);
+      setBusy(true);
       setFailure(null);
       try {
-        await home.remove(path);
-        // The listing this panel drew is stale the moment the file is gone,
-        // and it is the same listing the upload flow picks a free path
-        // against, so it is refreshed rather than patched in place.
+        if (question.kind === "remove") {
+          await home.remove(question.path);
+          onRemoved?.(question.path);
+        } else {
+          await replace?.(question.path, question.file);
+        }
+        // The listing this panel drew is stale the moment the file is gone
+        // or its size changed, and it is the same listing the upload flow
+        // picks a free path against, so it is refreshed rather than patched
+        // in place.
         await queryClient.invalidateQueries({ queryKey: home.key });
         setAsking(null);
       } catch (cause) {
@@ -116,9 +147,21 @@ export function AttachmentsSection({
           cause instanceof Error ? problemDetail(cause) : String(cause),
         );
       } finally {
-        setRemoving(false);
+        setBusy(false);
       }
     })();
+  };
+
+  /** A picked file replaces only a file of its own kind. */
+  const picked = (path: string, file: File) => {
+    const name = nameOf(path);
+    const kind = kindOf(path);
+    if (kindOf(file.name) !== kind) {
+      setFailure(`Pick a .${kind} file to replace ${name}.`);
+      return;
+    }
+    setFailure(null);
+    setAsking({ kind: "replace", path, file });
   };
 
   return (
@@ -164,19 +207,41 @@ export function AttachmentsSection({
                     {name}
                   </a>
                 )}
-                {canDelete && row !== undefined && asking === null && (
-                  // Last in the row and named after the file it acts on: a
-                  // rail may hold several of these, and "Remove" alone would
-                  // be the same name three times over.
-                  <IconButton
-                    label={`Remove ${name}`}
-                    icon={Trash2}
-                    className="ml-auto"
-                    onClick={() => {
-                      setFailure(null);
-                      setAsking(path);
-                    }}
-                  />
+                {row !== undefined && asking === null && (
+                  // Last in the row and named after the file they act on: a
+                  // rail may hold several rows, and "Remove" alone would be
+                  // the same name three times over.
+                  <span className="ml-auto flex shrink-0 items-center">
+                    {replace !== undefined && kind !== "" && (
+                      <ReplacePicker
+                        name={name}
+                        kind={kind}
+                        onPick={(file) => {
+                          picked(path, file);
+                        }}
+                      />
+                    )}
+                    {onMove !== undefined && (
+                      <IconButton
+                        label={`Move ${name}`}
+                        icon={FolderInput}
+                        onClick={() => {
+                          setFailure(null);
+                          onMove(path);
+                        }}
+                      />
+                    )}
+                    {canDelete && (
+                      <IconButton
+                        label={`Remove ${name}`}
+                        icon={Trash2}
+                        onClick={() => {
+                          setFailure(null);
+                          setAsking({ kind: "remove", path });
+                        }}
+                      />
+                    )}
+                  </span>
                 )}
               </span>
               <span className="flex flex-wrap items-center gap-2 text-caption text-slate-500 dark:text-slate-400">
@@ -186,26 +251,32 @@ export function AttachmentsSection({
                 )}
                 {missing && <Chip variant="caution">missing</Chip>}
               </span>
-              {asking === path && (
+              {asking?.path === path && (
                 <span className="flex flex-col gap-2">
                   <span className="text-caption text-slate-600 dark:text-slate-300">
-                    {confirmText(name)}
+                    {asking.kind === "remove"
+                      ? confirmText(name)
+                      : `Replace ${name}? Every page that shows it shows the new file.`}
                   </span>
                   <span className="flex flex-wrap gap-2">
                     <button
                       type="button"
-                      className={BUTTON.destructive}
-                      disabled={removing}
+                      className={
+                        asking.kind === "remove"
+                          ? BUTTON.destructive
+                          : BUTTON.primary
+                      }
+                      disabled={busy}
                       onClick={() => {
-                        remove(path);
+                        settle(asking);
                       }}
                     >
-                      Remove
+                      {asking.kind === "remove" ? "Remove" : "Replace"}
                     </button>
                     <button
                       type="button"
                       className={BUTTON.ghost}
-                      disabled={removing}
+                      disabled={busy}
                       onClick={() => {
                         setAsking(null);
                       }}
@@ -220,5 +291,47 @@ export function AttachmentsSection({
         })}
       </ul>
     </section>
+  );
+}
+
+/**
+ * "Replace <name>": a hidden picker limited to the file's own extension. The
+ * filter is a hint every dialog offers a way past, so the section checks the
+ * picked name again before it asks anything.
+ */
+function ReplacePicker({
+  name,
+  kind,
+  onPick,
+}: {
+  name: string;
+  kind: string;
+  onPick: (file: File) => void;
+}): ReactElement {
+  const picker = useRef<HTMLInputElement | null>(null);
+  return (
+    <>
+      <IconButton
+        label={`Replace ${name}`}
+        icon={Replace}
+        onClick={() => {
+          picker.current?.click();
+        }}
+      />
+      <input
+        ref={picker}
+        type="file"
+        accept={`.${kind}`}
+        className="hidden"
+        onChange={(event: ChangeEvent<HTMLInputElement>) => {
+          const file = event.target.files?.[0];
+          // Cleared first, so picking the same file again still fires.
+          event.target.value = "";
+          if (file !== undefined) {
+            onPick(file);
+          }
+        }}
+      />
+    </>
   );
 }

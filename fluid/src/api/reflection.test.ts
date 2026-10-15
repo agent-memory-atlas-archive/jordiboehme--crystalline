@@ -9,6 +9,7 @@ import {
   reflectionAssetHome,
   reflectionAssetsKey,
   reflectionAssetUrl,
+  replaceReflectionAsset,
   uploadReflectionAsset,
   openThread,
   readDoc,
@@ -476,5 +477,39 @@ describe("a Reflection's files", () => {
     );
     expect(home.refused("../assets/x.png")).toBeNull();
     expect(home.url("assets/x.png")).toMatch(/\/reflection\/assets\/x\.png$/);
+  });
+});
+
+describe("replacing a Reflection file", () => {
+  it("puts the new bytes to the same path with no precondition", async () => {
+    apiMock.mockResolvedValue({
+      path: "assets/flow.png",
+      mime: "image/png",
+      size: 3,
+      sha256: "cd",
+      created: false,
+    });
+    const file = new Blob(["abc"], { type: "image/png" });
+    const home = reflectionAssetHome("eng", "guides/deploying.md");
+    expect(await home.replace?.("assets/flow.png", file)).toEqual({
+      path: "assets/flow.png",
+      mime: "image/png",
+      size: 3,
+      sha256: "cd",
+      created: false,
+    });
+    // Only the content type: a create-only header on new uploads must never
+    // reach a replace, which overwrites on purpose.
+    expect(apiMock).toHaveBeenLastCalledWith(
+      "/domains/eng/reflection/assets/flow.png",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "image/png" },
+        body: file,
+      },
+    );
+    expect(
+      await replaceReflectionAsset("eng", "assets/flow.png", file),
+    ).toMatchObject({ path: "assets/flow.png" });
   });
 });

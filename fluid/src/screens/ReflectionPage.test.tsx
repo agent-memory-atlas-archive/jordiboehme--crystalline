@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -84,6 +84,8 @@ function serve(
         nodes: [],
       }),
       "/domains/eng/reflections/guides/deploying.md": () => doc(),
+      // The Reflection's files: a page that links one lists it below the article.
+      "/domains/eng/reflection/assets": () => ({ assets: [] }),
       ...routes,
     }),
   );
@@ -336,5 +338,146 @@ describe("a reflection's images and files", () => {
       expect(el.getAttribute("href") ?? "").not.toMatch(bad);
       expect(el.getAttribute("src") ?? "").not.toMatch(bad);
     }
+  });
+});
+
+describe("a reflection's attachments", () => {
+  const PAGE = "/domains/eng/reflections/guides/deploying.md";
+  const ASSETS = "/domains/eng/reflection/assets";
+  const LISTING = {
+    assets: [
+      {
+        path: "assets/flow.png",
+        mime: "image/png",
+        size: 2048,
+        modified: "2026-10-15T10:00:00Z",
+        sha256: "abc",
+      },
+    ],
+  };
+
+  function serveFiles(right: string, routes: Record<string, Answer> = {}) {
+    serve(right, right === "curate", {
+      [PAGE]: () =>
+        doc({
+          markdown: "# Deploying\n\n![Flow](../assets/flow.png)\n",
+          sections: [],
+        }),
+      [ASSETS]: () => LISTING,
+      ...routes,
+    });
+  }
+
+  function callsTo(route: string): number {
+    return apiMock.mock.calls.filter(([path]) => path === route).length;
+  }
+
+  it("a contributor sees the page's files and no curate controls", async () => {
+    serveFiles("edit");
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const region = await screen.findByRole("region", { name: "Attachments" });
+    expect(await within(region).findByText("2.0 KiB")).toBeVisible();
+    expect(within(region).getByText("flow.png")).toBeVisible();
+    for (const name of [
+      "Replace flow.png",
+      "Move flow.png",
+      "Remove flow.png",
+    ]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+  });
+
+  it("a curator removes a file and the copy names the reflect queue", async () => {
+    const removed = vi.fn(() => ({}));
+    serveFiles("curate", { [`${ASSETS}/flow.png`]: removed });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Remove flow.png" }),
+    );
+    expect(
+      screen.getByText(
+        "Remove flow.png? Pages keep their links until edited. The reflect queue names them as missing.",
+      ),
+    ).toBeVisible();
+    const pageReads = callsTo(PAGE);
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => {
+      expect(removed).toHaveBeenCalledWith(`${ASSETS}/flow.png`, {
+        method: "DELETE",
+      });
+    });
+    // The Reflection is refreshed, not only the listing.
+    await waitFor(() => {
+      expect(callsTo(PAGE)).toBeGreaterThan(pageReads);
+    });
+  });
+
+  it("a move shows the server's receipt and refreshes every page", async () => {
+    const moved = vi.fn(() => ({
+      from: "assets/flow.png",
+      to: "assets/diagrams/flow.png",
+      links_rewritten: 2,
+      links_failed: [{ path: "guides/other.md", reason: "not valid UTF-8" }],
+      note: "the file moved; its index row did not follow",
+    }));
+    serveFiles("curate", { "/domains/eng/reflection/move-asset": moved });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Move flow.png" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Move flow.png" });
+    const field = within(dialog).getByLabelText("New path");
+    expect(field).toHaveValue("flow.png");
+    await user.clear(field);
+    await user.type(field, "diagrams/flow.png");
+    const pageReads = callsTo(PAGE);
+    const listingReads = callsTo(ASSETS);
+    await user.click(within(dialog).getByRole("button", { name: "Move file" }));
+    expect(
+      await within(dialog).findByText("Moved. 2 links updated."),
+    ).toBeVisible();
+    expect(
+      within(dialog).getByText("the file moved; its index row did not follow"),
+    ).toBeVisible();
+    expect(
+      within(dialog).getByText("guides/other.md: not valid UTF-8"),
+    ).toBeVisible();
+    const [, init] = moved.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      from: "assets/flow.png",
+      to: "assets/diagrams/flow.png",
+    });
+    // Every page that linked the file was rewritten: the Reflection is read again.
+    await waitFor(() => {
+      expect(callsTo(PAGE)).toBeGreaterThan(pageReads);
+    });
+    await waitFor(() => {
+      expect(callsTo(ASSETS)).toBeGreaterThan(listingReads);
+    });
+  });
+
+  it("a move refused while a page is open says so in the server's words", async () => {
+    const sentence =
+      "guides/deploying.md is open for editing; the file moves once the room is closed";
+    serveFiles("curate", {
+      "/domains/eng/reflection/move-asset": () => {
+        throw new ApiProblem(409, "conflict", sentence);
+      },
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Move flow.png" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Move flow.png" });
+    const field = within(dialog).getByLabelText("New path");
+    await user.clear(field);
+    await user.type(field, "flow-2.png");
+    await user.click(within(dialog).getByRole("button", { name: "Move file" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      sentence,
+    );
   });
 });

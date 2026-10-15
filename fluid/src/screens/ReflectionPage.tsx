@@ -26,6 +26,7 @@ import {
   deleteReflection,
   fetchReflection,
   reflectionAssetHome,
+  reflectionAssetsKey,
   reflectionDocKey,
 } from "../api/reflection";
 import type { ReflectionRight } from "../api/reflectionDomains";
@@ -36,6 +37,7 @@ import {
   mayEditPage,
 } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
+import { AttachmentsSection } from "../components/AttachmentsSection";
 import { DestructiveAction } from "../components/DestructiveAction";
 import { LazyBoundary } from "../components/LazyBoundary";
 import { Markdown } from "../components/Markdown";
@@ -60,6 +62,17 @@ const MoveReflectionDialog = lazyChunk(() =>
     default: m.MoveReflectionDialog,
   })),
 );
+
+const MoveAssetDialog = lazyChunk(() =>
+  import("../components/MoveAssetDialog").then((m) => ({
+    default: m.MoveAssetDialog,
+  })),
+);
+
+/** What removing a Reflection file leaves behind, said before it happens. */
+function removeFileText(name: string): string {
+  return `Remove ${name}? Pages keep their links until edited. The reflect queue names them as missing.`;
+}
 
 const LINK =
   "text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400";
@@ -88,12 +101,16 @@ export default function ReflectionPage(): ReactElement {
   const [moving, setMoving] = useState<{ title: string; at: string } | null>(
     null,
   );
+  // The file move dialog while it is open, by the file's stored path. It
+  // belongs to the page it was opened on, so any change of route shuts it.
+  const [movingFile, setMovingFile] = useState<string | null>(null);
   const [seen, setSeen] = useState(path);
   if (seen !== path) {
     setSeen(path);
     if (moving !== null && moving.at !== path) {
       setMoving(null);
     }
+    setMovingFile(null);
   }
   const account = useAuth().user?.name ?? "anonymous";
   if (status.isPending) {
@@ -119,6 +136,7 @@ export default function ReflectionPage(): ReactElement {
         onMove={(title) => {
           setMoving({ title, at: path });
         }}
+        onMoveFile={setMovingFile}
         account={account}
       />
       {/*
@@ -141,6 +159,17 @@ export default function ReflectionPage(): ReactElement {
           />
         </LazyBoundary>
       )}
+      {movingFile !== null && (
+        <LazyBoundary fallback={null}>
+          <MoveAssetDialog
+            domain={domain}
+            path={movingFile}
+            onClose={() => {
+              setMovingFile(null);
+            }}
+          />
+        </LazyBoundary>
+      )}
     </>
   );
 }
@@ -151,6 +180,7 @@ function PageBody({
   right,
   engramsVisible,
   onMove,
+  onMoveFile,
   account,
 }: {
   domain: string;
@@ -158,6 +188,8 @@ function PageBody({
   right: ReflectionRight;
   engramsVisible: boolean;
   onMove: (title: string) => void;
+  /** Opens the file move dialog, which the page holds. */
+  onMoveFile: (path: string) => void;
   account: string;
 }): ReactElement {
   const [deleted, setDeleted] = useState(false);
@@ -236,6 +268,10 @@ function PageBody({
   // The page's own `# Title` is its heading when it has one; otherwise the
   // header draws the title, so the page always has exactly one.
   const ownTitle = /^\s*#[ \t]/.test(sections[0]?.text ?? "");
+  // Replace, move and remove are curate verbs, offered on the reading page
+  // only: a move waits while a linking page is open in a room, the
+  // curator's own included.
+  const curate = atLeast(right, "curate");
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-2">
@@ -298,23 +334,44 @@ function PageBody({
         )}
       </header>
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <article ref={articleRef} className="flex flex-col gap-4">
-          {sections.map((section, index) => (
-            <PageSection
-              key={section.id ?? `h${index}:${section.heading}`}
-              domain={domain}
-              assets={assets}
-              index={index}
-              section={section}
-              engramsVisible={engramsVisible}
-              view={
-                page.sections.find(
-                  (s) => s.id === section.id && s.heading === section.heading,
-                ) ?? null
-              }
-            />
-          ))}
-        </article>
+        <div className="flex min-w-0 flex-col gap-6">
+          <article ref={articleRef} className="flex flex-col gap-4">
+            {sections.map((section, index) => (
+              <PageSection
+                key={section.id ?? `h${index}:${section.heading}`}
+                domain={domain}
+                assets={assets}
+                index={index}
+                section={section}
+                engramsVisible={engramsVisible}
+                view={
+                  page.sections.find(
+                    (s) => s.id === section.id && s.heading === section.heading,
+                  ) ?? null
+                }
+              />
+            ))}
+          </article>
+          {/*
+          Outside the article: selections for threads are read against it,
+          and this list is not part of the page's text.
+        */}
+          <AttachmentsSection
+            domain={domain}
+            body={page.markdown}
+            home={assets}
+            canDelete={curate}
+            canReplace={curate}
+            onMove={curate ? onMoveFile : undefined}
+            onRemoved={() => {
+              invalidateReflection(queryClient, domain);
+              void queryClient.invalidateQueries({
+                queryKey: reflectionAssetsKey(domain),
+              });
+            }}
+            confirmText={removeFileText}
+          />
+        </div>
         <aside aria-label="Threads" className="flex flex-col gap-3">
           <ReflectionThreads
             domain={domain}

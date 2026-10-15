@@ -673,7 +673,8 @@ export type UploadedReflectionAsset = UploadedAttachment & {
   created: boolean;
 };
 
-export async function uploadReflectionAsset(
+/** One PUT of a file's bytes; the two callers below decide what it may overwrite. */
+async function putReflectionAsset(
   domain: string,
   path: string,
   file: Blob,
@@ -687,6 +688,28 @@ export async function uploadReflectionAsset(
     ...readUploaded(payload, path, file.size),
     created: asObject(payload)?.created === true,
   };
+}
+
+/** A new file under a path the upload flow picked as free. */
+export async function uploadReflectionAsset(
+  domain: string,
+  path: string,
+  file: Blob,
+): Promise<UploadedReflectionAsset> {
+  return putReflectionAsset(domain, path, file);
+}
+
+/**
+ * New bytes for a file that exists, under its own path: a curator's Replace.
+ * Kept apart from {@link uploadReflectionAsset} on purpose, so a create-only
+ * precondition added to new uploads never refuses a replace.
+ */
+export async function replaceReflectionAsset(
+  domain: string,
+  path: string,
+  file: Blob,
+): Promise<UploadedReflectionAsset> {
+  return putReflectionAsset(domain, path, file);
 }
 
 export async function deleteReflectionAsset(
@@ -741,6 +764,7 @@ export function reflectionAssetHome(
     key: reflectionAssetsKey(domain),
     list: () => fetchReflectionAssets(domain),
     upload: (path, file) => uploadReflectionAsset(domain, path, file),
+    replace: (path, file) => replaceReflectionAsset(domain, path, file),
     remove: (path) => deleteReflectionAsset(domain, path),
     url: (path) => reflectionAssetUrl(domain, path),
     resolve: (target) => {
