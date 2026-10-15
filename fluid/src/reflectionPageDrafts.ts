@@ -6,7 +6,10 @@
  * dead page's text back to a page created later on the same path.
  */
 
-import { reflectionOfferKey, reflectionRoomKey } from "./collab/provider";
+import {
+  reflectionOfferKey,
+  reflectionRoomKey,
+} from "./collab/reflectionDraftKeys";
 import { clearDraft, readDraft, writeDraft } from "./editor/drafts";
 
 const KEYS = [reflectionRoomKey, reflectionOfferKey];

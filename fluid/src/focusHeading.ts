@@ -13,7 +13,7 @@ export const FOCUS_HEADING = { focusHeading: true } as const;
 
 /** Make the page's first-level heading the focused element. */
 export function focusPageHeading(): void {
-  const heading = document.querySelector("h1");
+  const heading = document.querySelector("main h1");
   if (heading instanceof HTMLElement) {
     heading.tabIndex = -1;
     heading.focus();
