@@ -12,7 +12,7 @@
 /** One account, as every route hands it back. Carries no password material. */
 export type { User } from "./gen";
 
-/** What an account may do: `viewer`, `editor` or `admin`. */
+/** What an account may do: `none`, `viewer`, `editor` or `admin`. */
 export type { Role } from "./gen";
 
 /** The capability probe: who the caller is and what this instance allows. */
@@ -131,8 +131,14 @@ export type { MembersResponse } from "./gen";
 /** One membership row: who, at what level, added by whom and when. */
 export type { DomainMember } from "./gen";
 
-/** What a member may do on one private domain: `viewer`, `editor` or `manager`. */
+/** What a member may do on one private domain: `none`, `viewer`, `editor` or `manager`. */
 export type { MemberLevel } from "./gen";
+
+/**
+ * The Reflection level beside a knowledge level: `default` (as knowledge),
+ * `reader` or `contributor`. Only raises what the knowledge level gives.
+ */
+export type { ReflectionLevel } from "./gen";
 
 /** What `PUT /domains/{domain}/members/{principal}` takes. */
 export type { MemberBody } from "./gen";

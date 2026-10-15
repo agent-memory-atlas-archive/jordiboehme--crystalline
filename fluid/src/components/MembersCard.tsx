@@ -67,14 +67,23 @@ import {
   setMember,
   setOwner,
 } from "../api/members";
-import type { DomainMember, MemberLevel } from "../api/model";
+import type { DomainMember, MemberLevel, ReflectionLevel } from "../api/model";
 import { useAuth } from "../auth/AuthContext";
 import { formatDay } from "../format";
 import { DestructiveAction, READ_ONLY_REASON } from "./DestructiveAction";
 import { BUTTON, FIELD, Field } from "./primitives";
+import {
+  ReflectionLevelSelect,
+  raiseForNone,
+  reflectionWords,
+} from "./ReflectionLevelSelect";
 
-/** Every level a member can be invited at, or moved to. */
-const LEVELS: MemberLevel[] = ["viewer", "editor", "manager"];
+/**
+ * Every knowledge level a member can be invited at, or moved to, least to
+ * most. `none` sees no engram; the Reflection level beside it decides what
+ * such a member works on.
+ */
+const LEVELS: MemberLevel[] = ["none", "viewer", "editor", "manager"];
 
 /** What this caller may do here, derived from the one read every render makes. */
 interface MyStanding {
@@ -127,10 +136,12 @@ export function MembersCard({ domain }: { domain: string }) {
     mutationFn: ({
       principal,
       level,
+      reflection,
     }: {
       principal: string;
       level: MemberLevel;
-    }) => setMember(domain, principal, level),
+      reflection: ReflectionLevel;
+    }) => setMember(domain, principal, level, reflection),
     onSuccess: () => {
       setProblem(null);
       void invalidate();
@@ -144,10 +155,12 @@ export function MembersCard({ domain }: { domain: string }) {
     mutationFn: ({
       principal,
       level,
+      reflection,
     }: {
       principal: string;
       level: MemberLevel;
-    }) => setMember(domain, principal, level),
+      reflection: ReflectionLevel;
+    }) => setMember(domain, principal, level, reflection),
     onSuccess: () => {
       setProblem(null);
       void invalidate();
@@ -277,9 +290,9 @@ export function MembersCard({ domain }: { domain: string }) {
             removePending={remove.isPending}
             removeTarget={remove.variables}
             disabledReason={disabledReason}
-            onRelevel={(principal, level) => {
+            onRelevel={(principal, level, reflection) => {
               setProblem(null);
-              relevel.mutate({ principal, level });
+              relevel.mutate({ principal, level, reflection });
             }}
             onRemove={(principal) => {
               setProblem(null);
@@ -292,9 +305,9 @@ export function MembersCard({ domain }: { domain: string }) {
               isAdmin={capabilities.canAdminister}
               pending={invite.isPending}
               disabledReason={disabledReason}
-              onInvite={(principal, level) => {
+              onInvite={(principal, level, reflection) => {
                 setProblem(null);
-                return invite.mutateAsync({ principal, level });
+                return invite.mutateAsync({ principal, level, reflection });
               }}
             />
           )}
@@ -417,7 +430,11 @@ function MemberTable({
   removePending: boolean;
   removeTarget: string | undefined;
   disabledReason?: string | undefined;
-  onRelevel: (principal: string, level: MemberLevel) => void;
+  onRelevel: (
+    principal: string,
+    level: MemberLevel,
+    reflection: ReflectionLevel,
+  ) => void;
   onRemove: (principal: string) => void;
 }) {
   if (members.length === 0) {
@@ -438,6 +455,9 @@ function MemberTable({
             </th>
             <th scope="col" className="px-2 py-2">
               Level
+            </th>
+            <th scope="col" className="px-2 py-2">
+              Reflection
             </th>
             <th scope="col" className="px-2 py-2">
               Added
@@ -466,8 +486,8 @@ function MemberTable({
                   removePending && removeTarget === member.principal
                 }
                 disabledReason={disabledReason}
-                onRelevel={(level) => {
-                  onRelevel(member.principal, level);
+                onRelevel={(level, reflection) => {
+                  onRelevel(member.principal, level, reflection);
                 }}
                 onRemove={() => {
                   onRemove(member.principal);
@@ -499,7 +519,7 @@ function MemberRow({
   relevelPending: boolean;
   removePending: boolean;
   disabledReason?: string | undefined;
-  onRelevel: (level: MemberLevel) => void;
+  onRelevel: (level: MemberLevel, reflection: ReflectionLevel) => void;
   onRemove: () => void;
 }) {
   const selectId = useId();
@@ -538,7 +558,8 @@ function MemberRow({
                 if (disabledReason !== undefined) {
                   return;
                 }
-                onRelevel(event.target.value as MemberLevel);
+                const level = event.target.value as MemberLevel;
+                onRelevel(level, raiseForNone(level, member.reflection));
               }}
               className={`${FIELD} aria-disabled:cursor-default aria-disabled:opacity-50`}
             >
@@ -556,6 +577,21 @@ function MemberRow({
           </>
         ) : (
           member.level
+        )}
+      </td>
+      <td className="px-2 py-2">
+        {mayRelevel ? (
+          <ReflectionLevelSelect
+            label={`Reflection for ${member.principal}`}
+            knowledge={member.level}
+            value={member.reflection}
+            disabledReason={disabledReason}
+            onChange={(reflection) => {
+              onRelevel(member.level, reflection);
+            }}
+          />
+        ) : (
+          reflectionWords(member.level, member.reflection)
         )}
       </td>
       <td className="px-2 py-2 tabular-nums">{formatDay(member.added_at)}</td>
@@ -594,15 +630,21 @@ function InviteForm({
    * refusal leaves the typed name on screen to be fixed instead of thrown
    * away.
    */
-  onInvite: (principal: string, level: MemberLevel) => Promise<unknown>;
+  onInvite: (
+    principal: string,
+    level: MemberLevel,
+    reflection: ReflectionLevel,
+  ) => Promise<unknown>;
 }) {
   const assigning = ownerless && isAdmin;
   const [principal, setPrincipal] = useState("");
   const [level, setLevel] = useState<MemberLevel>(
     assigning ? "manager" : "viewer",
   );
+  const [reflection, setReflection] = useState<ReflectionLevel>("default");
   const nameField = useId();
   const levelField = useId();
+  const reflectionField = useId();
   const reasonId = useId();
   const disabled = pending || disabledReason !== undefined;
 
@@ -615,9 +657,10 @@ function InviteForm({
         if (trimmed === "" || disabled) {
           return;
         }
-        onInvite(trimmed, level)
+        onInvite(trimmed, level, raiseForNone(level, reflection))
           .then(() => {
             setPrincipal("");
+            setReflection("default");
           })
           .catch(() => {
             // Refused: the card above already shows the server's own words,
@@ -662,7 +705,9 @@ function InviteForm({
             if (disabledReason !== undefined) {
               return;
             }
-            setLevel(event.target.value as MemberLevel);
+            const next = event.target.value as MemberLevel;
+            setLevel(next);
+            setReflection((current) => raiseForNone(next, current));
           }}
           className={`${FIELD} aria-disabled:cursor-default aria-disabled:opacity-50`}
         >
@@ -672,6 +717,16 @@ function InviteForm({
             </option>
           ))}
         </select>
+      </Field>
+      <Field id={reflectionField} label="Reflection">
+        <ReflectionLevelSelect
+          id={reflectionField}
+          label="Reflection"
+          knowledge={level}
+          value={reflection}
+          disabledReason={disabledReason}
+          onChange={setReflection}
+        />
       </Field>
       <button
         type="submit"

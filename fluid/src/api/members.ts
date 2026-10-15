@@ -14,7 +14,7 @@
  */
 
 import { api, encodeSegment } from "./client";
-import type { MemberLevel, MembersResponse } from "./model";
+import type { MemberLevel, MembersResponse, ReflectionLevel } from "./model";
 
 /**
  * Whether two login names are the same account.
@@ -41,18 +41,20 @@ export async function fetchMembers(domain: string): Promise<MembersResponse> {
 /**
  * Invite an account to a private domain, or move it to a different level.
  * One verb for both, since a `PUT` states what the membership should be
- * rather than whether it existed before.
+ * rather than whether it existed before. Both axes travel together: the
+ * knowledge level and the Reflection level beside it.
  */
 export async function setMember(
   domain: string,
   principal: string,
   level: MemberLevel,
+  reflection: ReflectionLevel,
 ): Promise<void> {
   await api(
     `/domains/${encodeSegment(domain)}/members/${encodeSegment(principal)}`,
     {
       method: "PUT",
-      body: JSON.stringify({ level }),
+      body: JSON.stringify({ level, reflection }),
     },
   );
 }
