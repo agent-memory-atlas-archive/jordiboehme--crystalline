@@ -1,7 +1,7 @@
 import { screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "../api/client";
+import { ApiProblem, api } from "../api/client";
 import {
   answersFor,
   meResponse,
@@ -119,7 +119,7 @@ const REVIEW = {
   },
 };
 
-function serve(review: unknown = REVIEW) {
+function serve(review: unknown = REVIEW, status: Record<string, unknown> = {}) {
   apiMock.mockImplementation(
     answersFor({
       "/auth/me": () => meResponse({ user: userFixture() }),
@@ -134,13 +134,19 @@ function serve(review: unknown = REVIEW) {
         right: "curate",
         engrams_visible: true,
         pending_engrams: [],
+        ...status,
       }),
       "/domains/eng/reflection/tree": () => ({
         domain: "eng",
         pact: { path: "PACT.md", title: "PACT", exists: true, open_threads: 0 },
         nodes: [],
       }),
-      "/domains/eng/reflection/review": () => review,
+      "/domains/eng/reflection/review": () => {
+        if (review instanceof Error) {
+          throw review;
+        }
+        return review;
+      },
     }),
   );
 }
@@ -241,5 +247,45 @@ describe("the review screen", () => {
     const list = await screen.findByRole("list", { name: "Queue items" });
     expect(within(list).getByText("host_moved")).toBeVisible();
     expect(within(list).queryByRole("link")).toBeNull();
+  });
+
+  it("draws no source engram links or titles for a reader who cannot see engrams", async () => {
+    serve(REVIEW, { engrams_visible: false });
+    renderApp("/d/eng/reflection/review");
+    const queue = await screen.findByRole("region", { name: "Reflect queue" });
+    const list = await within(queue).findByRole("list", {
+      name: "Queue items",
+    });
+    expect(within(list).getByText("source_changed")).toBeVisible();
+    expect(
+      within(list).queryByRole("link", { name: "Deploy runbook" }),
+    ).toBeNull();
+    expect(queue.textContent).not.toContain("Deploy runbook");
+  });
+
+  it("shows the state notice instead of the review while the Reflection is off", async () => {
+    serve(REVIEW, { enabled: false, state: "off" });
+    renderApp("/d/eng/reflection/review");
+    expect(
+      await screen.findByText(/The Reflection is off for this domain/),
+    ).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Reflect queue" })).toBeNull();
+    expect(
+      apiMock.mock.calls.some(([path]) =>
+        String(path).endsWith("/reflection/review"),
+      ),
+    ).toBe(false);
+  });
+
+  it("shows the server's own sentence to a reader whose right is none", async () => {
+    serve(
+      new ApiProblem(403, "forbidden", "You may not read this Reflection."),
+      { right: "none" },
+    );
+    renderApp("/d/eng/reflection/review");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "You may not read this Reflection.",
+    );
+    expect(screen.queryByRole("region", { name: "Reflect queue" })).toBeNull();
   });
 });

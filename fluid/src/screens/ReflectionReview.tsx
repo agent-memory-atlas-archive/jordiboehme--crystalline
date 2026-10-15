@@ -101,6 +101,7 @@ export default function ReflectionReview(): ReactElement {
             <Queue
               domain={domain}
               items={review.data.queue.items}
+              engramsVisible={status.data?.engramsVisible === true}
               total={review.data.queue.total}
             />
           </section>
@@ -168,9 +169,12 @@ function Queue({
   domain,
   items,
   total,
+  engramsVisible,
 }: {
   domain: string;
   items: QueueItem[];
+  /** Source engrams are named only to a reader who may see engrams. */
+  engramsVisible: boolean;
   total: number;
 }): ReactElement {
   const shown = items.filter((item) => item.kind !== "review");
@@ -224,24 +228,26 @@ function Queue({
                 {stripIdLines(item.diff, true)}
               </pre>
             )}
-            {item.sources !== null && item.sources.length > 0 && (
-              <ul className="mt-1 flex flex-col gap-1">
-                {item.sources.map((source) => (
-                  <li
-                    key={source.permalink}
-                    className="flex items-center gap-2"
-                  >
-                    <Link
-                      to={engramRoute(domain, source.permalink)}
-                      className={LINK}
+            {engramsVisible &&
+              item.sources !== null &&
+              item.sources.length > 0 && (
+                <ul className="mt-1 flex flex-col gap-1">
+                  {item.sources.map((source) => (
+                    <li
+                      key={source.permalink}
+                      className="flex items-center gap-2"
                     >
-                      {source.title}
-                    </Link>
-                    {sourceChip(source.state)}
-                  </li>
-                ))}
-              </ul>
-            )}
+                      <Link
+                        to={engramRoute(domain, source.permalink)}
+                        className={LINK}
+                      >
+                        {source.title}
+                      </Link>
+                      {sourceChip(source.state)}
+                    </li>
+                  ))}
+                </ul>
+              )}
           </li>
         ))}
       </ul>
