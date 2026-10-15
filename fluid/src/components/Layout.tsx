@@ -87,6 +87,7 @@ import {
   storedLargeText,
   useLargeText,
 } from "../layoutText";
+import { lazyChunk } from "../lazyChunk";
 import type { LayoutText } from "../layoutText";
 import {
   LAYOUT_WIDTH_KEY,
@@ -116,7 +117,6 @@ import type { ThemePreference } from "../theme/context";
 import { CommandPalette } from "./CommandPalette";
 import { CreateDomainDialog } from "./CreateDomainDialog";
 import { CreateEngramDialog } from "./CreateEngramDialog";
-import { lazyChunk } from "../lazyChunk";
 import { DomainNav } from "./DomainNav";
 import { HelpOverlay } from "./HelpOverlay";
 import { JoinedDraftBar } from "./JoinedDraftBar";
@@ -1655,11 +1655,11 @@ function DomainSidebar({
           ) : (
             <>
               {/*
-                  A listing that failed is said here as it is in the flat mode.
-                  The switcher is drawn either way: it names the domain the
-                  reader is in from the address, so it works even when nothing
-                  could be listed to switch to.
-                */}
+                A listing that failed is said here as it is in the flat mode.
+                The switcher is drawn either way: it names the domain the
+                reader is in from the address, so it works even when nothing
+                could be listed to switch to.
+              */}
               {listing.error && <SidebarProblem error={listing.error} />}
               <DomainNav
                 domain={domain}
@@ -1706,7 +1706,9 @@ function DomainList({
     queryKey: REFLECTION_DOMAINS_KEY,
     queryFn: fetchReflectionDomains,
   });
-  const noReflections = reflections.data?.length === 0;
+  // A failed Reflection listing counts as none: the sentence is about what
+  // this list can show, and the failure is not worth hiding it for.
+  const noReflections = reflections.data?.length === 0 || reflections.isError;
   return (
     <>
       <h2 className="text-caption px-2 pb-2 font-semibold text-slate-500 dark:text-slate-400">

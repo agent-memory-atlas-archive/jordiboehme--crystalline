@@ -277,9 +277,9 @@ describe("the layout", () => {
     renderApp("/");
 
     const domains = await screen.findByRole("navigation", { name: "Domains" });
-    await waitFor(() => {
-      expect(apiMock).toHaveBeenCalledWith("/reflection/domains");
-    });
+    // Home draws the Reflection section from the same listing the sidebar
+    // reads, so once it is there the sentence's absence means something.
+    await screen.findByRole("region", { name: "Reflection" });
     expect(
       within(domains).queryByText(
         "No domains are registered on this instance yet.",

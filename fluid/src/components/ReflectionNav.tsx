@@ -19,12 +19,17 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { ReactElement } from "react";
 import { useState } from "react";
-import { Link } from "react-router";
+import { Link, useLocation } from "react-router";
 
 import { problemDetail } from "../api/client";
 import type { TreeNode } from "../api/reflection";
 import { fetchReflectionTree, reflectionTreeKey } from "../api/reflection";
-import { reflectionPageRoute, reflectionReviewRoute } from "../paths";
+import { plural } from "../format";
+import {
+  reflectionPageRoute,
+  reflectionReviewRoute,
+  reflectionRoute,
+} from "../paths";
 import { FOCUS_RING } from "./primitives";
 
 const INDENT_LEVELS = 6;
@@ -48,11 +53,16 @@ export function ReflectionNav({
     queryKey: reflectionTreeKey(domain),
     queryFn: () => fetchReflectionTree(domain),
   });
+  const home = useLocation().pathname === reflectionRoute(domain);
   return (
     <nav aria-label={`Reflection of ${domain}`} className="flex flex-col gap-2">
-      <p className="text-caption px-2 font-semibold text-slate-500 dark:text-slate-400">
+      <Link
+        to={reflectionRoute(domain)}
+        aria-current={home ? "page" : undefined}
+        className={`text-caption px-2 font-semibold text-slate-500 dark:text-slate-400 ${FOCUS_RING}`}
+      >
         {domain}
-      </p>
+      </Link>
       {tree.error && (
         <p className="rounded bg-red-50 px-2 py-1.5 text-sm text-red-800 dark:bg-red-950 dark:text-red-200">
           {problemDetail(tree.error)}
@@ -102,6 +112,18 @@ function Node({
   const [open, setOpen] = useState(
     () => node.kind === "folder" && holds(node.path, path),
   );
+  // Walking to a page under a shut folder opens the folders on its way; a
+  // folder the reader opened stays open.
+  const onTheWay = node.kind === "folder" && holds(node.path, path);
+  // Adjusted while rendering, the way React documents it for state that
+  // follows a prop, rather than in an effect.
+  const [wasOnTheWay, setWasOnTheWay] = useState(onTheWay);
+  if (onTheWay !== wasOnTheWay) {
+    setWasOnTheWay(onTheWay);
+    if (onTheWay) {
+      setOpen(true);
+    }
+  }
   if (node.kind === "reflection") {
     const current = node.path === path;
     return (
@@ -116,8 +138,14 @@ function Node({
         </Link>
         {/* Beside the link, so the link's name stays the page's title. */}
         {node.openThreads > 0 && (
-          <span className="px-2 text-xs text-slate-500 tabular-nums dark:text-slate-400">
-            {node.openThreads}
+          <span
+            title={plural(node.openThreads, "open thread", "open threads")}
+            className="px-2 text-xs text-slate-500 tabular-nums dark:text-slate-400"
+          >
+            <span aria-hidden="true">{node.openThreads}</span>
+            <span className="sr-only">
+              {plural(node.openThreads, "open thread", "open threads")}
+            </span>
           </span>
         )}
       </li>

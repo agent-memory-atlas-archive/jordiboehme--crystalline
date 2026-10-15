@@ -1,5 +1,7 @@
-import { screen, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter, useLocation, useNavigate } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
@@ -11,6 +13,7 @@ import {
   userFixture,
 } from "../test/harness";
 import { reflectionPathOf } from "../paths";
+import { ReflectionNav } from "./ReflectionNav";
 
 vi.setConfig({ testTimeout: 15000 });
 vi.mock("../api/client", async (importOriginal) => {
@@ -143,12 +146,16 @@ describe("the reflection tree", () => {
     // The tree arrives after the frame, so wait for the pact first.
     await within(nav).findByRole("link", { name: "How we write" });
     const links = within(nav).getAllByRole("link");
-    expect(links[0]).toHaveAccessibleName("How we write");
+    expect(links[0]).toHaveAccessibleName("eng");
+    expect(links[0]).toHaveAttribute("href", "/d/eng/reflection");
+    expect(links[0]).toHaveAttribute("aria-current", "page");
+    expect(links[1]).toHaveAccessibleName("How we write");
     expect(within(nav).getByRole("link", { name: "Top page" })).toHaveAttribute(
       "href",
       "/d/eng/reflection/top.md",
     );
-    expect(within(nav).getByText("2", { selector: "span" })).toBeVisible();
+    expect(within(nav).getByText("2 open threads")).toBeInTheDocument();
+    expect(within(nav).getByTitle("2 open threads")).toBeInTheDocument();
     expect(within(nav).getByRole("link", { name: "Review" })).toHaveAttribute(
       "href",
       "/d/eng/reflection/review",
@@ -169,6 +176,48 @@ describe("the reflection tree", () => {
     ).toBeVisible();
     expect(
       within(nav).getByRole("button", { name: "Expand l2" }),
+    ).toBeVisible();
+  });
+
+  it("opens the folders on the way when the reader walks to a page, and keeps the ones they opened", async () => {
+    serve();
+    const deep = `/d/eng/reflection/${Array.from({ length: 12 }, (_, i) => `l${String(i + 1)}`).join("/")}/bottom.md`;
+    function Walk() {
+      const navigate = useNavigate();
+      const { pathname } = useLocation();
+      return (
+        <>
+          <button type="button" onClick={() => void navigate(deep)}>
+            walk
+          </button>
+          <ReflectionNav
+            domain="eng"
+            path={
+              pathname === deep ? deep.slice("/d/eng/reflection/".length) : ""
+            }
+          />
+        </>
+      );
+    }
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/d/eng/reflection"]}>
+          <Walk />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const nav = await screen.findByRole("navigation", {
+      name: "Reflection of eng",
+    });
+    await userEvent.click(
+      await within(nav).findByRole("button", { name: "Expand l1" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "walk" }));
+    expect(
+      await within(nav).findByRole("button", { name: "Collapse l12" }),
+    ).toBeVisible();
+    expect(
+      within(nav).getByRole("button", { name: "Collapse l1" }),
     ).toBeVisible();
   });
 });

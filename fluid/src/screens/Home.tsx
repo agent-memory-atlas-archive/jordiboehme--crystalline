@@ -24,6 +24,7 @@ import {
   REFLECTION_DOMAINS_KEY,
   fetchReflectionDomains,
 } from "../api/reflectionDomains";
+import type { ReflectionDomain } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { CreateDomainDialog } from "../components/CreateDomainDialog";
 import { HomeElsewhere } from "../components/ReflectionModeSwitch";
@@ -133,18 +134,23 @@ export default function Home() {
         </ul>
       </section>
 
-      {reflectionOnly.length > 0 && (
+      {(reflectionOnly.length > 0 || reflections.error) && (
         <section aria-labelledby="home-reflection">
           <h2 id="home-reflection" className="mb-3 text-section">
             Reflection
           </h2>
+          {reflections.error && (
+            <p className="mb-3 text-sm text-red-800 dark:text-red-200">
+              {problemDetail(reflections.error)}
+            </p>
+          )}
           <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {reflectionOnly.map((row) => (
               <li
                 key={row.domain}
                 className="rounded border border-slate-200 p-3 dark:border-slate-800"
               >
-                {row.home === "elsewhere" ? (
+                {row.state === "elsewhere" ? (
                   <>
                     <p className="font-medium">{row.domain}</p>
                     <HomeElsewhere url={row.homeUrl} />
@@ -158,10 +164,7 @@ export default function Home() {
                       {row.domain}
                     </Link>
                     <p className="text-caption text-slate-500 dark:text-slate-400">
-                      {/* Pending or homeless: the Reflection home says why. */}
-                      {row.state === "on"
-                        ? plural(row.openThreads, "open thread", "open threads")
-                        : "Not open yet"}
+                      {reflectionLine(row)}
                     </p>
                   </>
                 )}
@@ -226,6 +229,21 @@ export default function Home() {
       </section>
     </div>
   );
+}
+
+/** What a Reflection-only row says under its name. */
+function reflectionLine(row: ReflectionDomain): string {
+  switch (row.state) {
+    case "on":
+      return plural(row.openThreads, "open thread", "open threads");
+    case "hosted_elsewhere":
+      return row.hostLabel !== null
+        ? `Served by another instance: ${row.hostLabel}`
+        : "Being renamed. It opens again when the rename is done.";
+    default:
+      // Pending or homeless: the Reflection home says why.
+      return "Not open yet";
+  }
 }
 
 /** One domain, as much as can be said about it from the listing and the feed. */

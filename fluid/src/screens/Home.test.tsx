@@ -282,6 +282,56 @@ describe("the home screen", () => {
     ).toBeNull();
   });
 
+  it("says what a Reflection hosted by another instance, or without a home, is doing", async () => {
+    serve({
+      "/domains": () => ({ behavior: [], domains: [] }),
+      "/reflection/domains": () => ({
+        domains: [
+          {
+            domain: "a",
+            state: "hosted_elsewhere",
+            host_label: "node-2",
+            right: "read",
+            engrams_visible: false,
+            home: null,
+            home_url: null,
+            open_threads: 0,
+          },
+          {
+            domain: "b",
+            state: "hosted_elsewhere",
+            host_label: null,
+            right: "read",
+            engrams_visible: false,
+            home: null,
+            home_url: null,
+            open_threads: 0,
+          },
+          {
+            domain: "c",
+            state: "homeless",
+            right: "read",
+            engrams_visible: false,
+            home: null,
+            home_url: null,
+            open_threads: 0,
+          },
+        ],
+      }),
+    });
+    renderApp("/");
+    const section = await screen.findByRole("region", { name: "Reflection" });
+    expect(
+      within(section).getByText("Served by another instance: node-2"),
+    ).toBeVisible();
+    expect(
+      within(section).getByText(
+        "Being renamed. It opens again when the rename is done.",
+      ),
+    ).toBeVisible();
+    expect(within(section).getAllByText("Not open yet")).toHaveLength(1);
+  });
+
   it("leaves a domain whose engrams the caller reads out of the Reflection section", async () => {
     serve({
       "/reflection/domains": () => ({
