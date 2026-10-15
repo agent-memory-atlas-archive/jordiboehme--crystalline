@@ -25,7 +25,12 @@ import type { ReactElement, ReactNode, RefObject } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { problemDetail } from "../api/client";
-import type { AnchorState, ReflectionDoc, ThreadView } from "../api/reflection";
+import type {
+  AnchorState,
+  ReflectionDoc,
+  SourceState,
+  ThreadView,
+} from "../api/reflection";
 import {
   fetchThreads,
   openThread,
@@ -47,7 +52,7 @@ import {
 } from "../reflectionQuotes";
 import type { SectionText } from "../reflectionText";
 import { TOP_SECTION, locateQuote } from "../reflectionText";
-import { BUTTON, FIELD, TOGGLE } from "./primitives";
+import { BUTTON, Chip, FIELD, TOGGLE } from "./primitives";
 
 const ALERT = "text-red-800 dark:text-red-200";
 
@@ -169,6 +174,21 @@ export function ThreadCard({
       {actions}
     </article>
   );
+}
+
+/** A source's state as a chip; a current source needs none. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function sourceChip(state: SourceState): ReactElement | null {
+  switch (state) {
+    case "current":
+      return null;
+    case "changed":
+      return <Chip variant="caution">changed</Chip>;
+    case "retired":
+      return <Chip variant="retired">retired</Chip>;
+    case "missing":
+      return <Chip variant="danger">missing</Chip>;
+  }
 }
 
 interface Listed {

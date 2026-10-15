@@ -21,7 +21,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router";
 
 import { ApiProblem, problemDetail } from "../api/client";
 import type { AssetResolver } from "../api/files";
-import type { SectionView, SourceState } from "../api/reflection";
+import type { SectionView } from "../api/reflection";
 import {
   changedVersions,
   deleteReflection,
@@ -48,8 +48,8 @@ import {
   useReflectionStatus,
 } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
-import { ReflectionThreads } from "../components/ReflectionThreads";
-import { BUTTON, Chip } from "../components/primitives";
+import { ReflectionThreads, sourceChip } from "../components/ReflectionThreads";
+import { BUTTON } from "../components/primitives";
 import { Skeleton } from "../components/Skeleton";
 import { engramRoute, reflectionEditRoute, reflectionRoute } from "../paths";
 import { assetRefsIn } from "../editor/imageFormat";
@@ -79,21 +79,6 @@ function removeFileText(name: string): string {
 
 const LINK =
   "text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400";
-
-/** A source's state as a chip; a current source needs none. */
-// eslint-disable-next-line react-refresh/only-export-components
-export function sourceChip(state: SourceState): ReactElement | null {
-  switch (state) {
-    case "current":
-      return null;
-    case "changed":
-      return <Chip variant="caution">changed</Chip>;
-    case "retired":
-      return <Chip variant="retired">retired</Chip>;
-    case "missing":
-      return <Chip variant="danger">missing</Chip>;
-  }
-}
 
 export default function ReflectionPage(): ReactElement {
   const { domain = "", "*": path = "" } = useParams();

@@ -103,6 +103,7 @@ const GrantedDraft = lazyChunk(() => import("./screens/GrantedDraft"));
  */
 const ReflectionHome = lazyChunk(() => import("./screens/ReflectionHome"));
 const ReflectionPage = lazyChunk(() => import("./screens/ReflectionPage"));
+const ReflectionReview = lazyChunk(() => import("./screens/ReflectionReview"));
 const ReflectionEditor = lazyChunk(() => import("./screens/ReflectionEditor"));
 
 /**
@@ -319,6 +320,14 @@ export function AppRoutes() {
             element={
               <LazyBoundary fallback={REFLECTION_FALLBACK}>
                 <ReflectionHome />
+              </LazyBoundary>
+            }
+          />
+          <Route
+            path="/d/:domain/reflection/review"
+            element={
+              <LazyBoundary fallback={REFLECTION_FALLBACK}>
+                <ReflectionReview />
               </LazyBoundary>
             }
           />
