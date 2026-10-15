@@ -315,4 +315,26 @@ describe("a reflection's images and files", () => {
       within(article).getAllByText(/This file is not in the Reflection/),
     ).toHaveLength(2);
   });
+
+  it("never lets a script or data address reach an href or a src", async () => {
+    servePage(
+      "welcome.md",
+      [
+        "[w](javascript:alert(1)//../../assets/x.png)",
+        "![i](javascript:alert(1)//../../assets/x.png)",
+        "[m](JaVaScRiPt:alert(1)//../../assets/x.png)",
+        "[v](vbscript:x//../../assets/x.png)",
+        "[d](data:text/html,x//../../assets/x.png)",
+        "<javascript:alert(1)//../../assets/x.png>",
+      ].join("\n\n"),
+    );
+    renderApp("/d/eng/reflection/welcome.md");
+    await screen.findByText("i");
+    const article = screen.getByRole("article");
+    const bad = /^\s*(javascript|vbscript|data):/i;
+    for (const el of article.querySelectorAll("[href], [src]")) {
+      expect(el.getAttribute("href") ?? "").not.toMatch(bad);
+      expect(el.getAttribute("src") ?? "").not.toMatch(bad);
+    }
+  });
 });

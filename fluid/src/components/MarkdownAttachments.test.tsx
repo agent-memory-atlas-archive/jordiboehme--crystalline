@@ -80,6 +80,16 @@ function placement(container: HTMLElement): HTMLElement {
 }
 
 describe("attachments in the reading view", () => {
+  it("shows only the alt text for an image whose address was dropped", async () => {
+    const { container } = await renderMarkdown(
+      "![Gone](CRYSTALLINE://eng/assets/x.png)",
+      DOMAIN,
+    );
+    expect(screen.getByText("Gone")).toBeVisible();
+    expect(container.querySelector("img")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
   it("draws a stored image from the files route", async () => {
     const { container } = await renderMarkdown(
       "![Shot](assets/2026/08/shot.png)",

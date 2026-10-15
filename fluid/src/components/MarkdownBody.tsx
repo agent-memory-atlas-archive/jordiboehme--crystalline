@@ -44,8 +44,7 @@ import {
   useState,
 } from "react";
 import type { ComponentProps, ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
-import { defaultUrlTransform } from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import { Link, useLocation, useNavigate } from "react-router";
@@ -599,7 +598,9 @@ const LINK_CLASSES =
  * hover, so nothing is fetched and nothing navigates.
  *
  * react-markdown's own URL transform has already dropped the protocols a link
- * may not carry (`javascript:` among them). What is left to decide is where it
+ * may not carry (`javascript:` among them). The one exception is a refused
+ * `crystalline://` target, which can arrive verbatim and is never put in an
+ * href. What is left to decide is where it
  * opens: a link out of the app leaves this tab alone and gets no handle on it,
  * while an anchor or an in-app path navigates in place.
  */
@@ -716,6 +717,12 @@ function MarkdownImage({
         </span>
       </span>
     );
+  }
+  // The URL transform dropped the target (an unknown protocol, say): there is
+  // nothing to fetch, so the alt text stands alone, with no picture and no
+  // full-window button.
+  if (written === "") {
+    return <span>{alt}</span>;
   }
   // Ours is rebuilt from the decoded path, which re-encodes exactly once;
   // anything else keeps the URL the renderer produced, escapes and all.
@@ -1101,11 +1108,17 @@ export default function MarkdownBody({
     [assets, domain],
   );
   // react-markdown drops a `crystalline:` address as an unknown protocol, and
-  // with it the target the resolver would refuse. Keep exactly the ones it
-  // refuses, so the words stay and the reason shows; nothing else changes.
+  // with it the target the resolver would refuse. Keep exactly those, and only
+  // when the address really is `crystalline://`: the refusal test reads a
+  // target by its shape, so `javascript:...//../../assets/x.png` counts as a
+  // refused attachment, and letting it through raw would make the sanitising
+  // boundary depend on how the renderers treat a refusal. Everything else,
+  // such a string included, goes through the default transform.
   const urlTransform = useMemo(
     () => (url: string) =>
-      resolver?.refused(url) == null ? defaultUrlTransform(url) : url,
+      url.startsWith("crystalline://") && resolver?.refused(url) != null
+        ? url
+        : defaultUrlTransform(url),
     [resolver],
   );
   const componentMap = useMemo(
