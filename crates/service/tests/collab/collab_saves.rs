@@ -2642,6 +2642,36 @@ async fn an_edit_that_switches_off_saves_and_closes_the_rooms_first() {
     assert_saved_then_closed(&tmp, &sessions, &mut joined).await;
 }
 
+/// An edit with a token of a MANIFEST stored with CRLF line endings closes
+/// the reflection rooms first too: the token is the stored bytes' checksum.
+#[tokio::test]
+async fn an_edit_with_a_token_of_a_crlf_manifest_saves_and_closes_the_rooms_first() {
+    let (tmp, engine, _scratch, sessions, mut joined) = a_typed_room_before_a_switch().await;
+    let manifest = tmp.path().join("eng/MANIFEST.md");
+    let crlf = std::fs::read_to_string(&manifest)
+        .unwrap()
+        .replace('\n', "\r\n");
+    std::fs::write(&manifest, &crlf).unwrap();
+    engine.sync(None).await.unwrap();
+    engine
+        .edit_engram(&crystalline_service::params::EditParams {
+            identifier: "manifest".into(),
+            domain: "eng".into(),
+            operation: "find_replace".into(),
+            find_text: Some("reflection: on".into()),
+            content: Some("reflection: off".into()),
+            expected_checksum: Some(crate::support::sha256_hex(crlf.as_bytes())),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.reflection_switch("eng"),
+        crystalline_core::ReflectionSwitch::Off
+    );
+    assert_saved_then_closed(&tmp, &sessions, &mut joined).await;
+}
+
 /// The MANIFEST editor's save closes the reflection rooms first.
 #[tokio::test]
 async fn a_manifest_editor_save_that_switches_off_saves_and_closes_the_rooms_first() {

@@ -241,12 +241,14 @@ impl Engine {
             && overlay.is_none()
             && self.live_text_at(&desc, &view).await.is_none()
         {
-            let current = view.text_at(&source, &desc).await?.unwrap_or_default();
-            let current = crystalline_core::to_lf(&current).into_owned();
+            // The token is the stored bytes' checksum, as the write's own
+            // compare reads it; the edit runs over the LF text, as it does.
+            let raw = view.text_at(&source, &desc).await?.unwrap_or_default();
             let fresh = p
                 .expected_checksum
                 .as_deref()
-                .is_none_or(|expected| sha256_hex(current.as_bytes()) == expected);
+                .is_none_or(|expected| sha256_hex(raw.as_bytes()) == expected);
+            let current = crystalline_core::to_lf(&raw).into_owned();
             if fresh
                 && let Ok((after, _)) = self.apply_edit(
                     &current,

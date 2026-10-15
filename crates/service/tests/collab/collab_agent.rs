@@ -2093,8 +2093,14 @@ fn no_engine_function_composes_into_a_room_under_a_file_write_lock() {
     /// read-modify-write, so both close the same cycle against the room's
     /// saver; watching only the spelling that says `write_lock` would leave
     /// every overlay arm unwatched. `lock_file` is the reflection pages'
-    /// spelling of the same lock.
-    const LOCK_NEEDLES: [&str; 3] = [".write_lock(", ".draft_lock(", ".lock_file("];
+    /// spelling of the same lock, and `write_checked` takes a file's lock and
+    /// hands it back for its caller to hold across the reindex.
+    const LOCK_NEEDLES: [&str; 4] = [
+        ".write_lock(",
+        ".draft_lock(",
+        ".lock_file(",
+        ".write_checked(",
+    ];
 
     // Per function, the first line that takes a per-path write lock and the
     // first that makes a room call. A comment mentioning either is not a call,

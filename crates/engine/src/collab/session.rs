@@ -2196,10 +2196,14 @@ impl CollabSession {
                     state.permalink
                 );
                 if self.merge_external(state, theirs, detail).await {
-                    // A merged MANIFEST that switches the Reflection off is
-                    // left to the next tick, which closes the reflection rooms
-                    // with this guard dropped (see `due_save`): the guard is
-                    // held here, and the close takes the registry.
+                    // Defensive, and not reached today: the probe runs only
+                    // while the room's text is the saved text, so a merge here
+                    // is the file's own text, which does not switch anything.
+                    // Should that change, a merged MANIFEST that switches the
+                    // Reflection off is left to the next tick, which closes the
+                    // reflection rooms with this guard dropped (see
+                    // `due_save`): the guard is held here, and the close takes
+                    // the registry.
                     if self.switches_reflection_off_locked(state) {
                         state.flush_requested = true;
                         return None;
