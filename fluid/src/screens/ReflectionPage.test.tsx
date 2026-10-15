@@ -198,4 +198,62 @@ describe("the reflection page", () => {
     ).toBeVisible();
     expect(screen.getByText("No page at guides/gone.md in eng.")).toBeVisible();
   });
+
+  it("keeps two sections without ids and with one heading apart", async () => {
+    const md = "# T\n\n## Same\n\nfirst body\n\n## Same\n\nsecond body\n";
+    serve("edit", false, {
+      "/domains/eng/reflections/guides/deploying.md": () =>
+        doc({
+          markdown: md,
+          sections: [
+            { id: null, heading: "Same", line: 3, changed: false },
+            { id: null, heading: "Same", line: 7, changed: false },
+          ],
+        }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    expect(await screen.findByText("first body")).toBeVisible();
+    expect(screen.getByText("second body")).toBeVisible();
+    const ids = [
+      ...screen.getByRole("article").querySelectorAll("section"),
+    ].map((s) => s.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("shows no sources to a reader without engrams even when the server sends them", async () => {
+    serve("edit", false, {
+      "/domains/eng/reflections/guides/deploying.md": () => doc(),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    expect(await screen.findByText("Deploys run at night.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /^Sources for/ })).toBeNull();
+  });
+
+  it("points the toggle at a list that exists while closed", async () => {
+    serve("curate", true);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const toggle = await screen.findByRole("button", {
+      name: "Sources for Night deploys",
+    });
+    const id = toggle.getAttribute("aria-controls") as string;
+    expect(document.getElementById(id)).toHaveAttribute("hidden");
+  });
+
+  it("names a failed read and links back to the Reflection", async () => {
+    serve("edit", false, {
+      "/domains/eng/reflections/guides/deploying.md": () => {
+        throw new ApiProblem(500, "boom", "the server broke");
+      },
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    expect(
+      await screen.findByRole("heading", {
+        name: "The page could not be read",
+      }),
+    ).toBeVisible();
+    expect(screen.getByText("the server broke")).toBeVisible();
+    expect(
+      screen.getByRole("link", { name: "See the Reflection of eng" }),
+    ).toBeVisible();
+  });
 });

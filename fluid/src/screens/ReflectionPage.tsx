@@ -71,17 +71,26 @@ export default function ReflectionPage(): ReactElement {
   if (status.data.state !== "on") {
     return <ReflectionStateNotice status={status.data} />;
   }
-  return <PageBody domain={domain} path={path} right={status.data.right} />;
+  return (
+    <PageBody
+      domain={domain}
+      path={path}
+      right={status.data.right}
+      engramsVisible={status.data.engramsVisible}
+    />
+  );
 }
 
 function PageBody({
   domain,
   path,
   right,
+  engramsVisible,
 }: {
   domain: string;
   path: string;
   right: ReflectionRight;
+  engramsVisible: boolean;
 }): ReactElement {
   const doc = useQuery({
     queryKey: reflectionDocKey(domain, path),
@@ -104,22 +113,24 @@ function PageBody({
       ?.scrollIntoView({ block: "start" });
   }, [doc.data, hash]);
 
-  if (doc.error instanceof ApiProblem && doc.error.status === 404) {
+  if (doc.error) {
+    const missing = doc.error instanceof ApiProblem && doc.error.status === 404;
     return (
       <div className="flex flex-col items-start gap-3">
-        <h1 className="text-display">Page not found</h1>
-        <p className="text-sm">{`No page at ${path} in ${domain}.`}</p>
+        <h1 className="text-display">
+          {missing ? "Page not found" : "The page could not be read"}
+        </h1>
+        {missing ? (
+          <p className="text-sm">{`No page at ${path} in ${domain}.`}</p>
+        ) : (
+          <p role="alert" className="text-sm text-red-800 dark:text-red-200">
+            {problemDetail(doc.error)}
+          </p>
+        )}
         <Link to={reflectionRoute(domain)} className={`text-sm ${LINK}`}>
           {`See the Reflection of ${domain}`}
         </Link>
       </div>
-    );
-  }
-  if (doc.error) {
-    return (
-      <p role="alert" className="text-sm text-red-800 dark:text-red-200">
-        {problemDetail(doc.error)}
-      </p>
     );
   }
   if (!doc.data) {
@@ -163,11 +174,13 @@ function PageBody({
       </header>
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <article ref={articleRef} className="flex flex-col gap-4">
-          {sections.map((section) => (
+          {sections.map((section, index) => (
             <PageSection
-              key={section.id ?? section.heading}
+              key={section.id ?? `h${index}:${section.heading}`}
               domain={domain}
+              index={index}
               section={section}
+              engramsVisible={engramsVisible}
               view={
                 page.sections.find(
                   (s) => s.id === section.id && s.heading === section.heading,
@@ -183,18 +196,26 @@ function PageBody({
 
 function PageSection({
   domain,
+  index,
   section,
+  engramsVisible,
   view,
 }: {
   /** For the source links only; the rendered body takes no domain (see above). */
   domain: string;
+  /** Position on the page: makes the DOM id of an id-less section unique. */
+  index: number;
   section: SectionText;
+  engramsVisible: boolean;
   view: SectionView | null;
 }): ReactElement {
   const key = section.id ?? section.heading;
+  // A section without an id yet has no stable address; its position keeps
+  // two same-named headings apart.
+  const domId = section.id === null ? `s-h${index}` : `s-${section.id}`;
   return (
     <section
-      id={`s-${key}`}
+      id={domId}
       {...{ [SECTION_ATTR]: key }}
       className="flex flex-col gap-1"
     >
@@ -203,7 +224,8 @@ function PageSection({
         files route. B9-3 passes the Reflection's own asset resolver here.
       */}
       <Markdown source={section.text} sourceSpans />
-      {view?.sources !== null &&
+      {engramsVisible &&
+        view?.sources !== null &&
         view?.sources !== undefined &&
         view.sources.length > 0 && (
           <Sources domain={domain} heading={section.heading} view={view} />
@@ -237,18 +259,16 @@ function Sources({
       >
         Sources
       </button>
-      {open && (
-        <ul id={panel} className="mt-1 flex flex-col gap-1 pl-2">
-          {(view.sources ?? []).map((source) => (
-            <li key={source.permalink} className="flex items-center gap-2">
-              <Link to={engramRoute(domain, source.permalink)} className={LINK}>
-                {source.title}
-              </Link>
-              {sourceChip(source.state)}
-            </li>
-          ))}
-        </ul>
-      )}
+      <ul id={panel} hidden={!open} className="mt-1 flex flex-col gap-1 pl-2">
+        {(view.sources ?? []).map((source) => (
+          <li key={source.permalink} className="flex items-center gap-2">
+            <Link to={engramRoute(domain, source.permalink)} className={LINK}>
+              {source.title}
+            </Link>
+            {sourceChip(source.state)}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
