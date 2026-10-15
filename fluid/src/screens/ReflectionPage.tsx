@@ -81,13 +81,16 @@ const LINK =
   "text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400";
 
 /**
- * Whether the text before the first `##` holds the page's own `# Title`
- * line. Not only the first line: an image or a paragraph may stand above it
- * (an attach with the cursor at the top puts one there). A `#` line inside a
- * code fence is code, not a title.
+ * Whether the text before the first `##` holds the page's own title: a
+ * `# Title` line, or a line of text underlined with `=`. Not only the first
+ * line: an image or a paragraph may stand above it. A line inside a code
+ * fence is code, not a title, and so is everything after a fence that is
+ * never closed.
  */
 function hasOwnTitle(intro: string): boolean {
   let fence: string | null = null;
+  // Whether the line before is text an `=` line would turn into a title.
+  let text = false;
   for (const line of intro.split("\n")) {
     const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
     if (fence !== null) {
@@ -98,10 +101,17 @@ function hasOwnTitle(intro: string): boolean {
       ) {
         fence = null;
       }
-    } else if (marker !== undefined) {
+      continue;
+    }
+    if (marker !== undefined) {
       fence = marker;
+      text = false;
     } else if (/^ {0,3}#[ \t]/.test(line)) {
       return true;
+    } else if (text && /^ {0,3}=+[ \t]*$/.test(line)) {
+      return true;
+    } else {
+      text = line.trim() !== "" && !/^ {0,3}#{1,6}([ \t]|$)/.test(line);
     }
   }
   return false;

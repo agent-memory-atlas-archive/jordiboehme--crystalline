@@ -149,6 +149,47 @@ describe("the reflection page", () => {
     ).toBeVisible();
   });
 
+  /** The page with its `# Deploying` line written as `intro` instead. */
+  function serveIntro(intro: string) {
+    serve("curate", true, {
+      "/domains/eng/reflections/guides/deploying.md": () =>
+        doc({ markdown: MARKDOWN.replace("\n# Deploying\n", `\n${intro}\n`) }),
+    });
+  }
+
+  async function titles(): Promise<HTMLElement[]> {
+    await within(await screen.findByRole("article")).findByText(
+      "Deploys run at night.",
+    );
+    return screen.getAllByRole("heading", { level: 1 });
+  }
+
+  it("takes a title underlined with = as the page's own", async () => {
+    serveIntro("Deploying\n=========");
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const h1 = await titles();
+    expect(h1).toHaveLength(1);
+    expect(h1[0]).toHaveTextContent("Deploying");
+    expect(h1[0]?.closest("article")).not.toBeNull();
+  });
+
+  it("draws the header title when a # line is only in a tilde fence", async () => {
+    serveIntro("~~~\n# not a title\n~~~");
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const h1 = await titles();
+    expect(h1).toHaveLength(1);
+    expect(h1[0]).toHaveTextContent("Deploying");
+    expect(h1[0]?.closest("article")).toBeNull();
+  });
+
+  it("draws the header title when a fence is never closed", async () => {
+    serveIntro("```\n# not a title\nDeploying\n===");
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const h1 = await titles();
+    expect(h1).toHaveLength(1);
+    expect(h1[0]?.closest("article")).toBeNull();
+  });
+
   it("jumps from a section to its source engrams for a reader of engrams", async () => {
     serve("curate", true);
     renderApp("/d/eng/reflection/guides/deploying.md");
