@@ -25,11 +25,17 @@ import {
   REFLECTION_SEARCH_MODES,
   fetchReflectionTree,
   readReflectionSearchMode,
+  reflectionKey,
   reflectionSearchKey,
   reflectionTreeKey,
+  saveReflection,
   searchReflections,
 } from "../api/reflection";
-import { REFLECTION_DOMAINS_KEY } from "../api/reflectionDomains";
+import {
+  PACT_PATH,
+  REFLECTION_DOMAINS_KEY,
+  atLeast,
+} from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import {
   DestructiveAction,
@@ -44,6 +50,7 @@ import { BUTTON, FIELD } from "../components/primitives";
 import { Skeleton } from "../components/Skeleton";
 import { plural } from "../format";
 import {
+  reflectionEditRoute,
   reflectionPageRoute,
   reflectionReviewRoute,
   reflectionSearchRoute,
@@ -107,7 +114,9 @@ export default function ReflectionHome(): ReactElement {
         </div>
         <ReflectionStateNotice status={s} />
       </header>
-      {s.state === "on" && <OnHome domain={domain} />}
+      {s.state === "on" && (
+        <OnHome domain={domain} mayWritePact={atLeast(s.right, "curate")} />
+      )}
       {/* In every state, not only while it is on: a member must be able to
           leave a domain whose Reflection is pending or paused too. */}
       {s.member && !s.engramsVisible && <LeaveDomain domain={domain} />}
@@ -115,7 +124,13 @@ export default function ReflectionHome(): ReactElement {
   );
 }
 
-function OnHome({ domain }: { domain: string }): ReactElement {
+function OnHome({
+  domain,
+  mayWritePact,
+}: {
+  domain: string;
+  mayWritePact: boolean;
+}): ReactElement {
   const tree = useQuery({
     queryKey: reflectionTreeKey(domain),
     queryFn: () => fetchReflectionTree(domain),
@@ -136,12 +151,18 @@ function OnHome({ domain }: { domain: string }): ReactElement {
             How this domain is written
           </h2>
           <p className="text-sm">
-            <Link
-              to={reflectionPageRoute(domain, tree.data.pact.path)}
-              className={LINK}
-            >
-              {tree.data.pact.exists ? tree.data.pact.title : "Write the pact"}
-            </Link>
+            {tree.data.pact.exists ? (
+              <Link
+                to={reflectionPageRoute(domain, tree.data.pact.path)}
+                className={LINK}
+              >
+                {tree.data.pact.title}
+              </Link>
+            ) : mayWritePact ? (
+              <WritePact domain={domain} />
+            ) : (
+              "No pact is written yet."
+            )}
           </p>
           <p className="text-sm">
             <Link to={reflectionReviewRoute(domain)} className={LINK}>
@@ -151,6 +172,45 @@ function OnHome({ domain }: { domain: string }): ReactElement {
         </section>
       )}
       <SearchSection domain={domain} />
+    </>
+  );
+}
+
+/**
+ * PACT.md does not exist yet: create it with a heading and open it in the
+ * editor. A create never overwrites, so a pact written meanwhile by somebody
+ * else is refused in the server's words.
+ */
+function WritePact({ domain }: { domain: string }): ReactElement {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const write = useMutation({
+    mutationFn: () =>
+      saveReflection(domain, PACT_PATH, `# How we write about ${domain}\n`, {
+        create: true,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: reflectionKey(domain) });
+      void navigate(reflectionEditRoute(domain, PACT_PATH));
+    },
+  });
+  return (
+    <>
+      <button
+        type="button"
+        disabled={write.isPending}
+        onClick={() => {
+          write.mutate();
+        }}
+        className={BUTTON.secondary}
+      >
+        Write the pact
+      </button>
+      {write.error && (
+        <span role="alert" className="ml-2 text-red-800 dark:text-red-200">
+          {problemDetail(write.error)}
+        </span>
+      )}
     </>
   );
 }

@@ -1,0 +1,333 @@
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { ApiProblem, api } from "../api/client";
+import type { Answer } from "../test/harness";
+import {
+  answersFor,
+  meResponse,
+  renderApp,
+  userFixture,
+} from "../test/harness";
+import { newPagePath } from "./NewReflectionDialog";
+
+vi.setConfig({ testTimeout: 15000 });
+vi.mock("../api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/client")>();
+  return { ...actual, api: vi.fn(), setCsrfToken: vi.fn() };
+});
+const apiMock = vi.mocked(api);
+
+function serve(right: string, routes: Record<string, Answer> = {}) {
+  apiMock.mockImplementation(
+    answersFor({
+      "/auth/me": () =>
+        meResponse({ user: userFixture({ name: "ann", role: "viewer" }) }),
+      "/domains": () => ({ behavior: [], domains: [] }),
+      "/reflection/domains": () => ({ domains: [] }),
+      "/domains/eng/reflection": () => ({
+        domain: "eng",
+        enabled: true,
+        state: "on",
+        home: "local",
+        home_url: null,
+        right,
+        engrams_visible: false,
+        pending_engrams: [],
+      }),
+      "/domains/eng/reflection/tree": () => ({
+        domain: "eng",
+        pact: { path: "PACT.md", title: "PACT", exists: true, open_threads: 0 },
+        nodes: [
+          {
+            kind: "reflection",
+            name: "a.md",
+            path: "guides/a.md",
+            title: "A",
+            open_threads: 0,
+            sections: 1,
+          },
+        ],
+      }),
+      "/domains/eng/reflections/guides/a.md": () => ({
+        domain: "eng",
+        path: "guides/a.md",
+        title: "A",
+        markdown: "# A\n",
+        checksum: "c1",
+        sections: [],
+        threads: [],
+      }),
+      "/domains/eng/reflections/PACT.md": () => ({
+        domain: "eng",
+        path: "PACT.md",
+        title: "PACT",
+        markdown: "# PACT\n",
+        checksum: "c2",
+        sections: [],
+        threads: [],
+      }),
+      ...routes,
+    }),
+  );
+}
+
+function body(path: string, method: string): unknown {
+  const call = apiMock.mock.calls.find(
+    ([sent, init]) => sent === path && init?.method === method,
+  );
+  return call ? (JSON.parse(call[1]?.body as string) as unknown) : undefined;
+}
+
+beforeEach(() => {
+  apiMock.mockReset();
+});
+
+describe("newPagePath", () => {
+  it("names a page after its title, in the folder given", () => {
+    expect(newPagePath("guides", "Night Deploys")).toBe(
+      "guides/night-deploys.md",
+    );
+    expect(newPagePath("", "Getting started!")).toBe("getting-started.md");
+    expect(newPagePath("guides", "  ")).toBe("");
+  });
+});
+
+describe("creating, moving and deleting pages", () => {
+  it("creates a page without ever overwriting one, and opens it in the editor", async () => {
+    serve("edit", {
+      "/domains/eng/reflections/guides/night-deploys.md": (_p, init) =>
+        init?.method === "PUT"
+          ? { checksum: "n", created: true, ids_assigned: [] }
+          : {
+              domain: "eng",
+              path: "guides/night-deploys.md",
+              title: "Night Deploys",
+              markdown: "# Night Deploys\n",
+              checksum: "n",
+              sections: [],
+              threads: [],
+            },
+    });
+    renderApp("/d/eng/reflection");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "New page" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "New page" });
+    await userEvent.type(
+      within(dialog).getByRole("textbox", { name: "Folder" }),
+      "guides",
+    );
+    await userEvent.type(
+      within(dialog).getByRole("textbox", { name: "Title" }),
+      "Night Deploys",
+    );
+    expect(
+      within(dialog).getByText(
+        "The page will be saved as guides/night-deploys.md.",
+      ),
+    ).toBeVisible();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Create page" }),
+    );
+    await waitFor(() => {
+      expect(
+        body("/domains/eng/reflections/guides/night-deploys.md", "PUT"),
+      ).toEqual({
+        markdown: "# Night Deploys\n",
+        create: true,
+      });
+    });
+    // The editor's own screen, whatever the room does in jsdom: it starts on
+    // the connecting skeleton.
+    expect(
+      await screen.findByRole("status", { name: "Connecting the session" }),
+    ).toBeVisible();
+  });
+
+  it("shows the server's words when the path is taken", async () => {
+    serve("edit", {
+      "/domains/eng/reflections/guides/a.md": (_p, init) => {
+        if (init?.method === "PUT") {
+          throw new ApiProblem(
+            409,
+            "conflict",
+            "a reflection already lives at 'guides/a.md'",
+          );
+        }
+        return {
+          domain: "eng",
+          path: "guides/a.md",
+          title: "A",
+          markdown: "# A\n",
+          checksum: "c1",
+          sections: [],
+          threads: [],
+        };
+      },
+    });
+    renderApp("/d/eng/reflection");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "New page" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "New page" });
+    await userEvent.type(
+      within(dialog).getByRole("textbox", { name: "Folder" }),
+      "guides",
+    );
+    await userEvent.type(
+      within(dialog).getByRole("textbox", { name: "Title" }),
+      "A",
+    );
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Create page" }),
+    );
+    expect(
+      await within(dialog).findByText(
+        "a reflection already lives at 'guides/a.md'",
+      ),
+    ).toBeVisible();
+  });
+
+  it("moves a page and follows it, and says when somebody is editing it", async () => {
+    let refuse = true;
+    serve("edit", {
+      "/domains/eng/reflection/move": () => {
+        if (refuse) {
+          throw new ApiProblem(
+            409,
+            "conflict",
+            "somebody is editing 'guides/a.md'; try again once the page is closed",
+          );
+        }
+        return {
+          from: "guides/a.md",
+          to: "howto/a.md",
+          links_rewritten: 1,
+          threads_moved: true,
+        };
+      },
+      "/domains/eng/reflections/howto/a.md": () => ({
+        domain: "eng",
+        path: "howto/a.md",
+        title: "A",
+        markdown: "# A\n",
+        checksum: "c1",
+        sections: [],
+        threads: [],
+      }),
+    });
+    renderApp("/d/eng/reflection/guides/a.md");
+    await userEvent.click(await screen.findByRole("button", { name: "Move" }));
+    const dialog = await screen.findByRole("dialog", { name: "Move A" });
+    const field = within(dialog).getByRole("textbox", { name: "New path" });
+    await userEvent.clear(field);
+    await userEvent.type(field, "howto/a.md");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Move page" }),
+    );
+    expect(
+      await within(dialog).findByText(
+        "somebody is editing 'guides/a.md'; try again once the page is closed",
+      ),
+    ).toBeVisible();
+    refuse = false;
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Move page" }),
+    );
+    await waitFor(() => {
+      expect(body("/domains/eng/reflection/move", "POST")).toEqual({
+        from: "guides/a.md",
+        to: "howto/a.md",
+      });
+    });
+    expect(
+      await screen.findByText("/ howto/a.md", { exact: false }),
+    ).toBeVisible();
+  });
+
+  it("lists the pages a move could not relink", async () => {
+    serve("edit", {
+      "/domains/eng/reflection/move": () => ({
+        from: "guides/a.md",
+        to: "howto/a.md",
+        links_rewritten: 0,
+        threads_moved: true,
+        links_failed: [{ path: "guides/b.md", reason: "it is open in a room" }],
+      }),
+      "/domains/eng/reflections/howto/a.md": () => ({
+        domain: "eng",
+        path: "howto/a.md",
+        title: "A",
+        markdown: "# A\n",
+        checksum: "c1",
+        sections: [],
+        threads: [],
+      }),
+    });
+    renderApp("/d/eng/reflection/guides/a.md");
+    await userEvent.click(await screen.findByRole("button", { name: "Move" }));
+    const dialog = await screen.findByRole("dialog", { name: "Move A" });
+    const field = within(dialog).getByRole("textbox", { name: "New path" });
+    await userEvent.clear(field);
+    await userEvent.type(field, "howto/a.md");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Move page" }),
+    );
+    expect(await within(dialog).findByText("guides/b.md")).toBeVisible();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Close" }),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("deletes a page after a second press", async () => {
+    const deleted = vi.fn(() => undefined);
+    serve("edit", {
+      "/domains/eng/reflections/guides/a.md": (_p, init) =>
+        init?.method === "DELETE"
+          ? deleted()
+          : {
+              domain: "eng",
+              path: "guides/a.md",
+              title: "A",
+              markdown: "# A\n",
+              checksum: "c1",
+              sections: [],
+              threads: [],
+            },
+    });
+    renderApp("/d/eng/reflection/guides/a.md");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Delete" }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Confirm delete" }),
+    );
+    await waitFor(() => {
+      expect(deleted).toHaveBeenCalledTimes(1);
+    });
+    // Back on the Reflection home.
+    expect(
+      await screen.findByRole("heading", { name: "Search", level: 2 }),
+    ).toBeVisible();
+  });
+
+  it("never offers to move or delete PACT.md, and offers none of the three to a commenter", async () => {
+    serve("curate");
+    renderApp("/d/eng/reflection/PACT.md");
+    await screen.findByRole("link", { name: "Edit" });
+    expect(screen.queryByRole("button", { name: "Move" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+  });
+
+  it("offers a commenter no New page, Move or Delete", async () => {
+    serve("read");
+    renderApp("/d/eng/reflection/guides/a.md");
+    await screen.findByRole("heading", { name: "A" });
+    expect(screen.queryByRole("button", { name: "New page" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Move" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+  });
+});

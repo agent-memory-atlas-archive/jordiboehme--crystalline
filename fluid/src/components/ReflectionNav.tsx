@@ -24,13 +24,23 @@ import { Link, useLocation } from "react-router";
 import { problemDetail } from "../api/client";
 import type { TreeNode } from "../api/reflection";
 import { fetchReflectionTree, reflectionTreeKey } from "../api/reflection";
+import { atLeast } from "../api/reflectionDomains";
+import { lazyChunk } from "../lazyChunk";
 import { plural } from "../format";
 import {
   reflectionPageRoute,
   reflectionReviewRoute,
   reflectionRoute,
 } from "../paths";
-import { FOCUS_RING } from "./primitives";
+import { LazyBoundary } from "./LazyBoundary";
+import { useReflectionStatus } from "./ReflectionModeSwitch";
+import { BUTTON, FOCUS_RING } from "./primitives";
+
+const NewReflectionDialog = lazyChunk(() =>
+  import("./NewReflectionDialog").then((m) => ({
+    default: m.NewReflectionDialog,
+  })),
+);
 
 const INDENT_LEVELS = 6;
 
@@ -54,6 +64,10 @@ export function ReflectionNav({
     queryFn: () => fetchReflectionTree(domain),
   });
   const home = useLocation().pathname === reflectionRoute(domain);
+  const status = useReflectionStatus(domain);
+  const mayEdit =
+    status.data !== undefined && atLeast(status.data.right, "edit");
+  const [creating, setCreating] = useState(false);
   return (
     <nav aria-label={`Reflection of ${domain}`} className="flex flex-col gap-2">
       <Link
@@ -94,6 +108,30 @@ export function ReflectionNav({
       <Link to={reflectionReviewRoute(domain)} className={ROW}>
         Review
       </Link>
+      {mayEdit && (
+        <button
+          type="button"
+          onClick={() => {
+            setCreating(true);
+          }}
+          className={`${BUTTON.secondary} w-full`}
+        >
+          New page
+        </button>
+      )}
+      {creating && (
+        <LazyBoundary fallback={null}>
+          <NewReflectionDialog
+            domain={domain}
+            folder={
+              path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ""
+            }
+            onClose={() => {
+              setCreating(false);
+            }}
+          />
+        </LazyBoundary>
+      )}
     </nav>
   );
 }

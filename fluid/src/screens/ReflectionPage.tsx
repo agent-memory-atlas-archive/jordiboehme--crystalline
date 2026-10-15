@@ -14,21 +14,25 @@
  * contributor: the server leaves the field out, and so does this page.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useParams } from "react-router";
+import { Link, useLocation, useNavigate, useParams } from "react-router";
 
 import { ApiProblem, problemDetail } from "../api/client";
 import type { AssetResolver } from "../api/files";
 import type { SectionView, SourceState } from "../api/reflection";
 import {
+  deleteReflection,
   fetchReflection,
   reflectionAssetHome,
   reflectionDocKey,
+  reflectionKey,
 } from "../api/reflection";
 import type { ReflectionRight } from "../api/reflectionDomains";
-import { mayEditPage } from "../api/reflectionDomains";
+import { PACT_PATH, atLeast, mayEditPage } from "../api/reflectionDomains";
+import { DestructiveAction } from "../components/DestructiveAction";
+import { LazyBoundary } from "../components/LazyBoundary";
 import { Markdown } from "../components/Markdown";
 import {
   ReflectionModeSwitch,
@@ -39,9 +43,16 @@ import { ReflectionThreads } from "../components/ReflectionThreads";
 import { BUTTON, Chip } from "../components/primitives";
 import { Skeleton } from "../components/Skeleton";
 import { engramRoute, reflectionEditRoute, reflectionRoute } from "../paths";
+import { lazyChunk } from "../lazyChunk";
 import { SECTION_ATTR } from "../reflectionQuotes";
 import type { SectionText } from "../reflectionText";
 import { sectionTexts } from "../reflectionText";
+
+const MoveReflectionDialog = lazyChunk(() =>
+  import("../components/MoveReflectionDialog").then((m) => ({
+    default: m.MoveReflectionDialog,
+  })),
+);
 
 const LINK =
   "text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400";
@@ -64,6 +75,8 @@ export function sourceChip(state: SourceState): ReactElement | null {
 export default function ReflectionPage(): ReactElement {
   const { domain = "", "*": path = "" } = useParams();
   const status = useReflectionStatus(domain);
+  // The title of the page the move dialog is open for, or null while shut.
+  const [moving, setMoving] = useState<string | null>(null);
   if (status.isPending) {
     return <Skeleton label="Loading the page" rows={6} />;
   }
@@ -78,12 +91,32 @@ export default function ReflectionPage(): ReactElement {
     return <ReflectionStateNotice status={status.data} />;
   }
   return (
-    <PageBody
-      domain={domain}
-      path={path}
-      right={status.data.right}
-      engramsVisible={status.data.engramsVisible}
-    />
+    <>
+      <PageBody
+        domain={domain}
+        path={path}
+        right={status.data.right}
+        engramsVisible={status.data.engramsVisible}
+        onMove={setMoving}
+      />
+      {/*
+        Held here, not in the body: after a move the body shows a skeleton
+        while the new address loads, and the dialog must outlive that to list
+        the pages it could not relink.
+      */}
+      {moving !== null && (
+        <LazyBoundary fallback={null}>
+          <MoveReflectionDialog
+            domain={domain}
+            path={path}
+            title={moving}
+            onClose={() => {
+              setMoving(null);
+            }}
+          />
+        </LazyBoundary>
+      )}
+    </>
   );
 }
 
@@ -92,17 +125,28 @@ function PageBody({
   path,
   right,
   engramsVisible,
+  onMove,
 }: {
   domain: string;
   path: string;
   right: ReflectionRight;
   engramsVisible: boolean;
+  onMove: (title: string) => void;
 }): ReactElement {
   const doc = useQuery({
     queryKey: reflectionDocKey(domain, path),
     queryFn: () => fetchReflection(domain, path),
   });
   const { hash } = useLocation();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const remove = useMutation({
+    mutationFn: () => deleteReflection(domain, path),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: reflectionKey(domain) });
+      void navigate(reflectionRoute(domain), { replace: true });
+    },
+  });
   const articleRef = useRef<HTMLElement | null>(null);
   const sections = useMemo<SectionText[]>(
     () => (doc.data ? sectionTexts(doc.data.markdown, doc.data.sections) : []),
@@ -172,8 +216,37 @@ function PageBody({
                 Edit
               </Link>
             )}
+            {atLeast(right, "edit") && path !== PACT_PATH && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onMove(page.title);
+                  }}
+                  className={BUTTON.secondary}
+                >
+                  Move
+                </button>
+                <DestructiveAction
+                  label="Delete"
+                  confirmLabel="Confirm delete"
+                  pending={remove.isPending}
+                  onConfirm={() => {
+                    remove.mutate();
+                  }}
+                />
+              </>
+            )}
           </div>
         </div>
+        {remove.error && (
+          <p
+            role="alert"
+            className="rounded bg-red-50 px-2 py-1 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
+          >
+            {problemDetail(remove.error)}
+          </p>
+        )}
         {!ownTitle && <h1 className="text-display">{page.title}</h1>}
         {page.livePresent.length > 0 && (
           <p

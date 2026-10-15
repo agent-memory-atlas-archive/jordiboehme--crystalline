@@ -147,6 +147,52 @@ beforeEach(() => {
 });
 
 describe("the doors into the Reflection", () => {
+  it("creates the pact when there is none, for a curator", async () => {
+    const put = vi.fn(() => ({
+      checksum: "p",
+      created: true,
+      ids_assigned: [],
+    }));
+    asEditor({
+      "/domains/eng/reflection/tree": () => ({
+        ...TREE,
+        pact: {
+          path: "PACT.md",
+          title: "PACT.md",
+          exists: false,
+          open_threads: 0,
+        },
+      }),
+      "/domains/eng/reflections/PACT.md": (_p, init) =>
+        init?.method === "PUT" ? put() : missing(),
+    });
+    renderApp("/d/eng/reflection");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Write the pact" }),
+    );
+    await waitFor(() => {
+      expect(put).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("offers an editor no way to write the pact", async () => {
+    asEditor({
+      "/domains/eng/reflection": () => status({ right: "edit" }),
+      "/domains/eng/reflection/tree": () => ({
+        ...TREE,
+        pact: {
+          path: "PACT.md",
+          title: "PACT.md",
+          exists: false,
+          open_threads: 0,
+        },
+      }),
+    });
+    renderApp("/d/eng/reflection");
+    expect(await screen.findByText("No pact is written yet.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Write the pact" })).toBeNull();
+  });
+
   it("a person with knowledge none opening the engram address of a domain lands in its Reflection", async () => {
     asContributor();
     renderApp("/d/eng/e/runbooks/deploy");
