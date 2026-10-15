@@ -982,6 +982,11 @@ impl Connection {
     /// ceiling. The server reads it under the account's own right for the
     /// kind of the file. A server older than 0.27.0 refuses the command
     /// ([`RemoteFailure::Refused`], in its words).
+    ///
+    /// Run as [`Budget::Cut`]: a large file over a slow link can outlast any
+    /// limit, and running out of time on one file says nothing about the
+    /// source, so a timeout here never opens its down window or drops the
+    /// pool. A refused connection still counts, as for every call.
     pub async fn file_within(
         &self,
         domain: &str,
@@ -989,7 +994,7 @@ impl Connection {
         limit: Duration,
     ) -> Result<Value, RemoteFailure> {
         let request = json!({ "v": 1, "cmd": FILE_COMMAND, "domain": domain, "path": path });
-        self.ctl_data_within(request, limit, Budget::Own).await
+        self.ctl_data_within(request, limit, Budget::Cut).await
     }
 
     async fn post_ctl(
@@ -1482,6 +1487,38 @@ mod tests {
         .await;
         let response = client.get(&url).send().await.unwrap();
         assert_eq!(read_capped(response, 10, &url).await.unwrap(), "hello");
+    }
+
+    /// A file read that runs out of time says nothing about the source: a
+    /// large file over a slow link is not a server that went away, so the
+    /// down window stays shut.
+    #[tokio::test]
+    async fn a_timed_out_file_read_leaves_the_source_up() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        let mut connection = connection(Health::new(Duration::from_secs(30)));
+        connection.source.url = url.clone();
+        connection.current = Arc::new(std::sync::Mutex::new(Some(ServerCredential::token(
+            "cmt_live".to_string(),
+            url,
+            "keeper".to_string(),
+            Utc::now(),
+        ))));
+        let failed = connection
+            .file_within("open", "assets/shot.png", Duration::from_millis(200))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(failed, RemoteFailure::TimedOut { .. }),
+            "{failed:?}"
+        );
+        assert_eq!(connection.down(), None);
     }
 
     /// The ceiling holds the largest file a domain keeps, as base64.
