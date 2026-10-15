@@ -2766,13 +2766,13 @@ async fn a_restore_that_switches_off_saves_and_closes_the_rooms_first() {
     assert_saved_then_closed(&tmp, &sessions, &mut joined).await;
 }
 
-/// A move of the MANIFEST takes it away, which switches the Reflection off:
-/// the rooms close first, and the switch is announced.
+/// A move of a file domain's MANIFEST is refused (Jordi, 2026-10-15): the
+/// domain needs it. Nothing moves, nothing switches, and no room is closed.
 #[tokio::test]
-async fn a_move_of_the_manifest_saves_and_closes_the_rooms_first() {
-    let (tmp, engine, _scratch, sessions, mut joined) = a_typed_room_before_a_switch().await;
+async fn a_move_of_the_manifest_is_refused_and_closes_no_room() {
+    let (tmp, engine, _scratch, sessions, joined) = a_typed_room_before_a_switch().await;
     let mut changes = engine.changes().subscribe();
-    engine
+    let err = engine
         .move_engram(
             &crystalline_service::params::MoveParams {
                 identifier: "manifest".into(),
@@ -2785,46 +2785,68 @@ async fn a_move_of_the_manifest_saves_and_closes_the_rooms_first() {
             &crystalline_service::Scope::Unrestricted,
         )
         .await
-        .unwrap();
-    assert_saved_then_closed(&tmp, &sessions, &mut joined).await;
-    let mut switched = 0;
+        .unwrap_err()
+        .to_string();
+    assert!(
+        !tmp.path().join("eng/old-manifest.md").exists(),
+        "nothing moved"
+    );
+    assert_eq!(err, crystalline_service::EngineError::Invalid(
+        "MANIFEST.md is required for a domain. Edit it instead, or remove the domain to drop it.".into()
+    ).to_string());
+    assert!(
+        tmp.path().join("eng/MANIFEST.md").exists(),
+        "the MANIFEST stays"
+    );
+    assert_eq!(
+        engine.reflection_switch("eng"),
+        crystalline_core::ReflectionSwitch::On,
+        "nothing switched"
+    );
+    assert_eq!(sessions.session_count().await, 1, "no room is closed");
+    assert!(!joined.session.is_disposed(), "the room stays open");
     while let Ok(envelope) = changes.try_recv() {
-        if let crystalline_service::changes::Change::Reflection(change) = envelope.change
-            && change.kind == crystalline_service::changes::ReflectionChangeKind::Switched
-        {
-            assert_eq!(change.domain, "eng");
-            switched += 1;
+        if let crystalline_service::changes::Change::Reflection(change) = envelope.change {
+            panic!("nothing is announced: {change:?}");
         }
     }
-    assert_eq!(switched, 1, "the switch-off is announced once");
 }
 
-/// Deleting the folder's MANIFEST switches the Reflection off: the rooms
-/// close first, and the switch is announced.
+/// A delete of a file domain's MANIFEST is refused (Jordi, 2026-10-15): the
+/// domain needs it. Nothing is deleted, nothing switches, and no room is
+/// closed.
 #[tokio::test]
-async fn a_delete_of_the_manifest_saves_and_closes_the_rooms_first() {
-    let (tmp, engine, _scratch, sessions, mut joined) = a_typed_room_before_a_switch().await;
+async fn a_delete_of_the_manifest_is_refused_and_closes_no_room() {
+    let (tmp, engine, _scratch, sessions, joined) = a_typed_room_before_a_switch().await;
     let mut changes = engine.changes().subscribe();
-    engine
+    let err = engine
         .delete_engram(&crystalline_service::params::DeleteParams {
             identifier: "manifest".into(),
             domain: "eng".into(),
             expected_checksum: None,
         })
         .await
-        .unwrap();
-    assert!(!tmp.path().join("eng/MANIFEST.md").exists());
-    assert_saved_then_closed(&tmp, &sessions, &mut joined).await;
-    let mut switched = 0;
+        .unwrap_err()
+        .to_string();
+    assert_eq!(err, crystalline_service::EngineError::Invalid(
+        "MANIFEST.md is required for a domain. Edit it instead, or remove the domain to drop it.".into()
+    ).to_string());
+    assert!(
+        tmp.path().join("eng/MANIFEST.md").exists(),
+        "the MANIFEST stays"
+    );
+    assert_eq!(
+        engine.reflection_switch("eng"),
+        crystalline_core::ReflectionSwitch::On,
+        "nothing switched"
+    );
+    assert_eq!(sessions.session_count().await, 1, "no room is closed");
+    assert!(!joined.session.is_disposed(), "the room stays open");
     while let Ok(envelope) = changes.try_recv() {
-        if let crystalline_service::changes::Change::Reflection(change) = envelope.change
-            && change.kind == crystalline_service::changes::ReflectionChangeKind::Switched
-        {
-            assert_eq!(change.domain, "eng");
-            switched += 1;
+        if let crystalline_service::changes::Change::Reflection(change) = envelope.change {
+            panic!("nothing is announced: {change:?}");
         }
     }
-    assert_eq!(switched, 1, "the switch-off is announced once");
 }
 
 /// A MANIFEST room's own switch-off save, with joins to that room racing

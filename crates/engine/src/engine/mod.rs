@@ -7970,6 +7970,23 @@ pub(crate) fn is_manifest_path(rel: &str) -> bool {
 /// keeps that folder; re-exported so the archive screen gives the same words.
 pub use crystalline_core::reflection::REFLECTION_NOT_IMPORTED;
 
+/// Why a move or a delete of a file domain's MANIFEST is refused: a domain
+/// needs it, and routing reads it.
+pub(crate) const MANIFEST_REQUIRED: &str =
+    "MANIFEST.md is required for a domain. Edit it instead, or remove the domain to drop it.";
+
+/// Refuse a move or a delete that would take a file domain's MANIFEST away
+/// (Jordi's decision, 2026-10-15). Compared in any letter case, as the
+/// write checks compare it. A virtual domain's MANIFEST row is left as it
+/// was: deleting it empties its routing, and a virtual domain keeps no
+/// Reflection to switch.
+pub(crate) fn refuse_manifest_removal(source: &ContentSource, rel: &str) -> Result<()> {
+    if matches!(source, ContentSource::File { .. }) && names_the_manifest(rel) {
+        return Err(EngineError::Invalid(MANIFEST_REQUIRED.to_string()));
+    }
+    Ok(())
+}
+
 /// Whether `rel` names the MANIFEST in any letter case. The write and move
 /// checks use this: a case-insensitive file system (the macOS and Windows
 /// defaults) opens `manifest.md` as the very `MANIFEST.md` routing reads.

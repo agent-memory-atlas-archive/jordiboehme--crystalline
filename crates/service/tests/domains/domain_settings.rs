@@ -509,13 +509,18 @@ async fn a_hidden_private_domain_is_not_found_and_never_a_view() {
 /// T5-a: an actor whose draft deletes the MANIFEST sees a domain with no
 /// MANIFEST, the way read_engram answers them. The folder and every other
 /// reader still see the domain's MANIFEST.
+///
+/// `delete_engram` refuses a file domain's MANIFEST, in a draft too (Jordi,
+/// 2026-10-15), so the draft deletion is written as the row it would be: a
+/// tombstone that came in some other way, for example with a pull, still
+/// reads this way.
 #[tokio::test]
 async fn a_draft_that_deletes_the_manifest_shows_it_missing_to_its_actor() {
     let (tmp, engine) = settings_engine(EVERY_SECTION, |cfg, _| {
         cfg.domains.get_mut("eng").unwrap().review = Some(ReviewMode::Overlay);
     })
     .await;
-    let receipt = engine
+    let refused = engine
         .delete_engram_as(
             &DeleteParams {
                 identifier: "manifest".to_string(),
@@ -526,8 +531,35 @@ async fn a_draft_that_deletes_the_manifest_shows_it_missing_to_its_actor() {
             &Scope::Unrestricted,
         )
         .await
-        .unwrap();
-    assert_eq!(receipt["draft"], true, "{receipt}");
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("MANIFEST.md is required"),
+        "{refused}"
+    );
+    {
+        let store = engine.store();
+        let store = store.lock().await;
+        let id = store
+            .upsert_domain(
+                "eng",
+                Some(&tmp.path().join("eng").to_string_lossy()),
+                crystalline_index::DomainKind::File,
+            )
+            .await
+            .unwrap();
+        let mut record = crystalline_index::EngramRecord::from_engram(
+            &crystalline_core::parse_engram(EVERY_SECTION).unwrap(),
+            "MANIFEST.md",
+            crystalline_index::FileStamp {
+                mtime: 0,
+                size: EVERY_SECTION.len() as u64,
+                sha256: "0".repeat(64),
+            },
+        );
+        record.content = EVERY_SECTION.to_string();
+        record.tombstone = true;
+        store.upsert_overlay(id, "owner", &record).await.unwrap();
+    }
     let on_disk = std::fs::read_to_string(tmp.path().join("eng/MANIFEST.md")).unwrap();
     assert_eq!(on_disk, EVERY_SECTION, "the folder is unchanged");
 

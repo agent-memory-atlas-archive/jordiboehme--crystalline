@@ -177,6 +177,11 @@ impl Engine {
         }
         let new_permalink = Self::moved_permalink(&src, &dest_rel, p.permalink.as_deref())?;
         let in_place = !cross && dest_rel == src.path;
+        // A file domain's MANIFEST never leaves its place, in a draft either:
+        // the domain needs it. A rename of its permalink in place keeps it.
+        if !in_place {
+            refuse_manifest_removal(&src_source, &src.path)?;
+        }
         if in_place && new_permalink == src.permalink {
             return Err(EngineError::Invalid(format!(
                 "'{}' already sits at '{dest_rel}' and answers to '{new_permalink}', so this \
@@ -253,10 +258,6 @@ impl Engine {
         // A move onto the MANIFEST may move the destination's switch.
         let switch_before =
             names_the_manifest(&dest_rel).then(|| self.reflection_switch(&dest_domain));
-        // And a move OF the MANIFEST takes it away from the source domain,
-        // which switches that domain's Reflection off.
-        let source_switch_before =
-            (names_the_manifest(&src.path) && !in_place).then(|| self.reflection_switch(&p.domain));
 
         // After the overlay branch, so a move OUT of a reviewing domain keeps
         // its own refusal ("share the change first"), and before anything is
@@ -326,19 +327,6 @@ impl Engine {
         // the attachments the plan could not carry, which ride out in the
         // receipt so a caller who never sees the daemon's trace still learns
         // what stayed behind.
-        // Every refusal is behind us: a move that switches a Reflection off
-        // closes that domain's rooms first, while it is still on. A move onto
-        // the MANIFEST lands on a missing one, which reads as off, so today
-        // only the source side can switch off; both are asked all the same.
-        if source_switch_before.is_some() {
-            self.close_reflection_rooms_if_switching_off(&p.domain, None)
-                .await;
-        }
-        if switch_before.is_some() {
-            let landing = moved_text.as_deref().unwrap_or(&original);
-            self.close_reflection_rooms_if_switching_off(&dest_domain, Some(landing))
-                .await;
-        }
         let mut carried: Vec<AttachmentCarry> = Vec::new();
         let mut attachment_warnings: Vec<String> = Vec::new();
         // The checksum of the text that landed at the destination, for the
@@ -609,9 +597,6 @@ impl Engine {
         }
         if let Some(before) = switch_before {
             self.announce_switch_if_moved(&dest_domain, before, change_label(scope));
-        }
-        if let Some(before) = source_switch_before {
-            self.announce_switch_if_moved(&p.domain, before, change_label(scope));
         }
         // The new address may be what a link in another domain has been
         // waiting for. A draft move returned above, through `move_within`.
