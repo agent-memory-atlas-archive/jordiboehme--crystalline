@@ -423,6 +423,16 @@ function lineRefs(line: string): RawRef[] {
       }
     }
     if (bracket < 0) {
+      // The core counts a destination whatever opened it, so it is a token
+      // here too; with no label it is no picture and has no span to rewrite.
+      refs.push({
+        image: false,
+        targetFrom: open + leading,
+        targetTo: open + leading + token.length,
+        from: hit,
+        to: end + 1,
+        token,
+      });
       continue;
     }
     const image = bracket > 0 && line[bracket - 1] === "!";
@@ -516,6 +526,22 @@ export function assetRefsIn(
     }
   });
   return [...paths];
+}
+
+/**
+ * Every link destination token in this text outside fenced code, as written,
+ * in order, duplicates included. The one scanner a document kind with its own
+ * link rules reads: the Reflection classifies these tokens where
+ * {@link assetRefsIn} resolves them as engram attachment paths.
+ */
+export function linkTokensIn(text: string): string[] {
+  const tokens: string[] = [];
+  eachLiveLine(text, (line) => {
+    for (const ref of lineRefs(line)) {
+      tokens.push(ref.token);
+    }
+  });
+  return tokens;
 }
 
 /**

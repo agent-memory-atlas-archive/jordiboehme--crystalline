@@ -10,9 +10,17 @@
  * Reflection after a write.
  */
 
-import { api, encodePermalink, encodeSegment } from "./client";
+import { API_BASE, api, encodePermalink, encodeSegment } from "./client";
+import {
+  type AssetHome,
+  type AttachmentRow,
+  type UploadedAttachment,
+  readAttachmentRows,
+  readUploaded,
+} from "./files";
 import { asArray, asNumber, asObject, asString, asStrings } from "./json";
 import { reflectionKey } from "./reflectionDomains";
+import { reflectionTargetOf, relativeTo } from "../reflectionAssets";
 
 export { reflectionKey };
 
@@ -160,6 +168,14 @@ export interface MoveReceipt {
   to: string;
   /** Pages that still link the old path because they could not be rewritten. */
   linksFailed: { path: string; reason: string }[];
+}
+
+function readLinksFailed(value: unknown): MoveReceipt["linksFailed"] {
+  return asArray(value).flatMap((f) => {
+    const row = asObject(f);
+    const path = asString(row?.path);
+    return path === null ? [] : [{ path, reason: asString(row?.reason) ?? "" }];
+  });
 }
 
 function readSource(value: unknown): SourceView | null {
@@ -533,13 +549,7 @@ export async function moveReflection(
   );
   return {
     to: asString(r?.to) ?? to,
-    linksFailed: asArray(r?.links_failed).flatMap((f) => {
-      const row = asObject(f);
-      const path = asString(row?.path);
-      return path === null
-        ? []
-        : [{ path, reason: asString(row?.reason) ?? "" }];
-    }),
+    linksFailed: readLinksFailed(r?.links_failed),
   };
 }
 
@@ -632,4 +642,115 @@ export async function searchReflections(
   return readSearch(
     await api<unknown>(`${base(domain)}/reflection/search?${q.toString()}`),
   );
+}
+
+/** The cache key of a domain's Reflection file listing. */
+export function reflectionAssetsKey(domain: string): readonly unknown[] {
+  return [...reflectionKey(domain), "assets"];
+}
+
+/** A Reflection file's path inside `reflections/` (`assets/...`) on the file route. */
+function assetRoute(domain: string, path: string): string {
+  const rest = path.startsWith("assets/") ? path.slice("assets/".length) : path;
+  return `${base(domain)}/reflection/assets/${encodePermalink(rest)}`;
+}
+
+/** The URL the browser reads a Reflection file at; `path` is `assets/...`. */
+export function reflectionAssetUrl(domain: string, path: string): string {
+  return `${API_BASE}${assetRoute(domain, path)}`;
+}
+
+export async function fetchReflectionAssets(
+  domain: string,
+): Promise<AttachmentRow[]> {
+  return readAttachmentRows(
+    asObject(await api<unknown>(`${base(domain)}/reflection/assets`))?.assets,
+  );
+}
+
+export type UploadedReflectionAsset = UploadedAttachment & {
+  /** Whether the path held no file before. */
+  created: boolean;
+};
+
+export async function uploadReflectionAsset(
+  domain: string,
+  path: string,
+  file: Blob,
+): Promise<UploadedReflectionAsset> {
+  const payload = await api<unknown>(assetRoute(domain, path), {
+    method: "PUT",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  return {
+    ...readUploaded(payload, path, file.size),
+    created: asObject(payload)?.created === true,
+  };
+}
+
+export async function deleteReflectionAsset(
+  domain: string,
+  path: string,
+): Promise<void> {
+  await api(assetRoute(domain, path), { method: "DELETE" });
+}
+
+export interface AssetMoveReceipt extends MoveReceipt {
+  from: string;
+  /** Pages whose link was rewritten to the new path. */
+  linksRewritten: number;
+  /** A sentence from the server when the file moved but its index row did not follow. */
+  note: string | null;
+}
+
+export async function moveReflectionAsset(
+  domain: string,
+  from: string,
+  to: string,
+): Promise<AssetMoveReceipt> {
+  const r = asObject(
+    await api<unknown>(`${base(domain)}/reflection/move-asset`, {
+      method: "POST",
+      body: JSON.stringify({ from, to }),
+    }),
+  );
+  return {
+    from: asString(r?.from) ?? from,
+    to: asString(r?.to) ?? to,
+    linksRewritten: asNumber(r?.links_rewritten) ?? 0,
+    linksFailed: readLinksFailed(r?.links_failed),
+    note: asString(r?.note),
+  };
+}
+
+/** Said when a page links an engram attachment (proposal; see the B9 plan, open question 4). */
+export const ENGRAM_FILE =
+  "This file is not in the Reflection. A curator copies it into the Reflection's files.";
+
+/**
+ * The Reflection's file store for the page at `pagePath`: its listing, the
+ * routes, and the page-relative links core's `classify_target` reads. Callers
+ * pass a memoized home. Lazy only: the link rules are not in the entry bundle.
+ */
+export function reflectionAssetHome(
+  domain: string,
+  pagePath: string,
+): AssetHome {
+  return {
+    key: reflectionAssetsKey(domain),
+    list: () => fetchReflectionAssets(domain),
+    upload: (path, file) => uploadReflectionAsset(domain, path, file),
+    remove: (path) => deleteReflectionAsset(domain, path),
+    url: (path) => reflectionAssetUrl(domain, path),
+    resolve: (target) => {
+      const r = reflectionTargetOf(target, pagePath);
+      return r.kind === "reflection" ? r.path : null;
+    },
+    refused: (target) =>
+      reflectionTargetOf(target, pagePath).kind === "engram"
+        ? ENGRAM_FILE
+        : null,
+    linkTo: (path) => relativeTo(pagePath, path),
+  };
 }

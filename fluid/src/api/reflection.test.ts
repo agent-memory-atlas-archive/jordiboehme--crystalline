@@ -1,8 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "./client";
+import { API_BASE } from "./client";
 import {
+  deleteReflectionAsset,
+  fetchReflectionAssets,
   moveReflection,
+  moveReflectionAsset,
+  reflectionAssetHome,
+  reflectionAssetsKey,
+  reflectionAssetUrl,
+  uploadReflectionAsset,
   openThread,
   readDoc,
   readQueue,
@@ -344,5 +352,130 @@ describe("more reads", () => {
       room: "conflict",
       roomNote: "The room will ask.",
     });
+  });
+});
+
+describe("a Reflection's files", () => {
+  it("the asset calls use the wildcard under reflections/assets/", async () => {
+    apiMock.mockResolvedValue({
+      path: "assets/2026/10/flow.png",
+      mime: "image/png",
+      size: 3,
+      sha256: "ab",
+      created: true,
+    });
+    const file = new Blob(["abc"], { type: "image/png" });
+    expect(
+      await uploadReflectionAsset("eng", "assets/2026/10/flow.png", file),
+    ).toEqual({
+      path: "assets/2026/10/flow.png",
+      mime: "image/png",
+      size: 3,
+      sha256: "ab",
+      created: true,
+    });
+    expect(apiMock).toHaveBeenCalledWith(
+      "/domains/eng/reflection/assets/2026/10/flow.png",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "image/png" },
+        body: file,
+      },
+    );
+
+    apiMock.mockResolvedValue(undefined);
+    await deleteReflectionAsset("eng", "assets/a b.png");
+    expect(apiMock).toHaveBeenLastCalledWith(
+      "/domains/eng/reflection/assets/a%20b.png",
+      { method: "DELETE" },
+    );
+
+    apiMock.mockResolvedValue({
+      from: "assets/a.png",
+      to: "assets/b.png",
+      links_rewritten: 2,
+    });
+    await moveReflectionAsset("eng", "assets/a.png", "assets/b.png");
+    expect(apiMock).toHaveBeenLastCalledWith(
+      "/domains/eng/reflection/move-asset",
+      {
+        method: "POST",
+        body: JSON.stringify({ from: "assets/a.png", to: "assets/b.png" }),
+      },
+    );
+
+    apiMock.mockResolvedValue({
+      assets: [
+        {
+          path: "assets/a.png",
+          mime: "image/png",
+          size: 1,
+          modified: "2026-10-01T00:00:00Z",
+          sha256: "x",
+        },
+        { size: 2 },
+      ],
+    });
+    expect(await fetchReflectionAssets("eng")).toEqual([
+      {
+        path: "assets/a.png",
+        mime: "image/png",
+        size: 1,
+        modified: "2026-10-01T00:00:00Z",
+        sha256: "x",
+      },
+    ]);
+    expect(apiMock).toHaveBeenLastCalledWith("/domains/eng/reflection/assets");
+  });
+
+  it("names the listing under the domain's Reflection key", () => {
+    expect(reflectionAssetsKey("eng")).toEqual(["reflection", "eng", "assets"]);
+    expect(reflectionAssetUrl("eng", "assets/x/y.png")).toBe(
+      `${API_BASE}/domains/eng/reflection/assets/x/y.png`,
+    );
+  });
+
+  it("a move receipt keeps the server's note and failed links as sent", async () => {
+    apiMock.mockResolvedValue({
+      domain: "eng",
+      from: "assets/a.png",
+      to: "assets/b.png",
+      links_rewritten: 1,
+      links_failed: [{ path: "c.md", reason: "it is open in a room" }],
+      note: "The file moved; its index row follows at the next sync.",
+    });
+    expect(
+      await moveReflectionAsset("eng", "assets/a.png", "assets/b.png"),
+    ).toEqual({
+      from: "assets/a.png",
+      to: "assets/b.png",
+      linksRewritten: 1,
+      linksFailed: [{ path: "c.md", reason: "it is open in a room" }],
+      note: "The file moved; its index row follows at the next sync.",
+    });
+    apiMock.mockResolvedValue({ from: "assets/a.png", to: "assets/b.png" });
+    expect(
+      await moveReflectionAsset("eng", "assets/a.png", "assets/b.png"),
+    ).toEqual({
+      from: "assets/a.png",
+      to: "assets/b.png",
+      linksRewritten: 0,
+      linksFailed: [],
+      note: null,
+    });
+  });
+
+  it("the Reflection's home links from the page and refuses engram files", () => {
+    const home = reflectionAssetHome("eng", "guides/a.md");
+    expect(home.key).toEqual(reflectionAssetsKey("eng"));
+    expect(home.linkTo("assets/x.png")).toBe("../assets/x.png");
+    expect(home.resolve("../assets/x.png#left")).toBe("assets/x.png");
+    expect(home.resolve("../../assets/x.png")).toBeNull();
+    expect(home.resolve("peer.md")).toBeNull();
+    expect(home.refused("../../assets/x.png")).toBe(
+      "This file is not in the Reflection. A curator copies it into the Reflection's files.",
+    );
+    expect(home.refused("../assets/x.png")).toBeNull();
+    expect(home.url("assets/x.png")).toMatch(/\/reflection\/assets\/x\.png$/);
   });
 });

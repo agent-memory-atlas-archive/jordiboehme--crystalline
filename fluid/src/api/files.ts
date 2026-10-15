@@ -248,6 +248,21 @@ export interface AttachmentRow extends UploadedAttachment {
   modified: string;
 }
 
+/** An upload's answer, tolerantly; shared with the Reflection's file route. */
+export function readUploaded(
+  payload: unknown,
+  path: string,
+  size: number,
+): UploadedAttachment {
+  const record = asObject(payload);
+  return {
+    path: asString(record?.path) ?? path,
+    mime: asString(record?.mime) ?? "application/octet-stream",
+    size: asNumber(record?.size) ?? size,
+    sha256: asString(record?.sha256) ?? "",
+  };
+}
+
 /**
  * Store the bytes, creating or replacing whatever is at `path`.
  *
@@ -266,13 +281,7 @@ export async function uploadAttachment(
     headers: { "Content-Type": file.type || "application/octet-stream" },
     body: file,
   });
-  const record = asObject(payload);
-  return {
-    path: asString(record?.path) ?? path,
-    mime: asString(record?.mime) ?? "application/octet-stream",
-    size: asNumber(record?.size) ?? file.size,
-    sha256: asString(record?.sha256) ?? "",
-  };
+  return readUploaded(payload, path, file.size);
 }
 
 /** Remove one attachment. The engram bodies that reference it are untouched. */
@@ -283,16 +292,10 @@ export async function deleteAttachment(
   await api(filesPath(domain, path), { method: "DELETE" });
 }
 
-/** Every attachment the domain carries, ordered by path as the server sends it. */
-export async function listAttachments(
-  domain: string,
-): Promise<AttachmentRow[]> {
-  const payload = await api<unknown>(
-    `/domains/${encodeSegment(domain)}/attachments`,
-  );
-  const record = asObject(payload);
+/** A listing's rows (`{ attachments | assets: [...] }` is the caller's pick), tolerantly. */
+export function readAttachmentRows(entries: unknown): AttachmentRow[] {
   const rows: AttachmentRow[] = [];
-  for (const entry of asArray(record?.attachments)) {
+  for (const entry of asArray(entries)) {
     const row = asObject(entry);
     const path = asString(row?.path);
     if (path === null) {
@@ -307,6 +310,16 @@ export async function listAttachments(
     });
   }
   return rows;
+}
+
+/** Every attachment the domain carries, ordered by path as the server sends it. */
+export async function listAttachments(
+  domain: string,
+): Promise<AttachmentRow[]> {
+  const payload = await api<unknown>(
+    `/domains/${encodeSegment(domain)}/attachments`,
+  );
+  return readAttachmentRows(asObject(payload)?.attachments);
 }
 
 /** The cache key of one domain's attachment listing. */
