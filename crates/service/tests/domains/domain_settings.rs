@@ -512,8 +512,8 @@ async fn a_hidden_private_domain_is_not_found_and_never_a_view() {
 ///
 /// `delete_engram` refuses a file domain's MANIFEST, in a draft too (Jordi,
 /// 2026-10-15), so the draft deletion is written as the row it would be: a
-/// tombstone that came in some other way, for example with a pull, still
-/// reads this way.
+/// tombstone that is still there from a draft made before 0.27, or that an
+/// overlay journal replay brought back, still reads this way.
 #[tokio::test]
 async fn a_draft_that_deletes_the_manifest_shows_it_missing_to_its_actor() {
     let (tmp, engine) = settings_engine(EVERY_SECTION, |cfg, _| {
