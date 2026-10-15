@@ -854,16 +854,18 @@ pub(super) fn compose_reflection(
         })
         .unwrap_or_default();
     let mut prov = r::Provenance::new();
-    // How many new sections each heading text has had so far, for the key
-    // into `new_by_heading`.
+    // How many sections under each heading text got their id in this
+    // compose so far, for the key into `new_by_heading`. Only the minted
+    // ones count, in page order: they are the sections the room saw without
+    // an id, which is what its keys count. A section that arrived with an id
+    // of its own (pasted from another page) takes no place.
+    let minted_ids: BTreeSet<&str> = minted.iter().map(String::as_str).collect();
     let mut new_seen: HashMap<String, usize> = HashMap::new();
     for section in r::split_sections(&text) {
         let Some(id) = section.id.clone() else {
             continue;
         };
-        // A section that just got its id: no record and nothing before it.
-        let new = !stored.contains_key(&id) && !before.contains_key(&id);
-        let place = new.then(|| {
+        let place = minted_ids.contains(id.as_str()).then(|| {
             let seen = new_seen.entry(section.heading.clone()).or_default();
             *seen += 1;
             *seen - 1
@@ -2433,6 +2435,41 @@ mod tests {
         assert_eq!(prov[&three].changed_by, vec!["ada".to_string()], "{text}");
         assert!(prov["aaaa1111"].changed_by.is_empty(), "{prov:?}");
         assert!(prov["bbbb2222"].changed_by.is_empty(), "{prov:?}");
+    }
+
+    /// A section that arrives with an id of its own (pasted from another
+    /// page) is not one the room counted as id-less, so it takes no place
+    /// among the carried names: the new section after it under the same
+    /// heading still names its typist, and the pasted one names nobody.
+    #[test]
+    fn a_pasted_section_with_an_id_takes_no_place_among_the_carried_names() {
+        let current = "# A\n\n## One\n<!-- r:aaaa1111 -->\n\nFirst.\n";
+        let incoming =
+            format!("{current}\n## Three\n<!-- r:cccc3333 -->\n\nPasted.\n\n## Three\n\nThird.\n");
+        let authors = SectionAuthors {
+            changed: vec![],
+            new_by_heading: BTreeMap::from([(
+                ("Three".to_string(), 0),
+                BTreeSet::from(["ada".to_string()]),
+            )]),
+            someone_if_empty: false,
+        };
+        let (text, minted, prov) = compose_reflection(
+            Some(current),
+            "",
+            &incoming,
+            &authors,
+            true,
+            "2026-10-15T00:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(minted.len(), 1, "{text}");
+        assert_eq!(
+            prov[&minted[0]].changed_by,
+            vec!["ada".to_string()],
+            "{text}"
+        );
+        assert!(prov["cccc3333"].changed_by.is_empty(), "{prov:?}");
     }
 
     /// The seeded pact carries a section id line under every heading, so an
