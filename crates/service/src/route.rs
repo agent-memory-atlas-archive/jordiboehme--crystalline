@@ -501,8 +501,18 @@ pub async fn routed_file(
     let source = table.source_of(domain)?.to_string();
     let names = table.names(&source);
     let remote = names.to_remote.get(domain)?.clone();
+    // The mime is this machine's, from the file name, never the server's: it
+    // decides whether the bytes are served as text.
+    let Some(mime) = file_mime(path) else {
+        return Some(Err(RouteError::Refused(format!(
+            "'{path}' is not a file a domain keeps: a file lives under assets/ or \
+             reflections/assets/ and has a known file type"
+        ))));
+    };
+    // A file has the long limit: a large one over a slow link takes time,
+    // and the read runs as a cut that never marks the source down.
     let answer = sources
-        .fetch_file(&source, &remote, path, ONE_DOMAIN_LIMIT)
+        .fetch_file(&source, &remote, path, CTL_TIMEOUT)
         .await;
     let failed = |failure: RemoteFailure| RouteError::Source {
         source: source.clone(),
@@ -510,7 +520,9 @@ pub async fn routed_file(
         failure,
     };
     Some(match answer {
-        Ok(value) => decoded_file(&value).map_err(|text| failed(RemoteFailure::Refused(text))),
+        Ok(value) => {
+            decoded_file(&value, mime).map_err(|text| failed(RemoteFailure::Refused(text)))
+        }
         Err(RemoteFailure::Refused(text)) if is_no_file_command(&text) => {
             let url = sources.source_url(&source).unwrap_or_default();
             Err(RouteError::Refused(format!(
@@ -518,8 +530,24 @@ pub async fn routed_file(
                  Crystalline 0.27 or newer on that server"
             )))
         }
-        Err(failure) => Err(failed(within(failure, ONE_DOMAIN_LIMIT))),
+        Err(failure) => Err(failed(within(failure, CTL_TIMEOUT))),
     })
+}
+
+/// The MIME type of a file of a mounted domain, decided on this machine:
+/// `path` (domain-relative) must name a file of either kind
+/// (`assets/...` or `reflections/assets/...`) that a domain may hold, and
+/// the type comes from its name. `None` for anything else. A server's own
+/// word on either is never taken.
+pub fn file_mime(path: &str) -> Option<&'static str> {
+    let url = crystalline_core::CrystallineUrl {
+        domain: String::new(),
+        permalink: path.to_string(),
+        glob: false,
+    };
+    let (_, inner) = url.asset_ref()?;
+    crystalline_core::validate_asset_path(inner).ok()?;
+    crystalline_core::attachment_mime(inner.rsplit('/').next().unwrap_or(inner))
 }
 
 /// Whether a server's refusal is the one a server without the `file`
@@ -534,11 +562,10 @@ fn is_no_file_command(text: &str) -> bool {
 
 /// A `file` answer's bytes, checked against what it says about them: valid
 /// base64, the size it names, and never past the largest file a domain
-/// keeps.
-fn decoded_file(value: &Value) -> Result<RoutedFile, String> {
+/// keeps. `mime` is this machine's ([`file_mime`]); the server's is ignored.
+fn decoded_file(value: &Value, mime: &'static str) -> Result<RoutedFile, String> {
     use base64::Engine as _;
     let broken = || "the server answered a file this machine cannot read".to_string();
-    let mime = value["mime"].as_str().ok_or_else(broken)?;
     let size = value["size"].as_u64().ok_or_else(broken)?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(value["base64"].as_str().ok_or_else(broken)?)
@@ -799,7 +826,9 @@ async fn localized_local(engine: &Engine, tool: &str, args: Value) -> Result<Val
 }
 
 /// The ctl `tool` command's whole answer, and the in-process CLI's: routed
-/// when the call names a mounted domain or all domains, local otherwise.
+/// when the call names a mounted domain or all domains, local otherwise. A
+/// routed read answers as a local one does: the server's `files` list,
+/// which only an MCP session turns into links, is left out.
 pub async fn run_tool_routed(
     engine: &Arc<Engine>,
     tool: &str,
@@ -808,7 +837,14 @@ pub async fn run_tool_routed(
     deadline: Option<Duration>,
 ) -> anyhow::Result<Value> {
     match routed(engine, tool, &args, agent, deadline).await {
-        Some(Ok(value)) => Ok(value),
+        Some(Ok(mut value)) => {
+            if matches!(tool, "read_engram" | "read_reflection")
+                && let Some(obj) = value.as_object_mut()
+            {
+                obj.remove("files");
+            }
+            Ok(value)
+        }
         Some(Err(e)) => Err(anyhow::anyhow!(e.to_string())),
         None => crate::client::dispatch_engine(engine, tool, args).await,
     }
@@ -828,16 +864,41 @@ mod tests {
         assert!(!is_no_file_command(
             "domain 'open' not registered; registered: [notes]"
         ));
-        let file =
-            decoded_file(&json!({ "mime": "text/plain", "size": 2, "base64": "aGk=" })).unwrap();
+        let file = decoded_file(
+            &json!({ "mime": "text/html", "size": 2, "base64": "aGk=" }),
+            "image/png",
+        )
+        .unwrap();
         assert_eq!(file.bytes, b"hi");
-        assert_eq!(file.mime, "text/plain");
+        assert_eq!(file.mime, "image/png", "the server's mime is ignored");
         for broken in [
-            json!({ "mime": "text/plain", "size": 3, "base64": "aGk=" }),
-            json!({ "mime": "text/plain", "size": 2, "base64": "not base64!" }),
-            json!({ "size": 2, "base64": "aGk=" }),
+            json!({ "size": 3, "base64": "aGk=" }),
+            json!({ "size": 2, "base64": "not base64!" }),
+            json!({ "base64": "aGk=" }),
         ] {
-            assert!(decoded_file(&broken).is_err(), "{broken}");
+            assert!(decoded_file(&broken, "image/png").is_err(), "{broken}");
+        }
+    }
+
+    /// A file's mime is decided from its own name, for a path a domain may
+    /// hold, and nothing else gets one.
+    #[test]
+    fn a_mounted_files_mime_comes_from_its_name() {
+        assert_eq!(file_mime("assets/shot.png"), Some("image/png"));
+        assert_eq!(
+            file_mime("reflections/assets/deck.pdf"),
+            Some("application/pdf")
+        );
+        for refused in [
+            "MANIFEST.md",
+            "assets/../x.png",
+            "reflections/assets/../../assets/shot.png",
+            "../notes/assets/x.png",
+            "/etc/passwd",
+            "Assets/shot.png",
+            "assets/run.exe",
+        ] {
+            assert_eq!(file_mime(refused), None, "{refused}");
         }
     }
 

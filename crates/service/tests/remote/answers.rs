@@ -431,11 +431,18 @@ async fn a_remote_file_command_answers_the_bytes_the_account_may_read() {
     assert_eq!(reply["ok"], true, "{reply}");
     assert_eq!(decoded(&reply), PIC);
 
-    // A path that names no file of either kind.
-    let (_, reply) = server
-        .ctl(Some(&keeper), file("open", "open-note.md"))
-        .await;
-    assert_eq!(reply["ok"], false, "{reply}");
+    // A path that names no file of either kind, or leaves the file folder.
+    for path in [
+        "open-note.md",
+        "assets/../x.png",
+        "reflections/assets/../../assets/shot.png",
+        "/etc/passwd",
+        "Assets/shot.png",
+    ] {
+        let (_, reply) = server.ctl(Some(&keeper), file("open", path)).await;
+        assert_eq!(reply["ok"], false, "{path}: {reply}");
+        assert!(reply.get("data").is_none(), "{path}: {reply}");
+    }
 
     // A private domain the account may not see reads as an unknown one.
     std::fs::create_dir_all(server.file("lab", "assets")).unwrap();

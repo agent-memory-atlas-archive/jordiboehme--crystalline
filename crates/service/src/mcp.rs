@@ -2121,7 +2121,14 @@ impl McpServer {
         };
         let routed = crate::route::routed(&self.engine, tool, &args, &agent, None).await?;
         Some(match routed {
-            Ok(value) => self.render_routed(tool, value),
+            Ok(value) => {
+                // The one domain a read was routed for, as this machine
+                // names it: a one-domain call routes on its first name.
+                let domain = crate::route::named_domains(tool, &args)
+                    .ok()
+                    .and_then(|named| named.into_iter().next());
+                self.render_routed(tool, value, domain.as_deref())
+            }
             // The local part of a sweep failed, or this machine refused: the
             // shape a local call gets.
             Err(crate::route::RouteError::Local(e)) => match e.downcast::<EngineError>() {
@@ -2142,12 +2149,18 @@ impl McpServer {
     /// links for the files they show, as local reads do (R85, which
     /// replaced decision D24): the server lists them as `files`, which is
     /// taken out of the answer here and turned into links under this
-    /// machine's name for the domain, and this machine's `resources/read`
+    /// machine's name for the domain the call was routed for (`domain`,
+    /// never a name the answer gives), and this machine's `resources/read`
     /// forwards a link to the server (`route::routed_file`). A server older
     /// than 0.27.0 sends no `files`, and the read answers without links.
-    fn render_routed(&self, tool: &str, mut value: Value) -> Result<CallToolResult, ErrorData> {
-        let links = match tool {
-            "read_engram" | "read_reflection" => routed_links(&mut value),
+    fn render_routed(
+        &self,
+        tool: &str,
+        mut value: Value,
+        domain: Option<&str>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let links = match (tool, domain) {
+            ("read_engram" | "read_reflection", Some(domain)) => routed_links(&mut value, domain),
             _ => Vec::new(),
         };
         let mut result = self.render_routed_value(tool, value)?;
@@ -5294,15 +5307,6 @@ fn decoded_uri_path(path: &str) -> Result<String, ErrorData> {
     Ok(decoded.into_owned())
 }
 
-/// One attachment's bytes as resource contents, in the shape its mime asks
-/// for: text for the readable formats
-/// [`crystalline_core::is_text_attachment_mime`] names, base64 for everything
-/// else.
-///
-/// A text mime whose bytes are not valid UTF-8 falls back to the blob shape
-/// rather than losing them to a lossy conversion: a `.txt` in some other
-/// encoding is still the file the caller asked for, and a client that decodes
-/// the base64 gets it byte for byte.
 /// One file a read answer shows, as [`McpServer::linked_files`] lists it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LinkedFile {
@@ -5341,20 +5345,27 @@ fn with_files(value: &mut Value, files: Vec<LinkedFile>) {
 }
 
 /// The `files` a routed read answer carries, taken out of it and turned
-/// into resource links under the domain the answer names (already this
-/// machine's name for it). An answer without them (a 0.26 server, a read
-/// that shows no file) gives no links; a malformed list is dropped.
-fn routed_links(value: &mut Value) -> Vec<ContentBlock> {
-    let Some(obj) = value.as_object_mut() else {
-        return Vec::new();
-    };
-    let Some(files) = obj.remove("files") else {
-        return Vec::new();
-    };
-    let Some(domain) = obj.get("domain").and_then(Value::as_str) else {
+/// into resource links under `domain`, the mounted domain the call was
+/// routed for (never a name the server's answer gives). The server lists;
+/// this machine decides: an entry whose path is not a file a domain may hold
+/// is dropped, and the mime comes from the file name here
+/// ([`crate::route::file_mime`]). An answer without `files` (a 0.26 server,
+/// a read that shows no file) gives no links; a malformed list is dropped.
+fn routed_links(value: &mut Value, domain: &str) -> Vec<ContentBlock> {
+    let Some(files) = value.as_object_mut().and_then(|obj| obj.remove("files")) else {
         return Vec::new();
     };
     let files: Vec<LinkedFile> = serde_json::from_value(files).unwrap_or_default();
+    let files: Vec<LinkedFile> = files
+        .into_iter()
+        .filter_map(|file| {
+            let mime = crate::route::file_mime(&file.path)?;
+            Some(LinkedFile {
+                mime: mime.to_string(),
+                ..file
+            })
+        })
+        .collect();
     file_links(domain, &files)
 }
 
@@ -5375,6 +5386,15 @@ fn routed_file_error(e: crate::route::RouteError) -> ErrorData {
     }
 }
 
+/// One attachment's bytes as resource contents, in the shape its mime asks
+/// for: text for the readable formats
+/// [`crystalline_core::is_text_attachment_mime`] names, base64 for everything
+/// else.
+///
+/// A text mime whose bytes are not valid UTF-8 falls back to the blob shape
+/// rather than losing them to a lossy conversion: a `.txt` in some other
+/// encoding is still the file the caller asked for, and a client that decodes
+/// the base64 gets it byte for byte.
 fn attachment_contents(uri: &str, bytes: Vec<u8>, mime: &str) -> ResourceContents {
     if crystalline_core::is_text_attachment_mime(mime) {
         match String::from_utf8(bytes) {
@@ -6074,6 +6094,35 @@ mod tests {
     use rmcp::model::ErrorCode;
 
     use super::*;
+
+    /// A routed file read the server refused (a Reflection served by another
+    /// instance, a right too low) is an input error with the server's words;
+    /// a server out of reach is a server-side error.
+    #[test]
+    fn a_routed_file_refusal_is_an_input_error_in_the_servers_words() {
+        use crate::route::RouteError;
+        use crystalline_remote::RemoteFailure;
+        let hosted = "this domain's Reflection is served by alpha; move it with crystalline serve --take-over";
+        let refused = routed_file_error(RouteError::Source {
+            source: "acme".into(),
+            domain: "open".into(),
+            failure: RemoteFailure::Refused(hosted.into()),
+        });
+        assert_eq!(refused.code, ErrorCode::INVALID_PARAMS);
+        assert_eq!(refused.message, hosted);
+        let ours = routed_file_error(RouteError::Refused("too old".into()));
+        assert_eq!(ours.code, ErrorCode::INVALID_PARAMS);
+        let down = routed_file_error(RouteError::Source {
+            source: "acme".into(),
+            domain: "open".into(),
+            failure: RemoteFailure::Unreachable {
+                source: "acme".into(),
+                url: "https://acme.test".into(),
+                detail: "nothing accepts connections at that address".into(),
+            },
+        });
+        assert_eq!(down.code, ErrorCode::INTERNAL_ERROR);
+    }
 
     /// Every spelling `discard_changes` and `resolve_conflict` accept for the
     /// MANIFEST is caught, and an engram beside it is not.

@@ -164,18 +164,39 @@ impl tower_service::Service<axum::extract::Request> for StripsPrefix {
     }
 }
 
-/// What the front of the instance records and how it plays an older
-/// server: the JSON body of every ctl request that carries a bearer, and a
-/// switch that makes it answer as 0.26 does (no `file` command, no `files`
-/// in a read answer).
+/// How the front of the instance plays a server that is not this one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Play {
+    /// Pass everything through.
+    #[default]
+    Honest,
+    /// A 0.26 server: no `file` command, no `files` in a read answer.
+    As026,
+    /// A hostile server: every mime it names is `text/html`, and a read
+    /// answer lists files with paths no domain may hold.
+    BadFiles,
+    /// A hostile server: a read answer names the local domain `notes` as its
+    /// own.
+    ForeignDomain,
+    /// A server whose Reflection is served by another instance on its
+    /// shared database: `file` answers the hosted refusal ([`HOSTED`]).
+    HostedElsewhere,
+}
+
+/// The refusal [`Play::HostedElsewhere`] answers, as the engine words it.
+pub const HOSTED: &str =
+    "this domain's Reflection is served by alpha; move it with crystalline serve --take-over";
+
+/// What the front of the instance records and how it plays: the JSON body
+/// of every ctl request that carries a bearer, and the [`Play`].
 #[derive(Default)]
 pub struct CtlTap {
     log: std::sync::Mutex<Vec<Value>>,
-    as_026: std::sync::atomic::AtomicBool,
+    play: std::sync::Mutex<Play>,
 }
 
-/// Record the JSON body of every ctl request that carries a bearer, then pass the request on
-/// unchanged, or answer it as 0.26 would while the switch is on.
+/// Record the JSON body of every ctl request that carries a bearer, then pass the request on,
+/// played as the tap says.
 async fn record_ctl(
     axum::extract::State(tap): axum::extract::State<Arc<CtlTap>>,
     request: axum::extract::Request,
@@ -198,20 +219,21 @@ async fn record_ctl(
     if let Some(value) = &parsed {
         tap.log.lock().unwrap().push(value.clone());
     }
-    let as_026 = tap.as_026.load(std::sync::atomic::Ordering::SeqCst);
+    let play = *tap.play.lock().unwrap();
     let cmd = parsed
         .as_ref()
         .and_then(|v| v.get("cmd"))
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    if as_026 && cmd == "file" {
-        return axum::Json(json!({
-            "v": 1,
-            "ok": false,
-            "error": "'file' is not available over a remote connection",
-        }))
-        .into_response();
+    let refused =
+        |error: &str| axum::Json(json!({ "v": 1, "ok": false, "error": error })).into_response();
+    match (play, cmd.as_str()) {
+        (Play::As026, "file") => {
+            return refused("'file' is not available over a remote connection");
+        }
+        (Play::HostedElsewhere, "file") => return refused(HOSTED),
+        _ => {}
     }
     let response = next
         .run(axum::extract::Request::from_parts(
@@ -219,17 +241,43 @@ async fn record_ctl(
             axum::body::Body::from(bytes),
         ))
         .await;
-    if !(as_026 && cmd == "tool") {
+    if play == Play::Honest || play == Play::HostedElsewhere {
         return response;
     }
-    // 0.26 knew no `files` in a read answer.
     let (parts, body) = response.into_parts();
     let bytes = axum::body::to_bytes(body, 64 << 20)
         .await
         .unwrap_or_default();
     let mut answer: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     if let Some(data) = answer.get_mut("data").and_then(Value::as_object_mut) {
-        data.remove("files");
+        match (play, cmd.as_str()) {
+            // 0.26 knew no `files` in a read answer.
+            (Play::As026, _) => {
+                data.remove("files");
+            }
+            (Play::BadFiles, "file") => {
+                data.insert("mime".into(), json!("text/html"));
+            }
+            (Play::BadFiles, _) => {
+                if let Some(Value::Array(files)) = data.get_mut("files") {
+                    for file in files.iter_mut() {
+                        file["mime"] = json!("text/html");
+                    }
+                    for path in [
+                        "MANIFEST.md",
+                        "assets/../x.png",
+                        "assets/run.exe",
+                        "../notes/assets/x.png",
+                    ] {
+                        files.push(json!({ "path": path, "mime": "text/html", "size": 1 }));
+                    }
+                }
+            }
+            (Play::ForeignDomain, _) if data.contains_key("domain") => {
+                data.insert("domain".into(), json!("notes"));
+            }
+            _ => {}
+        }
     }
     let mut parts = parts;
     parts.headers.remove(axum::http::header::CONTENT_LENGTH);
@@ -500,9 +548,12 @@ impl RemoteServer {
     /// Answer from now on as a 0.26 server does: no `file` command, no
     /// `files` in a read answer.
     pub fn answer_as_026(&self) {
-        self.ctl_tap
-            .as_026
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.play(Play::As026);
+    }
+
+    /// Play from now on as `play` says.
+    pub fn play(&self, play: Play) {
+        *self.ctl_tap.play.lock().unwrap() = play;
     }
 
     /// Give `open` files of both kinds: the Reflection on, an engram

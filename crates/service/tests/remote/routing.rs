@@ -813,6 +813,35 @@ async fn an_http_session_never_routes_a_resource_read() {
     );
 }
 
+/// A routed read through the control socket or the in-process CLI answers
+/// as a local read does: the server's `files` list stays out of it.
+#[tokio::test]
+async fn a_routed_cli_read_carries_no_files() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    server.with_files_in_open().await;
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let engram = call(
+        &machine,
+        "read_engram",
+        json!({ "identifier": "shot-note", "domain": "open" }),
+    )
+    .await
+    .unwrap();
+    assert!(engram["content"].is_string(), "{engram}");
+    assert!(engram.get("files").is_none(), "{engram}");
+    let page = call(
+        &machine,
+        "read_reflection",
+        json!({ "domain": "open", "path": "guides/a.md" }),
+    )
+    .await
+    .unwrap();
+    assert!(page["markdown"].is_string(), "{page}");
+    assert!(page.get("files").is_none(), "{page}");
+}
+
 #[test]
 fn the_planner_reads_the_names_a_call_carries() {
     use crystalline_service::route::named_domains;

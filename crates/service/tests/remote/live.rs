@@ -14,7 +14,7 @@ use rmcp::model::{CallToolRequestParams, GetPromptRequestParams, ReadResourceReq
 use rmcp::service::{Peer, RunningService};
 use serde_json::{Value, json};
 
-use crate::fixture::{Options, PIC, RemoteServer, SHOT};
+use crate::fixture::{HOSTED, Options, PIC, Play, RemoteServer, SHOT};
 use crate::local::LocalMachine;
 
 async fn connect(
@@ -994,4 +994,103 @@ async fn a_renamed_mount_links_and_reads_its_files_under_the_local_name() {
         "the server is asked under its own name: {:?}",
         server.ctl_requests()
     );
+}
+
+/// A hostile server does not decide how this machine serves a file: the
+/// mime comes from the file name here, whatever the server names, and a
+/// listed file whose path no domain may hold makes no link.
+#[tokio::test]
+async fn a_servers_mime_and_file_paths_are_not_trusted() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    server.with_files_in_open().await;
+    server.play(Play::BadFiles);
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    for (tool, args, uri) in [
+        (
+            "read_engram",
+            json!({ "identifier": "shot-note", "domain": "open" }),
+            "crystalline://open/assets/shot.png",
+        ),
+        (
+            "read_reflection",
+            json!({ "domain": "open", "path": "guides/a.md" }),
+            "crystalline://open/reflections/assets/pic.png",
+        ),
+    ] {
+        let (_, links) = call_with_links(client.peer(), tool, args).await;
+        assert_eq!(links.len(), 1, "{tool}: {links:?}");
+        assert_eq!(links[0]["uri"], uri, "{tool}");
+        assert_eq!(links[0]["mimeType"], "image/png", "{tool}");
+    }
+    // read_bytes asserts the mime is image/png and the bytes came as a blob.
+    assert_eq!(
+        read_bytes(client.peer(), "crystalline://open/assets/shot.png")
+            .await
+            .unwrap(),
+        SHOT
+    );
+}
+
+/// The links of a routed read name the domain the call was routed for,
+/// never a domain the server's answer names.
+#[tokio::test]
+async fn a_routed_reads_links_name_the_mounted_domain_whatever_the_server_says() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    server.with_files_in_open().await;
+    server.play(Play::ForeignDomain);
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    let (engram, links) = call_with_links(
+        client.peer(),
+        "read_engram",
+        json!({ "identifier": "shot-note", "domain": "open" }),
+    )
+    .await;
+    assert_eq!(engram["domain"], "notes", "the tap played: {engram}");
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert_eq!(links[0]["uri"], "crystalline://open/assets/shot.png");
+    let (_, links) = call_with_links(
+        client.peer(),
+        "read_reflection",
+        json!({ "domain": "open", "path": "guides/a.md" }),
+    )
+    .await;
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert_eq!(
+        links[0]["uri"],
+        "crystalline://open/reflections/assets/pic.png"
+    );
+}
+
+/// A Reflection served by another instance on the server's shared database:
+/// the server's refusal reaches the agent word for word as an input error,
+/// after exactly one request, and this machine never follows it.
+#[tokio::test]
+async fn a_hosted_elsewhere_refusal_of_a_file_arrives_word_for_word() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    server.with_files_in_open().await;
+    server.play(Play::HostedElsewhere);
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    server.clear_ctl_log();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    let refused = read_bytes(
+        client.peer(),
+        "crystalline://open/reflections/assets/pic.png",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused, format!("Mcp error: -32602: {HOSTED}"));
+    let asked = server
+        .ctl_requests()
+        .iter()
+        .filter(|r| r["cmd"] == "file")
+        .count();
+    assert_eq!(asked, 1, "{:?}", server.ctl_requests());
 }
