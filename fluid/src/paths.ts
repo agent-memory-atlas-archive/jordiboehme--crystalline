@@ -55,6 +55,60 @@ export function editRoute(domain: string, permalink: string): string {
 }
 
 /**
+ * A domain's Reflection: its home, where the tree, the pact and search are.
+ * A segment of its own after the domain rather than a query parameter,
+ * because it is a mode of the whole domain and every screen under it keeps
+ * it.
+ */
+export function reflectionRoute(domain: string): string {
+  return `${domainRoute(domain)}/reflection`;
+}
+
+/**
+ * One reflection, by its path inside `reflections/` (`guides/deploying.md`,
+ * `PACT.md`). The path is encoded segment by segment like a permalink, so
+ * its slashes stay slashes and the splat matches it.
+ */
+export function reflectionPageRoute(domain: string, path: string): string {
+  return `${reflectionRoute(domain)}/${encodePermalink(path)}`;
+}
+
+/** The live editor over one reflection; `reflection-edit` ahead of the splat, as `edit` is. */
+export function reflectionEditRoute(domain: string, path: string): string {
+  return `${domainRoute(domain)}/reflection-edit/${encodePermalink(path)}`;
+}
+
+/**
+ * The review screen: open threads and the reflect queue. Static, so it
+ * outranks the page splat; a page path always ends in `.md`, so no page can
+ * be called this.
+ */
+export function reflectionReviewRoute(domain: string): string {
+  return `${reflectionRoute(domain)}/review`;
+}
+
+/**
+ * Reflection-mode search, on the Reflection home. The mode (`search_type`)
+ * and the page ride in the address only when they are not the defaults, so a
+ * result page is a link somebody can send.
+ */
+export function reflectionSearchRoute(
+  domain: string,
+  query: string,
+  mode = "hybrid",
+  page = 1,
+): string {
+  const q = new URLSearchParams({ q: query });
+  if (mode !== "hybrid") {
+    q.set("search_type", mode);
+  }
+  if (page > 1) {
+    q.set("page", String(page));
+  }
+  return `${reflectionRoute(domain)}?${q.toString()}`;
+}
+
+/**
  * The route is kept as the base of the editor's address and redirects to
  * the domain page, where the MANIFEST is now read.
  */

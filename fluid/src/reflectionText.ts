@@ -1,0 +1,219 @@
+/**
+ * A reflection's text, cut the way the engine cuts it.
+ *
+ * A comment anchors on a section id plus a quoted passage and its
+ * occurrence, and the engine finds the passage again with `resolve_anchor`
+ * over `split_sections` (core plan, Tasks 3 and 5): the heading line and the
+ * body joined with LF, the id line left out, the text before the first `##`
+ * as the section `_top`. This module produces exactly that text, so a quote
+ * picked here is a quote the engine finds, and it counts occurrences the
+ * way the engine walks them: left to right, never overlapping.
+ *
+ * The cut uses the heading lines the server already found (`sections[].line`
+ * of `GET .../reflections/{path}`, one-based, frontmatter counted) rather
+ * than a second fence-aware heading parser here, which could only drift.
+ */
+
+/** The id of the text before the first `##`, the engine's `TOP_SECTION`. */
+export const TOP_SECTION = "_top";
+
+/** The frontmatter block, as `MarkdownBody` spells it. */
+const FRONTMATTER = /^---\r?\n[\s\S]*?\r?\n---[ \t]*(\r?\n|$)/;
+
+/** A section id line: `<!-- r:<4 to 16 hex> -->` alone on its line (core `parse_id_line` trims). */
+const ID_LINE = /^\s*<!-- r:[0-9a-f]{4,16} -->\s*$/;
+
+/** Whether this line of a page is a section id line. */
+export function isIdLine(line: string): boolean {
+  return ID_LINE.test(line);
+}
+
+/**
+ * The text with every id line removed: what a person is shown of a page, a
+ * snippet or, with `diff`, a unified diff (whose lines carry one marker
+ * character first). Ids are bookkeeping, never content.
+ */
+export function stripIdLines(text: string, diff = false): string {
+  return text
+    .split("\n")
+    .filter((line) => !isIdLine(diff ? line.slice(1) : line))
+    .join("\n");
+}
+
+/** One section's text, in the engine's shape. */
+export interface SectionText {
+  /** The id, `_top` for the intro, null for a heading that has none yet. */
+  id: string | null;
+  /** The heading text, empty for `_top`. */
+  heading: string;
+  /** The heading line and the body, LF-joined, without the id line. */
+  text: string;
+}
+
+/**
+ * The page cut into its sections, `_top` first.
+ *
+ * `sections` is the server's list in file order. A file that ends in a line
+ * break has no empty last line here, which is how the engine's line walk
+ * sees it too.
+ */
+export function sectionTexts(
+  markdown: string,
+  sections: readonly { id: string | null; heading: string; line: number }[],
+): SectionText[] {
+  const lf = markdown.replace(/\r\n/g, "\n");
+  const front = FRONTMATTER.exec(lf);
+  // One-based, as the engine counts it: the lines the frontmatter took, plus one.
+  const bodyLine = front === null ? 1 : front[0].split("\n").length;
+  const lines = lf.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  // Where each heading really is: at its `line` when that line is the
+  // heading, else the next line after the previous cut that is (defensive:
+  // the server counts `line` on the markdown it answers). A heading that is
+  // nowhere is left out, and a thread on it reads as its section gone.
+  const starts: number[] = [];
+  let cursor = bodyLine - 1;
+  for (const section of sections) {
+    let at = section.line - 1;
+    if (at < cursor || !isHeading(lines[at], section.heading)) {
+      at = lines.findIndex(
+        (line, i) => i >= cursor && isHeading(line, section.heading),
+      );
+    }
+    starts.push(at);
+    if (at >= 0) {
+      cursor = at + 1;
+    }
+  }
+  const found = starts.filter((at) => at >= 0);
+  const out: SectionText[] = [
+    {
+      id: TOP_SECTION,
+      heading: "",
+      text: lines.slice(bodyLine - 1, found[0] ?? lines.length).join("\n"),
+    },
+  ];
+  sections.forEach((section, index) => {
+    const start = starts[index] ?? -1;
+    if (start < 0) {
+      return;
+    }
+    const end = found.find((at) => at > start) ?? lines.length;
+    const own = lines.slice(start, end);
+    if (own.length > 1 && isIdLine(own[1] ?? "")) {
+      own.splice(1, 1);
+    }
+    out.push({
+      id: section.id,
+      heading: section.heading,
+      text: own.join("\n"),
+    });
+  });
+  return out;
+}
+
+/** A `##` heading line whose text is `heading` (the engine trims it). */
+const HEADING_LINE = /^##[ \t]+(.*)$/;
+function isHeading(line: string | undefined, heading: string): boolean {
+  const match = HEADING_LINE.exec(line ?? "");
+  return match !== null && (match[1] ?? "").trim() === heading;
+}
+
+/**
+ * Which occurrence of `quote` in `text` starts at `start`, counted the way
+ * `resolve_anchor` walks: each match resumes after the previous one ends, so
+ * matches never overlap. A selection that starts inside an earlier match
+ * (possible only with overlapping text) is filed under that match.
+ */
+export function occurrenceAt(
+  text: string,
+  quote: string,
+  start: number,
+): number {
+  let from = 0;
+  let n = 0;
+  for (;;) {
+    const at = text.indexOf(quote, from);
+    if (at < 0 || at > start) {
+      return Math.max(n, 1);
+    }
+    n += 1;
+    if (at === start) {
+      return n;
+    }
+    from = at + quote.length;
+  }
+}
+
+/** Where the `occurrence`-th match of `quote` is, or null when it is gone. */
+export function locateQuote(
+  text: string,
+  quote: string,
+  occurrence: number,
+): { start: number; end: number } | null {
+  if (quote === "") {
+    return { start: 0, end: text.length };
+  }
+  let from = 0;
+  for (let n = 1; n <= Math.max(occurrence, 1); n += 1) {
+    const at = text.indexOf(quote, from);
+    if (at < 0) {
+      return null;
+    }
+    if (n === Math.max(occurrence, 1)) {
+      return { start: at, end: at + quote.length };
+    }
+    from = at + quote.length;
+  }
+  return null;
+}
+
+/**
+ * The page without the `reflection:` block of its frontmatter: the text a
+ * live room holds (core Task 18), so a conflict's "theirs" compares like
+ * with like. The block is a top-level key; it ends at the next top-level key
+ * or at the closing `---`.
+ */
+export function stripProvenance(markdown: string): string {
+  const front = FRONTMATTER.exec(markdown);
+  if (front === null) {
+    return markdown;
+  }
+  const lines = front[0].split("\n");
+  const kept: string[] = [];
+  let inBlock = false;
+  lines.forEach((line, index) => {
+    const topLevel =
+      index === 0 || line === "---" || /^[^\s#-][^:]*:/.test(line);
+    if (topLevel) {
+      inBlock = /^reflection:/.test(line);
+    }
+    if (!inBlock) {
+      kept.push(line);
+    }
+  });
+  // Nothing left between the fences: the fences go too and the body loses
+  // its leading blank lines, which is the engine's cut (core Task 12,
+  // `without_provenance`), so a conflict compares the room's own text.
+  if (kept.every((line) => line.trim() === "---" || line.trim() === "")) {
+    return markdown.slice(front[0].length).replace(/^[\r\n]+/, "");
+  }
+  return kept.join("\n") + markdown.slice(front[0].length);
+}
+
+/** How long something has waited, in the largest whole unit. */
+export function ageText(seconds: number): string {
+  if (seconds < 60) {
+    return "just now";
+  }
+  const [size, one, many] =
+    seconds < 3600
+      ? [60, "minute", "minutes"]
+      : seconds < 86400
+        ? [3600, "hour", "hours"]
+        : [86400, "day", "days"];
+  const count = Math.floor(seconds / size);
+  return `${String(count)} ${count === 1 ? one : many}`;
+}
