@@ -344,16 +344,6 @@ async fn sort_pending_off_runtime(root: PathBuf, names: Vec<String>) -> Result<P
         })
 }
 
-/// Whether the recorded engram paths leave room for a pending engram: one
-/// of them lies under `reflections/`, or none is recorded at all (the index
-/// holds no row of the domain, so the files on disk decide).
-fn may_be_pending(recorded: &[String]) -> bool {
-    recorded.is_empty()
-        || recorded
-            .iter()
-            .any(|p| crystalline_core::reflection::is_under_reflections(p))
-}
-
 impl Engine {
     /// This instance's `service.public_url` in its canonical spelling (the
     /// origin in ascii, default port dropped, the path with no trailing
@@ -373,16 +363,20 @@ impl Engine {
         let ContentSource::File { root } = self.read_source(domain) else {
             return Ok(Vec::new());
         };
+        // Every gate asks this, so it asks the index two questions rather
+        // than loading every recorded path (R82). With rows recorded and none
+        // under the folder (a Reflection in effect keeps its pages out of the
+        // engram rows), nothing can be pending and no file is read, unless
+        // the folder is spelled twice, which holds the switch whatever the
+        // files are. The spelling check lists the root: blocking, like the
+        // predicate's file reads.
         let recorded = self.recorded_paths(domain).await?;
-        // Every gate asks this. With rows recorded and none under the folder
-        // (a Reflection in effect keeps its pages out of the engram rows),
-        // nothing can be pending and no file is read, unless the folder is
-        // spelled twice, which holds the switch whatever the files are.
-        if !may_be_pending(&recorded) && r::reflection_folders(&root).len() < 2 {
-            return Ok(Vec::new());
-        }
         tokio::task::spawn_blocking(move || {
-            crystalline_index::pending_engrams(&root, recorded.iter())
+            if recorded.nothing_pending(&root) {
+                Vec::new()
+            } else {
+                crystalline_index::pending_engrams(&root, recorded.under_reflections.iter())
+            }
         })
         .await
         .map_err(|e| {
@@ -1970,7 +1964,7 @@ impl Engine {
             .store
             .lock()
             .await
-            .list_reflections(access.domain_id)
+            .list_reflection_stamps(access.domain_id)
             .await?;
         let others = rows
             .iter()
@@ -2383,19 +2377,24 @@ mod tests {
         screen_switch(ON, OFF, &facts).unwrap();
     }
 
-    /// The gate's fast path: only rows under the folder, or no rows at all,
-    /// send the pending check to the disk.
+    /// The gate's fast path settles "nothing pending" only over rows that
+    /// lie outside the folder: no row at all is an empty index, and a row
+    /// under the folder is the predicate's to judge.
     #[test]
-    fn only_rows_under_the_folder_or_none_may_be_pending() {
-        assert!(may_be_pending(&[]));
-        assert!(!may_be_pending(&[
-            "MANIFEST.md".into(),
-            "notes/a.md".into()
-        ]));
-        assert!(may_be_pending(&[
-            "MANIFEST.md".into(),
-            "Reflections/a.md".into()
-        ]));
+    fn only_rows_outside_the_folder_settle_nothing_pending() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty = crate::engine::RecordedPaths::default();
+        assert!(!empty.nothing_pending(tmp.path()), "an empty index");
+        let outside = crate::engine::RecordedPaths {
+            any: true,
+            under_reflections: Vec::new(),
+        };
+        assert!(outside.nothing_pending(tmp.path()));
+        let under = crate::engine::RecordedPaths {
+            any: true,
+            under_reflections: vec!["Reflections/a.md".into()],
+        };
+        assert!(!under.nothing_pending(tmp.path()));
     }
 
     /// A write goes into the Reflection's folder as it is spelled on disk;

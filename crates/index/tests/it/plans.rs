@@ -296,6 +296,45 @@ pub fn registry() -> Vec<HotStatement> {
             postgres_must_seek: &[],
         },
         HotStatement {
+            // Every Reflection gate asks this (R82): the base rows under the
+            // folder in any letter case, within one domain.
+            issued_by: "Store::engram_rows_under_reflections",
+            turso: || crystalline_index::turso::ENGRAM_ROWS_UNDER_REFLECTIONS_SQL.to_string(),
+            postgres: || crystalline_index::postgres::ENGRAM_ROWS_UNDER_REFLECTIONS_SQL.to_string(),
+            literals: &["1", "64"],
+            literals_pg: None,
+            scan_expected: &[],
+            scan_expected_pg: None,
+            turso_must_seek: &[],
+            postgres_must_seek: &[],
+        },
+        HotStatement {
+            // The gate's second question, asked when no row lies under the
+            // folder: does the index hold any row of the domain at all.
+            issued_by: "Store::has_engram_rows",
+            turso: || crystalline_index::turso::HAS_ENGRAM_ROWS_SQL.to_string(),
+            postgres: || crystalline_index::postgres::HAS_ENGRAM_ROWS_SQL.to_string(),
+            literals: &["1"],
+            literals_pg: None,
+            scan_expected: &[],
+            scan_expected_pg: None,
+            turso_must_seek: &[],
+            postgres_must_seek: &[],
+        },
+        HotStatement {
+            // The sync's stat prefilter and the move screens: one domain's
+            // reflection rows, through the table's unique (domain_id, path).
+            issued_by: "Store::list_reflection_stamps",
+            turso: || crystalline_index::turso::REFLECTION_STAMPS_SQL.to_string(),
+            postgres: || crystalline_index::postgres::REFLECTION_STAMPS_SQL.to_string(),
+            literals: &["1"],
+            literals_pg: None,
+            scan_expected: &[],
+            scan_expected_pg: None,
+            turso_must_seek: &[],
+            postgres_must_seek: &[],
+        },
+        HotStatement {
             // The close-folder hint asks this on every write that may have
             // started a folder: is anything else already under it. A byte
             // range over `path`, which turso seeks on `idx_engram_path_actor`;

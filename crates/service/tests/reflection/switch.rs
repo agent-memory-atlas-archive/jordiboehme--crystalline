@@ -975,3 +975,292 @@ async fn a_manifest_edit_that_moves_the_switch_announces_it() {
         .unwrap();
     assert_eq!(switched(&mut rx), vec![Some("ada".to_string())]);
 }
+
+/// The cost of the Reflection gate on a large effective domain: 20,000
+/// engrams and 300 pages, 500 `reflection_status` calls and 50 rounds of
+/// what `GET /reflection/domains` asks the engine for each domain (the
+/// status, then the open threads of a Reflection that is on). Never a gate:
+/// the numbers depend on the machine and go into the task report. Run with
+/// `cargo nextest run -p crystalline-service --test reflection --run-ignored only reflection_gate_timing --no-capture`.
+#[tokio::test]
+#[ignore = "timing evidence for the task report, not a gate"]
+async fn reflection_gate_timing() {
+    use std::time::Instant;
+
+    use crate::docs::person;
+
+    let manifest_on = manifest("reflection: on\n");
+    let mut files: Vec<(String, String)> = vec![("MANIFEST.md".into(), manifest_on)];
+    for i in 0..20_000 {
+        files.push((
+            format!("notes/d{}/n{i}.md", i % 100),
+            engram(
+                &format!("Note {i}"),
+                &format!("note-{i}"),
+                "- [fact] a note",
+            ),
+        ));
+    }
+    for i in 0..300 {
+        files.push((format!("reflections/p{i}.md"), page(&format!("Page {i}"))));
+    }
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let built = Instant::now();
+    let fx = fixture(&refs).await;
+    eprintln!("fixture: {:?}", built.elapsed());
+    assert!(
+        fx.engine.reflection_effective("eng").await.unwrap(),
+        "the timing is taken on an effective Reflection"
+    );
+
+    let caller = person();
+    let started = Instant::now();
+    for _ in 0..500 {
+        fx.engine.reflection_status("eng", &caller).await.unwrap();
+    }
+    let status = started.elapsed();
+
+    let started = Instant::now();
+    for _ in 0..50 {
+        let mut names: Vec<String> = fx.engine.registered_domain_names().into_iter().collect();
+        names.sort();
+        for name in names {
+            let status = fx.engine.reflection_status(&name, &caller).await.unwrap();
+            if status["state"] == "on" {
+                fx.engine
+                    .list_reflection_threads(&name, None, "open", &caller)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+    let domains = started.elapsed();
+    eprintln!(
+        "reflection_status x500: {status:?} ({:?} each)",
+        status / 500
+    );
+    eprintln!(
+        "GET /reflection/domains x50 (engine calls): {domains:?} ({:?} each)",
+        domains / 50
+    );
+}
+
+/// A store the test keeps a handle on, under the fixture's engine.
+async fn fixture_holding_the_store(
+    files: &[(&str, &str)],
+) -> (
+    crate::fixture::Fx,
+    std::sync::Arc<tokio::sync::Mutex<dyn crystalline_index::Store>>,
+) {
+    let store: std::sync::Arc<tokio::sync::Mutex<dyn crystalline_index::Store>> =
+        std::sync::Arc::new(tokio::sync::Mutex::new(
+            crystalline_index::TursoStore::open_in_memory()
+                .await
+                .unwrap(),
+        ));
+    let fx = crate::fixture::fixture_on(store.clone(), files, |_, _| {}, None, None, None).await;
+    (fx, store)
+}
+
+/// The engram rows and the reflection rows the index holds of `eng`.
+async fn rows_of(
+    store: &std::sync::Arc<tokio::sync::Mutex<dyn crystalline_index::Store>>,
+) -> (Vec<String>, Vec<String>) {
+    let store = store.lock().await;
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    let mut engrams: Vec<String> = store.file_stamps(did).await.unwrap().into_keys().collect();
+    engrams.sort();
+    let pages = store
+        .list_reflections(did)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.path)
+        .collect();
+    (engrams, pages)
+}
+
+/// Every gate asks whether anything is pending. On a Reflection in effect
+/// (rows recorded, none under the folder) the answer comes from one probe of
+/// the index, never from loading every recorded path of the domain (R82).
+#[tokio::test]
+async fn a_hundred_gates_on_an_effective_domain_load_no_recorded_paths() {
+    use crate::docs::{person, reflecting, write};
+
+    let fx = reflecting().await;
+    fx.engine
+        .write_reflection(&write("a.md", &page("A")), &person())
+        .await
+        .unwrap();
+    let before = fx.engine.recorded_path_loads();
+    for _ in 0..50 {
+        fx.engine.reflection_status("eng", &person()).await.unwrap();
+    }
+    for _ in 0..50 {
+        fx.engine
+            .read_reflection("eng", "a.md", &person())
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        fx.engine.recorded_path_loads(),
+        before,
+        "a gate on an effective Reflection loads no recorded path"
+    );
+}
+
+/// A hand-written page with no section id line and no `reflection:` key is a
+/// pending engram to the disk walk, which an empty index takes. On an index
+/// that records the domain's engrams and holds the file as a reflection row,
+/// the fast path answers "nothing pending" without handing an empty path
+/// list to the index functions, which would read it as an empty index and
+/// walk the disk.
+#[tokio::test]
+async fn an_unmarked_page_keeps_an_effective_reflection_on_after_the_fast_path() {
+    let (fx, store) = fixture_holding_the_store(&[
+        ("MANIFEST.md", &manifest("reflection: on\n")),
+        (
+            "runbooks/deploy.md",
+            &engram("Deploy", "runbooks/deploy", "- [fact] deploys run at night"),
+        ),
+    ])
+    .await;
+    std::fs::create_dir_all(fx.root.join("reflections")).unwrap();
+    std::fs::write(
+        fx.root.join("reflections/plain.md"),
+        "---\ntitle: Plain\n---\n\n# Plain\n\nWritten by hand.\n",
+    )
+    .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    assert!(
+        crystalline_core::is_pending_engram(
+            &fx.root,
+            "reflections/plain.md",
+            crystalline_core::EngramRow::Unknown
+        ),
+        "the disk walk would call the page a pending engram"
+    );
+    let (engrams, pages) = rows_of(&store).await;
+    assert!(
+        pages.iter().any(|p| p == "plain.md"),
+        "a reflection row: {pages:?}"
+    );
+    assert!(
+        !engrams.is_empty()
+            && !engrams
+                .iter()
+                .any(|p| crystalline_core::reflection::is_under_reflections(p)),
+        "engram rows recorded, none under the folder: {engrams:?}"
+    );
+    assert_eq!(
+        fx.engine.reflection_state("eng").await.unwrap(),
+        ReflectionState::On {
+            home: crystalline_service::ReflectionHome::Local
+        }
+    );
+    assert!(fx.engine.reflection_effective("eng").await.unwrap());
+}
+
+const PENDING_FILES: [(&str, &str); 2] = [
+    (
+        "reflections/old.md",
+        "---\ntype: engram\ntitle: Old\npermalink: reflections/old\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-09-01\n---\n\n# Old\n\n- [fact] old\n",
+    ),
+    (
+        "reflections/deep/older.md",
+        "---\ntype: engram\ntitle: Older\npermalink: reflections/deep/older\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-09-01\n---\n\n# Older\n\n- [fact] older\n",
+    ),
+];
+
+/// A switch that arrives out of band while two engrams live under the folder
+/// stays pending and names both, in order: the engrams' rows under the folder
+/// are what the fast path hands on.
+#[tokio::test]
+async fn a_pending_switch_still_names_every_engram() {
+    let (fx, store) = fixture_holding_the_store(&PENDING_FILES).await;
+    std::fs::write(fx.root.join("MANIFEST.md"), manifest("reflection: on\n")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let (engrams, _) = rows_of(&store).await;
+    assert!(
+        engrams.iter().any(|p| p == "reflections/old.md"),
+        "{engrams:?}"
+    );
+    assert_eq!(
+        fx.engine.reflection_state("eng").await.unwrap(),
+        ReflectionState::Pending {
+            engrams: vec![
+                "reflections/deep/older.md".to_string(),
+                "reflections/old.md".to_string()
+            ]
+        }
+    );
+    assert!(!fx.engine.reflection_effective("eng").await.unwrap());
+}
+
+/// The same switch on an index that holds no row of the domain (a wipe and
+/// rebuild, a new machine): the files on disk decide, so it stays pending
+/// and names both engrams rather than reading "no row under the folder" as
+/// "nothing pending".
+#[tokio::test]
+async fn an_out_of_band_switch_on_an_empty_index_still_names_every_engram() {
+    let (fx, store) = fixture_holding_the_store(&PENDING_FILES).await;
+    std::fs::write(fx.root.join("MANIFEST.md"), manifest("reflection: on\n")).unwrap();
+    {
+        let store = store.lock().await;
+        let did = store.domain_id("eng").await.unwrap().unwrap();
+        store.clear_domain(did).await.unwrap();
+    }
+    let (engrams, _) = rows_of(&store).await;
+    assert!(engrams.is_empty(), "{engrams:?}");
+    assert_eq!(
+        fx.engine.reflection_state("eng").await.unwrap(),
+        ReflectionState::Pending {
+            engrams: vec![
+                "reflections/deep/older.md".to_string(),
+                "reflections/old.md".to_string()
+            ]
+        }
+    );
+    assert!(!fx.engine.reflection_effective("eng").await.unwrap());
+}
+
+/// More engrams under the folder than the gate's first read takes: the
+/// pending switch still names every one, so the rest is read.
+#[tokio::test]
+async fn a_pending_switch_past_the_probe_names_every_engram() {
+    let files: Vec<(String, String)> = (0..70)
+        .map(|i| {
+            (
+                format!("reflections/many/n{i:02}.md"),
+                engram(
+                    &format!("N{i}"),
+                    &format!("reflections/many/n{i:02}"),
+                    "- [fact] n",
+                ),
+            )
+        })
+        .collect();
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let fx = fixture(&refs).await;
+    std::fs::write(fx.root.join("MANIFEST.md"), manifest("reflection: on\n")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let before = fx.engine.recorded_path_loads();
+    let ReflectionState::Pending { engrams } = fx.engine.reflection_state("eng").await.unwrap()
+    else {
+        panic!("the switch waits for the engrams");
+    };
+    let mut expected: Vec<String> = files.into_iter().map(|(p, _)| p).collect();
+    expected.sort();
+    assert_eq!(engrams, expected);
+    assert_eq!(
+        fx.engine.recorded_path_loads(),
+        before + 1,
+        "one read past the probe"
+    );
+}

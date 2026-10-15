@@ -745,6 +745,41 @@ pub(crate) enum ContentSource {
     Virtual,
 }
 
+/// How many engram rows under `reflections/` a Reflection gate reads at
+/// first. More than that is a pending switch, whose refusal names every
+/// engram, so the rest is read too.
+pub(crate) const UNDER_REFLECTIONS_PROBE: usize = 64;
+
+/// What a Reflection gate asks the index of a domain's engram rows
+/// ([`Engine::recorded_paths`]). The rule over it, in order: a folder spelled
+/// twice holds the switch whatever the rows are; no row at all (`!any`) is an
+/// empty index, where the files on disk decide; rows and none under the
+/// folder is nothing pending, answered without a file read; otherwise the
+/// rows under the folder are the ones the predicate is asked of, which gives
+/// the answer the whole stamp map gave, since only paths under the folder
+/// were ever asked.
+#[derive(Debug, Default)]
+pub(crate) struct RecordedPaths {
+    /// Whether the index holds any base engram row of the domain.
+    pub any: bool,
+    /// The base engram rows under `reflections/`, in any letter case.
+    pub under_reflections: Vec<String>,
+}
+
+impl RecordedPaths {
+    /// Whether the fast path settles "nothing pending": rows recorded, none
+    /// under the folder, and the folder spelled once. The index functions are
+    /// never asked then, and must not be: they read an empty path list as an
+    /// empty index and walk the disk, where a hand-written page with no id
+    /// line counts as a pending engram. Blocking: lists the root's entries,
+    /// and only when the rows leave the answer open to the spelling.
+    pub(crate) fn nothing_pending(&self, root: &Path) -> bool {
+        self.any
+            && self.under_reflections.is_empty()
+            && crystalline_core::reflection::reflection_folders(root).len() < 2
+    }
+}
+
 /// The two signals of `Engine::hold_next_room_screen_until`.
 #[cfg(any(test, feature = "testing"))]
 struct RoomScreenGate {
@@ -829,6 +864,11 @@ pub struct Engine {
     // `Engine::contradiction_fact_loads`.
     #[cfg(any(test, feature = "testing"))]
     contradiction_fact_loads: std::sync::atomic::AtomicU64,
+    // A test seam like `contradiction_fact_loads`: how many times a
+    // Reflection gate loaded every recorded engram path of a domain. See
+    // `Engine::recorded_path_loads`.
+    #[cfg(any(test, feature = "testing"))]
+    recorded_path_loads: std::sync::atomic::AtomicU64,
     // What the contradiction walk parsed of each engram, per domain and path,
     // keyed by the content sha it was read at, so a walk reads only the
     // engrams whose stamp moved. Memory only, never written to the database;
@@ -2135,6 +2175,8 @@ impl Engine {
             contradiction_fact_walks: std::sync::atomic::AtomicU64::new(0),
             #[cfg(any(test, feature = "testing"))]
             contradiction_fact_loads: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(any(test, feature = "testing"))]
+            recorded_path_loads: std::sync::atomic::AtomicU64::new(0),
             contradiction_facts_cache: std::sync::Mutex::default(),
             #[cfg(any(test, feature = "testing"))]
             contradiction_walks: std::sync::atomic::AtomicU64::new(0),
@@ -2829,13 +2871,16 @@ impl Engine {
 
     /// The domain's Reflection mode in effect: `Effective` when switched on
     /// and no engram is left under `reflections/`, `Off` otherwise (pending
-    /// included). Decided by [`crystalline_index::reflection_mode`] over the
-    /// paths the index records, the call the sync makes, so the engine and
-    /// the sync never disagree; a domain the index holds no row of takes its
-    /// disk fallback. The MANIFEST is read first, so a domain without a
-    /// Reflection costs no store read, and the store lock is held for the
-    /// two reads only, never for the file reads that follow, which run on
-    /// the blocking pool.
+    /// included). The MANIFEST is read first, so a domain without a
+    /// Reflection costs no store read. Then the index is asked two questions
+    /// under one store lock (`Engine::recorded_paths`): a domain that
+    /// records engram rows and none under the folder is `Effective` with no
+    /// file read (unless the folder is spelled twice); otherwise
+    /// [`crystalline_index::reflection_mode`] decides over the rows under the
+    /// folder, the call the sync makes, so the engine and the sync never
+    /// disagree, and a domain the index holds no row of takes its disk
+    /// fallback. The file reads run on the blocking pool, never under the
+    /// store lock.
     pub async fn reflection_mode(&self, domain: &str) -> Result<crystalline_core::ReflectionMode> {
         let ContentSource::File { root } = self.read_source(domain) else {
             return Ok(crystalline_core::ReflectionMode::Off);
@@ -2844,10 +2889,15 @@ impl Engine {
             return Ok(crystalline_core::ReflectionMode::Off);
         }
         let recorded = self.recorded_paths(domain).await?;
-        // The predicate reads the recorded files (or walks the folder on an
-        // empty index): blocking IO, so off the runtime's workers.
+        // The spelling check and the predicate read the disk (the root's
+        // entries, the recorded files, or the folder on an empty index):
+        // blocking IO, so off the runtime's workers.
         tokio::task::spawn_blocking(move || {
-            crystalline_index::reflection_mode(&root, recorded.iter())
+            if recorded.nothing_pending(&root) {
+                crystalline_core::ReflectionMode::Effective
+            } else {
+                crystalline_index::reflection_mode(&root, recorded.under_reflections.iter())
+            }
         })
         .await
         .map_err(|e| {
@@ -2857,15 +2907,46 @@ impl Engine {
         })
     }
 
-    /// The domain-relative paths the index records for `domain`'s files,
-    /// empty when it holds no row of the domain. The store lock is held for
-    /// the two reads only.
-    pub(crate) async fn recorded_paths(&self, domain: &str) -> Result<Vec<String>> {
+    /// What the index records of `domain`'s engram rows, as much as a
+    /// Reflection gate needs (R82): whether it holds any base row, and the
+    /// base rows under `reflections/` in any letter case. Never the whole
+    /// stamp map: up to [`UNDER_REFLECTIONS_PROBE`] rows are read, and only a
+    /// domain with that many engrams under the folder (a pending switch,
+    /// whose refusal names them all) reads the rest. The store lock is held
+    /// for these reads only.
+    pub(crate) async fn recorded_paths(&self, domain: &str) -> Result<RecordedPaths> {
         let store = self.store.lock().await;
-        Ok(match store.domain_id(domain).await? {
-            Some(id) => store.file_stamps(id).await?.into_keys().collect(),
-            None => Vec::new(),
+        let Some(id) = store.domain_id(domain).await? else {
+            return Ok(RecordedPaths::default());
+        };
+        let mut under_reflections = store
+            .engram_rows_under_reflections(id, UNDER_REFLECTIONS_PROBE)
+            .await?;
+        if under_reflections.len() >= UNDER_REFLECTIONS_PROBE {
+            #[cfg(any(test, feature = "testing"))]
+            self.recorded_path_loads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            under_reflections = store.engram_rows_under_reflections(id, usize::MAX).await?;
+        }
+        // A row under the folder is a row: the second question only when
+        // there is none.
+        let any = !under_reflections.is_empty() || store.has_engram_rows(id).await?;
+        Ok(RecordedPaths {
+            any,
+            under_reflections,
         })
+    }
+
+    /// How many times a Reflection gate has read past the first
+    /// [`UNDER_REFLECTIONS_PROBE`] engram rows under the folder since this
+    /// engine was built: only a pending switch with that many engrams does.
+    /// Before R82 every gate loaded every recorded path of the domain, which
+    /// this counted too, so a gate on an effective Reflection that moves it
+    /// is a regression.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn recorded_path_loads(&self) -> u64 {
+        self.recorded_path_loads
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Whether the domain's Reflection is in effect.

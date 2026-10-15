@@ -116,13 +116,13 @@ use crate::store::{
     EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode,
     GraphSlice, HostClaim, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO, LeadVector,
     NamedCount, NewChunk, NewReflectionChunk, OBSERVATION_VECTOR_CHUNK, ObservationVector,
-    OutboundRef, Page, RebuildKind, RecentFilter, ReferenceCandidates, ReflectionRow, ScoredPair,
-    SearchHit, SearchMode, SearchQuery, SectionVector, SpellingPlan, Store, StoreInfo,
-    StoredEngram, Vocabulary, build_vocabulary, changed_spellings, count_references_to_sql,
-    domain_url_needles, folder_slash, in_transaction, names_a_domain_url, page_window,
-    reference_match, referencing_domains_sql, rename_onto_taken_row, reset_spelled_references_sql,
-    resolve_references_to_sql, resolve_spelled_references_sql, spelled_references_sql,
-    spelling_plan,
+    OutboundRef, Page, RebuildKind, RecentFilter, ReferenceCandidates, ReflectionRow,
+    ReflectionStamp, ScoredPair, SearchHit, SearchMode, SearchQuery, SectionVector, SpellingPlan,
+    Store, StoreInfo, StoredEngram, Vocabulary, build_vocabulary, changed_spellings,
+    count_references_to_sql, domain_url_needles, folder_slash, in_transaction, names_a_domain_url,
+    page_window, reference_match, referencing_domains_sql, rename_onto_taken_row,
+    reset_spelled_references_sql, resolve_references_to_sql, resolve_spelled_references_sql,
+    spelled_references_sql, spelling_plan,
 };
 use crate::sweep::{SpelledRef, UnresolvedRef};
 
@@ -1237,6 +1237,23 @@ async fn delete_children(conn: &mut PgConnection, engram_id: i64) -> Result<()> 
 pub const FILE_STAMPS_SQL: &str =
     "SELECT path, mtime, size, sha256 FROM engram WHERE domain_id=$1 AND actor = ''";
 
+/// The gate's fast path: base engram rows whose first path segment is the
+/// Reflection folder in any letter case (R82). Scans the domain's rows in the
+/// database; nothing is built in Rust.
+#[doc(hidden)]
+pub const ENGRAM_ROWS_UNDER_REFLECTIONS_SQL: &str = "SELECT path FROM engram WHERE domain_id=$1 AND actor = '' AND lower(substr(path, 1, 12)) = 'reflections/' LIMIT $2";
+
+/// Whether the domain has any base engram row: an empty one takes the disk walk.
+#[doc(hidden)]
+pub const HAS_ENGRAM_ROWS_SQL: &str =
+    "SELECT 1 FROM engram WHERE domain_id=$1 AND actor = '' LIMIT 1";
+
+/// The reflection rows without their text, behind
+/// [`Store::list_reflection_stamps`]; the method sorts them by path.
+#[doc(hidden)]
+pub const REFLECTION_STAMPS_SQL: &str =
+    "SELECT path, title, sha256, size, modified FROM reflection WHERE domain_id=$1";
+
 /// The probe behind every upsert, the twin of the turso one: two arms, each a
 /// full-key seek of its own unique index. Run with `persistent(false)` (see
 /// `upsert_row`).
@@ -1983,6 +2000,33 @@ impl Store for PostgresStore {
             );
         }
         Ok(out)
+    }
+
+    async fn engram_rows_under_reflections(
+        &self,
+        domain: DomainId,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        let mut conn = self.acquire().await?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = query_all(
+            conn.as_mut(),
+            ENGRAM_ROWS_UNDER_REFLECTIONS_SQL,
+            vec![Param::Int(domain.0), Param::Int(limit)],
+        )
+        .await?;
+        Ok(rows.iter().filter_map(|r| cell_text(r, 0)).collect())
+    }
+
+    async fn has_engram_rows(&self, domain: DomainId) -> Result<bool> {
+        let mut conn = self.acquire().await?;
+        let rows = query_all(
+            conn.as_mut(),
+            HAS_ENGRAM_ROWS_SQL,
+            vec![Param::Int(domain.0)],
+        )
+        .await?;
+        Ok(!rows.is_empty())
     }
 
     async fn upsert_engram(&self, domain: DomainId, record: &EngramRecord) -> Result<EngramId> {
@@ -4537,6 +4581,30 @@ impl Store for PostgresStore {
         )
         .await?;
         Ok(rows.iter().map(reflection_from_row).collect())
+    }
+
+    async fn list_reflection_stamps(&self, domain: DomainId) -> Result<Vec<ReflectionStamp>> {
+        let mut conn = self.acquire().await?;
+        let rows = query_all(
+            conn.as_mut(),
+            REFLECTION_STAMPS_SQL,
+            vec![Param::Int(domain.0)],
+        )
+        .await?;
+        let mut stamps: Vec<ReflectionStamp> = rows
+            .iter()
+            .map(|r| ReflectionStamp {
+                path: cell_text(r, 0).unwrap_or_default(),
+                title: cell_text(r, 1).unwrap_or_default(),
+                sha256: cell_text(r, 2).unwrap_or_default(),
+                size: cell_i64(r, 3).unwrap_or(0).max(0) as u64,
+                modified: cell_text(r, 4).unwrap_or_default(),
+            })
+            .collect();
+        // Byte order, the order `list_reflections` pins with `COLLATE "C"`;
+        // Rust compares strings byte by byte.
+        stamps.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(stamps)
     }
 
     async fn reflection_coverage(&self, domain: DomainId) -> Result<EmbeddingCoverage> {

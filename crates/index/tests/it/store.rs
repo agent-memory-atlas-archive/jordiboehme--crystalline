@@ -8461,6 +8461,105 @@ parity!(
     reflection_rows_roundtrip
 );
 
+/// The gate's probe: base rows whose first path segment is the Reflection
+/// folder in any letter case, never a draft, never a sibling whose name only
+/// starts the same way (R82).
+async fn rows_under_reflections(store: &dyn Store) {
+    let did = store
+        .upsert_domain("eng", Some("/k/eng"), DomainKind::File)
+        .await
+        .unwrap();
+    let empty = store
+        .upsert_domain("ops", Some("/k/ops"), DomainKind::File)
+        .await
+        .unwrap();
+    for (i, path) in [
+        "notes/a.md",
+        "reflections/x.md",
+        "Reflections/y.md",
+        "reflectionsx/z.md",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        store
+            .upsert_engram(did, &record(path, &format!("p{i}"), "x", "sha"))
+            .await
+            .unwrap();
+    }
+    store
+        .upsert_overlay(did, "ada", &record("reflections/d.md", "d", "x", "sha"))
+        .await
+        .unwrap();
+    assert!(
+        !store
+            .file_stamps(did)
+            .await
+            .unwrap()
+            .contains_key("reflections/d.md"),
+        "the draft is no base row"
+    );
+    let mut under = store.engram_rows_under_reflections(did, 10).await.unwrap();
+    under.sort();
+    assert_eq!(under, ["Reflections/y.md", "reflections/x.md"]);
+    let one = store.engram_rows_under_reflections(did, 1).await.unwrap();
+    assert_eq!(one.len(), 1, "{one:?}");
+    assert!(
+        one[0] == "Reflections/y.md" || one[0] == "reflections/x.md",
+        "{one:?}"
+    );
+    assert!(store.has_engram_rows(did).await.unwrap());
+    assert!(!store.has_engram_rows(empty).await.unwrap());
+    assert!(
+        store
+            .engram_rows_under_reflections(empty, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+parity!(
+    rows_under_reflections_fold_case_and_skip_drafts,
+    rows_under_reflections
+);
+
+/// The stamps the sync's stat prefilter and the move screens read: every
+/// field of `list_reflections` but the page text.
+async fn reflection_stamps(store: &dyn Store) {
+    let did = store
+        .upsert_domain("eng", Some("/k/eng"), DomainKind::File)
+        .await
+        .unwrap();
+    for (path, title, content) in [
+        ("guides/deploying.md", "Deploying", "# Deploying\n"),
+        ("home.md", "Home", "# Home\n\nWelcome.\n"),
+    ] {
+        store
+            .upsert_reflection(did, &reflection_row(path, title, content))
+            .await
+            .unwrap();
+    }
+    let mut stamps: Vec<(String, String, String, u64, String)> = store
+        .list_reflection_stamps(did)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| (s.path, s.title, s.sha256, s.size, s.modified))
+        .collect();
+    stamps.sort();
+    let mut rows: Vec<(String, String, String, u64, String)> = store
+        .list_reflections(did)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.path, r.title, r.sha256, r.size, r.modified))
+        .collect();
+    rows.sort();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(stamps, rows);
+}
+parity!(reflection_stamps_carry_no_content, reflection_stamps);
+
 // --- the sync routes `reflections/` (reflection core, Task 9) ----------------
 
 const MANIFEST_OFF: &str = "---\ntype: manifest\ntitle: eng\npermalink: manifest\ntags: [manifest]\nstatus: stable\n---\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n";
@@ -11901,10 +12000,12 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
         census.failures.join("\n")
     );
     assert_eq!(
-        census.sites, 178,
+        census.sites, 182,
         "the engram statement census moved; every new one needs a predicate or a waiver. \
-         73 per backend in mod.rs (the `LIMIT 1` probe of `folder_holds_other` is the \
-         newest, on the base rows; before it the path listing of `overlay_paths`, on \
+         75 per backend in mod.rs (the Reflection gate's two probes, \
+         `ENGRAM_ROWS_UNDER_REFLECTIONS_SQL` and `HAS_ENGRAM_ROWS_SQL`, are the newest, \
+         both on the base rows; before them the `LIMIT 1` probe of `folder_holds_other`, \
+         on the base rows; before it the path listing of `overlay_paths`, on \
          the caller's own actor; before it the permalink arm of `UPSERT_PROBE_SQL`, also \
          on the caller's own actor; before it the `engram_meta_value` delete of \
          `clear_domain`, waived below with the rest of that clear; before that the two unbinding \

@@ -257,8 +257,9 @@ impl FileRows {
                 .into_iter()
                 .map(|r| (r.path, (r.size, r.modified)))
                 .collect(),
+            // The stamps only: the page text is no input to the prefilter.
             FileRows::Reflections => store
-                .list_reflections(domain)
+                .list_reflection_stamps(domain)
                 .await?
                 .into_iter()
                 .map(|r| (r.path, (r.size, r.modified)))

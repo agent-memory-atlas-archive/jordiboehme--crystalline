@@ -2176,6 +2176,21 @@ pub struct ReflectionRow {
     pub modified: String,
 }
 
+/// A [`ReflectionRow`] without its `content`: [`Store::list_reflection_stamps`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReflectionStamp {
+    /// The path inside `reflections/`.
+    pub path: String,
+    /// The reflection's title.
+    pub title: String,
+    /// Lowercase hex SHA-256 of the file.
+    pub sha256: String,
+    /// Byte length.
+    pub size: u64,
+    /// Last modification instant, RFC 3339.
+    pub modified: String,
+}
+
 /// Which table a domain's files are kept in. Each table keeps its own rows;
 /// one body of code reads and writes them all, the table chosen here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2551,6 +2566,22 @@ pub trait Store: Send + Sync {
 
     /// The recorded file stamps for a domain, keyed by domain-relative path.
     async fn file_stamps(&self, domain: DomainId) -> Result<HashMap<String, FileStamp>>;
+
+    /// Up to `limit` paths of the domain's base engram rows whose first path
+    /// segment is the Reflection's folder in any ASCII letter case, in no
+    /// particular order. The Reflection gate's fast path (R82): a domain that
+    /// records engrams and none under the folder has nothing pending, which
+    /// this answers without loading every [`Store::file_stamps`] entry.
+    async fn engram_rows_under_reflections(
+        &self,
+        domain: DomainId,
+        limit: usize,
+    ) -> Result<Vec<String>>;
+
+    /// Whether the domain has any base engram row. A synced domain always
+    /// records its `MANIFEST.md`, so `false` means the index holds no row of
+    /// it and the files on disk decide what is pending.
+    async fn has_engram_rows(&self, domain: DomainId) -> Result<bool>;
 
     /// Insert or update one engram, replacing its observations, relations, links
     /// and tags. Returns the engram id. A duplicate permalink (a different path
@@ -3480,6 +3511,11 @@ pub trait Store: Send + Sync {
 
     /// Every reflection row of a domain, ordered by path in byte order.
     async fn list_reflections(&self, domain: DomainId) -> Result<Vec<ReflectionRow>>;
+
+    /// Every reflection row of a domain without its text, ordered by path in
+    /// byte order: what the sync's stat prefilter and the move screens read,
+    /// which have no use for the page itself.
+    async fn list_reflection_stamps(&self, domain: DomainId) -> Result<Vec<ReflectionStamp>>;
 
     /// Replace one page's chunk rows with a freshly computed set, carrying over
     /// the vector of any chunk whose fingerprint is unchanged, so an edit

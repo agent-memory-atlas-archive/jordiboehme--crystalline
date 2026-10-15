@@ -135,7 +135,7 @@ impl Engine {
             .store
             .lock()
             .await
-            .list_reflections(access.domain_id)
+            .list_reflection_stamps(access.domain_id)
             .await?;
         let linking = rooms_to_rewrite(
             &access,
