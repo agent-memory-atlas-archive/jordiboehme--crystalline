@@ -10,6 +10,69 @@
 use crate::error::Result;
 use crate::store::{DomainId, HostClaim, HostMove, OnlyElsewhere, Store};
 
+/// A claim of [`claim_host_marking_moves`]: the claim itself, and when it
+/// replaced a live claim of this same instance id (this machine's daemon,
+/// or another command of this machine), that claim's token, so a one-shot
+/// command can give the lock back to it ([`give_back`]) instead of
+/// deleting it from under it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Claimed {
+    /// The claim.
+    pub claim: HostClaim,
+    /// The token of the live claim under the same instance id this claim
+    /// replaced, if any.
+    pub over: Option<String>,
+}
+
+/// What a holder keeps of a claim it acquired, to give the lock back with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostLease {
+    /// The token its claim returned.
+    pub token: String,
+    /// The token of the live claim under the same instance id it replaced,
+    /// which [`give_back`] puts back instead of deleting the row.
+    pub over: Option<String>,
+}
+
+impl Claimed {
+    /// The lease to keep when the claim acquired the lock.
+    pub fn lease(&self) -> Option<HostLease> {
+        match &self.claim {
+            HostClaim::Acquired { token } => Some(HostLease {
+                token: token.clone(),
+                over: self.over.clone(),
+            }),
+            HostClaim::HeldByOther(_) => None,
+        }
+    }
+}
+
+/// Give back a lock a one-shot command claimed: delete the row when it
+/// still carries the lease's token, or, when the claim replaced a live claim
+/// of this same instance id, put that claim's token back, so its holder
+/// keeps the lock and its own release still matches. Never touches a row a
+/// later claim wrote, under this id or another.
+pub async fn give_back(
+    store: &dyn Store,
+    domain: DomainId,
+    instance_id: &str,
+    lease: &HostLease,
+) -> Result<()> {
+    match &lease.over {
+        Some(previous) => {
+            store
+                .hand_back_domain_host(domain, instance_id, &lease.token, previous)
+                .await?;
+        }
+        None => {
+            store
+                .release_domain_host(domain, instance_id, &lease.token)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 /// The default host-lock stale threshold, seconds (three missed heartbeats
 /// of 30 s). A lock whose last heartbeat is older is takeable by another
 /// instance.
@@ -57,6 +120,9 @@ pub const ACCEPT_DISK_NEEDS_DOMAIN: &str =
 /// rows only the previous host has. Every other argument is
 /// [`Store::claim_domain_host`]'s. Off a shared database this is that claim
 /// and nothing more, since one instance owns the database.
+///
+/// The answer also names the live claim of this same instance id the claim
+/// replaced, read in the same transaction ([`Claimed::over`]).
 pub async fn claim_host_marking_moves(
     store: &dyn Store,
     domain: DomainId,
@@ -65,11 +131,13 @@ pub async fn claim_host_marking_moves(
     now: &str,
     stale_before: &str,
     take_over: bool,
-) -> Result<HostClaim> {
+) -> Result<Claimed> {
     if !store.shares_database() {
-        return store
+        let over = live_own_token(store, domain, instance_id, stale_before).await?;
+        let claim = store
             .claim_domain_host(domain, instance_id, label, now, stale_before, take_over)
-            .await;
+            .await?;
+        return Ok(Claimed { claim, over });
     }
     store.begin().await?;
     let claimed = claim_and_mark(
@@ -94,6 +162,20 @@ pub async fn claim_host_marking_moves(
     }
 }
 
+/// The token of a live claim this instance id holds on `domain`, if any.
+async fn live_own_token(
+    store: &dyn Store,
+    domain: DomainId,
+    instance_id: &str,
+    stale_before: &str,
+) -> Result<Option<String>> {
+    Ok(store
+        .domain_host(domain)
+        .await?
+        .filter(|h| h.instance_id == instance_id && h.heartbeat_at.as_str() >= stale_before)
+        .map(|h| h.token))
+}
+
 /// The body of [`claim_host_marking_moves`] on a shared database, inside
 /// its transaction.
 async fn claim_and_mark(
@@ -104,14 +186,18 @@ async fn claim_and_mark(
     now: &str,
     stale_before: &str,
     take_over: bool,
-) -> Result<HostClaim> {
+) -> Result<Claimed> {
     let holder = store.domain_host(domain).await?;
+    let over = holder
+        .as_ref()
+        .filter(|h| h.instance_id == instance_id && h.heartbeat_at.as_str() >= stale_before)
+        .map(|h| h.token.clone());
     let last = store.last_domain_host(domain).await?;
     let previous = holder.map(|h| (h.instance_id, h.label)).or(last.clone());
     let claim = store
         .claim_domain_host(domain, instance_id, label, now, stale_before, take_over)
         .await?;
-    if claim == HostClaim::Acquired {
+    if claim.is_acquired() {
         if previous.as_ref().map(|(id, _)| id.as_str()) != Some(instance_id) {
             let mark = HostMove {
                 at: now.to_string(),
@@ -132,7 +218,7 @@ async fn claim_and_mark(
                 .await?;
         }
     }
-    Ok(claim)
+    Ok(Claimed { claim, over })
 }
 
 /// A failure injected into the mark write, for the test that proves a
@@ -328,7 +414,7 @@ mod tests {
         );
         release.notify_one();
         applying.await.unwrap().unwrap();
-        assert_eq!(claiming.await.unwrap().unwrap(), HostClaim::Acquired);
+        assert!(claiming.await.unwrap().unwrap().claim.is_acquired());
         let mark = a
             .host_move(domain)
             .await
@@ -428,7 +514,7 @@ mod tests {
                 claim_host_marking_moves(store, domain, id, id, &now, &stale_before, true).await
             }
         };
-        assert_eq!(claim("alpha-mark").await.unwrap(), HostClaim::Acquired);
+        assert!(claim("alpha-mark").await.unwrap().claim.is_acquired());
         store.set_host_move(domain, None).await.unwrap();
 
         seam::fail_marks_of("beta-mark-fails");
@@ -449,7 +535,7 @@ mod tests {
             "alpha-mark"
         );
 
-        assert_eq!(claim("beta-mark").await.unwrap(), HostClaim::Acquired);
+        assert!(claim("beta-mark").await.unwrap().claim.is_acquired());
         let mark = store.host_move(domain).await.unwrap().expect("marked");
         assert_eq!(mark.claimant.as_deref(), Some("beta-mark"));
         assert_eq!(
@@ -706,6 +792,111 @@ mod tests {
             "this run's marker goes"
         );
         assert_eq!(of("eng").engrams, 0, "nothing of the walk was written");
+        other.drop_schema().await.unwrap();
+    }
+
+    /// The hooks of a reindex that claims as `id` and records each domain
+    /// it could not apply, with whether the host was lost.
+    #[cfg(feature = "postgres")]
+    struct ClaimsAndRecords {
+        id: &'static str,
+        not_applied: std::sync::Mutex<Vec<(String, bool)>>,
+    }
+
+    #[cfg(feature = "postgres")]
+    #[async_trait::async_trait]
+    impl crate::ReindexHooks for ClaimsAndRecords {
+        async fn before_domain(
+            &self,
+            store: &dyn Store,
+            name: &str,
+            root: &std::path::Path,
+        ) -> crate::error::Result<bool> {
+            let domain = store
+                .upsert_domain(name, Some(&root.to_string_lossy()), crate::DomainKind::File)
+                .await?;
+            let (now, stale_before) = claim_window(90);
+            claim_host_marking_moves(store, domain, self.id, self.id, &now, &stale_before, false)
+                .await?;
+            Ok(true)
+        }
+
+        async fn not_applied(&self, name: &str, _why: &str, host_lost: bool) {
+            self.not_applied
+                .lock()
+                .unwrap()
+                .push((name.to_string(), host_lost));
+        }
+
+        fn walker(&self) -> Option<String> {
+            Some(self.id.to_string())
+        }
+    }
+
+    /// A reindex whose host move another walk changed while it ran applies
+    /// nothing of that domain, and says so with the host kept: the lock
+    /// still names this instance, so it goes on hosting the domain.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn a_reindex_whose_move_changed_meanwhile_keeps_the_host() {
+        let Some((url, schema)) = shared_schema() else {
+            return;
+        };
+        let a = crate::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .unwrap();
+        let other = crate::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .unwrap();
+        let (_tmp, root) = domain_folder();
+        let store: std::sync::Arc<tokio::sync::Mutex<dyn Store>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(a));
+        let hooks = std::sync::Arc::new(ClaimsAndRecords {
+            id: "alpha-m",
+            not_applied: std::sync::Mutex::new(Vec::new()),
+        });
+        let (entered, release) = crate::sync::apply_seam::arm("alpha-m");
+        let run = tokio::spawn({
+            let (store, hooks) = (store.clone(), hooks.clone());
+            async move {
+                crate::reindex_domains(
+                    &*store,
+                    &[("eng".to_string(), root)],
+                    &crate::ChunkParams::default(),
+                    None,
+                    &*hooks,
+                )
+                .await
+            }
+        });
+        entered.notified().await;
+        let domain = other.domain_id("eng").await.unwrap().unwrap();
+        let (now, _) = claim_window(90);
+        let written = HostMove {
+            at: now,
+            claimant: Some("alpha-m".to_string()),
+            walked: true,
+            only_elsewhere: OnlyElsewhere::default(),
+        };
+        other.set_host_move(domain, Some(&written)).await.unwrap();
+        release.notify_one();
+        let reports = run.await.unwrap().unwrap();
+        assert!(reports.is_empty(), "{reports:?}");
+        assert_eq!(
+            *hooks.not_applied.lock().unwrap(),
+            [("eng".to_string(), false)],
+            "not applied, and the host is not lost"
+        );
+        assert_eq!(
+            other
+                .domain_host(domain)
+                .await
+                .unwrap()
+                .unwrap()
+                .instance_id,
+            "alpha-m"
+        );
+        assert_eq!(other.host_move(domain).await.unwrap(), Some(written));
         other.drop_schema().await.unwrap();
     }
 }

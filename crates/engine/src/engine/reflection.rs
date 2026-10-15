@@ -51,6 +51,12 @@ pub const REFUSED_ELSEWHERE_START: &str = "this domain's Reflection lives at ";
 /// host's label and the way to move it follow.
 pub const REFUSED_HOSTED_START: &str = "this domain's Reflection is served by ";
 
+/// The gate's refusal in a one-shot command on a shared
+/// database, when no instance of this machine holds the domain's lock: a
+/// command never claims a domain to serve its Reflection.
+pub const REFUSED_NOT_BY_A_COMMAND: &str =
+    "this domain's Reflection is not served by a command; start the daemon (crystalline serve)";
+
 /// The gate's refusal for a Reflection the instance labelled `label` serves.
 fn hosted_refusal(label: &str) -> EngineError {
     EngineError::Refused(format!(
@@ -579,8 +585,19 @@ impl Engine {
             Some(id) => store.domain_host(id).await?,
             None => None,
         };
-        if let Some(host) = host.filter(|host| self.foreign_holder(host)) {
-            return Ok(Some(Some(host.label)));
+        if let Some(host) = host.as_ref().filter(|host| self.foreign_holder(host)) {
+            return Ok(Some(Some(host.label.clone())));
+        }
+        // A one-shot command never claims a domain to serve its Reflection:
+        // it holds no lock past a walk and sends no heartbeat, and a read
+        // must change no durable state (no lock row, no host-move mark). It
+        // serves the Reflection only while this machine's daemon holds the
+        // lock live, the same disk under the same id; otherwise nobody here
+        // serves it, and the gate says to start the daemon.
+        if self.is_one_shot() {
+            let stale_before = (now_offset() - Duration::seconds(self.stale_secs)).to_rfc3339();
+            let daemon_holds = host.is_some_and(|host| host.heartbeat_at >= stale_before);
+            return Ok(if daemon_holds { None } else { Some(None) });
         }
         // A domain a rename has paused is claimed by the sync that ends the
         // rename, under the name it ends with (as `Engine::claim_host`). Until
@@ -589,7 +606,7 @@ impl Engine {
             return Ok(Some(None));
         }
         match self.claim_file_host(&*store, domain, root, false).await? {
-            HostClaim::Acquired => {
+            HostClaim::Acquired { .. } => {
                 drop(store);
                 // The watcher's catch-up sync walks this disk; a page only the
                 // previous host's disk has keeps its row and is reported, it
@@ -683,6 +700,11 @@ impl Engine {
             }
             ReflectionState::HostedElsewhere { label: Some(label) } => {
                 return Err(hosted_refusal(&label));
+            }
+            ReflectionState::HostedElsewhere { label: None }
+                if self.is_one_shot() && !self.is_renaming(domain) =>
+            {
+                return Err(EngineError::Refused(REFUSED_NOT_BY_A_COMMAND.to_string()));
             }
             ReflectionState::HostedElsewhere { label: None } => {
                 return Err(EngineError::Refused(format!(

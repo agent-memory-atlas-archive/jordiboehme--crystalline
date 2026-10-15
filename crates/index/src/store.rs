@@ -2126,6 +2126,11 @@ pub struct DomainHost {
     pub label: String,
     /// The host's last heartbeat, RFC 3339.
     pub heartbeat_at: String,
+    /// The token of the claim that wrote the row (its `acquired_at`), which
+    /// a release compares before it deletes. Never serialized: it is the
+    /// holder's to keep, not something an answer shows.
+    #[serde(skip)]
+    pub(crate) token: String,
 }
 
 /// The outcome of a [`Store::claim_domain_host`]: this instance acquired (or
@@ -2133,11 +2138,32 @@ pub struct DomainHost {
 /// it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum HostClaim {
-    /// This instance holds the host lock now.
-    Acquired,
+    /// This instance holds the host lock now, under `token`: the claim's own
+    /// `acquired_at`, new on every claim, a re-claim by the same instance
+    /// id included. Only a release that names this token deletes the row
+    /// ([`Store::release_domain_host`]), so a process whose claim another
+    /// claim under the same id replaced cannot release the newer one.
+    Acquired {
+        /// The claim's token.
+        token: String,
+    },
     /// Another instance holds it and the claim did not qualify for takeover
     /// (not stale, no `take_over`).
     HeldByOther(DomainHost),
+}
+
+impl HostClaim {
+    /// Whether this instance holds the lock after the claim.
+    pub fn is_acquired(&self) -> bool {
+        matches!(self, HostClaim::Acquired { .. })
+    }
+}
+
+/// A new claim token: the claim's time, so the column still reads as when
+/// the lock was acquired, then a random part, so two claims in the same
+/// instant (two processes of one machine) never share a token.
+pub(crate) fn claim_token(now: &str) -> String {
+    format!("{now} {}", uuid::Uuid::new_v4().simple())
 }
 
 /// The rows of a file domain that the last complete walk did not see on
@@ -3709,10 +3735,32 @@ pub trait Store: Send + Sync {
         now: &str,
     ) -> Result<bool>;
 
-    /// Release a lock this instance holds (graceful shutdown). A no-op when this
-    /// instance is not the current holder, so a released takeover never deletes
-    /// the new host's lock.
-    async fn release_domain_host(&self, domain: DomainId, instance_id: &str) -> Result<()>;
+    /// Release a lock this instance holds (graceful shutdown, or the end of a
+    /// one-shot command's walk): a compare-and-delete on `token`, the one
+    /// its claim returned ([`HostClaim::Acquired`]). A no-op when the row
+    /// names another holder or another claim's token, so a released takeover
+    /// never deletes the new host's lock, and a process of this machine
+    /// never deletes the lock a later claim under the same id took (this
+    /// machine's daemon after a command's claim, or a second command).
+    /// `true` when the row was deleted.
+    async fn release_domain_host(
+        &self,
+        domain: DomainId,
+        instance_id: &str,
+        token: &str,
+    ) -> Result<bool>;
+
+    /// Give the lock back to the claim it was taken over from under the same
+    /// instance id: when the row still carries `token`, put `previous` back
+    /// as its token, so that claim's own release still matches. A no-op when
+    /// another claim replaced `token` meanwhile. `true` when it was put back.
+    async fn hand_back_domain_host(
+        &self,
+        domain: DomainId,
+        instance_id: &str,
+        token: &str,
+        previous: &str,
+    ) -> Result<bool>;
 
     /// The current holder of a file domain's host lock, or `None` when unheld.
     async fn domain_host(&self, domain: DomainId) -> Result<Option<DomainHost>>;

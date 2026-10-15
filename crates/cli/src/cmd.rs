@@ -706,11 +706,7 @@ pub(crate) async fn sync_domain_direct(
                 .await?;
             if let Some(host) = &host {
                 match host.claim(&*store, domain, false).await? {
-                    DirectClaim::Taken { release } => {
-                        if release {
-                            claimed.push(domain);
-                        }
-                    }
+                    DirectClaim::Taken(lease) => claimed.push((domain, lease)),
                     DirectClaim::Refused(holder) => bail!(direct_host_refusal(name, &holder)),
                 }
             }
@@ -746,7 +742,8 @@ pub(crate) async fn sync_domain_direct(
 /// host, and this machine's daemon claims the free lock again without
 /// marking a move. A lock this instance already held live before the
 /// claim is this machine's running daemon's (a sync with `--db` or
-/// `--config` runs here even while one runs), and it is left held.
+/// `--config` runs here even while one runs) or another command's: the
+/// release hands it back to that claim instead of deleting it.
 pub(crate) struct DirectHost {
     instance_id: String,
     stale_secs: i64,
@@ -774,13 +771,7 @@ impl DirectHost {
         take_over: bool,
     ) -> Result<DirectClaim> {
         let (now, stale_before) = crystalline_index::claim_window(self.stale_secs);
-        // This machine's daemon holds it, heartbeating: the claim renews
-        // nothing it would not renew itself, and the release must not take
-        // the lock away from under it.
-        let daemon_holds = store.domain_host(domain).await?.is_some_and(|holder| {
-            holder.instance_id == self.instance_id && holder.heartbeat_at >= stale_before
-        });
-        let claim = crystalline_index::claim_host_marking_moves(
+        let claimed = crystalline_index::claim_host_marking_moves(
             store,
             domain,
             &self.instance_id,
@@ -790,24 +781,28 @@ impl DirectHost {
             take_over,
         )
         .await?;
-        Ok(match claim {
-            HostClaim::Acquired => DirectClaim::Taken {
-                release: !daemon_holds,
-            },
-            HostClaim::HeldByOther(holder) => DirectClaim::Refused(holder),
+        Ok(match (claimed.lease(), claimed.claim) {
+            (Some(lease), _) => DirectClaim::Taken(lease),
+            (None, HostClaim::HeldByOther(holder)) => DirectClaim::Refused(holder),
+            (None, HostClaim::Acquired { .. }) => unreachable!("an acquired claim has a lease"),
         })
     }
 
-    /// Release the locks this command took. Best effort: a lock left behind
-    /// goes stale and is taken over by the next claim.
+    /// Give back the locks this command took, each through its lease: a
+    /// lock a later claim under this id took (this machine's daemon, another
+    /// command) stays, and one this command took from such a live claim is
+    /// handed back to it. Best effort: a lock left behind goes stale and is
+    /// taken over by the next claim.
     pub(crate) async fn release(
         &self,
         store: &Arc<TokioMutex<dyn Store>>,
-        domains: &[crystalline_index::DomainId],
+        leases: &[(crystalline_index::DomainId, crystalline_index::HostLease)],
     ) {
         let store = store.lock().await;
-        for domain in domains {
-            if let Err(e) = store.release_domain_host(*domain, &self.instance_id).await {
+        for (domain, lease) in leases {
+            if let Err(e) =
+                crystalline_index::give_back(&*store, *domain, &self.instance_id, lease).await
+            {
                 tracing::debug!("could not release a host lock after the sync: {e}");
             }
         }
@@ -820,7 +815,7 @@ impl DirectHost {
 struct DirectReindexHooks<'a> {
     host: Option<&'a DirectHost>,
     /// The locks this run took and gives back when it is done.
-    claimed: std::sync::Mutex<Vec<crystalline_index::DomainId>>,
+    claimed: std::sync::Mutex<Vec<(crystalline_index::DomainId, crystalline_index::HostLease)>>,
 }
 
 #[async_trait::async_trait]
@@ -842,10 +837,8 @@ impl crystalline_index::ReindexHooks for DirectReindexHooks<'_> {
             .await
             .map_err(|e| crystalline_index::IndexError::Db(e.to_string()))?;
         match claim {
-            DirectClaim::Taken { release } => {
-                if release {
-                    self.claimed.lock().unwrap().push(domain);
-                }
+            DirectClaim::Taken(lease) => {
+                self.claimed.lock().unwrap().push((domain, lease));
                 Ok(true)
             }
             DirectClaim::Refused(holder) => {
@@ -866,9 +859,9 @@ impl crystalline_index::ReindexHooks for DirectReindexHooks<'_> {
 
 /// What [`DirectHost::claim`] found.
 pub(crate) enum DirectClaim {
-    /// This instance holds the lock; `release` when this command took it
-    /// and gives it back after its walk.
-    Taken { release: bool },
+    /// This instance holds the lock, under this lease, which the command
+    /// gives back after its walk ([`DirectHost::release`]).
+    Taken(crystalline_index::HostLease),
     /// Another live instance hosts the domain.
     Refused(crystalline_index::DomainHost),
 }
@@ -877,7 +870,7 @@ pub(crate) enum DirectClaim {
 /// hosts it on this shared database.
 pub(crate) fn direct_host_refusal(name: &str, holder: &crystalline_index::DomainHost) -> String {
     format!(
-        "domain '{name}' is hosted by instance {} (last heartbeat {}); sync it there, or pass --take-over to move hosting to this instance",
+        "domain '{name}' is hosted by {} (last heartbeat {}); run crystalline sync --domain {name} --take-over, or run this on the host",
         holder.label, holder.heartbeat_at
     )
 }
@@ -2341,7 +2334,7 @@ pub async fn sync(
 ) -> Result<()> {
     let targets = select_domains(cfg, only)?;
     let host = DirectHost::of(&store).await?;
-    let mut claimed: Vec<crystalline_index::DomainId> = Vec::new();
+    let mut claimed = Vec::new();
     let walked = sync_targets(
         &store,
         cfg,
@@ -2411,7 +2404,7 @@ async fn sync_targets(
     targets: Vec<(String, DomainEntry)>,
     flags: SyncFlags,
     host: Option<&DirectHost>,
-    claimed: &mut Vec<crystalline_index::DomainId>,
+    claimed: &mut Vec<(crystalline_index::DomainId, crystalline_index::HostLease)>,
     json: bool,
 ) -> Result<Vec<crystalline_index::SyncReport>> {
     let params = chunk_params(cfg);
@@ -2457,11 +2450,7 @@ async fn sync_targets(
                 .await?;
             if let Some(host) = host {
                 match host.claim(&*store, domain, flags.take_over).await? {
-                    DirectClaim::Taken { release } => {
-                        if release {
-                            claimed.push(domain);
-                        }
-                    }
+                    DirectClaim::Taken(lease) => claimed.push((domain, lease)),
                     DirectClaim::Refused(holder) => {
                         let refusal = direct_host_refusal(&name, &holder);
                         if only.is_some() {

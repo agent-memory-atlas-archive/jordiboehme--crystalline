@@ -1008,15 +1008,19 @@ pub struct Engine {
     // successful `claim_domain_host` and renewed by the heartbeat timer. Drives
     // embed scoping, heartbeat renewal and graceful release.
     hosted: std::sync::RwLock<HashMap<String, DomainId>>,
-    // Whether this engine gives back, after each walk, the host locks it
-    // took for it: a one-shot command on a shared database, which sends no
-    // heartbeat (`Engine::with_one_shot_instance_id`). A daemon and the
-    // embedded MCP stack keep theirs and heartbeat them.
-    releases_after_walk: bool,
-    // The domains whose lock this engine took itself, as opposed to a lock
-    // this machine's live daemon already held under the same id: only these
-    // are given back after a walk.
+    // Whether this engine is a one-shot command on a shared database
+    // (`Engine::with_one_shot_instance_id`): it sends no heartbeat, so it
+    // gives back after each walk the host locks it took for it, and it never
+    // claims a domain to serve its Reflection (`Engine::is_one_shot`). A
+    // daemon and the embedded MCP stack keep theirs and heartbeat them.
+    one_shot: bool,
+    // The domains whose lock this one-shot engine claimed for a walk, given
+    // back after it (`Engine::release_taken_hosts`).
     taken: std::sync::Mutex<HashSet<String>>,
+    // What this engine keeps of each host claim it acquired, by domain name:
+    // the claim's token, which a release compares before it deletes, and
+    // for a one-shot command the live claim of this same id it replaced.
+    leases: std::sync::Mutex<HashMap<String, crystalline_index::HostLease>>,
     // The heartbeat interval and stale threshold, seconds. Defaults 30 and 90,
     // overridable via `CRYSTALLINE_HEARTBEAT_SECS`/`CRYSTALLINE_STALE_SECS` (a
     // short threshold makes multi-instance stale-takeover verification fast).
@@ -2277,8 +2281,9 @@ impl Engine {
             instance_id: String::new(),
             label: String::new(),
             hosted: std::sync::RwLock::new(HashMap::new()),
-            releases_after_walk: false,
+            one_shot: false,
             taken: std::sync::Mutex::new(HashSet::new()),
+            leases: std::sync::Mutex::new(HashMap::new()),
             heartbeat_secs: env_secs("CRYSTALLINE_HEARTBEAT_SECS", DEFAULT_HEARTBEAT_SECS),
             stale_secs: crystalline_index::stale_secs(),
             origin_locks: std::sync::Mutex::new(HashMap::new()),
@@ -3525,20 +3530,33 @@ impl Engine {
     /// [`Engine::with_instance_id`] for a one-shot command on a shared
     /// database: it claims each file domain before a walk as this machine,
     /// the id this machine's daemon uses, walks under the host-move rules
-    /// and gives back after the walk every lock it took itself. A lock this
-    /// machine's daemon holds live is used and left held. It sends no
-    /// heartbeat, so it holds nothing past a walk.
+    /// and gives back after the walk every lock it claimed. A lock this
+    /// machine's daemon (or another command here) held live is handed back
+    /// to that claim rather than deleted. It sends no heartbeat, so it holds
+    /// nothing past a walk, and it never claims a domain to serve its
+    /// Reflection.
     pub fn with_one_shot_instance_id(mut self, instance_id: String) -> Engine {
         self = self.with_instance_id(instance_id);
-        self.releases_after_walk = true;
+        self.one_shot = true;
         self
+    }
+
+    /// Whether this engine is a one-shot command on a shared database
+    /// ([`Engine::with_one_shot_instance_id`]): the one place that decides
+    /// both that it gives its locks back after each walk and that it serves
+    /// no Reflection it would have to claim for.
+    pub(super) fn is_one_shot(&self) -> bool {
+        self.one_shot
     }
 
     /// Give back the host locks this engine took for its walks, when it is
     /// a one-shot command ([`Engine::with_one_shot_instance_id`]); nothing
-    /// otherwise. Best effort: a lock left behind goes stale.
+    /// otherwise. Each goes back through its lease
+    /// ([`crystalline_index::give_back`]), so a lock a later claim under the
+    /// same id took (this machine's daemon, another command) stays where it
+    /// is. Best effort: a lock left behind goes stale.
     pub(super) async fn release_taken_hosts(&self) {
-        if !self.releases_after_walk {
+        if !self.is_one_shot() {
             return;
         }
         let taken: Vec<String> = self.taken.lock().unwrap().drain().collect();
@@ -3548,12 +3566,14 @@ impl Engine {
         let store = self.store.lock().await;
         for name in taken {
             let id = self.hosted.write().unwrap().remove(&name);
+            let lease = self.leases.lock().unwrap().remove(&name);
             let id = match id {
                 Some(id) => Some(id),
                 None => store.domain_id(&name).await.ok().flatten(),
             };
-            if let Some(id) = id
-                && let Err(e) = store.release_domain_host(id, &self.instance_id).await
+            if let (Some(id), Some(lease)) = (id, lease)
+                && let Err(e) =
+                    crystalline_index::give_back(&*store, id, &self.instance_id, &lease).await
             {
                 tracing::debug!("could not give back the host lock of '{name}': {e}");
             }
@@ -4185,17 +4205,11 @@ impl Engine {
             .await?;
         let now = now_offset().to_rfc3339();
         let stale_before = (now_offset() - Duration::seconds(self.stale_secs)).to_rfc3339();
-        // A one-shot command gives back only what it took: a lock this
-        // machine's daemon holds live under the same id stays the daemon's.
-        let daemon_holds = self.releases_after_walk
-            && store.domain_host(id).await?.is_some_and(|holder| {
-                holder.instance_id == self.instance_id && holder.heartbeat_at >= stale_before
-            });
         // On a shared database a claim that takes the domain from another
         // instance, or from no known one, also marks a host move: this disk
         // may lack files the previous host wrote, so the complete walks keep
         // the rows they do not see until that is resolved (Task 50).
-        let claim = crystalline_index::claim_host_marking_moves(
+        let claimed = crystalline_index::claim_host_marking_moves(
             store,
             id,
             &self.instance_id,
@@ -4205,11 +4219,33 @@ impl Engine {
             take_over,
         )
         .await?;
-        if self.releases_after_walk && claim == HostClaim::Acquired && !daemon_holds {
+        // The claim's token is kept for the release, the newest one: every
+        // claim writes a new token, a re-claim of a domain held here too. A
+        // re-claim of a lock this engine already holds keeps the claim the
+        // first one replaced, so a one-shot command gives the lock back to
+        // this machine's daemon, not to its own earlier claim.
+        {
+            let mut leases = self.leases.lock().unwrap();
+            match claimed.lease() {
+                Some(mut lease) => {
+                    if let Some(held) = leases.get(name)
+                        && lease.over.as_deref() == Some(held.token.as_str())
+                    {
+                        lease.over = held.over.clone();
+                    }
+                    leases.insert(name.to_string(), lease);
+                }
+                None => {
+                    leases.remove(name);
+                }
+            }
+        }
+        let claim = claimed.claim;
+        if self.is_one_shot() && claim.is_acquired() {
             self.taken.lock().unwrap().insert(name.to_string());
         }
         let moved = match &claim {
-            HostClaim::Acquired => self
+            HostClaim::Acquired { .. } => self
                 .hosted
                 .write()
                 .unwrap()
@@ -4298,10 +4334,14 @@ impl Engine {
         // A domain a rename has paused is claimed by the sync that ends the
         // rename, under the name it ends with.
         if self.instance_id.is_empty() || self.is_renaming(name) {
-            return Ok(HostClaim::Acquired);
+            return Ok(HostClaim::Acquired {
+                token: String::new(),
+            });
         }
         let ContentSource::File { root } = self.content_source(name)? else {
-            return Ok(HostClaim::Acquired);
+            return Ok(HostClaim::Acquired {
+                token: String::new(),
+            });
         };
         let store = self.store.lock().await;
         self.claim_file_host(&*store, name, &root, take_over).await
@@ -4361,8 +4401,15 @@ impl Engine {
         }
         {
             let store = self.store.lock().await;
-            for (_, id) in &hosted {
-                let _ = store.release_domain_host(*id, &self.instance_id).await;
+            for (name, id) in &hosted {
+                // Released under the token of this instance's newest claim,
+                // so a row another claim wrote since stays.
+                let lease = self.leases.lock().unwrap().remove(name);
+                if let Some(lease) = lease {
+                    let _ = store
+                        .release_domain_host(*id, &self.instance_id, &lease.token)
+                        .await;
+                }
             }
         }
         self.hosted.write().unwrap().clear();
@@ -6257,9 +6304,9 @@ mod reflection;
 mod reflection_assets;
 pub use reflection::{
     ANONYMOUS_COMMENT, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_HOSTED_START,
-    REFUSED_OFF_START, REFUSED_PENDING, REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS,
-    REFUSED_PENDING_UNOPENED, REFUSED_PENDING_UNREADABLE, ROOM_WAITING_NOTE, ReflectionSearch,
-    SectionAuthors,
+    REFUSED_NOT_BY_A_COMMAND, REFUSED_OFF_START, REFUSED_PENDING, REFUSED_PENDING_NAMED,
+    REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED, REFUSED_PENDING_UNREADABLE,
+    ROOM_WAITING_NOTE, ReflectionSearch, SectionAuthors,
 };
 pub use reflection_assets::WrittenReflectionAsset;
 mod rename_domain;
@@ -7078,12 +7125,14 @@ fn yaml_number(value: Option<&YamlValue>) -> Option<f64> {
 /// database (see `Engine::walks_no_file_domain`).
 pub const REFUSED_ANONYMOUS_WALK: &str = "this process does not sync file domains on a shared database: it has no instance id, so it cannot hold a domain's host lock. Start the daemon (crystalline serve), or run crystalline sync";
 
-/// The refusal message for a named sync of a file domain hosted by another live
-/// instance: names the host and its last heartbeat and points at `--take-over`.
+/// Why a walk of a file domain another live instance hosts is refused or
+/// left out: names the host by its label and its last heartbeat, and the two
+/// ways on, a take-over with the one command that takes `--take-over` for a
+/// domain, or the same work on the host.
 fn host_refusal(name: &str, host: &DomainHost) -> String {
     format!(
-        "domain '{name}' is hosted by instance {} (last heartbeat {}); this instance serves it read-from-database only. Pass --take-over to migrate hosting here.",
-        host.instance_id, host.heartbeat_at
+        "domain '{name}' is hosted by {} (last heartbeat {}); run crystalline sync --domain {name} --take-over, or run this on the host",
+        host.label, host.heartbeat_at
     )
 }
 
@@ -9086,12 +9135,14 @@ impl ReindexHooks for DaemonReindexHooks<'_> {
             .await
             .map_err(|e| IndexError::Db(e.to_string()))?;
         match claim {
-            HostClaim::Acquired => Ok(true),
+            HostClaim::Acquired { .. } => Ok(true),
             HostClaim::HeldByOther(host) => {
-                tracing::info!(
-                    "skipping reindex of '{name}' hosted by instance {}",
-                    host.instance_id
-                );
+                let reason = host_refusal(name, &host);
+                tracing::info!("reindex skipped: {reason}");
+                self.skipped
+                    .lock()
+                    .unwrap()
+                    .push(json!({ "domain": name, "reason": reason }));
                 Ok(false)
             }
         }

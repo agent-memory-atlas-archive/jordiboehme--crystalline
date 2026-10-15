@@ -47,7 +47,10 @@ pub use embed::{
 };
 pub use error::{IndexError, Result, SCHEMA_TOO_NEW_OPENING, is_schema_too_new_text};
 pub use factory::{open_store, store_location};
-pub use hosting::{ACCEPT_DISK_NEEDS_DOMAIN, claim_host_marking_moves, claim_window, stale_secs};
+pub use hosting::{
+    ACCEPT_DISK_NEEDS_DOMAIN, Claimed, HostLease, claim_host_marking_moves, claim_window,
+    give_back, stale_secs,
+};
 pub use store::{
     AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ChunkTable, ContentMention,
     ContradictionRow, DEFAULT_RETIRED_WEIGHT, DEFAULT_SALIENCE_WEIGHT, DomainHost, DomainId,

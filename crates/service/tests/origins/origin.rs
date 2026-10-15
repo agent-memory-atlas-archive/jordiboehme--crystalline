@@ -6890,9 +6890,9 @@ async fn a_standalone_origin_update_on_postgres_indexes_what_it_pulled() {
 
     // This machine's daemon holding the lock live (a command with --config
     // runs beside it): the command walks under it and leaves it held.
-    {
+    let daemon_token = {
         use crystalline_index::Store;
-        other
+        let crystalline_index::HostClaim::Acquired { token } = other
             .claim_domain_host(
                 did,
                 eng.instance_id(),
@@ -6902,8 +6902,12 @@ async fn a_standalone_origin_update_on_postgres_indexes_what_it_pulled() {
                 false,
             )
             .await
-            .unwrap();
-    }
+            .unwrap()
+        else {
+            panic!("this machine's daemon acquires the free lock");
+        };
+        token
+    };
     let c_daemon = mock.add_commit(commit_files(&[
         ("MANIFEST.md", manifest()),
         (
@@ -6924,10 +6928,13 @@ async fn a_standalone_origin_update_on_postgres_indexes_what_it_pulled() {
             eng.instance_id(),
             "the daemon's lock stays held"
         );
-        other
-            .release_domain_host(did, eng.instance_id())
-            .await
-            .unwrap();
+        assert!(
+            other
+                .release_domain_host(did, eng.instance_id(), &daemon_token)
+                .await
+                .unwrap(),
+            "the daemon's own claim still names the lock"
+        );
         // Another live instance hosts the domain now.
         other
             .claim_domain_host(

@@ -860,16 +860,20 @@ where
     R: AsyncRead + Unpin + Send + 'static,
 {
     let stdout = tokio::io::stdout();
-    let running = rmcp::serve_server(stack.server, (reader, stdout)).await?;
-    let _ = running.waiting().await;
+    let server = stack.server;
+    let session = async move {
+        let running = rmcp::serve_server(server, (reader, stdout)).await?;
+        let _ = running.waiting().await;
+        anyhow::Ok(())
+    };
+    // The host locks this stack claimed go back when the session ends, as a
+    // daemon's do at its shutdown, so another instance can take the domains
+    // at once; a session that failed to start gives them back too.
+    serve_then_release(&stack.engine, &stack.stop_sources, session).await?;
     tracing::info!(
         "stopping (the client closed the session); exiting within {}s",
         SHUTDOWN_DEADLINE.as_secs()
     );
-    let _ = stack.stop_sources.send(true);
-    // The host locks this stack claimed go back, as a daemon's do at its
-    // shutdown, so another instance can take the domains at once.
-    stack.engine.release_hosts().await;
     let departure = Departure::begin(stack.ownership, SHUTDOWN_DEADLINE);
     // Held to the exit, as in the daemon: an operation already inside the
     // store finishes and no new one starts.
@@ -881,6 +885,21 @@ where
     // pair the server rotated is saved.
     departure.settle_sign_ins().await;
     departure.finish(None)
+}
+
+/// Run the embedded stack's session, then stop its background tasks and
+/// give back every host lock it claimed, whether the session ended or
+/// failed: a lock left behind would make every other instance wait out the
+/// stale threshold. The session's own outcome is the answer.
+async fn serve_then_release(
+    engine: &Engine,
+    stop_sources: &tokio::sync::watch::Sender<bool>,
+    session: impl std::future::Future<Output = anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    let served = session.await;
+    let _ = stop_sources.send(true);
+    engine.release_hosts().await;
+    served
 }
 
 /// Serve the degraded status server over stdio: a stand-in that answers
@@ -2565,6 +2584,48 @@ fn init_tracing() {
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
+
+    /// The embedded stack gives back the host locks it claimed whether its
+    /// session ended or failed to start: a lock left behind would make every
+    /// other instance wait out the stale threshold.
+    #[tokio::test]
+    async fn the_embedded_stack_releases_its_locks_when_the_session_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("MANIFEST.md"), "# eng\n").unwrap();
+        let mut cfg = crystalline_core::config::GlobalConfig::default();
+        cfg.domains.insert(
+            "eng".to_string(),
+            crystalline_core::config::DomainEntry::file(root),
+        );
+        let store = crystalline_index::TursoStore::open_in_memory()
+            .await
+            .unwrap();
+        let engine = Engine::new(
+            Arc::new(tokio::sync::Mutex::new(store)),
+            cfg,
+            None,
+            Some(tmp.path().join("config.yaml")),
+        )
+        .with_instance_id("this-machine".to_string());
+        assert!(engine.claim_host("eng", false).await.unwrap().is_acquired());
+        let holder = || async {
+            let store = engine.store();
+            let store = store.lock().await;
+            let id = store.domain_id("eng").await.unwrap().unwrap();
+            store.domain_host(id).await.unwrap()
+        };
+        assert!(holder().await.is_some(), "the stack holds the lock");
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let served = serve_then_release(&engine, &stop, async {
+            Err(anyhow::anyhow!("the session could not start"))
+        })
+        .await;
+        assert!(served.is_err(), "the session's failure is the answer");
+        assert!(*stopped.borrow(), "the background tasks are told to stop");
+        assert!(holder().await.is_none(), "the lock is given back");
+    }
 
     /// An answer from a daemon before 0.25.1 has no `$read_only` key: every
     /// bullet is kept and nothing is marked.

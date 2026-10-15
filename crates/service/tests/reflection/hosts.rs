@@ -136,9 +136,12 @@ async fn a_reflection_on_a_shared_database_is_served_by_its_host_only_on_postgre
     // the status.
     let mut new_host = s.fx.engine.changes().subscribe();
     let mut old_host = a.engine.changes().subscribe();
-    assert_eq!(
-        s.fx.engine.claim_host("eng", true).await.unwrap(),
-        crystalline_index::HostClaim::Acquired
+    assert!(
+        s.fx.engine
+            .claim_host("eng", true)
+            .await
+            .unwrap()
+            .is_acquired()
     );
     s.fx.engine.claim_host("eng", false).await.unwrap();
     assert_eq!(
@@ -183,9 +186,12 @@ async fn a_reflection_on_a_shared_database_is_served_by_its_host_only_on_postgre
 
     // And back: a room open on the host that lost the lock saves nothing
     // from its next save on.
-    assert_eq!(
-        a.engine.claim_host("eng", true).await.unwrap(),
-        crystalline_index::HostClaim::Acquired
+    assert!(
+        a.engine
+            .claim_host("eng", true)
+            .await
+            .unwrap()
+            .is_acquired()
     );
     let err =
         s.fx.engine
@@ -536,9 +542,12 @@ async fn a_concurrent_walk_during_a_take_over_deletes_nothing_on_postgres() {
     alpha_writes(&alpha).await;
     alpha.engine.release_hosts().await;
 
-    assert_eq!(
-        beta.engine.claim_host("eng", false).await.unwrap(),
-        crystalline_index::HostClaim::Acquired
+    assert!(
+        beta.engine
+            .claim_host("eng", false)
+            .await
+            .unwrap()
+            .is_acquired()
     );
     let (sync, reindex, other) = tokio::join!(
         beta.engine.sync(Some("eng")),
@@ -658,9 +667,12 @@ async fn a_deposed_host_walk_neither_applies_nor_ends_the_move_on_postgres() {
         async move { engine.sync(Some("eng")).await }
     });
     entered.notified().await;
-    assert_eq!(
-        beta.engine.claim_host("eng", true).await.unwrap(),
-        crystalline_index::HostClaim::Acquired
+    assert!(
+        beta.engine
+            .claim_host("eng", true)
+            .await
+            .unwrap()
+            .is_acquired()
     );
     release.notify_one();
     let refused = walking.await.unwrap().unwrap_err();
@@ -764,6 +776,259 @@ async fn an_engine_without_an_instance_id_walks_no_file_domain_on_postgres() {
 
     assert_eq!(store.lock().await.host_move(did).await.unwrap(), marked);
     assert_eq!(alpha_rows(&beta).await, (true, true, true));
+
+    db.drop_schema().await;
+}
+
+/// A one-shot command of machine `id` on `fx`'s folder and configuration:
+/// the engine every daemonless command opens on a shared database.
+#[cfg(feature = "postgres")]
+async fn one_shot(db: &Shared, fx: &Fx, id: &str) -> Arc<crystalline_service::Engine> {
+    let config_path = fx.tmp.path().join("config.yaml");
+    let cfg = crystalline_core::config::load_yaml(&config_path).unwrap();
+    Arc::new(
+        crystalline_service::Engine::new(db.open().await, cfg, None, Some(config_path))
+            .with_state_dir(fx.tmp.path().join("state"))
+            .with_one_shot_instance_id(id.to_string()),
+    )
+}
+
+/// `eng`'s lock row and host move, read on a store of its own.
+#[cfg(feature = "postgres")]
+async fn lock_and_move(
+    db: &Shared,
+) -> (
+    Option<crystalline_index::DomainHost>,
+    Option<crystalline_index::HostMove>,
+) {
+    let store = db.open().await;
+    let store = store.lock().await;
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    (
+        store.domain_host(did).await.unwrap(),
+        store.host_move(did).await.unwrap(),
+    )
+}
+
+/// A one-shot command never claims a domain to serve its Reflection: it
+/// sends no heartbeat and holds nothing past a walk, and a read changes no
+/// durable state. On a free lock it answers as a non-host, says to start
+/// the daemon and leaves no lock row and no host-move mark behind. While
+/// this machine's daemon holds the lock live, the command serves the
+/// Reflection from the same disk and leaves that lock as it was.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_one_shot_command_claims_no_domain_to_serve_its_reflection_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    alpha.engine.release_hosts().await;
+    assert_eq!(lock_and_move(&db).await, (None, None), "a free lock");
+
+    let cmd = one_shot(&db, &alpha, "beta").await;
+    assert_eq!(
+        cmd.reflection_state("eng").await.unwrap(),
+        ReflectionState::HostedElsewhere { label: None }
+    );
+    let status = cmd
+        .reflection_status("eng", &ReflectionCaller::owner())
+        .await
+        .unwrap();
+    assert_eq!(status["state"], "hosted_elsewhere", "{status}");
+    assert!(status["host_label"].is_null(), "{status}");
+    let refused = cmd
+        .read_reflection_tree("eng", &ReflectionCaller::owner())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        refused,
+        crystalline_service::engine::REFUSED_NOT_BY_A_COMMAND,
+        "in plain words"
+    );
+    let p = crystalline_service::params::ReflectParams {
+        limit: Some(100),
+        ..Default::default()
+    };
+    let queue = cmd.reflect(&p, &crate::docs::agent()).await.unwrap();
+    assert_eq!(queue["queue"], serde_json::json!([]), "{queue}");
+    assert_eq!(
+        lock_and_move(&db).await,
+        (None, None),
+        "no lock row and no mark after the reads"
+    );
+
+    // Beta's daemon holds the lock live: the command serves the Reflection
+    // and claims nothing, so the daemon's own claim still names the lock.
+    let token = {
+        let store = db.open().await;
+        let store = store.lock().await;
+        let did = store.domain_id("eng").await.unwrap().unwrap();
+        let (now, stale_before) = crystalline_index::claim_window(90);
+        match store
+            .claim_domain_host(did, "beta", "beta", &now, &stale_before, false)
+            .await
+            .unwrap()
+        {
+            crystalline_index::HostClaim::Acquired { token } => token,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(cmd.reflection_state("eng").await.unwrap(), LOCAL);
+    cmd.read_reflection_tree("eng", &ReflectionCaller::owner())
+        .await
+        .unwrap();
+    let store = db.open().await;
+    let store = store.lock().await;
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    assert!(
+        store
+            .release_domain_host(did, "beta", &token)
+            .await
+            .unwrap(),
+        "the command did not claim over the daemon"
+    );
+    drop(store);
+
+    db.drop_schema().await;
+}
+
+/// A one-shot command's targeted sync of a domain another live instance
+/// hosts is refused with the host's label and the ways on, so the verb that
+/// ran it (an import, a discard) says why its files are not indexed. An
+/// instance that heartbeats (the daemon's watcher) passes over it quietly,
+/// and its full sync names the reason for the domain it leaves out.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_one_shot_targeted_sync_names_the_host_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    // Gamma, labelled apart from its id, hosts the domain live.
+    {
+        let store = db.open().await;
+        let store = store.lock().await;
+        let did = store.domain_id("eng").await.unwrap().unwrap();
+        let live = "2999-01-01T00:00:00+00:00";
+        assert!(
+            store
+                .claim_domain_host(did, "gamma-id", "gamma-laptop", live, live, true)
+                .await
+                .unwrap()
+                .is_acquired()
+        );
+    }
+    let reason = "domain 'eng' is hosted by gamma-laptop (last heartbeat 2999-01-01T00:00:00+00:00); run crystalline sync --domain eng --take-over, or run this on the host";
+
+    let cmd = one_shot(&db, &alpha, "beta").await;
+    let refused = cmd
+        .sync_paths("eng", vec!["runbooks/deploy.md".to_string()])
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(refused, reason);
+
+    let quiet = alpha
+        .engine
+        .sync_paths("eng", vec!["runbooks/deploy.md".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(quiet.domain, "eng");
+    let full = alpha.engine.sync(None).await.unwrap();
+    assert_eq!(full["skipped"][0]["domain"], "eng", "{full}");
+    assert_eq!(full["skipped"][0]["reason"], reason, "{full}");
+    let named = alpha
+        .engine
+        .sync(Some("eng"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(named, reason);
+    assert_eq!(
+        lock_and_move(&db).await.0.unwrap().instance_id,
+        "gamma-id",
+        "the host keeps its lock"
+    );
+
+    db.drop_schema().await;
+}
+
+/// A one-shot command's release never deletes a later claim under the
+/// same instance id. The command claims the free lock and holds before its
+/// apply; this machine's daemon claims the domain too; the command's
+/// release then misses, the daemon keeps hosting, and the daemon's own
+/// release still matches.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_command_release_leaves_the_daemon_claim_after_it_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    alpha.engine.release_hosts().await;
+
+    let cmd = one_shot(&db, &alpha, "beta").await;
+    let (entered, release) = cmd.hold_next_apply_until();
+    let walking = tokio::spawn({
+        let cmd = cmd.clone();
+        async move { cmd.sync(Some("eng")).await }
+    });
+    entered.notified().await;
+    let daemon = instance(db.open().await, "beta").await;
+    assert!(
+        daemon
+            .engine
+            .claim_host("eng", false)
+            .await
+            .unwrap()
+            .is_acquired()
+    );
+    release.notify_one();
+    walking.await.unwrap().unwrap();
+    assert_eq!(
+        lock_and_move(&db).await.0.map(|h| h.instance_id).as_deref(),
+        Some("beta"),
+        "the daemon's lock stays"
+    );
+    daemon.engine.release_hosts().await;
+    assert!(
+        lock_and_move(&db).await.0.is_none(),
+        "the daemon's own release matches"
+    );
+
+    db.drop_schema().await;
+}
+
+/// Two one-shot commands of one machine walk the same domain at once. The
+/// first one's release, while the second still walks, leaves the second
+/// one's claim, so the second walk applies: it still holds the lock.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn two_commands_of_one_machine_keep_each_other_claim_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    alpha.engine.release_hosts().await;
+
+    let first = one_shot(&db, &alpha, "beta").await;
+    let second = one_shot(&db, &alpha, "beta").await;
+    let (first_in, first_go) = first.hold_next_apply_until();
+    let (second_in, second_go) = second.hold_next_apply_until();
+    let first_walk = tokio::spawn({
+        let first = first.clone();
+        async move { first.sync(Some("eng")).await }
+    });
+    first_in.notified().await;
+    let second_walk = tokio::spawn({
+        let second = second.clone();
+        async move { second.sync(Some("eng")).await }
+    });
+    second_in.notified().await;
+    first_go.notify_one();
+    first_walk.await.unwrap().unwrap();
+    assert_eq!(
+        lock_and_move(&db).await.0.map(|h| h.instance_id).as_deref(),
+        Some("beta"),
+        "the second command's lock stays"
+    );
+    second_go.notify_one();
+    let applied = second_walk.await.unwrap();
+    assert!(applied.is_ok(), "the second walk applies: {applied:?}");
 
     db.drop_schema().await;
 }

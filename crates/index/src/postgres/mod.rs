@@ -801,6 +801,20 @@ pub(super) fn cell_text(row: &PgRow, idx: usize) -> Option<String> {
     row.try_get::<Option<String>, _>(idx).ok().flatten()
 }
 
+/// The read of a domain's host lock row, in [`domain_host_of`]'s column
+/// order.
+const DOMAIN_HOST_SQL: &str = "SELECT holder_instance_id, holder_label, heartbeat_at, acquired_at FROM domain_lock WHERE domain_id=$1";
+
+/// A [`DomainHost`] from a row read by [`DOMAIN_HOST_SQL`]'s columns.
+fn domain_host_of(r: &sqlx::postgres::PgRow) -> DomainHost {
+    DomainHost {
+        instance_id: cell_text(r, 0).unwrap_or_default(),
+        label: cell_text(r, 1).unwrap_or_default(),
+        heartbeat_at: cell_text(r, 2).unwrap_or_default(),
+        token: cell_text(r, 3).unwrap_or_default(),
+    }
+}
+
 pub(super) fn cell_real(row: &PgRow, idx: usize) -> Option<f64> {
     row.try_get::<Option<f64>, _>(idx).ok().flatten()
 }
@@ -1235,13 +1249,6 @@ async fn delete_children(conn: &mut PgConnection, engram_id: i64) -> Result<()> 
 // changed when they moved: the text each method runs is byte for byte the text
 // it ran inline.
 
-/// The on-disk snapshot behind [`Store::file_stamps`].
-///
-/// The snapshot names what is on disk, so it is the base rows and only the base
-/// rows. The sync driver derives its deletes by subtracting the walk from this
-/// map, so a draft here - a row that is on nobody's disk - would be proposed as
-/// a deletion on every single sync, and a draft at a base path would corrupt
-/// change detection outright.
 /// A domain's unresolved host move, read by every complete walk's apply on
 /// a shared database and by the Reflection queue: one primary-key seek.
 #[doc(hidden)]
@@ -1251,6 +1258,13 @@ pub const HOST_MOVE_SQL: &str = "SELECT host_move FROM domain WHERE id=$1";
 #[doc(hidden)]
 pub const RECORD_SYNC_SQL: &str = "UPDATE domain SET last_sync=$1 WHERE id=$2";
 
+/// The on-disk snapshot behind [`Store::file_stamps`].
+///
+/// The snapshot names what is on disk, so it is the base rows and only the base
+/// rows. The sync driver derives its deletes by subtracting the walk from this
+/// map, so a draft here - a row that is on nobody's disk - would be proposed as
+/// a deletion on every single sync, and a draft at a base path would corrupt
+/// change detection outright.
 #[doc(hidden)]
 pub const FILE_STAMPS_SQL: &str =
     "SELECT path, mtime, size, sha256 FROM engram WHERE domain_id=$1 AND actor = ''";
@@ -4242,11 +4256,14 @@ impl Store for PostgresStore {
         // One atomic upsert (insert, or take over on a re-claim, an explicit
         // `take_over` or a stale heartbeat), then a re-read on the same
         // connection so we see our own write and never re-enter the tx mutex.
+        // Every claim that lands writes a new token, a re-claim by the same
+        // instance id too: a release names the token its own claim read back.
+        let token = crate::store::claim_token(now);
         let mut conn = self.acquire().await?;
         let c = conn.as_mut();
         sqlx::query(
             "INSERT INTO domain_lock(domain_id, holder_instance_id, holder_label, acquired_at, heartbeat_at) \
-             VALUES($1,$2,$3,$4,$4) \
+             VALUES($1,$2,$3,$7,$4) \
              ON CONFLICT(domain_id) DO UPDATE SET \
              holder_instance_id=EXCLUDED.holder_instance_id, holder_label=EXCLUDED.holder_label, \
              acquired_at=EXCLUDED.acquired_at, heartbeat_at=EXCLUDED.heartbeat_at \
@@ -4260,30 +4277,21 @@ impl Store for PostgresStore {
         .bind(now)
         .bind(take_over)
         .bind(stale_before)
+        .bind(&token)
         .execute(&mut *c)
         .await
         .map_err(IndexError::from)?;
-        let row = sqlx::query(
-            "SELECT holder_instance_id, holder_label, heartbeat_at FROM domain_lock WHERE domain_id=$1",
-        )
-        .bind(domain.0)
-        .fetch_optional(&mut *c)
-        .await
-        .map_err(IndexError::from)?;
-        Ok(match row {
-            Some(r) => {
-                let host = DomainHost {
-                    instance_id: cell_text(&r, 0).unwrap_or_default(),
-                    label: cell_text(&r, 1).unwrap_or_default(),
-                    heartbeat_at: cell_text(&r, 2).unwrap_or_default(),
-                };
-                if host.instance_id == instance_id {
-                    HostClaim::Acquired
-                } else {
-                    HostClaim::HeldByOther(host)
-                }
+        let row = sqlx::query(DOMAIN_HOST_SQL)
+            .bind(domain.0)
+            .fetch_optional(&mut *c)
+            .await
+            .map_err(IndexError::from)?;
+        Ok(match row.map(|r| domain_host_of(&r)) {
+            Some(host) if host.instance_id == instance_id => {
+                HostClaim::Acquired { token: host.token }
             }
-            None => HostClaim::Acquired,
+            Some(host) => HostClaim::HeldByOther(host),
+            None => HostClaim::Acquired { token },
         })
     }
 
@@ -4306,47 +4314,67 @@ impl Store for PostgresStore {
         Ok(done.rows_affected() > 0)
     }
 
-    async fn release_domain_host(&self, domain: DomainId, instance_id: &str) -> Result<()> {
+    async fn release_domain_host(
+        &self,
+        domain: DomainId,
+        instance_id: &str,
+        token: &str,
+    ) -> Result<bool> {
         let mut conn = self.acquire().await?;
-        sqlx::query("DELETE FROM domain_lock WHERE domain_id=$1 AND holder_instance_id=$2")
-            .bind(domain.0)
-            .bind(instance_id)
-            .execute(conn.as_mut())
-            .await
-            .map_err(IndexError::from)?;
-        Ok(())
+        let done = sqlx::query(
+            "DELETE FROM domain_lock WHERE domain_id=$1 AND holder_instance_id=$2 AND acquired_at=$3",
+        )
+        .bind(domain.0)
+        .bind(instance_id)
+        .bind(token)
+        .execute(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn hand_back_domain_host(
+        &self,
+        domain: DomainId,
+        instance_id: &str,
+        token: &str,
+        previous: &str,
+    ) -> Result<bool> {
+        let mut conn = self.acquire().await?;
+        let done = sqlx::query(
+            "UPDATE domain_lock SET acquired_at=$4 \
+             WHERE domain_id=$1 AND holder_instance_id=$2 AND acquired_at=$3",
+        )
+        .bind(domain.0)
+        .bind(instance_id)
+        .bind(token)
+        .bind(previous)
+        .execute(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(done.rows_affected() > 0)
     }
 
     async fn domain_host(&self, domain: DomainId) -> Result<Option<DomainHost>> {
         let mut conn = self.acquire().await?;
-        let row = sqlx::query(
-            "SELECT holder_instance_id, holder_label, heartbeat_at FROM domain_lock WHERE domain_id=$1",
-        )
-        .bind(domain.0)
-        .fetch_optional(conn.as_mut())
-        .await
-        .map_err(IndexError::from)?;
-        Ok(row.map(|r| DomainHost {
-            instance_id: cell_text(&r, 0).unwrap_or_default(),
-            label: cell_text(&r, 1).unwrap_or_default(),
-            heartbeat_at: cell_text(&r, 2).unwrap_or_default(),
-        }))
+        let row = sqlx::query(DOMAIN_HOST_SQL)
+            .bind(domain.0)
+            .fetch_optional(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
+        Ok(row.map(|r| domain_host_of(&r)))
     }
 
     async fn domain_host_held(&self, domain: DomainId) -> Result<Option<DomainHost>> {
         let mut conn = self.acquire().await?;
         let row = sqlx::query(
-            "SELECT holder_instance_id, holder_label, heartbeat_at FROM domain_lock WHERE domain_id=$1 FOR SHARE",
+            "SELECT holder_instance_id, holder_label, heartbeat_at, acquired_at FROM domain_lock WHERE domain_id=$1 FOR SHARE",
         )
         .bind(domain.0)
         .fetch_optional(conn.as_mut())
         .await
         .map_err(IndexError::from)?;
-        Ok(row.map(|r| DomainHost {
-            instance_id: cell_text(&r, 0).unwrap_or_default(),
-            label: cell_text(&r, 1).unwrap_or_default(),
-            heartbeat_at: cell_text(&r, 2).unwrap_or_default(),
-        }))
+        Ok(row.map(|r| domain_host_of(&r)))
     }
 
     async fn swap_host_move(

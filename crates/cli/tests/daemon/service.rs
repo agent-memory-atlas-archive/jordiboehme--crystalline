@@ -1993,6 +1993,136 @@ fn a_daemonless_sync_refuses_a_domain_another_instance_hosts_on_postgres() {
     assert!(reports[0]["only_elsewhere"].is_null(), "{out}");
 }
 
+/// `crystalline mcp --embedded` on a shared Postgres database is this
+/// machine's instance for its whole session: it claims the domains it
+/// serves under this machine's id, heartbeats the claims as a daemon does,
+/// and gives them back when the client closes the session. Skipped with a
+/// note unless `CRYSTALLINE_TEST_POSTGRES_URL` is set and `psql` runs.
+#[test]
+fn the_embedded_stack_hosts_as_this_machine_and_releases_on_postgres() {
+    let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+        eprintln!("note: skipping the postgres leg (CRYSTALLINE_TEST_POSTGRES_URL is unset)");
+        return;
+    };
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("embedpg_{nanos}");
+    let psql = |sql: &str| {
+        Command::new("psql")
+            .args(["-v", "ON_ERROR_STOP=1", "-q", "-d", &url, "-c", sql])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    if !psql(&format!("CREATE SCHEMA {schema}")) {
+        eprintln!("note: skipping the postgres leg (psql could not create a schema)");
+        return;
+    }
+    struct DropSchema<'a>(&'a dyn Fn(&str) -> bool, String);
+    impl Drop for DropSchema<'_> {
+        fn drop(&mut self) {
+            (self.0)(&format!("DROP SCHEMA IF EXISTS {} CASCADE", self.1));
+        }
+    }
+    let _cleanup = DropSchema(&psql, schema.clone());
+    // `eng`'s lock row as `holder|heartbeat`, or empty when there is none.
+    let lock_row = || {
+        let out = Command::new("psql")
+            .args(["-q", "-t", "-A", "-d", &url, "-c"])
+            .arg(format!(
+                "SELECT l.holder_instance_id || '|' || l.heartbeat_at FROM {schema}.domain_lock l \
+                 JOIN {schema}.domain d ON d.id = l.domain_id WHERE d.name = 'eng'"
+            ))
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let wait_for = |what: &str, done: &dyn Fn(&str) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let row = lock_row();
+            if done(&row) {
+                return row;
+            }
+            assert!(Instant::now() < deadline, "{what}: the lock row is '{row}'");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+
+    let env = Env::new("embedpg");
+    let sep = if url.contains('?') { '&' } else { '?' };
+    let db_url = format!("{url}{sep}options=-c%20search_path%3D{schema},public");
+    std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();
+    std::fs::write(
+        env.config_path(),
+        format!(
+            "database:\n  backend: postgres\n  url: \"{db_url}\"\nservice:\n  response_format: json\n"
+        ),
+    )
+    .unwrap();
+    env.setup_domain("eng");
+    let me = std::fs::read_to_string(env.state_dir().join("instance-id"))
+        .expect("domain add claimed as this machine's instance");
+    let me = me.trim().to_string();
+    assert_eq!(lock_row(), "", "domain add gave its lock back");
+
+    let mut cmd = Command::new(bin());
+    env.apply(&mut cmd);
+    let mut child = cmd
+        .env("CRYSTALLINE_HEARTBEAT_SECS", "1")
+        .args(["mcp", "--embedded"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    writeln!(
+        stdin,
+        "{}",
+        json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "it", "version": "0" }
+            }
+        })
+    )
+    .unwrap();
+    let mut line = String::new();
+    out.read_line(&mut line).unwrap();
+    assert!(line.contains("\"result\""), "initialize: {line}");
+    writeln!(
+        stdin,
+        "{}",
+        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })
+    )
+    .unwrap();
+
+    // Its startup sync claims `eng` under this machine's id.
+    let held = wait_for("the stack claims eng", &|row: &str| {
+        row.starts_with(&format!("{me}|"))
+    });
+    // The heartbeat renews the claim while the session runs.
+    let renewed = wait_for("the heartbeat renews it", &|row: &str| {
+        row.starts_with(&format!("{me}|")) && row != held
+    });
+    assert!(renewed > held, "{held} then {renewed}");
+
+    // Closing the session gives the lock back.
+    drop(stdin);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the stack ends with the session");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(lock_row(), "", "the session's end released the lock");
+}
+
 /// A sync that names its index with `--config` does not line a domain's
 /// name up with a new MANIFEST name: an adoption renames this machine's own
 /// state and configuration, which only a sync of the machine's own index may

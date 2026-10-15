@@ -1033,6 +1033,20 @@ fn cell_text(row: &Row, idx: usize) -> Option<String> {
     }
 }
 
+/// The read of a domain's host lock row, in [`domain_host_of`]'s column
+/// order.
+const DOMAIN_HOST_SQL: &str = "SELECT holder_instance_id, holder_label, heartbeat_at, acquired_at FROM domain_lock WHERE domain_id=?1";
+
+/// A [`DomainHost`] from a row read by [`DOMAIN_HOST_SQL`]'s columns.
+fn domain_host_of(r: &Row) -> DomainHost {
+    DomainHost {
+        instance_id: cell_text(r, 0).unwrap_or_default(),
+        label: cell_text(r, 1).unwrap_or_default(),
+        heartbeat_at: cell_text(r, 2).unwrap_or_default(),
+        token: cell_text(r, 3).unwrap_or_default(),
+    }
+}
+
 fn cell_i64(row: &Row, idx: usize) -> Option<i64> {
     match row.get_value(idx) {
         Ok(Value::Integer(i)) => Some(i),
@@ -1175,14 +1189,6 @@ fn resolve_pending_sql(table: &str) -> String {
 // changed when they moved: the text each method runs is byte for byte the text
 // it ran inline.
 
-/// The on-disk snapshot behind [`Store::file_stamps`].
-///
-/// The snapshot names what is on disk, so it is the base rows and only the base
-/// rows. The sync driver derives its deletes by subtracting the walk from this
-/// map, so a draft here - a row that is on nobody's disk - would be proposed as
-/// a deletion on every single sync, and a draft at a base path would corrupt
-/// change detection outright. Same phantom-deletion class the generated indexes
-/// already document in `crystalline_remote::changes`.
 /// A domain's unresolved host move, read by every complete walk's apply on
 /// a shared database and by the Reflection queue: one primary-key seek.
 #[doc(hidden)]
@@ -1192,6 +1198,14 @@ pub const HOST_MOVE_SQL: &str = "SELECT host_move FROM domain WHERE id=?1";
 #[doc(hidden)]
 pub const RECORD_SYNC_SQL: &str = "UPDATE domain SET last_sync=?1 WHERE id=?2";
 
+/// The on-disk snapshot behind [`Store::file_stamps`].
+///
+/// The snapshot names what is on disk, so it is the base rows and only the base
+/// rows. The sync driver derives its deletes by subtracting the walk from this
+/// map, so a draft here - a row that is on nobody's disk - would be proposed as
+/// a deletion on every single sync, and a draft at a base path would corrupt
+/// change detection outright. Same phantom-deletion class the generated indexes
+/// already document in `crystalline_remote::changes`.
 #[doc(hidden)]
 pub const FILE_STAMPS_SQL: &str =
     "SELECT path, mtime, size, sha256 FROM engram WHERE domain_id=?1 AND actor = ''";
@@ -4128,6 +4142,8 @@ impl Store for TursoStore {
         // `take_over` is set, or when the current heartbeat is older than
         // `stale_before`. The guarded `ON CONFLICT ... DO UPDATE ... WHERE` leaves
         // a live holder untouched; the re-read then tells us who holds it now.
+        // Every claim that lands writes a new token, a re-claim included.
+        let token = crate::store::claim_token(now);
         self.conn
             .execute(
                 "INSERT INTO domain_lock(domain_id, holder_instance_id, holder_label, acquired_at, heartbeat_at) \
@@ -4142,7 +4158,7 @@ impl Store for TursoStore {
                     Value::Integer(domain.0),
                     Value::Text(instance_id.to_string()),
                     Value::Text(label.to_string()),
-                    Value::Text(now.to_string()),
+                    Value::Text(token.clone()),
                     Value::Text(now.to_string()),
                     Value::Integer(if take_over { 1 } else { 0 }),
                     Value::Text(stale_before.to_string()),
@@ -4150,9 +4166,9 @@ impl Store for TursoStore {
             )
             .await?;
         match self.domain_host(domain).await? {
-            Some(h) if h.instance_id == instance_id => Ok(HostClaim::Acquired),
+            Some(h) if h.instance_id == instance_id => Ok(HostClaim::Acquired { token: h.token }),
             Some(h) => Ok(HostClaim::HeldByOther(h)),
-            None => Ok(HostClaim::Acquired),
+            None => Ok(HostClaim::Acquired { token }),
         }
     }
 
@@ -4176,31 +4192,52 @@ impl Store for TursoStore {
         Ok(n > 0)
     }
 
-    async fn release_domain_host(&self, domain: DomainId, instance_id: &str) -> Result<()> {
-        self.conn
+    async fn release_domain_host(
+        &self,
+        domain: DomainId,
+        instance_id: &str,
+        token: &str,
+    ) -> Result<bool> {
+        let n = self
+            .conn
             .execute(
-                "DELETE FROM domain_lock WHERE domain_id=?1 AND holder_instance_id=?2",
+                "DELETE FROM domain_lock WHERE domain_id=?1 AND holder_instance_id=?2 AND acquired_at=?3",
                 vec![
                     Value::Integer(domain.0),
                     Value::Text(instance_id.to_string()),
+                    Value::Text(token.to_string()),
                 ],
             )
             .await?;
-        Ok(())
+        Ok(n > 0)
+    }
+
+    async fn hand_back_domain_host(
+        &self,
+        domain: DomainId,
+        instance_id: &str,
+        token: &str,
+        previous: &str,
+    ) -> Result<bool> {
+        let n = self
+            .conn
+            .execute(
+                "UPDATE domain_lock SET acquired_at=?4 \
+                 WHERE domain_id=?1 AND holder_instance_id=?2 AND acquired_at=?3",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(instance_id.to_string()),
+                    Value::Text(token.to_string()),
+                    Value::Text(previous.to_string()),
+                ],
+            )
+            .await?;
+        Ok(n > 0)
     }
 
     async fn domain_host(&self, domain: DomainId) -> Result<Option<DomainHost>> {
-        let row = query_first(
-            &self.conn,
-            "SELECT holder_instance_id, holder_label, heartbeat_at FROM domain_lock WHERE domain_id=?1",
-            vec![Value::Integer(domain.0)],
-        )
-        .await?;
-        Ok(row.map(|r| DomainHost {
-            instance_id: cell_text(&r, 0).unwrap_or_default(),
-            label: cell_text(&r, 1).unwrap_or_default(),
-            heartbeat_at: cell_text(&r, 2).unwrap_or_default(),
-        }))
+        let row = query_first(&self.conn, DOMAIN_HOST_SQL, vec![Value::Integer(domain.0)]).await?;
+        Ok(row.map(|r| domain_host_of(&r)))
     }
 
     async fn domain_host_held(&self, domain: DomainId) -> Result<Option<DomainHost>> {

@@ -1599,6 +1599,20 @@ impl Engine {
                 hosted.insert(new.to_string(), id);
             }
         }
+        // A one-shot command's locks and every claim's token follow the
+        // name too, so the release after the walk still finds them.
+        {
+            let mut taken = self.taken.lock().unwrap();
+            if taken.remove(old) {
+                taken.insert(new.to_string());
+            }
+        }
+        {
+            let mut leases = self.leases.lock().unwrap();
+            if let Some(lease) = leases.remove(old) {
+                leases.insert(new.to_string(), lease);
+            }
+        }
         self.origin_poller.rename_domain(old, new);
         {
             let mut routing = self.routing_virtual.write().unwrap();

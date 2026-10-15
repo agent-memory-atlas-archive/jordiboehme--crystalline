@@ -1278,7 +1278,7 @@ async fn run_watcher(
     let mut domains: Vec<(String, PathBuf)> = Vec::new();
     for (name, root) in startup {
         match engine.claim_host(&name, take_over).await {
-            Ok(HostClaim::Acquired) => {
+            Ok(HostClaim::Acquired { .. }) => {
                 if let Err(err) = watcher.watch(&root, RecursiveMode::Recursive) {
                     tracing::warn!(
                         "could not watch domain '{name}' at {}: {err}",
@@ -1315,7 +1315,7 @@ async fn run_watcher(
                             // domain another live instance hosts is not watched
                             // here and is served read-from-database only.
                             match engine.claim_host(&name, false).await {
-                                Ok(HostClaim::Acquired) => {
+                                Ok(HostClaim::Acquired { .. }) => {
                                     let armed = match watcher.watch(&root, RecursiveMode::Recursive) {
                                         Ok(()) => true,
                                         Err(err) => {

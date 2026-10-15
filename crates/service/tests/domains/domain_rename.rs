@@ -1149,8 +1149,18 @@ async fn a_shared_index_another_instance_uses_refuses_body(store: Arc<Mutex<dyn 
         let store = m.store.lock().await;
         for name in [&m.eng, &m.ops] {
             if let Some(id) = store.domain_id(name).await.unwrap() {
+                // A release names its claim's token: claim once more as
+                // this machine and give that claim back.
+                let now = "2026-01-01T00:00:00+00:00";
+                let crystalline_index::HostClaim::Acquired { token } = store
+                    .claim_domain_host(id, crate::support::THIS_MACHINE, "", now, now, true)
+                    .await
+                    .unwrap()
+                else {
+                    panic!("a take-over acquires");
+                };
                 store
-                    .release_domain_host(id, crate::support::THIS_MACHINE)
+                    .release_domain_host(id, crate::support::THIS_MACHINE, &token)
                     .await
                     .unwrap();
             }

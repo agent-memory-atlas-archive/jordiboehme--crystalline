@@ -6406,7 +6406,7 @@ async fn host_claim_and_contest(store: &dyn Store) {
         .claim_domain_host(did, "inst-a", "node-a", a_at, stale_before, false)
         .await
         .unwrap();
-    assert_eq!(claim, HostClaim::Acquired);
+    assert!(claim.is_acquired());
     let host = store.domain_host(did).await.unwrap().unwrap();
     assert_eq!(host.instance_id, "inst-a");
     assert_eq!(host.label, "node-a");
@@ -6425,7 +6425,9 @@ async fn host_claim_and_contest(store: &dyn Store) {
             assert_eq!(h.instance_id, "inst-a");
             assert_eq!(h.heartbeat_at, a_at);
         }
-        HostClaim::Acquired => panic!("B must not acquire a domain A holds with a fresh heartbeat"),
+        HostClaim::Acquired { .. } => {
+            panic!("B must not acquire a domain A holds with a fresh heartbeat")
+        }
     }
     assert_eq!(
         store.domain_host(did).await.unwrap().unwrap().instance_id,
@@ -6482,7 +6484,7 @@ async fn host_renew_takeover_release(store: &dyn Store) {
         .claim_domain_host(did, "inst-b", "node-b", b_at, stale_past, false)
         .await
         .unwrap();
-    assert_eq!(claim, HostClaim::Acquired);
+    assert!(claim.is_acquired());
     assert_eq!(
         store.domain_host(did).await.unwrap().unwrap().instance_id,
         "inst-b"
@@ -6495,7 +6497,7 @@ async fn host_renew_takeover_release(store: &dyn Store) {
         .claim_domain_host(did, "inst-a", "node-a", a2_at, stale_fresh, true)
         .await
         .unwrap();
-    assert_eq!(claim, HostClaim::Acquired);
+    assert!(claim.is_acquired());
     assert_eq!(
         store.domain_host(did).await.unwrap().unwrap().instance_id,
         "inst-a"
@@ -6507,19 +6509,32 @@ async fn host_renew_takeover_release(store: &dyn Store) {
         .claim_domain_host(did, "inst-a", "node-a", a3_at, stale_fresh, false)
         .await
         .unwrap();
-    assert_eq!(claim, HostClaim::Acquired);
+    assert!(claim.is_acquired());
     assert_eq!(
         store.domain_host(did).await.unwrap().unwrap().heartbeat_at,
         a3_at
     );
 
     // Release: a non-holder's release leaves the lock; the holder's clears it.
-    store.release_domain_host(did, "inst-b").await.unwrap();
+    let HostClaim::Acquired { token } = claim else {
+        unreachable!()
+    };
+    assert!(
+        !store
+            .release_domain_host(did, "inst-b", &token)
+            .await
+            .unwrap()
+    );
     assert!(
         store.domain_host(did).await.unwrap().is_some(),
         "a non-holder release does not clear the lock"
     );
-    store.release_domain_host(did, "inst-a").await.unwrap();
+    assert!(
+        store
+            .release_domain_host(did, "inst-a", &token)
+            .await
+            .unwrap()
+    );
     assert!(
         store.domain_host(did).await.unwrap().is_none(),
         "the holder's release clears the lock"
@@ -6528,6 +6543,96 @@ async fn host_renew_takeover_release(store: &dyn Store) {
 parity!(
     host_renews_takes_over_and_releases,
     host_renew_takeover_release
+);
+
+/// Two processes of one machine claim under one instance id: a one-shot
+/// command and this machine's daemon, or two commands. Every claim writes a
+/// new token, a re-claim by the same id too, and a release deletes the row
+/// only under the token its own claim read back, so the first process's
+/// release never deletes the second one's lock. A hand-back puts the token
+/// of the claim it replaced back instead of deleting.
+async fn host_release_names_its_claim(store: &dyn Store) {
+    let did = store
+        .upsert_domain("eng", Some("/k/eng"), DomainKind::File)
+        .await
+        .unwrap();
+    let stale_before = "2026-07-03T09:59:00+00:00";
+    // Both claims in the same instant: the token still differs.
+    let at = "2026-07-03T10:00:00+00:00";
+    let token = |claim: HostClaim| match claim {
+        HostClaim::Acquired { token } => token,
+        HostClaim::HeldByOther(h) => panic!("held by {h:?}"),
+    };
+    let first = token(
+        store
+            .claim_domain_host(did, "this-machine", "this-machine", at, stale_before, false)
+            .await
+            .unwrap(),
+    );
+    let second = token(
+        store
+            .claim_domain_host(did, "this-machine", "this-machine", at, stale_before, false)
+            .await
+            .unwrap(),
+    );
+    assert_ne!(first, second, "a re-claim writes a new token");
+    assert!(
+        !store
+            .release_domain_host(did, "this-machine", &first)
+            .await
+            .unwrap(),
+        "the first claim's release misses"
+    );
+    assert!(
+        store.domain_host(did).await.unwrap().is_some(),
+        "the second claim's lock stays"
+    );
+
+    // A hand-back gives the lock to the claim it replaced: the second
+    // claim's release then misses and the first one's matches.
+    let third = token(
+        store
+            .claim_domain_host(did, "this-machine", "this-machine", at, stale_before, false)
+            .await
+            .unwrap(),
+    );
+    assert!(
+        !store
+            .hand_back_domain_host(did, "this-machine", &second, &first)
+            .await
+            .unwrap(),
+        "a hand-back under a replaced token changes nothing"
+    );
+    assert!(
+        store
+            .hand_back_domain_host(did, "this-machine", &third, &second)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .release_domain_host(did, "this-machine", &third)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .release_domain_host(did, "another-machine", &second)
+            .await
+            .unwrap(),
+        "another instance's release never matches"
+    );
+    assert!(
+        store
+            .release_domain_host(did, "this-machine", &second)
+            .await
+            .unwrap()
+    );
+    assert!(store.domain_host(did).await.unwrap().is_none());
+}
+parity!(
+    host_release_names_its_claim_token,
+    host_release_names_its_claim
 );
 
 async fn seed_ids_stable(store: &dyn Store) {

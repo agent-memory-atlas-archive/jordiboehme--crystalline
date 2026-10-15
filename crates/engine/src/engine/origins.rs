@@ -1718,6 +1718,10 @@ impl Engine {
                     }
                     if let Err(e) = self.sync_paths(domain, paths.clone()).await {
                         tracing::warn!("indexing the direct commit's files in '{domain}': {e}");
+                        // The commit stands; the answer says why its files
+                        // are not indexed here (another instance hosts the
+                        // domain, for a command on a shared database).
+                        receipt["index_error"] = json!(e.to_string());
                     }
                     match self.converge_pulled_overlays(domain, &paths).await {
                         Ok(folded) => receipt["drafts_folded"] = json!(folded.cleared),

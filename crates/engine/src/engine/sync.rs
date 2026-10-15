@@ -189,20 +189,18 @@ impl Engine {
                 let store = self.store.lock().await;
                 if collab {
                     match self.claim_file_host(&*store, name, root, take_over).await? {
-                        HostClaim::Acquired => {}
+                        HostClaim::Acquired { .. } => {}
                         HostClaim::HeldByOther(host) => {
+                            let reason = host_refusal(name, &host);
                             if only.is_some() {
-                                return Err(EngineError::Conflict(host_refusal(name, &host)));
+                                return Err(EngineError::Conflict(reason));
                             }
-                            tracing::info!(
-                                "domain '{name}' is hosted by instance {} (last heartbeat {}); serving it read-from-database only",
-                                host.instance_id,
-                                host.heartbeat_at
-                            );
+                            tracing::info!("sync skipped: {reason}");
                             skipped.push(json!({
                                 "domain": name,
                                 "hosted_by": host.instance_id,
                                 "heartbeat_at": host.heartbeat_at,
+                                "reason": reason,
                             }));
                             continue;
                         }
@@ -389,11 +387,19 @@ impl Engine {
             let store = self.store.lock().await;
             if collab {
                 match self.claim_file_host(&*store, name, &root, false).await? {
-                    HostClaim::Acquired => {}
+                    HostClaim::Acquired { .. } => {}
+                    // A one-shot command is refused with the reason, so
+                    // the verb that ran it (an import, a discard, a direct
+                    // commit) says why its files are not indexed. The
+                    // daemon's watcher passes over it quietly: the host
+                    // indexes the domain.
+                    HostClaim::HeldByOther(host) if self.is_one_shot() => {
+                        return Err(EngineError::Conflict(host_refusal(name, &host)));
+                    }
                     HostClaim::HeldByOther(host) => {
                         tracing::info!(
-                            "targeted sync skipped: domain '{name}' is hosted by instance {}",
-                            host.instance_id
+                            "targeted sync skipped: domain '{name}' is hosted by {}",
+                            host.label
                         );
                         return Ok(SyncReport {
                             domain: name.to_string(),
