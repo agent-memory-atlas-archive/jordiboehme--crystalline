@@ -102,6 +102,7 @@ const GrantedDraft = lazyChunk(() => import("./screens/GrantedDraft"));
  * client and the review lists, and the app shell is paid for by everybody.
  */
 const ReflectionHome = lazyChunk(() => import("./screens/ReflectionHome"));
+const ReflectionPage = lazyChunk(() => import("./screens/ReflectionPage"));
 
 /**
  * The station itself, every place in it under one splat, `/π/*`, lazy like
@@ -317,6 +318,19 @@ export function AppRoutes() {
             element={
               <LazyBoundary fallback={REFLECTION_FALLBACK}>
                 <ReflectionHome />
+              </LazyBoundary>
+            }
+          />
+          {/*
+            One page of a domain's Reflection. The splat is the page's path
+            inside `reflections/`; it always ends in `.md`, so the static
+            `review` route (Task 10) can never be a page's address.
+          */}
+          <Route
+            path="/d/:domain/reflection/*"
+            element={
+              <LazyBoundary fallback={REFLECTION_FALLBACK}>
+                <ReflectionPage />
               </LazyBoundary>
             }
           />

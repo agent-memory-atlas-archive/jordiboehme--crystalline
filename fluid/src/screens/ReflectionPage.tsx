@@ -1,0 +1,254 @@
+/**
+ * One reflection, read.
+ *
+ * The page is drawn section by section from the texts the engine anchors
+ * comments on (`sectionTexts`): the frontmatter and the id lines are never
+ * part of what is rendered, so neither can show. Each section is its own
+ * `<section>` keyed by its id, which is what a search hit, a thread and a
+ * review row link to (`#s-<id>`), and what a selection is read against.
+ *
+ * Reading is for everybody with at least the comment right; editing is a
+ * separate screen over the live room (`reflection-edit/`), the way an engram
+ * has a reading page and an editor. The source engrams behind a section are
+ * one press away for a reader of engrams, and simply absent for a
+ * contributor: the server leaves the field out, and so does this page.
+ */
+
+import { useQuery } from "@tanstack/react-query";
+import type { ReactElement } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Link, useLocation, useParams } from "react-router";
+
+import { ApiProblem, problemDetail } from "../api/client";
+import type { SectionView, SourceState } from "../api/reflection";
+import { fetchReflection, reflectionDocKey } from "../api/reflection";
+import type { ReflectionRight } from "../api/reflectionDomains";
+import { mayEditPage } from "../api/reflectionDomains";
+import { Markdown } from "../components/Markdown";
+import {
+  ReflectionModeSwitch,
+  useReflectionStatus,
+} from "../components/ReflectionModeSwitch";
+import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
+import { BUTTON, Chip } from "../components/primitives";
+import { Skeleton } from "../components/Skeleton";
+import { engramRoute, reflectionEditRoute, reflectionRoute } from "../paths";
+import { SECTION_ATTR } from "../reflectionQuotes";
+import type { SectionText } from "../reflectionText";
+import { sectionTexts } from "../reflectionText";
+
+const LINK =
+  "text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400";
+
+/** A source's state as a chip; a current source needs none. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function sourceChip(state: SourceState): ReactElement | null {
+  switch (state) {
+    case "current":
+      return null;
+    case "changed":
+      return <Chip variant="caution">changed</Chip>;
+    case "retired":
+      return <Chip variant="retired">retired</Chip>;
+    case "missing":
+      return <Chip variant="danger">missing</Chip>;
+  }
+}
+
+export default function ReflectionPage(): ReactElement {
+  const { domain = "", "*": path = "" } = useParams();
+  const status = useReflectionStatus(domain);
+  if (status.isPending) {
+    return <Skeleton label="Loading the page" rows={6} />;
+  }
+  if (status.error) {
+    return (
+      <p className="text-sm text-red-800 dark:text-red-200">
+        {problemDetail(status.error)}
+      </p>
+    );
+  }
+  if (status.data.state !== "on") {
+    return <ReflectionStateNotice status={status.data} />;
+  }
+  return <PageBody domain={domain} path={path} right={status.data.right} />;
+}
+
+function PageBody({
+  domain,
+  path,
+  right,
+}: {
+  domain: string;
+  path: string;
+  right: ReflectionRight;
+}): ReactElement {
+  const doc = useQuery({
+    queryKey: reflectionDocKey(domain, path),
+    queryFn: () => fetchReflection(domain, path),
+  });
+  const { hash } = useLocation();
+  const articleRef = useRef<HTMLElement | null>(null);
+  const sections = useMemo<SectionText[]>(
+    () => (doc.data ? sectionTexts(doc.data.markdown, doc.data.sections) : []),
+    [doc.data],
+  );
+  // A link to a section or a thread (`#s-<id>`, `#t-<id>`) scrolls there once
+  // the page has something to scroll to.
+  useEffect(() => {
+    if (!doc.data || hash.length < 2) {
+      return;
+    }
+    document
+      .getElementById(decodeURIComponent(hash.slice(1)))
+      ?.scrollIntoView({ block: "start" });
+  }, [doc.data, hash]);
+
+  if (doc.error instanceof ApiProblem && doc.error.status === 404) {
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <h1 className="text-display">Page not found</h1>
+        <p className="text-sm">{`No page at ${path} in ${domain}.`}</p>
+        <Link to={reflectionRoute(domain)} className={`text-sm ${LINK}`}>
+          {`See the Reflection of ${domain}`}
+        </Link>
+      </div>
+    );
+  }
+  if (doc.error) {
+    return (
+      <p role="alert" className="text-sm text-red-800 dark:text-red-200">
+        {problemDetail(doc.error)}
+      </p>
+    );
+  }
+  if (!doc.data) {
+    return <Skeleton label="Loading the page" rows={6} />;
+  }
+  const page = doc.data;
+  // The page's own `# Title` is its heading when it has one; otherwise the
+  // header draws the title, so the page always has exactly one.
+  const ownTitle = /^\s*#[ \t]/.test(sections[0]?.text ?? "");
+  return (
+    <div className="flex flex-col gap-6">
+      <header className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-caption text-slate-500 dark:text-slate-400">
+            <Link to={reflectionRoute(domain)} className={LINK}>
+              {domain}
+            </Link>
+            {` / ${path}`}
+          </p>
+          <div className="flex items-center gap-2">
+            <ReflectionModeSwitch domain={domain} current="reflection" />
+            {mayEditPage(right, path) && (
+              <Link
+                to={reflectionEditRoute(domain, path)}
+                className={BUTTON.primary}
+              >
+                Edit
+              </Link>
+            )}
+          </div>
+        </div>
+        {!ownTitle && <h1 className="text-display">{page.title}</h1>}
+        {page.livePresent.length > 0 && (
+          <p
+            role="status"
+            className="text-sm text-slate-500 dark:text-slate-400"
+          >
+            {`${page.livePresent.join(", ")} editing now`}
+          </p>
+        )}
+      </header>
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <article ref={articleRef} className="flex flex-col gap-4">
+          {sections.map((section) => (
+            <PageSection
+              key={section.id ?? section.heading}
+              domain={domain}
+              section={section}
+              view={
+                page.sections.find(
+                  (s) => s.id === section.id && s.heading === section.heading,
+                ) ?? null
+              }
+            />
+          ))}
+        </article>
+      </div>
+    </div>
+  );
+}
+
+function PageSection({
+  domain,
+  section,
+  view,
+}: {
+  /** For the source links only; the rendered body takes no domain (see above). */
+  domain: string;
+  section: SectionText;
+  view: SectionView | null;
+}): ReactElement {
+  const key = section.id ?? section.heading;
+  return (
+    <section
+      id={`s-${key}`}
+      {...{ [SECTION_ATTR]: key }}
+      className="flex flex-col gap-1"
+    >
+      {/*
+        No `domain`: it would resolve `assets/` links through the engram
+        files route. B9-3 passes the Reflection's own asset resolver here.
+      */}
+      <Markdown source={section.text} sourceSpans />
+      {view?.sources !== null &&
+        view?.sources !== undefined &&
+        view.sources.length > 0 && (
+          <Sources domain={domain} heading={section.heading} view={view} />
+        )}
+    </section>
+  );
+}
+
+function Sources({
+  domain,
+  heading,
+  view,
+}: {
+  domain: string;
+  heading: string;
+  view: SectionView;
+}): ReactElement {
+  const [open, setOpen] = useState(false);
+  const panel = useId();
+  return (
+    <div className="text-sm">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panel}
+        aria-label={`Sources for ${heading}`}
+        onClick={() => {
+          setOpen(!open);
+        }}
+        className={BUTTON.ghost}
+      >
+        Sources
+      </button>
+      {open && (
+        <ul id={panel} className="mt-1 flex flex-col gap-1 pl-2">
+          {(view.sources ?? []).map((source) => (
+            <li key={source.permalink} className="flex items-center gap-2">
+              <Link to={engramRoute(domain, source.permalink)} className={LINK}>
+                {source.title}
+              </Link>
+              {sourceChip(source.state)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
