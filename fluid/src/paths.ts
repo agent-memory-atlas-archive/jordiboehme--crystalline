@@ -17,7 +17,9 @@ import { NEIGHBORHOOD_DEPTH } from "./api/graph";
  * to move or delete it (422 since 0.27.0).
  */
 export function isDomainManifestPath(path: string): boolean {
-  return path.toUpperCase() === "MANIFEST.MD";
+  // ASCII-only, like the engine's `eq_ignore_ascii_case`: `toUpperCase` is
+  // Unicode-aware and would turn a dotless "ı" into an "I".
+  return path.replace(/[A-Z]/g, (c) => c.toLowerCase()) === "manifest.md";
 }
 
 /** The address of one domain. */

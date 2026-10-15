@@ -1722,6 +1722,10 @@ describe("a domain's MANIFEST on the engram page", () => {
         name: "Delete permanently instead",
       }),
     ).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await userEvent.keyboard("{Meta>}k{/Meta}");
+    expect(await screen.findByText("Move engram")).toBeVisible();
+    expect(screen.getByText("Retire engram")).toBeVisible();
   });
 
   it("an engram called manifest in a folder keeps move and delete", async () => {
@@ -1738,6 +1742,10 @@ describe("a domain's MANIFEST on the engram page", () => {
         name: "Delete permanently instead",
       }),
     ).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await userEvent.keyboard("{Meta>}k{/Meta}");
+    expect(await screen.findByText("Move engram")).toBeVisible();
+    expect(screen.getByText("Retire engram")).toBeVisible();
   });
 });
 
