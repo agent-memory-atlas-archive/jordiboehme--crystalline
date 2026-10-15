@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./client";
-import { API_BASE } from "./client";
+import { API_BASE, api } from "./client";
 import {
   deleteReflectionAsset,
   fetchReflectionAssets,

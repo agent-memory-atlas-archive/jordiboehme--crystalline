@@ -290,5 +290,46 @@
       "assets/bad%zzname.png"
     ],
     "engram": []
+  },
+  {
+    "name": "a query suffix stays part of the name",
+    "page": "a.md",
+    "body": "![x](assets/a.png?x=1)",
+    "refs": [
+      "assets/a.png?x=1"
+    ],
+    "engram": []
+  },
+  {
+    "name": "the reflections folder folds case from a root page",
+    "page": "a.md",
+    "body": "![x](../Reflections/assets/a.png)",
+    "refs": [
+      "assets/a.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "the reflections folder folds case from a folder page",
+    "page": "guides/a.md",
+    "body": "![x](../../REFLECTIONS/assets/b.png)",
+    "refs": [
+      "assets/b.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "a glob address is other",
+    "page": "a.md",
+    "body": "[x](crystalline://eng/assets/*)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "an address with an empty domain is other",
+    "page": "a.md",
+    "body": "![x](crystalline:///assets/a.png)",
+    "refs": [],
+    "engram": []
   }
 ]
