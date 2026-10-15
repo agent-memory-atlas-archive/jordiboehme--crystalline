@@ -91,7 +91,7 @@ interface UploadBatch {
  * engram files they become, which is the engram home of that domain.
  */
 export type UploadRequest = UploadBatch &
-  ({ home: AssetHome } | { domain: string });
+  ({ home: AssetHome; domain?: never } | { domain: string; home?: never });
 
 /**
  * Why something failed, in words: the server's own where the failure came from
@@ -123,7 +123,7 @@ export async function uploadAttachments(
 ): Promise<number> {
   const { files, view, onError } = request;
   const home =
-    "home" in request ? request.home : engramAssetHome(request.domain);
+    request.home === undefined ? engramAssetHome(request.domain) : request.home;
   onError(null);
   if (files.length === 0) {
     return 0;
