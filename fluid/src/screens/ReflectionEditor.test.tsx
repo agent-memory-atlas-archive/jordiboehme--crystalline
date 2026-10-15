@@ -1,10 +1,12 @@
-import { act, screen } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { focusManager } from "@tanstack/react-query";
+import { useSyncExternalStore } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
 
-import { api } from "../api/client";
+import { ApiProblem, api } from "../api/client";
 import { TEXT_NAME } from "../collab/provider";
 import type { CollabSession } from "../collab/useCollabSession";
 import { useCollabSession } from "../collab/useCollabSession";
@@ -48,23 +50,27 @@ function room(text: string): CollabSession {
   };
 }
 
-function serve(right: string) {
+function onStatus(right: string, state = "on") {
+  return {
+    domain: "eng",
+    enabled: true,
+    state,
+    home: "local",
+    home_url: null,
+    right,
+    engrams_visible: false,
+    pending_engrams: [],
+  };
+}
+
+function serve(right: string, status: () => unknown = () => onStatus(right)) {
   apiMock.mockImplementation(
     answersFor({
       "/auth/me": () =>
         meResponse({ user: userFixture({ name: "ann", role: "viewer" }) }),
       "/domains": () => ({ behavior: [], domains: [] }),
       "/reflection/domains": () => ({ domains: [] }),
-      "/domains/eng/reflection": () => ({
-        domain: "eng",
-        enabled: true,
-        state: "on",
-        home: "local",
-        home_url: null,
-        right,
-        engrams_visible: false,
-        pending_engrams: [],
-      }),
+      "/domains/eng/reflection": status,
       "/domains/eng/reflection/tree": () => ({
         domain: "eng",
         pact: { path: "PACT.md", title: "PACT", exists: true, open_threads: 0 },
@@ -114,7 +120,10 @@ describe("the reflection editor", () => {
     ).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Put it back" }));
     expect(session.ytext?.toJSON()).toBe("typed offline\n");
-    expect(readDraft("ann", "eng", "reflection:guides/a.md")).toBeNull();
+    // Kept until the room saves it (the next test follows it there).
+    expect(readDraft("ann", "eng", "reflection:guides/a.md")?.content).toBe(
+      "typed offline\n",
+    );
     expect(
       screen.queryByText("Text from an earlier session was kept."),
     ).toBeNull();
@@ -182,6 +191,7 @@ describe("the reflection editor", () => {
     serve("edit");
     sessionMock.mockReturnValue({
       ...room(PAGE),
+      saveState: "pending",
       closed: true,
       closedReason: "internal",
     });
@@ -264,5 +274,333 @@ describe("the reflection editor", () => {
       screen.getByRole("link", { name: "Back to the page" }),
     ).toHaveAttribute("href", "/d/eng/reflection/guides/a.md");
     expect(sessionMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A session the test can change while the editor is on screen: the mocked
+ * hook reads it through an external store, so a change re-renders the
+ * editor the way a control from the server would.
+ */
+function live(first: CollabSession) {
+  let current = first;
+  const listeners = new Set<() => void>();
+  sessionMock.mockImplementation(() =>
+    useSyncExternalStore(
+      (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      () => current,
+    ),
+  );
+  return {
+    get: () => current,
+    set: (next: Partial<CollabSession>) => {
+      act(() => {
+        current = { ...current, ...next };
+        for (const listener of listeners) {
+          listener();
+        }
+      });
+    },
+  };
+}
+
+function type(session: CollabSession, text: string) {
+  act(() => {
+    const ytext = session.ytext as Y.Text;
+    ytext.insert(ytext.length, text);
+  });
+}
+
+const KEY = "reflection:guides/a.md";
+const REFUSAL = "the Reflection of 'eng' is not on here any more";
+
+afterEach(() => {
+  focusManager.setFocused(undefined);
+});
+
+async function openEditor(): Promise<HTMLElement> {
+  renderApp("/d/eng/reflection-edit/guides/a.md");
+  return screen.findByRole("textbox", { name: "Page source" });
+}
+
+describe("the reflection editor keeps what is owed", () => {
+  it("keeps following the typing after a refusal, with the server's words up", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    await openEditor();
+    session.set({ saveState: "failed", saveDetail: REFUSAL });
+    // A keystroke makes the hook say "pending"; the server does not repeat
+    // the same refusal.
+    session.set({ saveState: "pending", saveDetail: null });
+    type(session.get(), "more\n");
+    expect(readDraft("ann", "eng", KEY)?.content).toBe(`${PAGE}more\n`);
+    expect(screen.getByRole("alert")).toHaveTextContent(REFUSAL);
+    expect(screen.queryByText("Saving...")).toBeNull();
+  });
+
+  it("drops its own copy once the room saves again", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    await openEditor();
+    session.set({ saveState: "failed", saveDetail: REFUSAL });
+    expect(readDraft("ann", "eng", KEY)).not.toBeNull();
+    session.set({ saveState: "ok", saveDetail: null });
+    expect(readDraft("ann", "eng", KEY)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps the text while the connection is down, and on leaving", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    await openEditor();
+    session.set({ status: "reconnecting" });
+    type(session.get(), "offline\n");
+    expect(readDraft("ann", "eng", KEY)?.content).toBe(`${PAGE}offline\n`);
+    await userEvent.click(screen.getByRole("link", { name: "Done" }));
+    expect(readDraft("ann", "eng", KEY)?.content).toBe(`${PAGE}offline\n`);
+  });
+
+  it("keeps a pending text as a draft when the editor is left", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    await openEditor();
+    type(session.get(), "typed\n");
+    session.set({ saveState: "pending" });
+    await userEvent.click(screen.getByRole("link", { name: "Done" }));
+    expect(readDraft("ann", "eng", KEY)?.content).toBe(`${PAGE}typed\n`);
+  });
+
+  it("keeps the text under a conflict", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    await openEditor();
+    session.set({
+      saveState: "conflict",
+      conflict: { kind: "edit", theirs: "x", detail: "d" },
+    });
+    type(session.get(), "mine\n");
+    expect(readDraft("ann", "eng", KEY)?.content).toBe(`${PAGE}mine\n`);
+  });
+
+  it("asks before the page unloads while text is owed", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    await openEditor();
+    const quiet = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(quiet);
+    expect(quiet.defaultPrevented).toBe(false);
+    session.set({ saveState: "pending" });
+    const owed = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(owed);
+    expect(owed.defaultPrevented).toBe(true);
+  });
+});
+
+describe("the reflection editor taking the file version", () => {
+  it("keeps this tab's text as an offer that the file version does not overwrite", async () => {
+    serve("edit");
+    const session = live({
+      ...room(`${PAGE}mine\n`),
+      saveState: "conflict",
+      conflict: { kind: "edit", theirs: PAGE, detail: "d" },
+    });
+    await openEditor();
+    await userEvent.click(screen.getByRole("button", { name: "Resolve" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Take the file version" }),
+    );
+    // The room converges on theirs and heals.
+    act(() => {
+      const ytext = session.get().ytext as Y.Text;
+      ytext.delete(0, ytext.length);
+      ytext.insert(0, PAGE);
+    });
+    session.set({ saveState: "ok", conflict: null });
+    expect(readDraft("ann", "eng", KEY)?.content).toBe(`${PAGE}mine\n`);
+  });
+});
+
+describe("the reflection editor after it has opened", () => {
+  it("stays open when a status refetch fails, and says so beside it", async () => {
+    let calls = 0;
+    serve("edit", () => {
+      calls += 1;
+      if (calls > 1) {
+        throw new ApiProblem(403, "forbidden", "no longer allowed");
+      }
+      return onStatus("edit");
+    });
+    live(room(PAGE));
+    await openEditor();
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    expect(await screen.findByText("no longer allowed")).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Page source" })).toBeVisible();
+  });
+
+  it("stays open when the Reflection turns off, and shows the state beside it", async () => {
+    let calls = 0;
+    serve("edit", () => {
+      calls += 1;
+      return onStatus("edit", calls > 1 ? "off" : "on");
+    });
+    live(room(PAGE));
+    await openEditor();
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    await waitFor(() => {
+      expect(calls).toBeGreaterThan(1);
+    });
+    expect(screen.getByRole("textbox", { name: "Page source" })).toBeVisible();
+  });
+});
+
+describe("the reflection editor once the room has ended", () => {
+  it("claims no save under a conflict or a pending save", async () => {
+    for (const saveState of ["conflict", "pending"] as const) {
+      serve("edit");
+      const view = live({
+        ...room(PAGE),
+        saveState,
+        closed: true,
+        closedReason: "switched_off",
+      });
+      const { unmount } = renderApp("/d/eng/reflection-edit/guides/a.md");
+      expect(
+        await screen.findByText(
+          "The session ended; your text is kept as a draft",
+        ),
+      ).toBeVisible();
+      expect(screen.queryByText(/saved first/)).toBeNull();
+      expect(readDraft("ann", "eng", KEY)?.content).toBe(
+        (view.get().ytext as Y.Text).toJSON(),
+      );
+      unmount();
+      localStorage.clear();
+    }
+  });
+
+  it("keeps no draft when the room closed with everything saved", async () => {
+    serve("edit");
+    live({ ...room(PAGE), closed: true, closedReason: "internal" });
+    await openEditor();
+    expect(
+      screen.getByText("The session ended. Your text was saved."),
+    ).toBeVisible();
+    expect(readDraft("ann", "eng", KEY)).toBeNull();
+  });
+
+  it("turns a lost connection into an ended, read-only session", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    type(session.get(), "typed\n");
+    session.set({ saveState: "pending" });
+    session.set({ status: "failed" });
+    expect(
+      screen.getByText("The session ended; your text is kept as a draft"),
+    ).toBeVisible();
+    expect(editor).toHaveAttribute("contenteditable", "false");
+    expect(readDraft("ann", "eng", KEY)?.content).toBe(`${PAGE}typed\n`);
+  });
+
+  it("makes a closed room read-only and offers nothing to put back into it", async () => {
+    serve("edit");
+    writeDraft("ann", "eng", KEY, {
+      content: "older\n",
+      baseChecksum: "",
+      savedAt: "",
+    });
+    live({ ...room(PAGE), closed: true, closedReason: "deleted" });
+    const editor = await openEditor();
+    expect(editor).toHaveAttribute("contenteditable", "false");
+    expect(screen.queryByRole("button", { name: "Put it back" })).toBeNull();
+  });
+});
+
+describe("the reflection editor's kept text", () => {
+  it("keeps a put-back text as a draft until the room saves it", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    writeDraft("ann", "eng", KEY, {
+      content: "typed offline\n",
+      baseChecksum: "",
+      savedAt: "",
+    });
+    await openEditor();
+    await userEvent.click(screen.getByRole("button", { name: "Put it back" }));
+    expect(readDraft("ann", "eng", KEY)?.content).toBe("typed offline\n");
+    expect(screen.getByRole("textbox", { name: "Page source" })).toHaveFocus();
+    session.set({ saveState: "pending" });
+    type(session.get(), "more\n");
+    expect(readDraft("ann", "eng", KEY)?.content).toBe("typed offline\nmore\n");
+    session.set({ saveState: "ok" });
+    expect(readDraft("ann", "eng", KEY)).toBeNull();
+  });
+
+  it("discards only the offered text, never this tab's own copy", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    writeDraft("ann", "eng", KEY, {
+      content: "older\n",
+      baseChecksum: "",
+      savedAt: "",
+    });
+    await openEditor();
+    session.set({ saveState: "failed", saveDetail: REFUSAL });
+    await userEvent.click(screen.getByRole("button", { name: "Discard" }));
+    expect(readDraft("ann", "eng", KEY)?.content).toBe(PAGE);
+    expect(screen.getByRole("textbox", { name: "Page source" })).toHaveFocus();
+  });
+
+  it("leaves no draft behind that only repeats the room", async () => {
+    serve("edit");
+    live(room(PAGE));
+    writeDraft("ann", "eng", KEY, {
+      content: PAGE,
+      baseChecksum: "",
+      savedAt: "",
+    });
+    await openEditor();
+    expect(readDraft("ann", "eng", KEY)).toBeNull();
+  });
+});
+
+describe("the reflection editor's way in", () => {
+  it("tells a reader with no right on the page that it is not theirs to open", async () => {
+    serve("none");
+    live(room(PAGE));
+    renderApp("/d/eng/reflection-edit/guides/a.md");
+    expect(await screen.findByText("You cannot edit this page.")).toBeVisible();
+    expect(screen.queryByText(/can comment/)).toBeNull();
+  });
+
+  it("puts focus back on Try again when the room fails again", async () => {
+    serve("edit");
+    sessionMock.mockReturnValue(soloCollabSession());
+    renderApp("/d/eng/reflection-edit/guides/a.md");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Try again" }),
+    );
+    expect(screen.getByRole("button", { name: "Try again" })).toHaveFocus();
+  });
+
+  it("puts focus in the editor when a retry joins the room", async () => {
+    serve("edit");
+    sessionMock.mockReturnValue(soloCollabSession());
+    renderApp("/d/eng/reflection-edit/guides/a.md");
+    const retry = await screen.findByRole("button", { name: "Try again" });
+    sessionMock.mockReturnValue(room(PAGE));
+    await userEvent.click(retry);
+    expect(
+      await screen.findByRole("textbox", { name: "Page source" }),
+    ).toHaveFocus();
   });
 });

@@ -11,14 +11,22 @@
  * greets the reconnect with a new session; the hook keeps what this tab had
  * as a draft under the room's key first, and the next mount of this screen
  * offers it back.
+ *
+ * The Reflection's status and this person's right decide whether the room is
+ * opened at all, once. After that the room is the authority: a status that
+ * turns off or a refetch that fails is shown beside the editor, and the room
+ * ends the session itself with its own `closed` control. Unmounting a live
+ * room over a status refetch would drop text the server has not saved.
  */
 
-import { EditorState } from "@codemirror/state";
-import { keymap } from "@codemirror/view";
+import type { Extension } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
+import type { EditorView } from "@codemirror/view";
+import { EditorView as View, keymap } from "@codemirror/view";
 import { useQueryClient } from "@tanstack/react-query";
 import { Check } from "lucide-react";
 import type { ReactElement } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import * as Y from "yjs";
@@ -63,48 +71,75 @@ export default function ReflectionEditor(): ReactElement {
   const { domain = "", "*": path = "" } = useParams();
   const status = useReflectionStatus(domain);
   const [attempt, setAttempt] = useState(0);
-  if (status.isPending) {
-    return <Skeleton label="Loading the page" rows={6} />;
+  const [admitted, setAdmitted] = useState(false);
+  const data = status.data;
+  const opens =
+    data !== undefined && data.state === "on" && mayEditPage(data.right, path);
+  if (opens && !admitted) {
+    // Decided once: see the module comment.
+    setAdmitted(true);
   }
-  if (status.error) {
-    return (
-      <p role="alert" className={ALERT}>
-        {problemDetail(status.error)}
-      </p>
-    );
-  }
-  if (status.data.state !== "on") {
-    return <ReflectionStateNotice status={status.data} />;
-  }
-  if (!mayEditPage(status.data.right, path)) {
+  if (!admitted && !opens) {
+    if (data === undefined) {
+      return status.isPending ? (
+        <Skeleton label="Loading the page" rows={6} />
+      ) : (
+        <p role="alert" className={ALERT}>
+          {problemDetail(status.error)}
+        </p>
+      );
+    }
+    if (data.state !== "on") {
+      return <ReflectionStateNotice status={data} />;
+    }
     return (
       <div className="flex flex-col items-start gap-2 text-sm">
-        <p>You can comment on this page, but not edit it.</p>
-        <Link to={reflectionPageRoute(domain, path)} className={LINK}>
-          Back to the page
-        </Link>
+        <p>
+          {data.right === "none"
+            ? "You cannot edit this page."
+            : "You can comment on this page, but not edit it."}
+        </p>
+        {data.right !== "none" && (
+          <Link to={reflectionPageRoute(domain, path)} className={LINK}>
+            Back to the page
+          </Link>
+        )}
       </div>
     );
   }
   return (
-    <Room
-      key={attempt}
-      domain={domain}
-      path={path}
-      onRetry={() => {
-        setAttempt(attempt + 1);
-      }}
-    />
+    <div className="flex flex-col gap-4">
+      {status.error !== null ? (
+        <p role="alert" className={ALERT}>
+          {problemDetail(status.error)}
+        </p>
+      ) : (
+        data !== undefined &&
+        data.state !== "on" && <ReflectionStateNotice status={data} />
+      )}
+      <Room
+        key={attempt}
+        domain={domain}
+        path={path}
+        retried={attempt > 0}
+        onRetry={() => {
+          setAttempt(attempt + 1);
+        }}
+      />
+    </div>
   );
 }
 
 function Room({
   domain,
   path,
+  retried,
   onRetry,
 }: {
   domain: string;
   path: string;
+  /** Whether this mount is a "Try again": focus then goes somewhere useful. */
+  retried: boolean;
   onRetry: () => void;
 }): ReactElement {
   const { user } = useAuth();
@@ -129,21 +164,35 @@ function Room({
     enabled: true,
     room: target,
   });
-  if (
+  const connecting =
     collab.mode === "connecting" ||
-    (collab.mode === "collab" && collab.ytext === null)
-  ) {
+    (collab.mode === "collab" && collab.ytext === null);
+  const failed =
+    !connecting &&
+    (collab.mode === "solo" ||
+      collab.ytext === null ||
+      collab.awareness === null);
+  // The button that was pressed is gone with the room it remounted; when the
+  // new room fails too, focus goes back to the new button.
+  const retry = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (retried && failed) {
+      retry.current?.focus();
+    }
+  }, [retried, failed]);
+  if (connecting) {
     return <Skeleton label="Connecting the session" rows={8} />;
   }
-  if (
-    collab.mode === "solo" ||
-    collab.ytext === null ||
-    collab.awareness === null
-  ) {
+  if (failed) {
     return (
       <div className="flex flex-col items-start gap-2 text-sm">
         <p>Live editing is not available right now.</p>
-        <button type="button" onClick={onRetry} className={BUTTON.secondary}>
+        <button
+          ref={retry}
+          type="button"
+          onClick={onRetry}
+          className={BUTTON.secondary}
+        >
           Try again
         </button>
         <Link to={reflectionPageRoute(domain, path)} className={LINK}>
@@ -159,27 +208,30 @@ function Room({
       path={path}
       collab={collab}
       account={account}
+      focusOnReady={retried}
     />
   );
 }
 
 /**
- * What the banner says once the room has closed, by the server's reason. A
- * switch-off saves the room before it closes it, but that last save can be
- * refused too (the server then announces the refusal first), and a banner
- * must not claim a save that did not land.
+ * What the banner says once the room has ended, by the server's reason and
+ * the room's last save verdict. Only "ok" means the text landed: a refused
+ * save, a conflict (whose close saves nothing) and a save still in flight
+ * all leave the text with this tab.
  */
-function closedSentence(
+function endedSentence(
   reason: string | null,
   saveState: CollabSession["saveState"],
 ): string {
   if (reason === "deleted") {
     return "This page was deleted; your text is kept as a draft";
   }
-  if (reason === "switched_off" && saveState !== "failed") {
-    return "The Reflection was switched off. Your text was saved first.";
+  if (saveState !== "ok") {
+    return "The session ended; your text is kept as a draft";
   }
-  return "The session ended; your text is kept as a draft";
+  return reason === "switched_off"
+    ? "The Reflection was switched off. Your text was saved first."
+    : "The session ended. Your text was saved.";
 }
 
 /**
@@ -192,30 +244,96 @@ function differsFromRoom(draft: Draft, room: string): boolean {
   return kept !== stripIdLines(room);
 }
 
+/** The editor's switch for a room that has ended: the text stays, typing stops. */
+function readOnly(ended: boolean): Extension {
+  return ended ? [View.editable.of(false), EditorState.readOnly.of(true)] : [];
+}
+
 function Surface({
   domain,
   path,
   collab,
   account,
+  focusOnReady,
 }: {
   domain: string;
   path: string;
   collab: CollabSession;
   account: string;
+  focusOnReady: boolean;
 }): ReactElement {
   const { resolved } = useTheme();
   const queryClient = useQueryClient();
   const ytext = collab.ytext as Y.Text;
   const awareness = collab.awareness as NonNullable<CollabSession["awareness"]>;
   const key = reflectionRoomKey(path);
+
+  /*
+   * The room has ended: closed by the server, or a connection refused for
+   * good after the join (a 44xx close without a `closed` control), which
+   * leaves a room nobody will save from here either.
+   */
+  const ended = collab.closed || collab.status === "failed";
+  /*
+   * What this tab owes the person: text the server has not confirmed while
+   * something stands between it and the file (a refusal, a conflict, a lost
+   * connection, an ended room). A latch rather than a reading of the current
+   * verdict, because a keystroke after a refusal turns the verdict into
+   * "pending" and the server does not repeat the same refusal; only the next
+   * landed save (or a healthy connection with nothing pending) releases it.
+   * An ended room whose last verdict is "ok" owes nothing, unless the page
+   * was deleted: then the text in this tab is the only copy left.
+   */
+  const healthy =
+    !ended && collab.saveState === "ok" && collab.status === "connected";
+  const troubled =
+    ended ||
+    collab.saveState === "failed" ||
+    collab.saveState === "conflict" ||
+    collab.status !== "connected";
+  const latches =
+    troubled &&
+    !(ended && collab.saveState === "ok" && collab.closedReason !== "deleted");
+  const [owed, setOwed] = useState(latches);
+  const [wasHealthy, setWasHealthy] = useState(healthy);
+  // The server's refusal, held while the latch holds: a keystroke clears the
+  // hook's `saveDetail`, but the sentence is still true until a save lands.
+  const [refusal, setRefusal] = useState<string | null>(null);
+  if (healthy !== wasHealthy) {
+    setWasHealthy(healthy);
+    if (healthy) {
+      setOwed(false);
+      setRefusal(null);
+    }
+  }
+  if (latches && !owed) {
+    setOwed(true);
+  }
+  if (
+    collab.saveState === "failed" &&
+    collab.saveDetail !== null &&
+    collab.saveDetail !== refusal
+  ) {
+    setRefusal(collab.saveDetail);
+  }
+
   const [kept, setKept] = useState<Draft | null>(() => {
     const draft = readDraft(account, domain, key);
     return draft !== null && differsFromRoom(draft, ytext.toJSON())
       ? draft
       : null;
   });
+  // Whether the stored draft is this mount's own copy (not an offered one).
+  const wrote = useRef(false);
   const [resolving, setResolving] = useState(false);
+  // "Theirs" was taken over this tab's text, which was kept as a draft just
+  // before: it is then an offer for the next mount, not this mount's copy,
+  // so the text that follows (theirs) must not overwrite it.
+  const [parked, setParked] = useState(false);
   const [mountText] = useState(() => ytext.toJSON());
+  const [mountEnded] = useState(ended);
+  const [view, setView] = useState<EditorView | null>(null);
+  const editable = useMemo(() => new Compartment(), []);
   const extensions = useMemo(
     () => [
       // The shared text is LF space by construction (see EngramEditor).
@@ -228,33 +346,96 @@ function Surface({
       livePreview(),
       frontmatterFold(),
       hiddenIdLines(),
+      editable.of(readOnly(mountEnded)),
     ],
-    [ytext, awareness, resolved],
+    [ytext, awareness, resolved, editable, mountEnded],
   );
-
-  // A close from outside (a deletion, a shutdown) or a refused save (the
-  // Reflection switched off while the room held unsaved text) leaves this
-  // tab's copy as the only one a person can reach: keep it as a draft, which
-  // the next mount offers back. Text typed after the refusal is kept too: the
-  // server's refusal tells the person "this tab keeps a copy", so the copy
-  // follows the text.
   useEffect(() => {
-    if (!collab.closed && collab.saveState !== "failed") {
-      return undefined;
-    }
-    const keep = () => {
+    view?.dispatch({ effects: editable.reconfigure(readOnly(ended)) });
+  }, [view, editable, ended]);
+
+  const keep = useMemo(
+    () => () => {
       writeDraft(account, domain, key, {
         content: ytext.toJSON(),
         baseChecksum: "",
         savedAt: new Date().toISOString(),
       });
-    };
+      wrote.current = true;
+    },
+    [account, domain, key, ytext],
+  );
+
+  // While the latch holds, the draft follows the text: the server's refusal
+  // tells the person "this tab keeps a copy", and the reconnect line says
+  // edits are kept locally.
+  useEffect(() => {
+    if (!owed || parked) {
+      return undefined;
+    }
     keep();
     ytext.observe(keep);
     return () => {
       ytext.unobserve(keep);
     };
-  }, [collab.closed, collab.saveState, account, domain, key, ytext]);
+  }, [owed, parked, keep, ytext]);
+
+  // The latch released by a landed save: this mount's own copy is no longer
+  // needed. Never a draft still on offer, and never one this mount did not
+  // write.
+  useEffect(() => {
+    if (!owed && kept === null && wrote.current) {
+      clearDraft(account, domain, key);
+      wrote.current = false;
+    }
+  }, [owed, kept, account, domain, key]);
+
+  // A kept draft that only repeats the room is offered to nobody; drop it.
+  const [stale] = useState(() => {
+    const draft = readDraft(account, domain, key);
+    return draft !== null && !differsFromRoom(draft, mountText);
+  });
+  useEffect(() => {
+    if (stale) {
+      clearDraft(account, domain, key);
+    }
+  }, [stale, account, domain, key]);
+
+  // Text still owed when the screen goes ("Done", any navigation, a status
+  // change above) is kept as a draft on the way out.
+  const owedSave =
+    owed ||
+    collab.saveState === "pending" ||
+    collab.saveState === "failed" ||
+    collab.saveState === "conflict";
+  const leaving = useRef(owedSave);
+  const parkedRef = useRef(parked);
+  useEffect(() => {
+    leaving.current = owedSave;
+    parkedRef.current = parked;
+  }, [owedSave, parked]);
+  useEffect(
+    () => () => {
+      if (leaving.current && !parkedRef.current) {
+        keep();
+      }
+    },
+    [keep],
+  );
+  // And the browser asks before a tab with owed text unloads, as the engram
+  // editor does.
+  useEffect(() => {
+    if (!owedSave) {
+      return undefined;
+    }
+    const prompt = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", prompt);
+    return () => {
+      window.removeEventListener("beforeunload", prompt);
+    };
+  }, [owedSave]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -284,49 +465,68 @@ function Surface({
           Reconnecting - edits are kept locally
         </p>
       )}
-      {collab.saveState === "pending" && (
+      {collab.saveState === "pending" && refusal === null && !ended && (
         <p className="text-sm text-slate-500 dark:text-slate-400">Saving...</p>
       )}
-      {collab.saveState === "ok" && (
+      {collab.saveState === "ok" && !ended && (
         <p className="inline-flex items-center gap-1 text-sm text-slate-500 dark:text-slate-400">
           <Check aria-hidden="true" size={14} strokeWidth={2} />
           Saved
         </p>
       )}
-      {collab.saveState === "failed" && collab.saveDetail !== null && (
+      {refusal !== null && (
         <p role="alert" className={ALERT}>
-          {collab.saveDetail}
+          {refusal}
         </p>
       )}
-      {collab.closed && (
-        <p role="status" className={AMBER_BANNER}>
-          {closedSentence(collab.closedReason, collab.saveState)}
-        </p>
-      )}
+      {/*
+        Mounted from the start and filled when the room ends, so a screen
+        reader announces the change rather than meeting a region that
+        arrived with its text already in it.
+      */}
+      <div role="status">
+        {ended && (
+          <p className={AMBER_BANNER}>
+            {endedSentence(collab.closedReason, collab.saveState)}
+          </p>
+        )}
+      </div>
+      {/*
+        A note, not a status: the offer is there when the screen opens and
+        waits for a choice, it is not news that happened while the person
+        was looking.
+      */}
       {kept !== null && (
         <aside role="note" className={AMBER_BANNER}>
           <span>Text from an earlier session was kept.</span>
+          {!ended && (
+            <button
+              type="button"
+              className={BANNER_BUTTON}
+              onClick={() => {
+                const text = kept.content.replace(/\r\n/g, "\n");
+                ytext.doc?.transact(() => {
+                  ytext.delete(0, ytext.length);
+                  ytext.insert(0, text);
+                });
+                // Owed until the room saves it: the draft stays and follows.
+                setOwed(true);
+                setKept(null);
+                view?.focus();
+              }}
+            >
+              Put it back
+            </button>
+          )}
           <button
             type="button"
             className={BANNER_BUTTON}
             onClick={() => {
-              const text = kept.content.replace(/\r\n/g, "\n");
-              ytext.doc?.transact(() => {
-                ytext.delete(0, ytext.length);
-                ytext.insert(0, text);
-              });
-              clearDraft(account, domain, key);
+              if (!wrote.current) {
+                clearDraft(account, domain, key);
+              }
               setKept(null);
-            }}
-          >
-            Put it back
-          </button>
-          <button
-            type="button"
-            className={BANNER_BUTTON}
-            onClick={() => {
-              clearDraft(account, domain, key);
-              setKept(null);
+              view?.focus();
             }}
           >
             Discard
@@ -352,6 +552,12 @@ function Surface({
           initialDoc={mountText}
           extensions={extensions}
           ariaLabel="Page source"
+          onReady={(ready) => {
+            setView(ready);
+            if (focusOnReady) {
+              ready.focus();
+            }
+          }}
         />
       </div>
       {collab.conflict !== null && resolving && (
@@ -360,12 +566,11 @@ function Surface({
           mine={ytext.toJSON()}
           onResolve={(choice) => {
             if (choice === "theirs") {
-              // Taking their text drops this tab's: keep it as a draft first.
-              writeDraft(account, domain, key, {
-                content: ytext.toJSON(),
-                baseChecksum: "",
-                savedAt: new Date().toISOString(),
-              });
+              // Taking their text drops this tab's: keep it as a draft
+              // first, for the next mount to offer back.
+              keep();
+              wrote.current = false;
+              setParked(true);
             }
             collab.resolve(choice);
             setResolving(false);
