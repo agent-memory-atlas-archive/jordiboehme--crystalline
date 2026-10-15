@@ -470,8 +470,16 @@ export interface SaveReceipt {
   checksum: string;
   created: boolean;
   idsAssigned: string[];
+  /** Whether this write advanced the baseline. */
+  curated: boolean;
   /** Set when the write landed in an open live room. */
   landedLive: boolean;
+  /** Who is in the open room; empty when none is open. */
+  present: string[];
+  /** When the write is on disk only: what the room meets, `conflict` or `waiting`. */
+  room: "conflict" | "waiting" | null;
+  /** A sentence saying what the people in the room meet, as the server words it. */
+  roomNote: string | null;
 }
 
 export async function saveReflection(
@@ -497,7 +505,11 @@ export async function saveReflection(
     checksum: asString(r?.checksum) ?? "",
     created: r?.created === true,
     idsAssigned: asStrings(r?.ids_assigned),
+    curated: r?.curated === true,
     landedLive: r?.landed === "live",
+    present: asStrings(r?.present),
+    room: r?.room === "conflict" || r?.room === "waiting" ? r.room : null,
+    roomNote: asString(r?.room_note),
   };
 }
 

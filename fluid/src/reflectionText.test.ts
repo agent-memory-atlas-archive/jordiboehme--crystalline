@@ -36,7 +36,7 @@ describe("sectionTexts", () => {
     expect(texts[1]?.text).toBe(
       "## Night deploys\n\nDeploys run at night, after the batch.\nDeploys run at night.\n",
     );
-    expect(texts[2]?.text).toBe("## Other\n\nOther text.");
+    expect(texts[2]?.text).toBe("## Other\n\nOther text.\n");
     expect(texts.some((s) => s.text.includes("<!-- r:"))).toBe(false);
   });
 
@@ -73,7 +73,7 @@ describe("sectionTexts", () => {
 
   it("reads a CRLF file in LF space, like the engine", () => {
     const texts = sectionTexts(PAGE.replace(/\n/g, "\r\n"), SECTIONS);
-    expect(texts[2]?.text).toBe("## Other\n\nOther text.");
+    expect(texts[2]?.text).toBe("## Other\n\nOther text.\n");
   });
 
   it("keeps a heading with no id as its own section, addressed by heading", () => {
@@ -83,8 +83,43 @@ describe("sectionTexts", () => {
     expect(texts[1]).toEqual({
       id: null,
       heading: "New",
-      text: "## New\n\nTyped by hand.",
+      text: "## New\n\nTyped by hand.\n",
     });
+  });
+});
+
+describe("sectionTexts against the engine", () => {
+  it("keeps the trailing empty element like split_sections: a last section ends in a line break", () => {
+    const texts = sectionTexts(PAGE, SECTIONS);
+    expect(texts[2]?.text.endsWith("Other text.\n")).toBe(true);
+    // A page with no ## at all: the whole body is the top, ending in "\n".
+    expect(sectionTexts("# D\n\nJust text.\n", [])).toEqual([
+      { id: TOP_SECTION, heading: "", text: "# D\n\nJust text.\n" },
+    ]);
+    // No final line break: nothing to keep.
+    expect(
+      sectionTexts("# D\n\n## A\n\nEnd.", [
+        { id: null, heading: "A", line: 3 },
+      ])[1]?.text,
+    ).toBe("## A\n\nEnd.");
+  });
+
+  it("reads a heading the way parse_heading does", () => {
+    const page = "# D\n\n   ## Indented ##\n\nText.\n\n##\n\nEmpty one.\n";
+    const texts = sectionTexts(page, [
+      { id: null, heading: "Indented", line: 3 },
+      { id: null, heading: "", line: 7 },
+    ]);
+    expect(texts.map((s) => s.heading)).toEqual(["", "Indented", ""]);
+    expect(texts[1]?.text).toBe("   ## Indented ##\n\nText.\n");
+    expect(texts[2]?.text).toBe("##\n\nEmpty one.\n");
+  });
+
+  it("never drops a section whose line is a level-two heading, whatever its text says", () => {
+    const texts = sectionTexts("# D\n\n## Renamed\n\nBody.\n", [
+      { id: "7f3a9c2e", heading: "Old name", line: 3 },
+    ]);
+    expect(texts.map((s) => s.id)).toEqual([TOP_SECTION, "7f3a9c2e"]);
   });
 });
 

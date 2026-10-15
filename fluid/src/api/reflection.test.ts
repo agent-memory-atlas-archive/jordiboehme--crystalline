@@ -299,3 +299,50 @@ it("builds the Reflection addresses with the path's slashes kept", () => {
   );
   expect(reflectionReviewRoute("eng")).toBe("/d/eng/reflection/review");
 });
+
+describe("more reads", () => {
+  it("reads who is in the live room", () => {
+    expect(
+      readDoc({ path: "a.md", live: { present: ["Ada"] } }).livePresent,
+    ).toEqual(["Ada"]);
+  });
+
+  it("reads a save that landed live, with who is present", async () => {
+    apiMock.mockResolvedValue({
+      checksum: "c",
+      created: false,
+      ids_assigned: [],
+      curated: true,
+      landed: "live",
+      present: ["Ada"],
+    });
+    expect(await saveReflection("eng", "a.md", "# A\n")).toEqual({
+      checksum: "c",
+      created: false,
+      idsAssigned: [],
+      curated: true,
+      landedLive: true,
+      present: ["Ada"],
+      room: null,
+      roomNote: null,
+    });
+  });
+
+  it("reads the room note of a save that is on disk only", async () => {
+    apiMock.mockResolvedValue({
+      checksum: "c",
+      created: false,
+      ids_assigned: [],
+      curated: false,
+      landed: "file",
+      present: ["Ada"],
+      room: "conflict",
+      room_note: "The room will ask.",
+    });
+    expect(await saveReflection("eng", "a.md", "# A\n")).toMatchObject({
+      landedLive: false,
+      room: "conflict",
+      roomNote: "The room will ask.",
+    });
+  });
+});

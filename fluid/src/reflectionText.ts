@@ -54,8 +54,9 @@ export interface SectionText {
  * The page cut into its sections, `_top` first.
  *
  * `sections` is the server's list in file order. A file that ends in a line
- * break has no empty last line here, which is how the engine's line walk
- * sees it too.
+ * break keeps its empty last element, so the last section's text (or the
+ * `_top` text of a page with no `##`) ends in "\n", exactly as the engine's
+ * `split_sections` returns it.
  */
 export function sectionTexts(
   markdown: string,
@@ -66,9 +67,6 @@ export function sectionTexts(
   // One-based, as the engine counts it: the lines the frontmatter took, plus one.
   const bodyLine = front === null ? 1 : front[0].split("\n").length;
   const lines = lf.split("\n");
-  if (lines.length > 0 && lines[lines.length - 1] === "") {
-    lines.pop();
-  }
   // Where each heading really is: at its `line` when that line is the
   // heading, else the next line after the previous cut that is (defensive:
   // the server counts `line` on the markdown it answers). A heading that is
@@ -77,7 +75,7 @@ export function sectionTexts(
   let cursor = bodyLine - 1;
   for (const section of sections) {
     let at = section.line - 1;
-    if (at < cursor || !isHeading(lines[at], section.heading)) {
+    if (at < cursor || !isLevelTwo(lines[at])) {
       at = lines.findIndex(
         (line, i) => i >= cursor && isHeading(line, section.heading),
       );
@@ -114,11 +112,33 @@ export function sectionTexts(
   return out;
 }
 
-/** A `##` heading line whose text is `heading` (the engine trims it). */
-const HEADING_LINE = /^##[ \t]+(.*)$/;
+/**
+ * An ATX heading line of level two, as the engine's `parse_heading` reads it:
+ * up to three spaces of indent, exactly two `#`, then the end of the line or
+ * a space or tab. Its text is trimmed and loses a closing `#` run.
+ */
+const LEVEL_TWO = /^ {0,3}##(?:[ \t]+(.*))?$/;
+function headingText(line: string | undefined): string | null {
+  const match = LEVEL_TWO.exec(line ?? "");
+  if (match === null) {
+    return null;
+  }
+  const text = (match[1] ?? "").trim();
+  const without = text.replace(/#+$/, "");
+  if (without.length === text.length) {
+    return text;
+  }
+  if (without === "") {
+    return "";
+  }
+  return /[ \t]$/.test(without) ? without.trim() : text;
+}
+/** Whether a line is a level-two heading at all: the server said one is here. */
+function isLevelTwo(line: string | undefined): boolean {
+  return headingText(line) !== null;
+}
 function isHeading(line: string | undefined, heading: string): boolean {
-  const match = HEADING_LINE.exec(line ?? "");
-  return match !== null && (match[1] ?? "").trim() === heading;
+  return headingText(line) === heading;
 }
 
 /**

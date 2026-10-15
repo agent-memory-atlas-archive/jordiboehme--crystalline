@@ -153,6 +153,7 @@ describe("reflection domains", () => {
         engramsVisible: false,
         home: "here",
         homeUrl: null,
+        hostLabel: null,
         openThreads: 3,
       },
       {
@@ -162,8 +163,53 @@ describe("reflection domains", () => {
         engramsVisible: false,
         home: null,
         homeUrl: null,
+        hostLabel: null,
         openThreads: 0,
       },
     ]);
+  });
+});
+
+describe("reflection reads, more", () => {
+  it("reads a home of here with a null host label", () => {
+    const status = readReflectionStatus(
+      {
+        domain: "eng",
+        state: "on",
+        home: "here",
+        home_url: null,
+        host_label: null,
+        right: "edit",
+      },
+      "eng",
+    );
+    expect(status).toMatchObject({
+      home: "here",
+      homeUrl: null,
+      hostLabel: null,
+    });
+  });
+
+  it("reads the host label of a listing row, and a null one", () => {
+    const rows = readReflectionDomains({
+      domains: [
+        {
+          domain: "a",
+          state: "hosted_elsewhere",
+          right: "read",
+          host_label: "office-mac",
+        },
+        { domain: "b", state: "on", right: "read", host_label: null },
+      ],
+    });
+    expect(rows.map((r) => r.hostLabel)).toEqual(["office-mac", null]);
+  });
+
+  it("reads an unknown state of a listing row as on: the server lists a row only when it is not off", () => {
+    expect(
+      readReflectionDomains({
+        domains: [{ domain: "a", state: "sideways", right: "read" }],
+      })[0]?.state,
+    ).toBe("on");
   });
 });

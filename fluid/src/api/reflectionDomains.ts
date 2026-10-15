@@ -131,6 +131,8 @@ export interface ReflectionDomain {
   engramsVisible: boolean;
   home: ReflectionHomeKind | null;
   homeUrl: string | null;
+  /** While `hosted_elsewhere`: the label of the instance that serves it. */
+  hostLabel: string | null;
   openThreads: number;
 }
 
@@ -150,6 +152,7 @@ export function readReflectionDomains(payload: unknown): ReflectionDomain[] {
       engramsVisible: record?.engrams_visible === true,
       home: homeOf(record?.home),
       homeUrl: asString(record?.home_url),
+      hostLabel: asString(record?.host_label),
       openThreads: asNumber(record?.open_threads) ?? 0,
     });
   }
