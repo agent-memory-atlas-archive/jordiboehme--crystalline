@@ -770,18 +770,44 @@ pub(crate) fn source_view(src: &r::SourceRef, facts: &HashMap<String, EngramFact
     json!({ "permalink": src.engram, "title": title, "state": state })
 }
 
+/// Who a reflection write records as having changed a section.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SectionAuthors {
+    /// The names every changed section records.
+    pub changed: Vec<String>,
+    /// The names a room carries for a heading typed without an id yet,
+    /// recorded by the section that gets its id under that heading: the
+    /// room's typists have usually left by the close that mints it.
+    pub new_by_heading: BTreeMap<String, BTreeSet<String>>,
+    /// Record "someone" for a changed or newly id'd section whose list
+    /// comes out empty. A room sets it when nobody is connected.
+    pub someone_if_empty: bool,
+}
+
+impl SectionAuthors {
+    /// `names` for every changed section, nothing carried by heading, and
+    /// an empty list recording nobody.
+    pub fn plain(names: Vec<String>) -> SectionAuthors {
+        SectionAuthors {
+            changed: names,
+            ..SectionAuthors::default()
+        }
+    }
+}
+
 /// Rules 1 to 4 of a reflection write: the engine's bookkeeping block
 /// replaces the incoming one, a heading that lost its id line gets it back
 /// by heading, headings get new ids when `assign_ids`, changed sections
-/// record each of `authors` (one entry each, the on-disk list), records of
-/// vanished sections go. Answers the text to write (without
+/// record each of `authors.changed` (one entry each, the on-disk list) and a
+/// section that just got its id also the names carried for its heading,
+/// records of vanished sections go. Answers the text to write (without
 /// the bookkeeping block re-emitted yet), the minted ids and the new
 /// records. A live room composes through it too.
 pub(super) fn compose_reflection(
     current: Option<&str>,
     baseline: &str,
     incoming: &str,
-    authors: &[String],
+    authors: &SectionAuthors,
     assign_ids: bool,
     now: &str,
 ) -> Result<(String, Vec<String>, r::Provenance)> {
@@ -826,12 +852,30 @@ pub(super) fn compose_reflection(
         let Some(id) = section.id.clone() else {
             continue;
         };
+        // A section that just got its id: no record and nothing before it.
+        let new = !stored.contains_key(&id) && !before.contains_key(&id);
         let mut record = stored.get(&id).cloned().unwrap_or_default();
         if before.get(&id) != Some(&r::section_hash(&section.text)) {
             record.changed_at = Some(now.to_string());
-            for author in authors {
-                if !record.changed_by.contains(author) {
-                    record.changed_by.push(author.clone());
+            let carried = authors
+                .new_by_heading
+                .get(&section.heading)
+                .filter(|_| new)
+                .into_iter()
+                .flatten();
+            let mut names: Vec<&String> = Vec::new();
+            for name in authors.changed.iter().chain(carried) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+            let someone = "someone".to_string();
+            if names.is_empty() && authors.someone_if_empty {
+                names.push(&someone);
+            }
+            for name in names {
+                if !record.changed_by.contains(name) {
+                    record.changed_by.push(name.clone());
                 }
             }
         }
@@ -1194,7 +1238,7 @@ impl Engine {
             stored.as_deref(),
             &baseline,
             &incoming,
-            std::slice::from_ref(&caller.author.name),
+            &SectionAuthors::plain(vec![caller.author.name.clone()]),
             true,
             &now(),
         )?;
@@ -1408,11 +1452,12 @@ impl Engine {
 
     /// A room's save. `authors` are the names each changed section records,
     /// as the room decided them (the signed-in accounts that edited since
-    /// its last save); an empty list records nobody. The stored bookkeeping
-    /// wins over whatever the room text carries. Section ids are
-    /// assigned on the `final_save` only. Answers the receipt a room reads
-    /// (`checksum`, `permalink`, `path`); `permalink` is `inner`, so a
-    /// reflection room is never re-keyed.
+    /// its last save, and those that typed a heading still without an id);
+    /// an empty list records nobody, or "someone" when the room says so.
+    /// The stored bookkeeping wins over whatever the room text carries.
+    /// Section ids are assigned on the `final_save` only. Answers the
+    /// receipt a room reads (`checksum`, `permalink`, `path`); `permalink`
+    /// is `inner`, so a reflection room is never re-keyed.
     ///
     /// A page that is gone answers `NotFound` (the room's deletion conflict)
     /// unless `expected_checksum` is empty, which only the room's restore
@@ -1424,7 +1469,7 @@ impl Engine {
         inner: &str,
         text: &str,
         expected_checksum: &str,
-        authors: &[String],
+        authors: &SectionAuthors,
         final_save: bool,
     ) -> Result<Value> {
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
@@ -1514,8 +1559,8 @@ impl Engine {
             // The typist when the save holds one person's words alone; a
             // save of several, or of somebody the room cannot name, is by
             // nobody in particular.
-            let actor = match authors {
-                [one] if one != "someone" => Some(one.clone()),
+            let actor = match authors.changed.as_slice() {
+                [one] => Some(one.clone()),
                 _ => None,
             };
             self.announce_reflection(domain, inner, ReflectionChangeKind::Changed, None, actor);
@@ -2337,6 +2382,41 @@ mod tests {
         assert!(reflection_abs(tmp.path(), "guides/a.md").ends_with("reflections/guides/a.md"));
         std::fs::create_dir_all(tmp.path().join("Reflections")).unwrap();
         assert!(reflection_abs(tmp.path(), "guides/a.md").ends_with("Reflections/guides/a.md"));
+    }
+
+    /// A section that gets its id in this compose records the names the room
+    /// carried for its heading, even when nobody is named as having changed
+    /// anything in this save; a section nobody touched names nobody.
+    #[test]
+    fn a_section_that_gets_its_id_records_the_names_carried_for_its_heading() {
+        let current = "# A\n\n## One\n<!-- r:aaaa1111 -->\n\nFirst.\n\n## Two\n<!-- r:bbbb2222 -->\n\nSecond.\n";
+        let incoming = format!("{current}\n## Three\n\nThird.\n");
+        let authors = SectionAuthors {
+            changed: vec![],
+            new_by_heading: BTreeMap::from([(
+                "Three".to_string(),
+                BTreeSet::from(["ada".to_string()]),
+            )]),
+            someone_if_empty: false,
+        };
+        let (text, minted, prov) = compose_reflection(
+            Some(current),
+            "",
+            &incoming,
+            &authors,
+            true,
+            "2026-10-15T00:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(minted.len(), 1, "{text}");
+        let three = r::split_sections(&text)
+            .into_iter()
+            .find(|s| s.heading == "Three")
+            .and_then(|s| s.id)
+            .expect("Three got an id");
+        assert_eq!(prov[&three].changed_by, vec!["ada".to_string()], "{text}");
+        assert!(prov["aaaa1111"].changed_by.is_empty(), "{prov:?}");
+        assert!(prov["bbbb2222"].changed_by.is_empty(), "{prov:?}");
     }
 
     /// The seeded pact carries a section id line under every heading, so an

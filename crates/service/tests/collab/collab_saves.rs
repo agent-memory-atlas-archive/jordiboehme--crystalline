@@ -2493,6 +2493,76 @@ async fn the_final_save_names_the_typist_who_already_left() {
     );
 }
 
+/// A heading typed in a room gets its id only when the room closes, and by
+/// then the typist's save has landed and nobody is connected. The room
+/// remembers who typed the heading, so the new section names that person
+/// and not "someone".
+#[tokio::test]
+async fn a_heading_typed_in_a_room_names_its_typist_when_it_gets_its_id() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "\n## Three\n\nThird.").await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    until_saved(&mut joined.rx).await;
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    let saved = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    let sections = crystalline_core::reflection::split_sections(&saved);
+    let three = sections.iter().find(|s| s.heading == "Three").unwrap();
+    let id = three.id.clone().expect("the close gave it an id");
+    let prov = crystalline_core::reflection::provenance::read_provenance(&saved);
+    assert_eq!(prov[&id].changed_by, vec!["ada".to_string()], "{saved}");
+}
+
+/// A heading typed and taken out again leaves no name behind: a later
+/// heading of the same name that somebody else typed names only that
+/// person when it gets its id.
+#[tokio::test]
+async fn a_heading_taken_out_again_carries_no_name_onto_a_later_one() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    let mut ada = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let ada_doc = sync_client(&ada).await;
+    let original = ada_doc
+        .get_or_insert_text("content")
+        .get_string(&ada_doc.transact());
+    let later = || Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100);
+    append_line(&ada, &ada_doc, "\n## Three\n\nAda's.").await;
+    ada.session.tick_save(later()).await;
+    until_saved(&mut ada.rx).await;
+    replace_all(&ada, &ada_doc, &original).await;
+    ada.session.tick_save(later()).await;
+    until_saved(&mut ada.rx).await;
+    let bob = sessions
+        .join_reflection("eng", "guides/a.md", "bob")
+        .await
+        .unwrap();
+    let bob_doc = sync_client(&bob).await;
+    append_line(&bob, &bob_doc, "\n## Three\n\nBob's.").await;
+    bob.session.tick_save(later()).await;
+    until_saved(&mut ada.rx).await;
+    assert!(!ada.session.remove_conn(ada.conn).await);
+    assert!(bob.session.remove_conn(bob.conn).await);
+    bob.session.final_save().await;
+    let saved = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    let sections = crystalline_core::reflection::split_sections(&saved);
+    let three = sections.iter().find(|s| s.heading == "Three").unwrap();
+    let id = three.id.clone().expect("the close gave it an id");
+    let prov = crystalline_core::reflection::provenance::read_provenance(&saved);
+    assert_eq!(prov[&id].changed_by, vec!["bob".to_string()], "{saved}");
+}
+
 /// A room open across a switch-off writes nothing into what is engram
 /// content now: the save is refused, the file stays as it was and the
 /// room keeps its text.

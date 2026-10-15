@@ -5782,7 +5782,7 @@ mod reflection_assets;
 pub use reflection::{
     ANONYMOUS_COMMENT, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_OFF_START,
     REFUSED_PENDING, REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED,
-    REFUSED_PENDING_UNREADABLE, ReflectionSearch,
+    REFUSED_PENDING_UNREADABLE, ReflectionSearch, SectionAuthors,
 };
 pub use reflection_assets::WrittenReflectionAsset;
 mod rename_domain;

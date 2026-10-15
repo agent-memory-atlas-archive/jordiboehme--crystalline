@@ -1,6 +1,7 @@
 //! Threads through the engine.
 
 use crystalline_service::ReflectionCaller;
+use crystalline_service::SectionAuthors;
 use crystalline_service::params::DiscussParams;
 
 use crate::docs::{agent, person, write};
@@ -298,7 +299,7 @@ async fn a_rooms_closing_save_moves_a_heading_thread_onto_the_new_id() {
             "d.md",
             &typed,
             &crate::support::sha256_hex(stored.as_bytes()),
-            &["jordi".to_string()],
+            &SectionAuthors::plain(vec!["jordi".to_string()]),
             false,
         )
         .await
@@ -320,7 +321,7 @@ async fn a_rooms_closing_save_moves_a_heading_thread_onto_the_new_id() {
             "d.md",
             &current,
             &crate::support::sha256_hex(current.as_bytes()),
-            &[],
+            &SectionAuthors::default(),
             true,
         )
         .await

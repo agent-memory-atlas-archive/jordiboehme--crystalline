@@ -40,7 +40,7 @@ use yrs::{ClientID, Doc, GetString, Options, ReadTxn, Text, Transact, Update};
 use super::control::{self, Control};
 use super::merge::{self, MergeOutcome};
 use crate::domain_view::DomainView;
-use crate::engine::{Engine, EngineError, EngramText};
+use crate::engine::{Engine, EngineError, EngramText, SectionAuthors};
 use crystalline_core::to_lf;
 
 /// The address a room reads and saves its engram at: the `crystalline://`
@@ -988,6 +988,12 @@ struct SessionState {
     /// last person to leave is still named by the final save, and cleared
     /// only when a save lands, so a refused save keeps them for its retry.
     editors: std::collections::BTreeSet<String>,
+    /// The accounts that typed each heading of a reflection room that has
+    /// no id yet, gathered from `editors` as each save lands. A heading gets
+    /// its id only with the room's close, when its typists have usually
+    /// left and `editors` no longer names them; the close records these for
+    /// the section it mints, then they are dropped. Empty in an engram room.
+    new_heading_authors: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     /// The agents standing in this room, keyed by (account, label).
     ///
     /// Beside `conns` and never in it, which is the whole shape of the
@@ -1159,6 +1165,7 @@ impl CollabSession {
                 conns: HashMap::new(),
                 authors: HashMap::new(),
                 editors: std::collections::BTreeSet::new(),
+                new_heading_authors: std::collections::BTreeMap::new(),
                 agents: HashMap::new(),
                 guests: HashMap::new(),
                 dirty: false,
@@ -2024,7 +2031,15 @@ impl CollabSession {
                 // token for exactly this text, and it is also what a
                 // reconnecting client is greeted with.
                 state.checksum = checksum.clone();
-                state.last_saved_text = file;
+                let previous = std::mem::replace(&mut state.last_saved_text, file);
+                if matches!(self.doc(), RoomDoc::Reflection(_)) {
+                    if closing_reflection {
+                        // This save minted the ids and recorded these names.
+                        state.new_heading_authors.clear();
+                    } else {
+                        Self::carry_new_heading_authors(state, &previous);
+                    }
+                }
                 state.permalink = permalink.clone();
                 // The path a rename can move too (the receipt is the authority
                 // on where the engram now lives), so Task 7's idle probe never
@@ -2788,16 +2803,51 @@ impl CollabSession {
 
     /// Who a reflection room's save records as having changed a section:
     /// the signed-in accounts whose connections sent an edit since the last
-    /// save landed. Nobody else in the room, and no name a client put into
-    /// awareness. "someone" only for a save with nobody named and nobody
-    /// connected, such as the close of a room whose edits all landed
-    /// before; a save with people connected and no edit since the last one
-    /// names nobody.
-    fn reflection_authors_locked(state: &SessionState) -> Vec<String> {
-        if state.editors.is_empty() && state.conns.is_empty() {
-            return vec!["someone".to_string()];
+    /// save landed, and for a section that gets its id in this save also
+    /// the accounts that typed its heading. Nobody else in the room, and no
+    /// name a client put into awareness. "someone" only for a section with
+    /// nobody named while nobody is connected, such as the close of a room
+    /// whose edits all landed before; a save with people connected and no
+    /// edit since the last one names nobody.
+    fn reflection_authors_locked(state: &SessionState) -> SectionAuthors {
+        SectionAuthors {
+            changed: state.editors.iter().cloned().collect(),
+            new_by_heading: state.new_heading_authors.clone(),
+            someone_if_empty: state.conns.is_empty(),
         }
-        state.editors.iter().cloned().collect()
+    }
+
+    /// After a reflection room's save landed and before `editors` is
+    /// cleared: every heading without an id whose section is new or changed
+    /// against `previous` (the text saved before) gains the names in
+    /// `editors`. A heading the saved text no longer holds without an id is
+    /// dropped, so a name is never carried onto a later heading of the same
+    /// name that somebody else typed.
+    fn carry_new_heading_authors(state: &mut SessionState, previous: &str) {
+        use crystalline_core::reflection::split_sections;
+        let idless = |text: &str| -> std::collections::BTreeMap<String, String> {
+            let mut out = std::collections::BTreeMap::new();
+            for section in split_sections(text) {
+                if section.id.is_none() && !section.heading.is_empty() {
+                    out.entry(section.heading).or_insert(section.text);
+                }
+            }
+            out
+        };
+        let before = idless(previous);
+        let now = idless(&state.last_saved_text);
+        state
+            .new_heading_authors
+            .retain(|heading, _| now.contains_key(heading));
+        for (heading, text) in &now {
+            if before.get(heading) != Some(text) {
+                state
+                    .new_heading_authors
+                    .entry(heading.clone())
+                    .or_default()
+                    .extend(state.editors.iter().cloned());
+            }
+        }
     }
 
     /// The restore of a deleted document from the room's text.
