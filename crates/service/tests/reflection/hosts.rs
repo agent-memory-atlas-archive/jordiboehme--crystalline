@@ -130,9 +130,10 @@ async fn a_reflection_on_a_shared_database_is_served_by_its_host_only_on_postgre
         "a non-host writes nothing"
     );
 
-    // A takeover moves the Reflection: the new host serves it at once, the
-    // old one steps down at its next heartbeat. Each side announces the move
-    // once, as `switched`, so a reader re-reads the status.
+    // A takeover moves the Reflection: the new host serves it at once, and
+    // the old one refuses from its next gated request, before any heartbeat.
+    // Each side announces the move once, as `switched`, so a reader re-reads
+    // the status.
     let mut new_host = s.fx.engine.changes().subscribe();
     let mut old_host = a.engine.changes().subscribe();
     assert_eq!(
@@ -154,12 +155,6 @@ async fn a_reflection_on_a_shared_database_is_served_by_its_host_only_on_postgre
     assert_eq!(status, 200, "the new host serves the write: {made}");
     let (status, up) = ed.put_bytes(FILE, crate::assets::PNG).await;
     assert_eq!(status, 200, "and the file: {up}");
-    a.engine.renew_hosts().await;
-    assert_eq!(switched(&mut old_host), 1);
-    assert_eq!(
-        a.engine.reflection_state("eng").await.unwrap(),
-        hosted_by("beta")
-    );
     let err = a
         .engine
         .write_reflection(
@@ -168,7 +163,70 @@ async fn a_reflection_on_a_shared_database_is_served_by_its_host_only_on_postgre
         )
         .await
         .unwrap_err();
-    assert_eq!(err.to_string(), refusal("beta"));
+    assert_eq!(
+        err.to_string(),
+        refusal("beta"),
+        "refused with no heartbeat"
+    );
+    assert!(!a.root.join("reflections/guides/old.md").exists());
+    assert_eq!(switched(&mut old_host), 1);
+    assert_eq!(
+        a.engine.reflection_state("eng").await.unwrap(),
+        hosted_by("beta")
+    );
+    a.engine.renew_hosts().await;
+    assert_eq!(
+        switched(&mut old_host),
+        0,
+        "the heartbeat finds nothing left"
+    );
+
+    // And back: a room open on the host that lost the lock saves nothing
+    // from its next save on.
+    assert_eq!(
+        a.engine.claim_host("eng", true).await.unwrap(),
+        crystalline_index::HostClaim::Acquired
+    );
+    let err =
+        s.fx.engine
+            .save_reflection_room(
+                "eng",
+                "guides/new.md",
+                "# New\n\nMore.\n",
+                "",
+                &crystalline_service::SectionAuthors::default(),
+                false,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+    assert!(err.contains("is not on here any more"), "{err}");
+    let kept = std::fs::read_to_string(s.fx.root.join("reflections/guides/new.md")).unwrap();
+    assert!(
+        !kept.contains("More."),
+        "the room's text is not saved: {kept}"
+    );
+    let (_, body) = ed.get("/api/v1/domains/eng/reflection").await;
+    assert_eq!(body["state"], "hosted_elsewhere", "{body}");
+    assert_eq!(body["host_label"], "alpha", "{body}");
+
+    // A holder that stopped heartbeating still holds the lock: nothing claims
+    // it until an instance syncs the domain or starts with --take-over, so a
+    // non-host keeps refusing and names it.
+    {
+        let store = s.fx.engine.store();
+        let store = store.lock().await;
+        let id = store.domain_id("eng").await.unwrap().unwrap();
+        let long_ago = "2000-01-01T00:00:00+00:00";
+        store
+            .claim_domain_host(id, "gamma", "gamma", long_ago, long_ago, true)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        s.fx.engine.reflection_state("eng").await.unwrap(),
+        hosted_by("gamma")
+    );
 
     crystalline_index::PostgresStore::open_in_schema(&url, &schema)
         .await

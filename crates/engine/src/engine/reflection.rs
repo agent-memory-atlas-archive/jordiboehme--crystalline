@@ -50,6 +50,14 @@ pub const REFUSED_ELSEWHERE_START: &str = "this domain's Reflection lives at ";
 /// shared database serves, because it holds the domain's host lock; the
 /// host's label and the way to move it follow.
 pub const REFUSED_HOSTED_START: &str = "this domain's Reflection is served by ";
+
+/// The gate's refusal for a Reflection the instance labelled `label` serves.
+fn hosted_refusal(label: &str) -> EngineError {
+    EngineError::Refused(format!(
+        "{REFUSED_HOSTED_START}{label}; move it with crystalline serve --take-over"
+    ))
+}
+
 /// The refusal of a thread write by the anonymous visitor of a public domain.
 pub const ANONYMOUS_COMMENT: &str =
     "anonymous visitors read this Reflection and cannot comment; sign in to comment";
@@ -528,26 +536,32 @@ impl Engine {
     }
 
     /// The label of the instance that serves `domain`'s Reflection, when
-    /// that is another instance on this shared database (R92): the one that
-    /// holds the domain's host lock, with a live heartbeat. `None` when this
-    /// instance serves it.
+    /// that is another instance on this shared database (R92): the one whose
+    /// id the domain's host lock records. `None` when this instance serves it.
     ///
     /// Read fresh on every call, never through the gate's remembered rows:
     /// the instance's own hosts are asked first, in memory, so the host (and
     /// every engine without an instance id) answers without the store lock;
     /// only a non-host locks the store, to learn whether the database is
-    /// shared and who holds the lock. A database that is not shared (Turso)
-    /// is one instance's own, so its Reflection is always served here. A
-    /// lock nobody holds, or one whose holder stopped heartbeating, is the
-    /// one this instance's next claim takes, so the Reflection is served
-    /// here meanwhile: the liveness rule is the claim's
-    /// ([`Engine::held_elsewhere`]). A new host serves at once; the instance
-    /// it took the lock from steps down when its heartbeat finds the lock
-    /// gone ([`Engine::renew_hosts`]).
+    /// shared and who holds the lock ([`Engine::foreign_reflection_host`]).
+    /// A host that took the lock from this instance is seen here once the
+    /// gate ([`Engine::confirm_reflection_host`]) or the heartbeat
+    /// ([`Engine::renew_hosts`]) drops the domain from this instance's hosts.
     async fn reflection_host_elsewhere(&self, domain: &str) -> Result<Option<String>> {
         if self.instance_id.is_empty() || self.hosted.read().unwrap().contains_key(domain) {
             return Ok(None);
         }
+        self.foreign_reflection_host(domain).await
+    }
+
+    /// The label the domain's host lock records when another instance holds
+    /// it on a shared database, live or stale. A stale holder still counts:
+    /// nothing claims its lock until an instance syncs the domain or starts
+    /// with `--take-over`, and the refusal names that way out. A database
+    /// that is not shared (Turso) is one instance's own, so it answers
+    /// `None`, as do a domain with no lock row yet and a lock this instance
+    /// holds (a restart before its first claim).
+    async fn foreign_reflection_host(&self, domain: &str) -> Result<Option<String>> {
         let store = self.store.lock().await;
         if !store.shares_database() {
             return Ok(None);
@@ -557,14 +571,29 @@ impl Engine {
         };
         let host = store.domain_host(id).await?;
         drop(store);
-        Ok(host.and_then(|host| {
-            self.held_elsewhere(
-                Some(&host.instance_id),
-                Some(&host.heartbeat_at),
-                Utc::now(),
-            )
-            .then_some(host.label)
-        }))
+        Ok(host
+            .filter(|host| !host.instance_id.is_empty() && host.instance_id != self.instance_id)
+            .map(|host| host.label))
+    }
+
+    /// The host check of a gated verb and of a room's save on a domain this
+    /// instance remembers hosting: on a shared database the lock is read
+    /// again, so a takeover by another instance takes effect here at once
+    /// rather than at the next heartbeat. A lost lock drops the domain from
+    /// this instance's hosts, announces the move, and answers the new host's
+    /// label. Turso and an engine without an instance id never ask the store.
+    pub(crate) async fn confirm_reflection_host(&self, domain: &str) -> Result<Option<String>> {
+        if self.instance_id.is_empty() || !self.hosted.read().unwrap().contains_key(domain) {
+            return Ok(None);
+        }
+        let Some(label) = self.foreign_reflection_host(domain).await? else {
+            return Ok(None);
+        };
+        tracing::warn!("lost the host lock for domain '{domain}'; another instance took over");
+        if self.hosted.write().unwrap().remove(domain).is_some() {
+            self.announce_host_moved(domain);
+        }
+        Ok(Some(label))
     }
 
     /// The one gate of every reflection verb: right, then state, then the
@@ -611,11 +640,12 @@ impl Engine {
                 )));
             }
             ReflectionState::HostedElsewhere { label } => {
-                return Err(EngineError::Refused(format!(
-                    "{REFUSED_HOSTED_START}{label}; move it with crystalline serve --take-over"
-                )));
+                return Err(hosted_refusal(&label));
             }
         };
+        if let Some(label) = self.confirm_reflection_host(domain).await? {
+            return Err(hosted_refusal(&label));
+        }
         if right < need {
             // When the write list is why the right fell short, say so and
             // name the fix.
@@ -1554,13 +1584,14 @@ impl Engine {
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;
         // A room can outlive the state it was opened in: switched off, a
-        // pending switch or a home elsewhere make the folder engram content
-        // again, or another instance's. The save waits (a refusal the room
+        // pending switch, a home elsewhere or a host lock another instance
+        // took make the folder engram content again, or another instance's. The save waits (a refusal the room
         // shows and retries) instead of writing ids and bookkeeping into it.
         if !matches!(
             self.reflection_state(domain).await?,
             ReflectionState::On { .. }
-        ) {
+        ) || self.confirm_reflection_host(domain).await?.is_some()
+        {
             return Err(EngineError::Refused(format!(
                 "the Reflection of '{domain}' is not on here any more, so this room's text is not saved; this tab keeps a copy, and if the page closes the server keeps one too"
             )));
