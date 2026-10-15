@@ -837,9 +837,16 @@ function DomainPage({
         offer from what that read says rather than from an instance-wide
         capability; see its own module doc.
       */}
-      <Suspense fallback={<Skeleton label="Loading the members" rows={2} />}>
-        <MembersCard domain={domain} />
-      </Suspense>
+      {/*
+        Gated on the read the card itself waits for, so its chunk's skeleton
+        is only drawn where the card will be: a caller the read refuses gets
+        no card, and no skeleton that shows and then goes away either.
+      */}
+      {members.data !== undefined && (
+        <Suspense fallback={<Skeleton label="Loading the members" rows={2} />}>
+          <MembersCard domain={domain} />
+        </Suspense>
+      )}
 
       {/*
         Which way a write in this domain goes, and the control that changes it.
