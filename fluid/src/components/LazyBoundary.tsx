@@ -13,6 +13,7 @@
 
 import { Component, Suspense } from "react";
 import type { ReactNode } from "react";
+import { useLocation } from "react-router";
 
 import { ChunkLoadError } from "../lazyChunk";
 import { BUTTON } from "./primitives";
@@ -24,21 +25,50 @@ export function LazyBoundary({
   fallback: ReactNode;
   children: ReactNode;
 }) {
+  const { pathname } = useLocation();
   return (
-    <ChunkErrorBoundary>
+    <ChunkErrorBoundary resetKey={pathname}>
       <Suspense fallback={fallback}>{children}</Suspense>
     </ChunkErrorBoundary>
   );
 }
 
+/**
+ * The catching half. Every route draws its `LazyBoundary` at the same place
+ * under the frame's outlet, and the domain page draws its cards at the same
+ * place for every domain, so React keeps one instance of this across a
+ * move. A failure is therefore remembered only for the path it happened on:
+ * when `resetKey` (the pathname) changes, the error is dropped before the
+ * next render, and the new route draws its own content. A key on the
+ * boundary would do the same, but it would also remount every screen under
+ * it on each path change, which the engram screen, for one, does not do
+ * today.
+ *
+ * React reports an error each boundary catches, so an error this one throws
+ * on is logged twice: once here and once where it lands. A boundary cannot
+ * decline an error before React reports it, so that second line is the price
+ * of catching only chunk failures.
+ */
 class ChunkErrorBoundary extends Component<
-  { children: ReactNode },
-  { error: unknown }
+  { resetKey: string; children: ReactNode },
+  { error: unknown; resetKey: string }
 > {
-  state: { error: unknown } = { error: null };
+  state: { error: unknown; resetKey: string } = {
+    error: null,
+    resetKey: this.props.resetKey,
+  };
 
   static getDerivedStateFromError(error: unknown): { error: unknown } {
     return { error };
+  }
+
+  static getDerivedStateFromProps(
+    props: { resetKey: string },
+    state: { error: unknown; resetKey: string },
+  ): { error: unknown; resetKey: string } | null {
+    return props.resetKey === state.resetKey
+      ? null
+      : { error: null, resetKey: props.resetKey };
   }
 
   render() {

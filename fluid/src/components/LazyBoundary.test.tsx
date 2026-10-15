@@ -8,6 +8,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Component } from "react";
 import type { ReactNode } from "react";
+import { Link, MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { lazyChunk } from "../lazyChunk";
@@ -46,12 +47,12 @@ describe("LazyBoundary", () => {
     );
 
     render(
-      <>
+      <MemoryRouter>
         <p>Above</p>
         <LazyBoundary fallback={<p>Loading</p>}>
           <Missing />
         </LazyBoundary>
-      </>,
+      </MemoryRouter>,
     );
 
     const alert = await screen.findByRole("alert");
@@ -72,16 +73,71 @@ describe("LazyBoundary", () => {
     const Lazy = lazyChunk(() => Promise.resolve({ default: Broken }));
 
     render(
-      <Outer>
-        <LazyBoundary fallback={<p>Loading</p>}>
-          <Lazy />
-        </LazyBoundary>
-      </Outer>,
+      <MemoryRouter>
+        <Outer>
+          <LazyBoundary fallback={<p>Loading</p>}>
+            <Lazy />
+          </LazyBoundary>
+        </Outer>
+      </MemoryRouter>,
     );
 
     expect(
       await screen.findByText("outer caught a bug in the screen"),
     ).toBeVisible();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("clears the prompt when the reader moves to another route", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const Missing = lazyChunk(() =>
+      Promise.reject(
+        new TypeError("Failed to fetch dynamically imported module"),
+      ),
+    );
+    const Present = lazyChunk(() =>
+      Promise.resolve({ default: () => <p>The graph</p> }),
+    );
+
+    // Both routes draw their boundary at the same place in the tree, the way
+    // the app's routes do under the frame's outlet, so React keeps one
+    // boundary instance across the move; only the location tells it to let
+    // go of the old failure.
+    render(
+      <MemoryRouter initialEntries={["/search"]}>
+        <Link to="/graph">Graph</Link>
+        <Link to="/search">Search</Link>
+        <Routes>
+          <Route
+            path="/search"
+            element={
+              <LazyBoundary fallback={<p>Loading</p>}>
+                <Missing />
+              </LazyBoundary>
+            }
+          />
+          <Route
+            path="/graph"
+            element={
+              <LazyBoundary fallback={<p>Loading</p>}>
+                <Present />
+              </LazyBoundary>
+            }
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await screen.findByRole("alert");
+
+    await userEvent.click(screen.getByRole("link", { name: "Graph" }));
+
+    expect(await screen.findByText("The graph")).toBeVisible();
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // Back on the failed route the prompt returns: React keeps a lazy
+    // component's rejected import for the life of the page, so only a
+    // reload can fetch the chunk again. That is the prompt's whole advice.
+    await userEvent.click(screen.getByRole("link", { name: "Search" }));
+    expect(await screen.findByRole("alert")).toBeVisible();
   });
 });
