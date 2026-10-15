@@ -380,6 +380,15 @@ describe("displayQuote", () => {
     }
   });
 
+  it("reads a backslash before a closing tick as code", () => {
+    // `*\` is a code span, so its star pairs with nothing; the quote cut
+    // the span, so its closing tick goes and the star stays.
+    expect(shown("`*\\` x* y", "\\` x*")).toBe("\\ x*");
+    expect(shown("Use `a\\` and **b** now", "`a\\` and **b")).toBe(
+      "`a\\` and b",
+    );
+  });
+
   it("never leaves nothing to show", () => {
     expect(displayQuote("**x**", 0, 2)).toBe("**");
   });

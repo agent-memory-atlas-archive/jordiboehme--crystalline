@@ -220,9 +220,9 @@ export function ReflectionThreads({
     }
   }, [drafting]);
 
-  // What is selected on the page. A selection elsewhere (typing in a form
-  // here) is not the page's and changes nothing; a collapse on the page
-  // clears it.
+  // What is selected on the page. A collapse on the page clears it, and so
+  // does text selected elsewhere; a caret or a field outside the page
+  // changes nothing.
   useEffect(() => {
     const read = () => {
       const root = articleRef.current;
@@ -232,6 +232,14 @@ export function ReflectionThreads({
       }
       const range = selection.getRangeAt(0);
       if (!root.contains(range.commonAncestorContainer)) {
+        // Text selected elsewhere (a thread card) replaces the page's
+        // passage; a caret or typing in a field leaves it alone.
+        const typing =
+          document.activeElement instanceof HTMLInputElement ||
+          document.activeElement instanceof HTMLTextAreaElement;
+        if (!range.collapsed && !typing) {
+          setCaptured(null);
+        }
         return;
       }
       setCaptured(

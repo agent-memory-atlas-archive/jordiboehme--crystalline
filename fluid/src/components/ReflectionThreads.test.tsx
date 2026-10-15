@@ -147,6 +147,7 @@ beforeEach(() => {
   host.Highlight = FakeHighlight;
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   host.CSS = saved.CSS;
   host.Highlight = saved.Highlight;
   window.getSelection()?.removeAllRanges();
@@ -213,6 +214,18 @@ describe("comments on a reflection", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Comment" })).toHaveFocus();
     });
+  });
+
+  it("lets go of the page passage when text in a thread is selected", async () => {
+    serve([thread("t-00000001")]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await screen.findByText("Still true?");
+    select(textNode("Deploys run "), textNode(" night."), 6);
+    const button = screen.getByRole("button", { name: "Comment" });
+    expect(button).toHaveAttribute("aria-disabled", "false");
+    const words = textNode("Still true?");
+    select(words, words, 5);
+    expect(button).toHaveAttribute("aria-disabled", "true");
   });
 
   it("returns focus to the Comment button when the comment is cancelled", async () => {
@@ -602,7 +615,6 @@ describe("comments on a reflection", () => {
     await waitFor(() => {
       expect(scrolled.mock.contexts).toContain(card);
     });
-    scrolled.mockRestore();
   });
 
   it("says a reopen with no words was reopened", async () => {

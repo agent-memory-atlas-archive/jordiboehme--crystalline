@@ -513,16 +513,19 @@ type Pair = [[number, number], [number, number]];
 function markupPairs(text: string): Pair[] {
   const pairs: Pair[] = [];
   const code: [number, number][] = [];
-  const ticks = [...text.matchAll(/`+/g)].filter(
-    (m) => !escaped(text, m.index),
-  );
+  // A backslash escapes an opening tick only: inside a code span it is
+  // text, so `a\` is a code span.
+  const ticks = [...text.matchAll(/`+/g)];
   for (let i = 0; i < ticks.length; i += 1) {
     const open = ticks[i];
+    if (open === undefined || escaped(text, open.index)) {
+      continue;
+    }
     const j = ticks.findIndex(
-      (m, k) => k > i && open !== undefined && m[0].length === open[0].length,
+      (m, k) => k > i && m[0].length === open[0].length,
     );
     const close = ticks[j];
-    if (open === undefined || close === undefined) {
+    if (close === undefined) {
       continue;
     }
     const a: [number, number] = [open.index, open.index + open[0].length];
