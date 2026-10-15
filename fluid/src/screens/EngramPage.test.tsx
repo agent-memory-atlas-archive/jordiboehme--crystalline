@@ -1696,27 +1696,16 @@ describe("a domain's MANIFEST on the engram page", () => {
     });
   }
 
-  it("the MANIFEST page offers no move and no permanent delete", async () => {
+  it("the MANIFEST page offers no move, no permanent delete and no retire", async () => {
     serveAt("MANIFEST.md", "file");
     renderApp("/d/eng/e/alpha");
-    await userEvent.click(
-      await screen.findByRole("button", { name: "More actions" }),
-    );
-    expect(
-      await screen.findByRole("menuitem", { name: "Retire" }),
-    ).toBeVisible();
-    expect(screen.queryByRole("menuitem", { name: "Move" })).toBeNull();
-    await userEvent.click(screen.getByRole("menuitem", { name: "Retire" }));
-    const dialog = await screen.findByRole("dialog", { name: /retire/i });
-    expect(
-      within(dialog).queryByRole("button", {
-        name: "Delete permanently instead",
-      }),
-    ).toBeNull();
-    await userEvent.keyboard("{Escape}");
+    await screen.findByRole("link", { name: "Edit" });
+    // Nothing is left for the overflow menu to hold, so it is not drawn.
+    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
     await userEvent.keyboard("{Meta>}k{/Meta}");
-    expect(await screen.findByText("Retire engram")).toBeVisible();
+    expect(await screen.findByText("Edit engram")).toBeVisible();
     expect(screen.queryByText("Move engram")).toBeNull();
+    expect(screen.queryByText("Retire engram")).toBeNull();
   });
 
   it("a virtual domain's MANIFEST keeps move and delete", async () => {

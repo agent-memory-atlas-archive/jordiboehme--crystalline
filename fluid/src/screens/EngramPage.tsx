@@ -310,16 +310,16 @@ export default function EngramPage() {
               void navigate(editRoute(loaded.domain, loaded.permalink));
             },
           },
-          {
-            id: "retire",
-            title: "Retire engram",
-            run: () => {
-              setRetiring(true);
-            },
-          },
           ...(keepsManifest
             ? []
             : [
+                {
+                  id: "retire",
+                  title: "Retire engram",
+                  run: () => {
+                    setRetiring(true);
+                  },
+                },
                 {
                   id: "move",
                   title: "Move engram",
@@ -522,40 +522,43 @@ export default function EngramPage() {
                 >
                   Edit
                 </Link>
-                <DropdownMenu.Root>
-                  <DropdownMenu.Trigger asChild>
-                    <IconButton label="More actions" icon={MoreHorizontal} />
-                  </DropdownMenu.Trigger>
-                  <DropdownMenu.Portal>
-                    <DropdownMenu.Content
-                      align="end"
-                      sideOffset={6}
-                      className={MENU_CLASSES}
-                    >
-                      {!keepsManifest && (
-                        <>
-                          <DropdownMenu.Item
-                            className={ITEM_CLASSES}
-                            onSelect={() => {
-                              setMoving(true);
-                            }}
-                          >
-                            Move
-                          </DropdownMenu.Item>
-                          <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
-                        </>
-                      )}
-                      <DropdownMenu.Item
-                        className={`${ITEM_CLASSES} text-red-700 dark:text-red-300`}
-                        onSelect={() => {
-                          setRetiring(true);
-                        }}
+                {/*
+                    A file domain's MANIFEST can be neither moved nor deleted,
+                    and retiring the routing file makes no sense, so the menu
+                    would be empty: it is left out.
+                */}
+                {!keepsManifest && (
+                  <DropdownMenu.Root>
+                    <DropdownMenu.Trigger asChild>
+                      <IconButton label="More actions" icon={MoreHorizontal} />
+                    </DropdownMenu.Trigger>
+                    <DropdownMenu.Portal>
+                      <DropdownMenu.Content
+                        align="end"
+                        sideOffset={6}
+                        className={MENU_CLASSES}
                       >
-                        Retire
-                      </DropdownMenu.Item>
-                    </DropdownMenu.Content>
-                  </DropdownMenu.Portal>
-                </DropdownMenu.Root>
+                        <DropdownMenu.Item
+                          className={ITEM_CLASSES}
+                          onSelect={() => {
+                            setMoving(true);
+                          }}
+                        >
+                          Move
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
+                        <DropdownMenu.Item
+                          className={`${ITEM_CLASSES} text-red-700 dark:text-red-300`}
+                          onSelect={() => {
+                            setRetiring(true);
+                          }}
+                        >
+                          Retire
+                        </DropdownMenu.Item>
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Portal>
+                  </DropdownMenu.Root>
+                )}
               </>
             )}
             <EngramActions engram={engram} handlers={utilities} />
