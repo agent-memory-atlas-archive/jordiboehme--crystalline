@@ -976,6 +976,9 @@ impl Engine {
         domain: &str,
     ) -> Result<HashMap<String, EngramFact>> {
         let store = self.store.lock().await;
+        #[cfg(any(test, feature = "testing"))]
+        self.recorded_path_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let stamps = store.file_stamps(domain_id).await?;
         let engrams = store.list_engrams(domain, None, None).await?;
         Ok(engrams
@@ -1711,7 +1714,11 @@ impl Engine {
             EngineError::NotFound(format!("no reflection '{inner}' in domain '{domain}'"))
         })?;
         let prov = r::read_provenance(&text);
-        let facts = if access.engrams_visible {
+        // The facts are read only for a page that cites an engram: they cost
+        // every engram row of the domain, and a page without sources asks
+        // none of them.
+        let cites = prov.values().any(|record| !record.sources.is_empty());
+        let facts = if access.engrams_visible && cites {
             self.engram_facts(access.domain_id, domain).await?
         } else {
             HashMap::new()

@@ -1283,3 +1283,29 @@ async fn a_pending_switch_past_the_probe_names_every_engram() {
         "one read past the probe"
     );
 }
+
+/// A page that cites an engram still reads the engram facts its sources are
+/// held against: only an uncited page skips them.
+#[tokio::test]
+async fn a_page_citing_an_engram_still_reads_its_sources() {
+    use crate::docs::{agent, reflecting, write};
+
+    let fx = reflecting().await;
+    let mut p = write(
+        "a.md",
+        "# Deploying\n\nFor new people.\n\n## Night deploys\n\nDeploys run at night.\n",
+    );
+    p.sources = std::collections::BTreeMap::from([(
+        "Night deploys".to_string(),
+        vec!["runbooks/deploy".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let before = fx.engine.recorded_path_loads();
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(doc["sections"][0]["sources"][0]["state"], "current");
+    assert_eq!(fx.engine.recorded_path_loads(), before + 1);
+}

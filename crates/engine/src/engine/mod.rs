@@ -865,8 +865,8 @@ pub struct Engine {
     #[cfg(any(test, feature = "testing"))]
     contradiction_fact_loads: std::sync::atomic::AtomicU64,
     // A test seam like `contradiction_fact_loads`: how many times a
-    // Reflection gate loaded every recorded engram path of a domain. See
-    // `Engine::recorded_path_loads`.
+    // Reflection path loaded more of a domain's engram rows than the gate's
+    // probe. See `Engine::recorded_path_loads`.
     #[cfg(any(test, feature = "testing"))]
     recorded_path_loads: std::sync::atomic::AtomicU64,
     // What the contradiction walk parsed of each engram, per domain and path,
@@ -2937,12 +2937,15 @@ impl Engine {
         })
     }
 
-    /// How many times a Reflection gate has read past the first
-    /// [`UNDER_REFLECTIONS_PROBE`] engram rows under the folder since this
-    /// engine was built: only a pending switch with that many engrams does.
-    /// Before R82 every gate loaded every recorded path of the domain, which
-    /// this counted too, so a gate on an effective Reflection that moves it
-    /// is a regression.
+    /// How many times a Reflection path has loaded more of a domain's engram
+    /// rows than the gate's probe since this engine was built: every file
+    /// stamp of the domain (`engram_facts`, which a page citing engrams, a
+    /// sourced write, a take-in and the queue read), or every row under the
+    /// folder past the first [`UNDER_REFLECTIONS_PROBE`] (a pending switch
+    /// with that many engrams). Before R82 every gate loaded every recorded
+    /// path of the domain, which this counted too, so a gate or a read of an
+    /// uncited page on an effective Reflection that moves it is a
+    /// regression.
     #[cfg(any(test, feature = "testing"))]
     pub fn recorded_path_loads(&self) -> u64 {
         self.recorded_path_loads
