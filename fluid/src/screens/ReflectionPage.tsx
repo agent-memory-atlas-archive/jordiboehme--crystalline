@@ -160,9 +160,13 @@ function PageBody({
   onMove: (title: string) => void;
   account: string;
 }): ReactElement {
+  const [deleted, setDeleted] = useState(false);
   const doc = useQuery({
     queryKey: reflectionDocKey(domain, path),
     queryFn: () => fetchReflection(domain, path),
+    // Off once the page is deleted: dropping it from the cache must not make
+    // this screen fetch it again before the route leaves.
+    enabled: !deleted,
   });
   const { hash } = useLocation();
   const queryClient = useQueryClient();
@@ -171,6 +175,7 @@ function PageBody({
   const remove = useMutation({
     mutationFn: () => deleteReflection(domain, path),
     onSuccess: () => {
+      setDeleted(true);
       discardPageDrafts(account, domain, path);
       // The page is gone: drop it from the cache before leaving, so nothing
       // refetches it into a 404.
