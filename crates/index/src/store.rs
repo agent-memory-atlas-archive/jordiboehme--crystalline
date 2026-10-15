@@ -2144,7 +2144,8 @@ pub enum HostClaim {
     /// ([`Store::release_domain_host`]), so a process whose claim another
     /// claim under the same id replaced cannot release the newer one.
     Acquired {
-        /// The claim's token.
+        /// The claim's token. Never serialized: it is the holder's to keep.
+        #[serde(skip)]
         token: String,
     },
     /// Another instance holds it and the claim did not qualify for takeover

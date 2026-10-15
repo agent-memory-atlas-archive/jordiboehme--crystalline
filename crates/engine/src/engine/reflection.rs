@@ -596,7 +596,9 @@ impl Engine {
         // serves it, and the gate says to start the daemon.
         if self.is_one_shot() {
             let stale_before = (now_offset() - Duration::seconds(self.stale_secs)).to_rfc3339();
-            let daemon_holds = host.is_some_and(|host| host.heartbeat_at >= stale_before);
+            let daemon_holds = host.is_some_and(|host| {
+                host.instance_id == self.instance_id && host.heartbeat_at >= stale_before
+            });
             return Ok(if daemon_holds { None } else { Some(None) });
         }
         // A domain a rename has paused is claimed by the sync that ends the
