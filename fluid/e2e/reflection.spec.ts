@@ -1,20 +1,24 @@
 /**
  * The Reflection against a real daemon: two accounts, both modes, the live
- * room, a comment on a selected passage and the files a page shows. What
- * only a browser can prove is that a selection in rendered markdown becomes
- * a thread the server anchors, that a person at knowledge none has the
- * Reflection as their whole world, that the members card sets both axes and
- * that an image a page links to loads, follows a move and can be attached
- * from the live editor.
+ * room, threads on a selected passage, pages, files, search and the switch
+ * that turns a Reflection on. What only a browser can prove is that a
+ * selection in rendered markdown becomes a thread the server anchors, that a
+ * person at knowledge none has the Reflection as their whole world, that the
+ * members card sets both axes and that an image a page links to loads,
+ * follows a move, is replaced and can be attached from the live editor.
  *
  * The cast `run-smoke.sh` seeds: the admin owns `smoke-pages`, a private
- * domain with its Reflection on; the contributor is an account at knowledge
- * none, invited into it at knowledge none with Reflection contributor.
+ * domain with its Reflection on and no pact yet; the contributor is an
+ * account at knowledge none, invited into it at knowledge none with
+ * Reflection contributor.
  *
- * The journeys run in file order (the suite runs one worker) and build on
- * each other: the file move runs before any live room is open on the page
- * (a move refuses while a linking page is open in a room), and the review
- * journey sees the thread the contributor opened.
+ * The journeys are one serial story and build on each other, so a single
+ * journey cannot run alone (`-g` on one of them fails or skips the rest).
+ * The file move runs before any live room is open on its page (a move
+ * refuses while a linking page is open in a room), the pact is written
+ * before the contributor reads it, the review sees the thread while it is
+ * still waiting for the agent, and the curator's file journey replaces the
+ * file the contributor attached.
  *
  * Run it the way the whole suite runs (`bash fluid/e2e/run-smoke.sh
  * e2e/reflection.spec.ts`).
@@ -31,16 +35,29 @@ const CONTRIBUTOR = process.env.FLUID_E2E_CONTRIBUTOR ?? "contrib";
 const CONTRIBUTOR_PASSWORD =
   process.env.FLUID_E2E_CONTRIBUTOR_PASSWORD ?? "contrib-password";
 const DOMAIN = process.env.FLUID_E2E_REFLECTION_DOMAIN ?? "smoke-pages";
+/**
+ * A domain with its Reflection off, which the enable journey switches on.
+ * The members journey (`members.spec.ts`, which runs before this file) is
+ * done with it by then, and nothing after this file reads it.
+ */
+const OFF_DOMAIN = process.env.FLUID_E2E_PRIVATE_DOMAIN ?? "smoke-vault";
 // `run-smoke.sh` exports it; empty unless the daemon serves under a prefix.
 const BASE_PATH = process.env.FLUID_E2E_BASE_PATH ?? "";
 
-/** The fixture's image, the bytes the attach journey uploads under a new name. */
+/** The fixture's image, 32 px wide: the bytes the attach journey uploads. */
 const FLOW_PNG = new URL(
   "./fixtures/reflection-domain/reflections/assets/flow.png",
   import.meta.url,
 );
+/** Another picture, 48 px wide: the bytes the replace journey sends. */
+const WIDE_PNG = new URL(
+  "./fixtures/reflection-files/wide.png",
+  import.meta.url,
+);
 
-const WELCOME = `d/${DOMAIN}/reflection/guides/welcome.md`;
+const HOME = `d/${DOMAIN}/reflection`;
+const WELCOME = `${HOME}/guides/welcome.md`;
+const PACT_TITLE = `How we write about ${DOMAIN}`;
 
 async function signIn(
   page: Page,
@@ -65,232 +82,480 @@ async function expectLoaded(image: Locator): Promise<void> {
     .toBeGreaterThan(0);
 }
 
-test("the owner switches modes and reads a page", async ({ page }) => {
-  await signIn(page, USER, PASSWORD);
-  await page.goto(`d/${DOMAIN}`);
-  const modes = page.getByRole("navigation", { name: "Domain view" });
-  await expect(
-    modes.getByRole("link", { name: "Engrams", exact: true }),
-  ).toHaveAttribute("aria-current", "page");
-  await modes.getByRole("link", { name: "Reflection", exact: true }).click();
-  const tree = page.getByRole("navigation", {
-    name: `Reflection of ${DOMAIN}`,
+/** The page's source as the server holds it. */
+async function pageSource(page: Page, path: string): Promise<string> {
+  const response = await page.request.get(
+    `${BASE_PATH}/api/v1/domains/${DOMAIN}/reflections/${path}`,
+  );
+  return ((await response.json()) as { markdown: string }).markdown;
+}
+
+/** The sidebar tree of the Reflection. */
+function tree(page: Page): Locator {
+  return page.getByRole("navigation", { name: `Reflection of ${DOMAIN}` });
+}
+
+/** The pathname the browser is on, with the base path taken off. */
+function at(page: Page, path: string): Promise<void> {
+  return expect(page).toHaveURL(
+    (url) => url.pathname === `${BASE_PATH}/${path}`,
+  );
+}
+
+test.describe.serial("the Reflection journeys", () => {
+  test("the owner switches modes and reads a page", async ({ page }) => {
+    await signIn(page, USER, PASSWORD);
+    await page.goto(`d/${DOMAIN}`);
+    const modes = page.getByRole("navigation", { name: "Domain view" });
+    await expect(
+      modes.getByRole("link", { name: "Engrams", exact: true }),
+    ).toHaveAttribute("aria-current", "page");
+    await modes.getByRole("link", { name: "Reflection", exact: true }).click();
+    await tree(page).getByRole("button", { name: "Expand guides" }).click();
+    await tree(page).getByRole("link", { name: "Welcome" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Welcome", level: 1 }),
+    ).toBeVisible();
+    await expect(page.locator("main")).not.toContainText("r:c5a0e001");
+    await page
+      .getByRole("button", { name: "Sources for Night deploys" })
+      .click();
+    await expect(page.getByText("missing", { exact: true })).toBeVisible();
   });
-  await tree.getByRole("button", { name: "Expand guides" }).click();
-  await tree.getByRole("link", { name: "Welcome" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Welcome", level: 1 }),
-  ).toBeVisible();
-  await expect(page.locator("main")).not.toContainText("r:c5a0e001");
-  await page.getByRole("button", { name: "Sources for Night deploys" }).click();
-  await expect(page.getByText("missing", { exact: true })).toBeVisible();
-});
 
-test("a curator moves a file and the page follows", async ({ page }) => {
-  await signIn(page, USER, PASSWORD);
-  await page.goto(WELCOME);
-  await expectLoaded(page.getByRole("img", { name: "Flow" }));
+  test("a curator writes the pact in the live editor", async ({ page }) => {
+    await signIn(page, USER, PASSWORD);
+    await page.goto(HOME);
+    await page.getByRole("button", { name: "Write the pact" }).click();
+    await at(page, `d/${DOMAIN}/reflection-edit/PACT.md`);
+    const editor = page.getByRole("textbox", { name: "Page source" });
+    await expect(editor).toContainText(PACT_TITLE);
+    await editor.click();
+    await page.keyboard.press("ControlOrMeta+A");
+    await page.keyboard.press("ArrowRight");
+    await editor.pressSequentially(
+      "\n\n## Plain words\n\nPlain words, short sentences.",
+    );
+    await expect
+      .poll(() => pageSource(page, "PACT.md"))
+      .toContain("Plain words, short sentences.");
+    await page.getByRole("link", { name: "Done", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: PACT_TITLE, level: 1 }),
+    ).toBeVisible();
+    await expect(page.getByText("Plain words, short sentences.")).toBeVisible();
+    // The pact now exists, so the home links it instead of offering it.
+    await page.goto(HOME);
+    await expect(
+      page.getByRole("main").getByRole("link", { name: PACT_TITLE }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Write the pact" }),
+    ).toHaveCount(0);
+  });
 
-  await page
-    .getByRole("region", { name: "Attachments" })
-    .getByRole("button", { name: "Move flow.png", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog", { name: "Move flow.png" });
-  await dialog
-    .getByRole("textbox", { name: "New path" })
-    .fill("diagrams/flow.png");
-  await dialog.getByRole("button", { name: "Move file" }).click();
-  await expect(dialog.getByRole("status")).toContainText(
-    "Moved. 1 link updated.",
-  );
-  await dialog.getByRole("button", { name: "Close" }).click();
-  await expect(dialog).toHaveCount(0);
+  test("a curator moves a file and the page follows", async ({ page }) => {
+    await signIn(page, USER, PASSWORD);
+    await page.goto(WELCOME);
+    await expectLoaded(page.getByRole("img", { name: "Flow" }));
 
-  // The page link was rewritten on disk, and the image loads from there.
-  const image = page.getByRole("img", { name: "Flow" });
-  await expect(image).toHaveAttribute("src", /diagrams\/flow\.png/);
-  await expectLoaded(image);
-  await expect
-    .poll(async () => {
-      const response = await page.request.get(
-        `${BASE_PATH}/api/v1/domains/${DOMAIN}/reflections/guides/welcome.md`,
+    await page
+      .getByRole("region", { name: "Attachments" })
+      .getByRole("button", { name: "Move flow.png", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", { name: "Move flow.png" });
+    await dialog
+      .getByRole("textbox", { name: "New path" })
+      .fill("diagrams/flow.png");
+    await dialog.getByRole("button", { name: "Move file" }).click();
+    await expect(dialog.getByRole("status")).toContainText(
+      "Moved. 1 link updated.",
+    );
+    await dialog.getByRole("button", { name: "Close" }).click();
+    await expect(dialog).toHaveCount(0);
+
+    // The page link was rewritten on disk, and the image loads from there.
+    const image = page.getByRole("img", { name: "Flow" });
+    await expect(image).toHaveAttribute("src", /diagrams\/flow\.png/);
+    await expectLoaded(image);
+    await expect
+      .poll(() => pageSource(page, "guides/welcome.md"))
+      .toContain("../assets/diagrams/flow.png");
+  });
+
+  test("a knowledge-none contributor reads a reflection's image", async ({
+    page,
+  }) => {
+    await signIn(page, CONTRIBUTOR, CONTRIBUTOR_PASSWORD);
+    await page.goto(WELCOME);
+    await expectLoaded(page.getByRole("img", { name: "Flow" }));
+    const files = page.getByRole("region", { name: "Attachments" });
+    await expect(files).toContainText("flow.png");
+    // A contributor edits pages, but files are a curator's: no control on
+    // the row, and no move dialog to reach.
+    for (const name of [
+      "Remove flow.png",
+      "Move flow.png",
+      "Replace flow.png",
+      "Move file",
+    ]) {
+      await expect(page.getByRole("button", { name, exact: true })).toHaveCount(
+        0,
       );
-      return ((await response.json()) as { markdown: string }).markdown;
-    })
-    .toContain("../assets/diagrams/flow.png");
-});
-
-test("a knowledge-none contributor reads a reflection's image", async ({
-  page,
-}) => {
-  await signIn(page, CONTRIBUTOR, CONTRIBUTOR_PASSWORD);
-  await page.goto(WELCOME);
-  await expectLoaded(page.getByRole("img", { name: "Flow" }));
-  const files = page.getByRole("region", { name: "Attachments" });
-  await expect(files).toContainText("flow.png");
-  await expect(
-    files.getByRole("button", { name: "Remove flow.png" }),
-  ).toHaveCount(0);
-});
-
-test("a contributor lands in the Reflection, comments on a passage and edits live", async ({
-  page,
-}) => {
-  await signIn(page, CONTRIBUTOR, CONTRIBUTOR_PASSWORD);
-  await expect(
-    page
-      .getByRole("region", { name: "Reflection", exact: true })
-      .getByRole("link", { name: DOMAIN }),
-  ).toBeVisible();
-  // An engram address of the domain: nothing is said about engrams, and the
-  // domain's own address leads into the Reflection.
-  await page.goto(`d/${DOMAIN}`);
-  await expect(page).toHaveURL(
-    (url) => url.pathname === `${BASE_PATH}/d/${DOMAIN}/reflection`,
-  );
-  await expect(
-    page.getByRole("navigation", { name: "Domain view" }),
-  ).toHaveCount(0);
-
-  await page.goto(WELCOME);
-  const passage = page.getByText(
-    "Deploys run at night, after the batch window.",
-  );
-  await expect(passage).toBeVisible();
-  // No source engram reaches a contributor: not as a control, not in the page.
-  await expect(page.getByRole("button", { name: /^Sources for/ })).toHaveCount(
-    0,
-  );
-  expect(await page.content()).not.toContain("notes/smoke-source");
-  // Select "Deploys run at night" the way a drag would leave it. The
-  // paragraph's first child is the stamped span, whose first child is the
-  // text node.
-  await passage.evaluate((el) => {
-    const text = el.firstChild?.firstChild ?? el.firstChild;
-    if (text === null || text === undefined) {
-      return;
     }
-    const range = document.createRange();
-    range.setStart(text, 0);
-    range.setEnd(text, "Deploys run at night".length);
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
+    // Nothing on the page leads to an engram.
+    await expect(page.locator('a[href*="/e/"]')).toHaveCount(0);
   });
-  const threads = page.getByRole("complementary", { name: "Threads" });
-  await threads.getByRole("button", { name: "Comment", exact: true }).click();
-  await page
-    .getByRole("textbox", { name: "Your comment" })
-    .fill("Is this still true?");
-  await page
-    .getByRole("form", { name: "New comment" })
-    .getByRole("button", { name: "Comment", exact: true })
-    .click();
-  const card = page.getByRole("article", { name: "Thread on Night deploys" });
-  await expect(card).toContainText("Deploys run at night");
-  await expect(card).toContainText("Is this still true?");
 
-  // PACT.md is written by curators: the contributor reads it and gets no
-  // Edit, and proposes a change through a comment instead.
-  await page.goto(`d/${DOMAIN}/reflection/PACT.md`);
-  await expect(
-    page.getByRole("heading", {
-      name: "How we write about smoke pages",
-      level: 1,
-    }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Edit", exact: true }),
-  ).toHaveCount(0);
+  test("a contributor lands in the Reflection, comments on a passage and edits live", async ({
+    page,
+  }) => {
+    await signIn(page, CONTRIBUTOR, CONTRIBUTOR_PASSWORD);
+    await expect(
+      page
+        .getByRole("region", { name: "Reflection", exact: true })
+        .getByRole("link", { name: DOMAIN }),
+    ).toBeVisible();
+    // An engram address of the domain: nothing is said about engrams, and the
+    // domain's own address leads into the Reflection.
+    await page.goto(`d/${DOMAIN}`);
+    await at(page, HOME);
+    await expect(
+      page.getByRole("navigation", { name: "Domain view" }),
+    ).toHaveCount(0);
 
-  // The live room: typed text lands in the file, and the ids stay hidden.
-  await page.goto(WELCOME);
-  await page.getByRole("link", { name: "Edit", exact: true }).click();
-  const editor = page.getByRole("textbox", { name: "Page source" });
-  await expect(editor).toBeVisible();
-  await expect(editor).toContainText("Deploys run at night");
-  await expect(editor).not.toContainText("r:c5a0e001");
-  await editor.click();
-  await page.keyboard.press("ControlOrMeta+A");
-  await page.keyboard.press("ArrowRight");
-  await editor.pressSequentially("\nWritten in the smoke.");
-  await expect
-    .poll(async () => {
-      const response = await page.request.get(
-        `${BASE_PATH}/api/v1/domains/${DOMAIN}/reflections/guides/welcome.md`,
-      );
-      return ((await response.json()) as { markdown: string }).markdown;
-    })
-    .toContain("Written in the smoke.");
-  await page.getByRole("link", { name: "Done", exact: true }).click();
-  await expect(page.getByText("Written in the smoke.")).toBeVisible();
-});
+    await page.goto(WELCOME);
+    const passage = page.getByText(
+      "Deploys run at night, after the batch window.",
+    );
+    await expect(passage).toBeVisible();
+    // No source engram reaches a contributor: not as a control, not in the page.
+    await expect(
+      page.getByRole("button", { name: /^Sources for/ }),
+    ).toHaveCount(0);
+    expect(await page.content()).not.toContain("notes/smoke-source");
+    // Select "Deploys run at night" the way a drag would leave it. The
+    // paragraph's first child is the stamped span, whose first child is the
+    // text node.
+    await passage.evaluate((el) => {
+      const text = el.firstChild?.firstChild ?? el.firstChild;
+      if (text === null || text === undefined) {
+        throw new Error("no text node");
+      }
+      const range = document.createRange();
+      range.setStart(text, 0);
+      range.setEnd(text, "Deploys run at night".length);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    });
+    const threads = page.getByRole("complementary", { name: "Threads" });
+    await threads.getByRole("button", { name: "Comment", exact: true }).click();
+    await page
+      .getByRole("textbox", { name: "Your comment" })
+      .fill("Is this still true?");
+    await page
+      .getByRole("form", { name: "New comment" })
+      .getByRole("button", { name: "Comment", exact: true })
+      .click();
+    const card = page.getByRole("article", { name: "Thread on Night deploys" });
+    await expect(card).toContainText("Deploys run at night");
+    await expect(card).toContainText("Is this still true?");
 
-test("a contributor attaches a file in the live editor", async ({ page }) => {
-  await signIn(page, CONTRIBUTOR, CONTRIBUTOR_PASSWORD);
-  await page.goto(WELCOME);
-  await page.getByRole("link", { name: "Edit", exact: true }).click();
-  const editor = page.getByRole("textbox", { name: "Page source" });
-  await expect(editor).toContainText("Written in the smoke.");
-  const attach = page.getByRole("button", { name: "Attach a file" });
-  await expect(attach).toBeEnabled();
-  const chooser = page.waitForEvent("filechooser");
-  await attach.click();
-  await (
-    await chooser
-  ).setFiles({
-    name: "sketch.png",
-    mimeType: "image/png",
-    buffer: readFileSync(FLOW_PNG),
+    // PACT.md is written by curators: the contributor reads it and gets no
+    // Edit, and proposes a change through a comment instead.
+    await page.goto(`${HOME}/PACT.md`);
+    await expect(
+      page.getByRole("heading", { name: PACT_TITLE, level: 1 }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Edit", exact: true }),
+    ).toHaveCount(0);
+
+    // The live room: typed text lands in the file, and the ids stay hidden.
+    await page.goto(WELCOME);
+    await page.getByRole("link", { name: "Edit", exact: true }).click();
+    const editor = page.getByRole("textbox", { name: "Page source" });
+    await expect(editor).toBeVisible();
+    await expect(editor).toContainText("Deploys run at night");
+    await expect(editor).not.toContainText("r:c5a0e001");
+    await editor.click();
+    await page.keyboard.press("ControlOrMeta+A");
+    await page.keyboard.press("ArrowRight");
+    await editor.pressSequentially("\nWritten in the smoke.");
+    await expect
+      .poll(() => pageSource(page, "guides/welcome.md"))
+      .toContain("Written in the smoke.");
+    await page.getByRole("link", { name: "Done", exact: true }).click();
+    await expect(page.getByText("Written in the smoke.")).toBeVisible();
   });
-  await expect(editor).toContainText(/\.\.\/assets\/\S*sketch\.png/);
-  await page.getByRole("link", { name: "Done", exact: true }).click();
-  await expectLoaded(page.getByRole("img", { name: "sketch.png" }));
-});
 
-test("the members card and the users screen set both axes side by side", async ({
-  page,
-}) => {
-  await signIn(page, USER, PASSWORD);
-  await page.goto(`d/${DOMAIN}`);
-  await expect(
-    page.getByRole("combobox", { name: `Level for ${CONTRIBUTOR}` }),
-  ).toHaveValue("none");
-  await expect(
-    page.getByRole("combobox", { name: `Reflection for ${CONTRIBUTOR}` }),
-  ).toHaveValue("contributor");
-  await page.goto("users");
-  await expect(
-    page.getByRole("combobox", { name: `Role for ${CONTRIBUTOR}` }),
-  ).toHaveValue("none");
-  // The smoke's own admin curates: the cell says so and offers no choice.
-  await expect(
-    page.getByRole("combobox", { name: `Reflection for ${USER}` }),
-  ).toHaveCount(0);
-});
-
-test("the review screen lists the open thread as waiting for the agent", async ({
-  page,
-}) => {
-  await signIn(page, USER, PASSWORD);
-  await page.goto(`d/${DOMAIN}/reflection/review`);
-  const agent = page.getByRole("region", { name: "Waiting for the agent" });
-  await expect(agent.getByText("Is this still true?")).toBeVisible();
-  await expect(
-    page.getByRole("region", { name: "Reflect queue" }),
-  ).toBeVisible();
-
-  // After the move, the comment, the live edit and the upload, the tree
-  // still holds every page: the pact and the one guide, and no file of the
-  // assets folder shows up as a page.
-  const tree = page.getByRole("navigation", {
-    name: `Reflection of ${DOMAIN}`,
+  test("the review screen lists the open thread as waiting for the agent", async ({
+    page,
+  }) => {
+    await signIn(page, USER, PASSWORD);
+    await page.goto(`${HOME}/review`);
+    const agent = page.getByRole("region", { name: "Waiting for the agent" });
+    await expect(agent.getByText("Is this still true?")).toBeVisible();
+    await expect(
+      page.getByRole("region", { name: "Reflect queue" }),
+    ).toBeVisible();
   });
-  await expect(
-    tree.getByRole("link", { name: "How we write about smoke pages" }),
-  ).toBeVisible();
-  await tree.getByRole("button", { name: "Expand guides" }).click();
-  await expect(tree.getByRole("link", { name: "Welcome" })).toBeVisible();
-  await expect(tree.getByRole("button", { name: /^Expand / })).toHaveCount(0);
-  await expect(tree.getByRole("listitem")).toHaveCount(3);
+
+  test("the owner answers, resolves and reopens the thread", async ({
+    page,
+  }) => {
+    await signIn(page, USER, PASSWORD);
+    await page.goto(WELCOME);
+    const card = page.getByRole("article", { name: "Thread on Night deploys" });
+    await expect(card).toContainText("Is this still true?");
+
+    await card.getByRole("button", { name: "Answer", exact: true }).click();
+    await card
+      .getByRole("textbox", { name: "Your answer" })
+      .fill("Still true.");
+    await card.getByRole("button", { name: "Answer", exact: true }).click();
+    await expect(card).toContainText("Still true.");
+    await expect(
+      card.getByRole("textbox", { name: "Your answer" }),
+    ).toHaveCount(0);
+
+    await card.getByRole("button", { name: "Resolve", exact: true }).click();
+    await card
+      .getByRole("textbox", { name: "Outcome" })
+      .fill("Checked with the night shift.");
+    await card.getByRole("button", { name: "Resolve", exact: true }).click();
+    // Resolved threads leave the column until somebody asks for them.
+    await expect(card).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Show resolved threads" }).click();
+    await expect(card).toContainText("Resolved: Checked with the night shift.");
+    await card.getByRole("button", { name: "Reopen" }).click();
+    await expect(card).toContainText("Reopened");
+    await expect(
+      card.getByRole("button", { name: "Answer", exact: true }),
+    ).toBeVisible();
+  });
+
+  test("a contributor attaches a file in the live editor", async ({ page }) => {
+    await signIn(page, CONTRIBUTOR, CONTRIBUTOR_PASSWORD);
+    await page.goto(WELCOME);
+    await page.getByRole("link", { name: "Edit", exact: true }).click();
+    const editor = page.getByRole("textbox", { name: "Page source" });
+    await expect(editor).toContainText("Written in the smoke.");
+    // The link lands where the cursor is: at the end, as a person would put it.
+    await editor.click();
+    await page.keyboard.press("ControlOrMeta+A");
+    await page.keyboard.press("ArrowRight");
+    const attach = page.getByRole("button", { name: "Attach a file" });
+    await expect(attach).toBeEnabled();
+    const chooser = page.waitForEvent("filechooser");
+    await attach.click();
+    await (
+      await chooser
+    ).setFiles({
+      name: "sketch.png",
+      mimeType: "image/png",
+      buffer: readFileSync(FLOW_PNG),
+    });
+    await expect(editor).toContainText(/\.\.\/assets\/\S*sketch\.png/);
+    await page.getByRole("link", { name: "Done", exact: true }).click();
+    await expectLoaded(page.getByRole("img", { name: "sketch.png" }));
+  });
+
+  test("a curator replaces and removes a file", async ({ page }) => {
+    await signIn(page, USER, PASSWORD);
+    await page.goto(WELCOME);
+    const sketch = page.getByRole("img", { name: "sketch.png" });
+    await expectLoaded(sketch);
+    expect(
+      await sketch.evaluate((el) => (el as HTMLImageElement).naturalWidth),
+    ).toBe(32);
+    const files = page.getByRole("region", { name: "Attachments" });
+
+    const chooser = page.waitForEvent("filechooser");
+    await files
+      .getByRole("button", { name: "Replace sketch.png", exact: true })
+      .click();
+    await (
+      await chooser
+    ).setFiles({
+      name: "sketch.png",
+      mimeType: "image/png",
+      buffer: readFileSync(WIDE_PNG),
+    });
+    await files.getByRole("button", { name: "Replace", exact: true }).click();
+    // The new bytes under the same path: the address names the version, and
+    // the browser draws the new picture.
+    await expect(sketch).toHaveAttribute("src", /sketch\.png\?v=/);
+    await expect
+      .poll(() =>
+        sketch.evaluate((el) => (el as HTMLImageElement).naturalWidth),
+      )
+      .toBe(48);
+
+    await files
+      .getByRole("button", { name: "Remove sketch.png", exact: true })
+      .click();
+    await files.getByRole("button", { name: "Remove", exact: true }).click();
+    // The page still links it, so the row stays and says the file is gone.
+    await expect(
+      files.getByRole("button", { name: "Remove sketch.png", exact: true }),
+    ).toHaveCount(0);
+    await expect(files.getByText("missing", { exact: true })).toBeVisible();
+    // The file the curator moved earlier is untouched.
+    await expectLoaded(page.getByRole("img", { name: "Flow" }));
+  });
+
+  test("a curator creates, moves and deletes a page", async ({ page }) => {
+    await signIn(page, USER, PASSWORD);
+    await page.goto(HOME);
+    await tree(page).getByRole("button", { name: "New page" }).click();
+    const create = page.getByRole("dialog", { name: "New page" });
+    await create.getByRole("textbox", { name: "Folder" }).fill("scratch");
+    await create.getByRole("textbox", { name: "Title" }).fill("Tmp");
+    await create.getByRole("button", { name: "Create page" }).click();
+    // A new page opens in the editor.
+    await at(page, `d/${DOMAIN}/reflection-edit/scratch/tmp.md`);
+    await expect(
+      page.getByRole("textbox", { name: "Page source" }),
+    ).toContainText("Tmp");
+    await page.getByRole("link", { name: "Done", exact: true }).click();
+    await at(page, `${HOME}/scratch/tmp.md`);
+    await expect(
+      page.getByRole("heading", { name: "Tmp", level: 1 }),
+    ).toBeVisible();
+    await expect(
+      tree(page).getByRole("button", { name: "Collapse scratch" }),
+    ).toBeVisible();
+    await expect(tree(page).getByRole("link", { name: "Tmp" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Move", exact: true }).click();
+    const move = page.getByRole("dialog", { name: "Move Tmp" });
+    await move
+      .getByRole("textbox", { name: "New path" })
+      .fill("archive/tmp.md");
+    await move.getByRole("button", { name: "Move page" }).click();
+    await expect(move).toHaveCount(0);
+    await at(page, `${HOME}/archive/tmp.md`);
+    await expect(
+      page.getByRole("heading", { name: "Tmp", level: 1 }),
+    ).toBeFocused();
+    await expect(
+      tree(page).getByRole("button", { name: "Collapse archive" }),
+    ).toBeVisible();
+    await expect(tree(page).getByRole("link", { name: "Tmp" })).toBeVisible();
+    await expect(
+      tree(page).getByRole("button", { name: /^(Expand|Collapse) scratch$/ }),
+    ).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.getByRole("button", { name: "Confirm delete" }).click();
+    await at(page, HOME);
+    await expect(tree(page).getByRole("link", { name: "Tmp" })).toHaveCount(0);
+    await expect(
+      tree(page).getByRole("button", { name: /^(Expand|Collapse) archive$/ }),
+    ).toHaveCount(0);
+
+    // Every page the story made or kept is still in the tree, and nothing
+    // else: the pact, the two guides, no assets folder and no left-over
+    // folder from the move.
+    await expect(
+      tree(page).getByRole("link", { name: PACT_TITLE }),
+    ).toBeVisible();
+    await tree(page).getByRole("button", { name: "Expand guides" }).click();
+    await expect(
+      tree(page).getByRole("link", { name: "Welcome" }),
+    ).toBeVisible();
+    await expect(
+      tree(page).getByRole("link", { name: "Diagram" }),
+    ).toBeVisible();
+    for (const folder of ["assets", "diagrams", "scratch", "archive"]) {
+      await expect(
+        tree(page).getByRole("button", {
+          name: new RegExp(`^(Expand|Collapse) ${folder}$`),
+        }),
+      ).toHaveCount(0);
+    }
+  });
+
+  test("the Reflection search finds a page by its words", async ({ page }) => {
+    await signIn(page, USER, PASSWORD);
+    await page.goto(HOME);
+    const search = page.getByRole("search");
+    await search
+      .getByRole("searchbox", { name: "Search the Reflection" })
+      .fill("batch window");
+    // Text mode reads the full-text index alone, so no embedding model is
+    // needed.
+    await search.getByRole("combobox", { name: "Mode" }).selectOption("text");
+    await search.getByRole("button", { name: "Search", exact: true }).click();
+    const hit = page.getByRole("link", { name: "Welcome: Night deploys" });
+    await expect(hit).toBeVisible();
+    await expect(page.getByText(/ranked by text\./)).toBeVisible();
+    await hit.click();
+    await expect(
+      page.getByRole("heading", { name: "Welcome", level: 1 }),
+    ).toBeVisible();
+  });
+
+  test("a page refuses to show an engram's file", async ({ page }) => {
+    await signIn(page, USER, PASSWORD);
+    await page.goto(`${HOME}/guides/diagram.md`);
+    const article = page.locator("main article").first();
+    await expect(article).toContainText("Old harbor diagram");
+    await expect(article).toContainText(
+      "This file is not in the Reflection. A curator copies it into the Reflection's files.",
+    );
+    await expect(
+      page.getByRole("img", { name: "Old harbor diagram" }),
+    ).toHaveCount(0);
+    await expect(page.locator('img[src*="old-harbor"]')).toHaveCount(0);
+  });
+
+  test("the domain policies card turns a Reflection on", async ({ page }) => {
+    await signIn(page, USER, PASSWORD);
+    await page.goto(`d/${OFF_DOMAIN}`);
+    await expect(
+      page.getByRole("navigation", { name: "Domain view" }),
+    ).toHaveCount(0);
+    const policies = page.getByRole("region", { name: "Domain policies" });
+    const reflection = policies.getByRole("combobox", { name: "reflection" });
+    await expect(reflection).toHaveValue("off");
+    await reflection.selectOption("on");
+    await policies
+      .getByRole("button", { name: "Turn on the Reflection" })
+      .click();
+    await expect(reflection).toHaveValue("on");
+    const modes = page.getByRole("navigation", { name: "Domain view" });
+    await modes.getByRole("link", { name: "Reflection", exact: true }).click();
+    await at(page, `d/${OFF_DOMAIN}/reflection`);
+    // Switching it on wrote a first pact.
+    await expect(
+      page
+        .getByRole("navigation", { name: `Reflection of ${OFF_DOMAIN}` })
+        .getByRole("link", { name: /PACT|How we write/ }),
+    ).toBeVisible();
+  });
+
+  test("the members card and the users screen set both axes side by side", async ({
+    page,
+  }) => {
+    await signIn(page, USER, PASSWORD);
+    await page.goto(`d/${DOMAIN}`);
+    await expect(
+      page.getByRole("combobox", { name: `Level for ${CONTRIBUTOR}` }),
+    ).toHaveValue("none");
+    await expect(
+      page.getByRole("combobox", { name: `Reflection for ${CONTRIBUTOR}` }),
+    ).toHaveValue("contributor");
+    await page.goto("users");
+    await expect(
+      page.getByRole("combobox", { name: `Role for ${CONTRIBUTOR}` }),
+    ).toHaveValue("none");
+    // The smoke's own admin curates: the cell says so and offers no choice.
+    await expect(
+      page.getByRole("combobox", { name: `Reflection for ${USER}` }),
+    ).toHaveCount(0);
+  });
 });
