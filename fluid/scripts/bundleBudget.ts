@@ -70,12 +70,14 @@ export const MAIN_GUIDELINE_BYTES = 178_000;
  * The cap on eager JS, raw bytes: the entry script plus every module the
  * built `index.html` preloads, which is what every visitor downloads before
  * the first screen runs. The design ledger set the rule at 527 kB; the app
- * had grown past it before the rule was enforced, so this cap is the size
- * measured on 2026-10-15 (661,722 B) plus about 1 percent. A build over it
- * fails the CI step. Lower it whenever eager code moves out; raising it is
- * a decision, not a fix.
+ * had grown past it before the rule was enforced. The cap was first set at
+ * 668,500 B (661,722 B measured on 2026-10-15 plus about 1 percent); search,
+ * the graph, maintenance and three of the domain page's team cards then moved
+ * behind `lazy()`, and this cap is the 621,697 B measured after that plus
+ * about 1 percent. A build over it fails the CI step. Lower it whenever eager
+ * code moves out; raising it is a decision, not a fix.
  */
-export const EAGER_JS_CAP_BYTES = 668_500;
+export const EAGER_JS_CAP_BYTES = 628_000;
 
 /**
  * Whether a build without the `/π` route fails the check. The route ships in

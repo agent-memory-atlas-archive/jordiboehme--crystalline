@@ -22,12 +22,24 @@ import { Layout } from "./components/Layout";
 import { Skeleton } from "./components/Skeleton";
 import { domainRoute } from "./paths";
 import DomainHome from "./screens/DomainHome";
-import GraphView from "./screens/GraphView";
 import Home from "./screens/Home";
-import Maintenance from "./screens/Maintenance";
 import NotFound from "./screens/NotFound";
 import OauthConsent from "./screens/OauthConsent";
-import Search from "./screens/Search";
+
+/**
+ * Three screens a reader opens from the frame rather than lands on: the
+ * search results, the full-screen graph and the maintenance queue. They were
+ * eager once, and every visitor paid for them before the first screen ran,
+ * whether or not they ever opened one. Lazy for the reason the reading screen
+ * is: the daemon serves this bundle off localhost, so the chunk is a round
+ * trip of a few milliseconds. Maintenance waits behind the skeleton it
+ * draws itself while its sweep runs, so the chunk and the sweep read as one
+ * wait; search and the graph have no loading state of their own, so each
+ * waits behind a plain labelled skeleton.
+ */
+const Search = lazy(() => import("./screens/Search"));
+const GraphView = lazy(() => import("./screens/GraphView"));
+const Maintenance = lazy(() => import("./screens/Maintenance"));
 
 /**
  * The two editors: everything CodeMirror rides in these chunks, so the
@@ -179,6 +191,16 @@ const REFLECTION_FALLBACK = (
   <Skeleton label="Loading the Reflection" rows={4} />
 );
 
+const SEARCH_FALLBACK = <Skeleton label="Loading search" rows={4} />;
+
+const GRAPH_FALLBACK = <Skeleton label="Loading the graph" rows={6} />;
+
+/**
+ * The skeleton the maintenance screen draws itself while its sweep is in
+ * flight, so the chunk and the sweep read as one wait.
+ */
+const MAINTENANCE_FALLBACK = <Skeleton label="Sweeping the domains" rows={6} />;
+
 const GRANTED_DRAFT_FALLBACK = (
   <p className="text-sm text-slate-500 dark:text-slate-400">
     Opening the shared draft
@@ -314,8 +336,22 @@ export function AppRoutes() {
               </Suspense>
             }
           />
-          <Route path="/search" element={<Search />} />
-          <Route path="/graph" element={<GraphView />} />
+          <Route
+            path="/search"
+            element={
+              <Suspense fallback={SEARCH_FALLBACK}>
+                <Search />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/graph"
+            element={
+              <Suspense fallback={GRAPH_FALLBACK}>
+                <GraphView />
+              </Suspense>
+            }
+          />
           {/*
             Where an OAuth client's `?request=<id>` redirect lands. Eager,
             unlike the two editors and the reading screen above: it carries
@@ -325,11 +361,18 @@ export function AppRoutes() {
           */}
           <Route path="/authorize" element={<OauthConsent />} />
           {/*
-            Eager, unlike the two admin screens below it: this one is offered
-            to every role from the frame, so nobody would be spared its weight
-            by making it wait, and it carries no editor and no graph engine.
+            Offered to every role from the frame, and lazy all the same: most
+            visits never open it, and the queue it draws is the largest screen
+            the app shell used to carry.
           */}
-          <Route path="/maintenance" element={<Maintenance />} />
+          <Route
+            path="/maintenance"
+            element={
+              <Suspense fallback={MAINTENANCE_FALLBACK}>
+                <Maintenance />
+              </Suspense>
+            }
+          />
           {/*
             Routed for everybody and rendered for admins only: the screen
             itself answers with the not-found screen for anyone else, so the

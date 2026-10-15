@@ -32,7 +32,15 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Fragment, useEffect, useId, useMemo, useState } from "react";
+import {
+  Fragment,
+  Suspense,
+  lazy,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+} from "react";
 import type { ReactNode } from "react";
 import {
   Link,
@@ -87,18 +95,15 @@ import {
   READ_ONLY_REASON,
   RENAMING_REASON,
 } from "../components/DestructiveAction";
-import { DomainPoliciesCard } from "../components/DomainPoliciesCard";
 import { EngramList } from "../components/EngramList";
 import { EngramsOrderMenu } from "../components/EngramsOrderMenu";
 import { FilterFields, TagChips } from "../components/FilterControls";
 import { ImportArchiveDialog } from "../components/ImportArchiveDialog";
 import { InlineMarkdown } from "../components/InlineMarkdown";
 import { Markdown } from "../components/Markdown";
-import { MembersCard } from "../components/MembersCard";
 import { ProposalsCard } from "../components/ProposalsCard";
 import { ReflectionModeSwitch } from "../components/ReflectionModeSwitch";
 import { RenameDomainDialog } from "../components/RenameDomainDialog";
-import { ReviewModeCard } from "../components/ReviewModeCard";
 import { Skeleton } from "../components/Skeleton";
 import { SyncCard } from "../components/SyncCard";
 import { BUTTON, Chip, FOCUS_RING } from "../components/primitives";
@@ -113,6 +118,28 @@ import {
   reflectionRoute,
 } from "../paths";
 import { prefetchManifestEditor } from "../prefetch";
+
+/**
+ * The team's three settings cards, which sit below the engrams and are read
+ * rarely: who may reach the domain, which way a write goes and the MANIFEST's
+ * own switches. Lazy so the app shell does not carry them for every visitor
+ * of every screen. Each waits behind its own small skeleton, and all three
+ * are drawn after the engrams section, so nothing above them moves while
+ * they arrive.
+ */
+const MembersCard = lazy(() =>
+  import("../components/MembersCard").then((m) => ({ default: m.MembersCard })),
+);
+const ReviewModeCard = lazy(() =>
+  import("../components/ReviewModeCard").then((m) => ({
+    default: m.ReviewModeCard,
+  })),
+);
+const DomainPoliciesCard = lazy(() =>
+  import("../components/DomainPoliciesCard").then((m) => ({
+    default: m.DomainPoliciesCard,
+  })),
+);
 
 export default function DomainHome() {
   const { domain = "" } = useParams();
@@ -810,7 +837,9 @@ function DomainPage({
         offer from what that read says rather than from an instance-wide
         capability; see its own module doc.
       */}
-      <MembersCard domain={domain} />
+      <Suspense fallback={<Skeleton label="Loading the members" rows={2} />}>
+        <MembersCard domain={domain} />
+      </Suspense>
 
       {/*
         Which way a write in this domain goes, and the control that changes it.
@@ -821,7 +850,9 @@ function DomainPage({
         too, where the button answers 409 in the server's own words.
       */}
       {capabilities.canShare && summary !== undefined && (
-        <ReviewModeCard domain={domain} reviewing={summary.review !== null} />
+        <Suspense fallback={<Skeleton label="Loading review mode" rows={2} />}>
+          <ReviewModeCard domain={domain} reviewing={summary.review !== null} />
+        </Suspense>
       )}
 
       {/*
@@ -836,15 +867,19 @@ function DomainPage({
       {manifest.data?.sections !== null &&
         manifest.data?.sections !== undefined &&
         manifest.data.sections.policies.length > 0 && (
-          <DomainPoliciesCard
-            domain={domain}
-            policies={manifest.data.sections.policies}
-            branch={syncStatus.data?.branch ?? null}
-            onRename={() => {
-              setRenamingOpen(true);
-            }}
-            renaming={isRenaming}
-          />
+          <Suspense
+            fallback={<Skeleton label="Loading the policies" rows={2} />}
+          >
+            <DomainPoliciesCard
+              domain={domain}
+              policies={manifest.data.sections.policies}
+              branch={syncStatus.data?.branch ?? null}
+              onRename={() => {
+                setRenamingOpen(true);
+              }}
+              renaming={isRenaming}
+            />
+          </Suspense>
         )}
 
       {/*

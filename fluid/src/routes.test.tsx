@@ -12,6 +12,10 @@
  * The round trip ends at the request the engram screen makes, because that is
  * the last place the permalink can be mangled: the API path has to carry the
  * same slashes the link did, encoded a segment at a time.
+ *
+ * The last block is about the screens that load on demand: a deep link to one
+ * still draws it, and a route change into one still leaves the focus on the
+ * main region, where the frame put it.
  */
 
 import { screen, within } from "@testing-library/react";
@@ -152,5 +156,66 @@ describe("the engram route", () => {
 
     expect(await screen.findByRole("heading", { name: "Gamma" })).toBeVisible();
     expect(requested()).toContain("/domains/team%20eng/engrams/notes/alpha");
+  });
+});
+
+describe("the screens behind a lazy boundary", () => {
+  /** Signed in, with the reads the frame makes on every screen. */
+  function serveFrame(routes: Record<string, () => unknown> = {}) {
+    apiMock.mockImplementation(
+      answersFor({
+        "/auth/me": () => meResponse({ user: userFixture() }),
+        "/domains": domainsResponse,
+        "/vocabulary": () => ({
+          tags: [],
+          categories: [],
+          relation_types: [],
+        }),
+        "/search": () => ({
+          mode: "text",
+          total: 0,
+          page: 1,
+          limit: 50,
+          count: 0,
+          hits: [],
+        }),
+        ...routes,
+      }),
+    );
+  }
+
+  it("a deep link to search draws the search screen", async () => {
+    serveFrame();
+    renderApp("/search?q=gamma");
+
+    expect(
+      await screen.findByRole("heading", { name: "Search", level: 1 }),
+    ).toBeVisible();
+  });
+
+  it("a deep link to the graph draws the graph screen", async () => {
+    serveFrame();
+    renderApp("/graph");
+
+    expect(
+      await screen.findByRole("heading", { name: "Graph", level: 1 }),
+    ).toBeVisible();
+  });
+
+  it("a route change to a lazy screen still moves focus to the main region", async () => {
+    serveFrame();
+    renderApp("/graph");
+    await screen.findByRole("heading", { name: "Graph", level: 1 });
+
+    await userEvent.click(screen.getByRole("link", { name: "Maintenance" }));
+
+    // The screen arrives after its chunk, inside the same main region, and
+    // nothing it draws takes the focus the route change put there.
+    expect(
+      await screen.findByRole("heading", {
+        name: "Maintenance - what the knowledge needs next",
+      }),
+    ).toBeVisible();
+    expect(screen.getByRole("main")).toHaveFocus();
   });
 });

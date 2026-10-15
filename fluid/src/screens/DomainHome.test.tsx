@@ -606,6 +606,21 @@ describe("the domain screen", () => {
     expect(precedes(policies, backup)).toBe(true);
   });
 
+  it("draws the members card after the engrams, once its own chunk arrives", async () => {
+    serve();
+
+    renderApp("/d/eng");
+
+    // The card is lazy: the engrams section above it is drawn first and
+    // stays where it is, and the card lands below it rather than in its place.
+    const engrams = await screen.findByRole("region", { name: "Engrams" });
+    const members = await screen.findByRole("region", { name: "Members" });
+    expect(precedes(engrams, members)).toBe(true);
+    expect(
+      screen.queryByRole("status", { name: "Loading the members" }),
+    ).toBeNull();
+  });
+
   it("draws a routing bullet's markdown instead of its punctuation", async () => {
     serve({
       "/domains/eng/manifest": () => ({
@@ -1389,6 +1404,12 @@ describe("the domain screen", () => {
       within(body).queryByRole("region", { name: "Proposals" }),
     ).toBeNull();
     expect(within(body).queryByRole("region", { name: "Members" })).toBeNull();
+    // The team cards are lazy on the domain page, so an absent card could
+    // only mean its chunk had not landed yet. No loading shape either says
+    // the folder page never asked for them.
+    expect(
+      within(body).queryByRole("status", { name: "Loading the members" }),
+    ).toBeNull();
     expect(
       within(body).queryByRole("region", { name: "Review mode" }),
     ).toBeNull();
