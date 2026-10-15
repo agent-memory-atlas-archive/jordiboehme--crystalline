@@ -256,6 +256,37 @@ describe("the layout", () => {
     expect(screen.queryByRole("button", { name: /^Domain:/ })).toBeNull();
   });
 
+  it("does not call the instance empty when a contributor has Reflection-only domains", async () => {
+    serveSignedIn({
+      "/domains": () => ({ behavior: [], domains: [] }),
+      "/reflection/domains": () => ({
+        domains: [
+          {
+            domain: "eng",
+            state: "on",
+            right: "edit",
+            engrams_visible: false,
+            home: "here",
+            home_url: null,
+            open_threads: 1,
+          },
+        ],
+      }),
+    });
+
+    renderApp("/");
+
+    const domains = await screen.findByRole("navigation", { name: "Domains" });
+    await waitFor(() => {
+      expect(apiMock).toHaveBeenCalledWith("/reflection/domains");
+    });
+    expect(
+      within(domains).queryByText(
+        "No domains are registered on this instance yet.",
+      ),
+    ).toBeNull();
+  });
+
   it("badges a private domain in the sidebar and leaves a shared one plain", async () => {
     serveSignedIn({
       "/domains": () => ({

@@ -70,6 +70,10 @@ import {
 } from "../api/admin";
 import { problemDetail } from "../api/client";
 import { DOMAINS_QUERY_KEY, fetchDomains } from "../api/domains";
+import {
+  REFLECTION_DOMAINS_KEY,
+  fetchReflectionDomains,
+} from "../api/reflectionDomains";
 import type { DomainListing, DomainSummary } from "../api/domains";
 import { useAuth } from "../auth/AuthContext";
 import { useDomainWritable } from "../domainWritable";
@@ -103,6 +107,7 @@ import {
   githubSettingsRoute,
   maintenanceRoute,
   profileRoute,
+  reflectionPathOf,
   searchRoute,
   usersRoute,
 } from "../paths";
@@ -111,15 +116,19 @@ import type { ThemePreference } from "../theme/context";
 import { CommandPalette } from "./CommandPalette";
 import { CreateDomainDialog } from "./CreateDomainDialog";
 import { CreateEngramDialog } from "./CreateEngramDialog";
+import { lazyChunk } from "../lazyChunk";
 import { DomainNav } from "./DomainNav";
 import { HelpOverlay } from "./HelpOverlay";
 import { JoinedDraftBar } from "./JoinedDraftBar";
+import { LazyBoundary } from "./LazyBoundary";
 import { ShareDialog } from "./ShareDialog";
 import { SharePickerDialog } from "./SharePickerDialog";
 import { ShatterGem } from "./ShatterGem";
 import { ownedPhrase, shareBadgeCount } from "./changes";
 import { ITEM_CLASSES, MENU_CLASSES } from "./menu";
 import { Chip, FOCUS_RING, IconButton, Tooltip } from "./primitives";
+
+const ReflectionNav = lazyChunk(() => import("./ReflectionNav"));
 
 /**
  * What the command palette's shortcut is called on this keyboard.
@@ -1544,6 +1553,9 @@ function DomainSidebar({
   // either screen, and only the domain's own home - where the permalink is
   // truly absent - is treated as having none.
   const rest = match?.params["*"] ?? "";
+  // On a Reflection route the sidebar is the Reflection's own tree: the
+  // engram tree is the wrong map there, and for a contributor it is a 404.
+  const reflectionPath = reflectionPathOf(rest);
   const permalink = rest.startsWith("e/")
     ? rest.slice(2)
     : rest.startsWith("edit/")
@@ -1636,14 +1648,18 @@ function DomainSidebar({
                 capabilities.canAdminister ? onCreateDomain : null
               }
             />
+          ) : reflectionPath !== null ? (
+            <LazyBoundary fallback={null}>
+              <ReflectionNav domain={domain} path={reflectionPath} />
+            </LazyBoundary>
           ) : (
             <>
               {/*
-                A listing that failed is said here as it is in the flat mode.
-                The switcher is drawn either way: it names the domain the
-                reader is in from the address, so it works even when nothing
-                could be listed to switch to.
-              */}
+                  A listing that failed is said here as it is in the flat mode.
+                  The switcher is drawn either way: it names the domain the
+                  reader is in from the address, so it works even when nothing
+                  could be listed to switch to.
+                */}
               {listing.error && <SidebarProblem error={listing.error} />}
               <DomainNav
                 domain={domain}
@@ -1683,6 +1699,14 @@ function DomainList({
   // Which screen this listing is drawn beside, for the launcher below: the
   // home screen is the one that carries its own.
   const home = useLocation().pathname === "/";
+  // A contributor's domains are not in `domains` (it lists only those whose
+  // engrams the caller reads), so "empty" needs the Reflection listing too.
+  // Same key as Home: one request.
+  const reflections = useQuery({
+    queryKey: REFLECTION_DOMAINS_KEY,
+    queryFn: fetchReflectionDomains,
+  });
+  const noReflections = reflections.data?.length === 0;
   return (
     <>
       <h2 className="text-caption px-2 pb-2 font-semibold text-slate-500 dark:text-slate-400">
@@ -1701,7 +1725,7 @@ function DomainList({
           </li>
         ))}
       </ul>
-      {domains?.length === 0 && (
+      {domains?.length === 0 && noReflections && (
         <p className="px-2 text-sm text-slate-500 dark:text-slate-400">
           No domains are registered on this instance yet.
         </p>

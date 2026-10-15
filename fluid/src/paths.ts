@@ -120,6 +120,24 @@ export function reflectionSearchRoute(
 }
 
 /**
+ * The reflection path from the `/d/:domain/*` splat: `""` on the Reflection
+ * home and review screen, null outside the Reflection. Here rather than in
+ * the sidebar tree so the frame can ask without loading the tree.
+ */
+export function reflectionPathOf(rest: string): string | null {
+  if (rest === "reflection" || rest === "reflection/review") {
+    return "";
+  }
+  if (rest.startsWith("reflection/")) {
+    return decodeURIComponent(rest.slice("reflection/".length));
+  }
+  if (rest.startsWith("reflection-edit/")) {
+    return decodeURIComponent(rest.slice("reflection-edit/".length));
+  }
+  return null;
+}
+
+/**
  * The route is kept as the base of the editor's address and redirects to
  * the domain page, where the MANIFEST is now read.
  */

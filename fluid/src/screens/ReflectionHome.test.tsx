@@ -508,7 +508,9 @@ describe("the Reflection home", () => {
     });
     renderApp("/d/eng");
     expect(
-      await screen.findByRole("link", { name: "How we write about eng" }),
+      await within(await screen.findByRole("main")).findByRole("link", {
+        name: "How we write about eng",
+      }),
     ).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "Leave this domain" }),
@@ -519,7 +521,9 @@ describe("the Reflection home", () => {
     asEditor();
     renderApp("/d/eng/reflection");
     expect(
-      await screen.findByRole("link", { name: "How we write about eng" }),
+      await within(await screen.findByRole("main")).findByRole("link", {
+        name: "How we write about eng",
+      }),
     ).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "Leave this domain" }),
@@ -571,7 +575,8 @@ describe("the Reflection home, fix round 1", () => {
       ),
     ).toBeVisible();
     expect(screen.queryByText(/leave reflections\/:/)).toBeNull();
-    expect(screen.queryByRole("list")).toBeNull();
+    // The sidebar tree is a list of its own; the screen draws none.
+    expect(within(screen.getByRole("main")).queryByRole("list")).toBeNull();
   });
 
   it("lets a contributor leave while the Reflection is not open", async () => {

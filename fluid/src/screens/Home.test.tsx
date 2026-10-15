@@ -225,4 +225,83 @@ describe("the home screen", () => {
       home.queryByRole("region", { name: "From connected servers" }),
     ).not.toBeInTheDocument();
   });
+
+  it("lists the domains a contributor works on, and never says the instance is empty", async () => {
+    serve({
+      "/domains": () => ({ behavior: [], domains: [] }),
+      "/reflection/domains": () => ({
+        domains: [
+          {
+            domain: "eng",
+            state: "on",
+            right: "edit",
+            engrams_visible: false,
+            home: "here",
+            home_url: null,
+            open_threads: 3,
+          },
+          {
+            domain: "ops",
+            state: "elsewhere",
+            right: "read",
+            engrams_visible: false,
+            home: "elsewhere",
+            home_url: "https://team.example.com",
+            open_threads: 0,
+          },
+          {
+            domain: "lab",
+            state: "pending",
+            right: "read",
+            engrams_visible: false,
+            home: null,
+            home_url: null,
+            open_threads: 0,
+          },
+        ],
+      }),
+    });
+    renderApp("/");
+    const section = await screen.findByRole("region", { name: "Reflection" });
+    expect(within(section).getByRole("link", { name: "eng" })).toHaveAttribute(
+      "href",
+      "/d/eng/reflection",
+    );
+    expect(within(section).getByText("3 open threads")).toBeVisible();
+    expect(
+      within(section).getByRole("link", { name: "https://team.example.com" }),
+    ).toBeVisible();
+    // A Reflection that is not live yet says so instead of counting threads.
+    expect(within(section).getByRole("link", { name: "lab" })).toHaveAttribute(
+      "href",
+      "/d/lab/reflection",
+    );
+    expect(within(section).getByText("Not open yet")).toBeVisible();
+    expect(
+      screen.queryByText("No domains are registered on this instance yet."),
+    ).toBeNull();
+  });
+
+  it("leaves a domain whose engrams the caller reads out of the Reflection section", async () => {
+    serve({
+      "/reflection/domains": () => ({
+        domains: [
+          {
+            domain: "eng",
+            state: "on",
+            right: "curate",
+            engrams_visible: true,
+            home: "here",
+            home_url: null,
+            open_threads: 1,
+          },
+        ],
+      }),
+    });
+    renderApp("/");
+    expect(
+      await (await main()).findByRole("heading", { name: "Domains" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Reflection" })).toBeNull();
+  });
 });
