@@ -1,5 +1,7 @@
 /**
- * The CI step for the `/π` route's size check (M4 C30, Task 11).
+ * The CI step for the `/π` route's size check (M4 C30, Task 11), the main
+ * chunk's guideline and the eager JS cap (the built `index.html`'s entry
+ * script plus its modulepreloads, raw bytes, see `EAGER_JS_CAP_BYTES`).
  *
  * Reads the Vite build manifest at `dist/.vite/manifest.json` (written only
  * when the build ran with `FLUID_BUNDLE_REPORT=1`, see `vite.config.ts`),
@@ -31,7 +33,13 @@
  * Usage (from `fluid/`): `FLUID_BUNDLE_REPORT=1 pnpm build && node scripts/bundle-budget.ts`.
  */
 
-import { appendFileSync, existsSync, readFileSync, rmSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 
@@ -62,6 +70,10 @@ function main(): void {
     },
     cleanup: () => rmSync(VITE_DIR, { recursive: true, force: true }),
     routeRequired: ROUTE_REQUIRED,
+    eager: {
+      readIndexHtml: () => readFileSync(join(DIST_DIR, "index.html"), "utf8"),
+      rawSize: (file) => statSync(join(DIST_DIR, file)).size,
+    },
   });
 
   for (const line of result.annotations) {

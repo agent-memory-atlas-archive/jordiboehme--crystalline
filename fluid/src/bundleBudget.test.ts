@@ -12,13 +12,16 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  EAGER_JS_CAP_BYTES,
   GAME_BUDGET_BYTES,
   MAIN_GUIDELINE_BYTES,
   ROUTE_REQUIRED,
   chunkFileName,
+  eagerScripts,
   gameFiles,
   mainFile,
   measure,
+  measureEager,
   reportLines,
   runBudgetCheck,
   type Manifest,
@@ -273,5 +276,70 @@ describe("the /π route's chunk name", () => {
     expect(chunkFileName({ facadeModuleId: null })).toBe(
       "assets/[name]-[hash].js",
     );
+  });
+});
+
+describe("the eager JS cap", () => {
+  /** A built index.html: one module entry, preloads, a stylesheet and an inline script. */
+  const html = `<!doctype html>
+<html>
+  <head>
+    <script>window.theme = "dark";</script>
+    <script type="module" crossorigin src="./assets/index-a.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/runtime-b.js">
+    <link rel="modulepreload" crossorigin href="./assets/react-c.js">
+    <link rel="modulepreload" crossorigin href="./assets/runtime-b.js">
+    <link rel="stylesheet" crossorigin href="./assets/index-d.css">
+    <link rel="icon" href="./favicon.svg">
+  </head>
+</html>`;
+
+  it("measures the entry plus every modulepreload, each once", () => {
+    expect(eagerScripts(html)).toEqual([
+      "assets/index-a.js",
+      "assets/runtime-b.js",
+      "assets/react-c.js",
+    ]);
+    const sizes: Record<string, number> = {
+      "assets/index-a.js": 100,
+      "assets/runtime-b.js": 20,
+      "assets/react-c.js": 3,
+    };
+    expect(measureEager(html, (file) => sizes[file] ?? 0)).toEqual({
+      files: ["assets/index-a.js", "assets/runtime-b.js", "assets/react-c.js"],
+      bytes: 123,
+    });
+  });
+
+  it("fails a build over the cap and passes one at it", () => {
+    const run = (total: number) =>
+      runBudgetCheck({
+        readManifest: () => JSON.stringify(manifest),
+        gzipSize: () => 1,
+        writeSummary: () => {},
+        cleanup: () => {},
+        eager: {
+          readIndexHtml: () => html,
+          // All the bytes on the entry, none on the preloads.
+          rawSize: (file) => (file === "assets/index-a.js" ? total : 0),
+        },
+      });
+    const at = run(EAGER_JS_CAP_BYTES);
+    expect(at.failed).toBe(false);
+    expect(at.summary.some((l) => l.startsWith("eager JS:"))).toBe(true);
+    const over = run(EAGER_JS_CAP_BYTES + 1);
+    expect(over.failed).toBe(true);
+    expect(over.annotations.some((l) => l.includes("eager JS"))).toBe(true);
+  });
+
+  it("fails a build whose index.html loads no module script", () => {
+    const result = runBudgetCheck({
+      readManifest: () => JSON.stringify(manifest),
+      gzipSize: () => 1,
+      writeSummary: () => {},
+      cleanup: () => {},
+      eager: { readIndexHtml: () => "<html></html>", rawSize: () => 0 },
+    });
+    expect(result.failed).toBe(true);
   });
 });

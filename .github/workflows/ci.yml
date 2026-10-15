@@ -516,7 +516,8 @@ jobs:
         run: pnpm test
 
       # The /π route's lazy chunks must fit on one 1.44 MB floppy, gzipped;
-      # the main chunk has a guideline (a warning, never a failure). Vite
+      # the eager JS (entry plus modulepreloads, raw) must stay under its
+      # cap; the main chunk has a guideline (a warning, never a failure). Vite
       # writes its manifest only for this build, and the script removes it
       # again: the service crate embeds dist/ and must not serve it.
       - name: Build
