@@ -25,7 +25,6 @@ import {
   REFLECTION_SEARCH_MODES,
   fetchReflectionTree,
   readReflectionSearchMode,
-  reflectionKey,
   reflectionSearchKey,
   reflectionTreeKey,
   saveReflection,
@@ -35,6 +34,7 @@ import {
   PACT_PATH,
   REFLECTION_DOMAINS_KEY,
   atLeast,
+  invalidateReflection,
 } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import {
@@ -55,6 +55,7 @@ import {
   reflectionReviewRoute,
   reflectionSearchRoute,
 } from "../paths";
+import { useHeadingFocusRequest } from "../focusHeading";
 import { stripIdLines } from "../reflectionText";
 
 /** The refusal face, the one `DomainPoliciesCard` announces a problem in. */
@@ -78,6 +79,7 @@ function openThreads(tree: ReflectionTree): number {
 export default function ReflectionHome(): ReactElement {
   const { domain = "" } = useParams();
   const status = useReflectionStatus(domain);
+  useHeadingFocusRequest(!status.isPending);
   if (status.isPending) {
     return <Skeleton label="Loading the Reflection" rows={4} />;
   }
@@ -190,7 +192,7 @@ function WritePact({ domain }: { domain: string }): ReactElement {
         create: true,
       }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: reflectionKey(domain) });
+      invalidateReflection(queryClient, domain);
       void navigate(reflectionEditRoute(domain, PACT_PATH));
     },
   });

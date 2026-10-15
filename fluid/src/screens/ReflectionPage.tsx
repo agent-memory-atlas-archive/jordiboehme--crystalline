@@ -27,10 +27,15 @@ import {
   fetchReflection,
   reflectionAssetHome,
   reflectionDocKey,
-  reflectionKey,
 } from "../api/reflection";
 import type { ReflectionRight } from "../api/reflectionDomains";
-import { PACT_PATH, atLeast, mayEditPage } from "../api/reflectionDomains";
+import {
+  PACT_PATH,
+  atLeast,
+  invalidateReflection,
+  mayEditPage,
+} from "../api/reflectionDomains";
+import { useAuth } from "../auth/AuthContext";
 import { DestructiveAction } from "../components/DestructiveAction";
 import { LazyBoundary } from "../components/LazyBoundary";
 import { Markdown } from "../components/Markdown";
@@ -43,7 +48,9 @@ import { ReflectionThreads } from "../components/ReflectionThreads";
 import { BUTTON, Chip } from "../components/primitives";
 import { Skeleton } from "../components/Skeleton";
 import { engramRoute, reflectionEditRoute, reflectionRoute } from "../paths";
+import { FOCUS_HEADING, useHeadingFocusRequest } from "../focusHeading";
 import { lazyChunk } from "../lazyChunk";
+import { discardPageDrafts } from "../reflectionPageDrafts";
 import { SECTION_ATTR } from "../reflectionQuotes";
 import type { SectionText } from "../reflectionText";
 import { sectionTexts } from "../reflectionText";
@@ -75,8 +82,20 @@ export function sourceChip(state: SourceState): ReactElement | null {
 export default function ReflectionPage(): ReactElement {
   const { domain = "", "*": path = "" } = useParams();
   const status = useReflectionStatus(domain);
-  // The title of the page the move dialog is open for, or null while shut.
-  const [moving, setMoving] = useState<string | null>(null);
+  // The move dialog while it is open: the title it names and the path it is
+  // anchored on. A move re-anchors it on the new path (it has to outlive the
+  // jump to that address); any other change of route shuts it.
+  const [moving, setMoving] = useState<{ title: string; at: string } | null>(
+    null,
+  );
+  const [seen, setSeen] = useState(path);
+  if (seen !== path) {
+    setSeen(path);
+    if (moving !== null && moving.at !== path) {
+      setMoving(null);
+    }
+  }
+  const account = useAuth().user?.name ?? "anonymous";
   if (status.isPending) {
     return <Skeleton label="Loading the page" rows={6} />;
   }
@@ -97,7 +116,10 @@ export default function ReflectionPage(): ReactElement {
         path={path}
         right={status.data.right}
         engramsVisible={status.data.engramsVisible}
-        onMove={setMoving}
+        onMove={(title) => {
+          setMoving({ title, at: path });
+        }}
+        account={account}
       />
       {/*
         Held here, not in the body: after a move the body shows a skeleton
@@ -109,7 +131,10 @@ export default function ReflectionPage(): ReactElement {
           <MoveReflectionDialog
             domain={domain}
             path={path}
-            title={moving}
+            title={moving.title}
+            onMoved={(to) => {
+              setMoving({ title: moving.title, at: to });
+            }}
             onClose={() => {
               setMoving(null);
             }}
@@ -126,12 +151,14 @@ function PageBody({
   right,
   engramsVisible,
   onMove,
+  account,
 }: {
   domain: string;
   path: string;
   right: ReflectionRight;
   engramsVisible: boolean;
   onMove: (title: string) => void;
+  account: string;
 }): ReactElement {
   const doc = useQuery({
     queryKey: reflectionDocKey(domain, path),
@@ -140,11 +167,19 @@ function PageBody({
   const { hash } = useLocation();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  useHeadingFocusRequest(doc.data !== undefined);
   const remove = useMutation({
     mutationFn: () => deleteReflection(domain, path),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: reflectionKey(domain) });
-      void navigate(reflectionRoute(domain), { replace: true });
+      discardPageDrafts(account, domain, path);
+      // The page is gone: drop it from the cache before leaving, so nothing
+      // refetches it into a 404.
+      queryClient.removeQueries({ queryKey: reflectionDocKey(domain, path) });
+      invalidateReflection(queryClient, domain);
+      void navigate(reflectionRoute(domain), {
+        replace: true,
+        state: FOCUS_HEADING,
+      });
     },
   });
   const articleRef = useRef<HTMLElement | null>(null);

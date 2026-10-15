@@ -13,6 +13,8 @@
  * right, which draws nothing rather than a door that will not open.
  */
 
+import type { QueryClient } from "@tanstack/react-query";
+
 import { api, encodeSegment } from "./client";
 import { asArray, asNumber, asObject, asString, asStrings } from "./json";
 
@@ -173,6 +175,30 @@ export function reflectionKey(domain: string): readonly unknown[] {
 
 export function reflectionStatusKey(domain: string): readonly unknown[] {
   return ["reflection-status", domain];
+}
+
+/**
+ * Every query a change to a domain's Reflection can make stale: the
+ * Reflection itself, its status (outside that prefix) and the listing whose
+ * rows count open threads. The change-event reader and the writes of the
+ * screens both read this one list, so the two cannot drift apart.
+ */
+export function reflectionKeys(domain: string): (readonly unknown[])[] {
+  return [
+    reflectionKey(domain),
+    reflectionStatusKey(domain),
+    REFLECTION_DOMAINS_KEY,
+  ];
+}
+
+/** Refresh everything {@link reflectionKeys} lists, after a create, move or delete. */
+export function invalidateReflection(
+  queryClient: QueryClient,
+  domain: string,
+): void {
+  for (const queryKey of reflectionKeys(domain)) {
+    void queryClient.invalidateQueries({ queryKey });
+  }
 }
 
 export async function fetchReflectionStatus(

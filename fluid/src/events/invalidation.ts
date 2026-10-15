@@ -28,7 +28,7 @@ import type {
 } from "../api/events";
 import {
   REFLECTION_DOMAINS_KEY,
-  reflectionKey,
+  reflectionKeys,
   reflectionStatusKey,
 } from "../api/reflectionDomains";
 
@@ -95,11 +95,7 @@ export function keysForDomain(change: DomainChange): QueryKey[] {
  * only what is on screen refetches.
  */
 export function keysForReflection(change: ReflectionChange): QueryKey[] {
-  return [
-    reflectionKey(change.domain),
-    reflectionStatusKey(change.domain),
-    REFLECTION_DOMAINS_KEY,
-  ];
+  return reflectionKeys(change.domain);
 }
 
 export function keysFor(event: ChangeEvent): QueryKey[] | "everything" {

@@ -15,7 +15,8 @@ import { useId, useState } from "react";
 import { useNavigate } from "react-router";
 
 import { problemDetail } from "../api/client";
-import { reflectionKey, saveReflection } from "../api/reflection";
+import { saveReflection } from "../api/reflection";
+import { invalidateReflection } from "../api/reflectionDomains";
 import { reflectionEditRoute } from "../paths";
 import { pathPermalink } from "../permalink";
 import { BUTTON, FIELD } from "./primitives";
@@ -49,7 +50,7 @@ export function NewReflectionDialog({
     mutationFn: () =>
       saveReflection(domain, path, `# ${title.trim()}\n`, { create: true }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: reflectionKey(domain) });
+      invalidateReflection(queryClient, domain);
       onClose();
       void navigate(reflectionEditRoute(domain, path));
     },
@@ -70,9 +71,11 @@ export function NewReflectionDialog({
             New page
           </Dialog.Title>
           <Dialog.Description className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            {path === ""
-              ? "Give the page a title."
-              : `The page will be saved as ${path}.`}
+            {path !== ""
+              ? `The page will be saved as ${path}.`
+              : title.trim() === ""
+                ? "Give the page a title."
+                : "The title needs letters or digits from a to z."}
           </Dialog.Description>
           <form
             className="mt-3 flex flex-col gap-3"

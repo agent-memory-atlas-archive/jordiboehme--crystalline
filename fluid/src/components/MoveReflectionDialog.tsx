@@ -8,23 +8,30 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Dialog } from "radix-ui";
 import type { ReactElement } from "react";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 
 import { problemDetail } from "../api/client";
-import { moveReflection, reflectionKey } from "../api/reflection";
+import { moveReflection, reflectionDocKey } from "../api/reflection";
+import { invalidateReflection } from "../api/reflectionDomains";
+import { useAuth } from "../auth/AuthContext";
+import { FOCUS_HEADING, focusPageHeading } from "../focusHeading";
 import { reflectionPageRoute } from "../paths";
+import { movePageDrafts } from "../reflectionPageDrafts";
 import { BUTTON, FIELD } from "./primitives";
 
 export function MoveReflectionDialog({
   domain,
   path,
   title,
+  onMoved,
   onClose,
 }: {
   domain: string;
   path: string;
   title: string;
+  /** The page has moved: the owner re-anchors the dialog on the new path. */
+  onMoved: (to: string) => void;
   onClose: () => void;
 }): ReactElement {
   const [to, setTo] = useState(path);
@@ -34,20 +41,40 @@ export function MoveReflectionDialog({
   const field = useId();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const account = useAuth().user?.name ?? "anonymous";
+  const closeButton = useRef<HTMLButtonElement | null>(null);
+  // Set once the page has moved, so closing the dialog hands focus to the
+  // page's heading instead of back to a Move button that is gone.
+  const moved = useRef(false);
   const move = useMutation({
     mutationFn: () => moveReflection(domain, path, to.trim()),
-    onSuccess: (moved) => {
-      void queryClient.invalidateQueries({ queryKey: reflectionKey(domain) });
-      void navigate(reflectionPageRoute(domain, moved.to), { replace: true });
+    onSuccess: (receipt) => {
+      moved.current = true;
+      movePageDrafts(account, domain, path, receipt.to);
+      queryClient.removeQueries({ queryKey: reflectionDocKey(domain, path) });
+      invalidateReflection(queryClient, domain);
+      onMoved(receipt.to);
       // Pages the server could not relink stay listed until read; the page
-      // behind the dialog has already followed the move.
-      if (moved.linksFailed.length > 0) {
-        setUnlinked(moved.linksFailed);
+      // behind the dialog has already followed the move. With that list on
+      // screen focus stays in the dialog, on Close.
+      const listed = receipt.linksFailed.length > 0;
+      void navigate(reflectionPageRoute(domain, receipt.to), {
+        replace: true,
+        state: listed ? null : FOCUS_HEADING,
+      });
+      if (listed) {
+        setUnlinked(receipt.linksFailed);
       } else {
         onClose();
       }
     },
   });
+  useEffect(() => {
+    if (unlinked.length > 0) {
+      closeButton.current?.focus();
+    }
+  }, [unlinked]);
+  const target = to.trim();
   return (
     <Dialog.Root
       open
@@ -59,7 +86,17 @@ export function MoveReflectionDialog({
     >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-slate-900/40" />
-        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+        <Dialog.Content
+          onCloseAutoFocus={(event) => {
+            if (moved.current) {
+              event.preventDefault();
+              if (unlinked.length > 0) {
+                focusPageHeading();
+              }
+            }
+          }}
+          className="fixed top-1/2 left-1/2 z-50 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900"
+        >
           <Dialog.Title className="text-lg font-semibold">{`Move ${title}`}</Dialog.Title>
           <Dialog.Description className="mt-1 text-sm text-slate-500 dark:text-slate-400">
             Its threads move with it, and links to it in other pages follow.
@@ -109,6 +146,7 @@ export function MoveReflectionDialog({
               {unlinked.length > 0 ? (
                 <button
                   type="button"
+                  ref={closeButton}
                   onClick={onClose}
                   className={BUTTON.primary}
                 >
@@ -125,7 +163,9 @@ export function MoveReflectionDialog({
                   </button>
                   <button
                     type="submit"
-                    disabled={move.isPending}
+                    disabled={
+                      move.isPending || target === "" || target === path
+                    }
                     className={BUTTON.primary}
                   >
                     Move page
