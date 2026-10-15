@@ -18,7 +18,7 @@
 import type { Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 
-import { problemDetail } from "../api/client";
+import { ApiProblem, problemDetail } from "../api/client";
 import type { AssetHome } from "../api/files";
 import {
   ALLOWED_ATTACHMENT_EXTENSIONS,
@@ -103,6 +103,49 @@ function reasonOf(cause: unknown): string {
   return cause instanceof Error ? problemDetail(cause) : String(cause);
 }
 
+/** The refusals a name taken since the listing can explain. */
+const TAKEN_STATUSES = new Set([403, 409]);
+
+/**
+ * Store one file at `path`, and when the server refuses because somebody
+ * stored a file there since the listing, once more under the next free name.
+ *
+ * Whether the name was taken is decided by a fresh listing that now holds
+ * the path, never by the refusal's words: a 403 or 409 for any other reason
+ * (no right to add, a path the server will not take) is reported as the
+ * server sent it. A home that replaces (an engram's) never refuses a taken
+ * name, so for it this only ever adds one listing after a refusal.
+ */
+async function uploadOnce(
+  home: AssetHome,
+  file: File,
+  path: string,
+  taken: readonly string[],
+  now: Date | undefined,
+) {
+  try {
+    return await home.upload(path, file);
+  } catch (cause) {
+    if (!(cause instanceof ApiProblem) || !TAKEN_STATUSES.has(cause.status)) {
+      throw cause;
+    }
+    let fresh: string[];
+    try {
+      fresh = (await home.list()).map((row) => row.path);
+    } catch {
+      throw cause;
+    }
+    const wanted = path.toLowerCase();
+    if (!fresh.some((held) => held.toLowerCase() === wanted)) {
+      throw cause;
+    }
+    return home.upload(
+      freeAttachmentPath(file.name, [...taken, ...fresh], now),
+      file,
+    );
+  }
+}
+
 /**
  * Upload every file and insert one reference per stored file, at the cursor.
  *
@@ -149,7 +192,7 @@ export async function uploadAttachments(
     // name dropped together must not both claim one path.
     const path = freeAttachmentPath(file.name, taken, request.now);
     try {
-      const uploaded = await home.upload(path, file);
+      const uploaded = await uploadOnce(home, file, path, taken, request.now);
       taken = [...taken, uploaded.path];
       stored.push(uploaded.path);
       lines.push(attachmentMarkdown(file.name, home.linkTo(uploaded.path)));
@@ -167,10 +210,13 @@ export async function uploadAttachments(
   // the buffer was rebuilt while the upload was in flight - lands nowhere
   // either. Both end here, naming the paths so they can be linked by hand or
   // deleted.
-  if (lines.length > 0) {
+  // A buffer that turned read-only while the bytes were on their way (a room
+  // that ended) takes nothing either: the same orphan, the same sentence.
+  const writable = !view.state.readOnly;
+  if (lines.length > 0 && writable) {
     request.place?.(view);
   }
-  if (lines.length > 0 && !insertBlock(view, lines)) {
+  if (lines.length > 0 && (!writable || !insertBlock(view, lines))) {
     inserted = 0;
     problems.push(
       `Uploaded to ${stored.join(", ")}, but the reference could not be inserted here: put the caret in the body and link it, or delete the file.`,
@@ -194,9 +240,10 @@ export async function uploadAttachments(
  */
 export function attachmentUploads(onFiles: (files: File[]) => void): Extension {
   return EditorView.domEventHandlers({
-    paste(event) {
+    paste(event, view) {
       const files = transferFiles(event.clipboardData);
-      if (files.length === 0) {
+      // A read-only buffer is the editor's own business: it cancels the paste.
+      if (files.length === 0 || view.state.readOnly) {
         return false;
       }
       event.preventDefault();
@@ -215,6 +262,11 @@ export function attachmentUploads(onFiles: (files: File[]) => void): Extension {
         return false;
       }
       event.preventDefault();
+      // Taken, so the browser does not open the file in place of the page,
+      // but a read-only buffer gets nothing.
+      if (view.state.readOnly) {
+        return true;
+      }
       // Where it was dropped is where it belongs: the caret moves there first,
       // so the reference lands under the pointer rather than wherever the
       // caret happened to be left. A synthetic drop carrying no coordinates

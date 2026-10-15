@@ -6,9 +6,9 @@
  * maintenance sweep would then have to flag).
  */
 
-import { EditorSelection, EditorState } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiProblem } from "../api/client";
 import type { AssetHome } from "../api/files";
@@ -483,5 +483,240 @@ describe("uploadAttachments through a home", () => {
     );
     expect(listMock).not.toHaveBeenCalled();
     expect(uploadMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The name race: the listing said a path was free, and by the time the PUT
+ * arrived somebody had stored a file there. Only a refusal (403, 409) whose
+ * path a fresh listing now holds is tried again, once, under the next free
+ * name; anything else is reported as the server said it. For an engram the
+ * PUT replaces, so the retry can only fire on a refusal, and nothing else
+ * changes.
+ */
+describe("uploadAttachments when a name is taken meanwhile", () => {
+  // Queued answers must not leak between tests: clearing call history keeps them.
+  beforeEach(() => {
+    listMock.mockReset();
+    uploadMock.mockReset();
+  });
+
+  const SHOT = {
+    path: "assets/2026/08/shot.png",
+    mime: "image/png",
+    size: 1,
+    modified: "2026-08-01T00:00:00+00:00",
+    sha256: "a",
+  };
+
+  function stored(path: string) {
+    return Promise.resolve({ path, mime: "image/png", size: 8, sha256: "a" });
+  }
+
+  async function upload(errors: (string | null)[] = []) {
+    const target = mount();
+    const inserted = await uploadAttachments({
+      domain: "eng",
+      files: [fileOf("shot.png")],
+      view: target,
+      onError: (message) => errors.push(message),
+      now: new Date(2026, 7, 3),
+    });
+    return { target, inserted, errors };
+  }
+
+  it("tries once more under the next free name when a fresh listing holds the path", async () => {
+    listMock.mockResolvedValueOnce([]).mockResolvedValueOnce([SHOT]);
+    uploadMock
+      .mockRejectedValueOnce(
+        new ApiProblem(409, "conflict", "assets/2026/08/shot.png exists"),
+      )
+      .mockImplementationOnce((_domain, path) => stored(path));
+
+    const { target, inserted, errors } = await upload();
+
+    expect(inserted).toBe(1);
+    expect(uploadMock.mock.calls.map((call) => call[1])).toEqual([
+      "assets/2026/08/shot.png",
+      "assets/2026/08/shot-2.png",
+    ]);
+    expect(target.state.doc.toString()).toContain(
+      "![shot.png](assets/2026/08/shot-2.png)",
+    );
+    expect(errors).toEqual([null]);
+  });
+
+  it("matches the fresh listing without regard to case", async () => {
+    listMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ ...SHOT, path: "assets/2026/08/SHOT.png" }]);
+    uploadMock
+      .mockRejectedValueOnce(new ApiProblem(403, "forbidden", "taken"))
+      .mockImplementationOnce((_domain, path) => stored(path));
+
+    const { inserted } = await upload();
+
+    expect(inserted).toBe(1);
+    expect(uploadMock.mock.calls[1]?.[1]).toBe("assets/2026/08/shot-2.png");
+  });
+
+  it("does not try a third time", async () => {
+    listMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([SHOT])
+      .mockResolvedValue([
+        SHOT,
+        { ...SHOT, path: "assets/2026/08/shot-2.png" },
+      ]);
+    uploadMock
+      .mockRejectedValueOnce(new ApiProblem(409, "conflict", "first"))
+      .mockRejectedValueOnce(new ApiProblem(409, "conflict", "second"));
+
+    const { target, inserted, errors } = await upload();
+
+    expect(inserted).toBe(0);
+    expect(uploadMock).toHaveBeenCalledTimes(2);
+    expect(errors.at(-1)).toBe("second");
+    expect(target.state.doc.toString()).toBe("Body line\n");
+  });
+
+  it("reports a refusal for a path nobody holds as the server sent it", async () => {
+    listMock.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    uploadMock.mockRejectedValueOnce(
+      new ApiProblem(403, "forbidden", "you may not add files here"),
+    );
+
+    const { inserted, errors } = await upload();
+
+    expect(inserted).toBe(0);
+    expect(uploadMock).toHaveBeenCalledTimes(1);
+    expect(listMock).toHaveBeenCalledTimes(2);
+    expect(errors.at(-1)).toBe("you may not add files here");
+  });
+
+  it("reports the refusal when the fresh listing cannot be read", async () => {
+    listMock
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new ApiProblem(500, "error", "listing broke"));
+    uploadMock.mockRejectedValueOnce(
+      new ApiProblem(409, "conflict", "the path is taken"),
+    );
+
+    const { inserted, errors } = await upload();
+
+    expect(inserted).toBe(0);
+    expect(uploadMock).toHaveBeenCalledTimes(1);
+    expect(errors.at(-1)).toBe("the path is taken");
+  });
+
+  it("lists once and never retries any other failure", async () => {
+    listMock.mockResolvedValueOnce([SHOT]);
+    uploadMock.mockRejectedValueOnce(
+      new ApiProblem(413, "too large", "the attachment is larger than 10 MiB"),
+    );
+
+    const { errors } = await upload();
+
+    expect(listMock).toHaveBeenCalledTimes(1);
+    expect(uploadMock).toHaveBeenCalledTimes(1);
+    expect(errors.at(-1)).toBe("the attachment is larger than 10 MiB");
+  });
+
+  it("lists once when every upload lands", async () => {
+    listMock.mockResolvedValueOnce([]);
+    uploadMock.mockImplementation((_domain, path) => stored(path));
+
+    const { inserted } = await upload();
+
+    expect(inserted).toBe(1);
+    expect(listMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * A buffer that cannot be edited (a room that has ended) takes no files: a
+ * paste or a drop starts no upload, and a batch that was in flight when the
+ * buffer turned read-only inserts nothing into it.
+ */
+describe("a read-only buffer", () => {
+  // Queued answers must not leak between tests: clearing call history keeps them.
+  beforeEach(() => {
+    listMock.mockReset();
+    uploadMock.mockReset();
+  });
+
+  function readOnlyView(seen: File[][]): EditorView {
+    view = new EditorView({
+      state: EditorState.create({
+        doc: "x\n",
+        extensions: [
+          EditorState.readOnly.of(true),
+          EditorView.editable.of(false),
+          attachmentUploads((files) => {
+            seen.push(files);
+          }),
+        ],
+      }),
+    });
+    return view;
+  }
+
+  function carrying(type: "paste" | "drop", files: File[]): Event {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(
+      event,
+      type === "paste" ? "clipboardData" : "dataTransfer",
+      { value: { files, types: ["Files"], getData: () => "" } },
+    );
+    return event;
+  }
+
+  it("takes no file from a paste", () => {
+    const seen: File[][] = [];
+    const target = readOnlyView(seen);
+    target.contentDOM.dispatchEvent(carrying("paste", [fileOf("shot.png")]));
+    expect(seen).toEqual([]);
+    expect(target.state.doc.toString()).toBe("x\n");
+  });
+
+  it("takes no file from a drop, and the browser does not open it either", () => {
+    const seen: File[][] = [];
+    const target = readOnlyView(seen);
+    const event = carrying("drop", [fileOf("shot.png")]);
+    target.contentDOM.dispatchEvent(event);
+    expect(seen).toEqual([]);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("inserts nothing when the buffer turned read-only during the upload", async () => {
+    const lock = new Compartment();
+    view = new EditorView({
+      state: EditorState.create({
+        doc: "Body line\n",
+        extensions: [lock.of([])],
+      }),
+    });
+    const target = view;
+    listMock.mockResolvedValueOnce([]);
+    uploadMock.mockImplementation((_domain, path) => {
+      target.dispatch({
+        effects: lock.reconfigure(EditorState.readOnly.of(true)),
+      });
+      return Promise.resolve({ path, mime: "image/png", size: 8, sha256: "a" });
+    });
+    const errors: (string | null)[] = [];
+
+    const inserted = await uploadAttachments({
+      domain: "eng",
+      files: [fileOf("shot.png")],
+      view: target,
+      onError: (message) => errors.push(message),
+      now: new Date(2026, 7, 3),
+    });
+
+    expect(inserted).toBe(0);
+    expect(target.state.doc.toString()).toBe("Body line\n");
+    // Named, so the stored file can be linked later or deleted.
+    expect(errors.at(-1)).toContain("assets/2026/08/shot.png");
   });
 });
