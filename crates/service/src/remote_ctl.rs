@@ -189,30 +189,31 @@ pub(crate) async fn dispatch(
         "hook_status" => hook_status(engine, identity, &scope).await,
         "origin_status" => origin_status(engine, request, &scope).await,
         "origin_changes" => origin_changes(engine, request, identity, &scope).await,
-        other if other != "tool" && other != crystalline_remote::FILE_COMMAND => {
-            Err(format!("'{other}' {NOT_REMOTE}"))
-        }
         // The two commands that run a verb: an argument error among their
         // failures is told apart by its kind.
-        _ => {
-            let verb = if cmd == "tool" {
-                remote_tool(engine, request, identity, &scope, base).await
-            } else {
-                remote_file(engine, request, identity, &scope, base).await
-            };
-            return match verb {
-                Ok(data) => envelope_ok(data),
-                Err(failure) if failure.is_invalid() => {
-                    envelope_err_kind(failure.into_message(), crystalline_remote::INVALID_KIND)
-                }
-                Err(failure) => envelope_err(failure.into_message()),
-            };
+        "tool" => {
+            return verb_envelope(remote_tool(engine, request, identity, &scope, base).await);
         }
+        crystalline_remote::FILE_COMMAND => {
+            return verb_envelope(remote_file(engine, request, identity, &scope, base).await);
+        }
+        other => Err(format!("'{other}' {NOT_REMOTE}")),
     };
     match answer {
         Ok(data) if ETAG_COMMANDS.contains(&cmd) => conditional(request, data),
         Ok(data) => envelope_ok(data),
         Err(message) => envelope_err(message),
+    }
+}
+
+/// The envelope of a verb's answer: an argument error carries its kind.
+fn verb_envelope(verb: Result<Value, crate::mcp::RemoteToolError>) -> Value {
+    match verb {
+        Ok(data) => envelope_ok(data),
+        Err(failure) if failure.is_invalid() => {
+            envelope_err_kind(failure.into_message(), crystalline_remote::INVALID_KIND)
+        }
+        Err(failure) => envelope_err(failure.into_message()),
     }
 }
 

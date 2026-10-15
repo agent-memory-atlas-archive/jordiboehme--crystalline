@@ -5406,7 +5406,8 @@ fn routed_links(value: &mut Value, domain: &str) -> Vec<ContentBlock> {
 
 /// A routed file read that did not answer, as `resources/read` reports it:
 /// a refusal or an argument error (the server's, word for word, or this
-/// machine's) as an input error the agent reads, a server out of reach as a server-side error.
+/// machine's) as an input error the agent reads, a server out of reach as a
+/// server-side error.
 fn routed_file_error(e: crate::route::RouteError) -> ErrorData {
     use crate::route::RouteError;
     match &e {
