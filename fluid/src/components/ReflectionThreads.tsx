@@ -165,12 +165,14 @@ export function ReflectionThreads({
   articleRef: RefObject<HTMLElement | null>;
 }): ReactElement {
   const queryClient = useQueryClient();
-  const { user } = useAuth();
+  const { user, capabilities } = useAuth();
   const refresh = () =>
     queryClient.invalidateQueries({ queryKey: reflectionKey(domain) });
   // Reading and commenting are one level; the anonymous viewer of a public
-  // domain is the one reader who never comments (spec B5).
-  const mayComment = atLeast(right, "read") && user !== null;
+  // domain is the one reader who never comments (spec B5). A server that
+  // serves read-only refuses every thread write, so it gets no controls.
+  const mayComment =
+    atLeast(right, "read") && user !== null && !capabilities.readOnly;
   const [captured, setCaptured] = useState<SelectionAnchor | null>(null);
   const [drafting, setDrafting] = useState<SelectionAnchor | null>(null);
   const [active, setActive] = useState<string | null>(null);

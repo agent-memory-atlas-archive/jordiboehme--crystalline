@@ -193,6 +193,23 @@ describe("comments on a reflection", () => {
     }
   });
 
+  it("offers no way to write on a server that serves read-only", async () => {
+    serve([thread("t-00000001")], {
+      "/auth/me": () =>
+        meResponse({
+          user: userFixture({ name: "vera", role: "viewer" }),
+          read_only: true,
+        }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    expect(
+      await screen.findByRole("article", { name: "Thread on Night deploys" }),
+    ).toBeVisible();
+    for (const name of ["Comment", "Answer", "Resolve", "Reopen"]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+  });
+
   it("keeps the Comment button shut until something is selected", async () => {
     serve([]);
     renderApp("/d/eng/reflection/guides/deploying.md");
