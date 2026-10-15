@@ -32,8 +32,9 @@ import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import * as Y from "yjs";
 
 import { problemDetail } from "../api/client";
+import type { AssetHome } from "../api/files";
 import {
-  assetVersions,
+  changedVersions,
   fetchReflection,
   fetchReflectionAssets,
   reflectionAssetHome,
@@ -81,6 +82,11 @@ const AMBER_BANNER =
 const RED_BANNER =
   "flex flex-wrap items-baseline gap-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-100";
 const BANNER_BUTTON = "underline underline-offset-2 hover:no-underline";
+
+/** Whether a text links one of the Reflection's files; cheap when it cannot. */
+function linksAFile(text: string, home: AssetHome): boolean {
+  return text.includes("assets/") && assetRefsIn(text, home.resolve).length > 0;
+}
 
 export default function ReflectionEditor(): ReactElement {
   const { domain = "", "*": path = "" } = useParams();
@@ -374,21 +380,40 @@ function Surface({
    * handlers are read once at mount and must reach the live buffer.
    */
   const home = useMemo(() => reflectionAssetHome(domain, path), [domain, path]);
-  // The listing's sha256 per file makes a preview's address name its current
-  // bytes, so a file replaced elsewhere is drawn anew. Read once a page
-  // links a file: at mount, or after the first upload of this session (its
-  // onSettled below refreshes it). A page without files asks nothing. The
-  // previews sit in a compartment of their own: the editor takes its
-  // extensions once, at mount.
-  const [linksFiles, setLinksFiles] = useState(
-    () => assetRefsIn(mountText, home.resolve).length > 0,
+  // The listing makes a preview's address name a file's current bytes once
+  // they changed since this document first listed them (`changedVersions`,
+  // shared with the reading page), so a file replaced elsewhere is drawn
+  // anew. It is read once the room's text links a file, whoever wrote the
+  // link; a page without files asks nothing. The previews sit in a
+  // compartment of their own: the editor takes its extensions once, at mount.
+  const [linksFiles, setLinksFiles] = useState(() =>
+    linksAFile(mountText, home),
   );
+  useEffect(() => {
+    if (linksFiles) {
+      return;
+    }
+    // Once true it stays true: the listing is then kept fresh by uploads
+    // and by the change events, and the check stops running per keystroke.
+    const check = () => {
+      if (linksAFile(ytext.toJSON(), home)) {
+        setLinksFiles(true);
+      }
+    };
+    ytext.observe(check);
+    return () => {
+      ytext.unobserve(check);
+    };
+  }, [ytext, home, linksFiles]);
   const listing = useQuery({
     queryKey: reflectionAssetsKey(domain),
     queryFn: () => fetchReflectionAssets(domain),
     enabled: linksFiles,
   });
-  const versions = useMemo(() => assetVersions(listing.data), [listing.data]);
+  const versions = useMemo(
+    () => changedVersions(queryClient, domain, listing.data),
+    [queryClient, domain, listing.data],
+  );
   const previewHome = useMemo(
     () => reflectionAssetHome(domain, path, versions),
     [domain, path, versions],
@@ -396,13 +421,28 @@ function Surface({
   const previews = useMemo(() => new Compartment(), []);
   const uploadView = useRef<EditorView | null>(null);
   const [attachError, setAttachError] = useState<string | null>(null);
+  // The upload flow lists through the shared cache entry: a listing already
+  // on its way is joined rather than asked again, and the answer fills the
+  // cache the previews read. `staleTime: 0`, because a free path must be
+  // free against what is there now.
+  const uploadHome = useMemo<AssetHome>(
+    () => ({
+      ...home,
+      list: () =>
+        queryClient.fetchQuery({
+          queryKey: reflectionAssetsKey(domain),
+          queryFn: () => fetchReflectionAssets(domain),
+          staleTime: 0,
+        }),
+    }),
+    [home, queryClient, domain],
+  );
   const uploads = useAttachmentUploads({
     domain,
-    home,
+    home: uploadHome,
     view: () => uploadView.current,
     onError: setAttachError,
     onSettled: () => {
-      setLinksFiles(true);
       void queryClient.invalidateQueries({
         queryKey: reflectionAssetsKey(domain),
       });

@@ -23,7 +23,7 @@ import { ApiProblem, problemDetail } from "../api/client";
 import type { AssetResolver } from "../api/files";
 import type { SectionView, SourceState } from "../api/reflection";
 import {
-  assetVersions,
+  changedVersions,
   deleteReflection,
   fetchReflection,
   fetchReflectionAssets,
@@ -228,8 +228,9 @@ function PageBody({
     [doc.data],
   );
   // The Reflection's file listing: the same cache entry the attachments
-  // section reads, so this adds no request. Its sha256 per file is the
-  // version an image's address carries, so a replaced file is drawn anew.
+  // section reads, so this adds no request. A file whose sha256 changed
+  // since this document first listed it gets a version in its address, so a
+  // replaced file is drawn anew (see `changedVersions`).
   // A page that links no file asks nothing, the same rule the section keeps.
   const linksAFile = useMemo(
     () =>
@@ -243,7 +244,10 @@ function PageBody({
     queryFn: () => fetchReflectionAssets(domain),
     enabled: linksAFile,
   });
-  const versions = useMemo(() => assetVersions(listing.data), [listing.data]);
+  const versions = useMemo(
+    () => changedVersions(queryClient, domain, listing.data),
+    [queryClient, domain, listing.data],
+  );
   // One resolver per page: images and files load from the Reflection itself.
   const assets = useMemo(
     () => reflectionAssetHome(domain, path, versions),

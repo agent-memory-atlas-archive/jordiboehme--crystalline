@@ -28,7 +28,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderInput, Replace, Trash2 } from "lucide-react";
-import type { ChangeEvent, ReactElement } from "react";
+import type { ChangeEvent, ReactElement, RefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { problemDetail } from "../api/client";
@@ -72,12 +72,28 @@ type Asking =
  * asked (a no), or to the file's link (a done; the heading if it is gone).
  */
 type FocusAfter =
-  { kind: "opener"; label: string } | { kind: "file"; path: string };
+  { kind: "opener"; key: string } | { kind: "file"; path: string };
 
-/** The row button that opened a question, by its accessible name. */
-function openerOf(question: Asking): string {
-  const name = nameOf(question.path);
-  return question.kind === "remove" ? `Remove ${name}` : `Replace ${name}`;
+/** Which row button opened a question: its kind and the file's path. */
+function openerKey(kind: Asking["kind"], path: string): string {
+  return `${kind}\u0000${path}`;
+}
+
+/**
+ * Keeps a mounted element in `map` under `key` (and drops it on unmount), so
+ * focus can find a row's control without asking the DOM by name. Called from
+ * a callback ref, never while rendering.
+ */
+function remember<T extends HTMLElement>(
+  map: RefObject<Map<string, T>>,
+  key: string,
+  element: T | null,
+): void {
+  if (element === null) {
+    map.current.delete(key);
+  } else {
+    map.current.set(key, element);
+  }
 }
 
 /** What removing an engram's file leaves behind, said before it happens. */
@@ -126,7 +142,10 @@ export function AttachmentsSection({
   const [asking, setAsking] = useState<Asking | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const sectionRef = useRef<HTMLElement | null>(null);
+  /** The row buttons that open a question, by {@link openerKey}. */
+  const openers = useRef(new Map<string, HTMLButtonElement>());
+  /** The files' name links, by path. */
+  const links = useRef(new Map<string, HTMLAnchorElement>());
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const answerRef = useRef<HTMLButtonElement | null>(null);
   /** Set with the close of a question, read by the render that closes it. */
@@ -141,18 +160,13 @@ export function AttachmentsSection({
     }
     const after = focusAfter.current;
     focusAfter.current = null;
-    const root = sectionRef.current;
-    if (after === null || root === null) {
+    if (after === null) {
       return;
     }
     const target =
       after.kind === "opener"
-        ? [...root.querySelectorAll("button")].find(
-            (b) => b.getAttribute("aria-label") === after.label,
-          )
-        : [...root.querySelectorAll("a")].find(
-            (a) => a.getAttribute("title") === after.path,
-          );
+        ? openers.current.get(after.key)
+        : links.current.get(after.path);
     (target ?? headingRef.current)?.focus();
   }, [asking]);
 
@@ -208,7 +222,7 @@ export function AttachmentsSection({
   };
 
   return (
-    <section ref={sectionRef} aria-label="Attachments" className="text-sm">
+    <section aria-label="Attachments" className="text-sm">
       <h2
         ref={headingRef}
         tabIndex={-1}
@@ -245,6 +259,9 @@ export function AttachmentsSection({
                   </span>
                 ) : (
                   <a
+                    ref={(element) => {
+                      remember(links, path, element);
+                    }}
                     href={home.url(path)}
                     target="_blank"
                     rel="noreferrer"
@@ -261,6 +278,13 @@ export function AttachmentsSection({
                   <span className="ml-auto flex shrink-0 items-center">
                     {replace !== undefined && kind !== "" && (
                       <ReplacePicker
+                        buttonRef={(element) => {
+                          remember(
+                            openers,
+                            openerKey("replace", path),
+                            element,
+                          );
+                        }}
                         name={name}
                         kind={kind}
                         onPick={(file) => {
@@ -280,6 +304,9 @@ export function AttachmentsSection({
                     )}
                     {canDelete && (
                       <IconButton
+                        ref={(element) => {
+                          remember(openers, openerKey("remove", path), element);
+                        }}
                         label={`Remove ${name}`}
                         icon={Trash2}
                         onClick={() => {
@@ -328,7 +355,7 @@ export function AttachmentsSection({
                       onClick={() => {
                         focusAfter.current = {
                           kind: "opener",
-                          label: openerOf(asking),
+                          key: openerKey(asking.kind, asking.path),
                         };
                         setAsking(null);
                       }}
@@ -352,10 +379,13 @@ export function AttachmentsSection({
  * picked name again before it asks anything.
  */
 function ReplacePicker({
+  buttonRef,
   name,
   kind,
   onPick,
 }: {
+  /** The section keeps the button to hand focus back to it. */
+  buttonRef: (element: HTMLButtonElement | null) => void;
   name: string;
   kind: string;
   onPick: (file: File) => void;
@@ -364,6 +394,7 @@ function ReplacePicker({
   return (
     <>
       <IconButton
+        ref={buttonRef}
         label={`Replace ${name}`}
         icon={Replace}
         onClick={() => {

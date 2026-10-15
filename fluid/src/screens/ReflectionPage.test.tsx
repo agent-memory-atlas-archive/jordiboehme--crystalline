@@ -1,8 +1,8 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiProblem, api } from "../api/client";
+import { API_BASE, ApiProblem, api } from "../api/client";
 import type { Answer } from "../test/harness";
 import {
   answersFor,
@@ -390,9 +390,11 @@ describe("a reflection's attachments", () => {
     },
   );
 
-  it("a replaced image is drawn from its new bytes, and no version reaches the text", async () => {
-    const OLD = "1111111111111111aaaa";
-    const NEW = "2222222222222222bbbb";
+  const OLD = "1111111111111111aaaa";
+  const NEW = "2222222222222222bbbb";
+
+  /** flow.png under OLD until a PUT replaces it with NEW. */
+  function serveReplace(routes: Record<string, Answer> = {}) {
     let sha = OLD;
     serveFiles("curate", {
       [ASSETS]: () => ({
@@ -407,14 +409,11 @@ describe("a reflection's attachments", () => {
           sha256: NEW,
         };
       },
+      ...routes,
     });
-    renderApp("/d/eng/reflection/guides/deploying.md");
-    const article = await screen.findByRole("article");
-    await waitFor(() => {
-      expect(
-        within(article).getByRole("img", { name: "Flow" }).getAttribute("src"),
-      ).toMatch(/\/reflection\/assets\/flow\.png\?v=111111111111$/);
-    });
+  }
+
+  async function replaceFlow() {
     const user = userEvent.setup();
     await user.click(
       await screen.findByRole("button", { name: "Replace flow.png" }),
@@ -424,6 +423,94 @@ describe("a reflection's attachments", () => {
       new File(["new"], "flow.png", { type: "image/png" }),
     );
     await user.click(screen.getByRole("button", { name: "Replace" }));
+  }
+
+  it("a first load draws an image from one address only, the plain one", async () => {
+    serveReplace();
+    const seen: string[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        const nodes =
+          record.type === "attributes"
+            ? [record.target]
+            : [...record.addedNodes];
+        for (const node of nodes) {
+          if (!(node instanceof Element)) {
+            continue;
+          }
+          const imgs =
+            node instanceof HTMLImageElement
+              ? [node]
+              : [...node.querySelectorAll("img")];
+          for (const img of imgs) {
+            seen.push(img.getAttribute("src") ?? "");
+          }
+        }
+      }
+    });
+    observer.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["src"],
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const region = await screen.findByRole("region", { name: "Attachments" });
+    // The listing has landed: the section shows the file's size.
+    expect(await within(region).findByText("2.0 KiB")).toBeVisible();
+    await screen.findByRole("img", { name: "Flow" });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    observer.disconnect();
+    expect(new Set(seen.filter((src) => src.includes("flow.png")))).toEqual(
+      new Set([`${API_BASE}/domains/eng/reflection/assets/flow.png`]),
+    );
+  });
+
+  it("a file replaced while one page was open is drawn anew on the next", async () => {
+    serveReplace({
+      "/domains/eng/reflections/PACT.md": () =>
+        doc({
+          path: "PACT.md",
+          title: "PACT",
+          markdown: "# PACT\n\n![Flow](assets/flow.png)\n",
+          sections: [],
+        }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await screen.findByRole("region", { name: "Attachments" });
+    await replaceFlow();
+    await waitFor(() => {
+      expect(
+        screen.getByRole("img", { name: "Flow" }).getAttribute("src"),
+      ).toMatch(/\?v=222222222222$/);
+    });
+    const pact = (await screen.findAllByRole("link", { name: "PACT" })).find(
+      (link) => link.getAttribute("href") === "/d/eng/reflection/PACT.md",
+    ) as HTMLElement;
+    await userEvent.click(pact);
+    await screen.findByRole("heading", { name: "PACT", level: 1 });
+    await waitFor(() => {
+      expect(
+        screen.getByRole("img", { name: "Flow" }).getAttribute("src"),
+      ).toMatch(/\/reflection\/assets\/flow\.png\?v=222222222222$/);
+    });
+  });
+
+  it("a replaced image is drawn from its new bytes, and no version reaches the text", async () => {
+    serveReplace();
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const article = await screen.findByRole("article");
+    const region = await screen.findByRole("region", { name: "Attachments" });
+    expect(await within(region).findByText("2.0 KiB")).toBeVisible();
+    // The bytes the page first drew are the baseline: no version yet.
+    expect(
+      (await within(article).findByRole("img", { name: "Flow" })).getAttribute(
+        "src",
+      ),
+    ).toBe(`${API_BASE}/domains/eng/reflection/assets/flow.png`);
+    await replaceFlow();
     await waitFor(() => {
       expect(
         within(article).getByRole("img", { name: "Flow" }).getAttribute("src"),

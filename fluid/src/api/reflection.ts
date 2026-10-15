@@ -10,6 +10,8 @@
  * Reflection after a write.
  */
 
+import type { QueryClient } from "@tanstack/react-query";
+
 import { API_BASE, api, encodePermalink, encodeSegment } from "./client";
 import {
   type AssetHome,
@@ -754,18 +756,53 @@ export const ENGRAM_FILE =
 /** How much of a file's sha256 its URL carries: enough to tell versions apart. */
 const VERSION_CHARS = 12;
 
-/** Path to sha256 for every file a listing holds, for {@link reflectionAssetHome}. */
-export function assetVersions(
+/**
+ * The first sha256 this document saw for each Reflection file, by
+ * `<domain>\0<path>`. One per QueryClient: one per open document in the app,
+ * and a fresh one per test.
+ */
+const baselines = new WeakMap<QueryClient, Map<string, string>>();
+
+/**
+ * Path to sha256 for every file whose bytes changed since this document
+ * first listed it, for {@link reflectionAssetHome}. A file seen for the first
+ * time sets its baseline and is left out, so its address stays plain: the
+ * image drawn before the listing landed is not fetched a second time under
+ * another URL. The page and the editor share the baseline through the
+ * QueryClient, so a file replaced on one page is drawn anew on the next.
+ *
+ * The rare race: the plain image loads, then somebody replaces the file
+ * before this document's first listing arrives. The baseline is then the
+ * new sha, and the old picture stays until a reload.
+ */
+export function changedVersions(
+  queryClient: QueryClient,
+  domain: string,
   rows: readonly AttachmentRow[] | undefined,
 ): ReadonlyMap<string, string> {
-  return new Map((rows ?? []).map((row) => [row.path, row.sha256]));
+  let seen = baselines.get(queryClient);
+  if (seen === undefined) {
+    seen = new Map();
+    baselines.set(queryClient, seen);
+  }
+  const changed = new Map<string, string>();
+  for (const row of rows ?? []) {
+    const key = `${domain}\u0000${row.path}`;
+    const first = seen.get(key);
+    if (first === undefined) {
+      seen.set(key, row.sha256);
+    } else if (first !== row.sha256) {
+      changed.set(row.path, row.sha256);
+    }
+  }
+  return changed;
 }
 
 /**
  * The Reflection's file store for the page at `pagePath`: its listing, the
  * routes, and the page-relative links core's `classify_target` reads. Callers
  * pass a memoized home. Lazy only: the link rules are not in the entry bundle.
- * `versions` (path to sha256, {@link assetVersions} of the listing) makes
+ * `versions` (path to sha256, {@link changedVersions} of the listing) makes
  * `url` name each file's current bytes.
  */
 export function reflectionAssetHome(

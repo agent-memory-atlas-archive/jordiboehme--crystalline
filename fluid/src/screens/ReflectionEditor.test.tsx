@@ -962,11 +962,17 @@ describe("the reflection editor takes files", () => {
       [...root.querySelectorAll(".cm-image-preview img")].map((img) =>
         img.getAttribute("src"),
       );
+    // The listing that answered first is the baseline: the bytes on screen
+    // are the ones the plain address serves, so no version is added.
     await waitFor(() => {
-      expect(srcs()).toEqual([
-        "/api/v1/domains/eng/reflection/assets/2026/10/a.png?v=111111111111",
-      ]);
+      expect(apiMock.mock.calls.some(([path]) => path === ASSETS)).toBe(true);
     });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(srcs()).toEqual([
+      "/api/v1/domains/eng/reflection/assets/2026/10/a.png",
+    ]);
     // An upload refreshes the listing; the preview follows its new version.
     editor.dispatchEvent(carrying("paste", [png()]));
     await waitFor(() => {
@@ -975,6 +981,86 @@ describe("the reflection editor takes files", () => {
       );
     });
     expect(session.get().ytext?.toJSON()).not.toContain("?v=");
+  });
+
+  it("reads the listing once the room's text links a file, and not before", async () => {
+    serveFiles([[SHOT_ROW]]);
+    const session = live(room(PAGE));
+    await openEditor();
+    const listings = () =>
+      apiMock.mock.calls.filter(([path]) => path === ASSETS).length;
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(listings()).toBe(0);
+    // Somebody else in the room links a file.
+    type(session.get(), "\n![shot](../assets/2026/10/shot.png)\n");
+    await waitFor(() => {
+      expect(listings()).toBe(1);
+    });
+  });
+
+  it("a file replaced on the reading page is drawn anew in the editor", async () => {
+    const FLOW = {
+      path: "assets/flow.png",
+      mime: "image/png",
+      size: 2048,
+      modified: "2026-10-01T00:00:00Z",
+      sha256: "1111111111111111",
+    };
+    const TEXT = "# A\n\n![Flow](../assets/flow.png)\n";
+    let sha = FLOW.sha256;
+    serve("curate");
+    const base = apiMock.getMockImplementation();
+    apiMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === ASSETS) {
+        return { assets: [{ ...FLOW, sha256: sha }] };
+      }
+      if (path === `${ASSETS}/flow.png` && init?.method === "PUT") {
+        sha = "2222222222222222";
+        return { path: FLOW.path, mime: "image/png", size: 3, sha256: sha };
+      }
+      if (path === "/domains/eng/reflections/guides/a.md") {
+        return {
+          domain: "eng",
+          path: "guides/a.md",
+          title: "A",
+          markdown: TEXT,
+          checksum: "c1",
+          sections: [],
+          threads: [],
+        };
+      }
+      return await base?.(path, init);
+    });
+    live(room(TEXT));
+    renderApp("/d/eng/reflection/guides/a.md");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Replace flow.png" }),
+    );
+    await user.upload(
+      screen.getByLabelText("Replace flow.png: pick a file"),
+      new File(["new"], "flow.png", { type: "image/png" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Replace" }));
+    await waitFor(() => {
+      expect(
+        screen.getByRole("img", { name: "Flow" }).getAttribute("src"),
+      ).toMatch(/\?v=222222222222$/);
+    });
+    await user.click(screen.getByRole("link", { name: "Edit" }));
+    const editor = await screen.findByRole("textbox", { name: "Page source" });
+    const root = editor.closest(".cm-editor") as HTMLElement;
+    await waitFor(() => {
+      expect(
+        [...root.querySelectorAll(".cm-image-preview img")].map((img) =>
+          img.getAttribute("src"),
+        ),
+      ).toEqual([
+        "/api/v1/domains/eng/reflection/assets/flow.png?v=222222222222",
+      ]);
+    });
   });
 
   it("adds no link when the room ends while the file is on its way", async () => {
