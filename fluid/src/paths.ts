@@ -11,6 +11,15 @@ import { encodePermalink, encodeSegment } from "./api/client";
 import { crystallineAddress } from "./api/engram";
 import { NEIGHBORHOOD_DEPTH } from "./api/graph";
 
+/**
+ * Whether `path` is a domain's MANIFEST: the root file, in any letter case,
+ * the way the engine's `names_the_manifest` reads it. A file domain refuses
+ * to move or delete it (422 since 0.27.0).
+ */
+export function isDomainManifestPath(path: string): boolean {
+  return path.toUpperCase() === "MANIFEST.MD";
+}
+
 /** The address of one domain. */
 export function domainRoute(domain: string): string {
   return `/d/${encodeSegment(domain)}`;

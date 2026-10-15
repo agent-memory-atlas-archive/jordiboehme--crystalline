@@ -103,7 +103,13 @@ import { useRecentChange } from "../events/recent";
 import { useHoldPlace, useScrollKeeper } from "../events/useScrollKeeper";
 import { formatActor, plural } from "../format";
 import { useFullWidth } from "../layoutWidth";
-import { domainRoute, editRoute, engramRoute, graphRoute } from "../paths";
+import {
+  domainRoute,
+  editRoute,
+  engramRoute,
+  graphRoute,
+  isDomainManifestPath,
+} from "../paths";
 import { prefetchEngramEditor } from "../prefetch";
 import type { WikilinkResolver } from "../wikilinks";
 import { buildWikilinkResolver, innerOf, referenceState } from "../wikilinks";
@@ -284,6 +290,11 @@ export default function EngramPage() {
    * and, for a payload that names none, the permalink's own file.
    */
   const changePath = loaded?.path ?? `${permalink}.md`;
+  const domainRow = domains.data?.domains.find(
+    (entry) => entry.name === (loaded?.domain ?? domain),
+  );
+  const keepsManifest =
+    isDomainManifestPath(changePath) && domainRow?.kind !== "virtual";
   const commands = useMemo<readonly PaletteCommand[]>(() => {
     if (!loaded) {
       return NO_COMMANDS;
@@ -306,13 +317,17 @@ export default function EngramPage() {
               setRetiring(true);
             },
           },
-          {
-            id: "move",
-            title: "Move engram",
-            run: () => {
-              setMoving(true);
-            },
-          },
+          ...(keepsManifest
+            ? []
+            : [
+                {
+                  id: "move",
+                  title: "Move engram",
+                  run: () => {
+                    setMoving(true);
+                  },
+                },
+              ]),
         ]
       : [];
     // Looking at what changed is a palette row; discarding it is not. A loss
@@ -354,7 +369,7 @@ export default function EngramPage() {
         },
       },
     ];
-  }, [canWrite, chipWord, loaded, navigate]);
+  }, [canWrite, chipWord, keepsManifest, loaded, navigate]);
   useRegisterCommands(commands);
 
   /*
@@ -517,15 +532,19 @@ export default function EngramPage() {
                       sideOffset={6}
                       className={MENU_CLASSES}
                     >
-                      <DropdownMenu.Item
-                        className={ITEM_CLASSES}
-                        onSelect={() => {
-                          setMoving(true);
-                        }}
-                      >
-                        Move
-                      </DropdownMenu.Item>
-                      <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
+                      {!keepsManifest && (
+                        <>
+                          <DropdownMenu.Item
+                            className={ITEM_CLASSES}
+                            onSelect={() => {
+                              setMoving(true);
+                            }}
+                          >
+                            Move
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
+                        </>
+                      )}
                       <DropdownMenu.Item
                         className={`${ITEM_CLASSES} text-red-700 dark:text-red-300`}
                         onSelect={() => {
@@ -790,6 +809,7 @@ export default function EngramPage() {
         <RetireDialog
           engram={engram}
           backlinks={backlinks}
+          canDelete={!keepsManifest}
           onClose={() => {
             setRetiring(false);
           }}

@@ -29,6 +29,11 @@ export interface RetireDialogProps {
   engram: EngramDetail;
   /** Who points here, for the delete warning. */
   backlinks: Backlink[];
+  /**
+   * Whether "Delete permanently instead" is offered. False for a file
+   * domain's MANIFEST, which the server refuses to delete. Defaults to true.
+   */
+  canDelete?: boolean;
   onClose: () => void;
 }
 

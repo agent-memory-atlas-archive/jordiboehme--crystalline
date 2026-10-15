@@ -1684,6 +1684,74 @@ describe("what changed on this page", () => {
   });
 });
 
+describe("a domain's MANIFEST on the engram page", () => {
+  /** The same engram, at `path`, on a domain of the given kind. */
+  function serveAt(path: string, kind: "file" | "virtual") {
+    serve({
+      "/domains": () => ({
+        ...domainsResponse(),
+        domains: [{ ...domainsResponse().domains[0], kind }],
+      }),
+      "/domains/eng/engrams/alpha": () => detailResponse({ path }),
+    });
+  }
+
+  it("the MANIFEST page offers no move and no permanent delete", async () => {
+    serveAt("MANIFEST.md", "file");
+    renderApp("/d/eng/e/alpha");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    expect(
+      await screen.findByRole("menuitem", { name: "Retire" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("menuitem", { name: "Move" })).toBeNull();
+    await userEvent.click(screen.getByRole("menuitem", { name: "Retire" }));
+    const dialog = await screen.findByRole("dialog", { name: /retire/i });
+    expect(
+      within(dialog).queryByRole("button", {
+        name: "Delete permanently instead",
+      }),
+    ).toBeNull();
+    await userEvent.keyboard("{Escape}");
+    await userEvent.keyboard("{Meta>}k{/Meta}");
+    expect(await screen.findByText("Retire engram")).toBeVisible();
+    expect(screen.queryByText("Move engram")).toBeNull();
+  });
+
+  it("a virtual domain's MANIFEST keeps move and delete", async () => {
+    serveAt("MANIFEST.md", "virtual");
+    renderApp("/d/eng/e/alpha");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    expect(await screen.findByRole("menuitem", { name: "Move" })).toBeVisible();
+    await userEvent.click(screen.getByRole("menuitem", { name: "Retire" }));
+    const dialog = await screen.findByRole("dialog", { name: /retire/i });
+    expect(
+      within(dialog).getByRole("button", {
+        name: "Delete permanently instead",
+      }),
+    ).toBeVisible();
+  });
+
+  it("an engram called manifest in a folder keeps move and delete", async () => {
+    serveAt("notes/manifest.md", "file");
+    renderApp("/d/eng/e/alpha");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    expect(await screen.findByRole("menuitem", { name: "Move" })).toBeVisible();
+    await userEvent.click(screen.getByRole("menuitem", { name: "Retire" }));
+    const dialog = await screen.findByRole("dialog", { name: /retire/i });
+    expect(
+      within(dialog).getByRole("button", {
+        name: "Delete permanently instead",
+      }),
+    ).toBeVisible();
+  });
+});
+
 describe("the reading page follows the stream", () => {
   let scrollTo: ReturnType<typeof vi.fn>;
   beforeEach(() => {

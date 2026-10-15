@@ -9,12 +9,14 @@
  * retire status change lands optimistically, before any round trip answers.
  */
 
-import { QueryClient } from "@tanstack/react-query";
-import { screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
+import { RetireDialog } from "./RetireDialog";
 import { domainEngramsRoot, singlePage } from "../api/engrams";
 import {
   answersFor,
@@ -171,6 +173,28 @@ describe("the retire dialog", () => {
     // Optimistic: the lifecycle banner is up without a refetch round trip.
     const banner = await screen.findByRole("note");
     expect(within(banner).getByText(/superseded/i)).toBeInTheDocument();
+  });
+
+  it("a dialog that may not delete draws no permanent delete", async () => {
+    serve();
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={new QueryClient()}>
+          <RetireDialog
+            engram={detailResponse() as never}
+            backlinks={[]}
+            canDelete={false}
+            onClose={vi.fn()}
+          />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    const dialog = await screen.findByRole("dialog", { name: /retire/i });
+    expect(
+      within(dialog).queryByRole("button", {
+        name: "Delete permanently instead",
+      }),
+    ).toBeNull();
   });
 
   it("delete hides behind retire and warns with who points here", async () => {
