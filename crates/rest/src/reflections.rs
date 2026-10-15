@@ -943,8 +943,9 @@ pub struct QueueQuery {
                            `changed`, `removed`), `update` (`source_changed`, \
                            `source_retired`, `source_missing`, `unreflected`, \
                            `off_structure`, `pact_changed`) or `review` \
-                           (`thread`). `sources`, and an `unreflected` item's \
-                           `folder` and `engrams`, are absent for a caller who \
+                           (`thread`). `sources`, an `unreflected` item's \
+                           `folder` and `engrams`, and an `engram_attachment` \
+                           item's `targets` are absent for a caller who \
                            cannot read engrams. The MCP `reflect` tool answers \
                            the same shape with `scope: { domains, kinds }` in \
                            place of `domain` and a `domain` member on each row; \

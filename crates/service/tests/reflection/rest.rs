@@ -292,6 +292,63 @@ async fn a_contributor_sees_no_sources_and_no_engram_route() {
     assert!(!queue.to_string().contains("runbooks/deploy"), "{queue}");
 }
 
+/// A page embedding an engram attachment makes an `engram_attachment` item
+/// whose `targets` are engram file paths. Only a reader of engrams gets them.
+#[tokio::test]
+async fn a_contributor_gets_no_engram_attachment_targets_in_the_queue() {
+    let fx = fixture_with(
+        &[
+            ("MANIFEST.md", &manifest("reflection: on\n")),
+            ("assets/shot.png", "an engram attachment"),
+            (
+                "reflections/b.md",
+                "# B\n\n## Shot\n<!-- r:aaaa0003 -->\n\n![e](../assets/shot.png)\n",
+            ),
+        ],
+        |_, _| {},
+    )
+    .await;
+    let s = serve_fx(fx, true).await;
+    let queue_path = "/api/v1/domains/eng/reflection/queue";
+    let has_item = |queue: &Value| {
+        queue["queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["what"] == "engram_attachment")
+    };
+    // The page's own text (a feedback diff) names the link; the item must not.
+    let no_targets = |queue: &Value| {
+        queue["queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r.get("targets").is_none())
+    };
+    // ed reads engrams: the targets stay.
+    let ed = Session::login(s.addr, "ed").await;
+    let (status, queue) = ed.get(queue_path).await;
+    assert_eq!(status, 200, "{queue}");
+    let item = queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["what"] == "engram_attachment")
+        .unwrap_or_else(|| panic!("no engram_attachment item: {queue}"));
+    assert_eq!(item["targets"], json!(["../assets/shot.png"]), "{queue}");
+    // ann has knowledge none: the item stays, its targets do not.
+    let ann = Session::login(s.addr, "ann").await;
+    let (status, queue) = ann.get(queue_path).await;
+    assert_eq!(status, 200, "{queue}");
+    assert!(has_item(&queue), "the item is still asked for: {queue}");
+    assert!(no_targets(&queue), "{queue}");
+    // The review route carries the same queue.
+    let (status, review) = ann.get("/api/v1/domains/eng/reflection/review").await;
+    assert_eq!(status, 200, "{review}");
+    assert!(has_item(&review["queue"]), "{review}");
+    assert!(no_targets(&review["queue"]), "{review}");
+}
+
 #[tokio::test]
 async fn a_create_refuses_an_existing_page() {
     let s = serve().await;

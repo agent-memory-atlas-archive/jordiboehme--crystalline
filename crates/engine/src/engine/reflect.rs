@@ -496,6 +496,8 @@ impl Engine {
                     obj.remove("sources");
                     obj.remove("engrams");
                     obj.remove("folder");
+                    // The engram file paths a page links.
+                    obj.remove("targets");
                 }
                 row
             })
@@ -619,7 +621,7 @@ impl Engine {
                 Err(_) => continue,
             };
             // One page answers every swept domain, so a domain that hides
-            // engrams from the caller strips the sources of the whole page.
+            // engrams from the caller strips the sources, folders, engrams and targets of the whole page.
             visible_everywhere &= access.engrams_visible;
             match self.detect_reflection(&domain, &access, Detail::Full).await {
                 Ok(found) => items.extend(found),
