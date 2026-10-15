@@ -1049,6 +1049,15 @@ pub(crate) fn envelope_err(message: impl Into<String>) -> Value {
     json!({ "v": CTL_VERSION, "ok": false, "error": message.into() })
 }
 
+/// [`envelope_err`] with the `kind` of the error, which a connected machine
+/// reads to tell an argument error from a refusal. A server older than
+/// 0.27.0 sends none.
+pub(crate) fn envelope_err_kind(message: impl Into<String>, kind: &str) -> Value {
+    let mut envelope = envelope_err(message);
+    envelope["kind"] = Value::String(kind.to_string());
+    envelope
+}
+
 /// Refresh every source's routing within `refresh_deadline` in the
 /// background (single flight: a refresh already running is joined, never
 /// started again), and wait for it at most `wait`. Answers the sources whose

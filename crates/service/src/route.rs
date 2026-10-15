@@ -221,9 +221,9 @@ impl std::fmt::Display for RouteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RouteError::Refused(text) => f.write_str(text),
-            // The server's refusal, word for word.
+            // The server's refusal or argument error, word for word.
             RouteError::Source {
-                failure: RemoteFailure::Refused(text),
+                failure: RemoteFailure::Refused(text) | RemoteFailure::Invalid(text),
                 ..
             } => f.write_str(text),
             RouteError::Source {

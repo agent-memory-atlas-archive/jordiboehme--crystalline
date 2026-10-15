@@ -2104,7 +2104,8 @@ impl McpServer {
     /// down window answers at once.
     ///
     /// A refusal this machine makes itself (a write on a read-only instance)
-    /// has the shape the local call gets; every other routed refusal is a
+    /// has the shape the local call gets, and so does an argument error the
+    /// server found (`invalid_params`, R86); every other routed refusal is a
     /// tool error the agent reads.
     async fn mounted<P: serde::Serialize>(
         &self,
@@ -2138,6 +2139,12 @@ impl McpServer {
                 Ok(engine) => Err(to_error(engine)),
                 Err(e) => Err(ErrorData::internal_error(format!("{e:#}"), None)),
             },
+            // An argument error the server found: the protocol error a local
+            // call gives, in the server's words.
+            Err(crate::route::RouteError::Source {
+                failure: crystalline_remote::RemoteFailure::Invalid(text),
+                ..
+            }) => Err(ErrorData::invalid_params(text, None)),
             Err(other) => refuse(other.to_string()),
         })
     }
@@ -2668,24 +2675,34 @@ pub(crate) enum RemoteToolError {
     /// error: a write gate, a live document, a call off the allow-list.
     Refused(String),
     /// The arguments did not parse, or the engine failed: the message an MCP
-    /// call gets as its protocol error.
-    Failed(String),
+    /// call gets as its protocol error. `invalid` is whether that error is an
+    /// input error (`invalid_params`: a missing page, an unparsable filter),
+    /// which the envelope marks so a connected machine answers it as the same
+    /// protocol error.
+    Failed { message: String, invalid: bool },
 }
 
 impl RemoteToolError {
     /// The sentence the envelope carries.
     pub(crate) fn into_message(self) -> String {
         match self {
-            RemoteToolError::Refused(text) | RemoteToolError::Failed(text) => text,
+            RemoteToolError::Refused(text) | RemoteToolError::Failed { message: text, .. } => text,
         }
+    }
+
+    /// Whether the envelope marks this error as an argument error.
+    pub(crate) fn is_invalid(&self) -> bool {
+        matches!(self, RemoteToolError::Failed { invalid: true, .. })
     }
 }
 
 /// A remote call's `args` as the params the MCP handler of the same verb
 /// parses.
 fn remote_args<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, RemoteToolError> {
-    serde_json::from_value(args)
-        .map_err(|e| RemoteToolError::Failed(format!("invalid arguments: {e}")))
+    serde_json::from_value(args).map_err(|e| RemoteToolError::Failed {
+        message: format!("invalid arguments: {e}"),
+        invalid: true,
+    })
 }
 
 /// A verb core's answer for a remote caller: the raw receipt, or the refusal
@@ -2698,8 +2715,26 @@ fn remote_verdict(verdict: Result<Verdict, ErrorData>) -> Result<Value, RemoteTo
     }
 }
 
+/// Whether an MCP error is an argument error: one [`to_error`] marked with
+/// the `kind` of the class (a missing page, an unknown or ambiguous domain,
+/// a conflict, an invalid value). A refusal, which the same `invalid_params`
+/// code also carries, is not.
+fn is_argument_error(error: &ErrorData) -> bool {
+    error
+        .data
+        .as_ref()
+        .and_then(|data| data.get("kind"))
+        .and_then(Value::as_str)
+        == Some(crystalline_remote::INVALID_KIND)
+}
+
+/// An MCP error as a remote answer. An argument error is marked as one (the
+/// envelope's `kind`); a refusal and a server-side error are not.
 fn remote_failed(error: ErrorData) -> RemoteToolError {
-    RemoteToolError::Failed(error.message.to_string())
+    RemoteToolError::Failed {
+        invalid: is_argument_error(&error),
+        message: error.message.to_string(),
+    }
 }
 
 /// The Reflection caller of a remote `tool` call: the token's account under
@@ -5370,14 +5405,16 @@ fn routed_links(value: &mut Value, domain: &str) -> Vec<ContentBlock> {
 }
 
 /// A routed file read that did not answer, as `resources/read` reports it:
-/// a refusal (the server's, word for word, or this machine's) as an input
-/// error the agent reads, a server out of reach as a server-side error.
+/// a refusal or an argument error (the server's, word for word, or this
+/// machine's) as an input error the agent reads, a server out of reach as a server-side error.
 fn routed_file_error(e: crate::route::RouteError) -> ErrorData {
     use crate::route::RouteError;
     match &e {
         RouteError::Refused(_)
         | RouteError::Source {
-            failure: crystalline_remote::RemoteFailure::Refused(_),
+            failure:
+                crystalline_remote::RemoteFailure::Refused(_)
+                | crystalline_remote::RemoteFailure::Invalid(_),
             ..
         } => ErrorData::invalid_params(e.to_string(), None),
         RouteError::Source { .. } | RouteError::Local(_) => {
@@ -6008,12 +6045,18 @@ fn done_written(mut receipt: Value, base: &crate::web_url::WebBase) -> Verdict {
 /// Map an engine error to an rmcp tool error with an actionable message.
 fn to_error(e: EngineError) -> ErrorData {
     match e {
+        // The caller named something wrong: an argument error, marked with
+        // its kind so a connected machine can answer it as the same protocol
+        // error (R86).
         EngineError::UnknownDomain { .. }
         | EngineError::NotFound(_)
         | EngineError::Ambiguous(_)
         | EngineError::Conflict(_)
-        | EngineError::Invalid(_)
-        | EngineError::ReadOnly
+        | EngineError::Invalid(_) => ErrorData::invalid_params(
+            e.to_string(),
+            Some(json!({ "kind": crystalline_remote::INVALID_KIND })),
+        ),
+        EngineError::ReadOnly
         | EngineError::DomainReadOnly(_)
         // The caller asked for something they are not allowed to do, and the
         // message says who is: input-class guidance, like the read-only
@@ -6110,6 +6153,13 @@ mod tests {
         });
         assert_eq!(refused.code, ErrorCode::INVALID_PARAMS);
         assert_eq!(refused.message, hosted);
+        let invalid = routed_file_error(RouteError::Source {
+            source: "acme".into(),
+            domain: "open".into(),
+            failure: RemoteFailure::Invalid("no such file".into()),
+        });
+        assert_eq!(invalid.code, ErrorCode::INVALID_PARAMS);
+        assert_eq!(invalid.message, "no such file");
         let ours = routed_file_error(RouteError::Refused("too old".into()));
         assert_eq!(ours.code, ErrorCode::INVALID_PARAMS);
         let down = routed_file_error(RouteError::Source {

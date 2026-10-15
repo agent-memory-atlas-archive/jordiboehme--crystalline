@@ -145,6 +145,10 @@ pub(crate) const TOO_OLD_WORDS: &str = "does not serve the remote control protoc
 const NETWORK_HINT: &str =
     "check the VPN or the network; it recovers by itself once the server answers again";
 
+/// The `kind` of an envelope error that is an argument error: the one class
+/// of a refusal a caller answers as an input error.
+pub const INVALID_KIND: &str = "invalid";
+
 /// Why a remote exchange did not produce an answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteFailure {
@@ -177,6 +181,14 @@ pub enum RemoteFailure {
     /// server's own words, word for word), or a status that is not the
     /// protocol.
     Refused(String),
+    /// The server answered that an argument of the call is invalid (the
+    /// envelope's `kind: invalid`: a missing page, an unparsable filter), in
+    /// its own words. The same input error a local call gives, so a caller
+    /// answers it as one. Never a failure of the source: the server answered,
+    /// so it does not open the down window, whatever the [`Budget`]. A server
+    /// older than 0.27.0 sends no kind, and its answer stays
+    /// [`RemoteFailure::Refused`].
+    Invalid(String),
     /// The server answered with an HTTP status that is not the protocol (a
     /// proxy's error page, a crash). The body is kept for `status` and
     /// `doctor` only ([`RemoteFailure::server_text`]); what an agent reads
@@ -252,7 +264,9 @@ impl std::fmt::Display for RemoteFailure {
                 f,
                 "the access token for {url} has expired; the next call that may refresh it renews it by itself"
             ),
-            RemoteFailure::Credential(text) | RemoteFailure::Refused(text) => f.write_str(text),
+            RemoteFailure::Credential(text)
+            | RemoteFailure::Refused(text)
+            | RemoteFailure::Invalid(text) => f.write_str(text),
             RemoteFailure::Starting { source } => write!(
                 f,
                 "{source} was not asked: this process was still setting up its network connection, and the next call asks it"
@@ -1065,13 +1079,15 @@ impl Connection {
             ))
         })?;
         if envelope.get("ok").and_then(Value::as_bool) != Some(true) {
-            return Err(RemoteFailure::Refused(
-                envelope
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("ctl error")
-                    .to_string(),
-            ));
+            let text = envelope
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("ctl error")
+                .to_string();
+            return Err(match envelope.get("kind").and_then(Value::as_str) {
+                Some(INVALID_KIND) => RemoteFailure::Invalid(text),
+                _ => RemoteFailure::Refused(text),
+            });
         }
         let etag = envelope
             .get("etag")

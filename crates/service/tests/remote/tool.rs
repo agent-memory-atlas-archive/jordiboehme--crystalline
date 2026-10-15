@@ -380,3 +380,47 @@ async fn a_share_link_opens_the_draft_for_the_account_and_lapses_after_thirty_id
         draft.content
     );
 }
+
+/// An argument error carries `kind: invalid` in the envelope, so a connected
+/// machine can answer it as the protocol error a local call gives. A refusal
+/// carries no kind: it stays a tool error there.
+#[tokio::test]
+async fn an_argument_error_carries_kind_invalid_in_the_envelope() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let keeper = server.token_for("keeper").await;
+    for (name, args) in [
+        (
+            "read_engram",
+            json!({ "identifier": "no-such-page", "domain": "open" }),
+        ),
+        (
+            "search_engrams",
+            json!({ "query": "vent", "domains": ["open"], "metadata_filters": "not an object" }),
+        ),
+        (
+            "read_reflection",
+            json!({ "domain": "open", "path": "a.md", "query": "x" }),
+        ),
+        // Arguments that do not parse.
+        ("read_engram", json!({ "identifier": 7 })),
+    ] {
+        let (_, reply) = server.ctl(Some(&keeper), tool(name, args)).await;
+        assert_eq!(reply["ok"], false, "{name}: {reply}");
+        assert_eq!(reply["kind"], "invalid", "{name}: {reply}");
+    }
+    let looker = server.token_for("looker").await;
+    let (_, reply) = server
+        .ctl(
+            Some(&looker),
+            tool(
+                "write_engram",
+                json!({ "domain": "open", "title": "Not Mine", "content": "- [fact] no" }),
+            ),
+        )
+        .await;
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert!(
+        reply.get("kind").is_none(),
+        "a refusal has no kind: {reply}"
+    );
+}

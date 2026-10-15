@@ -181,7 +181,13 @@ pub enum Play {
     /// A server whose Reflection is served by another instance on its
     /// shared database: `file` answers the hosted refusal ([`HOSTED`]).
     HostedElsewhere,
+    /// A server that finds the argument of a `file` request invalid: it
+    /// answers [`INVALID_FILE`] with `kind: invalid`, as 0.27.0 does.
+    InvalidFile,
 }
+
+/// The argument error [`Play::InvalidFile`] answers.
+pub const INVALID_FILE: &str = "'assets/odd' is not a file of this domain";
 
 /// The refusal [`Play::HostedElsewhere`] answers, as the engine words it.
 pub const HOSTED: &str =
@@ -233,6 +239,12 @@ async fn record_ctl(
             return refused("'file' is not available over a remote connection");
         }
         (Play::HostedElsewhere, "file") => return refused(HOSTED),
+        (Play::InvalidFile, "file") => {
+            return axum::Json(
+                json!({ "v": 1, "ok": false, "error": INVALID_FILE, "kind": "invalid" }),
+            )
+            .into_response();
+        }
         _ => {}
     }
     let response = next
@@ -241,7 +253,10 @@ async fn record_ctl(
             axum::body::Body::from(bytes),
         ))
         .await;
-    if play == Play::Honest || play == Play::HostedElsewhere {
+    if matches!(
+        play,
+        Play::Honest | Play::HostedElsewhere | Play::InvalidFile
+    ) {
         return response;
     }
     let (parts, body) = response.into_parts();

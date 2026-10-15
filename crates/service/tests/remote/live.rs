@@ -14,7 +14,7 @@ use rmcp::model::{CallToolRequestParams, GetPromptRequestParams, ReadResourceReq
 use rmcp::service::{Peer, RunningService};
 use serde_json::{Value, json};
 
-use crate::fixture::{HOSTED, Options, PIC, Play, RemoteServer, SHOT};
+use crate::fixture::{HOSTED, INVALID_FILE, Options, PIC, Play, RemoteServer, SHOT};
 use crate::local::LocalMachine;
 
 async fn connect(
@@ -1093,4 +1093,138 @@ async fn a_hosted_elsewhere_refusal_of_a_file_arrives_word_for_word() {
         .filter(|r| r["cmd"] == "file")
         .count();
     assert_eq!(asked, 1, "{:?}", server.ctl_requests());
+}
+
+/// How a call ended, by class: `Ok`, a tool error (`isError`) or a protocol
+/// error with its code.
+#[derive(Debug, PartialEq)]
+enum Ending {
+    Answered,
+    ToolError,
+    Protocol(i32),
+}
+
+/// The ending of one call, by class, for comparing a local and a routed one.
+async fn ending(peer: &Peer<RoleClient>, tool: &str, args: Value) -> Ending {
+    let mut params = CallToolRequestParams::new(tool.to_string());
+    if let Value::Object(map) = args {
+        params = params.with_arguments(map);
+    }
+    match peer.call_tool(params).await {
+        Ok(result) if result.is_error == Some(true) => Ending::ToolError,
+        Ok(_) => Ending::Answered,
+        Err(rmcp::ServiceError::McpError(data)) => Ending::Protocol(data.code.0),
+        Err(other) => panic!("not an MCP answer: {other}"),
+    }
+}
+
+const INVALID_PARAMS: i32 = -32602;
+
+/// R86: an argument error from another instance is the protocol error a local
+/// one is. The class is compared, never the text.
+#[tokio::test]
+async fn a_mounted_argument_error_is_the_protocol_error_a_local_one_is() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    server.with_files_in_open().await;
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    for domain in ["notes", "open"] {
+        assert_eq!(
+            ending(
+                client.peer(),
+                "read_engram",
+                json!({ "identifier": "no-such-page", "domain": domain })
+            )
+            .await,
+            Ending::Protocol(INVALID_PARAMS),
+            "read_engram of a missing page in {domain}"
+        );
+        assert_eq!(
+            ending(
+                client.peer(),
+                "read_reflection",
+                json!({ "domain": domain, "path": "guides/a.md", "query": "text" })
+            )
+            .await,
+            Ending::Protocol(INVALID_PARAMS),
+            "read_reflection with path and query in {domain}"
+        );
+    }
+}
+
+/// R86 for the search: a filter the engine cannot parse is an argument error
+/// on the server, and the protocol error here.
+#[tokio::test]
+async fn a_mounted_search_argument_error_is_a_protocol_error() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    for domain in ["notes", "open"] {
+        assert_eq!(
+            ending(
+                client.peer(),
+                "search_engrams",
+                json!({ "query": "vent", "domains": [domain], "metadata_filters": "not an object" })
+            )
+            .await,
+            Ending::Protocol(INVALID_PARAMS),
+            "search in {domain}"
+        );
+    }
+}
+
+/// An argument error says nothing about the source: it is not a failure to
+/// answer, so it never opens the down window, and the next call is asked.
+#[tokio::test]
+async fn an_argument_error_does_not_open_the_down_window() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    assert_eq!(
+        ending(
+            client.peer(),
+            "read_engram",
+            json!({ "identifier": "no-such-page", "domain": "open" })
+        )
+        .await,
+        Ending::Protocol(INVALID_PARAMS)
+    );
+    let page = call(
+        client.peer(),
+        "read_engram",
+        json!({ "identifier": "open-note", "domain": "open" }),
+    )
+    .await
+    .unwrap();
+    assert!(page.to_string().contains("open-note"), "{page}");
+}
+
+/// A routed file read the server finds invalid is an input error with the
+/// server's words, and the source stays up: the next read is asked.
+#[tokio::test]
+async fn an_invalid_file_argument_is_an_input_error_and_keeps_the_source_up() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    server.with_files_in_open().await;
+    server.play(Play::InvalidFile);
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    let (client, _s) = connect(McpServer::new(machine.engine.clone())).await;
+    let refused = read_bytes(client.peer(), "crystalline://open/assets/shot.png")
+        .await
+        .unwrap_err();
+    assert_eq!(refused, format!("Mcp error: -32602: {INVALID_FILE}"));
+    server.play(Play::Honest);
+    assert_eq!(
+        read_bytes(client.peer(), "crystalline://open/assets/shot.png")
+            .await
+            .unwrap(),
+        SHOT
+    );
 }

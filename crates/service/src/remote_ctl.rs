@@ -32,7 +32,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-use crate::control::{envelope_err, envelope_ok};
+use crate::control::{envelope_err, envelope_err_kind, envelope_ok};
 use crate::engine::{Engine, ShareActor};
 use crate::mcp_gate::{Bearer, McpIdentity, resolve_bearer};
 use crate::params::ListDomainsParams;
@@ -185,15 +185,29 @@ pub(crate) async fn dispatch(
     };
     let answer = match cmd {
         "status" => remote_status(engine, identity, &scope).await,
-        "tool" => remote_tool(engine, request, identity, &scope, base).await,
         "routing_bullets" => routing_model(engine, identity, &scope).await,
         "hook_status" => hook_status(engine, identity, &scope).await,
         "origin_status" => origin_status(engine, request, &scope).await,
         "origin_changes" => origin_changes(engine, request, identity, &scope).await,
-        crystalline_remote::FILE_COMMAND => {
-            remote_file(engine, request, identity, &scope, base).await
+        other if other != "tool" && other != crystalline_remote::FILE_COMMAND => {
+            Err(format!("'{other}' {NOT_REMOTE}"))
         }
-        other => Err(format!("'{other}' {NOT_REMOTE}")),
+        // The two commands that run a verb: an argument error among their
+        // failures is told apart by its kind.
+        _ => {
+            let verb = if cmd == "tool" {
+                remote_tool(engine, request, identity, &scope, base).await
+            } else {
+                remote_file(engine, request, identity, &scope, base).await
+            };
+            return match verb {
+                Ok(data) => envelope_ok(data),
+                Err(failure) if failure.is_invalid() => {
+                    envelope_err_kind(failure.into_message(), crystalline_remote::INVALID_KIND)
+                }
+                Err(failure) => envelope_err(failure.into_message()),
+            };
+        }
     };
     match answer {
         Ok(data) if ETAG_COMMANDS.contains(&cmd) => conditional(request, data),
@@ -425,13 +439,12 @@ async fn remote_file(
     identity: &McpIdentity,
     scope: &Scope,
     base: &WebBase,
-) -> Result<Value, String> {
+) -> Result<Value, crate::mcp::RemoteToolError> {
     let domain = request.get("domain").and_then(Value::as_str).unwrap_or("");
     let path = request.get("path").and_then(Value::as_str).unwrap_or("");
     crate::mcp::McpServer::new_http(engine.clone())
         .remote_file(domain, path, &remote_caller(request, identity, scope, base))
         .await
-        .map_err(crate::mcp::RemoteToolError::into_message)
 }
 
 /// The caller of a remote call: the token's account, never anything the
@@ -462,14 +475,15 @@ async fn remote_tool(
     identity: &McpIdentity,
     scope: &Scope,
     base: &WebBase,
-) -> Result<Value, String> {
+) -> Result<Value, crate::mcp::RemoteToolError> {
     let tool = request.get("tool").and_then(Value::as_str).unwrap_or("");
     if !REMOTE_TOOLS.contains(&tool) {
-        return Err(format!("the tool '{tool}' {NOT_REMOTE}"));
+        return Err(crate::mcp::RemoteToolError::Refused(format!(
+            "the tool '{tool}' {NOT_REMOTE}"
+        )));
     }
     let args = request.get("args").cloned().unwrap_or_else(|| json!({}));
     crate::mcp::McpServer::new_http(engine.clone())
         .remote_tool(tool, args, &remote_caller(request, identity, scope, base))
         .await
-        .map_err(crate::mcp::RemoteToolError::into_message)
 }

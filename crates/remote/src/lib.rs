@@ -63,8 +63,8 @@ pub use provider::{
 };
 pub use server_client::{
     Budget, CONNECT_TIMEOUT, CTL_TIMEOUT, Connection, CtlAnswer, DOWN_WINDOW, FILE_ANSWER_CAP,
-    FILE_COMMAND, ForwardedAgent, Health, ONE_DOMAIN_LIMIT, RemoteFailure, form_body, http_client,
-    seconds, settle_refreshes, warm_http_client, warm_http_client_within,
+    FILE_COMMAND, ForwardedAgent, Health, INVALID_KIND, ONE_DOMAIN_LIMIT, RemoteFailure, form_body,
+    http_client, seconds, settle_refreshes, warm_http_client, warm_http_client_within,
 };
 pub use server_token::{
     CredentialKind, ServerCredential, ServerCredentialStore, server_folder, server_key,
