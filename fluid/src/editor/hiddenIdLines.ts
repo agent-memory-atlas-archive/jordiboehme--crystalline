@@ -53,7 +53,12 @@ const field = StateField.define<DecorationSet>({
   ],
 });
 
-/** A new line typed at the end of a heading lands below the heading's id. */
+/**
+ * A new line typed at the end of a heading lands below the heading's id, and
+ * so does a block inserted from a heading line (`insertBlock` writes it at
+ * the line's end, led by a line break): a toolbar block or an uploaded file's
+ * link never splits a heading from its id.
+ */
 const newLineBelowId = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged || !tr.isUserEvent("input")) {
     return tr;
@@ -83,9 +88,25 @@ const newLineBelowId = EditorState.transactionFilter.of((tr) => {
   if (!isIdLine(below.text)) {
     return tr;
   }
+  // The selection the insert asked for moves down with it: a typed new line
+  // leaves the caret after it, a block inserted from the toolbar or an upload
+  // keeps the caret or selection it put inside itself.
+  const shift = below.to - only.at;
+  const end = only.at + only.text.length;
+  const asked = tr.selection;
+  const inside =
+    asked !== undefined &&
+    asked.ranges.every((r) => r.from >= only.at && r.to <= end);
   return {
     changes: { from: below.to, insert: only.text },
-    selection: EditorSelection.cursor(below.to + only.text.length),
+    selection: inside
+      ? EditorSelection.create(
+          asked.ranges.map((r) =>
+            EditorSelection.range(r.anchor + shift, r.head + shift),
+          ),
+          asked.mainIndex,
+        )
+      : EditorSelection.cursor(below.to + only.text.length),
     scrollIntoView: true,
     userEvent: "input",
   };

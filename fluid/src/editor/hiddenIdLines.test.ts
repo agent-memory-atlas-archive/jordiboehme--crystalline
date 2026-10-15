@@ -8,6 +8,7 @@ import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { hiddenIdLines } from "./hiddenIdLines";
+import { insertBlock } from "./toolbar";
 
 let view: EditorView | null = null;
 afterEach(() => {
@@ -105,6 +106,33 @@ describe("hiddenIdLines keeps an id with its heading", () => {
       text = filter(text, v.state);
     }
     expect(text).toBe("## One\nFirst.\n");
+  });
+
+  it("lands a block inserted from a heading line below its id line", () => {
+    const v = at(SPACED, "## One".length);
+    expect(insertBlock(v, ["![a](assets/a.png)", "[b](assets/b.pdf)"])).toBe(
+      true,
+    );
+    expect(v.state.doc.toString()).toBe(
+      "## One\n<!-- r:aaaa1111 -->\n\n![a](assets/a.png)\n[b](assets/b.pdf)\n\n\nFirst.\n",
+    );
+    // The caret where the block put it, at the end of its first line, only
+    // moved down with the block.
+    const first = v.state.doc.toString().indexOf("![a]");
+    expect(v.state.selection.main.head).toBe(
+      first + "![a](assets/a.png)".length,
+    );
+  });
+
+  it("keeps a selection the block asked for when it moves below the id", () => {
+    const v = at(SPACED, "## One".length);
+    insertBlock(v, ["```", "code", "```"], { line: 1, from: 0, to: 4 });
+    const text = v.state.doc.toString();
+    expect(
+      text.startsWith("## One\n<!-- r:aaaa1111 -->\n\n```\ncode\n```\n"),
+    ).toBe(true);
+    const { from, to } = v.state.selection.main;
+    expect(text.slice(from, to)).toBe("code");
   });
 
   it("never rewrites an edit that is not this person's typing", () => {
