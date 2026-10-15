@@ -1980,7 +1980,8 @@ impl Engine {
             r::rewrite_links_to(text, inner, from, to).1
         });
         self.refuse_under_live_rooms(domain, &linking).await?;
-        // The test seam: the window between the screen and the page lock.
+        // The test seam sits between the screen and the file lock because that
+        // window is the one R81 pins: a room may open in it.
         self.take_room_screen_hold().await;
         let src = access.abs(from);
         let dst = access.abs(to);
@@ -2169,7 +2170,8 @@ impl Engine {
             ));
         }
         let abs = access.abs(inner);
-        // The test seam: the window between the screen and the page lock.
+        // The test seam sits between the screen and the file lock because that
+        // window is the one R81 pins: a room may open in it.
         self.take_room_screen_hold().await;
         let _lock = self.lock_file(&abs).await;
         if !remove_if_there(&abs)? {

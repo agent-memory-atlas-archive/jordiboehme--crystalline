@@ -745,6 +745,13 @@ pub(crate) enum ContentSource {
     Virtual,
 }
 
+/// The two signals of `Engine::hold_next_room_screen_until`.
+#[cfg(any(test, feature = "testing"))]
+struct RoomScreenGate {
+    entered: std::sync::Arc<tokio::sync::Notify>,
+    release: std::sync::Arc<tokio::sync::Notify>,
+}
+
 /// The shared service engine.
 pub struct Engine {
     store: Arc<Mutex<dyn Store>>,
@@ -878,11 +885,12 @@ pub struct Engine {
     // `Engine::hold_next_draft_edit`, and the same compile-out applies.
     #[cfg(any(test, feature = "testing"))]
     hold_next_draft_edit: std::sync::atomic::AtomicU64,
-    // The third stopwatch: when armed, the next move or delete of a Reflection
-    // sleeps this many milliseconds after its live-room screen and before it
-    // takes the page lock. See `Engine::hold_next_room_screen`.
+    // The third seam, a gate rather than a stopwatch: when armed, the next move
+    // or delete of a Reflection signals `entered` after its live-room screen,
+    // then waits for `release` before it takes the page lock. See
+    // `Engine::hold_next_room_screen_until`.
     #[cfg(any(test, feature = "testing"))]
-    hold_next_room_screen: std::sync::atomic::AtomicU64,
+    hold_next_room_screen: std::sync::Mutex<Option<RoomScreenGate>>,
     // The effective `skills.serve` value, snapshotted while this engine is
     // built and never re-read. See `Engine::skills_serve` for why it is frozen
     // and `Engine::with_env_overlay` for why the snapshot is taken twice.
@@ -2146,7 +2154,7 @@ impl Engine {
             #[cfg(any(test, feature = "testing"))]
             hold_next_draft_edit: std::sync::atomic::AtomicU64::new(0),
             #[cfg(any(test, feature = "testing"))]
-            hold_next_room_screen: std::sync::atomic::AtomicU64::new(0),
+            hold_next_room_screen: std::sync::Mutex::new(None),
             skills_serve,
             instance_id: String::new(),
             label: String::new(),
@@ -2280,9 +2288,12 @@ impl Engine {
         }
     }
 
-    /// Hold the next move or delete of a Reflection open between its screen for
+    /// Gate the next move or delete of a Reflection between its screen for
     /// live rooms and its page lock, once, so a test can open a room inside
-    /// that window.
+    /// that window. Returns `(entered, release)`: the verb notifies `entered`
+    /// when it reaches the gate and then waits for `release`, so the test
+    /// awaits `entered`, opens its room, and notifies `release`. Both are
+    /// `Notify` permits, so either order is safe.
     ///
     /// R81: the window is pinned, not closed. Closing it would mean screening
     /// under the page lock, which takes the registry lock after the file lock
@@ -2293,20 +2304,30 @@ impl Engine {
     /// Armed for ONE verb and consumed by it, and compiled out of a released
     /// binary like the seams above.
     #[cfg(any(test, feature = "testing"))]
-    pub fn hold_next_room_screen(&self, millis: u64) {
-        self.hold_next_room_screen
-            .store(millis, std::sync::atomic::Ordering::Relaxed);
+    pub fn hold_next_room_screen_until(
+        &self,
+    ) -> (
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        let gate = RoomScreenGate {
+            entered: std::sync::Arc::new(tokio::sync::Notify::new()),
+            release: std::sync::Arc::new(tokio::sync::Notify::new()),
+        };
+        let handles = (gate.entered.clone(), gate.release.clone());
+        *self.hold_next_room_screen.lock().unwrap() = Some(gate);
+        handles
     }
 
-    /// The hold above, consuming the arming. Does nothing outside a test build.
+    /// The gate above, consuming the arming; returns at once when none is
+    /// armed. Does nothing at all outside a test build.
     async fn take_room_screen_hold(&self) {
         #[cfg(any(test, feature = "testing"))]
         {
-            let millis = self
-                .hold_next_room_screen
-                .swap(0, std::sync::atomic::Ordering::Relaxed);
-            if millis > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
+            let gate = self.hold_next_room_screen.lock().unwrap().take();
+            if let Some(gate) = gate {
+                gate.entered.notify_one();
+                gate.release.notified().await;
             }
         }
     }

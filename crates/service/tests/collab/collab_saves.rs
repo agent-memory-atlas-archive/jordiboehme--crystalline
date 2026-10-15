@@ -2468,7 +2468,7 @@ async fn a_room_opened_inside_the_delete_window_meets_the_deletion() {
     let path = tmp.path().join("eng/reflections/guides/a.md");
     let sessions = CollabSessions::new(engine.clone());
     engine.set_collab_sessions(&sessions);
-    engine.hold_next_room_screen(300);
+    let (entered, release) = engine.hold_next_room_screen_until();
     let deleting = {
         let engine = engine.clone();
         tokio::spawn(async move {
@@ -2477,13 +2477,16 @@ async fn a_room_opened_inside_the_delete_window_meets_the_deletion() {
                 .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(60)).await;
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .expect("the verb reaches the gate");
     let mut joined = sessions
         .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let doc = sync_client(&joined).await;
     append_line(&joined, &doc, "Typed inside the window.").await;
+    release.notify_one();
     deleting.await.unwrap().unwrap();
     assert!(!path.exists(), "the delete went through");
     joined
@@ -2508,7 +2511,7 @@ async fn a_room_opened_inside_the_move_window_meets_the_deletion() {
     let new = tmp.path().join("eng/reflections/guides/b.md");
     let sessions = CollabSessions::new(engine.clone());
     engine.set_collab_sessions(&sessions);
-    engine.hold_next_room_screen(300);
+    let (entered, release) = engine.hold_next_room_screen_until();
     let moving = {
         let engine = engine.clone();
         tokio::spawn(async move {
@@ -2517,13 +2520,16 @@ async fn a_room_opened_inside_the_move_window_meets_the_deletion() {
                 .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(60)).await;
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .expect("the verb reaches the gate");
     let mut joined = sessions
         .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let doc = sync_client(&joined).await;
     append_line(&joined, &doc, "Typed inside the window.").await;
+    release.notify_one();
     moving.await.unwrap().unwrap();
     joined
         .session
