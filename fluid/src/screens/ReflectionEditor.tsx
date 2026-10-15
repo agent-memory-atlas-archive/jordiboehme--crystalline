@@ -386,6 +386,22 @@ function Surface({
     [account, domain, key, ytext],
   );
 
+  /**
+   * Clear the offer key, but only while it still holds the offer on screen:
+   * text set aside after the banner appeared ("Take the file version")
+   * is newer, and stays for the next mount to offer.
+   */
+  const dropOffer = (shown: Draft) => {
+    const stored = readDraft(account, domain, offerKey);
+    if (
+      stored !== null &&
+      stored.content === shown.content &&
+      stored.savedAt === shown.savedAt
+    ) {
+      clearDraft(account, domain, offerKey);
+    }
+  };
+
   // Declared before the copy below, so a copy this mount writes at once is
   // never the one moved away here.
   useEffect(() => {
@@ -532,7 +548,7 @@ function Surface({
                   ytext.insert(0, text);
                 });
                 // Owed until the room saves it: the copy follows it there.
-                clearDraft(account, domain, offerKey);
+                dropOffer(kept);
                 setOwed(true);
                 setKept(null);
                 view?.focus();
@@ -545,7 +561,7 @@ function Surface({
             type="button"
             className={BANNER_BUTTON}
             onClick={() => {
-              clearDraft(account, domain, offerKey);
+              dropOffer(kept);
               setKept(null);
               view?.focus();
             }}

@@ -451,6 +451,37 @@ describe("the reflection editor taking the file version", () => {
   });
 });
 
+describe("the reflection editor's older offer", () => {
+  for (const choice of ["Discard", "Put it back"]) {
+    it(`leaves text set aside after the offer appeared when "${choice}" is pressed`, async () => {
+      serve("edit");
+      const session = live({
+        ...room(`${PAGE}mine\n`),
+        saveState: "conflict",
+        conflict: { kind: "edit", theirs: PAGE, detail: "d" },
+      });
+      writeDraft("ann", "eng", KEY, {
+        content: "older\n",
+        baseChecksum: "",
+        savedAt: "2026-09-30T10:00:00Z",
+      });
+      await openEditor();
+      await userEvent.click(screen.getByRole("button", { name: "Resolve" }));
+      await userEvent.click(
+        screen.getByRole("button", { name: "Take the file version" }),
+      );
+      act(() => {
+        const ytext = session.get().ytext as Y.Text;
+        ytext.delete(0, ytext.length);
+        ytext.insert(0, PAGE);
+      });
+      session.set({ saveState: "ok", conflict: null });
+      await userEvent.click(screen.getByRole("button", { name: choice }));
+      expect(readDraft("ann", "eng", OFFER)?.content).toBe(`${PAGE}mine\n`);
+    });
+  }
+});
+
 describe("the reflection editor after it has opened", () => {
   it("stays open when a status refetch fails, and says so beside it", async () => {
     let calls = 0;
