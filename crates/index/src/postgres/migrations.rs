@@ -141,6 +141,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "reflection chunks by domain",
         sql: SCHEMA_V23,
     },
+    Migration {
+        version: 24,
+        label: "engram rows under the Reflection folder",
+        sql: SCHEMA_V24,
+    },
 ];
 
 // The whole current schema in one step. The temporal columns stay TEXT ISO
@@ -721,6 +726,18 @@ UPDATE reflection SET modified='';
 const SCHEMA_V23: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_reflection_chunk_domain_model ON reflection_chunk(domain_id, model, dims);
 DROP INDEX IF EXISTS idx_reflection_chunk_model;
+"#;
+
+// The twin of Turso's v24: the Reflection gate's probe (R82) seeks a domain's
+// base engram rows under `reflections/` in any ASCII letter case instead of
+// walking them. The expression is the probe's own, byte for byte
+// (`ENGRAM_ROWS_UNDER_REFLECTIONS_SQL`): `COLLATE "C"` makes `lower` fold
+// ASCII only, as `is_under_reflections` does, whatever the database's
+// collation, and the planner matches an expression index only to the same
+// expression. The expression leads, as on Turso, so no other statement seeks a
+// prefix of this index. Guarded, so a replay converges.
+const SCHEMA_V24: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_engram_reflection_head ON engram((lower(substr(path, 1, 12) COLLATE "C")), domain_id, actor);
 "#;
 
 const SCHEMA_V8: &str = r#"
@@ -2098,6 +2115,116 @@ mod tests {
         );
         drop(conn);
         store.drop_schema().await.unwrap();
+    }
+
+    /// v24, the Reflection gate's folder index, over a database at v23 with
+    /// a domain of engram rows in it: the index folds ASCII only (`COLLATE
+    /// "C"`), a replay changes nothing, and the shipped probe, forced onto the
+    /// generic plan a prepared statement settles on, seeks it and answers the
+    /// base rows under the folder in any ASCII letter case.
+    #[tokio::test]
+    async fn v24_over_v23_lets_the_folder_probe_seek() {
+        let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        let v24 = MIGRATIONS
+            .iter()
+            .position(|m| m.version == 24)
+            .expect("no migration v24");
+        assert_eq!(MIGRATIONS[v24 - 1].version, 23, "it follows v23");
+        let schema = format!("mig_refl_head_{}", std::process::id());
+        let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
+        fresh_schema(&mut conn, &schema).await;
+        for m in &MIGRATIONS[..v24] {
+            sqlx::raw_sql(m.sql).execute(&mut conn).await.unwrap();
+        }
+        // A domain big enough that a walk of it would show: 4000 base rows
+        // over 200 folders, three rows under the folder, a draft under it, a
+        // sibling whose name only starts the same way, and a non-ASCII
+        // spelling that a Unicode fold could reach but `is_under_reflections`
+        // never does.
+        sqlx::raw_sql(
+            "INSERT INTO domain (id, name, path) OVERRIDING SYSTEM VALUE VALUES (1, 'd', NULL);
+             INSERT INTO engram (domain_id, path, permalink, title, engram_type, status, metadata, actor)
+             SELECT 1, 'f' || (g % 200) || '/e' || g || '.md', 'f' || (g % 200) || '/e' || g,
+                    't', 'engram', 'stable', '{}', ''
+             FROM generate_series(1, 4000) g;
+             INSERT INTO engram (domain_id, path, permalink, title, engram_type, status, metadata, actor)
+             VALUES (1, 'reflections/a.md', 'ra', 't', 'engram', 'stable', '{}', ''),
+                    (1, 'Reflections/b.md', 'rb', 't', 'engram', 'stable', '{}', ''),
+                    (1, 'REFLECTIONS/deep/c.md', 'rc', 't', 'engram', 'stable', '{}', ''),
+                    (1, 'reflections/d.md', 'rd', 't', 'engram', 'stable', '{}', 'alice'),
+                    (1, 'reflectionsx/e.md', 're', 't', 'engram', 'stable', '{}', ''),
+                    (1, 'REFLECTİONS/f.md', 'rf', 't', 'engram', 'stable', '{}', '');",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        for round in ["v24", "a replay of v24"] {
+            sqlx::raw_sql(MIGRATIONS[v24].sql)
+                .execute(&mut conn)
+                .await
+                .unwrap();
+            let (def,): (String,) = sqlx::query_as(
+                "SELECT indexdef FROM pg_indexes \
+                 WHERE schemaname = $1 AND indexname = 'idx_engram_reflection_head'",
+            )
+            .bind(&schema)
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+            assert!(def.contains(r#"COLLATE "C""#), "after {round}: {def}");
+        }
+        sqlx::raw_sql("ANALYZE engram")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "SET plan_cache_mode = force_generic_plan; \
+             PREPARE head_probe(BIGINT, BIGINT) AS {}",
+            crate::postgres::ENGRAM_ROWS_UNDER_REFLECTIONS_SQL
+        )))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let plan: Vec<(String,)> = sqlx::query_as("EXPLAIN EXECUTE head_probe(1, 64)")
+            .fetch_all(&mut conn)
+            .await
+            .unwrap();
+        let plan: Vec<String> = plan.into_iter().map(|(line,)| line).collect();
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("idx_engram_reflection_head")),
+            "the generic plan seeks the index: {plan:#?}"
+        );
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("Index Cond: ((lower(")),
+            "on the folder expression: {plan:#?}"
+        );
+        let mut found: Vec<String> = sqlx::query_as::<_, (String,)>("EXECUTE head_probe(1, 64)")
+            .fetch_all(&mut conn)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(p,)| p)
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                "REFLECTIONS/deep/c.md",
+                "Reflections/b.md",
+                "reflections/a.md"
+            ]
+        );
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+            .execute(&mut conn)
+            .await
+            .unwrap();
     }
 
     /// v23, the reflection chunks by domain, over a database at v22 with

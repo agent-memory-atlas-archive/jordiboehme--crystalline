@@ -305,8 +305,12 @@ pub fn registry() -> Vec<HotStatement> {
             literals_pg: None,
             scan_expected: &[],
             scan_expected_pg: None,
-            turso_must_seek: &[],
-            postgres_must_seek: &[],
+            // The expression index, not merely an index: a walk of
+            // `idx_engram_domain` is a search too, and it reads every row of
+            // the domain on an effective Reflection, where the LIMIT is never
+            // reached.
+            turso_must_seek: &["idx_engram_reflection_head"],
+            postgres_must_seek: &["idx_engram_reflection_head"],
         },
         HotStatement {
             // The gate's second question, asked when no row lies under the
@@ -1556,6 +1560,15 @@ async fn every_hot_statement_is_index_served_on_turso() {
                 entry.issued_by
             );
         }
+        // The folder probe seeks on its expression, not merely through the
+        // index (a seek on a later column only would not name it first).
+        if entry.issued_by == "Store::engram_rows_under_reflections" {
+            assert!(
+                joined.contains("idx_engram_reflection_head (lower (substr (path, 1, 12))=?"),
+                "Store::engram_rows_under_reflections must seek on the folder expression, \
+                 plan was: {joined}"
+            );
+        }
     }
 }
 
@@ -2201,6 +2214,17 @@ mod postgres_plans {
                         entry.issued_by
                     );
                 }
+                // The folder probe seeks on its expression, not merely through
+                // the index: with sequential scans off, a read of the whole
+                // index on `domain_id` and `actor` names it too.
+                if entry.issued_by == "Store::engram_rows_under_reflections" {
+                    let text = plan.to_string();
+                    assert!(
+                        text.contains("\"Index Cond\":\"((lower("),
+                        "Store::engram_rows_under_reflections must seek on the folder \
+                         expression; the plan was {text}. Statement: {sql}"
+                    );
+                }
                 if entry.issued_by == "Store::contradiction_pairs_scored" {
                     assert!(
                         seen.iter().any(|name| {
@@ -2329,6 +2353,10 @@ mod postgres_plans {
             // Partial on the base rows and led by `domain_id`, so it serves
             // the base filter on its own just as the title index does.
             "idx_engram_base_path_c",
+            // Led by the folder expression, but it carries `domain_id` and
+            // `actor` after it, and with sequential scans off postgres reads
+            // the whole of it as a bitmap scan on those two (measured).
+            "idx_engram_reflection_head",
         ] {
             store.drop_index(index).await.unwrap();
         }

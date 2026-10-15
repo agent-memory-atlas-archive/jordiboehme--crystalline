@@ -1188,8 +1188,10 @@ pub const FILE_STAMPS_SQL: &str =
     "SELECT path, mtime, size, sha256 FROM engram WHERE domain_id=?1 AND actor = ''";
 
 /// The gate's fast path: base engram rows whose first path segment is the
-/// Reflection folder in any letter case (R82). Scans the domain's rows in the
-/// database; nothing is built in Rust.
+/// Reflection folder in any ASCII letter case (R82). A seek on the full key of
+/// `idx_engram_reflection_head` (v24), whose expression is this one byte for
+/// byte; a rewrite of either side turns every gate into a walk of the
+/// domain's rows, which `tests/it/plans.rs` catches.
 #[doc(hidden)]
 pub const ENGRAM_ROWS_UNDER_REFLECTIONS_SQL: &str = "SELECT path FROM engram WHERE domain_id=?1 AND actor = '' AND lower(substr(path, 1, 12)) = 'reflections/' LIMIT ?2";
 

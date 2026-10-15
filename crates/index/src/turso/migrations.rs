@@ -137,6 +137,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "reflection chunks by domain",
         sql: SCHEMA_V23,
     },
+    Migration {
+        version: 24,
+        label: "engram rows under the Reflection folder",
+        sql: SCHEMA_V24,
+    },
 ];
 
 const SCHEMA_V1: &str = r#"
@@ -813,6 +818,19 @@ UPDATE reflection SET modified='';
 const SCHEMA_V23: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_reflection_chunk_domain_model ON reflection_chunk(domain_id, model, dims);
 DROP INDEX IF EXISTS idx_reflection_chunk_model;
+"#;
+
+// The Reflection gate's probe (R82): a domain's base engram rows whose first
+// path segment is `reflections/` in any letter case. The expression is the
+// probe's own, byte for byte (`ENGRAM_ROWS_UNDER_REFLECTIONS_SQL`), so every
+// gate is a seek on the full key and never a walk of the domain's rows. The
+// expression leads: no other statement names it, so no other statement can
+// seek a prefix of this index and leave the index it is pinned to (with
+// `domain_id, actor` first it took the domain-scoped reads over from
+// `idx_engram_domain` and `idx_engram_path_actor`). Guarded, so a replay
+// changes nothing.
+const SCHEMA_V24: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_engram_reflection_head ON engram(lower(substr(path, 1, 12)), domain_id, actor);
 "#;
 
 const SCHEMA_V9: &str = r#"
@@ -1754,6 +1772,8 @@ mod tests {
                 "idx_engram_path_actor".to_string(),
                 "idx_engram_permalink_actor".to_string(),
                 "idx_engram_recorded".to_string(),
+                // Added by v24, which ran above with the rest after v13.
+                "idx_engram_reflection_head".to_string(),
                 "idx_engram_title_lower".to_string(),
                 "idx_engram_type".to_string(),
             ],
@@ -2411,7 +2431,7 @@ mod tests {
         let started = std::time::Instant::now();
         let store = crate::TursoStore::open(&db_path).await.unwrap();
         let ms = started.elapsed().as_millis();
-        assert_eq!(store.store_info().await.unwrap().schema_version, 23);
+        assert_eq!(store.store_info().await.unwrap().schema_version, 24);
         let rows = store.meta_values().await.unwrap().len();
         assert_eq!(rows, 5 * ENGRAMS as usize, "five rows an engram");
         eprintln!(
@@ -2480,7 +2500,7 @@ mod tests {
             }
         }
         let store = crate::TursoStore::open(&db_path).await.unwrap();
-        assert_eq!(store.store_info().await.unwrap().schema_version, 23);
+        assert_eq!(store.store_info().await.unwrap().schema_version, 24);
 
         let base_rows = meta_rows(store.conn.raw(), 7).await;
         assert_eq!(base_rows, crate::store::meta_value_rows(&base));
@@ -2702,6 +2722,104 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name} is not in WIPE_TABLES"))
         };
         assert!(at("reflection_chunk") < at("reflection") && at("reflection") < at("domain"));
+    }
+
+    /// v24, the Reflection gate's folder index, over a database at v23 with
+    /// a domain of engram rows in it: the index is there afterwards, a replay
+    /// changes nothing, and the shipped probe seeks it on the folder
+    /// expression and answers the base rows under the folder in any ASCII
+    /// letter case.
+    #[tokio::test]
+    async fn v24_over_v23_lets_the_folder_probe_seek() {
+        let v24 = MIGRATIONS
+            .iter()
+            .position(|m| m.version == 24)
+            .expect("no migration v24");
+        assert_eq!(MIGRATIONS[v24 - 1].version, 23, "it follows v23");
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        apply_migrations(&conn, &MIGRATIONS[..v24]).await.unwrap();
+        conn.execute(
+            "INSERT INTO domain(id, name, path, kind) VALUES (1, 'd', '/tmp/d', 'file')",
+            (),
+        )
+        .await
+        .unwrap();
+        // A domain big enough that a walk of it would show: 2000 base rows
+        // over 100 folders, three rows under the folder, a draft under it and
+        // a sibling whose name only starts the same way.
+        let mut values: Vec<String> = (0..2000)
+            .map(|g| format!("(1, 'f{}/e{g}.md', 'f{}/e{g}', '')", g % 100, g % 100))
+            .collect();
+        for (path, actor) in [
+            ("reflections/a.md", ""),
+            ("Reflections/b.md", ""),
+            ("REFLECTIONS/deep/c.md", ""),
+            ("reflections/d.md", "alice"),
+            ("reflectionsx/e.md", ""),
+        ] {
+            values.push(format!(
+                "(1, '{path}', '{}', '{actor}')",
+                path.trim_end_matches(".md")
+            ));
+        }
+        conn.execute(
+            &format!(
+                "INSERT INTO engram(domain_id, path, permalink, actor) VALUES {}",
+                values.join(", ")
+            ),
+            (),
+        )
+        .await
+        .unwrap();
+        let probe = crate::turso::ENGRAM_ROWS_UNDER_REFLECTIONS_SQL
+            .replace("?1", "1")
+            .replace("?2", "64");
+        for round in ["v24", "a replay of v24"] {
+            conn.execute_batch(MIGRATIONS[v24].sql).await.unwrap();
+            assert_eq!(
+                scalar(
+                    &conn,
+                    "SELECT count(*) FROM sqlite_schema \
+                     WHERE type = 'index' AND name = 'idx_engram_reflection_head'"
+                )
+                .await,
+                1,
+                "after {round}"
+            );
+            let mut rows = conn
+                .query(&format!("EXPLAIN QUERY PLAN {probe}"), ())
+                .await
+                .unwrap();
+            let mut plan = Vec::new();
+            while let Some(row) = rows.next().await.unwrap() {
+                if let Ok(turso::Value::Text(line)) = row.get_value(3) {
+                    plan.push(line);
+                }
+            }
+            assert!(
+                plan.iter().any(|line| line
+                    .contains("idx_engram_reflection_head (lower (substr (path, 1, 12))=?")),
+                "after {round}, the probe seeks the folder expression: {plan:?}"
+            );
+            let mut rows = conn.query(&probe, ()).await.unwrap();
+            let mut found = Vec::new();
+            while let Some(row) = rows.next().await.unwrap() {
+                if let Ok(turso::Value::Text(path)) = row.get_value(0) {
+                    found.push(path);
+                }
+            }
+            found.sort();
+            assert_eq!(
+                found,
+                [
+                    "REFLECTIONS/deep/c.md",
+                    "Reflections/b.md",
+                    "reflections/a.md"
+                ],
+                "after {round}"
+            );
+        }
     }
 
     /// v23, the reflection chunks by domain, over a database at v22 with
