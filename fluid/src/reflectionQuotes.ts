@@ -493,8 +493,9 @@ function wordChar(text: string, i: number): boolean {
  * The index ranges of emphasis, strike and code markers in `quote` that have
  * no partner inside it: what a selection edge left behind when it started or
  * ended inside `**...**`. A run opens when a word follows it and closes when
- * a word precedes it; an underscore between two letters is part of a word,
- * as in `snake_case`, and a backtick both opens and closes.
+ * a word precedes it. Plain text is left alone: a single `~` (strike takes
+ * two), and an underscore or a single star between two letters or digits,
+ * as in `snake_case` or `a*b`. A backtick both opens and closes.
  */
 function strayMarkers(quote: string): [number, number][] {
   const stray: [number, number][] = [];
@@ -506,9 +507,10 @@ function strayMarkers(quote: string): [number, number][] {
     let opens = !blank(quote, end);
     let closes = !blank(quote, at - 1);
     if (
-      run.startsWith("_") &&
-      wordChar(quote, at - 1) &&
-      wordChar(quote, end)
+      run === "~" ||
+      ((run.startsWith("_") || run === "*") &&
+        wordChar(quote, at - 1) &&
+        wordChar(quote, end))
     ) {
       continue;
     }

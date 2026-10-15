@@ -337,6 +337,8 @@ describe("displayQuote", () => {
       "snake_case_name",
       "2 * 3",
       "see [the docs](https://x) now",
+      "takes ~10 minutes",
+      "a*b",
     ]) {
       expect(displayQuote(quote)).toBe(quote);
     }
