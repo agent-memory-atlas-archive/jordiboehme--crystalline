@@ -38,7 +38,13 @@ export function ReflectionLevelSelect({
     // An `output`, not a `span`: it is labelable, so the form `Field`'s
     // visible "Reflection" label still points at something a screen reader
     // reads when the choice is implied.
-    return <output id={id}>curator</output>;
+    // With no `id` (the inline member row) nothing labels it, so it carries
+    // the label itself.
+    return (
+      <output id={id} aria-label={id === undefined ? label : undefined}>
+        curator
+      </output>
+    );
   }
   return (
     <>

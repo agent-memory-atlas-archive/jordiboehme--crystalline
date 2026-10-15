@@ -32,6 +32,20 @@ describe("the Reflection level beside a knowledge level", () => {
     ).toBeNull();
   });
 
+  it("names the implied level when no form label points at it", () => {
+    render(
+      <ReflectionLevelSelect
+        label="Reflection for ed"
+        knowledge="editor"
+        value="default"
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("Reflection for ed")).toHaveTextContent(
+      "curator",
+    );
+  });
+
   it("never offers nothing at all to knowledge none", () => {
     expect(levelsFor("viewer")).toEqual(["default", "reader", "contributor"]);
     expect(levelsFor("none")).toEqual(["reader", "contributor"]);
