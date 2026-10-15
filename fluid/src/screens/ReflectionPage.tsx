@@ -35,6 +35,7 @@ import {
   useReflectionStatus,
 } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
+import { ReflectionThreads } from "../components/ReflectionThreads";
 import { BUTTON, Chip } from "../components/primitives";
 import { Skeleton } from "../components/Skeleton";
 import { engramRoute, reflectionEditRoute, reflectionRoute } from "../paths";
@@ -200,6 +201,16 @@ function PageBody({
             />
           ))}
         </article>
+        <aside aria-label="Threads" className="flex flex-col gap-3">
+          <ReflectionThreads
+            domain={domain}
+            path={path}
+            doc={page}
+            sections={sections}
+            right={right}
+            articleRef={articleRef}
+          />
+        </aside>
       </div>
     </div>
   );
