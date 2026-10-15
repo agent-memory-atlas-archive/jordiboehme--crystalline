@@ -1183,6 +1183,15 @@ fn resolve_pending_sql(table: &str) -> String {
 /// a deletion on every single sync, and a draft at a base path would corrupt
 /// change detection outright. Same phantom-deletion class the generated indexes
 /// already document in `crystalline_remote::changes`.
+/// A domain's unresolved host move, read by every complete walk's apply on
+/// a shared database and by the Reflection queue: one primary-key seek.
+#[doc(hidden)]
+pub const HOST_MOVE_SQL: &str = "SELECT host_move FROM domain WHERE id=?1";
+
+/// The sync stamp every apply writes: one primary-key seek.
+#[doc(hidden)]
+pub const RECORD_SYNC_SQL: &str = "UPDATE domain SET last_sync=?1 WHERE id=?2";
+
 #[doc(hidden)]
 pub const FILE_STAMPS_SQL: &str =
     "SELECT path, mtime, size, sha256 FROM engram WHERE domain_id=?1 AND actor = ''";
@@ -3599,7 +3608,7 @@ impl Store for TursoStore {
     async fn record_sync(&self, domain: DomainId, when: &str) -> Result<()> {
         self.conn
             .execute(
-                "UPDATE domain SET last_sync=?1 WHERE id=?2",
+                RECORD_SYNC_SQL,
                 vec![Value::Text(when.to_string()), Value::Integer(domain.0)],
             )
             .await?;
@@ -4227,12 +4236,7 @@ impl Store for TursoStore {
     }
 
     async fn host_move(&self, domain: DomainId) -> Result<Option<HostMove>> {
-        let row = query_first(
-            &self.conn,
-            "SELECT host_move FROM domain WHERE id=?1",
-            vec![Value::Integer(domain.0)],
-        )
-        .await?;
+        let row = query_first(&self.conn, HOST_MOVE_SQL, vec![Value::Integer(domain.0)]).await?;
         Ok(row
             .and_then(|r| cell_text(&r, 0))
             .and_then(|text| crate::store::parse_host_move(&text)))

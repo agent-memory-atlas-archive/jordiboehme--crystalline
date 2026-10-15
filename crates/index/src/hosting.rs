@@ -50,9 +50,11 @@ pub const ACCEPT_DISK_NEEDS_DOMAIN: &str =
 /// lock row, the domain row keeps that name), so a restart of the same host
 /// marks nothing, clean or not.
 ///
-/// The previous holder is read on the caller's store, right before the
-/// claim: the caller holds its store lock across both, so no claim of this
-/// instance runs in between. Every other argument is
+/// The previous holder is read, the lock claimed and the move marked in one
+/// transaction, so a failed mark write or a crash between the steps never
+/// leaves the lock naming this instance without the mark: the next claim
+/// would read "this instance", mark nothing, and its walk would drop the
+/// rows only the previous host has. Every other argument is
 /// [`Store::claim_domain_host`]'s. Off a shared database this is that claim
 /// and nothing more, since one instance owns the database.
 pub async fn claim_host_marking_moves(
@@ -69,6 +71,40 @@ pub async fn claim_host_marking_moves(
             .claim_domain_host(domain, instance_id, label, now, stale_before, take_over)
             .await;
     }
+    store.begin().await?;
+    let claimed = claim_and_mark(
+        store,
+        domain,
+        instance_id,
+        label,
+        now,
+        stale_before,
+        take_over,
+    )
+    .await;
+    match claimed {
+        Ok(claim) => {
+            store.commit().await?;
+            Ok(claim)
+        }
+        Err(e) => {
+            let _ = store.rollback().await;
+            Err(e)
+        }
+    }
+}
+
+/// The body of [`claim_host_marking_moves`] on a shared database, inside
+/// its transaction.
+async fn claim_and_mark(
+    store: &dyn Store,
+    domain: DomainId,
+    instance_id: &str,
+    label: &str,
+    now: &str,
+    stale_before: &str,
+    take_over: bool,
+) -> Result<HostClaim> {
     let holder = store.domain_host(domain).await?;
     let last = store.last_domain_host(domain).await?;
     let previous = holder.map(|h| (h.instance_id, h.label)).or(last.clone());
@@ -79,12 +115,15 @@ pub async fn claim_host_marking_moves(
         if previous.as_ref().map(|(id, _)| id.as_str()) != Some(instance_id) {
             let mark = HostMove {
                 at: now.to_string(),
+                claimant: Some(instance_id.to_string()),
                 walked: false,
                 only_elsewhere: OnlyElsewhere {
                     previous_host: previous.map(|(_, label)| label),
                     ..OnlyElsewhere::default()
                 },
             };
+            #[cfg(test)]
+            seam::fail_mark_of(instance_id)?;
             store.set_host_move(domain, Some(&mark)).await?;
         }
         if last.as_ref().map(|(id, _)| id.as_str()) != Some(instance_id) {
@@ -94,6 +133,39 @@ pub async fn claim_host_marking_moves(
         }
     }
     Ok(claim)
+}
+
+/// A failure injected into the mark write, for the test that proves a
+/// failed mark leaves no claim behind. Keyed by instance id, so tests that
+/// run side by side never meet it.
+#[cfg(test)]
+mod seam {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    static FAILING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+    pub(super) fn fail_marks_of(instance_id: &str) {
+        FAILING
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashSet::new)
+            .insert(instance_id.to_string());
+    }
+
+    pub(super) fn fail_mark_of(instance_id: &str) -> crate::error::Result<()> {
+        if FAILING
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|ids| ids.contains(instance_id))
+        {
+            return Err(crate::error::IndexError::Db(
+                "injected: the mark write failed".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -122,5 +194,141 @@ mod tests {
             "1 engram, 2 attachments and 1 Reflection file exist only on another instance; copy the domain folder over or restore it, then sync, or drop them with: crystalline sync --domain eng --accept-disk"
         );
         assert_eq!(counts.total(), 4);
+        assert_eq!(
+            counts.line_elsewhere("beta"),
+            "1 engram, 2 attachments and 1 Reflection file exist only on another instance; beta hosts this domain, so resolve it there"
+        );
+    }
+
+    /// A Postgres store on a schema of its own, or `None` with no URL.
+    #[cfg(feature = "postgres")]
+    async fn shared_store() -> Option<crate::PostgresStore> {
+        let url = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL").ok()?;
+        if url.is_empty() {
+            return None;
+        }
+        let schema = format!(
+            "hosting_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        Some(
+            crate::PostgresStore::open_in_schema(&url, &schema)
+                .await
+                .unwrap(),
+        )
+    }
+
+    /// A claim whose mark write fails leaves no claim behind: the lock still
+    /// names the previous holder, and the next claim marks the move.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn a_failed_mark_leaves_the_lock_where_it_was() {
+        let Some(store) = shared_store().await else {
+            return;
+        };
+        let domain = store
+            .upsert_domain("eng", Some("/tmp/eng"), crate::DomainKind::File)
+            .await
+            .unwrap();
+        let (now, stale_before) = claim_window(90);
+        let claim = |id: &'static str| {
+            let (store, now, stale_before) = (&store, now.clone(), stale_before.clone());
+            async move {
+                claim_host_marking_moves(store, domain, id, id, &now, &stale_before, true).await
+            }
+        };
+        assert_eq!(claim("alpha-mark").await.unwrap(), HostClaim::Acquired);
+        store.set_host_move(domain, None).await.unwrap();
+
+        seam::fail_marks_of("beta-mark-fails");
+        assert!(claim("beta-mark-fails").await.is_err());
+        assert_eq!(
+            store
+                .domain_host(domain)
+                .await
+                .unwrap()
+                .unwrap()
+                .instance_id,
+            "alpha-mark",
+            "the lock was not taken"
+        );
+        assert!(store.host_move(domain).await.unwrap().is_none());
+        assert_eq!(
+            store.last_domain_host(domain).await.unwrap().unwrap().0,
+            "alpha-mark"
+        );
+
+        assert_eq!(claim("beta-mark").await.unwrap(), HostClaim::Acquired);
+        let mark = store.host_move(domain).await.unwrap().expect("marked");
+        assert_eq!(mark.claimant.as_deref(), Some("beta-mark"));
+        assert_eq!(
+            mark.only_elsewhere.previous_host.as_deref(),
+            Some("alpha-mark")
+        );
+        store.drop_schema().await.unwrap();
+    }
+
+    /// Only the instance that marked a move ends it: a complete walk that
+    /// sees every row but names no walker, or names another, keeps the mark;
+    /// the claimant's walk ends it.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn only_the_claimant_ends_a_move() {
+        let Some(store) = shared_store().await else {
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("a.md"),
+            "---\ntype: engram\ntitle: A\npermalink: a\nstatus: stable\n---\n\n# A\n",
+        )
+        .unwrap();
+        let domain = store
+            .upsert_domain(
+                "eng",
+                Some(&root.to_string_lossy()),
+                crate::DomainKind::File,
+            )
+            .await
+            .unwrap();
+        let (now, stale_before) = claim_window(90);
+        claim_host_marking_moves(&store, domain, "gamma", "gamma", &now, &stale_before, true)
+            .await
+            .unwrap();
+        assert!(store.host_move(domain).await.unwrap().is_some(), "marked");
+        let walk = |walker: Option<&'static str>| {
+            let (store, root) = (&store, root.clone());
+            async move {
+                let stamps = store.file_stamps(domain).await.unwrap();
+                let mut scan =
+                    crate::scan_domain("eng", &root, stamps, &crate::ChunkParams::default(), false)
+                        .await
+                        .unwrap();
+                if let Some(walker) = walker {
+                    scan.walked_by(walker);
+                }
+                crate::apply_scan(store, domain, scan).await
+            }
+        };
+        walk(None).await.unwrap();
+        assert!(
+            store.host_move(domain).await.unwrap().is_some(),
+            "a walk that names no walker leaves the move standing"
+        );
+        let refused = walk(Some("delta")).await.unwrap_err();
+        assert!(
+            matches!(refused, crate::IndexError::NotHost(_)),
+            "{refused}"
+        );
+        let report = walk(Some("gamma")).await.unwrap();
+        assert!(report.host_move_resolved);
+        assert!(store.host_move(domain).await.unwrap().is_none());
+        store.drop_schema().await.unwrap();
     }
 }

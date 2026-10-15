@@ -2416,6 +2416,68 @@ mod tests {
             .unwrap();
     }
 
+    /// v25, the host move columns, over a database at v24 with a domain in
+    /// it: the row reads no last host and no move, the columns take values,
+    /// and a replay changes nothing.
+    #[tokio::test]
+    async fn v25_over_v24_adds_the_host_move_columns() {
+        let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        let v25 = MIGRATIONS
+            .iter()
+            .position(|m| m.version == 25)
+            .expect("no migration v25");
+        assert_eq!(MIGRATIONS[v25 - 1].version, 24, "it follows v24");
+        let schema = format!("mig_host_move_{}", std::process::id());
+        let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
+        fresh_schema(&mut conn, &schema).await;
+        for m in &MIGRATIONS[..v25] {
+            sqlx::raw_sql(m.sql).execute(&mut conn).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO domain (id, name, path) OVERRIDING SYSTEM VALUE VALUES (1, 'd', '/tmp/d');",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        for round in ["v25", "a replay of v25"] {
+            sqlx::raw_sql(MIGRATIONS[v25].sql)
+                .execute(&mut conn)
+                .await
+                .unwrap_or_else(|e| panic!("{round}: {e}"));
+            let (empty,): (i64,) = sqlx::query_as(
+                "SELECT count(*) FROM domain WHERE last_host_id IS NULL \
+                 AND last_host_label IS NULL AND host_move IS NULL",
+            )
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+            assert_eq!(
+                empty, 1,
+                "{round}: the old row reads no last host and no move"
+            );
+        }
+        sqlx::raw_sql(
+            "UPDATE domain SET last_host_id='a', last_host_label='a', host_move='{}' WHERE id=1;",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let (set,): (i64,) = sqlx::query_as("SELECT count(*) FROM domain WHERE host_move = '{}'")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(set, 1);
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+    }
+
     /// v23, the reflection chunks by domain, over a database at v22 with
     /// chunk rows in it: the domain index is there afterwards, the model
     /// index (which no statement seeks any more) is gone, the rows are kept,

@@ -2746,6 +2746,50 @@ mod tests {
         assert!(at("reflection_chunk") < at("reflection") && at("reflection") < at("domain"));
     }
 
+    /// v25, the host move columns, over a database at v24 with a domain in
+    /// it: the row reads no last host and no move, the columns take values,
+    /// and opening again applies nothing twice.
+    #[tokio::test]
+    async fn v25_over_v24_adds_the_host_move_columns() {
+        let v25 = MIGRATIONS
+            .iter()
+            .position(|m| m.version == 25)
+            .expect("no migration v25");
+        assert_eq!(MIGRATIONS[v25 - 1].version, 24, "it follows v24");
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        apply_migrations(&conn, &MIGRATIONS[..v25]).await.unwrap();
+        conn.execute(
+            "INSERT INTO domain(id, name, path, kind) VALUES (1, 'd', '/tmp/d', 'file')",
+            (),
+        )
+        .await
+        .unwrap();
+        for round in 0..2 {
+            apply_migrations(&conn, &MIGRATIONS[..=v25]).await.unwrap();
+            assert_eq!(
+                scalar(
+                    &conn,
+                    "SELECT count(*) FROM domain WHERE last_host_id IS NULL \
+                     AND last_host_label IS NULL AND host_move IS NULL"
+                )
+                .await,
+                1,
+                "round {round}: the old row reads no last host and no move"
+            );
+        }
+        conn.execute(
+            "UPDATE domain SET last_host_id='a', last_host_label='a', host_move='{}' WHERE id=1",
+            (),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            scalar(&conn, "SELECT count(*) FROM domain WHERE host_move = '{}'").await,
+            1
+        );
+    }
+
     /// v24, the Reflection gate's folder index, over a database at v23 with
     /// a domain of engram rows in it: the index is there afterwards, a replay
     /// changes nothing, and the shipped probe seeks it on the folder

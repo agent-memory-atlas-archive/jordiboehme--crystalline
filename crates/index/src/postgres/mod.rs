@@ -1242,6 +1242,15 @@ async fn delete_children(conn: &mut PgConnection, engram_id: i64) -> Result<()> 
 /// map, so a draft here - a row that is on nobody's disk - would be proposed as
 /// a deletion on every single sync, and a draft at a base path would corrupt
 /// change detection outright.
+/// A domain's unresolved host move, read by every complete walk's apply on
+/// a shared database and by the Reflection queue: one primary-key seek.
+#[doc(hidden)]
+pub const HOST_MOVE_SQL: &str = "SELECT host_move FROM domain WHERE id=$1";
+
+/// The sync stamp every apply writes: one primary-key seek.
+#[doc(hidden)]
+pub const RECORD_SYNC_SQL: &str = "UPDATE domain SET last_sync=$1 WHERE id=$2";
+
 #[doc(hidden)]
 pub const FILE_STAMPS_SQL: &str =
     "SELECT path, mtime, size, sha256 FROM engram WHERE domain_id=$1 AND actor = ''";
@@ -3726,7 +3735,7 @@ impl Store for PostgresStore {
 
     async fn record_sync(&self, domain: DomainId, when: &str) -> Result<()> {
         let mut conn = self.acquire().await?;
-        sqlx::query("UPDATE domain SET last_sync=$1 WHERE id=$2")
+        sqlx::query(RECORD_SYNC_SQL)
             .bind(when)
             .bind(domain.0)
             .execute(conn.as_mut())
@@ -4356,7 +4365,7 @@ impl Store for PostgresStore {
 
     async fn host_move(&self, domain: DomainId) -> Result<Option<HostMove>> {
         let mut conn = self.acquire().await?;
-        let row = sqlx::query("SELECT host_move FROM domain WHERE id=$1")
+        let row = sqlx::query(HOST_MOVE_SQL)
             .bind(domain.0)
             .fetch_optional(conn.as_mut())
             .await

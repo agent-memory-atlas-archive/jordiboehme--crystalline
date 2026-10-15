@@ -2164,9 +2164,28 @@ impl OnlyElsewhere {
         self.engrams + self.attachments + self.pages + self.files
     }
 
-    /// The one line a person reads for `domain`, in the sync report and in
-    /// `crystalline status`, with the two ways to end it.
+    /// The one line a person reads for `domain` on the instance that hosts
+    /// it, in the sync report and in `crystalline status`, with the two ways
+    /// to end it.
     pub fn line(&self, domain: &str) -> String {
+        format!(
+            "{}; copy the domain folder over or restore it, then sync, or drop them with: crystalline sync --domain {domain} --accept-disk",
+            self.what()
+        )
+    }
+
+    /// The line on an instance that does not host the domain: the rows are
+    /// the host's to resolve, so it names the host instead of a remedy that
+    /// would be refused here.
+    pub fn line_elsewhere(&self, host: &str) -> String {
+        format!(
+            "{}; {host} hosts this domain, so resolve it there",
+            self.what()
+        )
+    }
+
+    /// "1 engram and 2 Reflection files exist only on alpha".
+    fn what(&self) -> String {
         let count =
             |n: u64, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
         let engrams = if self.attachments > 0 {
@@ -2184,9 +2203,7 @@ impl OnlyElsewhere {
             "Reflection files",
         );
         let host = self.previous_host.as_deref().unwrap_or("another instance");
-        format!(
-            "{engrams} and {reflection} exist only on {host}; copy the domain folder over or restore it, then sync, or drop them with: crystalline sync --domain {domain} --accept-disk"
-        )
+        format!("{engrams} and {reflection} exist only on {host}")
     }
 }
 
@@ -2202,6 +2219,7 @@ pub(crate) fn host_move_text(host_move: &HostMove) -> String {
 pub(crate) fn parse_host_move(text: &str) -> Option<HostMove> {
     Some(serde_json::from_str(text).unwrap_or_else(|_| HostMove {
         at: String::new(),
+        claimant: None,
         walked: false,
         only_elsewhere: OnlyElsewhere::default(),
     }))
@@ -2224,6 +2242,10 @@ pub(crate) fn reported_elsewhere(text: Option<&str>) -> Option<OnlyElsewhere> {
 pub struct HostMove {
     /// When the move was marked, RFC 3339.
     pub at: String,
+    /// The instance whose claim marked the move. Only a walk by that
+    /// instance ends it; `None` in a mark from before the field.
+    #[serde(default)]
+    pub claimant: Option<String>,
     /// Whether a complete walk has counted the rows since.
     pub walked: bool,
     /// What that walk did not see.

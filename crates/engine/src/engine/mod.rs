@@ -579,6 +579,7 @@ impl From<crystalline_index::IndexError> for EngineError {
             crystalline_index::IndexError::Constraint(m) => EngineError::Conflict(m),
             crystalline_index::IndexError::NotFound(m) => EngineError::NotFound(m),
             crystalline_index::IndexError::Invalid(m) => EngineError::Invalid(m),
+            crystalline_index::IndexError::NotHost(m) => EngineError::Conflict(m),
             // A stale compare-and-swap surfaces as a conflict, mirroring the
             // expected_replacements ergonomics: re-read and retry.
             crystalline_index::IndexError::StaleEdit { expected, found } => {
@@ -811,7 +812,8 @@ fn manifest_stamp(root: &Path) -> Option<(u64, i64)> {
     Some((meta.len(), i64::try_from(nanos).unwrap_or(i64::MAX)))
 }
 
-/// The two signals of `Engine::hold_next_room_screen_until`.
+/// The two signals of `Engine::hold_next_room_screen_until` and
+/// `Engine::hold_next_apply_until`.
 #[cfg(any(test, feature = "testing"))]
 struct RoomScreenGate {
     entered: std::sync::Arc<tokio::sync::Notify>,
@@ -975,6 +977,11 @@ pub struct Engine {
     // `Engine::hold_next_room_screen_until`.
     #[cfg(any(test, feature = "testing"))]
     hold_next_room_screen: std::sync::Mutex<Option<RoomScreenGate>>,
+    // The fourth seam, a gate: when armed, the next domain a full sync walks
+    // signals `entered` between its scan and its apply, then waits for
+    // `release`. See `Engine::hold_next_apply_until`.
+    #[cfg(any(test, feature = "testing"))]
+    hold_next_apply: std::sync::Mutex<Option<RoomScreenGate>>,
     // The effective `skills.serve` value, snapshotted while this engine is
     // built and never re-read. See `Engine::skills_serve` for why it is frozen
     // and `Engine::with_env_overlay` for why the snapshot is taken twice.
@@ -2245,6 +2252,8 @@ impl Engine {
             hold_next_draft_edit: std::sync::atomic::AtomicU64::new(0),
             #[cfg(any(test, feature = "testing"))]
             hold_next_room_screen: std::sync::Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            hold_next_apply: std::sync::Mutex::new(None),
             skills_serve,
             instance_id: String::new(),
             label: String::new(),
@@ -2407,6 +2416,40 @@ impl Engine {
         let handles = (gate.entered.clone(), gate.release.clone());
         *self.hold_next_room_screen.lock().unwrap() = Some(gate);
         handles
+    }
+
+    /// Hold the next walk of a full or named sync between its scan and its
+    /// apply: it signals `entered` there and waits for `release`. Lets a test
+    /// move the domain's host lock to another instance while a walk is in
+    /// flight. Armed for one walk and consumed by it, and compiled out of a
+    /// released binary like the seams above.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn hold_next_apply_until(
+        &self,
+    ) -> (
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        let gate = RoomScreenGate {
+            entered: std::sync::Arc::new(tokio::sync::Notify::new()),
+            release: std::sync::Arc::new(tokio::sync::Notify::new()),
+        };
+        let handles = (gate.entered.clone(), gate.release.clone());
+        *self.hold_next_apply.lock().unwrap() = Some(gate);
+        handles
+    }
+
+    /// The gate above, consuming the arming; returns at once when none is
+    /// armed. Does nothing at all outside a test build.
+    pub(crate) async fn take_apply_hold(&self) {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            let gate = self.hold_next_apply.lock().unwrap().take();
+            if let Some(gate) = gate {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            }
+        }
     }
 
     /// The gate above, consuming the arming; returns at once when none is
@@ -3552,6 +3595,18 @@ impl Engine {
     ) {
         self.backup_marks
             .mark(domain, cause, std::time::Instant::now());
+    }
+
+    /// The domains with a Reflection backup marked, due or not, and the
+    /// marks forgotten. Test-only: lets a test see what an apply marked.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn take_reflection_backup_marks(&self) -> Vec<String> {
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+        let marked = self.backup_marks.due_domains(later);
+        for domain in &marked {
+            self.backup_marks.clear(domain);
+        }
+        marked
     }
 
     /// Mark every domain whose Reflection is switched on, once, when the
@@ -8956,6 +9011,13 @@ impl ReindexHooks for DaemonReindexHooks<'_> {
             self.engine.refresh_index_files(name).await;
         }
         self.engine.announce_report(name, report, None);
+        self.engine.after_host_move_resolved(name, report);
+    }
+
+    /// This instance, when it claims: a walk applies only while it holds the
+    /// domain's lock.
+    fn walker(&self) -> Option<String> {
+        self.collab.then(|| self.engine.instance_id.clone())
     }
 }
 

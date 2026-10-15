@@ -202,6 +202,9 @@ impl Engine {
                     if accept_disk {
                         scan.accept_disk();
                     }
+                    if collab {
+                        scan.walked_by(&self.instance_id);
+                    }
                     scan
                 }
                 Err(e) if only.is_none() => {
@@ -214,13 +217,33 @@ impl Engine {
                 }
                 Err(e) => return Err(e.into()),
             };
-            let report = {
+            self.take_apply_hold().await;
+            let outcome = {
                 let store = self.store.lock().await;
-                apply_scan(&*store, domain, scan)
-                    .await
-                    .map_err(|e| EngineError::Internal(format!("sync of '{name}' failed: {e}")))?
+                apply_scan(&*store, domain, scan).await
+            };
+            let report = match outcome {
+                Ok(report) => report,
+                // Another instance took the domain over while this walk ran:
+                // nothing was written. A full sweep reports it and goes on, a
+                // named sync is refused.
+                Err(IndexError::NotHost(why)) => {
+                    self.lost_host(name);
+                    if only.is_some() {
+                        return Err(EngineError::Conflict(why));
+                    }
+                    tracing::warn!("{why}");
+                    failed.push(json!({ "domain": name, "error": why }));
+                    continue;
+                }
+                Err(e) => {
+                    return Err(EngineError::Internal(format!(
+                        "sync of '{name}' failed: {e}"
+                    )));
+                }
             };
             self.bump_after_apply(name, &report);
+            self.after_host_move_resolved(name, &report);
             // Files changed under us, so the generated index files follow.
             if changed_anything(&report) {
                 self.refresh_index_files(name).await;
@@ -341,12 +364,25 @@ impl Engine {
             (domain, snapshot)
         };
         let manifest_touched = Self::touches_manifest(&paths);
-        let scan = scan_paths(name, &root, snapshot, paths, &self.chunk_params).await;
-        let report = {
+        let mut scan = scan_paths(name, &root, snapshot, paths, &self.chunk_params).await;
+        if collab {
+            scan.walked_by(&self.instance_id);
+        }
+        let applied = {
             let store = self.store.lock().await;
-            apply_scan(&*store, domain, scan).await.map_err(|e| {
-                EngineError::Internal(format!("targeted sync of '{name}' failed: {e}"))
-            })?
+            apply_scan(&*store, domain, scan).await
+        };
+        let report = match applied {
+            Ok(report) => report,
+            Err(IndexError::NotHost(why)) => {
+                self.lost_host(name);
+                return Err(EngineError::Conflict(why));
+            }
+            Err(e) => {
+                return Err(EngineError::Internal(format!(
+                    "targeted sync of '{name}' failed: {e}"
+                )));
+            }
         };
         self.bump_after_apply(name, &report);
         // An out-of-band edit the watcher caught changes what the folder's
@@ -366,6 +402,24 @@ impl Engine {
         }
         self.announce_report(name, &report, actor);
         Ok(report)
+    }
+
+    /// A walk of `name` found its host lock taken by another instance: this
+    /// instance stops hosting the domain at once, as the Reflection gate's
+    /// confirm does, rather than at its next heartbeat.
+    fn lost_host(&self, name: &str) {
+        if self.hosted.write().unwrap().remove(name).is_some() {
+            self.announce_host_moved(name);
+        }
+    }
+
+    /// An apply ended a host move: the Reflection backup held back while it
+    /// was open is due now, so the edits made during the move reach the
+    /// backup branch without waiting for the next one.
+    pub(super) fn after_host_move_resolved(&self, name: &str, report: &SyncReport) {
+        if report.host_move_resolved {
+            self.mark_reflection_dirty(name, crate::reflection_backup::BackupCause::Edit);
+        }
     }
 
     /// Reindex all file domains. `full` re-reads, re-parses and re-upserts every

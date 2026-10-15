@@ -204,6 +204,11 @@ pub struct SyncReport {
     /// of the wire shape.
     #[serde(skip)]
     pub unread: usize,
+    /// Whether this apply ended an unresolved host move, so what waited on
+    /// the move (the Reflection backup) can follow. Not part of the wire
+    /// shape.
+    #[serde(skip)]
+    pub host_move_resolved: bool,
 }
 
 /// A file found on disk during the walk.
@@ -754,6 +759,9 @@ pub struct DomainScan {
     /// Whether this complete walk ends an unresolved host move by deleting
     /// the rows it did not see: [`DomainScan::accept_disk`].
     accept_disk: bool,
+    /// The instance that claimed the domain's host lock for this walk:
+    /// [`DomainScan::walked_by`].
+    walker: Option<String>,
     /// The Reflection mode the scan classified with. While it is in effect,
     /// an engram row under `reflections/` the walk no longer saw is deleted
     /// even though its file is on disk: the file is the Reflection's now.
@@ -782,6 +790,18 @@ impl DomainScan {
     /// a move is unresolved and counts them. A targeted scan is unaffected.
     pub fn accept_disk(&mut self) {
         self.accept_disk = true;
+    }
+
+    /// Name the instance that claimed the domain's host lock before this
+    /// walk. On a shared database the apply then checks, inside its own
+    /// transaction, that the lock still names it, and refuses with
+    /// [`IndexError::NotHost`] when another instance took the domain over
+    /// while the walk ran: the rows are the new host's to write, and its
+    /// host move must not be ended by the old host's disk. Only the instance
+    /// that marked a move ends it, so a walk with no walker named keeps a
+    /// move standing.
+    pub fn walked_by(&mut self, instance_id: &str) {
+        self.walker = Some(instance_id.to_string());
     }
 }
 
@@ -1348,6 +1368,7 @@ async fn classify_changes(
         reflection_asset_deletes: Vec::new(),
         reflections_complete: false,
         accept_disk: false,
+        walker: None,
         reflection: ReflectionMode::Off,
         // The caller decides: only a forced full scan ends a rebuild.
         ends_rebuild: false,
@@ -1405,6 +1426,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         reflection_asset_deletes,
         reflections_complete,
         accept_disk,
+        walker,
         reflection,
         ends_rebuild,
         mut report,
@@ -1412,6 +1434,30 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
     } = scan;
 
     store.begin().await?;
+    // A walker that lost the domain's host lock while it walked writes
+    // nothing: checked inside this transaction, before any row.
+    if let Some(walker) = walker.as_deref()
+        && store.shares_database()
+    {
+        let holder = match store.domain_host(domain).await {
+            Ok(holder) => holder,
+            Err(e) => {
+                let _ = store.rollback().await;
+                return Err(e);
+            }
+        };
+        if holder.as_ref().map(|h| h.instance_id.as_str()) != Some(walker) {
+            let _ = store.rollback().await;
+            let by = holder.map_or_else(
+                || "no instance holds its lock now".to_string(),
+                |h| format!("instance {} hosts it now", h.label),
+            );
+            return Err(IndexError::NotHost(format!(
+                "the walk of '{}' was not applied: {by}",
+                report.domain
+            )));
+        }
+    }
     // A complete walk (only a full walk sees every attachment) of a domain
     // that moved to this instance on a shared database keeps every row it
     // does not see while the move is unresolved: this disk may lack files
@@ -1434,7 +1480,12 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
     // Accepting the disk drops only rows a walk already reported: a move
     // marked since the last walk (a take-over sync run with --accept-disk)
     // is counted and reported first, and the next --accept-disk drops them.
-    let accepted = accept_disk && host_move.as_ref().is_some_and(|m| m.walked);
+    // Only the instance whose claim marked the move ends it; a walk by
+    // another, or by one that named no walker, keeps and counts.
+    let claimant = host_move
+        .as_ref()
+        .is_none_or(|m| m.claimant.is_none() || m.claimant.as_deref() == walker.as_deref());
+    let accepted = claimant && accept_disk && host_move.as_ref().is_some_and(|m| m.walked);
     let keep_unseen = host_move.is_some() && !accepted;
     let mut elsewhere = crate::OnlyElsewhere::default();
     let apply = apply_changes(
@@ -1534,7 +1585,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
     // nothing.
     if let Some(mut host_move) = host_move {
         elsewhere.previous_host = host_move.only_elsewhere.previous_host.take();
-        let resolved = accepted || (elsewhere.total() == 0 && reflections_complete);
+        let resolved = accepted || (claimant && elsewhere.total() == 0 && reflections_complete);
         let next = if resolved {
             None
         } else {
@@ -1549,6 +1600,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         if !resolved && elsewhere.total() > 0 {
             report.only_elsewhere = Some(elsewhere);
         }
+        report.host_move_resolved = resolved;
     }
 
     let resolved = match store.resolve_pending_relations(domain).await {
@@ -1636,6 +1688,13 @@ pub trait ReindexHooks: Send + Sync {
 
     /// Called after a domain's apply committed, with no store lock held.
     async fn after_apply(&self, _name: &str, _report: &SyncReport) {}
+
+    /// The instance that claims the domains this run walks, when it claims
+    /// any: each walk is applied only while the claim holds
+    /// ([`DomainScan::walked_by`]).
+    fn walker(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The do-nothing [`ReindexHooks`]: every domain is claimed by nobody and
@@ -1735,9 +1794,12 @@ pub async fn reindex_domains(
         if force && let Some(hold) = rebuild_hold() {
             tokio::time::sleep(hold).await;
         }
-        let scan = scan_domain(name, root, snapshot, chunk_params, force_domain)
+        let mut scan = scan_domain(name, root, snapshot, chunk_params, force_domain)
             .await
             .map_err(|e| in_domain("reindex", name, e))?;
+        if let Some(walker) = hooks.walker() {
+            scan.walked_by(&walker);
+        }
         let report = {
             let store = store.lock().await;
             apply_scan(&*store, domain, scan)

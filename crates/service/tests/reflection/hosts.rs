@@ -639,6 +639,85 @@ async fn accept_disk_drops_the_rows_only_elsewhere_on_postgres() {
     db.drop_schema().await;
 }
 
+/// A host that lost the lock while it walked writes nothing. Alpha scans,
+/// beta takes the domain over and marks the move before alpha applies:
+/// alpha's apply is refused, so its disk, which has every file, cannot end
+/// beta's move, and beta's own walk keeps and reports the rows its disk
+/// lacks.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_deposed_host_walk_neither_applies_nor_ends_the_move_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    let beta = instance(db.open().await, "beta").await;
+    alpha_writes(&alpha).await;
+
+    let (entered, release) = alpha.engine.hold_next_apply_until();
+    let walking = tokio::spawn({
+        let engine = alpha.engine.clone();
+        async move { engine.sync(Some("eng")).await }
+    });
+    entered.notified().await;
+    assert_eq!(
+        beta.engine.claim_host("eng", true).await.unwrap(),
+        crystalline_index::HostClaim::Acquired
+    );
+    release.notify_one();
+    let refused = walking.await.unwrap().unwrap_err();
+    assert!(
+        refused.to_string().contains("instance beta hosts it now"),
+        "{refused}"
+    );
+    assert_eq!(
+        alpha.engine.reflection_state("eng").await.unwrap(),
+        hosted_by("beta"),
+        "alpha stops hosting at once"
+    );
+
+    let synced = beta.engine.sync(Some("eng")).await.unwrap();
+    assert_eq!(synced["reports"][0]["only_elsewhere"], only_on_alpha());
+    assert_eq!(alpha_rows(&beta).await, (true, true, true));
+
+    db.drop_schema().await;
+}
+
+/// The Reflection backup waits while a move is unresolved; the walk that
+/// ends it marks the backup, so the edits made meanwhile are backed up
+/// without waiting for the next one. Here the move ends by an engram copied
+/// over, which changes no Reflection row on its own.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn the_walk_that_ends_a_move_marks_the_backup_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    let beta = instance(db.open().await, "beta").await;
+    alpha
+        .engine
+        .write_engram(&crate::fixture::write_params(
+            "Only On Alpha",
+            Some("runbooks"),
+            "- [fact] written on alpha",
+        ))
+        .await
+        .unwrap();
+    alpha.engine.release_hosts().await;
+    let synced = beta.engine.sync(Some("eng")).await.unwrap();
+    assert_eq!(synced["reports"][0]["only_elsewhere"]["engrams"], 1);
+    beta.engine.take_reflection_backup_marks();
+
+    std::fs::copy(alpha.root.join(ALPHA_ENGRAM), beta.root.join(ALPHA_ENGRAM)).unwrap();
+    let synced = beta.engine.sync(Some("eng")).await.unwrap();
+    let report = &synced["reports"][0];
+    assert!(report["only_elsewhere"].is_null(), "{report}");
+    assert_eq!(report["reflections_changed"], 0, "{report}");
+    assert_eq!(
+        beta.engine.take_reflection_backup_marks(),
+        vec!["eng".to_string()]
+    );
+
+    db.drop_schema().await;
+}
+
 /// How many `switched` events for `eng` the bus holds.
 #[cfg(feature = "postgres")]
 fn switched(

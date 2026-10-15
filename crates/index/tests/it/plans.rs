@@ -285,6 +285,31 @@ const LEXICAL_SCOPE_AND_TERM_PG: &str = "AND d.name IN ($1) AND (lower(e.title) 
 pub fn registry() -> Vec<HotStatement> {
     vec![
         HotStatement {
+            // Every complete walk's apply on a shared database, and every
+            // Reflection queue, reads the domain's host move.
+            issued_by: "Store::host_move",
+            turso: || crystalline_index::turso::HOST_MOVE_SQL.to_string(),
+            postgres: || crystalline_index::postgres::HOST_MOVE_SQL.to_string(),
+            literals: &["1"],
+            literals_pg: None,
+            scan_expected: &[],
+            scan_expected_pg: None,
+            turso_must_seek: &[],
+            postgres_must_seek: &[],
+        },
+        HotStatement {
+            // Every apply stamps its domain's last sync.
+            issued_by: "Store::record_sync",
+            turso: || crystalline_index::turso::RECORD_SYNC_SQL.to_string(),
+            postgres: || crystalline_index::postgres::RECORD_SYNC_SQL.to_string(),
+            literals: &["'2026-10-15T00:00:00+00:00'", "1"],
+            literals_pg: None,
+            scan_expected: &[],
+            scan_expected_pg: None,
+            turso_must_seek: &[],
+            postgres_must_seek: &[],
+        },
+        HotStatement {
             issued_by: "Store::file_stamps",
             turso: || crystalline_index::turso::FILE_STAMPS_SQL.to_string(),
             postgres: || crystalline_index::postgres::FILE_STAMPS_SQL.to_string(),
