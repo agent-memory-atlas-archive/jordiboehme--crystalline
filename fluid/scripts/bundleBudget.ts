@@ -198,32 +198,68 @@ function grouped(n: number): string {
 }
 
 /**
+ * One attribute's value from an HTML start tag, double-quoted, single-quoted
+ * or bare, or undefined when the tag does not carry it. The name must stand
+ * on its own: `data-src=` is not `src=`. Names match case-insensitively, as
+ * HTML reads them.
+ */
+function attribute(tag: string, name: string): string | undefined {
+  const match = new RegExp(
+    `(?<![\\w-])${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\`]+))`,
+    "i",
+  ).exec(tag);
+  return match === null ? undefined : (match[1] ?? match[2] ?? match[3]);
+}
+
+/** A `dist/`-relative path for a URL the page loads. */
+function distPath(url: string): string {
+  return url.replace(/^\.?\//, "");
+}
+
+/**
+ * What a built `index.html` loads up front: its module entry script (the
+ * first `<script type="module" src>`), or null when it has none, and the
+ * `.js` files its `modulepreload` links name. A `rel` is a list of tokens,
+ * so `rel="modulepreload stylesheet"` is a preload too.
+ */
+export function eagerScriptTags(html: string): {
+  entry: string | null;
+  preloads: string[];
+} {
+  let entry: string | null = null;
+  for (const tag of html.match(/<script\b[^>]*>/gi) ?? []) {
+    const src = attribute(tag, "src");
+    if (
+      attribute(tag, "type")?.toLowerCase() === "module" &&
+      src !== undefined
+    ) {
+      entry = distPath(src);
+      break;
+    }
+  }
+  const preloads: string[] = [];
+  for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
+    const rel = (attribute(tag, "rel") ?? "").toLowerCase().split(/\s+/);
+    const href = attribute(tag, "href");
+    if (rel.includes("modulepreload") && href !== undefined) {
+      preloads.push(distPath(href));
+    }
+  }
+  return { entry, preloads };
+}
+
+/**
  * The JS files a built `index.html` loads up front, as paths relative to
  * `dist/`: the module entry script first, then every `modulepreload` link,
  * each once, in document order. Only `.js` files count; a stylesheet is not
  * eager JS.
  */
 export function eagerScripts(html: string): string[] {
+  const { entry, preloads } = eagerScriptTags(html);
   const files: string[] = [];
-  const add = (url: string | undefined): void => {
-    if (url === undefined) {
-      return;
-    }
-    const file = url.replace(/^\.?\//, "");
+  for (const file of entry === null ? preloads : [entry, ...preloads]) {
     if (file.endsWith(".js") && !files.includes(file)) {
       files.push(file);
-    }
-  };
-  const attribute = (tag: string, name: string): string | undefined =>
-    new RegExp(`\\b${name}="([^"]*)"`).exec(tag)?.[1];
-  for (const tag of html.match(/<script\b[^>]*>/g) ?? []) {
-    if (attribute(tag, "type") === "module") {
-      add(attribute(tag, "src"));
-    }
-  }
-  for (const tag of html.match(/<link\b[^>]*>/g) ?? []) {
-    if (attribute(tag, "rel") === "modulepreload") {
-      add(attribute(tag, "href"));
     }
   }
   return files;
@@ -233,6 +269,8 @@ export function eagerScripts(html: string): string[] {
 export interface EagerReport {
   files: string[];
   bytes: number;
+  /** Whether the page has a module entry script, without which it runs nothing. */
+  hasEntry: boolean;
 }
 
 /**
@@ -247,6 +285,7 @@ export function measureEager(
   return {
     files,
     bytes: files.reduce((sum, file) => sum + rawSize(file), 0),
+    hasEntry: eagerScriptTags(html).entry !== null,
   };
 }
 
@@ -340,8 +379,8 @@ export function reportLines(
     summary.push(
       `eager JS: ${eager.bytes} B raw across ${eager.files.length} files, cap ${grouped(EAGER_JS_CAP_BYTES)} B.`,
     );
-    if (eager.files.length === 0) {
-      annotations.push("::error::index.html loads no module script");
+    if (!eager.hasEntry) {
+      annotations.push("::error::index.html has no module entry script");
       failed = true;
     } else if (eager.bytes > EAGER_JS_CAP_BYTES) {
       annotations.push(

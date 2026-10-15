@@ -308,6 +308,7 @@ describe("the eager JS cap", () => {
     expect(measureEager(html, (file) => sizes[file] ?? 0)).toEqual({
       files: ["assets/index-a.js", "assets/runtime-b.js", "assets/react-c.js"],
       bytes: 123,
+      hasEntry: true,
     });
   });
 
@@ -330,6 +331,47 @@ describe("the eager JS cap", () => {
     const over = run(EAGER_JS_CAP_BYTES + 1);
     expect(over.failed).toBe(true);
     expect(over.annotations.some((l) => l.includes("eager JS"))).toBe(true);
+  });
+
+  it("reads single-quoted and bare values, and a multi-token rel", () => {
+    const mixed = `<script type="module" src="./assets/index-a.js"></script>
+<link rel='modulepreload' href='./assets/single-b.js'>
+<link rel=modulepreload href=./assets/bare-c.js>
+<link rel="modulepreload stylesheet" href="./assets/multi-d.js">
+<LINK REL = "ModulePreload" HREF = "./assets/upper-e.js">`;
+    expect(eagerScripts(mixed)).toEqual([
+      "assets/index-a.js",
+      "assets/single-b.js",
+      "assets/bare-c.js",
+      "assets/multi-d.js",
+      "assets/upper-e.js",
+    ]);
+  });
+
+  it("does not read data-src or data-rel as src or rel", () => {
+    const decoys = `<script type="module" data-src="./assets/decoy-a.js" src="./assets/index-a.js"></script>
+<link data-rel="modulepreload" rel="icon" href="./assets/decoy-b.js">
+<link rel="preload" data-href="./assets/decoy-c.js" href="./assets/font-d.js">`;
+    expect(eagerScripts(decoys)).toEqual(["assets/index-a.js"]);
+  });
+
+  it("fails a page that preloads modules but has no module entry script", () => {
+    const result = runBudgetCheck({
+      readManifest: () => JSON.stringify(manifest),
+      gzipSize: () => 1,
+      writeSummary: () => {},
+      cleanup: () => {},
+      eager: {
+        readIndexHtml: () =>
+          `<script src="./assets/classic-a.js"></script>
+<link rel="modulepreload" href="./assets/runtime-b.js">`,
+        rawSize: () => 1,
+      },
+    });
+    expect(result.failed).toBe(true);
+    expect(result.annotations).toContain(
+      "::error::index.html has no module entry script",
+    );
   });
 
   it("fails a build whose index.html loads no module script", () => {
