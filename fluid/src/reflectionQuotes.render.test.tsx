@@ -54,7 +54,7 @@ async function roundTrip(text: string, quote: string, occurrence = 1) {
   const { root, sections, elements } = await renderSections([text]);
   const at = locateQuote(text, quote, occurrence);
   expect(at).not.toBeNull();
-  const range = domRange(elements[0]!, at!.start, at!.end);
+  const range = domRange(elements[0]!, at!.start, at!.end, text);
   expect(range).not.toBeNull();
   expect(selectionAnchor(root, range, sections)).toEqual({
     section: "s0",
@@ -112,6 +112,42 @@ describe("a quote through the real renderer", () => {
     await roundTrip(text, "ship it", 1);
     document.body.innerHTML = "";
     await roundTrip(text, "ship it", 2);
+  });
+
+  it("sits inside one line of a hard-wrapped list item", async () => {
+    const range = await roundTrip(
+      "- first item\n- second item runs\n  onto a second line\n",
+      "onto a second",
+    );
+    expect(range.toString()).toBe("onto a second");
+  });
+
+  it("crosses the lines of a hard-wrapped list item, the indent included", async () => {
+    const range = await roundTrip(
+      "- first item\n- second item runs\n  onto a second line\n",
+      "runs\n  onto",
+    );
+    expect(range.toString()).toBe("runs\nonto");
+  });
+
+  it("sits inside one line of a multi-line blockquote", async () => {
+    const range = await roundTrip(
+      "> quoted first line\n> quoted second line\n",
+      "second line",
+    );
+    expect(range.toString()).toBe("second line");
+  });
+
+  it("crosses the lines of a multi-line blockquote, the marker included", async () => {
+    const range = await roundTrip(
+      "> quoted first line\n> quoted second line\n",
+      "first line\n> quoted",
+    );
+    expect(range.toString()).toBe("first line\nquoted");
+  });
+
+  it("crosses an indented paragraph continuation", async () => {
+    await roundTrip("Opening words\n   then more words.\n", "words\n   then");
   });
 
   it("crosses an image, its markup included", async () => {
@@ -172,7 +208,9 @@ describe("a selection through the real renderer", () => {
     });
     // The placed words around them still paint.
     const fast = text.indexOf("fast");
-    expect(domRange(elements[0]!, fast, fast + 4)?.toString()).toBe("fast");
+    expect(domRange(elements[0]!, fast, fast + 4, text)?.toString()).toBe(
+      "fast",
+    );
   });
 
   it("gives a section anchor when an end is in a refused image's alt text", async () => {

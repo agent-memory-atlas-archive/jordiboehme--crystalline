@@ -48,6 +48,75 @@ export function spanBase(
   return at >= 0 ? start + at : null;
 }
 
+/** A line break, as the parser keeps it in a text value. */
+const LINE_BREAK = /\r\n|\r|\n/g;
+
+/** What a continuation line may start with in the source and not in the value. */
+const LINE_PREFIX = /^[ \t>]*/;
+
+/** One piece of a parsed text node: its words and their offset, or null for unplaced. */
+export interface SpanPiece {
+  value: string;
+  base: number | null;
+}
+
+/**
+ * A parsed text node cut into pieces that each sit in `source` in one piece.
+ * One piece when {@link spanBase} places the whole node. Otherwise the node
+ * is cut at its line breaks: a hard-wrapped list item, a blockquote or an
+ * indented continuation loses its line prefix (`  `, `> `) in the value, so
+ * each line is placed on its own after the prefix, and the line breaks
+ * between them stay unplaced. The first line that cannot be placed ends it:
+ * that line and the rest are one unplaced piece. Every placed piece holds
+ * `source.slice(base, base + value.length) === value`.
+ */
+export function spanPieces(
+  source: string,
+  start: number | undefined,
+  end: number | undefined,
+  value: string,
+): SpanPiece[] {
+  const whole = spanBase(source, start, end, value);
+  if (whole !== null || start === undefined || end === undefined) {
+    return [{ value, base: whole }];
+  }
+  const pieces: SpanPiece[] = [];
+  let cursor = start;
+  let taken = 0;
+  const lines = [...value.matchAll(LINE_BREAK)];
+  for (let i = 0; i <= lines.length; i += 1) {
+    const brk = lines[i];
+    const lineEnd = brk === undefined ? value.length : brk.index;
+    const line = value.slice(taken, lineEnd);
+    if (i > 0) {
+      cursor += (LINE_PREFIX.exec(source.slice(cursor, end))?.[0] ?? "").length;
+    }
+    if (line !== "") {
+      if (!source.startsWith(line, cursor) || cursor + line.length > end) {
+        break;
+      }
+      pieces.push({ value: line, base: cursor });
+      cursor += line.length;
+    }
+    taken = lineEnd;
+    if (brk === undefined) {
+      return pieces;
+    }
+    // Spaces the parser trimmed before the break are in the source only.
+    cursor += (/^[ \t]*/.exec(source.slice(cursor, end))?.[0] ?? "").length;
+    if (!source.startsWith(brk[0], cursor)) {
+      break;
+    }
+    pieces.push({ value: brk[0], base: null });
+    cursor += brk[0].length;
+    taken += brk[0].length;
+  }
+  if (taken < value.length) {
+    pieces.push({ value: value.slice(taken), base: null });
+  }
+  return pieces;
+}
+
 /** The element a DOM point sits in: the parent of a text node, else the node. */
 function elementOf(node: Node): Element | null {
   return node.nodeType === Node.TEXT_NODE
@@ -193,15 +262,30 @@ function atEdge(at: Point, edge: "start" | "end"): boolean {
   );
 }
 
-/** Whether a stamped span still reads what the source holds at its offset. */
-function trueToSource(node: Node, text: string): boolean {
-  const span = stampOf(node);
-  const base = span === null ? null : baseOf(span);
-  if (span === null || base === null) {
+/**
+ * Whether a stamped span still is what the stamp made: one text node that
+ * reads what the source holds at its offset. A later pass that rewrote the
+ * words inside it (a wikilink turned into its label) fails both tests.
+ */
+function spanTrue(span: Element, text: string): boolean {
+  const base = baseOf(span);
+  const only = span.firstChild;
+  if (
+    base === null ||
+    span.childNodes.length !== 1 ||
+    only === null ||
+    only.nodeType !== Node.TEXT_NODE
+  ) {
     return false;
   }
-  const words = span.textContent ?? "";
+  const words = only.textContent ?? "";
   return text.slice(base, base + words.length) === words;
+}
+
+/** Whether the stamped span holding `node` is true to the source. */
+function trueToSource(node: Node, text: string): boolean {
+  const span = stampOf(node);
+  return span !== null && spanTrue(span, text);
 }
 
 /** What a comment on this selection anchors on, or null for no comment at all. */
@@ -299,12 +383,12 @@ function pointIn(span: Element, left: number): Point | null {
  * the range: forward for a start, back for an end.
  */
 function pointAt(
-  scope: Element,
+  spans: readonly Element[],
   offset: number,
   edge: "start" | "end",
 ): { point: Point; at: number } | null {
   let near: { span: Element; at: number } | null = null;
-  for (const span of Array.from(scope.querySelectorAll(`[${SOURCE_ATTR}]`))) {
+  for (const span of spans) {
     const base = baseOf(span);
     if (base === null) {
       continue;
@@ -334,14 +418,30 @@ function pointAt(
   return point === null ? null : { point, at: near.at };
 }
 
-/** The rendered words between two source offsets, or null when they are not on the page. */
+/**
+ * The rendered words between two source offsets of `text` (the section text
+ * the page rendered), or null when they are not on the page. Null as well
+ * when any stamped span the range would cover is no longer true to `text`:
+ * counting rendered characters as source characters there would paint a
+ * shifted passage, and no paint is better than a wrong one.
+ */
 export function domRange(
   scope: Element,
   start: number,
   end: number,
+  text: string,
 ): Range | null {
-  const from = pointAt(scope, start, "start");
-  const to = pointAt(scope, end, "end");
+  const spans = Array.from(scope.querySelectorAll(`[${SOURCE_ATTR}]`));
+  for (const span of spans) {
+    const base = baseOf(span);
+    const length = (span.textContent ?? "").length;
+    const covered = base !== null && base <= end && base + length >= start;
+    if (covered && !spanTrue(span, text)) {
+      return null;
+    }
+  }
+  const from = pointAt(spans, start, "start");
+  const to = pointAt(spans, end, "end");
   if (from === null || to === null || from.at >= to.at) {
     return null;
   }

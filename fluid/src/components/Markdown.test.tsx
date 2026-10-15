@@ -154,6 +154,8 @@ describe("source spans", () => {
       "Line one",
       "line two.",
       "",
+      "> single quoted line",
+      "",
       "> quoted line",
       "> second quoted line",
       "",
@@ -167,7 +169,11 @@ describe("source spans", () => {
       "| - | - |",
       "| *c* | d |",
       "",
-      "Inline <b>raw</b> html, a &amp; b, and \\*escaped\\*.",
+      "Inline <b>raw</b> html.",
+      "",
+      "Tom &amp; Jerry.",
+      "",
+      "Use \\*stars\\* here.",
       "",
       "```js",
       "const x = 1;",
@@ -179,10 +185,32 @@ describe("source spans", () => {
     const stamped = expectSpansMatch(container, source);
     const texts = stamped.map((span) => span.textContent);
     expect(texts).toEqual(
-      expect.arrayContaining(["em", "strong", "under", "gone", "code", "link"]),
+      expect.arrayContaining([
+        "em",
+        "strong",
+        "under",
+        "gone",
+        "code",
+        "link",
+        // A list item, an ordered one and a table cell.
+        "item one",
+        "first",
+        "d",
+        // A blockquote of one line, and each line of one of two.
+        "single quoted line",
+        "quoted line",
+        "second quoted line",
+        // The wrapped line of a list item, placed after its indent.
+        "continued",
+      ]),
     );
-    // The parser gives a fenced block's text no position, so none of it is
-    // stamped.
+    // Unplaced on purpose: a run whose words differ from the source (an
+    // entity, an escape) is not one piece of it, and the parser gives a
+    // fenced block's text no position.
+    for (const words of ["Tom & Jerry.", "Use *stars* here."]) {
+      expect(screen.getByText(words).hasAttribute("data-src")).toBe(false);
+    }
+    expect(texts.some((t) => /Tom|stars|const/.test(t ?? ""))).toBe(false);
     expect(container.querySelector("pre [data-src]")).toBeNull();
   });
 });

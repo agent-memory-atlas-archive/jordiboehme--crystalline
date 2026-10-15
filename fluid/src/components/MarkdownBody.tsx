@@ -64,7 +64,7 @@ import {
   imageStyle,
   parseImageFragment,
 } from "../editor/imageFormat";
-import { SOURCE_ATTR, spanBase } from "../reflectionQuotes";
+import { SOURCE_ATTR, spanPieces } from "../reflectionQuotes";
 import { isIdLine } from "../reflectionText";
 import { WIKILINK, referenceState } from "../wikilinks";
 import type { WikilinkResolution, WikilinkResolver } from "../wikilinks";
@@ -298,25 +298,30 @@ function stamp(node: HastNode, source: string): void {
   }
   node.children = node.children
     .filter((child) => !(child.type === "raw" && isIdLine(child.value ?? "")))
-    .map((child) => {
-      if (child.type === "text") {
-        const base = spanBase(
-          source,
-          child.position?.start?.offset,
-          child.position?.end?.offset,
-          child.value ?? "",
-        );
-        return base === null
-          ? child
+    .flatMap((child) => {
+      if (child.type !== "text") {
+        stamp(child, source);
+        return [child];
+      }
+      const pieces = spanPieces(
+        source,
+        child.position?.start?.offset,
+        child.position?.end?.offset,
+        child.value ?? "",
+      );
+      if (pieces.length === 1 && pieces[0]?.base === null) {
+        return [child];
+      }
+      return pieces.map(({ value, base }) =>
+        base === null
+          ? { type: "text", value }
           : {
               type: "element",
               tagName: "span",
               properties: { [SOURCE_ATTR]: String(base) },
-              children: [child],
-            };
-      }
-      stamp(child, source);
-      return child;
+              children: [{ type: "text", value }],
+            },
+      );
     });
 }
 
@@ -1111,7 +1116,11 @@ export default function MarkdownBody({
       // resolved `[[Target]]` turned into.
       ...(anchored ? [headingIds()] : []),
       // After the highlighter, so what it built is already in place. The
-      // rewrite skips code either way.
+      // rewrite skips code either way. With `sourceSpans` it would rewrite
+      // words inside a stamped span (a resolved target becomes its label),
+      // which no longer reads the source at its offset: the reflection page
+      // passes no resolver, and `selectionAnchor` and `domRange` refuse such
+      // a span rather than map through it (`reflectionQuotes.ts`).
       ...(wikilinks ? [wikilinkRewrite(wikilinks)] : []),
     ],
     [anchored, wikilinks, sourceSpans, shown],

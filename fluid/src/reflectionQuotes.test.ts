@@ -8,6 +8,7 @@ import {
   selectionAnchor,
   sourceOffset,
   spanBase,
+  spanPieces,
 } from "./reflectionQuotes";
 import type { SectionText } from "./reflectionText";
 
@@ -53,6 +54,45 @@ describe("spanBase", () => {
     // A continuation line under a quote marker is not in one piece.
     expect(spanBase("> a\n> b", 2, 7, "a\nb")).toBeNull();
     expect(spanBase(TEXT, undefined, 5, "x")).toBeNull();
+  });
+});
+
+describe("spanPieces", () => {
+  it("places each line of a wrapped text node after its prefix", () => {
+    expect(spanPieces("> a\n> b", 2, 7, "a\nb")).toEqual([
+      { value: "a", base: 2 },
+      { value: "\n", base: null },
+      { value: "b", base: 6 },
+    ]);
+    expect(spanPieces("- one\n  two", 2, 11, "one\ntwo")).toEqual([
+      { value: "one", base: 2 },
+      { value: "\n", base: null },
+      { value: "two", base: 8 },
+    ]);
+    // Trailing spaces the parser trimmed, and a CRLF break.
+    expect(spanPieces("a \r\n   b", 0, 8, "a\r\nb")).toEqual([
+      { value: "a", base: 0 },
+      { value: "\r\n", base: null },
+      { value: "b", base: 7 },
+    ]);
+  });
+
+  it("keeps a node placed in one piece whole, and stops at a line it cannot place", () => {
+    expect(spanPieces(TEXT, 18, 30, "Deploys run ")).toEqual([
+      { value: "Deploys run ", base: 18 },
+    ]);
+    // The second line holds an escape: it and the rest stay unplaced.
+    expect(spanPieces("> a\n> b \\* c", 2, 13, "a\nb * c")).toEqual([
+      { value: "a", base: 2 },
+      { value: "\n", base: null },
+      { value: "b * c", base: null },
+    ]);
+    expect(spanPieces("a &amp; b", 0, 9, "a & b")).toEqual([
+      { value: "a & b", base: null },
+    ]);
+    expect(spanPieces(TEXT, undefined, 5, "x")).toEqual([
+      { value: "x", base: null },
+    ]);
   });
 });
 
@@ -190,20 +230,45 @@ describe("domRange", () => {
   it("clamps a source range whose ends sit on markup to the words inside", () => {
     const el = section();
     // `**at**`: both ends on the asterisks.
-    const range = domRange(el, TEXT.indexOf("**at"), TEXT.indexOf("at**") + 4);
+    const range = domRange(
+      el,
+      TEXT.indexOf("**at"),
+      TEXT.indexOf("at**") + 4,
+      TEXT,
+    );
     expect(range?.toString()).toBe("at");
   });
 
   it("turns a source range back into the rendered words", () => {
     const el = section();
     const start = TEXT.indexOf("run");
-    const range = domRange(el, start, TEXT.indexOf("night") + "night".length);
+    const range = domRange(
+      el,
+      start,
+      TEXT.indexOf("night") + "night".length,
+      TEXT,
+    );
     expect(range?.toString()).toBe("run at night");
     expect(sourceOffset(el, textIn(el, " night."), 1)).toBe(37);
   });
 
+  it("refuses a range over a span that no longer reads the source", () => {
+    // What the wikilink rewrite would do inside a stamped span: the words
+    // change, the offset stays. Counting them as source would shift the paint.
+    const el = section();
+    const span = el.querySelector('[data-src="18"]') as Element;
+    span.textContent = "Rollouts go ";
+    expect(domRange(el, 26, 42, TEXT)).toBeNull();
+    // A span that holds an element is refused the same way.
+    span.textContent = "";
+    span.append("Deploys ", document.createElement("a"), "run ");
+    expect(domRange(el, 26, 42, TEXT)).toBeNull();
+    // A range clear of the rewritten span still paints.
+    expect(domRange(el, 32, 42, TEXT)?.toString()).toBe("at night");
+  });
+
   it("answers null when the source range is not on the page", () => {
-    expect(domRange(section(), 900, 910)).toBeNull();
+    expect(domRange(section(), 900, 910, TEXT)).toBeNull();
   });
 });
 
@@ -225,7 +290,7 @@ describe("paintQuotes", () => {
     g.Highlight = FakeHighlight;
     try {
       const el = section();
-      const a = domRange(el, 18, 21) as Range;
+      const a = domRange(el, 18, 21, TEXT) as Range;
       const stop = paintQuotes([a, a], [a]);
       expect(
         (registry.get(QUOTE_HIGHLIGHT) as FakeHighlight).ranges,
