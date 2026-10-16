@@ -40,6 +40,32 @@ import { ageText } from "../reflectionText";
 
 const LINK =
   "text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline";
+/** One plain label per queue `what`; an unknown value is put into words. */
+const WHAT_LABEL: Record<string, string> = {
+  new: "New section",
+  changed: "Section edited",
+  removed: "Section removed",
+  pact_changed: "Pact edited",
+  source_changed: "A source changed",
+  source_retired: "A source was retired",
+  source_missing: "A source is gone",
+  off_structure: "Outside the pact's structure",
+  asset_missing: "Missing file",
+  engram_attachment: "Links to an engram file",
+  asset_unreferenced: "File no page uses",
+  host_moved: "Domain moved to this instance",
+  unreflected: "No page yet",
+};
+
+function whatLabel(what: string): string {
+  const known = WHAT_LABEL[what];
+  if (known !== undefined) {
+    return known;
+  }
+  const words = what.replace(/_/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 const MUTED = "text-sm text-muted";
 
 export default function ReflectionReview(): ReactElement {
@@ -218,7 +244,12 @@ function Queue({
   engramsVisible: boolean;
   total: number;
 }): ReactElement {
-  const shown = items.filter((item) => item.kind !== "review");
+  // An unreflected row is about engrams, so a reader who may not see them is
+  // told nothing of it (the server already leaves it out; this is the gate).
+  const shown = items.filter(
+    (item) =>
+      item.kind !== "review" && (engramsVisible || item.what !== "unreflected"),
+  );
   // What the page left out, whatever its kind: the review rows it carried
   // count as carried.
   const more = total - items.length;
@@ -236,7 +267,8 @@ function Queue({
       {shown.length === 0 && <p className={MUTED}>The queue is empty.</p>}
       <ul aria-label="Pages in the queue" className="flex flex-col gap-6">
         {grouped.map(([path, list]) => {
-          const title = titles.get(path) ?? path;
+          const title =
+            titles.get(path) ?? (path === "PACT.md" ? "Pact" : path);
           return (
             <li key={path} className="flex flex-col">
               {path === "" ? (
@@ -259,6 +291,7 @@ function Queue({
                     key={item.n}
                     domain={domain}
                     item={item}
+                    pageTitle={title}
                     engramsVisible={engramsVisible}
                   />
                 ))}
@@ -277,20 +310,19 @@ function Queue({
 function QueueRow({
   domain,
   item,
+  pageTitle,
   engramsVisible,
 }: {
   domain: string;
   item: QueueItem;
+  pageTitle: string;
   engramsVisible: boolean;
 }): ReactElement {
   const heading = item.heading !== null && item.heading !== "";
   return (
     <li className="border-t border-hair py-3 text-sm">
       <div className="flex flex-wrap items-baseline gap-2">
-        <Chip variant={item.kind === "feedback" ? "accent" : "neutral"}>
-          {item.kind}
-        </Chip>
-        <Chip mono>{item.what}</Chip>
+        <Chip variant="neutral">{whatLabel(item.what)}</Chip>
         {heading && item.path !== "" && (
           <Link
             to={`${reflectionPageRoute(domain, item.path)}${item.section !== null ? `#s-${item.section}` : ""}`}
@@ -312,7 +344,7 @@ function QueueRow({
         </p>
       )}
       {item.count !== null && item.what === "unreflected" && (
-        <p className="mt-1">{`${String(item.count)} engrams${item.folder !== null ? ` under ${item.folder}` : ""} have no page yet.`}</p>
+        <p className="mt-1">{`${plural(item.count, "engram", "engrams")}${item.folder !== null && item.folder !== "" ? ` under ${item.folder}` : ""} ${item.count === 1 ? "has" : "have"} no page yet.`}</p>
       )}
       <QueueDetail
         domain={domain}
@@ -322,7 +354,11 @@ function QueueRow({
       {item.diff !== null && (
         <ReviewDiff
           diff={item.diff}
-          label={`Changes${heading ? ` in ${item.heading ?? ""}` : ""}`}
+          label={
+            heading
+              ? `Changes in ${item.heading ?? ""}, ${pageTitle}`
+              : `Changes in ${pageTitle}`
+          }
         />
       )}
       {engramsVisible && item.sources !== null && item.sources.length > 0 && (

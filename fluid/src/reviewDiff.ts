@@ -4,8 +4,8 @@
  * The server hands the review a raw unified diff: file header lines
  * (`--- original`, `+++ modified`), hunk headers, a `\ No newline at end of
  * file` note and the section id lines, all bookkeeping. This module keeps what
- * a reader needs: the context, added and removed lines, with a gap where two
- * hunks (or a collapsed stretch) leave lines out.
+ * a reader needs: the engine's own hunks (three lines of context each), with
+ * a gap where two hunks leave lines out.
  */
 
 import { stripIdLines } from "./reflectionText";
@@ -57,49 +57,4 @@ export function parseDiff(raw: string): DiffLine[] {
     out.pop();
   }
   return out;
-}
-
-/**
- * The changed lines with `context` unchanged lines around each change; the
- * stretches left out become one gap each. `hidden` is false when nothing was
- * left out (a disclosure would show the same thing).
- */
-export function collapseDiff(
-  lines: DiffLine[],
-  context = 2,
-): { lines: DiffLine[]; hidden: boolean } {
-  const keep = lines.map((line) => line.kind === "add" || line.kind === "del");
-  const near = keep.map((_, i) => {
-    for (let d = -context; d <= context; d += 1) {
-      if (keep[i + d] === true) {
-        return true;
-      }
-    }
-    return false;
-  });
-  const out: DiffLine[] = [];
-  let hidden = false;
-  lines.forEach((line, i) => {
-    if (line.kind === "gap") {
-      if (out.length > 0 && out[out.length - 1]?.kind !== "gap") {
-        out.push(line);
-      }
-      return;
-    }
-    if (near[i]) {
-      out.push(line);
-      return;
-    }
-    hidden = true;
-    if (out.length > 0 && out[out.length - 1]?.kind !== "gap") {
-      out.push({ kind: "gap", text: "" });
-    }
-  });
-  while (out.length > 0 && out[out.length - 1]?.kind === "gap") {
-    out.pop();
-  }
-  while (out.length > 0 && out[0]?.kind === "gap") {
-    out.shift();
-  }
-  return { lines: out, hidden };
 }

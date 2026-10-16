@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { collapseDiff, parseDiff } from "./reviewDiff";
+import { parseDiff } from "./reviewDiff";
 
 describe("parseDiff", () => {
   it("drops file headers, hunk headers, the no-newline note and id lines", () => {
@@ -27,28 +27,6 @@ describe("parseDiff", () => {
       "gap",
       "del",
       "add",
-    ]);
-  });
-});
-
-describe("collapseDiff", () => {
-  it("keeps two lines around a change and reports what it hid", () => {
-    const raw = ["@@ -1 +1 @@"];
-    for (let i = 0; i < 10; i += 1) {
-      raw.push(` c${String(i)}`);
-    }
-    raw.push("+added");
-    for (let i = 10; i < 20; i += 1) {
-      raw.push(` c${String(i)}`);
-    }
-    const out = collapseDiff(parseDiff(raw.join("\n")));
-    expect(out.hidden).toBe(true);
-    expect(out.lines.map((l) => l.text)).toEqual([
-      "c8",
-      "c9",
-      "added",
-      "c10",
-      "c11",
     ]);
   });
 });

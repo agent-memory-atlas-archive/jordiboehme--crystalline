@@ -1,5 +1,4 @@
 import { screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiProblem, api } from "../api/client";
@@ -196,7 +195,9 @@ describe("the review screen", () => {
     });
     const rows = Array.from(list.children) as HTMLElement[];
     expect(rows).toHaveLength(2);
-    expect(within(rows[0] as HTMLElement).getByText("feedback")).toBeVisible();
+    expect(
+      within(rows[0] as HTMLElement).getByText("Section edited"),
+    ).toBeVisible();
     expect(
       within(rows[0] as HTMLElement).getByText("changed by vera"),
     ).toBeVisible();
@@ -252,7 +253,9 @@ describe("the review screen", () => {
       "/d/eng/reflection/guides/deploying.md#t-00000002",
     );
     const list = await screen.findByRole("list", { name: "Queue items" });
-    expect(within(list).getByText("host_moved")).toBeVisible();
+    expect(
+      within(list).getByText("Domain moved to this instance"),
+    ).toBeVisible();
     expect(within(list).queryByRole("link")).toBeNull();
   });
 
@@ -283,7 +286,7 @@ describe("the review screen", () => {
       });
       renderApp("/d/eng/reflection/review");
       const list = await queueList();
-      expect(within(list).getByText("asset_missing")).toBeVisible();
+      expect(within(list).getByText("Missing file")).toBeVisible();
       expect(within(list).getByText("assets/guides/gone.png")).toBeVisible();
       expect(within(list).getByText("assets/guides/other.pdf")).toBeVisible();
       expect(within(list).getAllByRole("link")).toHaveLength(1);
@@ -329,7 +332,7 @@ describe("the review screen", () => {
       );
       renderApp("/d/eng/reflection/review");
       const list = await queueList();
-      expect(within(list).getByText("engram_attachment")).toBeVisible();
+      expect(within(list).getByText("Links to an engram file")).toBeVisible();
       expect(within(list).queryByText("../../notes/runbook.md")).toBeNull();
     });
 
@@ -417,7 +420,7 @@ describe("the review screen", () => {
     const list = await within(queue).findByRole("list", {
       name: /^Queue items/,
     });
-    expect(within(list).getByText("source_changed")).toBeVisible();
+    expect(within(list).getByText("A source changed")).toBeVisible();
     expect(
       within(list).queryByRole("link", { name: "Deploy runbook" }),
     ).toBeNull();
@@ -518,22 +521,35 @@ describe("the review screen", () => {
       ).toHaveAttribute("href", "/d/eng/reflection/ops/failover.md");
     });
 
-    it("shows the changed lines with a little context and no file header lines", async () => {
-      serve(queueOf([row(1, "guides/deploying.md", { diff: DIFF })]));
+    const NODES = [
+      {
+        kind: "reflection",
+        name: "deploying.md",
+        path: "guides/deploying.md",
+        title: "Deploying",
+        open_threads: 0,
+        sections: 2,
+      },
+    ];
+    const DIFF_NAME = "Changes in Night deploys, Deploying";
+    function serveDiff(diff: string, extra = {}) {
+      serve(
+        queueOf([row(1, "guides/deploying.md", { diff, ...extra })]),
+        {},
+        NODES,
+      );
+    }
+
+    it("shows the engine's hunks as they are, with no file header lines", async () => {
+      serveDiff(DIFF);
       renderApp("/d/eng/reflection/review");
-      const diff = await screen.findByRole("group", {
-        name: "Changes in Night deploys",
-      });
+      const diff = await screen.findByRole("group", { name: DIFF_NAME });
       expect(diff).toHaveTextContent("new sentence");
       expect(diff).toHaveTextContent("old sentence");
-      // Two lines of context each side; the stretch before is left out.
-      expect(diff).toHaveTextContent("line four");
-      expect(diff).toHaveTextContent("line seven");
-      expect(diff).not.toHaveTextContent("line three");
-      expect(diff).not.toHaveTextContent("line eight");
-      expect(diff).not.toHaveTextContent("line ten");
-      expect(diff).toHaveTextContent("Removed: ");
-      expect(diff).toHaveTextContent("Added: ");
+      // The whole hunk, context included, and no disclosure for it.
+      expect(diff).toHaveTextContent("line one");
+      expect(diff).toHaveTextContent("line ten");
+      expect(screen.queryByRole("button", { name: /full diff/ })).toBeNull();
       for (const hidden of [
         "--- original",
         "+++ modified",
@@ -544,40 +560,166 @@ describe("the review screen", () => {
       }
     });
 
-    it("opens the full diff behind a disclosure and closes it again", async () => {
-      const user = userEvent.setup();
-      serve(queueOf([row(1, "guides/deploying.md", { diff: DIFF })]));
+    it("announces a run of added or removed lines once", async () => {
+      serveDiff("@@ -1,2 +1,3 @@\n-a\n-b\n+c\n+d\n+e\n");
       renderApp("/d/eng/reflection/review");
-      const diff = await screen.findByRole("group", {
-        name: "Changes in Night deploys",
-      });
-      const open = screen.getByRole("button", { name: "Show the full diff" });
-      expect(open).toHaveAttribute("aria-expanded", "false");
-      await user.click(open);
-      expect(diff).toHaveTextContent("line one");
-      expect(diff).toHaveTextContent("line ten");
-      expect(diff.textContent).not.toContain("No newline");
-      const close = screen.getByRole("button", {
-        name: "Show only the changed lines",
-      });
-      expect(close).toHaveAttribute("aria-expanded", "true");
-      await user.click(close);
-      expect(diff).not.toHaveTextContent("line one");
+      const diff = await screen.findByRole("group", { name: DIFF_NAME });
+      expect(diff.textContent?.match(/Removed: /g)).toHaveLength(1);
+      expect(diff.textContent?.match(/Added: /g)).toHaveLength(1);
     });
 
-    it("offers no disclosure for a diff that is all change", async () => {
+    it("shows a pure addition as one block with one announcement", async () => {
+      serveDiff("@@ -0,0 +1,3 @@\n+## New\n+\n+Text.\n");
+      renderApp("/d/eng/reflection/review");
+      const diff = await screen.findByRole("group", { name: DIFF_NAME });
+      expect(diff.textContent?.match(/Added: /g)).toHaveLength(1);
+      expect(diff.textContent).not.toContain("Removed");
+      expect(diff).toHaveTextContent("## New");
+    });
+
+    it("shows a removal with nothing added", async () => {
+      serveDiff("@@ -1,2 +0,0 @@\n-gone\n-also gone\n");
+      renderApp("/d/eng/reflection/review");
+      const diff = await screen.findByRole("group", { name: DIFF_NAME });
+      expect(diff).toHaveTextContent("also gone");
+      expect(diff.textContent).not.toContain("Added");
+    });
+
+    it("keeps a hunk that starts at the first line and separates two hunks with a gap", async () => {
+      serveDiff("@@ -1 +1 @@\n-first\n+First\n@@ -20 +20 @@\n-late\n+Late\n");
+      renderApp("/d/eng/reflection/review");
+      const diff = await screen.findByRole("group", { name: DIFF_NAME });
+      expect(diff).toHaveTextContent("First");
+      expect(diff).toHaveTextContent("Late");
+      expect(diff).toHaveTextContent("Unchanged lines left out");
+    });
+
+    it("reads a CRLF diff without carriage returns", async () => {
+      serveDiff("@@ -1 +1 @@\r\n-old\r\n+new\r\n");
+      renderApp("/d/eng/reflection/review");
+      const diff = await screen.findByRole("group", { name: DIFF_NAME });
+      expect(diff.textContent).not.toContain("\r");
+      expect(diff).toHaveTextContent("new");
+    });
+
+    it("drops a real id line and keeps a line that only looks like one", async () => {
+      serveDiff(
+        "@@ -1,3 +1,3 @@\n <!-- r:7f3a9c2e -->\n-<!-- r:not-an-id -->\n+<!-- note: keep -->\n",
+      );
+      renderApp("/d/eng/reflection/review");
+      const diff = await screen.findByRole("group", { name: DIFF_NAME });
+      expect(diff.textContent).not.toContain("r:7f3a9c2e");
+      expect(diff).toHaveTextContent("<!-- r:not-an-id -->");
+      expect(diff).toHaveTextContent("<!-- note: keep -->");
+    });
+
+    it("keeps a long line whole inside a scrolling box", async () => {
+      const long = "x".repeat(400);
+      serveDiff(`@@ -1 +1 @@\n-short\n+${long}\n`);
+      renderApp("/d/eng/reflection/review");
+      const diff = await screen.findByRole("group", { name: DIFF_NAME });
+      expect(diff).toHaveTextContent(long);
+      expect(diff.className).toContain("overflow-x-auto");
+    });
+
+    it("names the diff by the page alone when the item has no heading", async () => {
       serve(
         queueOf([
           row(1, "guides/deploying.md", {
-            diff: "@@ -1 +1 @@\n-old\n+new\n",
+            heading: "",
+            diff: "@@ -1 +1 @@\n-a\n+b\n",
+          }),
+        ]),
+        {},
+        NODES,
+      );
+      renderApp("/d/eng/reflection/review");
+      expect(
+        await screen.findByRole("group", { name: "Changes in Deploying" }),
+      ).toBeVisible();
+    });
+
+    it("shows the pact page as Pact", async () => {
+      serve(
+        queueOf([row(1, "PACT.md", { what: "pact_changed", heading: "" })]),
+      );
+      renderApp("/d/eng/reflection/review");
+      expect(
+        await screen.findByRole("heading", { name: "Pact", level: 3 }),
+      ).toBeVisible();
+    });
+
+    it("says no raw words: one plain label per kind of item, unknown ones put into words", async () => {
+      serve(
+        queueOf([
+          row(1, "guides/deploying.md", {
+            what: "source_changed",
+            kind: "update",
+          }),
+          row(2, "guides/deploying.md", {
+            what: "brand_new_thing",
+            kind: "update",
           }),
         ]),
       );
       renderApp("/d/eng/reflection/review");
-      await screen.findByRole("group", { name: "Changes in Night deploys" });
+      const queue = await screen.findByRole("region", {
+        name: "Reflect queue",
+      });
+      expect(await within(queue).findByText("A source changed")).toBeVisible();
+      expect(within(queue).getByText("Brand new thing")).toBeVisible();
+      expect(queue.textContent).not.toMatch(/source_changed|feedback|update/);
+    });
+
+    it("counts unreflected engrams with the right verb for a reader of engrams", async () => {
+      const item = (n: number, count: number, folder: string) => ({
+        n,
+        kind: "update",
+        what: "unreflected",
+        path: "",
+        section: null,
+        heading: "",
+        age_secs: 60,
+        count,
+        folder,
+        engrams: [`${folder}/a`],
+      });
+      serve(queueOf([item(1, 1, "notes"), item(2, 3, "runbooks")]));
+      renderApp("/d/eng/reflection/review");
       expect(
-        screen.queryByRole("button", { name: "Show the full diff" }),
-      ).toBeNull();
+        await screen.findByText("1 engram under notes has no page yet."),
+      ).toBeVisible();
+      expect(
+        screen.getByText("3 engrams under runbooks have no page yet."),
+      ).toBeVisible();
+    });
+
+    it("shows a reader without engram rights no unreflected row and no folder", async () => {
+      serve(
+        queueOf([
+          {
+            n: 1,
+            kind: "update",
+            what: "unreflected",
+            path: "",
+            section: null,
+            heading: "",
+            age_secs: 60,
+            count: 2,
+            folder: "secret-folder",
+          },
+          row(2, "guides/deploying.md"),
+        ]),
+        { engrams_visible: false },
+      );
+      renderApp("/d/eng/reflection/review");
+      const queue = await screen.findByRole("region", {
+        name: "Reflect queue",
+      });
+      await within(queue).findByText("Section edited");
+      expect(queue.textContent).not.toContain("secret-folder");
+      expect(queue.textContent).not.toContain("no page yet");
+      expect(queue.textContent).not.toContain("No page yet");
     });
 
     it("leaks no engram names to a reader without engram rights", async () => {
