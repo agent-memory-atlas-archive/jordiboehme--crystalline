@@ -230,6 +230,13 @@ fn hit(row: &ReflectionRow, section: &Section, snippet: String, score: f64) -> R
 /// Put one reflection's row and its chunks in the index (R53): the one
 /// writer of reflection rows, called by the sync and by the engine, so a page
 /// never has a row without the chunks of that same text.
+///
+/// Writes the row and its chunks in two statements and opens no transaction
+/// of its own (turso's `Conn` takes no savepoint). Every caller holds one:
+/// `Engine::index_reflection` begins and commits around it, and the sync's
+/// `reconcile_rows` runs inside the apply's transaction. A row written
+/// without its chunks would never be re-chunked, because the prefilter trusts
+/// its stamp.
 pub async fn index_reflection_row<S: Store + ?Sized>(
     store: &S,
     domain: DomainId,
