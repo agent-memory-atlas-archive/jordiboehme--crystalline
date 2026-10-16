@@ -55,6 +55,14 @@ export const MESSAGE_CONTROL = 4;
 export const CONNECT_TIMEOUT_MS = 8000;
 export const BACKOFF_BASE_MS = 500;
 export const BACKOFF_CAP_MS = 10_000;
+/**
+ * How long after a missed join deadline the provider asks once more, when no
+ * upgrade was ever accepted. A move answers every join with 409 while it
+ * runs and with the `moved` close once it is done; a move that outlasts the
+ * deadline would otherwise leave the person on the fallback without the
+ * notice. The ask listens for that close and nothing else.
+ */
+export const PROBE_AFTER_DEADLINE_MS = 4000;
 
 export interface CollabHello {
   kind: "hello";
@@ -147,6 +155,24 @@ export function collabSocketUrl(
   return `${scheme}//${location.host}${path}`;
 }
 
+/** The first control a frame carries, or null. */
+function firstControl(frame: Uint8Array): CollabControl | null {
+  const decoder = decoding.createDecoder(frame);
+  if (
+    !decoding.hasContent(decoder) ||
+    decoding.readVarUint(decoder) !== MESSAGE_CONTROL
+  ) {
+    return null;
+  }
+  try {
+    return JSON.parse(
+      new TextDecoder().decode(decoding.readVarUint8Array(decoder)),
+    ) as CollabControl;
+  } catch {
+    return null;
+  }
+}
+
 export class CollabProvider {
   private readonly url: string;
   private readonly doc: Y.Doc;
@@ -164,6 +190,9 @@ export class CollabProvider {
    *  down too - a browser closes a connecting socket asynchronously, so the
    *  close event cannot be relied on to clear it in time. */
   private deadline: ReturnType<typeof setTimeout> | null = null;
+  /** The one ask after a missed deadline (see PROBE_AFTER_DEADLINE_MS). */
+  private probeTimer: ReturnType<typeof setTimeout> | null = null;
+  private probeSocket: WebSocket | null = null;
   /** Whether ANY connection of this provider ever had a hello accepted. */
   private everAccepted = false;
   private statusValue: CollabStatus = "connecting";
@@ -196,8 +225,12 @@ export class CollabProvider {
       if (this.closed || this.everAccepted) {
         return;
       }
+      const neverUpgraded = !this.everConnected;
       this.stop();
       this.setStatus("failed");
+      if (neverUpgraded) {
+        this.probeOnce();
+      }
     }, CONNECT_TIMEOUT_MS);
     this.connect();
   }
@@ -234,6 +267,32 @@ export class CollabProvider {
     this.socket = null;
   }
 
+  /**
+   * Ask the room once more after a missed deadline, for the `moved` close
+   * only: no hello is answered and nothing is sent, so the fallback the
+   * owner already shows stays as it is unless the document has moved.
+   */
+  private probeOnce(): void {
+    this.probeTimer = setTimeout(() => {
+      this.probeTimer = null;
+      const socket = this.socketFactory(this.url);
+      this.probeSocket = socket;
+      socket.binaryType = "arraybuffer";
+      socket.onmessage = (event) => {
+        const control = firstControl(new Uint8Array(event.data as ArrayBuffer));
+        if (control?.kind === "closed" && control.reason === "moved") {
+          this.handlers.onControl(control);
+        }
+        socket.close();
+      };
+      socket.onclose = () => {
+        if (this.probeSocket === socket) {
+          this.probeSocket = null;
+        }
+      };
+    }, PROBE_AFTER_DEADLINE_MS);
+  }
+
   destroy(): void {
     // The goodbye FIRST, while the awareness listener is still attached to
     // relay it and the socket `stop` is about to close is still open; the
@@ -243,6 +302,12 @@ export class CollabProvider {
     this.doc.off("update", this.onDocUpdate);
     this.awareness.off("update", this.onAwarenessUpdate);
     this.stop();
+    if (this.probeTimer !== null) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = null;
+    }
+    this.probeSocket?.close();
+    this.probeSocket = null;
   }
 
   private setStatus(status: CollabStatus): void {

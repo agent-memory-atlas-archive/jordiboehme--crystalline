@@ -2990,6 +2990,26 @@ describe("the engram editor resolving a session conflict", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("names no place when the engram moved where this person cannot go", async () => {
+    joinedSession({ closed: true, closedReason: "moved", movedTo: null });
+    serveEditor();
+    renderApp("/d/eng/edit/alpha");
+    expect(
+      await screen.findByText(
+        "This engram was moved to a place you cannot open. Your text is kept as a draft.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open it there" })).toBeNull();
+    expect(readDraft("ada", "eng", "alpha")?.content).toContain("A rule.");
+    // The notice stays: nothing walks the author away.
+    await new Promise((settle) => setTimeout(settle, 1500));
+    expect(
+      screen.getByText(
+        "This engram was moved to a place you cannot open. Your text is kept as a draft.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("tells an editor that never joined the room where the engram went", async () => {
     collabMock.mockReturnValue({
       ...soloCollabSession(),

@@ -795,8 +795,10 @@ function Surface({
    * ever opened, so this is read on the solo surface too.
    */
   const movedTo = collab.movedTo;
+  // Moved somewhere this person cannot open: the notice says so and stays.
+  const movedAway = inRoom && collab.closedReason === "moved";
   useEffect(() => {
-    if (!closed || movedTo !== null) {
+    if (!closed || movedTo !== null || movedAway) {
       return;
     }
     const timer = setTimeout(() => {
@@ -805,7 +807,7 @@ function Surface({
     return () => {
       clearTimeout(timer);
     };
-  }, [closed, movedTo, engram.domain, navigate]);
+  }, [closed, movedTo, movedAway, engram.domain, navigate]);
 
   /**
    * The unload prompt in a room, keyed on the SESSION's verdict.
@@ -1238,7 +1240,9 @@ function Surface({
         >
           {collab.closedReason === "deleted"
             ? "This engram was deleted; your text is kept as a draft"
-            : "The session ended; your text is kept as a draft"}
+            : collab.closedReason === "moved"
+              ? "This engram was moved to a place you cannot open. Your text is kept as a draft."
+              : "The session ended; your text is kept as a draft"}
         </p>
       )}
       {/*

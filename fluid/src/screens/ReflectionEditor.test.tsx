@@ -628,6 +628,24 @@ describe("the reflection editor when its page was moved", () => {
     expect(screen.queryByText(/This page was moved/)).toBeNull();
   });
 
+  it("keeps the text and names no place when the page moved where this person cannot go", async () => {
+    serve("edit");
+    live({
+      ...room(PAGE),
+      closed: true,
+      closedReason: "moved",
+      movedTo: null,
+    });
+    await openEditor();
+    expect(
+      screen.getByText(
+        "This page was moved to a place you cannot open. Your text is kept as a draft.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Open it there" })).toBeNull();
+    expect(readDraft("ann", "eng", KEY)?.content).toBe(PAGE);
+  });
+
   it("tells an editor that was still joining where the page went", async () => {
     serve("edit");
     sessionMock.mockReturnValue({

@@ -284,6 +284,11 @@ function endedSentence(
   if (reason === "deleted") {
     return "This page was deleted; your text is kept as a draft";
   }
+  // A move that named no address: the page went somewhere this person may
+  // not open, so where is not theirs to learn.
+  if (reason === "moved") {
+    return "This page was moved to a place you cannot open. Your text is kept as a draft.";
+  }
   if (saveState !== "ok") {
     return "The session ended; your text is kept as a draft";
   }
@@ -351,8 +356,9 @@ function Surface({
    * "pending" and the server does not repeat the same refusal; only the next
    * landed save (or a healthy connection with nothing pending) releases it.
    * An ended room whose last verdict is "ok" owes nothing, unless the page
-   * was deleted: then the text in this tab is the only copy left. A moved
-   * page's text goes with the person when they open it at its new path.
+   * was deleted or moved somewhere this person cannot open: then the text in
+   * this tab is the only copy they have. A page moved where they can follow
+   * has its text go with them when they open it at its new path.
    */
   const healthy =
     !ended && collab.saveState === "ok" && collab.status === "connected";
@@ -361,9 +367,12 @@ function Surface({
     collab.saveState === "failed" ||
     collab.saveState === "conflict" ||
     collab.status !== "connected";
-  const latches =
-    troubled &&
-    !(ended && collab.saveState === "ok" && collab.closedReason !== "deleted");
+  // A page moved to a place this person cannot open is gone for them, as a
+  // deleted one is: the text in this tab is kept.
+  const lost =
+    collab.closedReason === "deleted" ||
+    (collab.closedReason === "moved" && collab.movedTo === null);
+  const latches = troubled && !(ended && collab.saveState === "ok" && !lost);
   const [owed, setOwed] = useState(latches);
   const [wasHealthy, setWasHealthy] = useState(healthy);
   // The server's refusal, held while the latch holds: a keystroke clears the

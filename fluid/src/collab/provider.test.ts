@@ -10,6 +10,7 @@ import {
   CollabProvider,
   MESSAGE_CONTROL,
   MESSAGE_SYNC,
+  PROBE_AFTER_DEADLINE_MS,
   collabSocketUrl,
   collabUrl,
   reflectionOfferKey,
@@ -381,6 +382,54 @@ describe("CollabProvider", () => {
     vi.advanceTimersByTime(CONNECT_TIMEOUT_MS + 100);
     expect(statuses.at(-1)).toBe("failed");
     expect(socket.readyState).toBe(3);
+    provider.destroy();
+    vi.useRealTimers();
+  });
+
+  it("asks once more after a missed deadline and hands on a moved close", () => {
+    vi.useFakeTimers();
+    const controls: unknown[] = [];
+    const statuses: string[] = [];
+    const { provider, socket } = makeProvider({
+      onControl: (control) => controls.push(control),
+      onStatus: (status) => statuses.push(status),
+    });
+    // A long move: every upgrade is refused until the deadline passes.
+    socket.dropWith(1006);
+    vi.advanceTimersByTime(CONNECT_TIMEOUT_MS + 100);
+    expect(statuses.at(-1)).toBe("failed");
+    const dialled = FakeSocket.instances.length;
+    vi.advanceTimersByTime(PROBE_AFTER_DEADLINE_MS);
+    const probe = FakeSocket.instances[dialled];
+    if (!probe) throw new Error("no probe socket");
+    probe.open();
+    const moved = { kind: "closed", reason: "moved", path: "guides/b.md" };
+    probe.receive(controlFrame(moved));
+    expect(controls).toEqual([moved]);
+    expect(probe.readyState).toBe(3);
+    expect(probe.sent).toHaveLength(0);
+    // Once is enough.
+    vi.advanceTimersByTime(60_000);
+    expect(FakeSocket.instances).toHaveLength(dialled + 1);
+    provider.destroy();
+    vi.useRealTimers();
+  });
+
+  it("the ask after the deadline answers no hello and hands on nothing else", () => {
+    vi.useFakeTimers();
+    const controls: unknown[] = [];
+    const { provider, socket } = makeProvider({
+      onControl: (control) => controls.push(control),
+    });
+    socket.dropWith(1006);
+    vi.advanceTimersByTime(CONNECT_TIMEOUT_MS + PROBE_AFTER_DEADLINE_MS + 100);
+    const probe = FakeSocket.instances.at(-1);
+    if (!probe || probe === socket) throw new Error("no probe socket");
+    probe.open();
+    probe.receive(helloFrame("e1"));
+    expect(controls).toEqual([]);
+    expect(probe.sent).toHaveLength(0);
+    expect(probe.readyState).toBe(3);
     provider.destroy();
     vi.useRealTimers();
   });
