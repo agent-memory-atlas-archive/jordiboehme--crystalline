@@ -4,6 +4,24 @@
  * copy, `reflection-offer:<path>` for text set aside); both are keyed by the
  * path, so a move would otherwise strand them and a delete would offer a
  * dead page's text back to a page created later on the same path.
+ *
+ * The cleanup rule. A page's drafts live as long as the page does:
+ *
+ * - Deleted through this tab: both drafts go at once (`discardPageDrafts`).
+ * - Moved through this tab, or followed with "Open it there": both drafts go
+ *   with the page to its new path (`movePageDrafts`).
+ * - Deleted or moved anywhere else (another tab, another person, the files
+ *   on disk): this tab cannot hear of it, and a tab that still had the
+ *   editor open may write its copy after the delete. So the server's answer
+ *   decides. Opening the page and getting a 404 drops both drafts at its
+ *   path; drafts at the old path of a page moved elsewhere go the same way,
+ *   unless "Open it there" carried them first.
+ *
+ * Only a 404 counts. A refusal (401, 403) or a failed connection says
+ * nothing about the page, and its drafts stay. That is also why the editor
+ * of a page deleted or moved out of reach asks the person to copy their
+ * text rather than promising a draft: the draft lasts only until the next
+ * 404 on that path.
  */
 
 import {

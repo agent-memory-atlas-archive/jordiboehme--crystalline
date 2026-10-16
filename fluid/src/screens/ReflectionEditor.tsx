@@ -302,19 +302,21 @@ function Room({
  * What the banner says once the room has ended, by the server's reason and
  * the room's last save verdict. Only "ok" means the text landed: a refused
  * save, a conflict (whose close saves nothing) and a save still in flight
- * all leave the text with this tab.
+ * all leave the text with this tab. A page deleted or moved out of reach
+ * asks for a copy instead of promising a draft: its drafts at this path go
+ * on the next 404 there (the rule in `reflectionPageDrafts.ts`).
  */
 function endedSentence(
   reason: string | null,
   saveState: CollabSession["saveState"],
 ): string {
   if (reason === "deleted") {
-    return "This page was deleted; your text is kept as a draft";
+    return "This page was deleted. Copy your text if you want to keep it.";
   }
   // A move that named no address: the page went somewhere this person may
   // not open, so where is not theirs to learn.
   if (reason === "moved") {
-    return "This page was moved to a place you cannot open. Your text is kept as a draft.";
+    return "This page was moved to a place you cannot open. Copy your text if you want to keep it.";
   }
   if (saveState !== "ok") {
     return "The session ended; your text is kept as a draft";

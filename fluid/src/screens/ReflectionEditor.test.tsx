@@ -784,7 +784,7 @@ describe("the reflection editor when its page was moved", () => {
     await openEditor();
     expect(
       screen.getByText(
-        "This page was moved to a place you cannot open. Your text is kept as a draft.",
+        "This page was moved to a place you cannot open. Copy your text if you want to keep it.",
       ),
     ).toBeVisible();
     expect(screen.queryByRole("button", { name: "Open it there" })).toBeNull();

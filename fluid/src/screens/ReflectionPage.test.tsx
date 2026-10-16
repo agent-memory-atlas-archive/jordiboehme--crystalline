@@ -3,6 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { API_BASE, ApiProblem, api } from "../api/client";
+import {
+  reflectionOfferKey,
+  reflectionRoomKey,
+} from "../collab/reflectionDraftKeys";
+import { clearDraft, readDraft, writeDraft } from "../editor/drafts";
 import type { Answer } from "../test/harness";
 import {
   answersFor,
@@ -277,6 +282,63 @@ describe("the reflection page", () => {
       await screen.findByRole("heading", { name: "Page not found" }),
     ).toBeVisible();
     expect(screen.getByText("No page at guides/gone.md in eng.")).toBeVisible();
+  });
+
+  it("drops the drafts of a page the server says is not there", async () => {
+    const draft = {
+      content: "## Gone\n\nText from another tab.\n",
+      baseChecksum: "",
+      savedAt: "2026-10-16T10:00:00Z",
+    };
+    writeDraft("ann", "eng", reflectionRoomKey("guides/gone.md"), draft);
+    writeDraft("ann", "eng", reflectionOfferKey("guides/gone.md"), draft);
+    writeDraft("ann", "eng", reflectionRoomKey("guides/here.md"), draft);
+    serve("edit", false, {
+      "/domains/eng/reflections/guides/gone.md": () => {
+        throw new ApiProblem(404, "not found", "no reflection");
+      },
+    });
+    renderApp("/d/eng/reflection/guides/gone.md");
+    expect(
+      await screen.findByRole("heading", { name: "Page not found" }),
+    ).toBeVisible();
+    await waitFor(() => {
+      expect(
+        readDraft("ann", "eng", reflectionRoomKey("guides/gone.md")),
+      ).toBeNull();
+    });
+    expect(
+      readDraft("ann", "eng", reflectionOfferKey("guides/gone.md")),
+    ).toBeNull();
+    // Another page's draft is not this page's business.
+    expect(
+      readDraft("ann", "eng", reflectionRoomKey("guides/here.md")),
+    ).not.toBeNull();
+    clearDraft("ann", "eng", reflectionRoomKey("guides/here.md"));
+  });
+
+  it("keeps the drafts of a page it may not read", async () => {
+    const draft = {
+      content: "Mine.\n",
+      baseChecksum: "",
+      savedAt: "2026-10-16T10:00:00Z",
+    };
+    writeDraft("ann", "eng", reflectionRoomKey("guides/shut.md"), draft);
+    serve("edit", false, {
+      "/domains/eng/reflections/guides/shut.md": () => {
+        throw new ApiProblem(403, "forbidden", "not yours");
+      },
+    });
+    renderApp("/d/eng/reflection/guides/shut.md");
+    expect(
+      await screen.findByRole("heading", {
+        name: "The page could not be read",
+      }),
+    ).toBeVisible();
+    expect(
+      readDraft("ann", "eng", reflectionRoomKey("guides/shut.md")),
+    ).toEqual(draft);
+    clearDraft("ann", "eng", reflectionRoomKey("guides/shut.md"));
   });
 
   it("keeps two sections without ids and with one heading apart", async () => {

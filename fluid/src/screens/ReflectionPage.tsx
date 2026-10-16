@@ -314,8 +314,16 @@ function PageBody({
       ?.scrollIntoView({ block: "start" });
   }, [doc.data, hash]);
 
+  const missing = doc.error instanceof ApiProblem && doc.error.status === 404;
+  // The server says the page is not there: its drafts on this device go
+  // (the rule is written down in `reflectionPageDrafts.ts`).
+  useEffect(() => {
+    if (missing) {
+      discardPageDrafts(account, domain, path);
+    }
+  }, [missing, account, domain, path]);
+
   if (doc.error) {
-    const missing = doc.error instanceof ApiProblem && doc.error.status === 404;
     return (
       <div className="flex flex-col items-start gap-3">
         <h1 className="text-display">
