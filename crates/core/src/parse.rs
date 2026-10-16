@@ -436,48 +436,14 @@ pub(crate) struct BodyLine<'a> {
 /// the fence markers themselves) are flagged `in_fence`.
 pub(crate) fn body_lines(body: &str, body_line_start: usize) -> Vec<BodyLine<'_>> {
     let mut out = Vec::new();
-    let mut fence: Option<(char, usize)> = None;
+    let mut fence = FenceTracker::new();
     for (i, raw) in body.split('\n').enumerate() {
         let text = raw.trim_end_matches('\r');
-        let line_no = body_line_start + i;
-        match fence {
-            None => {
-                if let Some((c, n, _)) = fence_marker(text) {
-                    fence = Some((c, n));
-                    out.push(BodyLine {
-                        line_no,
-                        text,
-                        in_fence: true,
-                    });
-                } else {
-                    out.push(BodyLine {
-                        line_no,
-                        text,
-                        in_fence: false,
-                    });
-                }
-            }
-            Some((fc, fcount)) => {
-                let mut closes = false;
-                if let Some((c, n, _)) = fence_marker(text)
-                    && c == fc
-                    && n >= fcount
-                {
-                    let after = &text.trim_start()[n..];
-                    if after.trim().is_empty() {
-                        closes = true;
-                    }
-                }
-                out.push(BodyLine {
-                    line_no,
-                    text,
-                    in_fence: true,
-                });
-                if closes {
-                    fence = None;
-                }
-            }
-        }
+        out.push(BodyLine {
+            line_no: body_line_start + i,
+            text,
+            in_fence: fence.in_fence(text),
+        });
     }
     out
 }
@@ -751,6 +717,48 @@ pub(crate) fn fence_marker(line: &str) -> Option<(char, usize, usize)> {
     Some((first, count, indent))
 }
 
+/// The one fenced-code rule, shared by every walk over a body's lines. A
+/// fence opens on a marker (see `fence_marker`) and closes only on a marker of
+/// the same character, at least as long, with nothing after it.
+///
+/// Feed it each line in order, line ending already stripped.
+#[derive(Debug, Default, Clone)]
+pub struct FenceTracker {
+    open: Option<(char, usize)>,
+}
+
+impl FenceTracker {
+    /// A tracker outside any fence.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Advance over one line. True for an opening or closing marker line and
+    /// for every line inside the fence, false for a line outside fenced code.
+    pub fn in_fence(&mut self, line: &str) -> bool {
+        match self.open {
+            None => {
+                if let Some((c, n, _)) = fence_marker(line) {
+                    self.open = Some((c, n));
+                    true
+                } else {
+                    false
+                }
+            }
+            Some((open_char, open_count)) => {
+                if let Some((c, n, _)) = fence_marker(line)
+                    && c == open_char
+                    && n >= open_count
+                    && line.trim_start()[n..].trim().is_empty()
+                {
+                    self.open = None;
+                }
+                true
+            }
+        }
+    }
+}
+
 fn top_level_bullet(line: &str) -> Option<&str> {
     // Zero indent only; nested or indented bullets are not observations or
     // relations.
@@ -912,6 +920,28 @@ mod tests {
     // Pins the current mask_inline_code/scan_body behavior before the
     // single-buffer and contains-guard refactor so the refactor cannot
     // change observable output.
+
+    #[test]
+    fn fence_tracker_closes_only_on_the_same_marker_at_least_as_long_with_nothing_after() {
+        let mut fence = FenceTracker::new();
+        assert!(!fence.in_fence("prose"));
+        assert!(fence.in_fence("````"), "the opener is a fence line");
+        assert!(fence.in_fence("```"), "a shorter run does not close");
+        assert!(fence.in_fence("~~~~"), "another character does not close");
+        assert!(
+            fence.in_fence("```` tail"),
+            "text after the run does not close"
+        );
+        assert!(
+            fence.in_fence("   `````  "),
+            "a longer run closes, the closer is a fence line"
+        );
+        assert!(!fence.in_fence("after"), "the fence is shut");
+        assert!(fence.in_fence("~~~"), "a tilde fence opens");
+        assert!(fence.in_fence("    ```"), "indent over three is content");
+        assert!(fence.in_fence("~~~"));
+        assert!(!fence.in_fence("done"));
+    }
 
     #[test]
     fn mask_inline_code_leaves_unterminated_backtick_run_unmasked() {

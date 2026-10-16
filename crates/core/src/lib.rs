@@ -93,7 +93,7 @@ pub use manifest::{
 };
 pub use names::{NameInput, NameTable};
 pub use parse::{
-    LosslessEngram, PARSE_GENERATION, ParseError, parse_engram, parse_engram_lossless,
+    FenceTracker, LosslessEngram, PARSE_GENERATION, ParseError, parse_engram, parse_engram_lossless,
 };
 pub use path::fold_path_case;
 pub use prompt::{

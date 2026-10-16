@@ -8374,51 +8374,16 @@ fn rewrite_carried_refs(content: &str, renames: &BTreeMap<String, String>) -> St
 /// is never rewritten into a path the snippet did not mean.
 fn rewrite_asset_refs(body: &str, renames: &BTreeMap<String, String>) -> String {
     let mut out = String::with_capacity(body.len());
-    let mut fence: Option<(char, usize)> = None;
+    let mut fence = crystalline_core::FenceTracker::new();
     for line in body.split_inclusive('\n') {
         let text = line.trim_end_matches(['\n', '\r']);
-        match fence {
-            None => {
-                if let Some((marker, count)) = asset_fence_marker(text) {
-                    fence = Some((marker, count));
-                    out.push_str(line);
-                    continue;
-                }
-            }
-            Some((open_marker, open_count)) => {
-                if let Some((marker, count)) = asset_fence_marker(text)
-                    && marker == open_marker
-                    && count >= open_count
-                    && text.trim_start()[count..].trim().is_empty()
-                {
-                    fence = None;
-                }
-                out.push_str(line);
-                continue;
-            }
+        if fence.in_fence(text) {
+            out.push_str(line);
+            continue;
         }
         out.push_str(&rewrite_line_asset_refs(line, renames));
     }
     out
-}
-
-/// A fenced code block's opening or closing marker: the character and how many
-/// of it, for a line indented no more than three spaces.
-///
-/// The same rule the core parser reads fences by, restated here because it is
-/// crate-private there and this is the only reader of it outside core.
-fn asset_fence_marker(line: &str) -> Option<(char, usize)> {
-    let indent = line.len() - line.trim_start_matches(' ').len();
-    if indent > 3 {
-        return None;
-    }
-    let rest = &line[indent..];
-    let first = rest.chars().next()?;
-    if first != '`' && first != '~' {
-        return None;
-    }
-    let count = rest.chars().take_while(|c| *c == first).count();
-    (count >= 3).then_some((first, count))
 }
 
 /// One line's `](assets/...)` destinations rewritten, every other byte of the
