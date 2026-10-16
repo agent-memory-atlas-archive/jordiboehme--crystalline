@@ -50,18 +50,18 @@ use crate::alias::{AliasMap, query_uses_tags};
 use crate::error::{IndexError, Result};
 use crate::store::WorkClaim;
 use crate::store::{
-    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkTable, ContentMention, ContradictionRow,
-    CoverageGroup, DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage,
-    EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode,
-    GraphSlice, HostClaim, HostMove, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO,
-    LeadVector, NamedCount, NewChunk, NewReflectionChunk, ObservationVector, OutboundRef, Page,
-    RebuildKind, RecentFilter, ReferenceCandidates, ReflectionRow, ReflectionStamp, ScoredPair,
-    SearchHit, SearchMode, SearchQuery, SectionVector, SpellingPlan, Store, StoreInfo,
-    StoredEngram, Vocabulary, build_vocabulary, changed_spellings, count_references_to_sql,
-    domain_url_needles, folder_slash, in_transaction, names_a_domain_url, page_window,
-    reference_match, referencing_domains_sql, rename_onto_taken_row, reset_spelled_references_sql,
-    resolve_references_to_sql, resolve_spelled_references_sql, spelled_references_sql,
-    spelling_plan,
+    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkTable, CitedEngram, ContentMention,
+    ContradictionRow, CoverageGroup, DomainHost, DomainId, DomainKind, DomainStats, EdgeKind,
+    EmbeddingCoverage, EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary,
+    FileStamp, FtsMode, GraphSlice, HostClaim, HostMove, InboundHit, InboundPage, InboundQuery,
+    InboundRef, LINKS_TO, LeadVector, NamedCount, NewChunk, NewReflectionChunk, ObservationVector,
+    OutboundRef, Page, RebuildKind, RecentFilter, ReferenceCandidates, ReflectionRow,
+    ReflectionStamp, ScoredPair, SearchHit, SearchMode, SearchQuery, SectionVector, SpellingPlan,
+    Store, StoreInfo, StoredEngram, Vocabulary, build_vocabulary, changed_spellings,
+    count_references_to_sql, domain_url_needles, folder_slash, in_transaction, names_a_domain_url,
+    page_window, reference_match, referencing_domains_sql, rename_onto_taken_row,
+    reset_spelled_references_sql, resolve_references_to_sql, resolve_spelled_references_sql,
+    spelled_references_sql, spelling_plan,
 };
 use crate::sweep::{SpelledRef, UnresolvedRef};
 
@@ -712,6 +712,16 @@ async fn scalar_i64(conn: &Conn, sql: &str, params: Vec<Value>) -> Result<i64> {
         .unwrap_or(0))
 }
 
+fn cited_engram_from_row(r: &Row) -> CitedEngram {
+    CitedEngram {
+        permalink: cell_text(r, 0).unwrap_or_default(),
+        title: cell_text(r, 1).unwrap_or_default(),
+        status: cell_text(r, 2).unwrap_or_default(),
+        sha256: cell_text(r, 3).unwrap_or_default(),
+        mtime: cell_i64(r, 4).unwrap_or(0),
+    }
+}
+
 fn descriptor_from_row(r: &Row) -> EngramDescriptor {
     EngramDescriptor {
         id: EngramId(cell_i64(r, 0).unwrap_or(0)),
@@ -1255,6 +1265,13 @@ pub const FILE_STAMPS_SQL: &str =
 /// domain's rows, which `tests/it/plans.rs` catches.
 #[doc(hidden)]
 pub const ENGRAM_ROWS_UNDER_REFLECTIONS_SQL: &str = "SELECT path FROM engram WHERE domain_id=?1 AND actor = '' AND lower(substr(path, 1, 12)) = 'reflections/' LIMIT ?2";
+
+/// One cited engram by permalink, behind [`Store::cited_engrams`]: a
+/// full-key seek of the unique `idx_engram_permalink_actor`, run once per
+/// permalink. A plain equality rather than an `IN` list, which turso would
+/// back with an ephemeral table.
+#[doc(hidden)]
+pub const CITED_ENGRAM_SQL: &str = "SELECT permalink, title, status, sha256, mtime FROM engram WHERE domain_id=?1 AND permalink=?2 AND actor = ''";
 
 /// Whether the domain has any base engram row: an empty one takes the disk walk.
 #[doc(hidden)]
@@ -2106,6 +2123,29 @@ impl Store for TursoStore {
         )
         .await?
         .is_some())
+    }
+
+    async fn cited_engrams(
+        &self,
+        domain: DomainId,
+        permalinks: &[String],
+    ) -> Result<Vec<CitedEngram>> {
+        let wanted: std::collections::BTreeSet<&str> =
+            permalinks.iter().map(String::as_str).collect();
+        let mut out = Vec::with_capacity(wanted.len());
+        for permalink in wanted {
+            let Some(r) = query_first(
+                &self.conn,
+                CITED_ENGRAM_SQL,
+                vec![Value::Integer(domain.0), Value::Text(permalink.to_string())],
+            )
+            .await?
+            else {
+                continue;
+            };
+            out.push(cited_engram_from_row(&r));
+        }
+        Ok(out)
     }
 
     async fn upsert_engram(&self, domain: DomainId, record: &EngramRecord) -> Result<EngramId> {

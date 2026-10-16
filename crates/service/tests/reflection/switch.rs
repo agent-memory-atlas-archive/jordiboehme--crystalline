@@ -1073,6 +1073,102 @@ async fn reflection_gate_timing() {
             .unwrap();
     }
     let threads = started.elapsed();
+
+    // The two store questions every gate asked besides the probe: the
+    // visibility screen and the domain row (F2).
+    let started = Instant::now();
+    for _ in 0..500 {
+        fx.engine
+            .hidden_for(&crystalline_service::Scope::Unrestricted)
+            .await
+            .unwrap();
+    }
+    let hidden = started.elapsed();
+    let root = fx.root.to_string_lossy().to_string();
+    let started = Instant::now();
+    for _ in 0..500 {
+        store
+            .lock()
+            .await
+            .upsert_domain("eng", Some(&root), crystalline_index::DomainKind::File)
+            .await
+            .unwrap();
+    }
+    let upsert = started.elapsed();
+    let started = Instant::now();
+    for _ in 0..500 {
+        fx.engine
+            .require_reflection_edit("eng", "p0.md", &caller)
+            .await
+            .unwrap();
+    }
+    let gate = started.elapsed();
+
+    // A page citing ten engrams, read whole, and the same page's threads
+    // listed with every other page's (F2).
+    let agent = crate::docs::agent();
+    let mut cited = crate::docs::write("cited.md", "# Cited\n\nFor people.\n");
+    let mut sources = std::collections::BTreeMap::new();
+    for s in 0..5 {
+        cited
+            .markdown
+            .as_mut()
+            .unwrap()
+            .push_str(&format!("\n## Part {s}\n\nText {s}.\n"));
+        sources.insert(
+            format!("Part {s}"),
+            vec![format!("note-{}", 2 * s), format!("note-{}", 2 * s + 1)],
+        );
+    }
+    cited.sources = sources;
+    fx.engine.write_reflection(&cited, &agent).await.unwrap();
+    for s in 0..5 {
+        fx.engine
+            .discuss(
+                &crystalline_service::params::DiscussParams {
+                    domain: "eng".into(),
+                    action: Some("open".into()),
+                    path: Some("cited.md".into()),
+                    section: Some(format!("Part {s}")),
+                    text: Some("Still true?".into()),
+                    ..Default::default()
+                },
+                &agent,
+            )
+            .await
+            .unwrap();
+    }
+    let doc = fx
+        .engine
+        .read_reflection("eng", "cited.md", &agent)
+        .await
+        .unwrap();
+    assert_eq!(doc["sections"][0]["sources"][0]["state"], "current");
+    let started = Instant::now();
+    for _ in 0..50 {
+        fx.engine
+            .read_reflection("eng", "cited.md", &agent)
+            .await
+            .unwrap();
+    }
+    let cited_read = started.elapsed();
+    let started = Instant::now();
+    for _ in 0..50 {
+        fx.engine
+            .read_reflection("eng", "p0.md", &agent)
+            .await
+            .unwrap();
+    }
+    let plain_read = started.elapsed();
+    let started = Instant::now();
+    for _ in 0..50 {
+        fx.engine
+            .list_reflection_threads("eng", None, "open", &agent)
+            .await
+            .unwrap();
+    }
+    let listed = started.elapsed();
+
     eprintln!("index probes x500: {probes:?} ({:?} each)", probes / 500);
     eprintln!("reflection_state x500: {state:?} ({:?} each)", state / 500);
     eprintln!(
@@ -1087,6 +1183,27 @@ async fn reflection_gate_timing() {
     eprintln!(
         "reflection_open_threads x50: {threads:?} ({:?} each)",
         threads / 50
+    );
+    eprintln!("hidden_for x500: {hidden:?} ({:?} each)", hidden / 500);
+    eprintln!(
+        "upsert_domain under the lock x500: {upsert:?} ({:?} each)",
+        upsert / 500
+    );
+    eprintln!(
+        "require_reflection_edit x500: {gate:?} ({:?} each)",
+        gate / 500
+    );
+    eprintln!(
+        "read_reflection, ten cited engrams x50: {cited_read:?} ({:?} each)",
+        cited_read / 50
+    );
+    eprintln!(
+        "read_reflection, no sources x50: {plain_read:?} ({:?} each)",
+        plain_read / 50
+    );
+    eprintln!(
+        "list_reflection_threads x50: {listed:?} ({:?} each)",
+        listed / 50
     );
 }
 
@@ -1307,30 +1424,112 @@ async fn a_pending_switch_past_the_probe_names_every_engram() {
     );
 }
 
-/// A page that cites an engram still reads the engram facts its sources are
-/// held against: only an uncited page skips them.
+/// A page that cites engrams reads the facts of its own sources only, never
+/// every engram of the domain (F2), and each source still answers its state:
+/// current, changed, retired or missing.
 #[tokio::test]
-async fn a_page_citing_an_engram_still_reads_its_sources() {
-    use crate::docs::{agent, reflecting, write};
+async fn a_page_citing_engrams_reads_only_its_sources() {
+    use crate::docs::{agent, write};
 
-    let fx = reflecting().await;
+    let notes: Vec<(String, String)> = ["a", "b", "c", "d"]
+        .into_iter()
+        .map(|n| {
+            (
+                format!("notes/{n}.md"),
+                engram(&format!("Note {n}"), &format!("notes/{n}"), "- [fact] x"),
+            )
+        })
+        .collect();
+    let manifest_on = manifest("reflection: on\n");
+    let mut files: Vec<(&str, &str)> = vec![("MANIFEST.md", &manifest_on)];
+    files.extend(notes.iter().map(|(p, c)| (p.as_str(), c.as_str())));
+    let fx = fixture(&files).await;
     let mut p = write(
         "a.md",
-        "# Deploying\n\nFor new people.\n\n## Night deploys\n\nDeploys run at night.\n",
+        "# Notes\n\nFor people.\n\n## First\n\nOne.\n\n## Second\n\nTwo.\n",
     );
-    p.sources = std::collections::BTreeMap::from([(
-        "Night deploys".to_string(),
-        vec!["runbooks/deploy".to_string()],
-    )]);
+    p.sources = std::collections::BTreeMap::from([
+        (
+            "First".to_string(),
+            vec!["notes/a".to_string(), "notes/b".to_string()],
+        ),
+        (
+            "Second".to_string(),
+            vec!["notes/c".to_string(), "notes/d".to_string()],
+        ),
+    ]);
+    let before_write = fx.engine.recorded_path_loads();
     fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    assert_eq!(
+        fx.engine.recorded_path_loads(),
+        before_write,
+        "a sourced write reads only the engrams it names"
+    );
+
+    // b changes, c is retired, d goes; a stays as it was cited.
+    std::fs::write(
+        fx.root.join("notes/b.md"),
+        engram("Note b", "notes/b", "- [fact] a longer fact"),
+    )
+    .unwrap();
+    std::fs::write(
+        fx.root.join("notes/c.md"),
+        engram("Note c", "notes/c", "- [fact] x").replace("status: stable", "status: superseded"),
+    )
+    .unwrap();
+    std::fs::remove_file(fx.root.join("notes/d.md")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+
     let before = fx.engine.recorded_path_loads();
     let doc = fx
         .engine
         .read_reflection("eng", "a.md", &agent())
         .await
         .unwrap();
-    assert_eq!(doc["sections"][0]["sources"][0]["state"], "current");
-    assert_eq!(fx.engine.recorded_path_loads(), before + 1);
+    let states: Vec<(String, String, String)> = doc["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|s| s["sources"].as_array().unwrap().iter())
+        .map(|src| {
+            (
+                src["permalink"].as_str().unwrap().to_string(),
+                src["state"].as_str().unwrap().to_string(),
+                src["title"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let want = [
+        ("notes/a", "current", "Note a"),
+        ("notes/b", "changed", "Note b"),
+        ("notes/c", "retired", "Note c"),
+        ("notes/d", "missing", ""),
+    ]
+    .map(|(p, s, t)| (p.to_string(), s.to_string(), t.to_string()));
+    assert_eq!(states, want);
+    assert_eq!(
+        fx.engine.recorded_path_loads(),
+        before,
+        "a cited page loads no engram facts of the whole domain"
+    );
+
+    // A source no engram holds is still refused by name, nothing written.
+    let mut q = write("b.md", "# B\n\nFor people.\n\n## Only\n\nText.\n");
+    q.sources = std::collections::BTreeMap::from([(
+        "Only".to_string(),
+        vec!["notes/a".to_string(), "notes/nowhere".to_string()],
+    )]);
+    let err = fx
+        .engine
+        .write_reflection(&q, &agent())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("no engram 'notes/nowhere' in domain 'eng' to name as a source"),
+        "{err}"
+    );
+    assert!(!fx.root.join("reflections/b.md").exists());
 }
 
 /// The engrams the gate remembers per domain follow the rows. The switch

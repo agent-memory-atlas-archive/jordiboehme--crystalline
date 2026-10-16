@@ -381,6 +381,26 @@ pub fn registry() -> Vec<HotStatement> {
             postgres_must_seek: &[],
         },
         HotStatement {
+            // A cited page's read asks this once per cited permalink: one
+            // full-key seek of the unique (domain_id, permalink, actor), so
+            // the read costs the page's sources, never the domain's rows.
+            issued_by: "Store::cited_engrams",
+            turso: || crystalline_index::turso::CITED_ENGRAM_SQL.to_string(),
+            #[cfg(feature = "postgres")]
+            postgres: || crystalline_index::postgres::CITED_ENGRAM_SQL.to_string(),
+            literals: &["1", "'p0'"],
+            #[cfg(feature = "postgres")]
+            literals_pg: None,
+            scan_expected: &[],
+            #[cfg(feature = "postgres")]
+            scan_expected_pg: None,
+            turso_must_seek: &[
+                "idx_engram_permalink_actor (domain_id=? AND permalink=? AND actor=?)",
+            ],
+            #[cfg(feature = "postgres")]
+            postgres_must_seek: &["idx_engram_permalink_actor"],
+        },
+        HotStatement {
             // The sync's stat prefilter and the move screens: one domain's
             // reflection rows, through the table's unique (domain_id, path).
             issued_by: "Store::list_reflection_stamps",

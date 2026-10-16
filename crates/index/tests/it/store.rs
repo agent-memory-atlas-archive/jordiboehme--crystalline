@@ -8730,6 +8730,96 @@ async fn reflection_stamps(store: &dyn Store) {
 }
 parity!(reflection_stamps_carry_no_content, reflection_stamps);
 
+/// The facts a cited page's sources are held against, for the named
+/// permalinks only: base rows of the one domain, never a draft at the same
+/// permalink, never another domain's engram, and nothing for a permalink no
+/// row holds. Each answer carries the title, status, checksum and mtime the
+/// whole-domain stamps and descriptors give for it.
+async fn cited_engrams_by_permalink(store: &dyn Store) {
+    let did = store
+        .upsert_domain("eng", Some("/k/eng"), DomainKind::File)
+        .await
+        .unwrap();
+    let other = store
+        .upsert_domain("ops", Some("/k/ops"), DomainKind::File)
+        .await
+        .unwrap();
+    // A draft at a cited permalink, and a draft no base row stands under.
+    let mut draft = record("notes/n1.md", "notes/n1", "y", "shaDraft");
+    draft.title = "Draft title".to_string();
+    store.upsert_overlay(did, "ada", &draft).await.unwrap();
+    store
+        .upsert_overlay(
+            did,
+            "ada",
+            &record("notes/new.md", "notes/new", "y", "shaNew"),
+        )
+        .await
+        .unwrap();
+    for i in 0..5 {
+        let mut row = record(
+            &format!("notes/n{i}.md"),
+            &format!("notes/n{i}"),
+            "x",
+            &format!("sha{i}"),
+        );
+        row.title = format!("Note {i}");
+        row.stamp.mtime = 100 + i;
+        if i == 3 {
+            row.status = "superseded".to_string();
+        }
+        store.upsert_engram(did, &row).await.unwrap();
+    }
+    store
+        .upsert_engram(other, &record("notes/x.md", "notes/x", "x", "shaX"))
+        .await
+        .unwrap();
+
+    let asked: Vec<String> = [
+        "notes/n1",
+        "notes/n3",
+        "notes/x",
+        "notes/gone",
+        "notes/new",
+        "notes/n1",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    let mut got: Vec<(String, String, String, String, i64)> = store
+        .cited_engrams(did, &asked)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| (c.permalink, c.title, c.status, c.sha256, c.mtime))
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            (
+                "notes/n1".to_string(),
+                "Note 1".to_string(),
+                "current".to_string(),
+                "sha1".to_string(),
+                101
+            ),
+            (
+                "notes/n3".to_string(),
+                "Note 3".to_string(),
+                "superseded".to_string(),
+                "sha3".to_string(),
+                103
+            ),
+        ]
+    );
+    assert!(store.cited_engrams(did, &[]).await.unwrap().is_empty());
+}
+parity!(
+    cited_engrams_are_read_by_permalink,
+    cited_engrams_by_permalink
+);
+
 // --- the sync routes `reflections/` (reflection core, Task 9) ----------------
 
 const MANIFEST_OFF: &str = "---\ntype: manifest\ntitle: eng\npermalink: manifest\ntags: [manifest]\nstatus: stable\n---\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n";
@@ -12170,9 +12260,9 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
         census.failures.join("\n")
     );
     assert_eq!(
-        census.sites, 184,
+        census.sites, 186,
         "the engram statement census moved; every new one needs a predicate or a waiver. \
-         76 per backend in mod.rs (`ENGRAM_COVERAGE_SQL`, the coverage of one domain's engram chunks, is the newest, waived below; before it the Reflection gate's two probes, \
+         77 per backend in mod.rs (`CITED_ENGRAM_SQL`, one cited engram by permalink, is the newest, on the base rows; before it `ENGRAM_COVERAGE_SQL`, the coverage of one domain's engram chunks, waived below; before it the Reflection gate's two probes, \
          `ENGRAM_ROWS_UNDER_REFLECTIONS_SQL` and `HAS_ENGRAM_ROWS_SQL`, are the newest, \
          both on the base rows; before them the `LIMIT 1` probe of `folder_holds_other`, \
          on the base rows; before it the path listing of `overlay_paths`, on \

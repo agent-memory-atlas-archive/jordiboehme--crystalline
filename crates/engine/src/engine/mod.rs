@@ -3266,13 +3266,13 @@ impl Engine {
 
     /// How many times a Reflection path has loaded more of a domain's engram
     /// rows than the gate's probe since this engine was built: every file
-    /// stamp of the domain (`engram_facts`, which a page citing engrams, a
-    /// sourced write, a take-in and the queue read), or every row under the
-    /// folder past the first [`UNDER_REFLECTIONS_PROBE`] (a pending switch
-    /// with that many engrams). Before R82 every gate loaded every recorded
-    /// path of the domain, which this counted too, so a gate or a read of an
-    /// uncited page on an effective Reflection that moves it is a
-    /// regression.
+    /// stamp of the domain (`engram_facts`, which a take-in and the queue
+    /// read), or every row under the folder past the first
+    /// [`UNDER_REFLECTIONS_PROBE`] (a pending switch with that many
+    /// engrams). Before R82 every gate loaded every recorded path of the
+    /// domain, which this counted too, so a gate, a page read or a sourced
+    /// write on an effective Reflection that moves it is a regression: those
+    /// read only the engrams the page cites (`cited_facts`).
     #[cfg(any(test, feature = "testing"))]
     pub fn recorded_path_loads(&self) -> u64 {
         self.recorded_path_loads

@@ -1197,6 +1197,45 @@ impl Engine {
             .collect())
     }
 
+    /// The facts of the engrams `wanted` names, by permalink: what a
+    /// page's own sources are held against. One index seek per distinct
+    /// permalink under the store lock, so a page citing a few engrams never
+    /// pays for every engram of the domain the way [`Engine::engram_facts`]
+    /// does. A permalink no engram holds has no entry, which a source reads
+    /// as missing.
+    pub(crate) async fn cited_facts(
+        &self,
+        domain_id: DomainId,
+        mut wanted: Vec<String>,
+    ) -> Result<HashMap<String, EngramFact>> {
+        if wanted.is_empty() {
+            return Ok(HashMap::new());
+        }
+        wanted.sort();
+        wanted.dedup();
+        let cited = self
+            .store
+            .lock()
+            .await
+            .cited_engrams(domain_id, &wanted)
+            .await?;
+        Ok(cited
+            .into_iter()
+            .map(|c| {
+                (
+                    c.permalink.clone(),
+                    EngramFact {
+                        permalink: c.permalink,
+                        title: c.title,
+                        status: c.status,
+                        checksum: c.sha256,
+                        mtime: c.mtime,
+                    },
+                )
+            })
+            .collect())
+    }
+
     /// Put one reflection's row and its chunks in the index (R53), from the
     /// text just written to `abs`. The row carries the file's own
     /// modification instant, in the spelling the sync's prefilter compares
@@ -1349,11 +1388,12 @@ impl Engine {
                 EngineError::Invalid(format!("`{name}` is not a section operation; use replace_section, insert_before_section or insert_after_section"))
             })?),
         };
-        let facts = if p.sources.is_empty() {
-            HashMap::new()
-        } else {
-            self.engram_facts(access.domain_id, &p.domain).await?
-        };
+        let facts = self
+            .cited_facts(
+                access.domain_id,
+                p.sources.values().flatten().cloned().collect(),
+            )
+            .await?;
         let abs = access.abs(&p.path);
         let baseline_abs = access.abs(&r::baseline_path(&p.path));
         let _lock = self.lock_file(&abs).await;
@@ -1899,12 +1939,16 @@ impl Engine {
             EngineError::NotFound(format!("no reflection '{inner}' in domain '{domain}'"))
         })?;
         let prov = r::read_provenance(&text);
-        // The facts are read only for a page that cites an engram: they cost
-        // every engram row of the domain, and a page without sources asks
-        // none of them.
-        let cites = prov.values().any(|record| !record.sources.is_empty());
-        let facts = if access.engrams_visible && cites {
-            self.engram_facts(access.domain_id, domain).await?
+        // Only the engrams the page cites are read, one seek each: a page
+        // without sources asks the index nothing.
+        let facts = if access.engrams_visible {
+            self.cited_facts(
+                access.domain_id,
+                prov.values()
+                    .flat_map(|record| record.sources.iter().map(|src| src.engram.clone()))
+                    .collect(),
+            )
+            .await?
         } else {
             HashMap::new()
         };

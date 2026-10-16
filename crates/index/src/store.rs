@@ -2382,6 +2382,22 @@ pub struct ReflectionRow {
     pub modified: String,
 }
 
+/// One engram a Reflection section cites, as [`Store::cited_engrams`]
+/// answers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CitedEngram {
+    /// The permalink the source names.
+    pub permalink: String,
+    /// The engram's title.
+    pub title: String,
+    /// The engram's status, as written.
+    pub status: String,
+    /// Lowercase hex SHA-256 of the file, the checksum a source records.
+    pub sha256: String,
+    /// Seconds since the epoch of the file's last change.
+    pub mtime: i64,
+}
+
 /// A [`ReflectionRow`] without its `content`: [`Store::list_reflection_stamps`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReflectionStamp {
@@ -2785,6 +2801,18 @@ pub trait Store: Send + Sync {
     /// records its `MANIFEST.md`, so `false` means the index holds no row of
     /// it and the files on disk decide what is pending.
     async fn has_engram_rows(&self, domain: DomainId) -> Result<bool>;
+
+    /// The base engram rows of `domain` holding one of `permalinks`, with
+    /// what a cited source is held against: title, status, checksum and
+    /// mtime. A permalink no base row holds has no answer, a permalink named
+    /// twice answers once, and the order is unspecified. One index seek per
+    /// distinct permalink, so a page citing a few engrams never reads the
+    /// whole domain's [`Store::file_stamps`].
+    async fn cited_engrams(
+        &self,
+        domain: DomainId,
+        permalinks: &[String],
+    ) -> Result<Vec<CitedEngram>>;
 
     /// Insert or update one engram, replacing its observations, relations, links
     /// and tags. Returns the engram id. A duplicate permalink (a different path
