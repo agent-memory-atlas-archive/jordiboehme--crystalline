@@ -9714,6 +9714,54 @@ mod lock_tests {
         assert!(kept.contains("The body."), "{kept}");
     }
 
+    /// The same move with the default permalink, which follows the path. A
+    /// permalink is folded to lower case, so it stays `notes/gamma`; the
+    /// file keeps its body under the new spelling, and the index finds the
+    /// engram at the new path.
+    #[tokio::test]
+    async fn an_engram_moved_only_by_letter_case_follows_its_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        let text = engram("Gamma", "notes/gamma", "The body.");
+        std::fs::write(root.join("notes/gamma.md"), &text).unwrap();
+        let engine = file_engine(&root).await;
+        let moved = engine
+            .move_engram(
+                &MoveParams {
+                    identifier: "notes/gamma".to_string(),
+                    domain: "eng".to_string(),
+                    destination: "notes/Gamma".to_string(),
+                    destination_domain: None,
+                    permalink: None,
+                    update_links: None,
+                },
+                &crate::scope::Scope::Unrestricted,
+            )
+            .await
+            .unwrap();
+        assert_eq!(moved["to"]["path"], "notes/Gamma.md", "{moved}");
+        assert_eq!(moved["to"]["permalink"], "notes/gamma", "{moved}");
+        let names: Vec<String> = std::fs::read_dir(root.join("notes"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.to_lowercase().starts_with("gamma"))
+            .collect();
+        assert_eq!(names, ["Gamma.md"]);
+        let kept = std::fs::read_to_string(root.join("notes/Gamma.md")).unwrap();
+        assert!(kept.contains("The body."), "{kept}");
+        assert!(kept.contains("permalink: notes/gamma\n"), "{kept}");
+        let found = engine
+            .store
+            .lock()
+            .await
+            .find_engram("eng", "notes/gamma")
+            .await
+            .unwrap()
+            .expect("the engram is indexed");
+        assert_eq!(found.path, "notes/Gamma.md");
+    }
+
     /// The markdown of a minimal engram, for the tests below.
     fn engram(title: &str, permalink: &str, body: &str) -> String {
         format!(
