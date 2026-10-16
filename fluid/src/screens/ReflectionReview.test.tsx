@@ -175,7 +175,7 @@ describe("the review screen", () => {
     expect(
       within(people).getByText("Is the batch window still 2am?"),
     ).toBeVisible();
-    expect(within(people).getByText("waiting 2 days")).toBeVisible();
+    expect(within(people).getByText("2 days ago")).toBeVisible();
     const agent = screen.getByRole("region", { name: "Waiting for the agent" });
     const texts = within(agent)
       .getAllByText(/Still true\?|Typo here\./)
@@ -247,7 +247,7 @@ describe("the review screen", () => {
       name: "Waiting for people",
     });
     expect(
-      within(people).getByRole("link", { name: "waiting 2 days" }),
+      within(people).getByRole("link", { name: "2 days ago" }),
     ).toHaveAttribute(
       "href",
       "/d/eng/reflection/guides/deploying.md#t-00000002",
@@ -636,6 +636,29 @@ describe("the review screen", () => {
       renderApp("/d/eng/reflection/review");
       expect(
         await screen.findByRole("group", { name: "Changes in Deploying" }),
+      ).toBeVisible();
+    });
+
+    it("says in one plain sentence which folders the pact names", async () => {
+      serve(
+        queueOf([
+          row(1, "misc/stray.md", {
+            what: "off_structure",
+            kind: "update",
+            heading: "",
+            structure: [
+              "guides/` for how to do things",
+              "`decisions/` for why",
+              "onboarding/**",
+            ],
+          }),
+        ]),
+      );
+      renderApp("/d/eng/reflection/review");
+      expect(
+        await screen.findByText(
+          "This page is not in a folder the pact names (guides, decisions, onboarding).",
+        ),
       ).toBeVisible();
     });
 

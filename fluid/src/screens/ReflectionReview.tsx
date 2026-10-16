@@ -57,6 +57,23 @@ const WHAT_LABEL: Record<string, string> = {
   unreflected: "No page yet",
 };
 
+/** "just now" or "2 days ago". */
+function agoText(seconds: number): string {
+  return seconds < 60 ? "just now" : `${ageText(seconds)} ago`;
+}
+
+/**
+ * The folder names of the pact's structure globs. A glob arrives as the
+ * pact wrote it, often with a backticked folder and a few words after it
+ * (`guides/` for how to do things), so only the leading folder is kept.
+ */
+function structureFolders(globs: string[]): string[] {
+  return globs
+    .map((glob) => /^[\s`'"]*([^\s`'"]+)/.exec(glob)?.[1] ?? "")
+    .map((name) => name.replace(/[/*]+$/, ""))
+    .filter((name) => name !== "");
+}
+
 function whatLabel(what: string): string {
   const known = WHAT_LABEL[what];
   if (known !== undefined) {
@@ -189,7 +206,7 @@ function Waiting({
                       to={`${reflectionPageRoute(domain, group.path)}#${thread.id}`}
                       className={LINK}
                     >
-                      {`waiting ${ageText(thread.ageSecs)}`}
+                      {agoText(thread.ageSecs)}
                     </Link>
                   </p>
                 }
@@ -340,7 +357,7 @@ function QueueRow({
       )}
       {item.structure.length > 0 && (
         <p className="text-caption mt-1 text-muted">
-          {`outside ${item.structure.join(", ")}`}
+          {`This page is not in a folder the pact names (${structureFolders(item.structure).join(", ")}).`}
         </p>
       )}
       {item.count !== null && item.what === "unreflected" && (
