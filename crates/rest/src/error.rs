@@ -142,6 +142,21 @@ impl ApiError {
         }
     }
 
+    /// A 412 for a write whose precondition does not hold, with a plain
+    /// detail and nothing else: an upload's `If-None-Match: *` onto a path
+    /// that already holds a file. Not [`precondition_failed`], which carries
+    /// the markdown a client merges and has none to carry for bytes.
+    pub fn precondition_failed_plain(detail: impl Into<String>) -> ApiError {
+        ApiError {
+            status: StatusCode::PRECONDITION_FAILED,
+            title: "precondition failed",
+            detail: detail.into(),
+            token_required: None,
+            retry_after: None,
+            home_url: None,
+        }
+    }
+
     /// A 400 for a header the server can parse as HTTP but whose shape this
     /// surface refuses to accept - a comma-separated `If-Match` list, for
     /// instance, which RFC 9110 allows but this API's "exactly one strong
@@ -463,6 +478,24 @@ pub fn if_match(headers: &axum::http::HeaderMap) -> Result<String, ApiError> {
         return Err(ApiError::unprocessable("the If-Match token is empty"));
     }
     Ok(checksum.to_string())
+}
+
+/// Whether an upload asks to only create: `If-None-Match: *` (RFC 9110:
+/// "only if nothing is there"). Absent is `false`, `*` (whitespace around it
+/// aside) is `true`, and anything else is 422: an upload has no entity tag
+/// to compare, so a list, a quoted tag or a weak `W/*` would read as a
+/// precondition the server never checks. Not [`if_none_match_matches`],
+/// which is permissive on purpose because it only guards a read.
+pub fn create_only(headers: &axum::http::HeaderMap) -> Result<bool, ApiError> {
+    let Some(value) = headers.get(axum::http::header::IF_NONE_MATCH) else {
+        return Ok(false);
+    };
+    match value.to_str().map(str::trim) {
+        Ok("*") => Ok(true),
+        _ => Err(ApiError::unprocessable(
+            "If-None-Match on an upload takes only *",
+        )),
+    }
 }
 
 /// `Cache-Control` for every conditional single-resource read, sent on both

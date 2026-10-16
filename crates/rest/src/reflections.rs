@@ -15,10 +15,10 @@ use utoipa::{IntoParams, ToSchema};
 use super::auth::Identity;
 use super::{ApiError, ApiJson, ApiPath, ApiQuery, ProblemDetail, RestState, refuse_read_only};
 use crate::engine::{
-    ANONYMOUS_COMMENT, EngineError, MOVE_ONTO_A_FILE, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS,
-    REFUSED_HOSTED_START, REFUSED_OFF_START, REFUSED_PENDING, REFUSED_PENDING_NAMED,
-    REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED, REFUSED_PENDING_UNREADABLE,
-    ReflectionSearch,
+    ANONYMOUS_COMMENT, ASSET_EXISTS, EngineError, MOVE_ONTO_A_FILE, REFUSED_ELSEWHERE_START,
+    REFUSED_HOMELESS, REFUSED_HOSTED_START, REFUSED_OFF_START, REFUSED_PENDING,
+    REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED,
+    REFUSED_PENDING_UNREADABLE, ReflectionSearch,
 };
 use crate::files::{AttachmentView, attachment_response};
 use crate::params::{DiscussParams, WriteReflectionParams};
@@ -91,6 +91,11 @@ pub(crate) fn reflection_error(e: EngineError) -> ApiError {
         // logging in is what fixes it, so 401 like every other anonymous write.
         EngineError::Forbidden(text) if text == ANONYMOUS_COMMENT => {
             ApiError::unauthorized(text.clone())
+        }
+        // A create-only upload onto a path that holds a file: the request's
+        // own precondition failed.
+        EngineError::Conflict(text) if text.ends_with(ASSET_EXISTS) => {
+            ApiError::precondition_failed_plain(text.clone())
         }
         EngineError::Conflict(text)
             if text.starts_with("stale edit")
@@ -1345,12 +1350,23 @@ pub async fn asset_read(
                    file, since a replace removes the old bytes. The request \
                    body is the raw file, not multipart; the extension \
                    allowlist decides the mime. The path rules, the allowlist \
-                   and the 10 MiB ceiling are the engram attachments' own.",
+                   and the 10 MiB ceiling are the engram attachments' own. \
+                   With `If-None-Match: *` the upload only creates: a path \
+                   that already holds a file is refused with 412, for a \
+                   curator too, so two people cannot replace each other's \
+                   upload by accident.",
     params(
         ("domain" = String, Path, description = "The domain."),
         ("path" = String, Path, description = "Where to store it, under \
                                                reflections/assets/; may contain slashes.",
          example = "diagrams/flow.png"),
+        (
+            "If-None-Match" = Option<String>,
+            Header,
+            description = "`*` to only create: a path that already holds a \
+                           file is refused with 412 and left as it is. Any \
+                           other value is 422.",
+        ),
     ),
     request_body(
         description = "The raw file bytes.",
@@ -1394,6 +1410,13 @@ pub async fn asset_read(
             content_type = "application/problem+json",
         ),
         (
+            status = 412,
+            description = "`If-None-Match: *` and the path already holds a \
+                           file; nothing was stored. Pick another name.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
             status = 413,
             description = "Over the 10 MiB ceiling.",
             body = ProblemDetail,
@@ -1401,7 +1424,8 @@ pub async fn asset_read(
         ),
         (
             status = 422,
-            description = "A path rule or the extension allowlist refused it.",
+            description = "A path rule or the extension allowlist refused it, \
+                           or `If-None-Match` carried something other than `*`.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -1410,21 +1434,27 @@ pub async fn asset_read(
 pub async fn asset_write(
     State(state): State<RestState>,
     identity: Identity,
+    headers: HeaderMap,
     ApiPath((domain, rel)): ApiPath<(String, String)>,
+    // Last: the only extractor here that consumes the body.
     body: Bytes,
 ) -> Result<Json<UploadedReflectionAsset>, ApiError> {
     refuse_anonymous(&state, &identity, &domain, ANONYMOUS_EDIT).await?;
     refuse_read_only(&state)?;
-    let written = state
-        .engine
-        .reflection_asset_write(
-            &domain,
-            &asset_path(&rel),
-            body.to_vec(),
-            &caller(&identity),
-        )
-        .await
-        .map_err(reflection_error)?;
+    let create_only = super::create_only(&headers)?;
+    let (path, bytes, who) = (asset_path(&rel), body.to_vec(), caller(&identity));
+    let written = if create_only {
+        state
+            .engine
+            .reflection_asset_create(&domain, &path, bytes, &who)
+            .await
+    } else {
+        state
+            .engine
+            .reflection_asset_write(&domain, &path, bytes, &who)
+            .await
+    }
+    .map_err(reflection_error)?;
     Ok(Json(UploadedReflectionAsset {
         path: written.row.path,
         mime: written.row.mime,

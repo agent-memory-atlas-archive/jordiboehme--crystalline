@@ -6417,7 +6417,7 @@ mod domain_lookup_tests {
 // lists them in the order they stood in the single engine.rs.
 mod adopt_names;
 mod asset_home;
-pub use asset_home::MOVE_ONTO_A_FILE;
+pub use asset_home::{ASSET_EXISTS, MOVE_ONTO_A_FILE};
 pub(crate) use asset_home::{AssetHome, ReplaceRule, WrittenAsset};
 mod attachments;
 mod close_folders;

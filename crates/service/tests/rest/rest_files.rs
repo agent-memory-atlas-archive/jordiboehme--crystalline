@@ -1160,3 +1160,116 @@ async fn an_archive_preview_reports_a_collision_on_the_importers_own_draft_file_
         );
     }
 }
+
+/// Upload `bytes` to `path` with `If-None-Match` set to `value`.
+async fn put_if_none_match(
+    addr: std::net::SocketAddr,
+    session: &(String, String),
+    path: &str,
+    bytes: &'static [u8],
+    value: &str,
+) -> reqwest::Response {
+    as_session(addr, reqwest::Method::PUT, path, session)
+        .header("if-none-match", value)
+        .body(bytes)
+        .send()
+        .await
+        .unwrap()
+}
+
+/// What a create-only refusal says about `path`.
+fn exists_detail(path: &str) -> String {
+    format!("'{path}' {}", crystalline_service::engine::ASSET_EXISTS)
+}
+
+/// `If-None-Match: *` makes an engram upload create-only on every kind of
+/// domain: a file domain (a file the sync saw and one only the disk holds), a
+/// virtual domain, and a domain that reviews changes, where what counts is
+/// what the uploader's own view shows. Without the header an upload still
+/// replaces, and any other value is 422.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_create_only_engram_upload_refuses_a_path_that_holds_a_file() {
+    let fx = serve(Options {
+        review: true,
+        ..Options::default()
+    })
+    .await;
+    let eddy = login(fx.addr, "eddy", "eddypw").await;
+    std::fs::write(fx.root.join("eng/assets/late.png"), PNG).unwrap();
+    for (domain, path) in [
+        ("eng", "assets/shot.png"),
+        ("eng", "assets/late.png"),
+        ("rev", "assets/shot.png"),
+    ] {
+        let url = format!("/api/v1/domains/{domain}/files/{path}");
+        let resp = put_if_none_match(fx.addr, &eddy, &url, PDF, "*").await;
+        assert_eq!(resp.status(), 412, "{url}");
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["detail"], exists_detail(path), "{url}: {body}");
+    }
+    assert_eq!(
+        std::fs::read(fx.root.join("eng/assets/late.png")).unwrap(),
+        PNG
+    );
+    assert_eq!(
+        std::fs::read(fx.root.join("eng/assets/shot.png")).unwrap(),
+        PNG
+    );
+
+    // A new path is created, once, in each kind of domain.
+    for domain in ["eng", "scratch", "rev"] {
+        let url = format!("/api/v1/domains/{domain}/files/assets/new.png");
+        let resp = put_if_none_match(fx.addr, &eddy, &url, PNG, "*").await;
+        assert_eq!(resp.status(), 200, "{url}");
+        let resp = put_if_none_match(fx.addr, &eddy, &url, PDF, "*").await;
+        assert_eq!(resp.status(), 412, "{url}");
+        let resp = as_session(fx.addr, reqwest::Method::GET, &url, &eddy)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.bytes().await.unwrap().as_ref(), PNG, "{url}");
+    }
+
+    // A reviewed file this account deleted is gone from its view, so a
+    // create-only upload there lands in its draft.
+    let resp = as_session(
+        fx.addr,
+        reqwest::Method::DELETE,
+        "/api/v1/domains/rev/files/assets/shot.png",
+        &eddy,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert!(resp.status().is_success(), "{}", resp.status());
+    let resp = put_if_none_match(
+        fx.addr,
+        &eddy,
+        "/api/v1/domains/rev/files/assets/shot.png",
+        PDF,
+        "*",
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+
+    let resp = put(
+        fx.addr,
+        &eddy,
+        "/api/v1/domains/eng/files/assets/shot.png",
+        PDF,
+    )
+    .await;
+    assert_eq!(resp.status(), 200, "no header, a replace");
+    let resp = put_if_none_match(
+        fx.addr,
+        &eddy,
+        "/api/v1/domains/eng/files/assets/other.png",
+        PNG,
+        "\"abc\"",
+    )
+    .await;
+    assert_eq!(resp.status(), 422);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["detail"], "If-None-Match on an upload takes only *");
+    assert!(!fx.root.join("eng/assets/other.png").exists());
+}

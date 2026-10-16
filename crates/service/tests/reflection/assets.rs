@@ -926,6 +926,51 @@ async fn a_contributor_never_replaces_a_file_the_index_has_not_seen() {
     );
 }
 
+/// A create-only write never replaces a file, whatever the right: not one an
+/// upload stored, not one only the disk holds (no sync has seen it), not even
+/// a curator's. The refusal is the create-only one for a contributor too, not
+/// the curate refusal of a plain replace.
+#[tokio::test]
+async fn a_create_only_write_never_replaces_a_file() {
+    use crystalline_service::EngineError;
+    use crystalline_service::engine::ASSET_EXISTS;
+    let (fx, vera, nora, ed) = three_people().await;
+    let err = fx
+        .engine
+        .reflection_asset_create("eng", "assets/flow.png", PNG.to_vec(), &vera)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, EngineError::Forbidden(_)),
+        "a reader adds nothing: {err}"
+    );
+    let created = fx
+        .engine
+        .reflection_asset_create("eng", "assets/flow.png", PNG.to_vec(), &nora)
+        .await
+        .unwrap();
+    assert!(created.created);
+    std::fs::write(fx.root.join("reflections/assets/late.png"), PNG).unwrap();
+    for path in ["assets/flow.png", "assets/late.png"] {
+        for who in [&nora, &ed] {
+            let err = fx
+                .engine
+                .reflection_asset_create("eng", path, b"other".to_vec(), who)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, EngineError::Conflict(text) if *text == format!("'{path}' {ASSET_EXISTS}")),
+                "{path}: {err}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(fx.root.join("reflections").join(path)).unwrap(),
+            PNG,
+            "{path} keeps its bytes"
+        );
+    }
+}
+
 /// An engram embed a page already holds (written by hand) does not hold up a
 /// change to another section; a write that adds one is refused.
 #[tokio::test]

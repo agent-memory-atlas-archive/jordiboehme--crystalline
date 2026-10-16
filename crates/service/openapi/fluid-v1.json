@@ -3208,7 +3208,7 @@
           "attachments"
         ],
         "summary": "Upload an attachment, creating or replacing it.",
-        "description": "Editor only. The request body is the raw file - not multipart - and the declared content type is ignored: the extension allowlist decides the mime, at upload and at every later read.\n\nThe path must start with `assets/`, hold no `.`, `..` or hidden segment, no backslash, colon, `#` or `%`, be at most 256 bytes and end in an allowlisted extension; anything else is 400 naming the rule. The domain is marked as owing a consolidation sweep, because a person just added something the agent has not read yet.\n\nOn a domain that reviews changes the bytes land in the caller's own files overlay and the folder the team reviewed is not touched, which is what `draft` in the answer says. With `X-Crystalline-Join` naming a live join the bytes follow it into the OWNER's files overlay instead, to be folded or discarded with the draft that references them.",
+        "description": "Editor only. The request body is the raw file - not multipart - and the declared content type is ignored: the extension allowlist decides the mime, at upload and at every later read.\n\nThe path must start with `assets/`, hold no `.`, `..` or hidden segment, no backslash, colon, `#` or `%`, be at most 256 bytes and end in an allowlisted extension; anything else is 400 naming the rule. The domain is marked as owing a consolidation sweep, because a person just added something the agent has not read yet.\n\nOn a domain that reviews changes the bytes land in the caller's own files overlay and the folder the team reviewed is not touched, which is what `draft` in the answer says. With `X-Crystalline-Join` naming a live join the bytes follow it into the OWNER's files overlay instead, to be folded or discarded with the draft that references them.\n\nWith `If-None-Match: *` the upload only creates: a path that already holds a file is refused with 412. On a domain that reviews changes that is the file the caller sees there (its own draft bytes, or a reviewed file it has not deleted).",
         "operationId": "write_attachment",
         "parameters": [
           {
@@ -3234,6 +3234,18 @@
             "name": "X-Crystalline-Join",
             "in": "header",
             "description": "The key of a live join this session opened on a draft share-link (`POST /draft-links/join`). It routes the upload into the draft owner's files overlay rather than the caller's own. A key naming no live join of this account's is refused 403 and nothing is stored.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "description": "`*` to only create: a path that already holds a file is refused with 412 and left as it is. Any other value is 422.",
             "required": false,
             "schema": {
               "type": [
@@ -3305,6 +3317,16 @@
               }
             }
           },
+          "412": {
+            "description": "`If-None-Match: *` and the path already holds a file; nothing was stored. Pick another name.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
           "413": {
             "description": "The body is over the 10 MiB limit this API accepts, which is also the attachment size ceiling.",
             "content": {
@@ -3316,7 +3338,7 @@
             }
           },
           "422": {
-            "description": "A teaching refusal from a domain that reviews changes: a write into the folder the team reviewed rather than into a draft, a path where a share-link shows somebody else's draft and this session has not joined it, or a caller with no account of their own and so no draft to write into. The detail is the sentence that says what to do instead.",
+            "description": "`If-None-Match` carried something other than `*`; or a teaching refusal from a domain that reviews changes: a write into the folder the team reviewed rather than into a draft, a path where a share-link shows somebody else's draft and this session has not joined it, or a caller with no account of their own and so no draft to write into. The detail is the sentence that says what to do instead.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4796,7 +4818,7 @@
           "reflection"
         ],
         "summary": "Add a file to the Reflection, or replace one.",
-        "description": "Needs `edit` for a new path and `curate` to replace a file, since a replace removes the old bytes. The request body is the raw file, not multipart; the extension allowlist decides the mime. The path rules, the allowlist and the 10 MiB ceiling are the engram attachments' own.",
+        "description": "Needs `edit` for a new path and `curate` to replace a file, since a replace removes the old bytes. The request body is the raw file, not multipart; the extension allowlist decides the mime. The path rules, the allowlist and the 10 MiB ceiling are the engram attachments' own. With `If-None-Match: *` the upload only creates: a path that already holds a file is refused with 412, for a curator too, so two people cannot replace each other's upload by accident.",
         "operationId": "write_reflection_asset",
         "parameters": [
           {
@@ -4817,6 +4839,18 @@
               "type": "string"
             },
             "example": "diagrams/flow.png"
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "description": "`*` to only create: a path that already holds a file is refused with 412 and left as it is. Any other value is 422.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -4881,6 +4915,16 @@
               }
             }
           },
+          "412": {
+            "description": "`If-None-Match: *` and the path already holds a file; nothing was stored. Pick another name.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Over the 10 MiB ceiling.",
             "content": {
@@ -4892,7 +4936,7 @@
             }
           },
           "422": {
-            "description": "A path rule or the extension allowlist refused it.",
+            "description": "A path rule or the extension allowlist refused it, or `If-None-Match` carried something other than `*`.",
             "content": {
               "application/problem+json": {
                 "schema": {

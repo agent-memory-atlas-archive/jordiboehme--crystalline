@@ -2123,6 +2123,29 @@ impl<'a> DomainView<'a> {
         crate::engine::attachment_row(path, bytes, crate::engine::asset_modified(&abs))
     }
 
+    /// Whether this actor's files overlay shows a file at `path`: its own
+    /// bytes, or a reviewed file it has not deleted. The question a
+    /// create-only upload asks before [`DomainView::put_file`], read the way
+    /// [`DomainView::tombstone_file`] reads the folder (either half, the file
+    /// or the row).
+    pub(crate) async fn shows_file(&self, path: &str) -> Result<bool> {
+        let actor = self.files_writer()?;
+        let state_dir = self.files_state_dir()?;
+        let held = crate::overlay_files::held(&state_dir, &self.domain, actor, path)
+            .map_err(|e| self.files_io(path, e))?;
+        match held {
+            crate::overlay_files::Held::Bytes => Ok(true),
+            crate::overlay_files::Held::Tombstone => Ok(false),
+            crate::overlay_files::Held::Nothing => {
+                match self.engine.attachment_delete_size(&self.domain, path).await {
+                    Ok(_) => Ok(true),
+                    Err(EngineError::NotFound(_)) => Ok(false),
+                    Err(e) => Err(e),
+                }
+            }
+        }
+    }
+
     /// Mark this actor's deletion of one non-engram path.
     ///
     /// Two shapes, decided by whether the folder holds the path at all. A

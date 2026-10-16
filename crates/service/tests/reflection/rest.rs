@@ -1117,16 +1117,26 @@ async fn an_unknown_thread_action_is_404_and_a_search_needs_words() {
 
 impl Session {
     pub async fn put_bytes(&self, path: &str, bytes: &[u8]) -> (u16, Value) {
+        self.put_bytes_with(path, bytes, &[]).await
+    }
+
+    /// [`Session::put_bytes`] with extra request headers.
+    pub async fn put_bytes_with(
+        &self,
+        path: &str,
+        bytes: &[u8],
+        headers: &[(&str, &str)],
+    ) -> (u16, Value) {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let resp = client
+        let mut request = client
             .put(format!("http://{}{path}", self.addr))
             .header("cookie", format!("fluid_session={}", self.cookie))
             .header("x-csrf-token", &self.csrf)
-            .header("content-type", "application/octet-stream")
-            .body(bytes.to_vec())
-            .send()
-            .await
-            .unwrap();
+            .header("content-type", "application/octet-stream");
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let resp = request.body(bytes.to_vec()).send().await.unwrap();
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap();
         (
@@ -1649,4 +1659,69 @@ async fn the_domain_listing_counts_open_threads_without_page_text() {
         "no page text is read to count threads"
     );
     assert_eq!(s.fx.engine.recorded_path_loads(), paths);
+}
+
+/// `If-None-Match: *` makes an upload create-only: the first lands, the
+/// second is 412 with the bytes unchanged, for a contributor and a curator
+/// alike (a contributor is told 412, not the 403 of a refused replace).
+#[tokio::test]
+async fn a_create_only_upload_refuses_an_existing_file_with_412() {
+    let s = serve().await;
+    let (ann, ed) = (
+        Session::login(s.addr, "ann").await,
+        Session::login(s.addr, "ed").await,
+    );
+    const FILE: &str = "/api/v1/domains/eng/reflection/assets/flow.png";
+    let png = crate::assets::PNG;
+    let star = [("if-none-match", "*")];
+    let (status, up) = ann.put_bytes_with(FILE, png, &star).await;
+    assert_eq!(status, 200, "{up}");
+    assert_eq!(up["created"], true, "{up}");
+    for who in [&ann, &ed] {
+        let (status, err) = who.put_bytes_with(FILE, b"other", &star).await;
+        assert_eq!(status, 412, "{err}");
+        assert_eq!(err["status"], 412, "{err}");
+        assert_eq!(
+            err["detail"],
+            format!(
+                "'assets/flow.png' {}",
+                crystalline_service::engine::ASSET_EXISTS
+            ),
+            "{err}"
+        );
+    }
+    // A space around the star is still the star.
+    let (status, err) = ed
+        .put_bytes_with(FILE, b"other", &[("if-none-match", " * ")])
+        .await;
+    assert_eq!(status, 412, "{err}");
+    assert_eq!(
+        std::fs::read(s.fx.root.join("reflections/assets/flow.png")).unwrap(),
+        png,
+        "nothing replaced the first upload"
+    );
+    // Without the header a curator still replaces.
+    let (status, up) = ed.put_bytes(FILE, b"other").await;
+    assert_eq!(status, 200, "{up}");
+    assert_eq!(up["created"], false, "{up}");
+}
+
+/// Only `*` asks to create: any other `If-None-Match` is 422 and stores
+/// nothing.
+#[tokio::test]
+async fn an_if_none_match_other_than_star_is_422() {
+    let s = serve().await;
+    let ed = Session::login(s.addr, "ed").await;
+    const FILE: &str = "/api/v1/domains/eng/reflection/assets/flow.png";
+    for value in ["\"abc\"", "W/*", "*, \"abc\"", "\"*\"", ""] {
+        let (status, err) = ed
+            .put_bytes_with(FILE, crate::assets::PNG, &[("if-none-match", value)])
+            .await;
+        assert_eq!(status, 422, "{value:?}: {err}");
+        assert_eq!(
+            err["detail"], "If-None-Match on an upload takes only *",
+            "{value:?}: {err}"
+        );
+    }
+    assert!(!s.fx.root.join("reflections/assets/flow.png").exists());
 }

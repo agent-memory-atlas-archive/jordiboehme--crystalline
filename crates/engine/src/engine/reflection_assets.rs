@@ -56,10 +56,43 @@ impl Engine {
         bytes: Vec<u8>,
         caller: &ReflectionCaller,
     ) -> Result<WrittenReflectionAsset> {
+        self.reflection_asset_put(domain, path, bytes, caller, false)
+            .await
+    }
+
+    /// Add a file only where none is: a file already at `path` is refused
+    /// with [`EngineError::Conflict`] ending in
+    /// [`crate::engine::ASSET_EXISTS`], for a curator too. The check runs
+    /// under the file's lock, so of two racing uploads to one free path
+    /// exactly one lands.
+    pub async fn reflection_asset_create(
+        &self,
+        domain: &str,
+        path: &str,
+        bytes: Vec<u8>,
+        caller: &ReflectionCaller,
+    ) -> Result<WrittenReflectionAsset> {
+        self.reflection_asset_put(domain, path, bytes, caller, true)
+            .await
+    }
+
+    /// The two verbs above. Create-only wins over the curate refusal (R90):
+    /// a contributor who asked to only create is told that, not that
+    /// replacing needs curate.
+    async fn reflection_asset_put(
+        &self,
+        domain: &str,
+        path: &str,
+        bytes: Vec<u8>,
+        caller: &ReflectionCaller,
+        create_only: bool,
+    ) -> Result<WrittenReflectionAsset> {
         let access = self
             .require_reflection(domain, caller, ReflectionRight::Edit)
             .await?;
-        let replace = if access.right >= ReflectionRight::Curate {
+        let replace = if create_only {
+            ReplaceRule::CreateOnly
+        } else if access.right >= ReflectionRight::Curate {
             ReplaceRule::Allow
         } else {
             ReplaceRule::Refuse(format!(

@@ -14,6 +14,11 @@ use crystalline_index::AssetTable;
 /// refusal with its own status matches exactly this one.
 pub const MOVE_ONTO_A_FILE: &str = "already holds a file; remove it first or pick another name";
 
+/// The end of the sentence a create-only upload onto an occupied path is
+/// refused with, after the quoted path. Public so a surface can answer this
+/// refusal with its own status (REST: 412).
+pub const ASSET_EXISTS: &str = "already holds a file; this upload only creates";
+
 /// Where a domain keeps the files of one kind of document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AssetHome {
@@ -111,6 +116,23 @@ pub(crate) enum ReplaceRule {
     Allow,
     /// It may not, and the caller is told this sentence (`Forbidden`).
     Refuse(String),
+    /// The caller asked to only create: a file already there is refused with
+    /// [`ASSET_EXISTS`] (`Conflict`), whatever the caller's right.
+    CreateOnly,
+}
+
+impl ReplaceRule {
+    /// The refusal of a write onto `path`, which already holds a file, or
+    /// `None` when the write may replace it.
+    fn refusal(&self, path: &str) -> Option<EngineError> {
+        match self {
+            ReplaceRule::Allow => None,
+            ReplaceRule::Refuse(sentence) => Some(EngineError::Forbidden(sentence.clone())),
+            ReplaceRule::CreateOnly => {
+                Some(EngineError::Conflict(format!("'{path}' {ASSET_EXISTS}")))
+            }
+        }
+    }
 }
 
 /// What a write landed as.
@@ -244,8 +266,10 @@ impl Engine {
     ///
     /// `replace` decides whether a file already at the path may be replaced;
     /// [`ReplaceRule::Refuse`] answers [`EngineError::Forbidden`] with its
-    /// sentence. The check runs under the lock that serialises the write, so
-    /// two racing writes cannot both find the path empty.
+    /// sentence and [`ReplaceRule::CreateOnly`] answers
+    /// [`EngineError::Conflict`] ending in [`ASSET_EXISTS`]. The check runs
+    /// under the lock that serialises the write, so two racing writes cannot
+    /// both find the path empty.
     ///
     /// Both kinds owe the home's after-change step afterwards
     /// (`Engine::after_asset_change`).
@@ -284,8 +308,8 @@ impl Engine {
                 // cannot report what it replaced, so this one stat stays, under
                 // the lock so no racing write can slip in after it.
                 let existed = abs.is_file();
-                if existed && let ReplaceRule::Refuse(sentence) = &replace {
-                    return Err(EngineError::Forbidden(sentence.clone()));
+                if existed && let Some(refusal) = replace.refusal(path) {
+                    return Err(refusal);
                 }
                 write_bytes(&abs, &bytes)?;
                 // The modification instant is read back off the file rather
@@ -307,9 +331,9 @@ impl Engine {
                 // back rather than approximate it.
                 let previous = store.get_asset(home.table(), domain_id, path).await?;
                 if previous.is_some()
-                    && let ReplaceRule::Refuse(sentence) = &replace
+                    && let Some(refusal) = replace.refusal(path)
                 {
-                    return Err(EngineError::Forbidden(sentence.clone()));
+                    return Err(refusal);
                 }
                 store.upsert_asset(home.table(), domain_id, &row).await?;
                 // A failed blob write must leave the domain exactly as it found

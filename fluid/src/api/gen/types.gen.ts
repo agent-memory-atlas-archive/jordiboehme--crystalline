@@ -3735,6 +3735,10 @@ export type WriteAttachmentData = {
          * The key of a live join this session opened on a draft share-link (`POST /draft-links/join`). It routes the upload into the draft owner's files overlay rather than the caller's own. A key naming no live join of this account's is refused 403 and nothing is stored.
          */
         'X-Crystalline-Join'?: string | null;
+        /**
+         * `*` to only create: a path that already holds a file is refused with 412 and left as it is. Any other value is 422.
+         */
+        'If-None-Match'?: string | null;
     };
     path: {
         /**
@@ -3768,11 +3772,15 @@ export type WriteAttachmentErrors = {
      */
     404: ProblemDetail;
     /**
+     * `If-None-Match: *` and the path already holds a file; nothing was stored. Pick another name.
+     */
+    412: ProblemDetail;
+    /**
      * The body is over the 10 MiB limit this API accepts, which is also the attachment size ceiling.
      */
     413: ProblemDetail;
     /**
-     * A teaching refusal from a domain that reviews changes: a write into the folder the team reviewed rather than into a draft, a path where a share-link shows somebody else's draft and this session has not joined it, or a caller with no account of their own and so no draft to write into. The detail is the sentence that says what to do instead.
+     * `If-None-Match` carried something other than `*`; or a teaching refusal from a domain that reviews changes: a write into the folder the team reviewed rather than into a draft, a path where a share-link shows somebody else's draft and this session has not joined it, or a caller with no account of their own and so no draft to write into. The detail is the sentence that says what to do instead.
      */
     422: ProblemDetail;
 };
@@ -4420,6 +4428,12 @@ export type WriteReflectionAssetData = {
      * The raw file bytes.
      */
     body: string;
+    headers?: {
+        /**
+         * `*` to only create: a path that already holds a file is refused with 412 and left as it is. Any other value is 422.
+         */
+        'If-None-Match'?: string | null;
+    };
     path: {
         /**
          * The domain.
@@ -4452,11 +4466,15 @@ export type WriteReflectionAssetErrors = {
      */
     409: ProblemDetail;
     /**
+     * `If-None-Match: *` and the path already holds a file; nothing was stored. Pick another name.
+     */
+    412: ProblemDetail;
+    /**
      * Over the 10 MiB ceiling.
      */
     413: ProblemDetail;
     /**
-     * A path rule or the extension allowlist refused it.
+     * A path rule or the extension allowlist refused it, or `If-None-Match` carried something other than `*`.
      */
     422: ProblemDetail;
 };

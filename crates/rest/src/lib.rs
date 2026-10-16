@@ -64,8 +64,8 @@ pub use auth::{
 };
 pub use auth_store::*;
 pub use error::{
-    ApiError, ApiJson, ApiPath, ApiQuery, ConflictDetail, ProblemDetail, REVALIDATE, if_match,
-    if_none_match_matches, precondition_failed, versioned_etag,
+    ApiError, ApiJson, ApiPath, ApiQuery, ConflictDetail, ProblemDetail, REVALIDATE, create_only,
+    if_match, if_none_match_matches, precondition_failed, versioned_etag,
 };
 use login_throttle::LoginThrottle;
 /// The loopback names every tier answers to, shared with `daemon::http_config`
