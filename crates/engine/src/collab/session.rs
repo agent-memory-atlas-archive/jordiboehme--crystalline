@@ -1953,14 +1953,14 @@ impl CollabSession {
         }
     }
 
-    /// Write a closing room's text that could not be saved to
-    /// `<state dir>/kept/<domain>/<engram|reflection>/<path>.<UTC time>.md`
-    /// and log where. Best effort: a failure to write it is a second
-    /// warning, never a panic.
+    /// Write a closing room's text that could not be saved to the kept
+    /// folder (layout in [`crystalline_core::kept`]) and log where. Best
+    /// effort: a failure to write it is a second warning, never a panic.
     fn keep_refused_text(&self, state: &SessionState) {
-        let (folder, path) = match self.doc() {
-            RoomDoc::Engram(_) => ("engram", state.path.clone()),
-            RoomDoc::Reflection(path) => ("reflection", path),
+        use crystalline_core::kept::KeptKind;
+        let (kind, path) = match self.doc() {
+            RoomDoc::Engram(_) => (KeptKind::Engram, state.path.clone()),
+            RoomDoc::Reflection(path) => (KeptKind::Reflection, path),
         };
         let text = Self::file_text_locked(state);
         let Some(kept) = self.engine.kept_dir() else {
@@ -1971,19 +1971,24 @@ impl CollabSession {
             );
             return;
         };
-        let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-        let base = kept.join(&self.domain).join(folder).join(&path);
-        match write_kept(&base, &stamp, &text) {
+        match crystalline_core::kept::write(
+            &kept,
+            &self.domain,
+            kind,
+            &path,
+            chrono::Utc::now(),
+            &text,
+        ) {
             Ok(file) => tracing::warn!(
                 domain = %self.domain,
                 path = %path,
                 kept = %file.display(),
-                "a closing room's text could not be saved and is kept here"
+                "a closing room's text could not be saved and is kept here; crystalline kept list shows it"
             ),
             Err(err) => tracing::warn!(
                 domain = %self.domain,
                 path = %path,
-                kept = %base.display(),
+                kept = %kept.display(),
                 %err,
                 "a closing room's text could not be saved, and keeping it failed too"
             ),
@@ -3112,61 +3117,9 @@ async fn run_saver(session: Arc<CollabSession>) {
     }
 }
 
-/// Write `text` to a new file `<base>.<stamp>.md`, never over one that is
-/// there: the stamp has one-second resolution and the path names no owner,
-/// so two rooms over one engram (two drafts) or one page refused twice in a
-/// second map to one name, and the later one takes `<base>.<stamp>-2.md`,
-/// `-3` and so on. Creates the folders. Answers the file written.
-fn write_kept(
-    base: &std::path::Path,
-    stamp: &str,
-    text: &str,
-) -> std::io::Result<std::path::PathBuf> {
-    use std::io::Write as _;
-    if let Some(parent) = base.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let name = base.file_name().unwrap_or_default().to_string_lossy();
-    for n in 1u32.. {
-        let file = base.with_file_name(match n {
-            1 => format!("{name}.{stamp}.md"),
-            n => format!("{name}.{stamp}-{n}.md"),
-        });
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&file)
-        {
-            Ok(mut out) => {
-                out.write_all(text.as_bytes())?;
-                return Ok(file);
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(err),
-        }
-    }
-    unreachable!("a free name is found before the counter runs out")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Two refusals that map to one kept name both keep their text: the
-    /// second never overwrites the first.
-    #[test]
-    fn a_second_kept_text_under_the_same_name_does_not_overwrite_the_first() {
-        let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().join("eng/reflection/guides/a.md");
-        let stamp = "20261015T080000Z";
-        let first = write_kept(&base, stamp, "first").unwrap();
-        let second = write_kept(&base, stamp, "second").unwrap();
-        assert_ne!(first, second);
-        assert_eq!(first.file_name().unwrap(), "a.md.20261015T080000Z.md");
-        assert_eq!(second.file_name().unwrap(), "a.md.20261015T080000Z-2.md");
-        assert_eq!(std::fs::read_to_string(&first).unwrap(), "first");
-        assert_eq!(std::fs::read_to_string(&second).unwrap(), "second");
-    }
 
     #[test]
     fn an_engram_room_is_keyed_by_its_permalink_as_a_room_doc() {

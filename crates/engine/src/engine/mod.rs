@@ -2677,7 +2677,9 @@ impl Engine {
     /// [`Engine::with_state_dir`], so a test never writes into the
     /// developer's own state folder.
     pub(crate) fn kept_dir(&self) -> Option<PathBuf> {
-        self.journal_state_dir().ok().map(|dir| dir.join("kept"))
+        self.journal_state_dir()
+            .ok()
+            .map(|dir| dir.join(crystalline_core::kept::KEPT_DIR))
     }
 
     /// Hold the domain-admin lock for the whole of a registration or a removal.
@@ -6583,6 +6585,7 @@ mod domains;
 mod edit;
 mod evolve;
 mod github;
+mod kept;
 mod move_;
 mod name_report;
 mod names;

@@ -3477,6 +3477,24 @@ async fn a_refused_close_keeps_the_rooms_text_on_the_server() {
     );
     let held = std::fs::read_to_string(&kept[0]).unwrap();
     assert!(held.contains("Typed while it was switched off."), "{held}");
+    // What the room kept is what the kept-text listing finds, under the
+    // page's own path and with its text.
+    let listed = engine
+        .kept_texts("eng", &crystalline_service::Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].path, "guides/a.md");
+    assert_eq!(listed[0].kind, crystalline_core::kept::KeptKind::Reflection);
+    let (_, text) = engine
+        .kept_text(
+            "eng",
+            &listed[0].id,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(text, held);
 }
 
 /// A room nobody typed in loses nothing when its last save is refused (a

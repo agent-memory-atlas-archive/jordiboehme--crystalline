@@ -28,6 +28,7 @@ mod headings;
 pub mod import;
 pub mod index;
 pub mod jsonc_edit;
+pub mod kept;
 pub mod kind;
 pub mod layout;
 pub mod line_endings;
