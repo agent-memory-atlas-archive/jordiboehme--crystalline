@@ -8,7 +8,7 @@ use crystalline_service::rest::{MemberLevel, Role};
 use reqwest::Method;
 use serde_json::Value;
 
-use crate::rest::{Served, Session, anonymous, serve, serve_with};
+use crate::rest::{Opts, Served, Session, anonymous, serve, serve_opts, serve_with};
 
 const PAGE: &str = "guides/deploying.md";
 const ENGRAM: &str = "runbooks/deploy.md";
@@ -319,4 +319,84 @@ async fn a_drafts_kept_text_goes_to_its_owner_only() {
         .await;
     assert_eq!(status, 204);
     assert!(kept::scan(&root).is_empty());
+}
+
+/// A removed domain's kept texts are set aside, never deleted: a new domain
+/// registered under the same name sees none of them over the JSON API,
+/// while the files stay, listed as from a removed domain.
+#[tokio::test]
+async fn a_new_domain_with_a_removed_domains_name_sees_none_of_its_kept_texts() {
+    let s = serve_opts(Opts {
+        anonymous: false,
+        private: false,
+        origin: false,
+    })
+    .await;
+    keep(&s);
+    let keeper = Session::login(s.addr, "keeper").await;
+    let (_, body) = keeper.get("/api/v1/domains/eng/kept").await;
+    assert_eq!(listed(&body).len(), 2, "{body}");
+
+    let engine = &s.fx.engine;
+    engine
+        .unregister_domain("eng", &crystalline_service::Scope::Unrestricted, false, &[])
+        .await
+        .unwrap();
+    engine
+        .domain_add_local(Some("eng"), Some(s.fx.root.to_str().unwrap()))
+        .await
+        .unwrap();
+
+    let (status, body) = keeper.get("/api/v1/domains/eng/kept").await;
+    assert_eq!(status, 200, "{body}");
+    assert!(listed(&body).is_empty(), "{body}");
+    let root = s.fx.tmp.path().join("state/kept");
+    let found = kept::scan(&root);
+    let removed: Vec<&str> = found
+        .iter()
+        .filter(|k| k.domain == "eng" && k.removed)
+        .map(|k| k.path.as_str())
+        .collect();
+    assert_eq!(removed, vec![PAGE, ENGRAM], "set aside, not deleted");
+    for k in found.iter().filter(|k| k.removed) {
+        let (status, _) = keeper
+            .get(&format!("/api/v1/domains/eng/kept/{}", k.id))
+            .await;
+        assert_eq!(status, 404);
+    }
+}
+
+/// A renamed domain takes its kept texts along: they answer under the new
+/// name, and the old name holds none.
+#[tokio::test]
+async fn a_renamed_domain_takes_its_kept_texts_along() {
+    let s = serve_opts(Opts {
+        anonymous: false,
+        private: false,
+        origin: false,
+    })
+    .await;
+    keep(&s);
+    s.fx.engine
+        .rename_domain(
+            "eng",
+            "platform",
+            true,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let keeper = Session::login(s.addr, "keeper").await;
+    let (status, body) = keeper.get("/api/v1/domains/platform/kept").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        listed(&body),
+        vec![
+            ("reflection".to_string(), PAGE.to_string()),
+            ("engram".to_string(), ENGRAM.to_string()),
+        ]
+    );
+    let root = s.fx.tmp.path().join("state/kept");
+    assert!(!root.join("eng").exists());
+    assert!(root.join("platform").is_dir());
 }

@@ -1547,6 +1547,18 @@ impl Engine {
                 )
                 .map_err(io_error)?;
             }
+            RenameStep::KeptDir => {
+                let root = state_dir.join(crystalline_core::kept::KEPT_DIR);
+                // Texts already under the new name belong to no registered
+                // domain (one removed before removals set them aside): they
+                // go aside, never under the renamed domain and never away.
+                let distinct = old.to_lowercase() != new.to_lowercase();
+                if distinct && root.join(old).is_dir() && root.join(new).is_dir() {
+                    crystalline_core::kept::set_aside(&root, new, chrono::Utc::now())
+                        .map_err(io_error)?;
+                }
+                move_state_dir(&root, old, new).map_err(io_error)?;
+            }
             RenameStep::ProvisionReceipt => {
                 let path = state_dir.join(RECEIPT_FILE);
                 if path.is_file() {

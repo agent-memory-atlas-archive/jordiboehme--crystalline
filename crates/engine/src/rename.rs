@@ -39,6 +39,8 @@ pub enum RenameStep {
     OriginsDir,
     /// Move the `overlays/<name>/` draft journal folder.
     OverlaysDir,
+    /// Move the `kept/<name>/` folder of texts rooms could not save.
+    KeptDir,
     /// Move the provision receipt's entries.
     ProvisionReceipt,
     /// Write the configuration: the new key, the old spellings as aliases.
@@ -47,24 +49,26 @@ pub enum RenameStep {
 
 impl RenameStep {
     /// The steps of a rename of this machine's name only.
-    pub(crate) const LOCAL: [RenameStep; 6] = [
+    pub(crate) const LOCAL: [RenameStep; 7] = [
         RenameStep::IndexRow,
         RenameStep::AuthTables,
         RenameStep::OriginsDir,
         RenameStep::OverlaysDir,
+        RenameStep::KeptDir,
         RenameStep::ProvisionReceipt,
         RenameStep::Config,
     ];
 
     /// The steps of a rename that also writes the MANIFEST and respells
     /// links: those two first, then the local ones.
-    pub(crate) const FULL: [RenameStep; 8] = [
+    pub(crate) const FULL: [RenameStep; 9] = [
         RenameStep::Manifest,
         RenameStep::Relink,
         RenameStep::IndexRow,
         RenameStep::AuthTables,
         RenameStep::OriginsDir,
         RenameStep::OverlaysDir,
+        RenameStep::KeptDir,
         RenameStep::ProvisionReceipt,
         RenameStep::Config,
     ];
@@ -78,6 +82,7 @@ impl RenameStep {
             RenameStep::AuthTables => "auth_tables",
             RenameStep::OriginsDir => "origins_dir",
             RenameStep::OverlaysDir => "overlays_dir",
+            RenameStep::KeptDir => "kept_dir",
             RenameStep::ProvisionReceipt => "provision_receipt",
             RenameStep::Config => "config",
         }

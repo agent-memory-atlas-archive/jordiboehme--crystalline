@@ -40,6 +40,54 @@ const ID_LEN: usize = 12;
 /// folder per owner.
 const DRAFT_DIR: &str = "draft";
 
+/// The folder under the kept folder that holds removed domains' texts, one
+/// folder per removal named `<domain>-<time>`. Its leading dot is what
+/// `validate_domain_name` refuses, so no domain is ever called this.
+pub const REMOVED_DIR: &str = ".removed";
+
+/// Move `domain`'s kept texts aside when the domain is removed, to
+/// `<root>/.removed/<domain>-<time>/` (or `-N` after the time when that is
+/// taken), so a domain registered later under the same name never reaches
+/// them. Nothing is deleted. Answers where they went, or `None` when the
+/// domain kept nothing.
+pub fn set_aside(root: &Path, domain: &str, at: DateTime<Utc>) -> std::io::Result<Option<PathBuf>> {
+    let from = root.join(domain);
+    if domain.is_empty()
+        || domain.starts_with('.')
+        || domain.contains(['/', '\\'])
+        || !from.is_dir()
+    {
+        return Ok(None);
+    }
+    let removed = root.join(REMOVED_DIR);
+    std::fs::create_dir_all(&removed)?;
+    let stamp = at.format(STAMP).to_string();
+    for n in 1u32.. {
+        let to = removed.join(match n {
+            1 => format!("{domain}-{stamp}"),
+            n => format!("{domain}-{stamp}-{n}"),
+        });
+        if to.exists() {
+            continue;
+        }
+        std::fs::rename(&from, &to)?;
+        return Ok(Some(to));
+    }
+    unreachable!("a free name is found before the counter runs out")
+}
+
+/// The domain a folder under [`REMOVED_DIR`] belonged to:
+/// `<domain>-<time>` or `<domain>-<time>-<n>`.
+fn removed_domain(folder: &str) -> Option<&str> {
+    let folder = match folder.rsplit_once('-') {
+        Some((head, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => head,
+        _ => folder,
+    };
+    let (domain, stamp) = folder.rsplit_once('-')?;
+    NaiveDateTime::parse_from_str(stamp, STAMP).ok()?;
+    (!domain.is_empty()).then_some(domain)
+}
+
 /// Which kind of room a text was kept from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,6 +124,10 @@ pub struct KeptText {
     pub id: String,
     /// The domain the room belonged to.
     pub domain: String,
+    /// Whether the domain was removed from this machine after the text was
+    /// kept: [`set_aside`] moved the texts out of its folder, so a later
+    /// domain of the same name never reaches them.
+    pub removed: bool,
     /// Whose review draft the room was over, or `None` for the domain's own
     /// text. A draft's kept text is its owner's alone.
     pub owner: Option<String>,
@@ -194,20 +246,24 @@ fn place(
 /// scan never fails, so a report that lists kept texts always runs.
 pub fn scan(root: &Path) -> Vec<KeptText> {
     let mut found = Vec::new();
-    for domain in dir_entries(root) {
-        if !domain.is_dir {
+    for entry in dir_entries(root) {
+        if !entry.is_dir {
             continue;
         }
-        for entry in dir_entries(&domain.path) {
-            if entry.is_dir && entry.name == DRAFT_DIR {
-                for owner in dir_entries(&entry.path) {
-                    if owner.is_dir {
-                        scan_kinds(&domain.name, Some(&owner.name), &owner.path, &mut found);
-                    }
+        if entry.name == REMOVED_DIR {
+            for folder in dir_entries(&entry.path) {
+                if let Some(domain) = folder
+                    .is_dir
+                    .then(|| removed_domain(&folder.name))
+                    .flatten()
+                {
+                    let prefix = format!("{REMOVED_DIR}/{}", folder.name);
+                    scan_domain(domain, true, &prefix, &folder.path, &mut found);
                 }
             }
+        } else if !entry.name.starts_with('.') {
+            scan_domain(&entry.name, false, &entry.name, &entry.path, &mut found);
         }
-        scan_kinds(&domain.name, None, &domain.path, &mut found);
     }
     found.sort_by(|a, b| {
         (a.kept_at, &a.domain, &a.owner, a.kind, &a.path, &a.file)
@@ -245,28 +301,59 @@ pub fn remove(root: &Path, kept: &KeptText) -> std::io::Result<()> {
     Ok(())
 }
 
+/// One domain's folder at `dir` (`prefix` inside the kept folder): its own
+/// texts and every owner's draft texts.
+fn scan_domain(domain: &str, removed: bool, prefix: &str, dir: &Path, found: &mut Vec<KeptText>) {
+    for entry in dir_entries(dir) {
+        if entry.is_dir && entry.name == DRAFT_DIR {
+            for owner in dir_entries(&entry.path) {
+                if owner.is_dir {
+                    let prefix = format!("{prefix}/{DRAFT_DIR}/{}", owner.name);
+                    let at = Domain {
+                        name: domain,
+                        removed,
+                        owner: Some(&owner.name),
+                        prefix: &prefix,
+                    };
+                    scan_kinds(&at, &owner.path, found);
+                }
+            }
+        }
+    }
+    let at = Domain {
+        name: domain,
+        removed,
+        owner: None,
+        prefix,
+    };
+    scan_kinds(&at, dir, found);
+}
+
+/// Where a scan is: the domain, whether it was removed, whose draft folder
+/// (if any), and that folder's path inside the kept folder.
+struct Domain<'a> {
+    name: &'a str,
+    removed: bool,
+    owner: Option<&'a str>,
+    prefix: &'a str,
+}
+
 /// The two kind folders under `dir` (a domain's folder, or one owner's
 /// draft folder), walked into `found`.
-fn scan_kinds(domain: &str, owner: Option<&str>, dir: &Path, found: &mut Vec<KeptText>) {
+fn scan_kinds(at: &Domain<'_>, dir: &Path, found: &mut Vec<KeptText>) {
     for kind_dir in dir_entries(dir) {
         let Some(kind) = KeptKind::from_folder(&kind_dir.name) else {
             continue;
         };
         if kind_dir.is_dir {
-            let place = Place {
-                domain,
-                owner,
-                kind,
-            };
-            walk(&place, &kind_dir.path, "", found);
+            walk(&Place { at, kind }, &kind_dir.path, "", found);
         }
     }
 }
 
 /// Which kind folder a walk is in.
 struct Place<'a> {
-    domain: &'a str,
-    owner: Option<&'a str>,
+    at: &'a Domain<'a>,
     kind: KeptKind,
 }
 
@@ -274,14 +361,7 @@ impl Place<'_> {
     /// The file at `rel` inside this kind folder, as a path inside the kept
     /// folder, `/`-separated.
     fn rel(&self, rel: &str) -> String {
-        match self.owner {
-            Some(owner) => format!(
-                "{}/{DRAFT_DIR}/{owner}/{}/{rel}",
-                self.domain,
-                self.kind.as_str()
-            ),
-            None => format!("{}/{}/{rel}", self.domain, self.kind.as_str()),
-        }
+        format!("{}/{}/{rel}", self.at.prefix, self.kind.as_str())
     }
 }
 
@@ -311,8 +391,9 @@ fn walk(place: &Place<'_>, dir: &Path, rel: &str, found: &mut Vec<KeptText>) {
         };
         found.push(KeptText {
             id: id_of(&place.rel(&child)),
-            domain: place.domain.to_string(),
-            owner: place.owner.map(str::to_string),
+            domain: place.at.name.to_string(),
+            removed: place.at.removed,
+            owner: place.at.owner.map(str::to_string),
             kind: place.kind,
             path,
             kept_at,
@@ -424,6 +505,68 @@ mod tests {
         let err = write(root, "ops", None, KeptKind::Engram, "a.md", at(8), "x").unwrap_err();
         PRUNES.with(|left| left.set(0));
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    /// A removed domain's texts move aside whole, are listed as removed
+    /// under their domain's name, and a later folder of the same name holds
+    /// only its own. A second removal in the same second takes `-2`.
+    #[test]
+    fn a_removed_domains_texts_are_set_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(
+            root,
+            "eng",
+            Some("ada"),
+            KeptKind::Engram,
+            "a.md",
+            at(8),
+            "draft",
+        )
+        .unwrap();
+        write(
+            root,
+            "eng",
+            None,
+            KeptKind::Reflection,
+            "p.md",
+            at(8),
+            "page",
+        )
+        .unwrap();
+        let to = set_aside(root, "eng", at(9)).unwrap().unwrap();
+        assert_eq!(to, root.join(".removed/eng-20261015T090000Z"));
+        assert!(!root.join("eng").exists());
+        assert_eq!(set_aside(root, "eng", at(9)).unwrap(), None, "nothing left");
+        write(root, "eng", None, KeptKind::Engram, "new.md", at(10), "new").unwrap();
+        let found = scan(root);
+        let rows: Vec<(&str, bool, Option<&str>, &str)> = found
+            .iter()
+            .map(|k| {
+                (
+                    k.domain.as_str(),
+                    k.removed,
+                    k.owner.as_deref(),
+                    k.path.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("eng", true, None, "p.md"),
+                ("eng", true, Some("ada"), "a.md"),
+                ("eng", false, None, "new.md"),
+            ]
+        );
+        let again = set_aside(root, "eng", at(9)).unwrap().unwrap();
+        assert_eq!(again, root.join(".removed/eng-20261015T090000Z-2"));
+        assert_eq!(scan(root).iter().filter(|k| k.removed).count(), 3);
+        assert_eq!(
+            removed_domain("my-team-20261015T090000Z-3"),
+            Some("my-team")
+        );
+        assert_eq!(removed_domain("eng"), None);
     }
 
     /// The temporary name a keep writes first is never listed.

@@ -699,7 +699,8 @@ impl Engine {
     }
 
     /// Sweep a domain's overlay journal as part of ending it, answering with
-    /// how many mirrored drafts went.
+    /// how many mirrored drafts went. Its kept texts are moved aside first
+    /// (see [`Engine::set_aside_kept`]), never deleted.
     ///
     /// Best effort, like [`Engine::forget_domain_records`] beside it and for
     /// the same reason: by the time this runs the rows are already cleared, and
@@ -708,6 +709,7 @@ impl Engine {
     /// nothing restores from it either way - [`Engine::restore_overlays`]
     /// refuses a domain nobody registers.
     pub(super) async fn sweep_domain_journal(&self, name: &str) -> u64 {
+        self.set_aside_kept(name);
         let state_dir = match self.journal_state_dir() {
             Ok(dir) => dir,
             Err(e) => {

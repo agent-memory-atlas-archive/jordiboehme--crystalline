@@ -42,6 +42,7 @@ pub fn to_json(k: &KeptText) -> Value {
         "id": k.id,
         "domain": k.domain,
         "owner": k.owner,
+        "removed": k.removed,
         "kind": k.kind,
         "path": k.path,
         "kept_at": k.kept_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -51,13 +52,17 @@ pub fn to_json(k: &KeptText) -> Value {
 }
 
 /// "eng reflection guides/a.md", plus "(ada's draft)" for a text kept from
-/// a review draft: what a kept text was.
+/// a review draft and "(removed domain)" for one whose domain was removed
+/// since: what a kept text was.
 pub fn what(k: &KeptText) -> String {
-    let base = format!("{} {} {}", k.domain, k.kind.as_str(), k.path);
-    match &k.owner {
-        Some(owner) => format!("{base} ({owner}'s draft)"),
-        None => base,
+    let mut out = format!("{} {} {}", k.domain, k.kind.as_str(), k.path);
+    if let Some(owner) = &k.owner {
+        out.push_str(&format!(" ({owner}'s draft)"));
     }
+    if k.removed {
+        out.push_str(" (removed domain)");
+    }
+    out
 }
 
 /// "2026-10-15 08:00 UTC".

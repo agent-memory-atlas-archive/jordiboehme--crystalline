@@ -351,6 +351,7 @@ async fn a_local_rename_moves_everything_and_keeps_the_id_body(store: Arc<Mutex<
             "auth_tables",
             "origins_dir",
             "overlays_dir",
+            "kept_dir",
             "provision_receipt",
             "config"
         ],
@@ -446,6 +447,7 @@ async fn a_leftover_journal_is_completed_before_the_first_sync_body(store: Arc<M
         RenameStep::AuthTables,
         RenameStep::OriginsDir,
         RenameStep::OverlaysDir,
+        RenameStep::KeptDir,
         RenameStep::ProvisionReceipt,
         RenameStep::Config,
     ];
@@ -1871,6 +1873,7 @@ async fn a_full_rename_a_crash_stopped_is_finished_body(store: Arc<Mutex<dyn Sto
                 "auth_tables",
                 "origins_dir",
                 "overlays_dir",
+                "kept_dir",
                 "provision_receipt",
                 "config"
             ]),

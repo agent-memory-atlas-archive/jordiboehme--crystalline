@@ -110,10 +110,34 @@ impl Engine {
             .into_iter()
             .filter(|k| {
                 k.domain == domain
+                    && !k.removed
                     && rights.allows(k.kind)
                     && (k.owner.is_none() || k.owner == mine)
             })
             .collect()
+    }
+
+    /// Move a removed domain's kept texts aside, so a domain registered
+    /// later under the same name never reaches them; `crystalline kept list`
+    /// still shows them, marked as from a removed domain. Best effort, like
+    /// the journal sweep beside it: a failure is logged.
+    pub(crate) fn set_aside_kept(&self, name: &str) {
+        let Some(root) = self.kept_dir() else {
+            return;
+        };
+        match kept::set_aside(&root, name, chrono::Utc::now()) {
+            Ok(Some(to)) => tracing::info!(
+                domain = name,
+                kept = %to.display(),
+                "the removed domain's kept texts are set aside here"
+            ),
+            Ok(None) => {}
+            Err(err) => tracing::warn!(
+                domain = name,
+                %err,
+                "the removed domain's kept texts could not be set aside; a domain registered under this name would reach them"
+            ),
+        }
     }
 
     fn kept_root(&self) -> Result<std::path::PathBuf> {
