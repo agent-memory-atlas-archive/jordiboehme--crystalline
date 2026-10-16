@@ -87,21 +87,28 @@ fn doctor_warns_about_a_pair_that_differs_only_in_case() {
     let home = tempfile::tempdir().unwrap();
     let a = folder(home.path(), "a", None);
     let b = folder(home.path(), "b", None);
-    let config = crate::common::isolation_env(home.path())
-        .into_iter()
-        .find(|(name, _)| *name == "XDG_CONFIG_HOME" || *name == "APPDATA")
-        .map(|(_, dir)| dir.join("crystalline").join("config.yaml"))
-        .unwrap();
-    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    // The config is named through `CRYSTALLINE_CONFIG`: the default path
+    // differs per platform (Windows does not read `XDG_CONFIG_HOME`).
+    let config = home.path().join("config.yaml");
     std::fs::write(
         &config,
-        format!("domains:\n  eng:\n    path: {a}\n  Eng:\n    path: {b}\n"),
+        format!("domains:\n  eng:\n    path: '{a}'\n  Eng:\n    path: '{b}'\n"),
     )
     .unwrap();
-    let out = run(home.path(), &["doctor", "--json"]);
+    let doctor = |args: &[&str]| {
+        let mut cmd = crate::common::crystalline();
+        crate::common::isolate(&mut cmd, home.path());
+        cmd.env("CRYSTALLINE_SERVICE_HTTP", "false")
+            .env("CRYSTALLINE_TEST_DAEMON_TASK", "ready")
+            .env("CRYSTALLINE_CONFIG", &config)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let out = doctor(&["doctor", "--json"]);
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(report["case_twins"], serde_json::json!([["eng", "Eng"]]));
-    let human = String::from_utf8_lossy(&run(home.path(), &["doctor"]).stdout).into_owned();
+    let human = String::from_utf8_lossy(&doctor(&["doctor"]).stdout).into_owned();
     assert!(
         human.contains("[warning] 'eng' and 'Eng' differ only in letter case")
             && human.contains("crystalline domain rename Eng <new name>"),
