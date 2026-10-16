@@ -132,9 +132,3 @@ export function keptNoticeSentence(entry: KeptTextEntry): string {
     ? "The server kept unsaved text from your draft."
     : "The server kept unsaved text for this page.";
 }
-
-/** Whether a saved text holds a kept one, line endings aside. */
-export function savedHolds(saved: string, text: string): boolean {
-  const lf = (value: string) => value.replace(/\r\n/g, "\n");
-  return lf(saved).includes(lf(text).trim());
-}

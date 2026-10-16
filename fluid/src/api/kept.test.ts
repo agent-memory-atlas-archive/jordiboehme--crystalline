@@ -19,7 +19,6 @@ import {
   keptNoticeSentence,
   keptQuery,
   keptTextKey,
-  savedHolds,
 } from "./kept";
 import type { KeptTextEntry } from "./model";
 
@@ -133,11 +132,5 @@ describe("the kept texts api module", () => {
     expect(keptNoticeSentence(entry({ draft: true }))).toBe(
       "The server kept unsaved text from your draft.",
     );
-  });
-
-  it("finds a kept text in a saved one whatever the line endings", () => {
-    expect(savedHolds("a\r\nb\r\n", "a\nb\n")).toBe(true);
-    expect(savedHolds("x\na\nb\ny", "a\nb\n")).toBe(true);
-    expect(savedHolds("a\nc\n", "a\nb\n")).toBe(false);
   });
 });

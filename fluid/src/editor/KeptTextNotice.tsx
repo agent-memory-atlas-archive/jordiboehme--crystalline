@@ -12,9 +12,11 @@
  * The server copy is the last copy until the text is saved again, so
  * Replace with it never deletes it on its own. It reads the text, checks the
  * editor can still take it, puts it in as one change the person can undo,
- * and asks the editor whether it really landed. Only the next save that
- * holds the text drops the kept copy; until then the note says it waits for
- * that save. Nothing is ever dropped for a text that went nowhere.
+ * and asks the editor whether it really landed. The kept copy goes with the
+ * first save that began after that, whatever the text is by then: the
+ * person chose to work on top of it. A save that was already under way
+ * when the text went in does not count. Until then the note says it waits
+ * for the save. Nothing is ever dropped for a text that went nowhere.
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -31,7 +33,6 @@ import {
   keptNoticeSentence,
   keptQuery,
   keptTextKey,
-  savedHolds,
 } from "../api/kept";
 import type { KeptTextEntry } from "../api/kept";
 import { useAuth } from "../auth/AuthContext";
@@ -43,10 +44,14 @@ const NOTICE =
 const DANGER = `rounded font-medium text-red-700 underline underline-offset-[3px] hover:no-underline dark:text-red-300 ${FOCUS_RING}`;
 const ACTION = `rounded text-link underline decoration-(--link-line) underline-offset-[3px] hover:no-underline aria-disabled:cursor-default aria-disabled:opacity-50 ${FOCUS_RING}`;
 
+/** What an editor hands back to tell its later saves apart. */
+export type SaveMark = string | number;
+
 /** A text put in the editor, waiting for the save that holds it. */
 interface Placed {
   id: string;
-  text: string;
+  /** The editor's mark for "saves from here on". */
+  mark: SaveMark;
   /** A save held it, but the kept copy could not be dropped. */
   held?: boolean;
 }
@@ -58,7 +63,9 @@ export function KeptTextNotice({
   draft,
   ready,
   onReplace,
-  saved,
+  markSave,
+  saveCovers,
+  saveSignal,
   onDropped,
 }: {
   domain: string;
@@ -76,9 +83,13 @@ export function KeptTextNotice({
   /** Put `text` in the editor as one undoable change; true only when it
    *  really landed. */
   onReplace: (text: string) => boolean;
-  /** The text the editor's last successful save stored; a new value after
-   *  each save. The kept copy is dropped once a save holds its text. */
-  saved?: string | null;
+  /** Called right after the text landed: returns a mark that a later save
+   *  covers once it began after this moment (a room is asked to save now). */
+  markSave: () => SaveMark;
+  /** Whether a landed save began after `mark` was taken. */
+  saveCovers: (mark: SaveMark) => boolean;
+  /** Any value that changes when a save lands, so the note asks again. */
+  saveSignal: unknown;
   /** Told after a person's Drop went through, to hand the focus back. */
   onDropped?: () => void;
 }): ReactElement | null {
@@ -143,19 +154,21 @@ export function KeptTextNotice({
       },
     );
 
-  // The save that holds the placed text is what lets the kept copy go.
+  // The first save that began after the text went in lets the kept copy go.
   const placedId = placed?.id ?? null;
-  const placedText = placed?.text ?? null;
+  const placedMark = placed?.mark ?? null;
+  const placedHeld = placed?.held === true;
   useEffect(() => {
-    if (placedId === null || placedText === null || saved == null) {
+    if (placedId === null || placedMark === null || placedHeld) {
       return;
     }
-    if (savedHolds(saved, placedText)) {
+    if (saveCovers(placedMark)) {
       void drop(placedId, true);
     }
-    // `drop` is rebuilt every render and reads nothing that matters here.
+    // `drop` and `saveCovers` are rebuilt every render; `saveSignal` is what
+    // says a save landed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [saved, placedId, placedText]);
+  }, [saveSignal, placedId, placedMark, placedHeld]);
 
   const entry =
     path === null || draft === null
@@ -202,7 +215,7 @@ export function KeptTextNotice({
         return;
       }
       setProblem(null);
-      setPlaced({ id: entry.id, text });
+      setPlaced({ id: entry.id, mark: markSave() });
     } finally {
       setBusy(false);
     }

@@ -111,8 +111,6 @@ export interface EditorSession {
   buffer: string;
   setBuffer: (next: string) => void;
   dirty: boolean;
-  /** The text the last successful save stored (the mounted text before any). */
-  savedText: string;
   /**
    * How many saves this session has started so far. Read when something
    * needs to know which later save is the first to include it.
@@ -469,7 +467,6 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
     buffer,
     setBuffer,
     dirty,
-    savedText,
     savesStarted: () => saveStarts.current,
     landedSave,
     checksum,

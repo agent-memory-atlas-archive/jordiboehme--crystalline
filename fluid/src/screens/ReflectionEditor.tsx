@@ -476,20 +476,6 @@ function Surface({
   }
 
   /*
-   * What the room's last save stored, as this tab can tell: the shared text
-   * when the verdict turns to "ok" again. The kept text note lets the
-   * server's copy go only once a save holds its text.
-   */
-  const [roomSaved, setRoomSaved] = useState<string | null>(null);
-  const [lastVerdict, setLastVerdict] = useState(collab.saveState);
-  if (collab.saveState !== lastVerdict) {
-    setLastVerdict(collab.saveState);
-    if (collab.saveState === "ok") {
-      setRoomSaved(ytext.toJSON());
-    }
-  }
-
-  /*
    * What this mount finds: a copy left under `key` by an earlier mount (a
    * refusal, a lost connection, an epoch gap) and the short history of
    * offers under `offerKey` (`readOffers`, newest first). Each is offered
@@ -990,7 +976,17 @@ function Surface({
         path={path}
         draft={false}
         ready={!ended && collab.status === "connected"}
-        saved={roomSaved}
+        markSave={() => {
+          // The room is asked to save now; the mark comes back on the first
+          // save that began after the text went in.
+          const mark = crypto.randomUUID();
+          collab.flush(mark);
+          return mark;
+        }}
+        saveCovers={(mark) =>
+          typeof mark === "string" && collab.covered.has(mark)
+        }
+        saveSignal={collab.covered}
         onReplace={(text) => {
           // One change on the shared text, as Put it back makes it, so the
           // room's Undo takes it back; owed until the room saves it.

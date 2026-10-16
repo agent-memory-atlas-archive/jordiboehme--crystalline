@@ -96,6 +96,18 @@ function serve(entries: KeptTextEntry[]): Server {
 
 type Props = Partial<Parameters<typeof KeptTextNotice>[0]>;
 
+/**
+ * The editor's saves as the note sees them: each save gets a number when it
+ * starts, and the newest that landed is remembered, as the solo session
+ * counts them.
+ */
+const saves = { started: 0, landed: 0 };
+
+function startSave(): number {
+  saves.started += 1;
+  return saves.started;
+}
+
 function mount(props: Props = {}, readOnly = false) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -110,8 +122,10 @@ function mount(props: Props = {}, readOnly = false) {
           path="a.md"
           draft={false}
           ready
-          saved={null}
           onReplace={() => true}
+          markSave={() => saves.started}
+          saveCovers={(mark) => saves.landed > Number(mark)}
+          saveSignal={saves.landed}
           {...next}
         />
       </AuthContext>
@@ -131,6 +145,8 @@ function note(): HTMLElement {
 
 beforeEach(() => {
   apiMock.mockReset();
+  saves.started = 0;
+  saves.landed = 0;
 });
 
 describe("the kept text note", () => {
@@ -172,7 +188,7 @@ describe("the kept text note", () => {
     expect(screen.queryByRole("note")).toBeNull();
   });
 
-  it("Replace with it puts the text in and keeps the server copy until a save holds it", async () => {
+  it("Replace with it puts the text in and keeps the server copy until a later save lands", async () => {
     const server = serve([entry()]);
     const onReplace = vi.fn(() => true);
     const { rerender } = mount({ onReplace });
@@ -187,19 +203,41 @@ describe("the kept text note", () => {
       within(note()).queryByRole("button", { name: "Replace with it" }),
     ).toBeNull();
     expect(server.dropped).toEqual([]);
-    // A save of something else does not let it go.
-    rerender({ onReplace, saved: "# A\n\nOther text.\n" });
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(server.dropped).toEqual([]);
-    // The save that holds it does, whatever its line endings.
-    rerender({ onReplace, saved: KEPT.replace(/\n/g, "\r\n") });
+    // The person edits on top of it and saves: whatever the text is now,
+    // the save began after the replace, so the kept copy goes.
+    const save = startSave();
+    saves.landed = save;
+    rerender({ onReplace, saveSignal: saves.landed });
     await waitFor(() => {
       expect(server.dropped).toEqual(["k1"]);
     });
     await waitFor(() => {
       expect(screen.queryByRole("note")).toBeNull();
+    });
+  });
+
+  it("a save already under way when the text went in does not let the copy go", async () => {
+    const server = serve([entry()]);
+    const onReplace = vi.fn(() => true);
+    // A save started before the replace and has not landed yet.
+    const inFlight = startSave();
+    const { rerender } = mount({ onReplace });
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Replace with it" }),
+    );
+    await within(note()).findByText("Waiting for the save.");
+    saves.landed = inFlight;
+    rerender({ onReplace, saveSignal: saves.landed });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(server.dropped).toEqual([]);
+    expect(within(note()).getByText("Waiting for the save.")).toBeVisible();
+    // The next save began after it, and does.
+    saves.landed = startSave();
+    rerender({ onReplace, saveSignal: saves.landed });
+    await waitFor(() => {
+      expect(server.dropped).toEqual(["k1"]);
     });
   });
 
@@ -305,7 +343,8 @@ describe("the kept text note", () => {
       await screen.findByRole("button", { name: "Replace with it" }),
     );
     await within(note()).findByText("Waiting for the save.");
-    rerender({ onReplace, saved: KEPT });
+    saves.landed = startSave();
+    rerender({ onReplace, saveSignal: saves.landed });
     expect(await within(note()).findByRole("alert")).toHaveTextContent(
       "Your text is saved, but the kept copy could not be dropped. the disk is gone",
     );

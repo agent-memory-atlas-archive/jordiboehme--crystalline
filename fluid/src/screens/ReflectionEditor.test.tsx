@@ -1737,9 +1737,10 @@ describe("the reflection editor's kept text notice", () => {
     ).toHaveTextContent("First, as the room kept it.");
   });
 
-  it("Replace with it changes the room's text as one undoable change, and waits for the room's save", async () => {
+  it("Replace with it changes the room's text as one undoable change, and waits for the save that covers it", async () => {
     const dropped = serveKept(() => ({ domain: "eng", kept: [keptEntry()] }));
-    const session = live(room(PAGE));
+    const flush = vi.fn();
+    const session = live({ ...room(PAGE), flush });
     await openEditor();
     const notice = await screen.findByRole("note", { name: "Kept text" });
     await userEvent.click(
@@ -1752,9 +1753,14 @@ describe("the reflection editor's kept text notice", () => {
     expect(
       await within(notice).findByText("Waiting for the save."),
     ).toBeVisible();
-    session.set({ saveState: "pending" });
+    // The room is asked to save now, with a mark of this replace.
+    expect(flush).toHaveBeenCalledTimes(1);
+    const mark = flush.mock.calls[0]?.[0] as string;
+    // A save that began earlier lands without the mark: the copy stays.
+    session.set({ saveState: "ok", covered: new Set(["earlier"]) });
     expect(dropped).toEqual([]);
-    session.set({ saveState: "ok" });
+    // Then the save that covers the replace.
+    session.set({ covered: new Set(["earlier", mark]) });
     await waitFor(() => {
       expect(dropped).toEqual(["k1"]);
     });

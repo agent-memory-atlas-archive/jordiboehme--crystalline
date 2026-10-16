@@ -826,19 +826,6 @@ function Surface({
   /** The room's standing conflict, if this surface is in a room at all. */
   const conflict = inRoom ? collab.conflict : null;
   /*
-   * What the room's last save stored, as far as this tab can tell: the
-   * shared text when the verdict turns to "ok" again. The kept text note
-   * drops the server's copy only once a save holds its text.
-   */
-  const [roomSaved, setRoomSaved] = useState<string | null>(null);
-  const [lastVerdict, setLastVerdict] = useState(collab.saveState);
-  if (collab.saveState !== lastVerdict) {
-    setLastVerdict(collab.saveState);
-    if (collab.saveState === "ok" && room !== null) {
-      setRoomSaved(room.ytext.toJSON());
-    }
-  }
-  /*
    * Whose document this editor is, as the room decides it: in a domain
    * that reviews changes it is the reader's own draft unless it is
    * somebody else's granted one. Unknown until the listing answers.
@@ -1356,7 +1343,22 @@ function Surface({
             ready={
               inRoom ? collab.status === "connected" && !closed : view !== null
             }
-            saved={inRoom ? roomSaved : session.savedText}
+            markSave={() => {
+              if (inRoom) {
+                // The room is asked to save now; the mark comes back on the
+                // first save that began after the text went in.
+                const mark = crypto.randomUUID();
+                collab.flush(mark);
+                return mark;
+              }
+              return session.savesStarted();
+            }}
+            saveCovers={(mark) =>
+              inRoom
+                ? typeof mark === "string" && collab.covered.has(mark)
+                : typeof mark === "number" && session.landedSave > mark
+            }
+            saveSignal={inRoom ? collab.covered : session.landedSave}
             onReplace={(text) => {
               // One ordinary change on the buffer, so Undo takes it back: in
               // the mounted line endings, which in a room are LF. A

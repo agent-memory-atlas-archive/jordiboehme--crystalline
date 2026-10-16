@@ -3303,6 +3303,7 @@ describe("the engram editor's kept text notice", () => {
     );
     return {
       ytext: first.ytext,
+      flush: first.flush,
       set: (next: Partial<CollabSession>) => {
         act(() => {
           current = { ...current, ...next };
@@ -3360,6 +3361,61 @@ describe("the engram editor's kept text notice", () => {
     expect(docText(view.state)).toBe(CONTENT);
   });
 
+  it("lets the kept copy go with the first save after the replace, even when the text was edited before it", async () => {
+    const dropped = serveKept([keptEntry()]);
+    renderApp("/d/eng/edit/alpha");
+    const editor = await openBuffer();
+    await replace();
+    await waitFor(() => {
+      expect(docText(mountedView(editor).state)).toBe(KEPT);
+    });
+    // The person works on top of it before saving.
+    typeAtEnd(editor, "and more on top\n");
+    await saveNow("button");
+    await waitFor(() => {
+      expect(dropped).toEqual(["k1"]);
+    });
+  });
+
+  it("keeps the kept copy when a save that was already under way lands after the replace", async () => {
+    let land: () => void = () => undefined;
+    let first = true;
+    const dropped = serveKept([keptEntry()], {
+      "/domains/eng/engrams/alpha": async (_path, init) => {
+        if (init?.method !== "PUT") {
+          return detailResponse();
+        }
+        if (first) {
+          first = false;
+          await new Promise<void>((resolve) => {
+            land = resolve;
+          });
+        }
+        return stored(init, { checksum: `c${String(Date.now())}` });
+      },
+    });
+    renderApp("/d/eng/edit/alpha");
+    const editor = await openBuffer();
+    typeAtEnd(editor, "typed before\n");
+    await saveNow("button");
+    // That save is on its way when the kept text goes in.
+    await replace();
+    await waitFor(() => {
+      expect(docText(mountedView(editor).state)).toBe(KEPT);
+    });
+    act(() => {
+      land();
+    });
+    await settled();
+    expect(dropped).toEqual([]);
+    expect(screen.getByText("Waiting for the save.")).toBeVisible();
+    // The next save began after the replace, and lets it go.
+    await saveNow("button");
+    await waitFor(() => {
+      expect(dropped).toEqual(["k1"]);
+    });
+  });
+
   it("keeps a one-line text's undo and the file's CRLF endings", async () => {
     const crlf = CONTENT.replace(/\n/g, "\r\n");
     serveKept(
@@ -3387,7 +3443,7 @@ describe("the engram editor's kept text notice", () => {
     expect(docText(view.state)).toBe(crlf);
   });
 
-  it("in a room, replaces the shared text and drops the kept copy only after the room saved it", async () => {
+  it("in a room, asks for a save and drops the kept copy only when a save covering the replace lands", async () => {
     const dropped = serveKept([keptEntry()]);
     const room = liveRoom();
     renderApp("/d/eng/edit/alpha");
@@ -3396,9 +3452,17 @@ describe("the engram editor's kept text notice", () => {
     await waitFor(() => {
       expect(room.ytext.toJSON()).toBe(KEPT);
     });
-    room.set({ saveState: "pending" });
-    expect(dropped).toEqual([]);
+    expect(room.flush).toHaveBeenCalledTimes(1);
+    const mark = room.flush.mock.calls[0]?.[0] as string;
+    expect(typeof mark).toBe("string");
+    // A save that began before the replace lands: it covers another mark,
+    // or none, and the kept copy stays.
+    room.set({ covered: new Set(["somebody-else"]) });
     room.set({ saveState: "ok" });
+    expect(dropped).toEqual([]);
+    expect(screen.getByText("Waiting for the save.")).toBeVisible();
+    // The save that began after the replace names its mark.
+    room.set({ covered: new Set(["somebody-else", mark]) });
     await waitFor(() => {
       expect(dropped).toEqual(["k1"]);
     });
