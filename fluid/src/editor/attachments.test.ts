@@ -984,7 +984,7 @@ describe("a buffer that is gone when the upload ends", () => {
 
     expect(inserted).toBe(0);
     expect(errors.at(-1)).toBe(
-      "Uploaded to assets/2026/08/shot.png, but the reference could not be inserted here: put the caret in the body and link it.",
+      "Uploaded to assets/2026/08/shot.png, but the screen was closed before the link was added. Add the link when you edit again.",
     );
   });
 });

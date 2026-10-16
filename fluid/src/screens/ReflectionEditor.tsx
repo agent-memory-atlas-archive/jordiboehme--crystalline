@@ -545,6 +545,7 @@ function Surface({
   );
   const uploads = useAttachmentUploads({
     domain,
+    subject: title,
     home: uploadHome,
     view: () => uploadView.current,
     onError: setAttachError,

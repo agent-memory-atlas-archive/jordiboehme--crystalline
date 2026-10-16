@@ -580,6 +580,7 @@ function Surface({
   const uploadView = useRef<EditorView | null>(null);
   const uploads = useAttachmentUploads({
     domain: engram.domain,
+    subject: engram.title,
     view: () => uploadView.current,
     onError: setAttachError,
   });

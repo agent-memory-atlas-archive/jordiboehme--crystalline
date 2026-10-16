@@ -8,6 +8,11 @@
  * domain the screen holds now - and it is why `attach`, which the toolbar's
  * picker calls, is the same stable function rather than a second path with its
  * own copy of the rules.
+ *
+ * An upload can outlive its screen: the person presses Done or follows a link
+ * while the bytes are on their way. What it has to say after that (a failure,
+ * or a file stored without its link) goes to the app-wide upload notices,
+ * naming the files and the page, rather than to a screen nobody sees.
  */
 
 import type { Extension } from "@codemirror/state";
@@ -15,6 +20,7 @@ import type { EditorView } from "@codemirror/view";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import type { AssetHome } from "../api/files";
+import { reportOrphanUpload } from "../uploadNotices";
 import { attachmentUploads, uploadAttachments } from "./attachments";
 
 /** What a screen needs to offer uploads on its buffer. */
@@ -32,6 +38,12 @@ export interface AttachmentUploadOptions {
   view: () => EditorView | null;
   /** A refusal in words an author can act on; null clears a standing one. */
   onError: (message: string | null) => void;
+  /**
+   * What the screen edits, as a person names it (a title, or a path): an
+   * upload that fails after its screen has gone is reported app-wide with
+   * this name, since `onError` then reaches nobody.
+   */
+  subject?: string;
   /**
    * Runs once a batch has finished, whatever it stored: a screen that shows
    * the home's listing refreshes it here.
@@ -56,8 +68,28 @@ export function useAttachmentUploads(
   useEffect(() => {
     latest.current = options;
   });
+  // Whether the screen has gone. Set on unmount and cleared on a mount, so a
+  // development remount does not leave it set.
+  const gone = useRef(false);
+  useEffect(() => {
+    gone.current = false;
+    return () => {
+      gone.current = true;
+    };
+  }, []);
   const attach = useCallback((files: File[]) => {
-    const { domain, home, place, view, onError, onSettled } = latest.current;
+    const { domain, home, place, view, onSettled } = latest.current;
+    const onError = (message: string | null) => {
+      if (!gone.current) {
+        latest.current.onError(message);
+      } else if (message !== null) {
+        reportOrphanUpload(
+          files.map((file) => file.name),
+          latest.current.subject ?? "",
+          message,
+        );
+      }
+    };
     const target = view();
     if (target === null) {
       return;

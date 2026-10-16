@@ -275,9 +275,11 @@ export async function uploadAttachments(
   // raise days later. So every such case ends in a sentence naming the paths.
   // A buffer that turned read-only on the way (a room that ended) gets its
   // own: nobody can link there now. `insertBlock` refuses over a folded
-  // frontmatter block, and a view that was destroyed on the way (its screen
-  // remounted or went) would take the dispatch and show nothing; both get
-  // the general sentence, which a screen that has gone never shows.
+  // frontmatter block and gets the general sentence. A view that was
+  // destroyed on the way (its screen remounted or went) would take the
+  // dispatch and show nothing; it gets a sentence of its own that does not
+  // say "here", since the screen that started the upload may be gone and the
+  // sentence is then shown elsewhere (`useAttachmentUploads`).
   if (lines.length > 0) {
     if (view.state.readOnly) {
       inserted = 0;
@@ -294,8 +296,12 @@ export async function uploadAttachments(
       if (live && !atEnd) {
         request.place?.(view);
       }
-      if (
-        !live ||
+      if (!live) {
+        inserted = 0;
+        problems.push(
+          `Uploaded to ${stored.join(", ")}, but the screen was closed before the link was added. Add the link when you edit again.`,
+        );
+      } else if (
         !(atEnd ? appendBlock(view, lines) : insertBlock(view, lines))
       ) {
         inserted = 0;

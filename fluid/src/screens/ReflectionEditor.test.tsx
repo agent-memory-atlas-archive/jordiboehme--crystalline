@@ -1094,6 +1094,43 @@ describe("the reflection editor takes files", () => {
     vi.restoreAllMocks();
   });
 
+  it("reports an upload that fails after its screen has gone, naming the file and the page", async () => {
+    let fail: (cause: unknown) => void = () => undefined;
+    serveFiles(
+      [[]],
+      [
+        () =>
+          new Promise((_resolve, reject) => {
+            fail = reject;
+          }),
+      ],
+    );
+    live(room(PAGE));
+    const editor = await openEditor();
+    editor.dispatchEvent(carrying("paste", [png("flow.png")]));
+    await waitFor(() => {
+      expect(puts()).toHaveLength(1);
+    });
+    // The person leaves while the bytes are on their way.
+    await userEvent.click(screen.getByRole("link", { name: "Done" }));
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("textbox", { name: "Page source" }),
+      ).not.toBeInTheDocument();
+    });
+    act(() => {
+      fail(new ApiProblem(507, "Insufficient Storage", "the disk is full"));
+    });
+    expect(
+      await screen.findByText("The upload of flow.png to A did not finish."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("the disk is full")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(
+      screen.queryByText("The upload of flow.png to A did not finish."),
+    ).toBeNull();
+  });
+
   it("a contributor's paste uploads under a free name and inserts a relative link", async () => {
     serveFiles([[SHOT_ROW]]);
     const session = live(room(PAGE));
