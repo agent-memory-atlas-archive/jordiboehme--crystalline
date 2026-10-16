@@ -3121,7 +3121,7 @@ impl Engine {
     ///
     /// **In-process only.** Two Crystalline processes over one domain root are
     /// not held apart by this; the host-lock machinery governs that.
-    pub(super) fn write_lock(&self, abs: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    pub(crate) fn write_lock(&self, abs: &Path) -> Arc<tokio::sync::Mutex<()>> {
         // Computed before the map-wide guard is taken: `canonicalize` is a
         // blocking stat, and every other file's lookup would otherwise queue
         // behind it while it resolves this one's path.

@@ -2114,21 +2114,56 @@ impl<'a> DomainView<'a> {
     /// describing the other writer's bytes - which is what the folder arm's
     /// per-file lock exists to prevent there.
     pub(crate) async fn put_file(&self, path: &str, bytes: &[u8]) -> Result<AttachmentRow> {
+        self.put_file_ruled(path, bytes, false).await
+    }
+
+    /// [`DomainView::put_file`], refused when this actor's view already shows
+    /// a file at `path` ([`DomainView::shows_file`]): a create-only upload.
+    /// The refusal is [`EngineError::Conflict`] ending in
+    /// [`crate::engine::ASSET_EXISTS`], the folder's own.
+    pub(crate) async fn put_file_if_absent(
+        &self,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<AttachmentRow> {
+        self.put_file_ruled(path, bytes, true).await
+    }
+
+    /// The two writes above, under the overlay file's per-file lock
+    /// (`Engine::write_lock`), held across the create-only check and the
+    /// write so two racing uploads of one path by one actor (two tabs, or a
+    /// joined owner) cannot both find it empty. The file lock is taken before
+    /// the check, which may take the store lock, so the order is the one
+    /// every other writer keeps.
+    async fn put_file_ruled(
+        &self,
+        path: &str,
+        bytes: &[u8],
+        create_only: bool,
+    ) -> Result<AttachmentRow> {
         let actor = self.files_writer()?;
         let state_dir = self.files_state_dir()?;
-        crate::overlay_files::put(&state_dir, &self.domain, actor, path, bytes)
-            .map_err(|e| self.files_io(path, e))?;
         let abs = crate::overlay_files::file(&state_dir, &self.domain, actor, path)
+            .map_err(|e| self.files_io(path, e))?;
+        let lock = self.engine.write_lock(&abs);
+        let _guard = lock.lock().await;
+        if create_only && self.shows_file(path).await? {
+            return Err(EngineError::Conflict(format!(
+                "'{path}' {}",
+                crate::engine::ASSET_EXISTS
+            )));
+        }
+        crate::overlay_files::put(&state_dir, &self.domain, actor, path, bytes)
             .map_err(|e| self.files_io(path, e))?;
         crate::engine::attachment_row(path, bytes, crate::engine::asset_modified(&abs))
     }
 
     /// Whether this actor's files overlay shows a file at `path`: its own
     /// bytes, or a reviewed file it has not deleted. The question a
-    /// create-only upload asks before [`DomainView::put_file`], read the way
-    /// [`DomainView::tombstone_file`] reads the folder (either half, the file
-    /// or the row).
-    pub(crate) async fn shows_file(&self, path: &str) -> Result<bool> {
+    /// create-only upload asks in [`DomainView::put_file_if_absent`], read the
+    /// way [`DomainView::tombstone_file`] reads the folder (either half, the
+    /// file or the row).
+    async fn shows_file(&self, path: &str) -> Result<bool> {
         let actor = self.files_writer()?;
         let state_dir = self.files_state_dir()?;
         let held = crate::overlay_files::held(&state_dir, &self.domain, actor, path)

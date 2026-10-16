@@ -8807,3 +8807,48 @@ async fn the_close_folder_budget_starts_once_the_store_lock_is_held() {
     );
     assert_eq!(found[0].folder, "planview");
 }
+
+/// **Two create-only uploads of one path by one actor: exactly one lands.**
+///
+/// In review mode the bytes go to the actor's files overlay, not through the
+/// folder's write path, so the overlay check and write need their own
+/// per-file lock. Two tabs of one account race on 50 fresh paths; each path
+/// answers one Ok and one create-only refusal, and the stored bytes are the
+/// winner's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_create_only_overlay_uploads_of_one_path_land_once() {
+    use crystalline_service::EngineError;
+    use crystalline_service::engine::ASSET_EXISTS;
+    let f = review_fixture().await;
+    for i in 0..50 {
+        let path = format!("assets/race-{i}.png");
+        let write = |bytes: &'static [u8]| {
+            let (engine, path) = (f.engine.clone(), path.clone());
+            tokio::spawn(async move {
+                engine
+                    .attachment_write_joined(
+                        "team",
+                        &path,
+                        bytes.to_vec(),
+                        &scope_of("alice"),
+                        None,
+                        true,
+                    )
+                    .await
+            })
+        };
+        let (a, b) = tokio::join!(write(b"first"), write(b"second"));
+        let (a, b) = (a.unwrap(), b.unwrap());
+        let winner: &[u8] = match (&a, &b) {
+            (Ok(_), Err(EngineError::Conflict(text))) if text.ends_with(ASSET_EXISTS) => b"first",
+            (Err(EngineError::Conflict(text)), Ok(_)) if text.ends_with(ASSET_EXISTS) => b"second",
+            _ => panic!("{path}: exactly one lands: {a:?} / {b:?}"),
+        };
+        let (bytes, _) = f
+            .engine
+            .attachment_read_as("team", &path, &scope_of("alice"))
+            .await
+            .unwrap();
+        assert_eq!(bytes, winner, "{path}");
+    }
+}

@@ -159,10 +159,11 @@ impl Engine {
     /// stands where it always did.
     ///
     /// `create_only` refuses a path that already holds a file with
-    /// [`EngineError::Conflict`] ending in [`crate::engine::ASSET_EXISTS`]. In
-    /// the folder the check runs under the file's lock; in an overlay it asks
-    /// what this actor's view shows (its own bytes, or a reviewed file it has
-    /// not deleted), and the overlay has no per-file lock.
+    /// [`EngineError::Conflict`] ending in [`crate::engine::ASSET_EXISTS`].
+    /// The check runs under the file's per-file lock either way: in the folder
+    /// the folder file's, in an overlay the overlay file's, where it asks what
+    /// this actor's view shows (its own bytes, or a reviewed file it has not
+    /// deleted).
     pub(crate) async fn attachment_write_in(
         &self,
         view: &DomainView<'_>,
@@ -183,13 +184,11 @@ impl Engine {
             )));
         }
         if let Some(actor) = view.actor() {
-            if create_only && view.shows_file(path).await? {
-                return Err(EngineError::Conflict(format!(
-                    "'{path}' {}",
-                    crate::engine::ASSET_EXISTS
-                )));
-            }
-            let row = view.put_file(path, &bytes).await?;
+            let row = if create_only {
+                view.put_file_if_absent(path, &bytes).await?
+            } else {
+                view.put_file(path, &bytes).await?
+            };
             // The write IS the resolution, for a file. A conflict resolution
             // settles an engram's markdown and `origin_resolve` says so to
             // anybody who names an attachment path; what settles a file is
