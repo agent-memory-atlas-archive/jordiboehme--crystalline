@@ -1942,10 +1942,28 @@ impl std::fmt::Display for PrintedRefusal {
 
 impl std::error::Error for PrintedRefusal {}
 
+/// A command that has said everything it has to say and ends with this exit
+/// code. Returned rather than calling `std::process::exit` inside a command's
+/// future, so the runtime wrapper still runs what follows the command (the
+/// give-back of a command's host locks) before the process ends.
+#[derive(Debug)]
+struct ExitWith(u8);
+
+impl std::fmt::Display for ExitWith {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "exit code {}", self.0)
+    }
+}
+
+impl std::error::Error for ExitWith {}
+
 fn main() -> std::process::ExitCode {
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) if e.is::<PrintedRefusal>() => std::process::ExitCode::from(1),
+        Err(e) if e.is::<ExitWith>() => {
+            std::process::ExitCode::from(e.downcast_ref::<ExitWith>().map_or(1, |exit| exit.0))
+        }
         // What `fn main() -> anyhow::Result<()>` printed, unchanged.
         Err(e) => {
             eprintln!("Error: {e:?}");
@@ -3194,7 +3212,7 @@ async fn run_origin(command: OriginCommand, db: Option<PathBuf>, json: bool) -> 
             )
             .await?;
             if !cmd::print_origin_discard(&data, json) {
-                std::process::exit(1);
+                return Err(ExitWith(1).into());
             }
             Ok(())
         }
@@ -3735,11 +3753,10 @@ async fn run_doctor(
     } else {
         print!("{}", doctor::render_human(&report));
     }
-    std::process::exit(if report.remaining_problems() > 0 {
-        1
-    } else {
-        0
-    });
+    if report.remaining_problems() > 0 {
+        return Err(ExitWith(1).into());
+    }
+    Ok(())
 }
 
 async fn run_ctl(command: CtlCommand, json: bool) -> anyhow::Result<()> {
@@ -5664,6 +5681,56 @@ fn to_core_format(f: OutputFormat) -> verify::Format {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A command that ends with an exit code still gives back the host locks
+    /// it claimed: the runtime wrapper runs the give-back after the command's
+    /// future, whatever it answered.
+    #[test]
+    fn a_command_ending_with_an_exit_code_still_gives_its_locks_back() {
+        use crystalline_index::Store as _;
+        let setup = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (store, domain, lease) = setup.block_on(async {
+            let store = crystalline_index::TursoStore::open_in_memory()
+                .await
+                .unwrap();
+            let domain = store
+                .upsert_domain("eng", Some("/tmp/eng"), crystalline_index::DomainKind::File)
+                .await
+                .unwrap();
+            let (now, stale) = crystalline_index::claim_window(90);
+            let token = match store
+                .claim_domain_host(domain, "this-machine", "this-machine", &now, &stale, false)
+                .await
+                .unwrap()
+            {
+                crystalline_index::HostClaim::Acquired { token } => token,
+                other => panic!("{other:?}"),
+            };
+            let store: std::sync::Arc<tokio::sync::Mutex<dyn crystalline_index::Store>> =
+                std::sync::Arc::new(tokio::sync::Mutex::new(store));
+            (
+                store,
+                domain,
+                crystalline_index::HostLease { token, over: None },
+            )
+        });
+        crystalline_service::engine::note_command_lock(
+            store.clone(),
+            domain,
+            "this-machine",
+            lease,
+        );
+        let ended = on_runtime(|| async { Err(ExitWith(3).into()) });
+        let code = ended.unwrap_err();
+        assert_eq!(code.downcast_ref::<ExitWith>().map(|e| e.0), Some(3));
+        assert_eq!(crystalline_service::engine::command_locks_pending(), 0);
+        let holder =
+            setup.block_on(async { store.lock().await.domain_host(domain).await.unwrap() });
+        assert!(holder.is_none(), "the lock was given back: {holder:?}");
+    }
     use serde_json::{Value, json};
 
     fn share_flags(args: &[&str]) -> (Option<Option<u64>>, bool) {

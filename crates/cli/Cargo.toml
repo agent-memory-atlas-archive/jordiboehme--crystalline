@@ -116,6 +116,9 @@ tar = { workspace = true }
 # process (the fs4 lock a rival daemon would hold) so the spawned `mcp` child
 # fails to acquire it and serves the stub.
 fs4 = { workspace = true }
+# The Postgres tests make and drop their own schema through a connection of
+# their own, so they need no `psql` on the machine.
+sqlx = { workspace = true }
 
 # The job test in tests/daemon/service_windows.rs puts its own process in a
 # job that forbids breakaway, to see the daemon's refusal path end to end.

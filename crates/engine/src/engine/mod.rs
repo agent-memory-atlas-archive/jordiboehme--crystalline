@@ -7783,6 +7783,29 @@ struct CommandLease {
 /// nothing.
 static COMMAND_LEASES: std::sync::Mutex<Vec<CommandLease>> = std::sync::Mutex::new(Vec::new());
 
+/// Record a host lock as a command's, as a one-shot claim does, for a test
+/// of the process end's give-back. Not for production code.
+#[doc(hidden)]
+pub fn note_command_lock(
+    store: Arc<Mutex<dyn Store>>,
+    domain: DomainId,
+    instance_id: &str,
+    lease: crystalline_index::HostLease,
+) {
+    COMMAND_LEASES.lock().unwrap().push(CommandLease {
+        store,
+        domain,
+        instance_id: instance_id.to_string(),
+        lease,
+    });
+}
+
+/// How many host locks this process holds for its command, for a test.
+#[doc(hidden)]
+pub fn command_locks_pending() -> usize {
+    COMMAND_LEASES.lock().unwrap().len()
+}
+
 /// Give back every host lock a command without a daemon claimed in this
 /// process: the CLI calls this when a command ends, on every path it ends
 /// by, so a command never leaves a lock it sends no heartbeat for. A lock
