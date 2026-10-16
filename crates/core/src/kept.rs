@@ -173,7 +173,8 @@ pub struct Sender {
     /// The account the sender acted as (an agent's is the account it acts
     /// for).
     pub account: String,
-    /// The display name, for people.
+    /// The name the sender is shown under in threads (the login name for
+    /// a person).
     pub name: String,
 }
 

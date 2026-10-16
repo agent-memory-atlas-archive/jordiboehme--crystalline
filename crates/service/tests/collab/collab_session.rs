@@ -127,11 +127,17 @@ async fn the_first_join_loads_the_file_and_greets_with_hello_and_step1() {
         permalink,
         save_state,
         epoch,
+        features,
         ..
     }) = control::decode(payload)
     else {
         panic!("hello parses");
     };
+    assert_eq!(
+        features,
+        vec![control::FLUSH_MARKS.to_string()],
+        "the room says it answers flush marks"
+    );
     assert_eq!(separator, "\n");
     assert_eq!(permalink, "crlf");
     assert_eq!(save_state, "ok");

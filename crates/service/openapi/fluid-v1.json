@@ -12077,7 +12077,7 @@
               "string",
               "null"
             ],
-            "description": "Who sent the text, for a text kept from a write that was refused\nafter its instance lost the domain's host lock; `null` for a room's\ntext.",
+            "description": "Who sent the text, by the name shown in threads (the login name for\na person), for a text kept from a write that was refused after its\ninstance lost the domain's host lock; `null` for a room's text.",
             "example": "ada"
           },
           "sender_account": {
@@ -12085,7 +12085,7 @@
               "string",
               "null"
             ],
-            "description": "The account that sent it, the login name the rights match a kept\ncomment's sender on; `null` when no sender is recorded. A client\ncompares it with the signed-in account to tell its own comments\napart: two people may share a display name, never an account.",
+            "description": "The account that sent it, the login name the rights match a kept\ncomment's sender on; `null` when no sender is recorded. A client\ncompares it with the signed-in account to tell its own comments\napart: the shown name is not proof of who sent it, the account is.",
             "example": "ada"
           }
         }

@@ -700,16 +700,16 @@ export type KeptTextEntry = {
      */
     path: string;
     /**
-     * Who sent the text, for a text kept from a write that was refused
-     * after its instance lost the domain's host lock; `null` for a room's
-     * text.
+     * Who sent the text, by the name shown in threads (the login name for
+     * a person), for a text kept from a write that was refused after its
+     * instance lost the domain's host lock; `null` for a room's text.
      */
     sender?: string | null;
     /**
      * The account that sent it, the login name the rights match a kept
      * comment's sender on; `null` when no sender is recorded. A client
      * compares it with the signed-in account to tell its own comments
-     * apart: two people may share a display name, never an account.
+     * apart: the shown name is not proof of who sent it, the account is.
      */
     sender_account?: string | null;
 };

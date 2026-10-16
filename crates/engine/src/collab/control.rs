@@ -12,6 +12,9 @@ use yrs::updates::encoder::Encode;
 /// encodings only agree under 128.
 pub const CONTROL_TAG: u8 = 4;
 
+/// The feature a room names in its hello when it answers flush marks.
+pub const FLUSH_MARKS: &str = "flush-marks";
+
 /// One session control message. Server-to-client kinds carry state changes the
 /// y-protocols messages have no room for; client-to-server kinds ask the
 /// session for something outside the CRDT.
@@ -40,6 +43,13 @@ pub enum Control {
         /// greeting it has always seen; decoding is lenient the same way.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
+        /// What this room can do beyond the messages every room speaks, so a
+        /// client knows what it may rely on: `flush-marks` says a `Flush`
+        /// mark comes back in a `Saved` and `Discarded` names marks a choice
+        /// threw away. Skipped when empty; an older room sends none, and a
+        /// client then relies on none of them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        features: Vec<String>,
     },
     /// A save landed; the checksum is the new CAS token.
     Saved {
@@ -64,6 +74,12 @@ pub enum Control {
     },
     /// An external change was merged into the live session.
     Merged,
+    /// Flush marks no save will ever cover: a "theirs" choice threw away the
+    /// text they were asked for. A client stops waiting for them.
+    Discarded {
+        /// The marks given up.
+        marks: Vec<String>,
+    },
     /// An external change could not be merged; the client must resolve.
     Conflict {
         /// What kind of conflict this is ("edit" for colliding edits,
@@ -157,6 +173,7 @@ mod tests {
                 permalink: "notes/alpha".into(),
                 save_state: "ok".into(),
                 detail: None,
+                features: vec![FLUSH_MARKS.to_string()],
             },
             Control::Hello {
                 epoch: "1a2b.1".into(),
@@ -165,6 +182,7 @@ mod tests {
                 permalink: "notes/alpha".into(),
                 save_state: "failed".into(),
                 detail: Some("the document carries no frontmatter".into()),
+                features: Vec::new(),
             },
             Control::Saved {
                 checksum: "def".into(),
@@ -180,6 +198,9 @@ mod tests {
                 detail: "the document carries no frontmatter".into(),
             },
             Control::Merged,
+            Control::Discarded {
+                marks: vec!["m1".into()],
+            },
             Control::Conflict {
                 conflict_kind: "edit".into(),
                 theirs: Some("---\ntitle: B\n---\n".into()),
@@ -229,6 +250,7 @@ mod tests {
             permalink: "alpha".into(),
             save_state: "ok".into(),
             detail: None,
+            features: Vec::new(),
         };
         let json = serde_json::to_string(&healthy).unwrap();
         assert!(
@@ -247,6 +269,7 @@ mod tests {
                 permalink: "alpha".into(),
                 save_state: "failed".into(),
                 detail: None,
+                features: Vec::new(),
             })
         );
     }
