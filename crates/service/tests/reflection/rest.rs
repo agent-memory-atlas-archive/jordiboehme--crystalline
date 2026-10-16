@@ -1963,15 +1963,32 @@ fn home_from_review(review: &Value) -> Value {
         n
     };
     let (agent, people) = (count("waiting_for_the_agent"), count("waiting_for_people"));
+    let mut update_pages: Vec<&str> = review["queue"]["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["kind"] == "update")
+        .filter_map(|row| row["path"].as_str())
+        .filter(|path| !path.is_empty())
+        .collect();
+    update_pages.sort_unstable();
+    update_pages.dedup();
     json!({
         "agent": agent,
         "people": people,
         "updates": review["queue"]["kinds"]["update"],
+        "update_pages": update_pages.len(),
         "pages": pages.into_iter().map(|(path, (title, mut threads))| {
             threads.sort_by_key(|t| t[0].as_str().unwrap().to_string());
             json!([path, title, threads])
         }).collect::<Vec<_>>(),
     })
+}
+
+/// Whether the review's first queue page (50 rows) can hold every update,
+/// so the distinct pages read off it are all of them.
+fn review_queue_fits(summary: &Value) -> bool {
+    summary["updates"].as_u64().unwrap() <= 50
 }
 
 /// The same, read off the summary route.
@@ -1995,7 +2012,8 @@ fn home_from_summary(summary: &Value) -> Value {
     json!({
         "agent": summary["waiting_for_the_agent"],
         "people": summary["waiting_for_people"],
-        "updates": summary["pages_to_update"],
+        "updates": summary["updates"],
+        "update_pages": summary["pages_to_update"],
         "pages": pages,
     })
 }
@@ -2103,9 +2121,17 @@ async fn the_reflection_summary_agrees_with_the_review_for_every_reader() {
         );
     }
     let (_, ann_summary) = ann.get(summary_path).await;
+    assert!(
+        review_queue_fits(&ed_summary),
+        "the review's first page holds every update row: {ed_summary}"
+    );
     assert_eq!(
-        ed_summary["pages_to_update"].as_u64().unwrap(),
-        ann_summary["pages_to_update"].as_u64().unwrap() + 1,
+        ed_summary["pages_to_update"], ann_summary["pages_to_update"],
+        "unreflected engrams are on no page"
+    );
+    assert_eq!(
+        ed_summary["updates"].as_u64().unwrap(),
+        ann_summary["updates"].as_u64().unwrap() + 1,
         "the unreflected engram is counted for a reader of engrams only: {ed_summary} {ann_summary}"
     );
     assert!(!ann_summary.to_string().contains("notes"), "{ann_summary}");

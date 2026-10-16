@@ -765,9 +765,10 @@ impl Engine {
 
     /// The Reflection home's summary: what [`Engine::reflection_review`]
     /// answers, cut to what the home draws. The open threads by who they
-    /// wait on, the queue's update count (the review's `kinds.update`,
-    /// counted with no page compared for feedback, no diff rendered and no
-    /// source looked up) and the open
+    /// wait on, the queue's update count (`updates`, the review's
+    /// `kinds.update`, counted with no page compared for feedback, no diff
+    /// rendered and no source looked up), the distinct pages those updates
+    /// are on (`pages_to_update`) and the open
     /// threads by page, each thread with its first quote and the people in
     /// it, never its entries. Pages and their threads come oldest first, by
     /// when a thread was opened. The threads files are read once.
@@ -834,14 +835,24 @@ impl Engine {
         let items = self
             .detect_reflection(domain, &access, Detail::Updates, &threads)
             .await?;
-        let pages_to_update = items
+        let shown: Vec<&Item> = items
             .iter()
             .filter(|i| i.kind == "update" && shown_to(i, access.engrams_visible))
-            .count();
+            .collect();
+        // A page counts once however many of its sections wait; an item of
+        // no page (a loose file, unreflected engrams, a host move) is in
+        // `updates` only.
+        let pages_to_update = shown
+            .iter()
+            .filter(|i| !i.path.is_empty())
+            .map(|i| i.path.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
         Ok(json!({
             "domain": domain,
             "waiting_for_the_agent": for_agent,
             "waiting_for_people": for_people,
+            "updates": shown.len(),
             "pages_to_update": pages_to_update,
             "open_by_page": open_by_page.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
         }))

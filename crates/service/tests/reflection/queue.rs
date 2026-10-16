@@ -938,15 +938,13 @@ async fn reflection_summary_timing() {
     let caller = person();
     let review = fx.engine.reflection_review("eng", &caller).await.unwrap();
     let summary = fx.engine.reflection_summary("eng", &caller).await.unwrap();
-    assert_eq!(
-        summary["pages_to_update"],
-        review["queue"]["kinds"]["update"]
-    );
+    assert_eq!(summary["updates"], review["queue"]["kinds"]["update"]);
     assert_eq!(summary["waiting_for_the_agent"], 400);
     eprintln!(
-        "queue: {} (update {}, feedback {}); payload bytes: review {}, summary {}",
+        "queue: {} (update {} on {} pages, feedback {}); payload bytes: review {}, summary {}",
         review["queue"]["total"],
         review["queue"]["kinds"]["update"],
+        summary["pages_to_update"],
         review["queue"]["kinds"]["feedback"],
         review.to_string().len(),
         summary.to_string().len(),

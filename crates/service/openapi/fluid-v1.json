@@ -5777,7 +5777,7 @@
           "reflection"
         ],
         "summary": "The Reflection home: what waits for review, in counts and by page.",
-        "description": "The cheap cut of the review the Reflection home draws: how many open threads wait for the agent and for people, `pages_to_update` (the review queue's `kinds.update`, counted without rendering a diff or looking up a source) and the open threads by page. A thread carries its id, its first quote (`null` for a whole section), who it waits on, when it was opened and the people who wrote in it, never its entries. Pages and threads come oldest first. The same rights as the review: a reader without engram rights is not counted any update about engrams that no page cites.",
+        "description": "The cheap cut of the review the Reflection home draws: how many open threads wait for the agent and for people, `updates` (the review queue's `kinds.update`, counted without rendering a diff or looking up a source), `pages_to_update` (the distinct pages those updates are on; an update of no page, such as unreflected engrams or a loose file, is in `updates` only) and the open threads by page. A thread carries its id, its first quote (`null` for a whole section), who it waits on, when it was opened and the people who wrote in it, never its entries. Pages and threads come oldest first. The same rights as the review: a reader without engram rights is not counted any update about engrams that no page cites.",
         "operationId": "get_reflection_summary",
         "parameters": [
           {
@@ -5821,6 +5821,7 @@
                     }
                   ],
                   "pages_to_update": 2,
+                  "updates": 3,
                   "waiting_for_people": 0,
                   "waiting_for_the_agent": 1
                 }

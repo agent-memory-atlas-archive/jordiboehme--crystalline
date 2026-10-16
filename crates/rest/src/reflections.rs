@@ -1078,9 +1078,12 @@ pub async fn review(
     summary = "The Reflection home: what waits for review, in counts and by page.",
     description = "The cheap cut of the review the Reflection home draws: \
                    how many open threads wait for the agent and for people, \
-                   `pages_to_update` (the review queue's `kinds.update`, \
-                   counted without rendering a diff or looking up a source) \
-                   and the open threads by page. A thread carries its id, its \
+                   `updates` (the review queue's `kinds.update`, counted \
+                   without rendering a diff or looking up a source), \
+                   `pages_to_update` (the distinct pages those updates are \
+                   on; an update of no page, such as unreflected engrams or \
+                   a loose file, is in `updates` only) and the open threads \
+                   by page. A thread carries its id, its \
                    first quote (`null` for a whole section), who it waits on, \
                    when it was opened and the people who wrote in it, never \
                    its entries. Pages and threads come oldest first. The same \
@@ -1095,6 +1098,7 @@ pub async fn review(
             example = json!({ "domain": "eng",
                 "waiting_for_the_agent": 1,
                 "waiting_for_people": 0,
+                "updates": 3,
                 "pages_to_update": 2,
                 "open_by_page": [ { "path": "guides/deploying.md",
                     "title": "Deploying",
