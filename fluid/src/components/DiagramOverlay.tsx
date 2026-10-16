@@ -651,6 +651,7 @@ export default function DiagramOverlay({
         ) : (
           <div ref={hostRef}>
             <img
+              className="content-img"
               src={content.src}
               alt={content.alt}
               // The stage owns the drag: a draggable image would start the

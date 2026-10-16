@@ -10,7 +10,7 @@ import type { ReactElement } from "react";
 import { Link } from "react-router";
 
 import { domainRoute } from "../paths";
-import { FOCUS_RING } from "./primitives";
+import { CHROME_LINK, FOCUS_RING } from "./primitives";
 
 export interface Crumb {
   label: string;
@@ -53,7 +53,7 @@ export function Breadcrumbs({ crumbs }: { crumbs: Crumb[] }): ReactElement {
             {crumb.href !== null ? (
               <Link
                 to={crumb.href}
-                className={`max-w-48 truncate rounded hover:underline ${FOCUS_RING}`}
+                className={`max-w-48 truncate rounded ${CHROME_LINK} ${FOCUS_RING}`}
               >
                 {crumb.label}
               </Link>

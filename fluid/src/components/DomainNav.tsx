@@ -56,7 +56,7 @@ import { domainRoute, engramRoute, folderRoute } from "../paths";
 import { ENGRAM_PREFETCH } from "../prefetch";
 import { CreateEngramDialog } from "./CreateEngramDialog";
 import { ITEM_CLASSES, MENU_CLASSES } from "./menu";
-import { Chip, FOCUS_RING, Tooltip } from "./primitives";
+import { CHROME_LINK, Chip, FOCUS_RING, Tooltip } from "./primitives";
 
 export interface DomainNavProps {
   /** The domain the route is inside. */
@@ -95,7 +95,7 @@ export function DomainNav({ domain, permalink, domains }: DomainNavProps) {
     <div className="flex flex-col gap-3">
       <Link
         to="/"
-        className="px-2 text-xs text-slate-500 underline underline-offset-2 hover:no-underline focus-visible:ring-2 focus-visible:ring-accent-600 dark:focus-visible:ring-accent-400 focus-visible:outline-none dark:text-slate-400"
+        className={`rounded px-2 text-xs ${CHROME_LINK} ${FOCUS_RING}`}
       >
         All domains
       </Link>

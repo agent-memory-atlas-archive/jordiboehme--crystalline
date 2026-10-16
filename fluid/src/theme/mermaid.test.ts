@@ -20,7 +20,7 @@ describe("mermaidConfig", () => {
 
   test("arrowheadColor is named in both schemes, never derived", () => {
     // base derives arrowheadColor by channel-inverting the background;
-    // inverting the dark scheme's #0f172a lands on a warm cream, which is
+    // inverting the dark scheme's #0d0f16 lands on a warm cream, which is
     // the user-journey wart this pins shut. A named variable always wins
     // the derivation pass.
     expect(mermaidConfig(false).themeVariables).toMatchObject({

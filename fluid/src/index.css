@@ -140,7 +140,11 @@
     --muted: #8b93a7;
     --faint: #636b80;
     --link: var(--color-accent-300);
-    --link-line: #5a4f99;
+    --link-line: color-mix(
+      in srgb,
+      var(--color-accent-800) 60%,
+      var(--color-accent-500)
+    );
     --accent-tint: color-mix(in srgb, var(--color-accent-400) 16%, transparent);
     --mark: color-mix(in srgb, var(--color-amber-400) 16%, transparent);
     --mark-rule: #d6a23a;
@@ -317,7 +321,8 @@
   }
 
   /* A white diagram should not glare on the dark canvas. */
-  [data-theme="dark"] img {
+  [data-theme="dark"] .measured img,
+  [data-theme="dark"] .content-img {
     filter: brightness(0.86);
   }
 

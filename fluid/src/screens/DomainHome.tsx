@@ -99,7 +99,12 @@ import { ReflectionModeSwitch } from "../components/ReflectionModeSwitch";
 import { RenameDomainDialog } from "../components/RenameDomainDialog";
 import { Skeleton } from "../components/Skeleton";
 import { SyncCard } from "../components/SyncCard";
-import { BUTTON, Chip, FOCUS_RING } from "../components/primitives";
+import {
+  BUTTON,
+  CHROME_LINK,
+  Chip,
+  FOCUS_RING,
+} from "../components/primitives";
 import { orderQuery, useEngramsOrder } from "../engramsOrder";
 import { frontmatterFilters } from "../filters";
 import { plural } from "../format";
@@ -1693,10 +1698,7 @@ function DomainNotFound({ domain }: { domain: string }) {
       <p className="text-sm">
         No domain named {`"${domain}"`} is registered on this instance.
       </p>
-      <Link
-        to="/"
-        className="text-sm text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline"
-      >
+      <Link to="/" className={`text-sm ${CHROME_LINK}`}>
         See the domains that are
       </Link>
     </div>

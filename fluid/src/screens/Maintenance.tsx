@@ -86,7 +86,13 @@ import {
 import { deleteAttachment } from "../api/files";
 import { useAuth } from "../auth/AuthContext";
 import { Skeleton } from "../components/Skeleton";
-import { BUTTON, Chip, FIELD, TOGGLE } from "../components/primitives";
+import {
+  BUTTON,
+  CHROME_LINK,
+  Chip,
+  FIELD,
+  TOGGLE,
+} from "../components/primitives";
 import type { ChipVariant } from "../components/primitives";
 import { plural } from "../format";
 import { engramRoute } from "../paths";
@@ -673,7 +679,7 @@ function FindingRow({
         {anchored ? (
           <Link
             to={engramRoute(finding.domain, finding.permalink)}
-            className="text-sm text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline"
+            className={`text-sm ${CHROME_LINK}`}
           >
             {finding.title}
           </Link>
@@ -707,7 +713,7 @@ function FindingRow({
             <li>
               <Link
                 to={engramRoute(finding.domain, finding.counterpart.permalink)}
-                className="text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline"
+                className={CHROME_LINK}
               >
                 {finding.counterpart.title}
               </Link>

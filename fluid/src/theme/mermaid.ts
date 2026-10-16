@@ -34,13 +34,13 @@ import type { MermaidConfig } from "mermaid";
  * sequence or class diagram's notes come out in mermaid's yellow in BOTH
  * schemes - a highlighter box on a slate page. And `titleColor` falls back to
  * `tertiaryTextColor`, which is the channel inversion of `tertiaryColor`:
- * inverting the dark scheme's `#0f172a` gives the warm cream `#f0e8d5`, so
+ * inverting the dark scheme's `#0d0f16` gives the warm cream `#f2f0e9`, so
  * subgraph and cluster titles would be the one thing on the page that is not
  * accent or slate. `arrowheadColor` derives the same way `titleColor` does, but
  * more directly - `this.arrowheadColor = this.arrowheadColor ||
  * invert_default(this.background)` inverts `background` itself rather than
  * routing through `tertiaryColor`, landing on that same warm cream for the
- * dark scheme's `#0f172a`, so every arrowhead in a flowchart or user journey
+ * dark scheme's `#0d0f16`, so every arrowhead in a flowchart or user journey
  * would read as the one non-accent, non-slate mark on the page - the wart this
  * file pins shut by naming it to match `lineColor` per scheme. Naming all
  * four is what closes that: overrides are applied again AFTER the derivation
@@ -54,14 +54,14 @@ import type { MermaidConfig } from "mermaid";
 const VARIABLES = {
   dark: {
     darkMode: true,
-    background: "#0f172a",
+    background: "#0d0f16",
     primaryColor: "#2a1f5f",
     primaryTextColor: "#e2e8f0",
     primaryBorderColor: "#978bd3",
     lineColor: "#64748b",
     arrowheadColor: "#64748b",
     secondaryColor: "#1e293b",
-    tertiaryColor: "#0f172a",
+    tertiaryColor: "#0d0f16",
     noteBkgColor: "#1e293b",
     noteTextColor: "#e2e8f0",
     titleColor: "#e2e8f0",

@@ -1004,7 +1004,7 @@ function TopBar({
   const { fullWidth } = useFullWidth();
 
   return (
-    <header className="sticky top-0 z-40 border-b border-slate-200 bg-canvas/90 backdrop-blur print:hidden dark:border-slate-800">
+    <header className="sticky top-0 z-40 border-b border-hair bg-canvas/90 backdrop-blur print:hidden">
       {/*
         A fixed row rather than one sized by its contents: the sticky offsets
         below it - the reading surface's own sticky pieces, the editor's

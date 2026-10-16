@@ -17,6 +17,14 @@ import type {
 
 import { isRetired } from "../lifecycle";
 
+/**
+ * A link in chrome (breadcrumbs, sidebar, lists, rails): quiet ink, no
+ * underline until the pointer is on it. Links inside rendered Markdown keep
+ * the underlined prose style instead.
+ */
+export const CHROME_LINK =
+  "text-ink-3 hover:text-ink hover:underline underline-offset-[3px]";
+
 /** The one focus treatment, everywhere. */
 export const FOCUS_RING =
   "focus-visible:ring-2 focus-visible:ring-accent-600 focus-visible:outline-none dark:focus-visible:ring-accent-400";
