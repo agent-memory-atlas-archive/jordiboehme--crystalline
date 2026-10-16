@@ -328,7 +328,7 @@ describe("creating, moving and deleting pages", () => {
     });
     // Back on the Reflection home.
     expect(
-      await screen.findByRole("heading", { name: "Search", level: 2 }),
+      await screen.findByRole("searchbox", { name: "Search the Reflection" }),
     ).toBeVisible();
   });
 

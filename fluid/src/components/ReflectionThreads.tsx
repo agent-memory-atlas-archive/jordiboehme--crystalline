@@ -292,7 +292,7 @@ function avatarColor(name: string): string {
 }
 
 /** A round initial; the name beside it is what a screen reader hears. */
-function Avatar({
+export function Avatar({
   name,
   agent,
 }: {

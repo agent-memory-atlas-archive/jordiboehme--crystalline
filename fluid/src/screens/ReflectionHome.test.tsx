@@ -70,6 +70,57 @@ const TREE = {
   ],
 };
 
+const THREAD = (
+  id: string,
+  waiting: "people" | "agent",
+  authors: string[],
+) => ({
+  id,
+  path: "guides/deploying.md",
+  anchor: {
+    section: "7f3a9c2e",
+    quote: "between 01:30 and 04:00",
+    occurrence: 1,
+    state: "found",
+  },
+  status: "open",
+  waiting_on: waiting,
+  opened_at: "2026-10-01T10:00:00Z",
+  age_secs: 3600,
+  entries: authors.map((name) => ({
+    at: "2026-10-01T10:00:00Z",
+    kind: "comment",
+    author: { name, agent: name === "bot" },
+    text: "Why then?",
+  })),
+});
+
+const REVIEW = {
+  waiting_for_people: [
+    {
+      path: "guides/deploying.md",
+      title: "Deploying",
+      threads: [THREAD("t1", "people", ["bot"])],
+    },
+  ],
+  waiting_for_the_agent: [
+    {
+      path: "guides/deploying.md",
+      title: "Deploying",
+      threads: [
+        THREAD("t2", "agent", ["ben", "ana"]),
+        THREAD("t3", "agent", ["ben"]),
+      ],
+    },
+  ],
+  queue: {
+    total: 2,
+    kinds: { feedback: 0, update: 2, review: 0 },
+    queue: [],
+    guidance: null,
+  },
+};
+
 /**
  * A person with knowledge `none` and Reflection `contributor` on `eng`: a
  * member of the private `eng`, so it may leave (`member: true`).
@@ -97,6 +148,7 @@ function asContributor(routes: Record<string, Answer> = {}) {
       "/domains/eng/reflection": () =>
         status({ right: "edit", engrams_visible: false, member: true }),
       "/domains/eng/reflection/tree": () => TREE,
+      "/domains/eng/reflection/review": () => REVIEW,
       ...routes,
     }),
   );
@@ -137,6 +189,7 @@ function asEditor(routes: Record<string, Answer> = {}) {
       "/reflection/domains": () => ({ domains: [] }),
       "/domains/eng/reflection": () => status(),
       "/domains/eng/reflection/tree": () => TREE,
+      "/domains/eng/reflection/review": () => REVIEW,
       ...routes,
     }),
   );
@@ -384,9 +437,120 @@ describe("the Reflection home", () => {
     expect(
       await within(main).findByRole("link", { name: "How we write about eng" }),
     ).toHaveAttribute("href", "/d/eng/reflection/PACT.md");
+    const review = within(main).getByRole("link", { name: "Review" });
+    expect(review).toHaveAttribute("href", "/d/eng/reflection/review");
+    expect(review.closest("section")).toHaveTextContent("3 open threads");
+  });
+
+  it("says in the Review card what waits", async () => {
+    asEditor();
+    renderApp("/d/eng/reflection");
+    const card = await within(await screen.findByRole("main")).findByRole(
+      "region",
+      { name: "Review" },
+    );
     expect(
-      within(main).getByRole("link", { name: "3 open threads" }),
-    ).toHaveAttribute("href", "/d/eng/reflection/review");
+      await within(card).findByText(
+        "2 threads wait for the agent. 1 thread waits for people. 2 pages need an update from a changed engram.",
+      ),
+    ).toBeVisible();
+  });
+
+  it("says nothing waits when the review is empty", async () => {
+    asEditor({
+      "/domains/eng/reflection/review": () => ({
+        waiting_for_people: [],
+        waiting_for_the_agent: [],
+        queue: { total: 0, kinds: {}, queue: [], guidance: null },
+      }),
+    });
+    renderApp("/d/eng/reflection");
+    expect(await screen.findByText("Nothing waits for review.")).toBeVisible();
+    expect(
+      screen.queryByRole("list", { name: "Pages with open threads" }),
+    ).toBeNull();
+  });
+
+  it("groups the open threads by page with the people involved", async () => {
+    asEditor();
+    renderApp("/d/eng/reflection");
+    const list = await screen.findByRole("list", {
+      name: "Pages with open threads",
+    });
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows).toHaveLength(1);
+    expect(
+      within(rows[0] as HTMLElement).getByRole("link", { name: "Deploying" }),
+    ).toHaveAttribute("href", "/d/eng/reflection/guides/deploying.md");
+    expect(rows[0]).toHaveTextContent("bot (agent), ben, ana");
+    expect(rows[0]).toHaveTextContent("3 open");
+    expect(screen.getByText("3 on 1 page")).toBeVisible();
+  });
+
+  it("lists every page with its folder, sections and open threads", async () => {
+    asEditor();
+    renderApp("/d/eng/reflection");
+    const list = await screen.findByRole("list", { name: "All pages" });
+    const row = within(list).getByRole("listitem");
+    expect(row).toHaveTextContent("Deploying");
+    expect(row).toHaveTextContent("guides");
+    expect(row).toHaveTextContent("3 sections");
+    expect(row).toHaveTextContent("2 open threads");
+  });
+
+  it("offers New page nowhere on the home", async () => {
+    asEditor();
+    renderApp("/d/eng/reflection");
+    const main = await screen.findByRole("main");
+    await within(main).findByRole("list", { name: "All pages" });
+    expect(within(main).queryByText(/New page/)).toBeNull();
+  });
+
+  it("writes the pact from its card for a curator", async () => {
+    asEditor({
+      "/domains/eng/reflection/tree": () => ({
+        ...TREE,
+        pact: {
+          path: "PACT.md",
+          title: "PACT.md",
+          exists: false,
+          open_threads: 0,
+        },
+      }),
+    });
+    renderApp("/d/eng/reflection");
+    const card = await within(await screen.findByRole("main")).findByRole(
+      "region",
+      { name: "Pact" },
+    );
+    expect(
+      await within(card).findByRole("button", { name: "Write the pact" }),
+    ).toBeVisible();
+    expect(within(card).getByText("How we write about eng")).toBeVisible();
+  });
+
+  it("shows the pact card to an editor without the write button", async () => {
+    asEditor({
+      "/domains/eng/reflection": () => status({ right: "edit" }),
+      "/domains/eng/reflection/tree": () => ({
+        ...TREE,
+        pact: {
+          path: "PACT.md",
+          title: "PACT.md",
+          exists: false,
+          open_threads: 0,
+        },
+      }),
+    });
+    renderApp("/d/eng/reflection");
+    const card = await within(await screen.findByRole("main")).findByRole(
+      "region",
+      { name: "Pact" },
+    );
+    expect(
+      await within(card).findByText("No pact is written yet."),
+    ).toBeVisible();
+    expect(within(card).queryByRole("button")).toBeNull();
   });
 
   it("searches the Reflection in the mode asked for, says which ran, and never shows an id line", async () => {

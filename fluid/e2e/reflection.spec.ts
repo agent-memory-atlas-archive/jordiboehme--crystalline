@@ -577,7 +577,7 @@ test.describe.serial("the Reflection journeys", () => {
   test("the Reflection search finds a page by its words", async ({ page }) => {
     await signIn(page, USER, PASSWORD);
     await page.goto(HOME);
-    const search = page.getByRole("search");
+    const search = page.getByRole("search", { name: "Search the Reflection" });
     await search
       .getByRole("searchbox", { name: "Search the Reflection" })
       .fill("batch window");
