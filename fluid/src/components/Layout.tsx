@@ -92,6 +92,7 @@ import {
   reflectionPathOf,
   searchRoute,
 } from "../paths";
+import { PREFETCH } from "../prefetch";
 import { useWide } from "../useWide";
 import { CommandPalette, openPalette } from "./CommandPalette";
 import { CreateDomainDialog } from "./CreateDomainDialog";
@@ -1657,6 +1658,7 @@ function DomainLink({ domain }: { domain: DomainSummary }) {
   return (
     <NavLink
       to={domainRoute(domain.name)}
+      {...PREFETCH.domain}
       className={({ isActive }) =>
         `${SIDE.row} justify-between ${isActive ? SIDE.current : ""}`
       }

@@ -83,6 +83,22 @@ describe("lazyPart", () => {
     expect(load).toHaveBeenCalledTimes(3);
   });
 
+  it("imports again when the part is mounted again after a failure", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const load = vi
+      .fn<() => Promise<{ default: typeof Body }>>()
+      .mockRejectedValueOnce(new TypeError("offline"))
+      .mockResolvedValue({ default: Body });
+    const Part = lazyPart(load);
+    const first = render(<Part fallback={null} name="again" />);
+    await screen.findByRole("alert");
+    first.unmount();
+
+    render(<Part fallback={null} name="again" />);
+    expect(await screen.findByText("Loaded again")).toBeInTheDocument();
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
   it("lets a dialog be closed when its chunk is missing", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const onClose = vi.fn();

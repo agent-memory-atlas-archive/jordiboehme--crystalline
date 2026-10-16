@@ -18,7 +18,7 @@
  * main region, where the frame put it.
  */
 
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -121,6 +121,9 @@ async function followRowIn(domain: string, permalink: string) {
   return row;
 }
 
+/** How long a cold lazy import may take under a full run, in milliseconds. */
+const SLOW = 8000;
+
 beforeEach(() => {
   apiMock.mockReset();
 });
@@ -205,22 +208,65 @@ describe("the screens behind a lazy boundary", () => {
   it("a route change to a lazy screen still moves focus to the main region", async () => {
     serveFrame();
     renderApp("/graph");
-    await screen.findByRole("heading", { name: "Graph", level: 1 });
+    // Three cold lazy imports (the graph screen, the menu body, Maintenance)
+    // are waited on below. In a full run they compete with every other test
+    // file for the CPU, and the default one second is not enough then.
+    await screen.findByRole(
+      "heading",
+      { name: "Graph", level: 1 },
+      { timeout: SLOW },
+    );
 
     await userEvent.click(
-      await screen.findByRole("button", { name: "Ada Lovelace" }),
+      await screen.findByRole(
+        "button",
+        { name: "Ada Lovelace" },
+        { timeout: SLOW },
+      ),
     );
     await userEvent.click(
-      await screen.findByRole("menuitem", { name: "Maintenance" }),
+      await screen.findByRole(
+        "menuitem",
+        { name: "Maintenance" },
+        { timeout: SLOW },
+      ),
     );
 
     // The screen arrives after its chunk, inside the same main region, and
     // nothing it draws takes the focus the route change put there.
     expect(
-      await screen.findByRole("heading", {
-        name: "Maintenance - what the knowledge needs next",
-      }),
+      await screen.findByRole(
+        "heading",
+        { name: "Maintenance - what the knowledge needs next" },
+        { timeout: SLOW },
+      ),
     ).toBeVisible();
+    // Radix returns the focus to the avatar a tick after the menu closes;
+    // give that tick time to happen, then check it did not take the focus.
+    await new Promise((resolve) => setTimeout(resolve, 100));
     expect(screen.getByRole("main")).toHaveFocus();
-  });
+  }, 30_000);
+
+  it("closing the avatar menu with Escape still returns the focus to the avatar", async () => {
+    serveFrame();
+    renderApp("/graph");
+    await screen.findByRole(
+      "heading",
+      { name: "Graph", level: 1 },
+      { timeout: SLOW },
+    );
+    const avatar = await screen.findByRole(
+      "button",
+      { name: "Ada Lovelace" },
+      { timeout: SLOW },
+    );
+    await userEvent.click(avatar);
+    await screen.findByRole("menuitem", { name: "Maintenance" });
+
+    await userEvent.keyboard("{Escape}");
+
+    await waitFor(() => {
+      expect(avatar).toHaveFocus();
+    });
+  }, 30_000);
 });

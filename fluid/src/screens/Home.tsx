@@ -33,7 +33,7 @@ import { BUTTON, Chip, FOCUS_RING } from "../components/primitives";
 import { formatDay, plural } from "../format";
 import { RETIRED_CLASS, isRetired } from "../lifecycle";
 import { domainRoute, engramRoute, reflectionRoute } from "../paths";
-import { ENGRAM_PREFETCH } from "../prefetch";
+import { ENGRAM_PREFETCH, PREFETCH } from "../prefetch";
 import { useWide } from "../useWide";
 
 export default function Home() {
@@ -163,6 +163,7 @@ export default function Home() {
                   <>
                     <Link
                       to={reflectionRoute(row.domain)}
+                      {...PREFETCH.reflection}
                       className="font-medium text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline"
                     >
                       {row.domain}
@@ -263,6 +264,7 @@ function DomainCard({
       <h3 className="flex flex-wrap items-center gap-2 text-base font-semibold">
         <Link
           to={domainRoute(domain.name)}
+          {...PREFETCH.domain}
           className="hover:underline focus-visible:ring-2 focus-visible:ring-accent-600 dark:focus-visible:ring-accent-400 focus-visible:outline-none"
         >
           {domain.name}
@@ -374,6 +376,7 @@ function ActivityFeed({
         {firstDomain !== null && (
           <Link
             to={domainRoute(firstDomain)}
+            {...PREFETCH.domain}
             className={`mt-1 text-sm text-accent-700 underline underline-offset-2 hover:no-underline dark:text-accent-400 ${FOCUS_RING}`}
           >
             {`Start in ${firstDomain}`}

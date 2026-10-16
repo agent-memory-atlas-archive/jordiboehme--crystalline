@@ -92,6 +92,16 @@ export function AvatarMenu({
           sideOffset={6}
           collisionPadding={8}
           className="avatar-menu"
+          // Radix hands the focus back to the avatar a tick after the menu
+          // closes. When a link in the menu has taken the reader to another
+          // screen, that screen has already put the focus on its main
+          // region, and the avatar must not take it away again.
+          onCloseAutoFocus={(event) => {
+            const active = document.activeElement;
+            if (active instanceof HTMLElement && active !== document.body) {
+              event.preventDefault();
+            }
+          }}
         >
           <Body triggerRef={triggerRef} onShortcuts={onShortcuts} />
         </DropdownMenu.Content>

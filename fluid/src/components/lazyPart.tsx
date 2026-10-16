@@ -15,7 +15,7 @@
  * part that loaded stays mounted as it was.
  */
 
-import { Suspense, lazy } from "react";
+import { Suspense, lazy, useState } from "react";
 import type { ComponentType, ReactNode } from "react";
 
 import { ChunkLoadError } from "../lazyChunk";
@@ -66,6 +66,9 @@ export function lazyPart<P extends object>(
   }
 
   return function Part(all: P & PartFrame) {
+    // A part mounted again after a failure (a dialog opened a second time)
+    // starts a new import rather than meeting the old rejection.
+    useState(retry);
     const { fallback, overlay = false, ...rest } = all;
     const close = (rest as { onClose?: unknown }).onClose;
     return (
