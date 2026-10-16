@@ -43,6 +43,7 @@ pub fn to_json(k: &KeptText) -> Value {
         "domain": k.domain,
         "owner": k.owner,
         "removed": k.removed,
+        "unfinished": k.unfinished,
         "kind": k.kind,
         "path": k.path,
         "kept_at": k.kept_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -61,6 +62,9 @@ pub fn what(k: &KeptText) -> String {
     }
     if k.removed {
         out.push_str(" (removed domain)");
+    }
+    if k.unfinished {
+        out.push_str(" (unfinished keep)");
     }
     out
 }

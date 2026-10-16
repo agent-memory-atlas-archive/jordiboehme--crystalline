@@ -1422,6 +1422,9 @@ pub struct KeptDoctor {
     pub owner: Option<String>,
     /// Whether its domain was removed from this machine since.
     pub removed: bool,
+    /// Whether this is an unfinished keep: a temporary file a keep left
+    /// when its process stopped. It may be the only copy.
+    pub unfinished: bool,
     /// `engram` or `reflection`.
     pub kind: crystalline_core::kept::KeptKind,
     /// The engram's file path in its domain, or the page's path inside
@@ -1465,6 +1468,7 @@ fn check_kept(
                 domain: k.domain.clone(),
                 owner: k.owner.clone(),
                 removed: k.removed,
+                unfinished: k.unfinished,
                 kind: k.kind,
                 path: k.path.clone(),
                 kept_at: k.kept_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -1484,7 +1488,13 @@ fn render_kept(out: &mut String, kept: &[KeptDoctor]) {
     }
     let _ = writeln!(out, "kept texts:");
     for k in kept {
-        if k.stale {
+        if k.unfinished {
+            let _ = writeln!(
+                out,
+                "  [warning] {}: a keep that never finished, perhaps the only copy of this text: {}",
+                k.line, k.file
+            );
+        } else if k.stale {
             let _ = writeln!(
                 out,
                 "  [warning] {}, more than {} days ago: {}",

@@ -282,6 +282,28 @@ async fn a_contributor_gets_a_pages_text_and_not_the_pacts() {
     assert_eq!(status, 200, "a curator gets the pact's text");
 }
 
+/// An unfinished keep (a temporary file a crash left) is never served over
+/// the JSON API: neither listed nor read.
+#[tokio::test]
+async fn an_unfinished_keep_is_not_served() {
+    let s = serve().await;
+    let folder = s.fx.tmp.path().join("state/kept/eng/reflection/guides");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join(".deploying.md.20261015T080000Z.42-0.keeping"),
+        "Half kept.\n",
+    )
+    .unwrap();
+    let root = s.fx.tmp.path().join("state/kept");
+    let id = kept::scan(&root)[0].id.clone();
+    let keeper = Session::login(s.addr, "keeper").await;
+    let (status, body) = keeper.get("/api/v1/domains/eng/kept").await;
+    assert_eq!(status, 200, "{body}");
+    assert!(listed(&body).is_empty(), "{body}");
+    let (status, _) = keeper.get(&format!("/api/v1/domains/eng/kept/{id}")).await;
+    assert_eq!(status, 404);
+}
+
 /// The anonymous viewer of a public domain is asked to sign in.
 #[tokio::test]
 async fn the_anonymous_viewer_is_asked_to_sign_in() {

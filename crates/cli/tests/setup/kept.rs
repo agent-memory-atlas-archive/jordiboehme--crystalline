@@ -246,3 +246,37 @@ fn status_through_the_daemon_counts_the_kept_texts() {
     let json: Value = serde_json::from_str(&json).unwrap();
     assert_eq!(json["kept_texts"], 1, "{json}");
 }
+
+/// A temporary file a keep left when its process stopped is listed as an
+/// unfinished keep with its path, `kept show` prints it, and doctor warns
+/// about it; nothing deletes it.
+#[test]
+fn an_unfinished_keep_is_listed_shown_and_warned_about() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = kept_root(home.path()).join("eng/engram/runbooks");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = folder.join(".deploy.md.20261015T080000Z.42-0.keeping");
+    std::fs::write(&file, "Half kept.\n").unwrap();
+
+    let all = listed(home.path(), &[]);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(all[0]["unfinished"], true);
+    assert_eq!(all[0]["path"], "runbooks/deploy.md");
+    assert_eq!(all[0]["file"], file.display().to_string());
+    let human = stdout(&run(home.path(), &["kept", "list"]));
+    assert!(
+        human.contains("eng engram runbooks/deploy.md (unfinished keep)"),
+        "{human}"
+    );
+    let id = all[0]["id"].as_str().unwrap();
+    assert_eq!(
+        stdout(&run(home.path(), &["kept", "show", id])),
+        "Half kept.\n"
+    );
+    let doctor = stdout(&run(home.path(), &["doctor", "--fix"]));
+    assert!(
+        doctor.contains("[warning]") && doctor.contains("a keep that never finished"),
+        "{doctor}"
+    );
+    assert!(file.is_file(), "nothing deletes it");
+}

@@ -128,6 +128,12 @@ pub struct KeptText {
     /// kept: [`set_aside`] moved the texts out of its folder, so a later
     /// domain of the same name never reaches them.
     pub removed: bool,
+    /// Whether this is an unfinished keep: the temporary file a keep writes
+    /// before it gives the text its kept name, left behind when the
+    /// process stopped in between. It may be the only copy, so it is listed
+    /// and shown like a kept text, never served over the JSON API and never
+    /// deleted on its own.
+    pub unfinished: bool,
     /// Whose review draft the room was over, or `None` for the domain's own
     /// text. A draft's kept text is its owner's alone.
     pub owner: Option<String>,
@@ -179,27 +185,46 @@ pub fn write(
     // takes for a kept text, so a listing never shows a file half written.
     // A `remove` of the folder's last text may prune the folder between its
     // creation and the open: then the folder is made again, a few times.
-    let temp = parent.join(format!(".{name}.{stamp}.{}.keeping", std::process::id()));
+    // The temporary name carries the process and a counter, so two keeps of
+    // one path in one second never meet; one that is taken all the same
+    // (another process reusing the id) is passed over for the next.
     let mut attempt = 0;
-    loop {
+    let temp = loop {
+        let temp = parent.join(format!(
+            ".{name}.{stamp}.{}-{}{TEMP_SUFFIX}",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&parent)?;
         #[cfg(test)]
-        tests::before_open(&parent);
+        tests::before_open(&parent, &temp);
         match write_new(&temp, text) {
-            Ok(()) => break,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound && attempt < OPEN_TRIES => {
+            Ok(()) => break temp,
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::AlreadyExists
+                ) && attempt < OPEN_TRIES =>
+            {
                 attempt += 1;
             }
             Err(err) => return Err(err),
         }
-    }
+    };
     let placed = place(&temp, &base, &name, &stamp, text);
     let _ = std::fs::remove_file(&temp);
     placed
 }
 
-/// How many times [`write`] makes a pruned folder again before it gives up.
+/// How many times [`write`] makes a pruned folder again, or passes over a
+/// taken temporary name, before it gives up.
 const OPEN_TRIES: u32 = 5;
+
+/// The end of a temporary keep's name: `.<name>.<stamp>.<pid>-<n>.keeping`.
+const TEMP_SUFFIX: &str = ".keeping";
+
+/// The counter in a temporary keep's name, one per keep in this process.
+static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Write `text` to a new file at `file`; fails when something is there.
 fn write_new(file: &Path, text: &str) -> std::io::Result<()> {
@@ -381,8 +406,12 @@ fn walk(place: &Place<'_>, dir: &Path, rel: &str, found: &mut Vec<KeptText>) {
         if !entry.is_file {
             continue;
         }
-        let Some((name, kept_at)) = parse_name(&entry.name) else {
-            continue;
+        let (name, kept_at, unfinished) = match parse_name(&entry.name) {
+            Some((name, kept_at)) => (name, kept_at, false),
+            None => match parse_temp_name(&entry.name) {
+                Some((name, kept_at)) => (name, kept_at, true),
+                None => continue,
+            },
         };
         let path = if rel.is_empty() {
             name.to_string()
@@ -393,6 +422,7 @@ fn walk(place: &Place<'_>, dir: &Path, rel: &str, found: &mut Vec<KeptText>) {
             id: id_of(&place.rel(&child)),
             domain: place.at.name.to_string(),
             removed: place.at.removed,
+            unfinished,
             owner: place.at.owner.map(str::to_string),
             kind: place.kind,
             path,
@@ -401,6 +431,19 @@ fn walk(place: &Place<'_>, dir: &Path, rel: &str, found: &mut Vec<KeptText>) {
             file: entry.path,
         });
     }
+}
+
+/// `.<name>.<stamp>.<pid>[-<n>].keeping`, an unfinished keep's temporary
+/// name: the original file name and the time.
+fn parse_temp_name(file: &str) -> Option<(&str, DateTime<Utc>)> {
+    let stem = file.strip_prefix('.')?.strip_suffix(TEMP_SUFFIX)?;
+    let (head, process) = stem.rsplit_once('.')?;
+    if process.is_empty() || !process.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+        return None;
+    }
+    let (name, stamp) = head.rsplit_once('.')?;
+    let at = NaiveDateTime::parse_from_str(stamp, STAMP).ok()?;
+    (!name.is_empty()).then(|| (name, at.and_utc()))
 }
 
 /// `<name>.<stamp>.md` or `<name>.<stamp>-<n>.md`: the original file name
@@ -475,15 +518,76 @@ mod tests {
         static PRUNES: Cell<u32> = const { Cell::new(0) };
     }
 
+    thread_local! {
+        /// How many more times [`before_open`] takes the temporary name first.
+        static TAKES: Cell<u32> = const { Cell::new(0) };
+    }
+
     /// The test seam in [`write`]: right after the folder is made, remove it
-    /// again while [`PRUNES`] says so, as a concurrent `remove` would.
-    pub(super) fn before_open(dir: &Path) {
+    /// again while [`PRUNES`] says so, as a concurrent `remove` would, or put
+    /// a file at the temporary name while [`TAKES`] says so, as a second keep
+    /// of the same name would.
+    pub(super) fn before_open(dir: &Path, temp: &Path) {
         PRUNES.with(|left| {
             if left.get() > 0 {
                 left.set(left.get() - 1);
                 std::fs::remove_dir(dir).unwrap();
             }
         });
+        TAKES.with(|left| {
+            if left.get() > 0 {
+                left.set(left.get() - 1);
+                std::fs::write(temp, "someone else's").unwrap();
+            }
+        });
+    }
+
+    /// A temporary name another keep holds is passed over: the text is kept
+    /// under its own name all the same, and the other file is left alone.
+    /// Two keeps of one path in one second get two temporary names.
+    #[test]
+    fn a_taken_temporary_name_is_passed_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        TAKES.with(|left| left.set(2));
+        let file = write(root, "eng", None, KeptKind::Engram, "a.md", at(8), "mine").unwrap();
+        TAKES.with(|left| left.set(0));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "mine");
+        let found = scan(root);
+        assert_eq!(
+            found.iter().filter(|k| k.unfinished).count(),
+            2,
+            "{found:?}"
+        );
+        assert_eq!(found.iter().filter(|k| !k.unfinished).count(), 1);
+        let again = write(root, "eng", None, KeptKind::Engram, "a.md", at(8), "again").unwrap();
+        assert_ne!(again, file);
+    }
+
+    /// A temporary file a crash left behind is listed as an unfinished
+    /// keep, with its path, its time and its text, and is never taken for a
+    /// finished one.
+    #[test]
+    fn a_leftover_temporary_file_is_an_unfinished_keep() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("eng/engram/runbooks");
+        std::fs::create_dir_all(&folder).unwrap();
+        for name in [
+            ".deploy.md.20261015T080000Z.42-3.keeping",
+            ".deploy.md.20261015T080000Z.42.keeping",
+        ] {
+            std::fs::write(folder.join(name), "half").unwrap();
+        }
+        std::fs::write(folder.join(".deploy.md.x.42.keeping"), "not a keep").unwrap();
+        let found = scan(dir.path());
+        assert_eq!(found.len(), 2, "{found:?}");
+        for k in &found {
+            assert!(k.unfinished);
+            assert_eq!(k.path, "runbooks/deploy.md");
+            assert_eq!(k.kept_at, at(8));
+            assert_eq!(read(k).unwrap(), "half");
+        }
+        assert_ne!(found[0].id, found[1].id);
     }
 
     /// A drop that prunes the folder between its creation and the open does
@@ -567,16 +671,6 @@ mod tests {
             Some("my-team")
         );
         assert_eq!(removed_domain("eng"), None);
-    }
-
-    /// The temporary name a keep writes first is never listed.
-    #[test]
-    fn a_text_being_written_is_not_listed() {
-        let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("eng/engram");
-        std::fs::create_dir_all(&folder).unwrap();
-        std::fs::write(folder.join(".a.md.20261015T080000Z.42.keeping"), "half").unwrap();
-        assert!(scan(dir.path()).is_empty());
     }
 
     fn at(h: u32) -> DateTime<Utc> {

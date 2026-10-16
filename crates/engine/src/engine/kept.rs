@@ -119,6 +119,7 @@ impl Engine {
             .filter(|k| {
                 k.domain == domain
                     && !k.removed
+                    && !k.unfinished
                     && rights.allows(k)
                     && (k.owner.is_none() || k.owner == mine)
             })
