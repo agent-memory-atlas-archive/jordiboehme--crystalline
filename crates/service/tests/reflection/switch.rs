@@ -1692,8 +1692,6 @@ async fn a_cached_state_follows_a_manifest_edit_outside_crystalline() {
 /// needs no index read, and the domain's row id is remembered with its rows.
 #[tokio::test]
 async fn a_poll_and_a_gate_answer_without_the_store_lock() {
-    use crate::docs::person;
-
     let fx = fixture(&[
         ("MANIFEST.md", &manifest("reflection: on\n")),
         (
@@ -1702,6 +1700,39 @@ async fn a_poll_and_a_gate_answer_without_the_store_lock() {
         ),
     ])
     .await;
+    poll_and_gate_without_the_store_lock(fx).await;
+}
+
+/// The same on an instance with an id, as a daemon is: its sync claimed
+/// the domain, so the host check answers from memory too.
+#[tokio::test]
+async fn a_poll_and_a_gate_on_an_instance_answer_without_the_store_lock() {
+    let store: std::sync::Arc<tokio::sync::Mutex<dyn crystalline_index::Store>> =
+        std::sync::Arc::new(tokio::sync::Mutex::new(
+            crystalline_index::TursoStore::open_in_memory()
+                .await
+                .unwrap(),
+        ));
+    let fx = crate::fixture::instance_on(
+        store,
+        "this-machine",
+        &[
+            ("MANIFEST.md", &manifest("reflection: on\n")),
+            (
+                "runbooks/deploy.md",
+                &engram("Deploy", "runbooks/deploy", "- [fact] deploys run at night"),
+            ),
+        ],
+    )
+    .await;
+    poll_and_gate_without_the_store_lock(fx).await;
+}
+
+/// A warm status and gate, then both again within 200 ms while the test
+/// holds the store lock.
+async fn poll_and_gate_without_the_store_lock(fx: crate::fixture::Fx) {
+    use crate::docs::person;
+
     let caller = person();
     let status = fx.engine.reflection_status("eng", &caller).await.unwrap();
     assert_eq!(status["state"], "on");

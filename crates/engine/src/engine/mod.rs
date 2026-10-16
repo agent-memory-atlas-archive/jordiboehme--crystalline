@@ -1022,6 +1022,10 @@ pub struct Engine {
     // successful `claim_domain_host` and renewed by the heartbeat timer. Drives
     // embed scoping, heartbeat renewal and graceful release.
     hosted: std::sync::RwLock<HashMap<String, DomainId>>,
+    // Whether the store is shared with other instances, read once: it is a
+    // property of the backend, fixed for the store's lifetime, so a gate
+    // that only needs it takes no store lock after the first.
+    shared_database: std::sync::OnceLock<bool>,
     // Whether this engine is a one-shot command on a shared database
     // (`Engine::with_one_shot_instance_id`): it sends no heartbeat, so it
     // gives back after each walk the host locks it took for it, and it never
@@ -2308,6 +2312,7 @@ impl Engine {
             instance_id: String::new(),
             label: String::new(),
             hosted: std::sync::RwLock::new(HashMap::new()),
+            shared_database: std::sync::OnceLock::new(),
             one_shot: false,
             taken: std::sync::Mutex::new(HashSet::new()),
             leases: std::sync::Mutex::new(HashMap::new()),
@@ -3456,6 +3461,17 @@ impl Engine {
         let mut hidden = self.hidden_domains(scope).await?.unwrap_or_default();
         hidden.extend(self.shadowed_domains());
         Ok(hidden)
+    }
+
+    /// Whether the store is shared with other instances
+    /// ([`Store::shares_database`]). The store lock is taken only on the
+    /// first call: the answer is the backend's and never changes.
+    pub(crate) async fn store_is_shared(&self) -> bool {
+        if let Some(shared) = self.shared_database.get() {
+            return *shared;
+        }
+        let shared = self.store.lock().await.shares_database();
+        *self.shared_database.get_or_init(|| shared)
     }
 
     /// Whether `name` is one of [`Engine::known_domain_names`], the names

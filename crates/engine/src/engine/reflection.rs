@@ -583,9 +583,10 @@ impl Engine {
     /// Read fresh on every call, never through the gate's remembered rows:
     /// the instance's own hosts are asked first, in memory, so the host (and
     /// every engine without an instance id) answers without the store lock;
-    /// only a non-host locks the store, to learn whether the database is
-    /// shared and who holds the lock. A database that is not shared (Turso)
-    /// is one instance's own, so its Reflection is always served here.
+    /// only a non-host on a shared database locks the store, to learn who
+    /// holds the lock. A database that is not shared (Turso) is one
+    /// instance's own, so its Reflection is always served here, and saying
+    /// so takes no store lock ([`Engine::store_is_shared`]).
     ///
     /// Another instance's holder counts live or stale: nothing claims a lock
     /// until an instance syncs the domain or starts with `--take-over`, and
@@ -610,10 +611,10 @@ impl Engine {
         if self.instance_id.is_empty() || self.hosted.read().unwrap().contains_key(domain) {
             return Ok(None);
         }
-        let store = self.store.lock().await;
-        if !store.shares_database() {
+        if !self.store_is_shared().await {
             return Ok(None);
         }
+        let store = self.store.lock().await;
         let host = match store.domain_id(domain).await? {
             Some(id) => store.domain_host(id).await?,
             None => None,
@@ -674,10 +675,12 @@ impl Engine {
         let Some(id) = self.hosted.read().unwrap().get(domain).copied() else {
             return Ok(None);
         };
-        let store = self.store.lock().await;
-        if !store.shares_database() {
+        // A database of this instance's own has no other host to lose the
+        // lock to, and saying so needs no store lock.
+        if !self.store_is_shared().await {
             return Ok(None);
         }
+        let store = self.store.lock().await;
         let host = store.domain_host(id).await?;
         drop(store);
         let Some(host) = host.filter(|host| self.foreign_holder(host)) else {
