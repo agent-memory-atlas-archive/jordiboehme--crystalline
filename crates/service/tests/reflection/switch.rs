@@ -1168,6 +1168,20 @@ async fn reflection_gate_timing() {
             .unwrap();
     }
     let listed = started.elapsed();
+    let ids: Vec<String> = doc["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap().to_string())
+        .collect();
+    let started = Instant::now();
+    for _ in 0..50 {
+        fx.engine
+            .settle_reflection("eng", "cited.md", &ids, "taken_in", &agent)
+            .await
+            .unwrap();
+    }
+    let settled = started.elapsed();
 
     eprintln!("index probes x500: {probes:?} ({:?} each)", probes / 500);
     eprintln!("reflection_state x500: {state:?} ({:?} each)", state / 500);
@@ -1204,6 +1218,10 @@ async fn reflection_gate_timing() {
     eprintln!(
         "list_reflection_threads x50: {listed:?} ({:?} each)",
         listed / 50
+    );
+    eprintln!(
+        "settle_reflection taken_in, ten cited engrams x50: {settled:?} ({:?} each)",
+        settled / 50
     );
 }
 
@@ -1685,6 +1703,82 @@ async fn a_cached_state_follows_a_manifest_edit_outside_crystalline() {
         fx.engine.reflection_state("eng").await.unwrap(),
         ReflectionState::Off
     );
+}
+
+/// A take-in reads the facts of the settled sections' sources only, never
+/// every engram of the domain (F2 fix round): the sources of the sections it
+/// settles take the engrams' current checksums, and a section it leaves
+/// alone keeps its old ones.
+#[tokio::test]
+async fn a_take_in_reads_only_the_sources_it_settles() {
+    use crate::docs::{agent, write};
+
+    let notes: Vec<(String, String)> = ["a", "b"]
+        .into_iter()
+        .map(|n| {
+            (
+                format!("notes/{n}.md"),
+                engram(&format!("Note {n}"), &format!("notes/{n}"), "- [fact] x"),
+            )
+        })
+        .collect();
+    let manifest_on = manifest("reflection: on\n");
+    let mut files: Vec<(&str, &str)> = vec![("MANIFEST.md", &manifest_on)];
+    files.extend(notes.iter().map(|(p, c)| (p.as_str(), c.as_str())));
+    let fx = fixture(&files).await;
+    let mut p = write(
+        "a.md",
+        "# Notes\n\nFor people.\n\n## First\n\nOne.\n\n## Second\n\nTwo.\n",
+    );
+    p.sources = std::collections::BTreeMap::from([
+        ("First".to_string(), vec!["notes/a".to_string()]),
+        ("Second".to_string(), vec!["notes/b".to_string()]),
+    ]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    for n in ["a", "b"] {
+        std::fs::write(
+            fx.root.join(format!("notes/{n}.md")),
+            engram(
+                &format!("Note {n}"),
+                &format!("notes/{n}"),
+                "- [fact] a longer fact",
+            ),
+        )
+        .unwrap();
+    }
+    fx.engine.sync(None).await.unwrap();
+    let states = |doc: &serde_json::Value| -> Vec<String> {
+        doc["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["sources"][0]["state"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(states(&doc), ["changed", "changed"]);
+    let first = doc["sections"][0]["id"].as_str().unwrap().to_string();
+
+    let before = fx.engine.recorded_path_loads();
+    fx.engine
+        .settle_reflection("eng", "a.md", &[first], "taken_in", &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        fx.engine.recorded_path_loads(),
+        before,
+        "a take-in loads no engram facts of the whole domain"
+    );
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(states(&doc), ["current", "changed"]);
 }
 
 /// A Reflection poll and a verb's gate take no store lock once the gate

@@ -2132,6 +2132,9 @@ impl Store for TursoStore {
     ) -> Result<Vec<CitedEngram>> {
         let wanted: std::collections::BTreeSet<&str> =
             permalinks.iter().map(String::as_str).collect();
+        if wanted.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut out = Vec::with_capacity(wanted.len());
         for permalink in wanted {
             let Some(r) = query_first(

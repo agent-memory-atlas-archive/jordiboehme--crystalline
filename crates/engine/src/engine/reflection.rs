@@ -1218,20 +1218,21 @@ impl Engine {
 
     /// The facts of the engrams `wanted` names, by permalink: what a
     /// page's own sources are held against. One index seek per distinct
-    /// permalink under the store lock, so a page citing a few engrams never
-    /// pays for every engram of the domain the way [`Engine::engram_facts`]
+    /// permalink under the store lock ([`Store::cited_engrams`] asks a
+    /// repeated permalink once), so a page citing a few engrams never pays
+    /// for every engram of the domain the way [`Engine::engram_facts`]
     /// does. A permalink no engram holds has no entry, which a source reads
     /// as missing.
+    ///
+    /// [`Store::cited_engrams`]: crystalline_index::Store::cited_engrams
     pub(crate) async fn cited_facts(
         &self,
         domain_id: DomainId,
-        mut wanted: Vec<String>,
+        wanted: Vec<String>,
     ) -> Result<HashMap<String, EngramFact>> {
         if wanted.is_empty() {
             return Ok(HashMap::new());
         }
-        wanted.sort();
-        wanted.dedup();
         let cited = self
             .store
             .lock()
@@ -2477,11 +2478,6 @@ impl Engine {
         r::validate_reflection_path(inner).map_err(EngineError::Invalid)?;
         let abs = access.abs(inner);
         let baseline_abs = access.abs(&r::baseline_path(inner));
-        let facts = if outcome == "taken_in" {
-            self.engram_facts(access.domain_id, domain).await?
-        } else {
-            HashMap::new()
-        };
         let _lock = self.lock_file(&abs).await;
         let text = read_opt(&abs)?.ok_or_else(|| {
             EngineError::NotFound(format!("no reflection '{inner}' in domain '{domain}'"))
@@ -2489,6 +2485,20 @@ impl Engine {
         let baseline = read_opt(&baseline_abs)?.unwrap_or_default();
         let sections = r::split_sections(&text);
         let mut prov = r::read_provenance(&text);
+        // A take-in reads the facts of the settled sections' sources only,
+        // from the page as it stands under the file lock. The store lock is
+        // taken inside the file lock, the order `index_reflection` below
+        // already uses.
+        let facts = if outcome == "taken_in" {
+            let cited = ids
+                .iter()
+                .filter_map(|id| prov.get(id))
+                .flat_map(|record| record.sources.iter().map(|src| src.engram.clone()))
+                .collect();
+            self.cited_facts(access.domain_id, cited).await?
+        } else {
+            HashMap::new()
+        };
         let known: BTreeSet<String> = sections
             .iter()
             .filter_map(|s| s.id.clone())
