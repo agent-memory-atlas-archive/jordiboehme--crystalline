@@ -24,6 +24,7 @@ mod hook;
 mod hook_dialect;
 mod install;
 mod install_profile;
+mod kept;
 mod mcp_json;
 mod members;
 mod recall;
@@ -486,6 +487,15 @@ enum Command {
     Users {
         #[command(subcommand)]
         command: UsersCommand,
+    },
+    /// Find and handle the texts this machine's server kept when a
+    /// co-editing room could not save: the last person left and the final
+    /// save was refused or ended in a conflict. They live in the state
+    /// directory's `kept` folder and are never deleted on their own. Copy a
+    /// text back into its page or engram, then drop it.
+    Kept {
+        #[command(subcommand)]
+        command: KeptCommand,
     },
     /// Capture a new engram into a domain (the body is read from --content or stdin).
     Write {
@@ -975,6 +985,32 @@ enum CtlCommand {
     },
     /// Ask the daemon to shut down cleanly.
     Shutdown,
+}
+
+#[derive(Subcommand, Debug)]
+enum KeptCommand {
+    /// List every kept text with its id, domain, page or engram, when it
+    /// was kept, its size and the file it is in.
+    List {
+        /// Only the texts kept for this domain.
+        #[arg(long)]
+        domain: Option<String>,
+    },
+    /// Print one kept text as it was kept, so it can be redirected into a
+    /// file.
+    Show {
+        /// The id `kept list` shows.
+        id: String,
+    },
+    /// Delete one kept text. It may be the last copy of somebody's work, so
+    /// it asks first.
+    Drop {
+        /// The id `kept list` shows.
+        id: String,
+        /// Skip the confirmation prompt and delete.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -2181,6 +2217,7 @@ fn run() -> anyhow::Result<()> {
         }) => on_runtime(move || mcp_dispatch(embedded, read_only, harness, config, cli.db)),
         Some(Command::Ctl { command }) => on_runtime(move || run_ctl(command, cli.json)),
         Some(Command::Users { command }) => on_runtime(move || users::run(command, cli.json)),
+        Some(Command::Kept { command }) => kept::run(command, cli.json),
         Some(
             cmd @ (Command::Read { .. }
             | Command::Search { .. }
@@ -2396,6 +2433,7 @@ async fn status_dispatch(
                     "desktop_states".to_string(),
                     serde_json::to_value(desktop_state::scan_here())?,
                 );
+                insert_kept_count(map);
                 // Present only when something differs, as doctor --json does.
                 if !mismatches.is_empty() {
                     map.insert(
@@ -2421,6 +2459,9 @@ async fn status_dispatch(
                 format_uptime(data["uptime_secs"].as_u64().unwrap_or(0)),
             );
             if let Some(line) = desktop_state::status_line(&desktop_state::scan_here()) {
+                println!("{line}");
+            }
+            if let Some(line) = kept::status_line(&kept::scan_here()) {
                 println!("{line}");
             }
             sources::render_sources(&source_rows);
@@ -2493,6 +2534,15 @@ async fn status_dispatch(
     finish_status(route, &cfg, json, note, &source_rows).await
 }
 
+/// `kept_texts` in `status --json`: how many texts the server kept when a
+/// room could not save, present only when there are any.
+fn insert_kept_count(map: &mut serde_json::Map<String, serde_json::Value>) {
+    let count = kept::scan_here().len();
+    if count > 0 {
+        map.insert("kept_texts".to_string(), serde_json::json!(count));
+    }
+}
+
 /// A direct read's `status`: the index's report with the sources and any
 /// split Claude Desktop state added, both before the rest in the human form.
 async fn finish_status(
@@ -2510,10 +2560,14 @@ async fn finish_status(
                 "desktop_states".to_string(),
                 serde_json::to_value(desktop_state::scan_here())?,
             );
+            insert_kept_count(map);
         }
         println!("{value}");
     } else {
         if let Some(line) = desktop_state::status_line(&desktop_state::scan_here()) {
+            println!("{line}");
+        }
+        if let Some(line) = kept::status_line(&kept::scan_here()) {
             println!("{line}");
         }
         sources::render_sources(source_rows);

@@ -1399,6 +1399,97 @@ pub struct DoctorReport {
     /// Why `--merge-desktop-state` stopped, such as a daemon from the
     /// private folder that still runs.
     pub merge_error: Option<String>,
+    /// The texts the server kept when a co-editing room could not save,
+    /// oldest first; only the `--domain` one's on a `--domain` run. Never a
+    /// problem and never touched by `--fix`: each is the last copy of
+    /// somebody's work, and only a person drops one (`crystalline kept
+    /// drop`). One older than [`crate::kept::STALE_DAYS`] days is a warning.
+    pub kept: Vec<KeptDoctor>,
+}
+
+/// One kept text in the `doctor` report.
+#[derive(Debug, Clone, Serialize)]
+pub struct KeptDoctor {
+    /// The id `crystalline kept show` and `drop` take.
+    pub id: String,
+    /// The domain the room belonged to.
+    pub domain: String,
+    /// `engram` or `reflection`.
+    pub kind: crystalline_core::kept::KeptKind,
+    /// The engram's file path in its domain, or the page's path inside
+    /// `reflections/`.
+    pub path: String,
+    /// When it was kept, RFC 3339.
+    pub kept_at: String,
+    /// Its size in bytes.
+    pub bytes: u64,
+    /// The file it is in.
+    pub file: String,
+    /// Kept more than [`crate::kept::STALE_DAYS`] days ago.
+    pub stale: bool,
+    /// The human line's wording of what and when, kept off the JSON.
+    #[serde(skip)]
+    pub line: String,
+}
+
+/// The kept texts on this machine (only `domain_filter`'s when given), each
+/// marked stale when it is older than [`crate::kept::STALE_DAYS`] days at
+/// `now`. Read-only, whatever `--fix` says.
+fn check_kept(
+    found: Vec<crystalline_core::kept::KeptText>,
+    domain_filter: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<KeptDoctor> {
+    found
+        .into_iter()
+        .filter(|k| domain_filter.is_none_or(|d| k.domain == d))
+        .map(|k| {
+            let stale = now - k.kept_at > chrono::Duration::days(crate::kept::STALE_DAYS);
+            KeptDoctor {
+                line: format!(
+                    "{} {}, kept {}, {}",
+                    k.id,
+                    crate::kept::what(&k),
+                    crate::kept::when(&k),
+                    cmd::human_size(k.bytes)
+                ),
+                id: k.id.clone(),
+                domain: k.domain.clone(),
+                kind: k.kind,
+                path: k.path.clone(),
+                kept_at: k.kept_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                bytes: k.bytes,
+                file: k.file.display().to_string(),
+                stale,
+            }
+        })
+        .collect()
+}
+
+/// The kept texts section of the human report.
+fn render_kept(out: &mut String, kept: &[KeptDoctor]) {
+    use std::fmt::Write as _;
+    if kept.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "kept texts:");
+    for k in kept {
+        if k.stale {
+            let _ = writeln!(
+                out,
+                "  [warning] {}, more than {} days ago: {}",
+                k.line,
+                crate::kept::STALE_DAYS,
+                k.file
+            );
+        } else {
+            let _ = writeln!(out, "  {}: {}", k.line, k.file);
+        }
+    }
+    let _ = writeln!(
+        out,
+        "  a room could not save these; show one with crystalline kept show <id>, copy it back into its page or engram, then crystalline kept drop <id> (doctor never deletes them)"
+    );
 }
 
 /// A rename journal waiting in the state directory: a domain rename an
@@ -1593,6 +1684,9 @@ impl DoctorReport {
             .as_ref()
             .map_or(0, |m| m.conflicts.len() + m.not_moved.len());
         n += usize::from(self.merge_error.is_some());
+        // Kept texts never count: no `--fix` resolves one, so counting them
+        // would fail doctor until a person drops each, and an old one is a
+        // warning in its section instead.
         n
     }
 }
@@ -1850,6 +1944,8 @@ pub async fn run(
 
     let daemon_task = check_task(fix);
 
+    let kept = check_kept(crate::kept::scan_here(), domain_filter, chrono::Utc::now());
+
     Ok(DoctorReport {
         index,
         domains,
@@ -1872,6 +1968,7 @@ pub async fn run(
         desktop_states,
         merge,
         merge_error,
+        kept,
     })
 }
 
@@ -5302,6 +5399,8 @@ pub fn render_human(report: &DoctorReport) -> String {
         render_rename(&mut out, rename);
     }
 
+    render_kept(&mut out, &report.kept);
+
     // Advisory tag hygiene: near-duplicate clusters, never a counted problem.
     if let Some(t) = &report.tags
         && !t.clusters.is_empty()
@@ -5990,6 +6089,47 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    /// A `--domain` run lists that domain's kept texts only; one kept more
+    /// than 30 days before `now` is stale and rendered as a warning; none of
+    /// them is a problem.
+    #[test]
+    fn kept_texts_follow_the_domain_filter_and_old_ones_warn() {
+        use crystalline_core::kept::{self, KeptKind};
+        let dir = tempfile::tempdir().unwrap();
+        let now = chrono::Utc::now();
+        kept::write(dir.path(), "eng", KeptKind::Reflection, "a.md", now, "x").unwrap();
+        kept::write(
+            dir.path(),
+            "ops",
+            KeptKind::Engram,
+            "b.md",
+            now - chrono::Duration::days(31),
+            "y",
+        )
+        .unwrap();
+        let all = check_kept(kept::scan(dir.path()), None, now);
+        assert_eq!(
+            all.iter()
+                .map(|k| (k.domain.as_str(), k.stale))
+                .collect::<Vec<_>>(),
+            vec![("ops", true), ("eng", false)]
+        );
+        let eng = check_kept(kept::scan(dir.path()), Some("eng"), now);
+        assert_eq!(eng.len(), 1);
+        assert_eq!(eng[0].path, "a.md");
+        let report = DoctorReport {
+            kept: all,
+            ..DoctorReport::default()
+        };
+        assert_eq!(report.remaining_problems(), 0);
+        let out = render_human(&report);
+        assert!(
+            out.contains("[warning]") && out.contains("ops engram b.md"),
+            "{out}"
+        );
+        assert!(out.contains("eng reflection a.md"), "{out}");
     }
 
     /// A mismatch the daemon's facts show is a warning in the service

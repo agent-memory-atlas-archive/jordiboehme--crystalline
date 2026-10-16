@@ -25,6 +25,7 @@ mod harness_install;
 mod hook;
 #[cfg(unix)]
 mod install;
+mod kept;
 mod prompt;
 #[cfg(unix)]
 mod provision;
