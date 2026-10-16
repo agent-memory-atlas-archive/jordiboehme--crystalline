@@ -2982,6 +2982,83 @@ async fn an_edit_that_switches_off_saves_and_closes_the_rooms_first() {
     assert_saved_then_closed(&tmp, &sessions, &mut joined).await;
 }
 
+/// **Task 41b.** The MANIFEST is open in a room whose save is in conflict,
+/// so an edit that switches the Reflection off does not compose into that
+/// room: it lands in the file. The reflection rooms are then saved and
+/// closed first, once, as they are for an edit with no room over the
+/// MANIFEST, and the receipt says the MANIFEST's room is waiting.
+#[tokio::test]
+async fn an_edit_that_switches_off_past_a_manifest_room_in_conflict_closes_the_rooms_once() {
+    let (tmp, engine, _scratch, sessions, mut joined) = a_typed_room_before_a_switch().await;
+    let manifest = tmp.path().join("eng/MANIFEST.md");
+    let room = sessions.join("eng", "manifest", None).await.unwrap();
+    let doc = sync_client(&room).await;
+    append_line(&room, &doc, "- typed in the manifest room").await;
+    let on_disk = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(&manifest, format!("{on_disk}- written on disk\n")).unwrap();
+    room.session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    assert!(
+        !sessions
+            .live_text("eng", "manifest", None)
+            .await
+            .unwrap()
+            .saving,
+        "the manifest's room is in conflict"
+    );
+
+    let receipt = engine
+        .edit_engram(&crystalline_service::params::EditParams {
+            identifier: "manifest".into(),
+            domain: "eng".into(),
+            operation: "find_replace".into(),
+            find_text: Some("reflection: on".into()),
+            content: Some("reflection: off".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    assert_eq!(receipt["room"], "waiting", "{receipt}");
+    let after = std::fs::read_to_string(&manifest).unwrap();
+    assert!(
+        after.contains("reflection: off") && after.contains("- written on disk"),
+        "the switch-off is in the file: {after}"
+    );
+    assert!(!after.contains("typed in the manifest room"), "{after}");
+
+    let page = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    assert!(page.contains("Typed just before the switch."), "{page}");
+    let mut closed = None;
+    while closed.is_none() {
+        if let Control::Closed { reason } = next_control(&mut joined.rx).await {
+            closed = Some(reason);
+        }
+    }
+    assert_eq!(closed.as_deref(), Some("switched_off"));
+    while let Ok(frame) = joined.rx.try_recv() {
+        for message in messages_of(&frame.bytes) {
+            if let Message::Custom(control::CONTROL_TAG, payload) = message {
+                assert!(
+                    !matches!(control::decode(&payload), Some(Control::Closed { .. })),
+                    "the reflection room is closed once"
+                );
+            }
+        }
+    }
+    assert!(
+        !sessions
+            .has_live_doc(
+                "eng",
+                &crystalline_service::collab::session::RoomDoc::Reflection("guides/a.md".into()),
+                None,
+            )
+            .await,
+        "the reflection room is gone"
+    );
+}
+
 /// An edit with a token of a MANIFEST stored with CRLF line endings closes
 /// the reflection rooms first too: the token is the stored bytes' checksum.
 #[tokio::test]

@@ -955,18 +955,18 @@ pub struct Engine {
     // `EngineError::ReadOnly`. Set at construction from the effective mode
     // (explicit flag or `service.read_only`). Index maintenance is unaffected.
     read_only: bool,
-    // The first of this file's four test seams: when armed, the next source edit
-    // fails on its far side, once. See `Engine::fail_next_source_edit`.
+    // A test seam: when armed, the next source edit fails on its far side,
+    // once. See `Engine::fail_next_source_edit`.
     // Compiled only into a test build (`cfg(test)` for this crate's unit tests,
     // the `testing` feature for its integration tests), so a released binary
     // carries neither the flag nor the branches that read it.
-    // The third test seam: how many prune statements the embed pass has sent to
+    // A test counter: how many prune statements the embed pass has sent to
     // the store. The prune's whole point is the statements it does NOT send, and
     // a skipped scan is invisible from the outside. See
     // `Engine::prune_statements_issued`.
     #[cfg(any(test, feature = "testing"))]
     prune_statements: std::sync::atomic::AtomicU64,
-    // The fourth: how many detection walks a team domain's change list has paid
+    // Another counter: how many detection walks a team domain's change list has paid
     // for. A walk reads and hashes every file in the domain, and answering a
     // diff from one walk rather than one per changed file is invisible in the
     // JSON, which is byte for byte the same either way. See
@@ -980,23 +980,29 @@ pub struct Engine {
     // See `Engine::lose_next_relink_swap`.
     #[cfg(any(test, feature = "testing"))]
     lose_next_relink_swap: std::sync::atomic::AtomicBool,
-    // The second, and it is a stopwatch rather than a failure: when armed, the
+    // A seam that is a stopwatch rather than a failure: when armed, the
     // next edit of a draft sleeps this many milliseconds between reading the
     // draft and writing it back, holding whatever it holds. See
     // `Engine::hold_next_draft_edit`, and the same compile-out applies.
     #[cfg(any(test, feature = "testing"))]
     hold_next_draft_edit: std::sync::atomic::AtomicU64,
-    // The third seam, a gate rather than a stopwatch: when armed, the next move
+    // A seam that is a gate rather than a stopwatch: when armed, the next move
     // or delete of a Reflection signals `entered` after its live-room screen,
     // then waits for `release` before it takes the page lock. See
     // `Engine::hold_next_room_screen_until`.
     #[cfg(any(test, feature = "testing"))]
     hold_next_room_screen: std::sync::Mutex<Option<RoomScreenGate>>,
-    // The fourth seam, a gate: when armed, the next domain a full sync walks
+    // A gate: when armed, the next domain a full sync walks
     // signals `entered` between its scan and its apply, then waits for
     // `release`. See `Engine::hold_next_apply_until`.
     #[cfg(any(test, feature = "testing"))]
     hold_next_apply: std::sync::Mutex<Option<RoomScreenGate>>,
+    // A gate: when armed, the next try of an edit's live arm
+    // signals `entered` after it read the room's text and computed its
+    // target, then waits for `release` before it composes. See
+    // `Engine::hold_next_live_compose_until`.
+    #[cfg(any(test, feature = "testing"))]
+    hold_next_live_compose: std::sync::Mutex<Option<RoomScreenGate>>,
     // The effective `skills.serve` value, snapshotted while this engine is
     // built and never re-read. See `Engine::skills_serve` for why it is frozen
     // and `Engine::with_env_overlay` for why the snapshot is taken twice.
@@ -2293,6 +2299,8 @@ impl Engine {
             hold_next_room_screen: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             hold_next_apply: std::sync::Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            hold_next_live_compose: std::sync::Mutex::new(None),
             skills_serve,
             instance_id: String::new(),
             label: String::new(),
@@ -2482,6 +2490,41 @@ impl Engine {
         let handles = (gate.entered.clone(), gate.release.clone());
         *self.hold_next_apply.lock().unwrap() = Some(gate);
         handles
+    }
+
+    /// Hold the next try of an edit's live arm between its look at the room
+    /// and its compose: it signals `entered` there and waits for `release`.
+    /// Lets a test type into the room inside that window, which a real
+    /// person's typing cannot be timed to hit. Armed for one try and consumed
+    /// by it; a test that arms it again before it releases holds the next try
+    /// too. Compiled out of a released binary like the seams above.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn hold_next_live_compose_until(
+        &self,
+    ) -> (
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        let gate = RoomScreenGate {
+            entered: std::sync::Arc::new(tokio::sync::Notify::new()),
+            release: std::sync::Arc::new(tokio::sync::Notify::new()),
+        };
+        let handles = (gate.entered.clone(), gate.release.clone());
+        *self.hold_next_live_compose.lock().unwrap() = Some(gate);
+        handles
+    }
+
+    /// The gate above, consuming the arming; returns at once when none is
+    /// armed. Does nothing at all outside a test build.
+    pub(super) async fn take_live_compose_hold(&self) {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            let gate = self.hold_next_live_compose.lock().unwrap().take();
+            if let Some(gate) = gate {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            }
+        }
     }
 
     /// The gate above, consuming the arming; returns at once when none is
@@ -7264,6 +7307,10 @@ struct SourceEdited {
     /// no file, no row, no draft, no live compose and no generated stamp.
     /// Only an edit that asked for the check (`skip_unchanged`) reports it.
     unchanged: bool,
+    /// Whether a room was open over the document and did not take the edit
+    /// (it would not save it, or kept moving under it), so the edit was
+    /// written to the source behind it instead.
+    room_passed: bool,
 }
 
 /// A source edit that failed, and whether the source may already carry the new

@@ -1144,6 +1144,7 @@ impl Engine {
                 scope,
                 None,
                 false,
+                false,
                 |current| {
                     Self::replanned_split_source(&plan, current, p, &desc.permalink, &back_link)
                 },

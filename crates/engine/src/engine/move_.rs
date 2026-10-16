@@ -1,12 +1,6 @@
 use super::*;
 use crate::collab::session::{ComposeRefused, RoomDoc};
 
-/// The first pause before a move tries again to compose its rewrite into a
-/// room whose text moved under it; each further try waits twice as long. With
-/// [`super::edit::UNGUARDED_EDIT_ATTEMPTS`] tries that is 120 ms of waiting
-/// at most before the rewrite goes to the source instead.
-const LIVE_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(40);
-
 /// What [`Engine::relink_engram`] rewrote in one linking engram.
 pub(super) struct Relinked {
     /// How many references changed.
@@ -1015,9 +1009,11 @@ impl Engine {
                     .compose_while_saving(
                         &linker.domain,
                         &desc.permalink,
-                        &live.text,
+                        None,
+                        Some(&live.text),
                         edited,
                         actor,
+                        None,
                     )
                     .await
                 {
@@ -1033,7 +1029,8 @@ impl Engine {
                     // still leaves a gap the rewrite can compose into.
                     Err(ComposeRefused::Moved) => {
                         if attempt + 1 < super::edit::UNGUARDED_EDIT_ATTEMPTS {
-                            tokio::time::sleep(LIVE_RETRY_PAUSE * (1 << attempt)).await;
+                            tokio::time::sleep(super::edit::LIVE_RETRY_PAUSE * (1 << attempt))
+                                .await;
                         }
                         continue;
                     }

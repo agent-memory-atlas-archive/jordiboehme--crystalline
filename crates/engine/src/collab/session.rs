@@ -121,9 +121,9 @@ pub struct LiveText {
     pub checksum: String,
     /// Whether the room will save what it holds: its save state is ok and its
     /// final save has not run yet. A room in conflict, with a failed save, or
-    /// whose final save ran, holds text that may never reach the file. Read at the moment of the look;
-    /// [`CollabSessions::compose_while_saving`] decides it again under the
-    /// compose's own lock.
+    /// whose final save ran, holds text that may never reach the file. Read
+    /// at the moment of the look; [`CollabSessions::compose_while_saving`]
+    /// decides it again under the compose's own lock.
     pub saving: bool,
 }
 
@@ -778,22 +778,30 @@ impl CollabSessions {
     /// A room in conflict or with a failed save may never write it either.
     /// `base` is the live text `target` was computed from: when it moved,
     /// composing the diff to `target` would take back what was typed since.
+    /// `None` is a wholesale replacement, which was computed from no text
+    /// and so checks only that the room saves.
+    ///
+    /// `overlay` and `peer` are [`CollabSessions::apply_text`]'s: whose
+    /// document, and who the agent shows up as in its strip.
+    #[allow(clippy::too_many_arguments)]
     pub async fn compose_while_saving(
         &self,
         domain: &str,
         permalink: &str,
-        base: &str,
+        overlay: Option<&str>,
+        base: Option<&str>,
         target: String,
         agent_label: &str,
+        peer: Option<&AgentPeer>,
     ) -> Result<LiveApplied, ComposeRefused> {
         let Some(session) = self
-            .live_room(domain, &RoomDoc::Engram(permalink.to_string()), None)
+            .live_room(domain, &RoomDoc::Engram(permalink.to_string()), overlay)
             .await
         else {
             return Err(ComposeRefused::NotSaving);
         };
         session
-            .apply_agent_text_while_saving(base, &target, agent_label)
+            .apply_agent_text_while_saving(base, &target, agent_label, peer)
             .await
     }
 
@@ -2588,12 +2596,16 @@ impl CollabSession {
     /// a standing conflict or failure meets the file on its next save, and
     /// otherwise the file is merged three ways into the live text. A merge
     /// that kept unsaved typing arms the save timers, as typing does.
+    ///
+    /// A room whose final save has run is ended for this purpose: it saves
+    /// nothing again, so text merged into it would be reported as taken in
+    /// while it lands nowhere.
     async fn absorb_file_change(&self) -> Result<AbsorbOutcome, String> {
         if self.is_disposed() {
             return Err("this co-editing session ended while the write was being prepared".into());
         }
         let mut state = self.state.lock().await;
-        if state.closed {
+        if state.closed || state.final_saved {
             return Err(
                 "this co-editing session ended while the write was being prepared".to_string(),
             );
@@ -2667,9 +2679,10 @@ impl CollabSession {
     /// composed, unless the room will save the text and still holds `base`.
     async fn apply_agent_text_while_saving(
         &self,
-        base: &str,
+        base: Option<&str>,
         target: &str,
         origin: &str,
+        peer: Option<&AgentPeer>,
     ) -> Result<LiveApplied, ComposeRefused> {
         if self.is_disposed() {
             return Err(ComposeRefused::NotSaving);
@@ -2678,10 +2691,10 @@ impl CollabSession {
         if state.closed || state.final_saved || !matches!(state.save_state, SaveStateTag::Ok) {
             return Err(ComposeRefused::NotSaving);
         }
-        if Self::file_text_locked(&state) != base {
+        if base.is_some_and(|base| Self::file_text_locked(&state) != base) {
             return Err(ComposeRefused::Moved);
         }
-        Ok(self.compose_locked(&mut state, target, origin, None))
+        Ok(self.compose_locked(&mut state, target, origin, peer))
     }
 
     /// The compose itself, over the locked state: converge the document to

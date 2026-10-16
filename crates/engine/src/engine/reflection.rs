@@ -74,6 +74,34 @@ pub const ROOM_CONFLICT_NOTE: &str = "your write is on disk, and it collides wit
 /// A reflection write's receipt when the open room could not take it in yet.
 pub const ROOM_WAITING_NOTE: &str = "your write is on disk; the open room has an unresolved change of its own, and the people in it meet yours when they resolve it";
 
+/// Say on a write's receipt what an open room did with the write behind it
+/// ([`crate::collab::session::CollabSessions::absorb_doc_change`]): `live`
+/// when it merged it in, `file` with `room` and `room_note` when it raised
+/// its edit conflict over it or waits behind one of its own. `present` is who
+/// is in the room. A reflection's write and an engram edit that went past a
+/// room share it, so both say it in the same words.
+pub(crate) fn note_room_outcome(
+    receipt: &mut Value,
+    absorbed: crate::collab::session::Absorbed,
+    present: Vec<String>,
+) {
+    use crate::collab::session::Absorbed;
+    receipt["present"] = json!(present);
+    match absorbed {
+        Absorbed::Merged => receipt["landed"] = json!("live"),
+        Absorbed::Conflict => {
+            receipt["landed"] = json!("file");
+            receipt["room"] = json!("conflict");
+            receipt["room_note"] = json!(ROOM_CONFLICT_NOTE);
+        }
+        Absorbed::Deferred => {
+            receipt["landed"] = json!("file");
+            receipt["room"] = json!("waiting");
+            receipt["room_note"] = json!(ROOM_WAITING_NOTE);
+        }
+    }
+}
+
 /// What the gate hands a reflection verb.
 #[derive(Debug, Clone)]
 pub(crate) struct ReflectionAccess {
@@ -1504,21 +1532,7 @@ impl Engine {
             // either way: a room that closed meanwhile is no refusal.
             match rooms.absorb_doc_change(&p.domain, &doc, None).await {
                 Ok(outcome) => {
-                    use crate::collab::session::Absorbed;
-                    receipt["present"] = json!(outcome.participants);
-                    match outcome.absorbed {
-                        Absorbed::Merged => receipt["landed"] = json!("live"),
-                        Absorbed::Conflict => {
-                            receipt["landed"] = json!("file");
-                            receipt["room"] = json!("conflict");
-                            receipt["room_note"] = json!(ROOM_CONFLICT_NOTE);
-                        }
-                        Absorbed::Deferred => {
-                            receipt["landed"] = json!("file");
-                            receipt["room"] = json!("waiting");
-                            receipt["room_note"] = json!(ROOM_WAITING_NOTE);
-                        }
-                    }
+                    note_room_outcome(&mut receipt, outcome.absorbed, outcome.participants);
                 }
                 Err(e) => tracing::debug!(
                     domain = %p.domain,

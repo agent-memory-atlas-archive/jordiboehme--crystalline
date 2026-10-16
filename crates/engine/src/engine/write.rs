@@ -570,10 +570,39 @@ impl Engine {
             // capture's document, and the rules are owed their say about it
             // exactly as an edit of the MANIFEST gets it.
             let manifest_text = names_the_manifest(&path).then(|| markdown.clone());
-            let applied = rooms
-                .apply_text(&p.domain, &permalink, overlay, markdown, &actor, peer)
+            // Only into a room that will save it. A room in conflict, with a
+            // failed save, or whose final save has run may never write what
+            // it is given, and writing the file behind it would land over
+            // text it holds and nobody has saved. So the replace is refused
+            // there, naming who is in the room. A replacement was computed
+            // from no text, so there is no base to check.
+            let applied = match rooms
+                .compose_while_saving(&p.domain, &permalink, overlay, None, markdown, &actor, peer)
                 .await
-                .map_err(EngineError::Conflict)?;
+            {
+                Ok(applied) => applied,
+                Err(_) => {
+                    let mine = match peer {
+                        Some(peer) => {
+                            rooms
+                                .touch_agent_presence(&p.domain, &permalink, overlay, peer)
+                                .await
+                        }
+                        None => None,
+                    };
+                    let present = rooms
+                        .participants(
+                            &p.domain,
+                            &RoomDoc::Engram(permalink.clone()),
+                            overlay,
+                            mine,
+                        )
+                        .await;
+                    return Err(EngineError::Conflict(unsaving_room_refusal(
+                        &p.domain, &permalink, &present,
+                    )));
+                }
+            };
             if let Some(text) = manifest_text {
                 note_manifest_findings(&mut receipt, &text, domain_verify_config(&source).as_ref());
             }
@@ -2103,6 +2132,19 @@ impl Engine {
 const MANIFEST_CAPTURE_REFUSAL: &str = "a new engram cannot be written at the domain root as MANIFEST.md: in this domain that file is the MANIFEST, which routing reads. Change it with edit_engram, or pick another title or a folder";
 
 /// The one collision message, which every surface hands the caller as it is.
+/// The refusal of a wholesale replace of an engram whose open room will not
+/// save what it holds, naming who is in there.
+fn unsaving_room_refusal(domain: &str, permalink: &str, present: &[String]) -> String {
+    let present = if present.is_empty() {
+        "nobody has published a name".to_string()
+    } else {
+        present.join(", ")
+    };
+    format!(
+        "the engram '{permalink}' in domain '{domain}' is open in the editor (present: {present}) and its room is not saving right now: its save is in conflict or was refused, or it is closing. A full replace was refused so it cannot land over their unsaved text, and nothing was written. Use edit_engram for a targeted change, or replace it once the room saves again or has closed"
+    )
+}
+
 fn collision_message(permalink: &str, domain: &str, at: &str) -> String {
     format!(
         "permalink '{permalink}' already exists in domain '{domain}' (at {at}); pass overwrite=true to replace"
