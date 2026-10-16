@@ -713,15 +713,21 @@ export type UploadedReflectionAsset = UploadedAttachment & {
   created: boolean;
 };
 
-/** One PUT of a file's bytes; the two callers below decide what it may overwrite. */
+/**
+ * One PUT of a file's bytes; the two callers below decide what it may
+ * overwrite. `createOnly` sends `If-None-Match: *`, and the server then
+ * answers 412 instead of replacing a file that is already at `path`.
+ */
 async function putReflectionAsset(
   domain: string,
   path: string,
   file: Blob,
+  createOnly: boolean,
 ): Promise<UploadedReflectionAsset> {
+  const type = { "Content-Type": file.type || "application/octet-stream" };
   const payload = await api<unknown>(assetRoute(domain, path), {
     method: "PUT",
-    headers: { "Content-Type": file.type || "application/octet-stream" },
+    headers: createOnly ? { ...type, "If-None-Match": "*" } : type,
     body: file,
   });
   return {
@@ -730,26 +736,30 @@ async function putReflectionAsset(
   };
 }
 
-/** A new file under a path the upload flow picked as free. */
+/**
+ * A new file under a path the upload flow picked as free. Create-only: when
+ * somebody stored a file there since the listing, the server answers 412 and
+ * the upload flow tries the next free name.
+ */
 export async function uploadReflectionAsset(
   domain: string,
   path: string,
   file: Blob,
 ): Promise<UploadedReflectionAsset> {
-  return putReflectionAsset(domain, path, file);
+  return putReflectionAsset(domain, path, file, true);
 }
 
 /**
  * New bytes for a file that exists, under its own path: a curator's Replace.
- * Kept apart from {@link uploadReflectionAsset} on purpose, so a create-only
- * precondition added to new uploads never refuses a replace.
+ * Kept apart from {@link uploadReflectionAsset} on purpose, so the create-only
+ * precondition of new uploads never refuses a replace.
  */
 export async function replaceReflectionAsset(
   domain: string,
   path: string,
   file: Blob,
 ): Promise<UploadedReflectionAsset> {
-  return putReflectionAsset(domain, path, file);
+  return putReflectionAsset(domain, path, file, false);
 }
 
 export async function deleteReflectionAsset(

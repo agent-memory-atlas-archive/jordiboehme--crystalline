@@ -129,19 +129,25 @@ function reasonOf(cause: unknown): string {
   return cause instanceof Error ? problemDetail(cause) : String(cause);
 }
 
-/** The refusals a name taken since the listing can explain. */
-const TAKEN_STATUSES = new Set([403, 409]);
+/**
+ * The refusals a name taken since the listing can explain. A 412 says so by
+ * itself: it answers only a create-only upload (`If-None-Match: *`) onto a
+ * path that holds a file.
+ */
+const TAKEN_STATUSES = new Set([403, 409, 412]);
 
 /**
  * Store one file at `path`, and when the server refuses because somebody
  * stored a file there since the listing, once more under the next free name.
  *
- * Whether the name was taken is decided by a fresh listing that now holds
- * the path, never by the refusal's words: a 403 or 409 for any other reason
- * (no right to add, a path the server will not take) is reported as the
- * server sent it. A home that replaces (an engram's) never refuses a taken
- * name, so for it this only ever adds one listing after a refusal. A fresh
- * listing goes to `onListed`, so the rest of the batch is named against it.
+ * A 412 is a taken name with no further question. For a 403 or 409, whether
+ * the name was taken is decided by a fresh listing that now holds the path,
+ * never by the refusal's words: a 403 or 409 for any other reason (no right
+ * to add, a path the server will not take) is reported as the server sent
+ * it. A home that replaces (an engram's) never refuses a taken name, so for
+ * it this only ever adds one listing after a refusal. A fresh listing (or
+ * the path a 412 refused) goes to `onListed`, so the rest of the batch is
+ * named against it.
  */
 async function uploadOnce(
   home: AssetHome,
@@ -156,6 +162,14 @@ async function uploadOnce(
   } catch (cause) {
     if (!(cause instanceof ApiProblem) || !TAKEN_STATUSES.has(cause.status)) {
       throw cause;
+    }
+    if (cause.status === 412) {
+      // The refused path counts as taken for the rest of the batch too.
+      onListed([path]);
+      return home.upload(
+        freeAttachmentPath(file.name, [...taken, path], now),
+        file,
+      );
     }
     let fresh: string[];
     try {

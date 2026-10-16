@@ -730,6 +730,52 @@ describe("uploadAttachments when a name is taken meanwhile", () => {
     expect(uploadMock.mock.calls[1]?.[1]).toBe("assets/2026/08/shot-2.png");
   });
 
+  it("takes a 412 as a taken name without reading the listing again", async () => {
+    listMock.mockResolvedValueOnce([]);
+    uploadMock
+      .mockRejectedValueOnce(
+        new ApiProblem(412, "precondition failed", "already holds a file"),
+      )
+      .mockImplementationOnce((_domain, path) => stored(path));
+
+    const { target, inserted, errors } = await upload();
+
+    expect(inserted).toBe(1);
+    expect(listMock).toHaveBeenCalledTimes(1);
+    expect(uploadMock.mock.calls.map((call) => call[1])).toEqual([
+      "assets/2026/08/shot.png",
+      "assets/2026/08/shot-2.png",
+    ]);
+    expect(target.state.doc.toString()).toContain(
+      "![shot.png](assets/2026/08/shot-2.png)",
+    );
+    expect(errors).toEqual([null]);
+  });
+
+  it("names the rest of the batch past a path a 412 refused", async () => {
+    listMock.mockResolvedValueOnce([]);
+    uploadMock
+      .mockRejectedValueOnce(new ApiProblem(412, "precondition failed", "x"))
+      .mockImplementation((_domain, path) => stored(path));
+    const target = mount();
+
+    const inserted = await uploadAttachments({
+      domain: "eng",
+      files: [fileOf("shot.png"), fileOf("shot.png")],
+      view: target,
+      onError: () => undefined,
+      now: new Date(2026, 7, 3),
+    });
+
+    expect(inserted).toBe(2);
+    expect(listMock).toHaveBeenCalledTimes(1);
+    expect(uploadMock.mock.calls.map((call) => call[1])).toEqual([
+      "assets/2026/08/shot.png",
+      "assets/2026/08/shot-2.png",
+      "assets/2026/08/shot-3.png",
+    ]);
+  });
+
   it("does not try a third time", async () => {
     listMock
       .mockResolvedValueOnce([])

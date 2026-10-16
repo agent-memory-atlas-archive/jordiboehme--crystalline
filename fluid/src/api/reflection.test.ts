@@ -376,11 +376,12 @@ describe("a Reflection's files", () => {
       sha256: "ab",
       created: true,
     });
+    // A new upload only creates: the server refuses a taken path with 412.
     expect(apiMock).toHaveBeenCalledWith(
       "/domains/eng/reflection/assets/2026/10/flow.png",
       {
         method: "PUT",
-        headers: { "Content-Type": "image/png" },
+        headers: { "Content-Type": "image/png", "If-None-Match": "*" },
         body: file,
       },
     );
