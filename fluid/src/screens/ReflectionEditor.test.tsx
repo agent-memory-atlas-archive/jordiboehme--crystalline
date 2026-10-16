@@ -1,9 +1,10 @@
 import { EditorView } from "@codemirror/view";
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, focusManager } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { yUndoManagerKeymap } from "y-codemirror.next";
 import { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
 
@@ -1432,5 +1433,166 @@ describe("the reflection editor takes files", () => {
     expect(
       apiMock.mock.calls.filter(([path]) => path.startsWith(ASSETS)),
     ).toEqual([]);
+  });
+});
+
+describe("the reflection editor's kept text notice", () => {
+  const KEPT_PAGE = PAGE.replace("First.", "First, as the room kept it.");
+
+  function keptEntry(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "k1",
+      draft: false,
+      kind: "reflection",
+      path: "guides/a.md",
+      kept_at: "2026-10-15T08:00:00Z",
+      bytes: KEPT_PAGE.length,
+      sender: null,
+      ...overrides,
+    };
+  }
+
+  /** `serve`'s routes plus the kept listing; records every drop. */
+  function serveKept(list: () => unknown) {
+    const dropped: string[] = [];
+    let gone = false;
+    apiMock.mockImplementation(
+      answersFor({
+        "/auth/me": () =>
+          meResponse({ user: userFixture({ name: "ann", role: "viewer" }) }),
+        "/domains": () => ({ behavior: [], domains: [] }),
+        "/reflection/domains": () => ({ domains: [] }),
+        "/domains/eng/reflection": () => onStatus("edit"),
+        "/domains/eng/kept": () =>
+          gone ? { domain: "eng", kept: [] } : list(),
+        "/domains/eng/kept/k1": (_path, init) => {
+          if (init?.method === "DELETE") {
+            dropped.push("k1");
+            gone = true;
+            return undefined;
+          }
+          return { domain: "eng", ...keptEntry(), text: KEPT_PAGE };
+        },
+      }),
+    );
+    return dropped;
+  }
+
+  it("offers the server's kept text beside this browser's own copy", async () => {
+    serveKept(() => ({ domain: "eng", kept: [keptEntry()] }));
+    sessionMock.mockReturnValue(room(PAGE));
+    writeDraft("ann", "eng", "reflection:guides/a.md", {
+      content: "typed offline\n",
+      baseChecksum: "c0",
+      savedAt: "2026-09-30T10:00:00Z",
+    });
+    await openEditor();
+    expect(
+      await screen.findByText("You have a kept text for this page."),
+    ).toBeVisible();
+    expect(
+      screen.getByText("Text from an earlier session was kept."),
+    ).toBeVisible();
+    const notice = screen.getByRole("note", { name: "Kept text" });
+    await userEvent.click(within(notice).getByRole("button", { name: "Show" }));
+    const dialog = await screen.findByRole("dialog", { name: "Kept text" });
+    expect(
+      await within(dialog).findByLabelText("The kept text"),
+    ).toHaveTextContent("First, as the room kept it.");
+  });
+
+  it("Use it puts the kept text into the room as one undoable change, then drops it", async () => {
+    const dropped = serveKept(() => ({ domain: "eng", kept: [keptEntry()] }));
+    const session = room(PAGE);
+    sessionMock.mockReturnValue(session);
+    await openEditor();
+    const notice = await screen.findByRole("note", { name: "Kept text" });
+    await userEvent.click(
+      within(notice).getByRole("button", { name: "Use it" }),
+    );
+    await waitFor(() => {
+      expect(session.ytext?.toJSON()).toBe(KEPT_PAGE);
+    });
+    await waitFor(() => {
+      expect(dropped).toEqual(["k1"]);
+    });
+    await waitFor(() => {
+      expect(
+        screen.queryByText("You have a kept text for this page."),
+      ).toBeNull();
+    });
+    // The room's own undo takes the whole change back.
+    const host = screen
+      .getByRole("textbox", { name: "Page source" })
+      .closest(".cm-editor");
+    const view = EditorView.findFromDOM(host as HTMLElement);
+    expect(view).not.toBeNull();
+    const undo = yUndoManagerKeymap.find((binding) => binding.key === "Mod-z");
+    act(() => {
+      undo?.run?.(view as EditorView);
+    });
+    expect(session.ytext?.toJSON()).toBe(PAGE);
+  });
+
+  it("Drop asks first, then drops the kept text", async () => {
+    const dropped = serveKept(() => ({ domain: "eng", kept: [keptEntry()] }));
+    const session = room(PAGE);
+    sessionMock.mockReturnValue(session);
+    await openEditor();
+    const notice = await screen.findByRole("note", { name: "Kept text" });
+    await userEvent.click(
+      within(notice).getByRole("button", { name: "Drop the kept text" }),
+    );
+    expect(dropped).toEqual([]);
+    await userEvent.click(
+      within(notice).getByRole("button", { name: "Drop it" }),
+    );
+    await waitFor(() => {
+      expect(dropped).toEqual(["k1"]);
+    });
+    await waitFor(() => {
+      expect(
+        screen.queryByText("You have a kept text for this page."),
+      ).toBeNull();
+    });
+    expect(session.ytext?.toJSON()).toBe(PAGE);
+  });
+
+  it("is not there for another page, a comment or a draft", async () => {
+    serveKept(() => ({
+      domain: "eng",
+      kept: [
+        keptEntry({ path: "guides/b.md" }),
+        keptEntry({ id: "k2", kind: "comment", sender: "ben" }),
+        keptEntry({ id: "k3", kind: "engram" }),
+      ],
+    }));
+    sessionMock.mockReturnValue(room(PAGE));
+    await openEditor();
+    await waitFor(() => {
+      expect(
+        apiMock.mock.calls.some(([path]) => path === "/domains/eng/kept"),
+      ).toBe(true);
+    });
+    expect(
+      screen.queryByText("You have a kept text for this page."),
+    ).toBeNull();
+  });
+
+  it("is not there, and says nothing, without a right to kept texts", async () => {
+    serveKept(() => {
+      throw new ApiProblem(403, "forbidden", "kept texts need write access");
+    });
+    sessionMock.mockReturnValue(room(PAGE));
+    await openEditor();
+    await waitFor(() => {
+      expect(
+        apiMock.mock.calls.some(([path]) => path === "/domains/eng/kept"),
+      ).toBe(true);
+    });
+    expect(
+      screen.queryByText("You have a kept text for this page."),
+    ).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

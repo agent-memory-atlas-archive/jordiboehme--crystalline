@@ -3242,3 +3242,160 @@ describe("the engram editor resolving a session conflict", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("the engram editor's kept text notice", () => {
+  const KEPT = CONTENT.replace("A rule.", "A rule the room kept.");
+
+  function keptEntry(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "k1",
+      draft: false,
+      kind: "engram",
+      path: "alpha.md",
+      kept_at: "2026-10-15T08:00:00Z",
+      bytes: KEPT.length,
+      sender: null,
+      ...overrides,
+    };
+  }
+
+  /** Serve the editor with `entries` kept, and record every drop. */
+  function serveKept(entries: unknown[]) {
+    let listed = entries;
+    const dropped: string[] = [];
+    serveEditor({
+      "/domains/eng/kept": () => ({ domain: "eng", kept: listed }),
+      "/domains/eng/kept/k1": (_path, init) => {
+        if (init?.method === "DELETE") {
+          dropped.push("k1");
+          listed = [];
+          return undefined;
+        }
+        return { domain: "eng", ...keptEntry(), text: KEPT };
+      },
+    });
+    return dropped;
+  }
+
+  it("says a kept text is there and shows it read only", async () => {
+    serveKept([keptEntry()]);
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    const notice = await screen.findByRole("note", { name: "Kept text" });
+    expect(notice).toHaveTextContent("You have a kept text for this page.");
+    await userEvent.click(within(notice).getByRole("button", { name: "Show" }));
+    const dialog = await screen.findByRole("dialog", { name: "Kept text" });
+    expect(
+      await within(dialog).findByLabelText("The kept text"),
+    ).toHaveTextContent("A rule the room kept.");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Close" }),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("Use it puts the kept text in as one undoable change, then drops it", async () => {
+    const dropped = serveKept([keptEntry()]);
+    renderApp("/d/eng/edit/alpha");
+    const editor = await openBuffer();
+    const notice = await screen.findByRole("note", { name: "Kept text" });
+    await userEvent.click(
+      within(notice).getByRole("button", { name: "Use it" }),
+    );
+    const view = mountedView(editor);
+    await waitFor(() => {
+      expect(docText(view.state)).toBe(KEPT);
+    });
+    await waitFor(() => {
+      expect(dropped).toEqual(["k1"]);
+    });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("note", { name: "Kept text" }),
+      ).not.toBeInTheDocument();
+    });
+    act(() => {
+      undo(view);
+    });
+    expect(docText(view.state)).toBe(CONTENT);
+  });
+
+  it("Use it in a room is an edit of the shared text", async () => {
+    const { ytext } = joinedSession();
+    const dropped = serveKept([keptEntry()]);
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    const notice = await screen.findByRole("note", { name: "Kept text" });
+    await userEvent.click(
+      within(notice).getByRole("button", { name: "Use it" }),
+    );
+    await waitFor(() => {
+      expect(ytext.toJSON()).toBe(KEPT);
+    });
+    await waitFor(() => {
+      expect(dropped).toEqual(["k1"]);
+    });
+  });
+
+  it("Drop asks first, then drops the kept text and leaves the editor alone", async () => {
+    const dropped = serveKept([keptEntry()]);
+    renderApp("/d/eng/edit/alpha");
+    const editor = await openBuffer();
+    const notice = await screen.findByRole("note", { name: "Kept text" });
+    await userEvent.click(
+      within(notice).getByRole("button", { name: "Drop the kept text" }),
+    );
+    expect(dropped).toEqual([]);
+    await userEvent.click(
+      within(notice).getByRole("button", { name: "Drop it" }),
+    );
+    await waitFor(() => {
+      expect(dropped).toEqual(["k1"]);
+    });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("note", { name: "Kept text" }),
+      ).not.toBeInTheDocument();
+    });
+    expect(docText(mountedView(editor).state)).toBe(CONTENT);
+  });
+
+  it("is not there when nothing is kept for this engram", async () => {
+    serveKept([
+      keptEntry({ path: "beta.md" }),
+      keptEntry({ id: "k2", kind: "comment" }),
+      keptEntry({ id: "k3", draft: true }),
+    ]);
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    await waitFor(() => {
+      expect(
+        apiMock.mock.calls.some(([path]) => path === "/domains/eng/kept"),
+      ).toBe(true);
+    });
+    expect(
+      screen.queryByRole("note", { name: "Kept text" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("is not there, and says nothing, when the person has no right to kept texts", async () => {
+    serveEditor({
+      "/domains/eng/kept": () => {
+        throw new ApiProblem(403, "forbidden", "kept texts need write access");
+      },
+    });
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    await waitFor(() => {
+      expect(
+        apiMock.mock.calls.some(([path]) => path === "/domains/eng/kept"),
+      ).toBe(true);
+    });
+    expect(
+      screen.queryByRole("note", { name: "Kept text" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("kept texts need write access"),
+    ).not.toBeInTheDocument();
+  });
+});

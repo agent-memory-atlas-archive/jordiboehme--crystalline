@@ -22,6 +22,7 @@ import {
 } from "../api/admin";
 import { problemDetail } from "../api/client";
 import { fetchManifest, manifestKey, treeQuery } from "../api/domain";
+import { isNoKeptRight, keptQuery } from "../api/kept";
 import type { ManifestSections } from "../api/domain";
 import { useAuth } from "../auth/AuthContext";
 import { navigateTo } from "../base";
@@ -31,6 +32,7 @@ import { BackupCard } from "../components/BackupCard";
 import { DangerZoneCard } from "../components/DangerZoneCard";
 import { DomainPoliciesCard } from "../components/DomainPoliciesCard";
 import { ImportArchiveDialog } from "../components/ImportArchiveDialog";
+import { KeptTextsCard } from "../components/KeptTextsCard";
 import {
   EmptySection,
   Problems,
@@ -69,7 +71,7 @@ function Settings({
   domain: string;
   treeAnswered: boolean;
 }) {
-  const { capabilities } = useAuth();
+  const { user, capabilities } = useAuth();
   const { canWrite } = useDomainWritable(domain);
   const navigate = useNavigate();
   const location = useLocation();
@@ -106,6 +108,10 @@ function Settings({
     retry: false,
     enabled: capabilities.canShare,
   });
+  // The texts the server kept for this domain. A refusal (no right, signed
+  // out) is not an error here: the section is simply not drawn.
+  const kept = useQuery(keptQuery(domain, user !== null));
+  const keptFailed = kept.error !== null && !isNoKeptRight(kept.error);
   const sections = manifest.data?.sections ?? null;
   const manifestEditable =
     manifest.data !== undefined || isMissing(manifest.error);
@@ -127,7 +133,8 @@ function Settings({
     !listing.isPending &&
     !members.isPending &&
     !manifest.isPending &&
-    !(capabilities.canShare && syncStatus.isPending);
+    !(capabilities.canShare && syncStatus.isPending) &&
+    !(user !== null && kept.isPending);
   const [settled, setSettled] = useState(answered);
   if (answered && !settled) {
     setSettled(true);
@@ -215,6 +222,11 @@ function Settings({
     },
     { id: "provisioning", label: "Provisioning", shown: sections !== null },
     { id: "tag-aliases", label: "Tag aliases", shown: sections !== null },
+    {
+      id: "kept-texts",
+      label: "Kept texts",
+      shown: kept.data !== undefined || keptFailed,
+    },
     { id: "backup", label: "Backup", shown: capabilities.canAdminister },
     {
       id: "danger-zone",
@@ -284,6 +296,32 @@ function Settings({
           )}
           {sections !== null && (
             <ConfigSections sections={sections} onStart={onStart} />
+          )}
+
+          {(kept.data !== undefined || keptFailed) && (
+            <div
+              id="kept-texts"
+              className="scroll-mt-20 py-8 first:pt-0 last:pb-0"
+            >
+              {kept.data !== undefined ? (
+                <KeptTextsCard domain={domain} entries={kept.data} />
+              ) : (
+                <section
+                  aria-labelledby="domain-kept"
+                  className="flex flex-col gap-4"
+                >
+                  <h2 id="domain-kept" className="text-section">
+                    Kept texts
+                  </h2>
+                  <p
+                    role="alert"
+                    className="rounded bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
+                  >
+                    {kept.error !== null && problemDetail(kept.error)}
+                  </p>
+                </section>
+              )}
+            </div>
           )}
 
           {capabilities.canAdminister && (

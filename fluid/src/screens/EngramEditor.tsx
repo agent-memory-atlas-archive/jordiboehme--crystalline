@@ -71,6 +71,7 @@ import { imageContextListener } from "../editor/imageVerbs";
 import { FindingsPanel, jumpToLine } from "../editor/FindingsPanel";
 import { frontmatterFold } from "../editor/frontmatterFold";
 import { FrontmatterForm } from "../editor/FrontmatterForm";
+import { KeptTextNotice } from "../editor/KeptTextNotice";
 import { livePreview } from "../editor/preview";
 import {
   RAW_MONO,
@@ -1310,6 +1311,29 @@ function Surface({
               </button>
             </aside>
           )}
+          {/*
+            A text the server kept for this engram when a room could not
+            save it. Somebody else's draft has none of the reader's own.
+          */}
+          <KeptTextNotice
+            domain={engram.domain}
+            kind="engram"
+            path={engram.draftOwner ? null : engram.path}
+            draft={engram.draft}
+            canUse={!closed}
+            onUse={(text) => {
+              // One ordinary change on the buffer, so Undo takes it back: in
+              // the mounted line endings, which in a room are LF.
+              const current = session.viewRef.current;
+              const separator =
+                current?.state.facet(EditorState.lineSeparator) ?? "\n";
+              const lf = text.replace(/\r\n/g, "\n");
+              session.replaceWith(
+                separator === "\n" ? lf : lf.replace(/\n/g, separator),
+              );
+              current?.focus();
+            }}
+          />
         </div>
         <div className="edit-column order-3 min-w-0 lg:col-start-1 lg:row-start-2">
           {/*

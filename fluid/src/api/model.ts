@@ -182,3 +182,16 @@ export type { MintedLinkResponse } from "./gen";
 
 /** One share-link standing on a draft: who redeemed it, and when it was made. */
 export type { OverlayGrant } from "./gen";
+
+/**
+ * One text the server kept when a co-editing room could not save it, or a
+ * thread comment a refused write kept: its id, kind, path, time and sender.
+ * Never the text itself.
+ */
+export type { KeptTextEntry } from "./gen";
+
+/** What `GET /domains/{domain}/kept` answers: the entries this caller may handle. */
+export type { KeptTextsResponse } from "./gen";
+
+/** One kept text with its text, as `GET /domains/{domain}/kept/{id}` answers. */
+export type { KeptTextResponse } from "./gen";

@@ -743,3 +743,157 @@ describe("the domain settings screen", () => {
     expect(importArchive).toHaveAccessibleDescription(REASON);
   });
 });
+
+describe("the domain settings kept texts section", () => {
+  function keptEntry(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "k1",
+      draft: false,
+      kind: "engram",
+      path: "guides/a.md",
+      kept_at: "2026-10-15T08:00:00Z",
+      bytes: 12,
+      sender: null,
+      ...overrides,
+    };
+  }
+
+  /** The kept routes over `serve`'s, with every drop recorded. */
+  function serveKept(entries: ReturnType<typeof keptEntry>[]) {
+    let listed = entries;
+    const dropped: string[] = [];
+    const texts: Record<string, string> = {
+      k1: "# A\n\nThe room's text.\n",
+      c1: "Please add the rollback step.",
+    };
+    const routes: Record<string, Answer> = {
+      "/domains/eng/kept": () => ({ domain: "eng", kept: listed }),
+    };
+    for (const entry of entries) {
+      routes[`/domains/eng/kept/${entry.id}`] = (_path, init) => {
+        if (init?.method === "DELETE") {
+          dropped.push(entry.id);
+          listed = listed.filter((row) => row.id !== entry.id);
+          return undefined;
+        }
+        return { domain: "eng", ...entry, text: texts[entry.id] ?? "" };
+      };
+    }
+    serve(routes);
+    return dropped;
+  }
+
+  it("lists each kept text with its page, kind, sender and time, newest first", async () => {
+    serveKept([
+      keptEntry(),
+      keptEntry({
+        id: "c1",
+        kind: "comment",
+        path: "guides/deploying.md",
+        kept_at: "2026-10-16T09:30:00Z",
+        sender: "ben",
+      }),
+    ]);
+    renderApp("/d/eng/settings");
+    const section = await screen.findByRole("region", { name: "Kept texts" });
+    // In the index, between the configuration sections and Backup.
+    expect(
+      within(
+        screen.getByRole("navigation", { name: "Settings sections" }),
+      ).getByRole("link", { name: "Kept texts" }),
+    ).toHaveAttribute("href", "/d/eng/settings#kept-texts");
+    expect(
+      precedes(screen.getByRole("region", { name: "Tag aliases" }), section),
+    ).toBe(true);
+    expect(
+      precedes(section, screen.getByRole("region", { name: "Backup" })),
+    ).toBe(true);
+    const rows = within(
+      within(section).getByRole("list", { name: "Kept texts" }),
+    ).getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent("guides/deploying.md");
+    expect(rows[0]).toHaveTextContent("Comment");
+    expect(rows[0]).toHaveTextContent("From ben");
+    expect(rows[1]).toHaveTextContent("guides/a.md");
+    expect(rows[1]).toHaveTextContent("Engram text");
+    expect(rows[1]).not.toHaveTextContent("From");
+  });
+
+  it("shows a comment's text", async () => {
+    serveKept([
+      keptEntry({
+        id: "c1",
+        kind: "comment",
+        path: "guides/deploying.md",
+        sender: "ben",
+      }),
+    ]);
+    renderApp("/d/eng/settings");
+    const section = await screen.findByRole("region", { name: "Kept texts" });
+    await userEvent.click(
+      within(section).getByRole("button", {
+        name: "Show the kept comment for guides/deploying.md",
+      }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Kept comment" });
+    expect(dialog).toHaveTextContent("From ben");
+    expect(
+      await within(dialog).findByLabelText("The kept comment"),
+    ).toHaveTextContent("Please add the rollback step.");
+  });
+
+  it("drops a kept text after a confirm, then says none are left", async () => {
+    const dropped = serveKept([keptEntry()]);
+    renderApp("/d/eng/settings");
+    const section = await screen.findByRole("region", { name: "Kept texts" });
+    await userEvent.click(
+      within(section).getByRole("button", {
+        name: "Drop the kept text for guides/a.md",
+      }),
+    );
+    expect(dropped).toEqual([]);
+    await userEvent.click(
+      within(section).getByRole("button", { name: "Drop it" }),
+    );
+    await waitFor(() => {
+      expect(dropped).toEqual(["k1"]);
+    });
+    expect(await within(section).findByText("No kept texts.")).toBeVisible();
+  });
+
+  it("says so when nothing is kept", async () => {
+    serveKept([]);
+    renderApp("/d/eng/settings");
+    const section = await screen.findByRole("region", { name: "Kept texts" });
+    expect(within(section).getByText("No kept texts.")).toBeVisible();
+    expect(within(section).queryByRole("list")).toBeNull();
+  });
+
+  it("is not drawn for a person with no right to kept texts", async () => {
+    serve({
+      "/domains/eng/kept": () => {
+        throw new ApiProblem(403, "forbidden", "kept texts need write access");
+      },
+    });
+    renderApp("/d/eng/settings");
+    await screen.findByRole("region", { name: "Backup" });
+    expect(screen.queryByRole("region", { name: "Kept texts" })).toBeNull();
+    expect(
+      screen.queryByText("kept texts need write access"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says why when the listing fails for another reason", async () => {
+    serve({
+      "/domains/eng/kept": () => {
+        throw new ApiProblem(500, "internal", "the state folder is unreadable");
+      },
+    });
+    renderApp("/d/eng/settings");
+    const section = await screen.findByRole("region", { name: "Kept texts" });
+    expect(within(section).getByRole("alert")).toHaveTextContent(
+      "the state folder is unreadable",
+    );
+  });
+});

@@ -65,6 +65,7 @@ import type { Draft } from "../editor/drafts";
 import { assetRefsIn } from "../editor/imageFormat";
 import { clearDraft, readDraft, writeDraft } from "../editor/drafts";
 import { hiddenIdLines } from "../editor/hiddenIdLines";
+import { KeptTextNotice } from "../editor/KeptTextNotice";
 import { imagePreviews } from "../editor/imagePreviews";
 import { readScalar } from "../editor/frontmatterFields";
 import { livePreview } from "../editor/preview";
@@ -830,6 +831,28 @@ function Surface({
           </button>
         </aside>
       )}
+      {/*
+        A text the server kept for this page when a room could not save it:
+        not this browser's copy above, but the server's.
+      */}
+      <KeptTextNotice
+        domain={domain}
+        kind="reflection"
+        path={path}
+        draft={false}
+        canUse={!ended}
+        onUse={(text) => {
+          // One change on the shared text, as Put it back makes it, so the
+          // room's Undo takes it back; owed until the room saves it.
+          const lf = text.replace(/\r\n/g, "\n");
+          ytext.doc?.transact(() => {
+            ytext.delete(0, ytext.length);
+            ytext.insert(0, lf);
+          });
+          setOwed(true);
+          view?.focus();
+        }}
+      />
       {collab.conflict !== null && (
         <aside role="alert" className={RED_BANNER}>
           <span>Saving is paused: this page changed outside the session.</span>
