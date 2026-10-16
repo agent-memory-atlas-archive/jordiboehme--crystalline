@@ -143,6 +143,10 @@ enum Detail {
     /// Only what ranks and counts an item; no diff is rendered and no
     /// source is looked up (the nudge counts).
     Count,
+    /// Only the update items, as [`Detail::Count`] builds them: no page is
+    /// compared with its baseline for feedback and no thread is queued (the
+    /// Reflection home's update count).
+    Updates,
 }
 
 impl Engine {
@@ -157,6 +161,7 @@ impl Engine {
         threads: &[(String, th::Thread, String)],
     ) -> Result<Vec<Item>> {
         let full = detail == Detail::Full;
+        let feedback = detail != Detail::Updates;
         let (rows, host_move) = {
             let store = self.store.lock().await;
             (
@@ -180,7 +185,13 @@ impl Engine {
         let mut cited: HashSet<String> = HashSet::new();
         let mut items = Vec::new();
         for row in &rows {
-            let baseline = std::fs::read_to_string(access.abs(&r::baseline_path(&row.path))).ok();
+            // The baseline is read for feedback alone, and the pact's is
+            // always read: a changed pact is an update.
+            let baseline = if feedback || row.path == r::PACT_FILE {
+                std::fs::read_to_string(access.abs(&r::baseline_path(&row.path))).ok()
+            } else {
+                None
+            };
             // While a host move is unresolved, a page whose baseline is not on
             // this disk is one the previous host reflected: without the
             // baseline every section would read as a person's change, so the
@@ -219,7 +230,7 @@ impl Engine {
                 }
                 continue;
             }
-            let changes = if no_feedback {
+            let changes = if no_feedback || !feedback {
                 Vec::new()
             } else {
                 r::feedback_changes(&row.content, &baseline)
@@ -432,7 +443,7 @@ impl Engine {
                 }),
             });
         }
-        for (path, thread, text) in threads {
+        for (path, thread, text) in threads.iter().filter(|_| feedback) {
             if thread.status != ThreadStatus::Open || th::waiting_on(thread) != Waiting::Agent {
                 continue;
             }
@@ -755,7 +766,8 @@ impl Engine {
     /// The Reflection home's summary: what [`Engine::reflection_review`]
     /// answers, cut to what the home draws. The open threads by who they
     /// wait on, the queue's update count (the review's `kinds.update`,
-    /// counted with no diff rendered and no source looked up) and the open
+    /// counted with no page compared for feedback, no diff rendered and no
+    /// source looked up: [`Detail::Updates`]) and the open
     /// threads by page, each thread with its first quote and the people in
     /// it, never its entries. Pages and their threads come oldest first, by
     /// when a thread was opened. The threads files are read once.
@@ -819,7 +831,7 @@ impl Engine {
             .collect();
         open_by_page.sort_by(|a, b| a.0.cmp(b.0));
         let items = self
-            .detect_reflection(domain, &access, Detail::Count, &threads)
+            .detect_reflection(domain, &access, Detail::Updates, &threads)
             .await?;
         let pages_to_update = items
             .iter()

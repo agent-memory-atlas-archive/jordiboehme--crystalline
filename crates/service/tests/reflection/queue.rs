@@ -840,3 +840,137 @@ async fn a_queue_with_nothing_pending_names_nothing_pending() {
         .unwrap();
     assert!(queue["scope"].get("pending").is_none(), "{queue}");
 }
+
+/// The cost of the Reflection home's summary against the full review on a
+/// large domain: 5,000 engrams, 200 pages of four sections each citing two
+/// engrams, 400 cited engrams changed since, 100 pages edited by a person
+/// and 400 open threads. Never a gate: the numbers depend on the machine and
+/// go into the task report. Run with
+/// `cargo nextest run -p crystalline-service --test reflection --run-ignored only reflection_summary_timing --no-capture`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "timing evidence for the task report, not a gate"]
+async fn reflection_summary_timing() {
+    use std::time::Instant;
+
+    const ENGRAMS: usize = 5_000;
+    const PAGES: usize = 200;
+    const SECTIONS: usize = 4;
+    const RUNS: usize = 15;
+
+    let note = |i: usize, body: &str| engram(&format!("Note {i}"), &format!("note-{i}"), body);
+    let mut files: Vec<(String, String)> =
+        vec![("MANIFEST.md".into(), manifest("reflection: on\n"))];
+    for i in 0..ENGRAMS {
+        files.push((
+            format!("notes/d{}/n{i}.md", i % 50),
+            note(i, "- [fact] a note"),
+        ));
+    }
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let built = Instant::now();
+    let fx = fixture(&refs).await;
+
+    let section =
+        |p: usize, s: usize, text: &str| format!("## Part {s}\n\n{text} of page {p}.\n\n");
+    for p in 0..PAGES {
+        let mut markdown = format!("# Page {p}\n\nFor people.\n\n");
+        let mut sources = BTreeMap::from([("_top".to_string(), Vec::new())]);
+        for s in 0..SECTIONS {
+            markdown.push_str(&section(p, s, "What the agent wrote"));
+            let first = (p * SECTIONS + s) * 2 % ENGRAMS;
+            sources.insert(
+                format!("Part {s}"),
+                vec![format!("note-{first}"), format!("note-{}", first + 1)],
+            );
+        }
+        let mut params = write(&format!("area{}/page{p}.md", p % 10), &markdown);
+        params.sources = sources;
+        fx.engine.write_reflection(&params, &agent()).await.unwrap();
+    }
+    // 400 cited engrams change after they were reflected.
+    for i in 0..400 {
+        std::fs::write(
+            fx.root.join(format!("notes/d{}/n{i}.md", i % 50)),
+            note(i, "- [fact] a changed note"),
+        )
+        .unwrap();
+    }
+    fx.engine.sync(None).await.unwrap();
+    // 100 pages edited by a person: every section differs from its baseline.
+    for p in 0..100 {
+        let path = format!("area{}/page{p}.md", p % 10);
+        let doc = fx
+            .engine
+            .read_reflection("eng", &path, &person())
+            .await
+            .unwrap();
+        let edited = doc["markdown"]
+            .as_str()
+            .unwrap()
+            .replace("What the agent wrote", "What a person rewrote");
+        fx.engine
+            .write_reflection(&write(&path, &edited), &person())
+            .await
+            .unwrap();
+    }
+    // 400 open threads, two on each of the first 200 pages' first section.
+    for t in 0..400 {
+        let p = t % PAGES;
+        fx.engine
+            .discuss(
+                &DiscussParams {
+                    domain: "eng".into(),
+                    path: Some(format!("area{}/page{p}.md", p % 10)),
+                    section: Some("Part 0".into()),
+                    text: Some(format!("Question {t}?")),
+                    ..Default::default()
+                },
+                &person(),
+            )
+            .await
+            .unwrap();
+    }
+    eprintln!("seeded in {:?}", built.elapsed());
+
+    let caller = person();
+    let review = fx.engine.reflection_review("eng", &caller).await.unwrap();
+    let summary = fx.engine.reflection_summary("eng", &caller).await.unwrap();
+    assert_eq!(
+        summary["pages_to_update"],
+        review["queue"]["kinds"]["update"]
+    );
+    assert_eq!(summary["waiting_for_the_agent"], 400);
+    eprintln!(
+        "queue: {} (update {}, feedback {}); payload bytes: review {}, summary {}",
+        review["queue"]["total"],
+        review["queue"]["kinds"]["update"],
+        review["queue"]["kinds"]["feedback"],
+        review.to_string().len(),
+        summary.to_string().len(),
+    );
+
+    let median = |mut times: Vec<std::time::Duration>| {
+        times.sort();
+        times[times.len() / 2]
+    };
+    let mut review_times = Vec::new();
+    let mut summary_times = Vec::new();
+    for _ in 0..RUNS {
+        let started = Instant::now();
+        let v = fx.engine.reflection_review("eng", &caller).await.unwrap();
+        let _ = v.to_string();
+        review_times.push(started.elapsed());
+        let started = Instant::now();
+        let v = fx.engine.reflection_summary("eng", &caller).await.unwrap();
+        let _ = v.to_string();
+        summary_times.push(started.elapsed());
+    }
+    eprintln!(
+        "median of {RUNS}: review {:?}, summary {:?}",
+        median(review_times),
+        median(summary_times)
+    );
+}
