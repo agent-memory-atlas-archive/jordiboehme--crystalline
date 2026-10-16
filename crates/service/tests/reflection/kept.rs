@@ -537,3 +537,53 @@ async fn a_name_taken_later_never_reaches_texts_left_under_it() {
         ]
     );
 }
+
+/// At start (the opener's step, after any rename journal): a `kept/<name>`
+/// folder no registered domain owns is set aside, a registered domain's
+/// own stays. And a domain that reaches the configuration file by hand
+/// after start has its name's left-over texts set aside the first time this
+/// engine meets it, before it is served.
+#[tokio::test]
+async fn start_and_a_hand_added_domain_set_left_over_texts_aside() {
+    let s = serve_opts(Opts {
+        anonymous: false,
+        private: false,
+        origin: false,
+    })
+    .await;
+    let root = s.fx.tmp.path().join("state").join(kept::KEPT_DIR);
+    let at = chrono::Utc.with_ymd_and_hms(2026, 10, 15, 8, 0, 0).unwrap();
+    for name in ["gone", "eng"] {
+        kept::write(&root, name, None, KeptKind::Engram, "a.md", at, "text\\n").unwrap();
+    }
+    s.fx.engine.finish_leftover_rename().await;
+    let state: Vec<(String, bool)> = kept::scan(&root)
+        .into_iter()
+        .map(|k| (k.domain, k.removed))
+        .collect();
+    assert_eq!(
+        state,
+        vec![("eng".to_string(), false), ("gone".to_string(), true)]
+    );
+
+    kept::write(&root, "fresh", None, KeptKind::Engram, "a.md", at, "old\\n").unwrap();
+    let config = s.fx.tmp.path().join("config.yaml");
+    let mut cfg: crystalline_core::config::GlobalConfig =
+        crystalline_core::config::load_yaml(&config).unwrap();
+    cfg.domains.insert(
+        "fresh".to_string(),
+        crystalline_core::config::DomainEntry::virtual_domain(),
+    );
+    crystalline_core::config::save_yaml(&config, &cfg).unwrap();
+    let listed =
+        s.fx.engine
+            .kept_texts("fresh", &crystalline_service::Scope::Unrestricted)
+            .await
+            .unwrap();
+    assert!(listed.is_empty(), "{listed:?}");
+    assert!(
+        kept::scan(&root)
+            .iter()
+            .any(|k| k.domain == "fresh" && k.removed)
+    );
+}

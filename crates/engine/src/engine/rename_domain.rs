@@ -599,6 +599,14 @@ impl Engine {
     /// A rename it finished is logged and its report answered, for the one
     /// caller that was about to send that same rename again.
     pub async fn finish_leftover_rename(&self) -> Option<Value> {
+        let finished = self.finish_leftover_rename_inner().await;
+        // After the journal, so a rename it finished has its texts under
+        // the new name before any folder is judged.
+        self.set_aside_orphan_kept_all();
+        finished
+    }
+
+    async fn finish_leftover_rename_inner(&self) -> Option<Value> {
         match self.recover_rename_journal().await {
             Ok(Some(report)) => {
                 tracing::info!(

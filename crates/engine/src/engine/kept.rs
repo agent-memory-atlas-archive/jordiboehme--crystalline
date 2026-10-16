@@ -187,6 +187,73 @@ impl Engine {
         }
     }
 
+    /// At start, before anything is served: set aside every `kept/<name>`
+    /// folder no registered domain owns, as [`Engine::set_aside_orphan_kept`]
+    /// does for one name, so a domain that reached the configuration
+    /// without going through a registration (a hand-edited file) never
+    /// sees texts left under its name. Runs only while this process holds
+    /// the state directory, and leaves both names of a rename journal still
+    /// waiting alone (an opener finishes the journal first, so none should
+    /// be left; this is the belt to that).
+    pub fn set_aside_orphan_kept_all(&self) {
+        if !self.holds_state_dir() {
+            return;
+        }
+        let Some(root) = self.kept_dir() else {
+            return;
+        };
+        let pending = self
+            .journal_state_dir()
+            .ok()
+            .and_then(|dir| crate::rename::RenameJournal::load(&dir).ok().flatten())
+            .map(|j| [j.old, j.new]);
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            return;
+        };
+        for entry in entries.filter_map(std::result::Result::ok) {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            if name.starts_with('.') || !entry.path().is_dir() {
+                continue;
+            }
+            if pending.as_ref().is_some_and(|names| names.contains(&name)) {
+                continue;
+            }
+            self.set_aside_orphan_kept(&name);
+        }
+    }
+
+    /// A domain this engine first meets in the configuration file after it
+    /// started (a hand edit, another process): its `kept/<name>` folder,
+    /// if any, predates the registration, so it is set aside before the
+    /// domain is served. Unlike [`Engine::set_aside_orphan_kept`] it does not
+    /// ask the registrations, which already carry the new name.
+    pub(crate) fn set_aside_kept_for_discovered(&self, name: &str) {
+        if !self.holds_state_dir() {
+            return;
+        }
+        let Some(root) = self.kept_dir() else {
+            return;
+        };
+        if !root.join(name).is_dir() {
+            return;
+        }
+        match kept::set_aside(&root, name, chrono::Utc::now()) {
+            Ok(Some(to)) => tracing::info!(
+                domain = name,
+                kept = %to.display(),
+                "kept texts left under the name of a domain added to the configuration are set aside"
+            ),
+            Ok(None) => {}
+            Err(err) => tracing::warn!(
+                domain = name,
+                %err,
+                "kept texts left under the name of a domain added to the configuration could not be set aside; it may see them"
+            ),
+        }
+    }
+
     fn kept_root(&self) -> Result<std::path::PathBuf> {
         self.kept_dir()
             .ok_or_else(|| EngineError::Internal("this process knows no state folder".to_string()))

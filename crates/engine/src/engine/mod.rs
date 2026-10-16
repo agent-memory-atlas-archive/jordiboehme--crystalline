@@ -5813,6 +5813,9 @@ impl Engine {
     fn refresh_domain(&self, name: &str) -> Option<DomainEntry> {
         let fresh = self.reread_config()?;
         let entry = fresh.domains.get(name)?.clone();
+        // Before the domain is served: kept texts left under its name
+        // belong to an earlier domain of that name.
+        self.set_aside_kept_for_discovered(name);
         self.discovered_domains
             .write()
             .unwrap()
