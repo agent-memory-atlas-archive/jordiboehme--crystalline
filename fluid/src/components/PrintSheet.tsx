@@ -18,10 +18,11 @@
  */
 
 import type { ReactElement, RefObject } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { encode } from "uqr";
 
 import type { PrintFact } from "../printSheet";
-import { cssString } from "../printSheet";
+import { cssString, qrPath } from "../printSheet";
 
 /** Today as a short date in the reader's own locale (`Oct 16, 2026` in en-US). */
 function today(): string {
@@ -174,6 +175,7 @@ export function PrintTitleBlock({
   lead = null,
   facts = [],
   address,
+  webAddress,
 }: {
   /** Domain and folders, drawn small above the title. */
   trail: string[];
@@ -181,7 +183,10 @@ export function PrintTitleBlock({
   title: string | null;
   lead?: string | null;
   facts?: PrintFact[];
+  /** The page's name: its `crystalline://` address, or its web address. */
   address: string;
+  /** The page's web address, which the QR stamp in the corner opens. */
+  webAddress: string;
 }): ReactElement {
   const { ref: printedRef, text: printed } = usePrintDate<HTMLSpanElement>(
     (date) => `Printed ${date}`,
@@ -192,27 +197,72 @@ export function PrintTitleBlock({
       data-print=""
       className="print-title mb-1 border-b border-hair-strong pb-4"
     >
-      <p className="text-caption font-medium tracking-[0.08em] text-muted uppercase">
-        {trail.join(" / ")}
-      </p>
-      {title !== null && <p className="mt-1.5 text-display">{title}</p>}
-      {lead !== null && (
-        <p className="mt-2 text-lg leading-snug text-ink-3">{lead}</p>
-      )}
-      {facts.length > 0 && (
-        <dl className="mt-3.5 flex flex-wrap gap-x-6 gap-y-1 text-sm">
-          {facts.map((fact) => (
-            <div key={fact.label} className="flex gap-1.5">
-              <dt className="text-muted">{fact.label}</dt>
-              <dd className="font-medium text-ink-2">{fact.value}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
+      {/*
+        The stamp keeps a column of its own at the right, so the title never
+        runs under it and never wraps around it.
+      */}
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-6">
+        <div className="min-w-0">
+          <p className="text-caption font-medium tracking-[0.08em] text-muted uppercase">
+            {trail.join(" / ")}
+          </p>
+          {title !== null && <p className="mt-1.5 text-display">{title}</p>}
+          {lead !== null && (
+            <p className="mt-2 text-lg leading-snug text-ink-3">{lead}</p>
+          )}
+          {facts.length > 0 && (
+            <dl className="mt-3.5 flex flex-wrap gap-x-6 gap-y-1 text-sm">
+              {facts.map((fact) => (
+                <div key={fact.label} className="flex gap-1.5">
+                  <dt className="text-muted">{fact.label}</dt>
+                  <dd className="font-medium text-ink-2">{fact.value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </div>
+        <QrStamp text={webAddress} />
+      </div>
       <p className="mt-2 flex flex-wrap justify-between gap-x-4 text-caption text-muted">
-        <span className="font-mono">{address}</span>
+        <span className="font-mono break-all">{address}</span>
         <span ref={printedRef}>{printed}</span>
       </p>
     </header>
+  );
+}
+
+/**
+ * A small stamp at the top right of the first printed page: the page's web
+ * address as a QR code (error correction M, a quiet zone of four modules),
+ * black on white, about 22 mm square, with a caption. The encoder rides in
+ * this lazy chunk only.
+ */
+function QrStamp({ text }: { text: string }): ReactElement {
+  // Encoding an address takes well under a millisecond, so it is done with
+  // the page rather than at the last moment before printing.
+  const data = useMemo(
+    () => encode(text, { ecc: "M", border: 4 }).data,
+    [text],
+  );
+  const size = data.length;
+  return (
+    <figure className="print-qr flex w-[22mm] flex-col items-center gap-1">
+      <svg
+        role="img"
+        aria-label={`QR code: ${text}`}
+        data-qr-text={text}
+        data-qr-size={size}
+        viewBox={`0 0 ${String(size)} ${String(size)}`}
+        width="22mm"
+        height="22mm"
+        shapeRendering="crispEdges"
+      >
+        <rect width={size} height={size} fill="#ffffff" />
+        <path d={qrPath(data)} fill="#000000" />
+      </svg>
+      <figcaption className="text-[7pt] leading-none text-muted">
+        Open in Fluid
+      </figcaption>
+    </figure>
   );
 }

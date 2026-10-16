@@ -502,6 +502,10 @@ export default function EngramPage() {
           content: engram.content,
         })}
         address={engram.url}
+        webAddress={
+          engram.webUrl ??
+          absoluteUrl(engramRoute(engram.domain, engram.permalink))
+        }
       />
       <header className="flex flex-col gap-2 print:hidden">
         {/*

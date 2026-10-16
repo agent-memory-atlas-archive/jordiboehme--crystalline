@@ -1,6 +1,8 @@
-import { act, render } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
+import { encode } from "uqr";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { qrPath } from "../printSheet";
 import { PrintPageStyle, PrintTitleBlock } from "./PrintSheet";
 
 afterEach(() => {
@@ -19,6 +21,7 @@ function page() {
         trail={["eng"]}
         title="Alpha"
         address="crystalline://eng/alpha"
+        webAddress="https://fluid.example/d/eng/e/alpha"
       />
       <img alt="far down" loading="lazy" src="data:," />
     </main>,
@@ -65,5 +68,38 @@ describe("the printed page's sheet", () => {
       window.dispatchEvent(new Event("afterprint"));
     });
     expect(image?.getAttribute("loading")).toBe("lazy");
+  });
+
+  it("stamps the page's web address as a QR code on paper only", async () => {
+    const { container } = page();
+    const svg = await waitFor(() => {
+      const found = container.querySelector<SVGElement>("svg[data-qr-text]");
+      expect(found).not.toBeNull();
+      return found as SVGElement;
+    });
+    // On paper only: inside the hidden print block, never on screen.
+    expect(svg.closest("[hidden][data-print]")).not.toBeNull();
+    expect(svg.closest("header.print-title")).not.toBeNull();
+    // The web address, not the crystalline:// name, at level M with a
+    // four-module quiet zone: the very modules the encoder gives for it.
+    const address = "https://fluid.example/d/eng/e/alpha";
+    expect(svg.getAttribute("data-qr-text")).toBe(address);
+    const expected = encode(address, { ecc: "M", border: 4 });
+    expect(Number(svg.getAttribute("data-qr-size"))).toBe(expected.size);
+    expect(svg.getAttribute("viewBox")).toBe(
+      `0 0 ${String(expected.size)} ${String(expected.size)}`,
+    );
+    expect(svg.querySelector("path")?.getAttribute("d")).toBe(
+      qrPath(expected.data),
+    );
+    // The quiet zone: the first four rows and columns are light.
+    for (const row of expected.data.slice(0, 4)) {
+      expect(row.every((dark) => !dark)).toBe(true);
+    }
+    expect(expected.data.every((row) => row.slice(0, 4).every((d) => !d))).toBe(
+      true,
+    );
+    expect(svg.getAttribute("width")).toBe("22mm");
+    expect(svg.closest("figure")).toHaveTextContent("Open in Fluid");
   });
 });

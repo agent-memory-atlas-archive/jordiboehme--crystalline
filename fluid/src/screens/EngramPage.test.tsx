@@ -2428,6 +2428,12 @@ describe("the printed engram", () => {
     expect(block).toHaveTextContent("Tagsone, two");
     expect(block).toHaveTextContent("crystalline://eng/alpha");
     expect(block).toHaveTextContent(/Printed \w/);
+    // The stamp in the corner opens the engram's page, not its name.
+    await waitFor(() => {
+      expect(
+        block?.querySelector("svg[data-qr-text]")?.getAttribute("data-qr-text"),
+      ).toBe(`${window.location.origin}/d/eng/e/alpha`);
+    });
     // The page margins carry the domain, the title and the address.
     const margins = document.querySelector("style[data-print-page]");
     expect(margins?.textContent).toContain('@top-left { content: "eng"; }');

@@ -95,3 +95,24 @@ export function reflectionFacts(
   }
   return facts;
 }
+
+/** One SVG path for the dark modules, a run of them per rectangle. */
+export function qrPath(data: readonly (readonly boolean[])[]): string {
+  let path = "";
+  data.forEach((row, y) => {
+    let x = 0;
+    while (x < row.length) {
+      if (!row[x]) {
+        x += 1;
+        continue;
+      }
+      let run = 1;
+      while (row[x + run]) {
+        run += 1;
+      }
+      path += `M${String(x)} ${String(y)}h${String(run)}v1h-${String(run)}z`;
+      x += run;
+    }
+  });
+  return path;
+}
