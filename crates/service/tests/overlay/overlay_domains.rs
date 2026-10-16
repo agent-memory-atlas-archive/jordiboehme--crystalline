@@ -9212,4 +9212,60 @@ async fn a_folder_count_follows_the_readers_drafts_at_any_depth() {
         .await
         .unwrap();
     assert_eq!(listed["total"], counts(&level), "{listed}");
+
+    // Another reader holds no drafts here: their count is the base's, and
+    // their listing agrees.
+    let bea = account("bea");
+    let theirs = f.engine.browse_domain(&params, &bea).await.unwrap();
+    assert_eq!(counts(&theirs), serde_json::json!(3), "{theirs}");
+    let listed = f
+        .engine
+        .search_engrams_under(
+            &crystalline_service::params::SearchParams {
+                domains: vec!["team".to_string()],
+                limit: Some(1),
+                ..Default::default()
+            },
+            Some("notes"),
+            crystalline_index::SearchOrder::default(),
+            &bea,
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed["total"], serde_json::json!(3), "{listed}");
+
+    // The base row under a tombstone goes away (a pull removed the file):
+    // the tombstone it leaves behind takes nothing more from the folder.
+    std::fs::remove_file(root.join("notes/a.md")).unwrap();
+    f.engine.sync(None).await.unwrap();
+    let stale = {
+        let store = f.engine.store();
+        let store = store.lock().await;
+        let id = store.domain_id("team").await.unwrap().unwrap();
+        store
+            .overlay_entries(id, "owner")
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.tombstone && e.path == "notes/a.md")
+    };
+    assert!(stale, "the tombstone outlives its base row");
+    let level = browse().await.unwrap();
+    // Base: notes/b and notes/deep/c; c tombstoned, deep/fresh drafted.
+    assert_eq!(counts(&level), serde_json::json!(2), "{level}");
+    let listed = f
+        .engine
+        .search_engrams_under(
+            &crystalline_service::params::SearchParams {
+                domains: vec!["team".to_string()],
+                limit: Some(1),
+                ..Default::default()
+            },
+            Some("notes"),
+            crystalline_index::SearchOrder::default(),
+            &owner,
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed["total"], counts(&level), "{listed}");
 }

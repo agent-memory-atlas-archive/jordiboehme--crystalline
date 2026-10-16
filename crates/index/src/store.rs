@@ -2818,6 +2818,13 @@ pub trait Store: Send + Sync {
     /// the same however many pages the Reflection holds.
     async fn has_reflection_rows(&self, domain: DomainId) -> Result<bool>;
 
+    /// Which of `paths` hold a base engram row in `domain`: the existence
+    /// probe a browse level's folder counts ask of a reader's drafts and
+    /// tombstones. One `LIMIT 1` seek of the unique `(domain_id, path,
+    /// actor)` per distinct path, reading no body, so it costs the reader's
+    /// overlay, never the domain.
+    async fn base_paths(&self, domain: DomainId, paths: &[String]) -> Result<HashSet<String>>;
+
     /// The base engram rows of `domain` holding one of `permalinks`, with
     /// what a cited source is held against: title, status, checksum and
     /// mtime. A permalink no base row holds has no answer, a permalink named

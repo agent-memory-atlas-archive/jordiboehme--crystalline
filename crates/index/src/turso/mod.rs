@@ -1266,6 +1266,13 @@ pub const FILE_STAMPS_SQL: &str =
 #[doc(hidden)]
 pub const ENGRAM_ROWS_UNDER_REFLECTIONS_SQL: &str = "SELECT path FROM engram WHERE domain_id=?1 AND actor = '' AND lower(substr(path, 1, 12)) = 'reflections/' LIMIT ?2";
 
+/// Whether one path holds a base engram row, behind [`Store::base_paths`]:
+/// a full-key seek of the unique `idx_engram_path_actor`, run once per path,
+/// reading no body.
+#[doc(hidden)]
+pub const BASE_PATH_SQL: &str =
+    "SELECT 1 FROM engram WHERE domain_id=?1 AND path=?2 AND actor = '' LIMIT 1";
+
 /// One cited engram by permalink, behind [`Store::cited_engrams`]: a
 /// full-key seek of the unique `idx_engram_permalink_actor`, run once per
 /// permalink. A plain equality rather than an `IN` list, which turso would
@@ -2148,6 +2155,31 @@ impl Store for TursoStore {
             }
         }
         Ok(false)
+    }
+
+    async fn base_paths(
+        &self,
+        domain: DomainId,
+        paths: &[String],
+    ) -> Result<std::collections::HashSet<String>> {
+        let wanted: std::collections::BTreeSet<&str> = paths.iter().map(String::as_str).collect();
+        let mut out = std::collections::HashSet::new();
+        if wanted.is_empty() {
+            return Ok(out);
+        }
+        for path in wanted {
+            if query_first(
+                &self.conn,
+                BASE_PATH_SQL,
+                vec![Value::Integer(domain.0), Value::Text(path.to_string())],
+            )
+            .await?
+            .is_some()
+            {
+                out.insert(path.to_string());
+            }
+        }
+        Ok(out)
     }
 
     async fn cited_engrams(

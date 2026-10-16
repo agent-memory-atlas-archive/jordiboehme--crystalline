@@ -1407,6 +1407,13 @@ pub const FILE_STAMPS_SQL: &str =
 #[doc(hidden)]
 pub const ENGRAM_ROWS_UNDER_REFLECTIONS_SQL: &str = "SELECT path FROM engram WHERE domain_id=$1 AND actor = '' AND lower(substr(path, 1, 12) COLLATE \"C\") = 'reflections/' LIMIT $2";
 
+/// Whether one path holds a base engram row, behind [`Store::base_paths`]:
+/// a full-key seek of the unique `idx_engram_path_actor`, run once per path,
+/// reading no body.
+#[doc(hidden)]
+pub const BASE_PATH_SQL: &str =
+    "SELECT 1 FROM engram WHERE domain_id=$1 AND path=$2 AND actor = '' LIMIT 1";
+
 /// One cited engram by permalink, behind [`Store::cited_engrams`]: a
 /// full-key seek of the unique `idx_engram_permalink_actor`, run once per
 /// permalink. A plain equality rather than an `IN` list, which turso would
@@ -2230,6 +2237,31 @@ impl Store for PostgresStore {
             }
         }
         Ok(false)
+    }
+
+    async fn base_paths(
+        &self,
+        domain: DomainId,
+        paths: &[String],
+    ) -> Result<std::collections::HashSet<String>> {
+        let wanted: std::collections::BTreeSet<&str> = paths.iter().map(String::as_str).collect();
+        let mut out = std::collections::HashSet::new();
+        if wanted.is_empty() {
+            return Ok(out);
+        }
+        let mut conn = self.acquire().await?;
+        for path in wanted {
+            let rows = query_all(
+                conn.as_mut(),
+                BASE_PATH_SQL,
+                vec![Param::Int(domain.0), Param::Text(path.to_string())],
+            )
+            .await?;
+            if !rows.is_empty() {
+                out.insert(path.to_string());
+            }
+        }
+        Ok(out)
     }
 
     async fn cited_engrams(

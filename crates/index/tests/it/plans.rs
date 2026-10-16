@@ -415,6 +415,24 @@ pub fn registry() -> Vec<HotStatement> {
             postgres_must_seek: &[],
         },
         HotStatement {
+            // A browse level asks this once per path a reader drafts or
+            // tombstones under a folder: one full-key seek of the unique
+            // (domain_id, path, actor), never a body.
+            issued_by: "Store::base_paths",
+            turso: || crystalline_index::turso::BASE_PATH_SQL.to_string(),
+            #[cfg(feature = "postgres")]
+            postgres: || crystalline_index::postgres::BASE_PATH_SQL.to_string(),
+            literals: &["1", "'p0'"],
+            #[cfg(feature = "postgres")]
+            literals_pg: None,
+            scan_expected: &[],
+            #[cfg(feature = "postgres")]
+            scan_expected_pg: None,
+            turso_must_seek: &["idx_engram_path_actor (domain_id=? AND path=? AND actor=?)"],
+            #[cfg(feature = "postgres")]
+            postgres_must_seek: &["idx_engram_path_actor"],
+        },
+        HotStatement {
             // A cited page's read asks this once per cited permalink: one
             // full-key seek of the unique (domain_id, permalink, actor), so
             // the read costs the page's sources, never the domain's rows.
