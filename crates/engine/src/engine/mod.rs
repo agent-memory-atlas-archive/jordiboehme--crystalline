@@ -3239,6 +3239,13 @@ impl Engine {
     /// rename move the generation on, so an id whose row went is never
     /// answered. `None` while a rename pauses the domain, whose row is
     /// looked up fresh ([`Engine::domain_source`]).
+    ///
+    /// What the window costs on a shared postgres: another instance's
+    /// removal or collection of the row is not announced here, so for up to
+    /// [`crate::changes::VISIBILITY_TTL`] (10 s) the gate can answer the
+    /// dropped row's id. A page read then shows its sources as missing, and
+    /// a page write fails on the foreign key after the file is on disk; the
+    /// next sync indexes that file under the row it makes.
     pub(crate) fn remembered_domain_id(&self, domain: &str, root: &Path) -> Option<DomainId> {
         if self.is_renaming(domain) {
             return None;
@@ -3475,10 +3482,12 @@ impl Engine {
     }
 
     /// Whether `name` is one of [`Engine::known_domain_names`], the names
-    /// [`Engine::unregistered_domains`] never answers. In memory only.
+    /// [`Engine::unregistered_domains`] never answers. In memory only, and
+    /// read through the same two tiers that listing reads.
     pub(crate) fn knows_domain(&self, name: &str) -> bool {
-        self.config.read().unwrap().domains.contains_key(name)
-            || self.discovered_domains.read().unwrap().contains_key(name)
+        !self
+            .known_domain_names_where(|known| known == name)
+            .is_empty()
     }
 
     /// The domains the index holds that this instance has no registration for.
@@ -6012,15 +6021,30 @@ impl Engine {
     /// [`Engine::registered_domain_names`] to decide whether a domain is
     /// registered at all.
     fn known_domain_names(&self) -> Vec<String> {
+        self.known_domain_names_where(|_| true)
+    }
+
+    /// The names of [`Engine::known_domain_names`] that `keep` accepts: the
+    /// one place that reads its two tiers, so [`Engine::knows_domain`] can
+    /// never disagree with it.
+    fn known_domain_names_where(&self, keep: impl Fn(&str) -> bool) -> Vec<String> {
         let mut names: Vec<String> = self
             .config
             .read()
             .unwrap()
             .domains
             .keys()
+            .filter(|name| keep(name))
             .cloned()
             .collect();
-        names.extend(self.discovered_domains.read().unwrap().keys().cloned());
+        names.extend(
+            self.discovered_domains
+                .read()
+                .unwrap()
+                .keys()
+                .filter(|name| keep(name))
+                .cloned(),
+        );
         names
     }
 

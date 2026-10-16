@@ -619,16 +619,25 @@ mod tests {
             "pub(crate) async fn all_threads(",
             "pub(crate) async fn open_thread_count(",
         ] {
-            let start = src.find(signature).expect("the function is in the file");
+            let start = src
+                .find(signature)
+                .unwrap_or_else(|| panic!("source pin: {signature} is not in threads.rs"));
             let end = start + src[start..].find("\n    }\n").expect("the function ends");
             let body = &src[start..end];
+            // A source pin: it reads this file's text, not the running code.
+            let pin = "this is a source pin on threads.rs: a threads file must be read \
+                       inside spawn_blocking, never on a runtime worker. Move the read \
+                       back into the closure; if the function was renamed or reshaped \
+                       on purpose, update the signature or the needles here";
             let blocking = body
                 .find("spawn_blocking(")
-                .unwrap_or_else(|| panic!("{signature} reads on the blocking pool"));
-            let first_read = body.find("read_opt(").expect("it reads the threads files");
+                .unwrap_or_else(|| panic!("{signature} has no spawn_blocking; {pin}"));
+            let first_read = body
+                .find("read_opt(")
+                .unwrap_or_else(|| panic!("{signature} has no read_opt; {pin}"));
             assert!(
                 first_read > blocking,
-                "{signature} reads a threads file before its spawn_blocking"
+                "{signature} reads a threads file before its spawn_blocking; {pin}"
             );
         }
     }
