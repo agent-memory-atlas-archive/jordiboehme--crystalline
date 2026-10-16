@@ -21,6 +21,7 @@
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Dialog } from "radix-ui";
 import {
   House,
   PanelLeft,
@@ -110,7 +111,7 @@ import { ShareDialog } from "./ShareDialog";
 import { SharePickerDialog } from "./SharePickerDialog";
 import { ShatterGem } from "./ShatterGem";
 import { ownedPhrase, shareBadgeCount } from "./changes";
-import { Chip, FOCUS_RING, IconButton, Tooltip } from "./primitives";
+import { Chip, FOCUS_RING, IconButton, SIDE, Tooltip } from "./primitives";
 
 const ReflectionNav = lazyChunk(() => import("./ReflectionNav"));
 
@@ -556,6 +557,11 @@ export function Layout() {
   const [largeText, setLargeText] = useState(storedLargeText);
   const [engramsOrder, setEngramsOrderState] = useState(storedEngramsOrder);
   const wide = useWide();
+  // A window that grows past the breakpoint has no drawer, so it is shut for
+  // good rather than left to come back when the window narrows again.
+  if (wide && navOpen) {
+    setNavOpen(false);
+  }
   const [helpOpen, setHelpOpen] = useState(false);
   // The Help button, when it is what opened the shortcut map: a menu item has
   // unmounted by the time the dialog closes, so focus would be lost to <body>.
@@ -837,10 +843,10 @@ export function Layout() {
                   open={navOpen}
                   rail={rail && wide}
                   onToggleRail={toggleRail}
-                  onClose={() => {
+                  onDismiss={() => {
                     setNavOpen(false);
-                    navToggleRef.current?.focus();
                   }}
+                  drawerToggle={navToggleRef}
                   onCreateDomain={() => {
                     setCreatingDomain(true);
                   }}
@@ -1256,14 +1262,17 @@ function DomainSidebar({
   open,
   rail,
   onToggleRail,
-  onClose,
+  onDismiss,
+  drawerToggle,
   onCreateDomain,
 }: {
   open: boolean;
   rail: boolean;
   onToggleRail: () => void;
-  /** Shut the phone drawer and give the keyboard back to its toggle. */
-  onClose: () => void;
+  /** Shut the phone drawer from inside it (close button, Escape, scrim). */
+  onDismiss: () => void;
+  /** The bar's drawer toggle, where the keyboard goes when the drawer shuts. */
+  drawerToggle: RefObject<HTMLButtonElement | null>;
   /** Open the frame's own register-a-domain dialog. */
   onCreateDomain: () => void;
 }) {
@@ -1271,19 +1280,24 @@ function DomainSidebar({
   const { capabilities } = useAuth();
   const wide = useWide();
   const [creating, setCreating] = useState(false);
+  // The rail's launcher, where the keyboard goes back to when its dialog is
+  // dismissed (the dialog's lazy body loses radix's own return).
+  const [launcher, setLauncher] = useState<HTMLElement | null>(null);
   const listing = useQuery({
     queryKey: DOMAINS_QUERY_KEY,
     queryFn: fetchDomains,
   });
 
-  // Folding the sidebar unmounts the control that folded it, so the keyboard
-  // is handed to the one that took its place - the same spot on screen (the
-  // foot), the opposite verb. Without this, focus lands on the document and a
-  // reader is back at the top of the page. Only after a press: a mount that
-  // read the stored preference must not steal focus from wherever the reader
-  // is.
+  // The fold is one button in the foot whose name and glyph flip, so the
+  // keyboard stays where it was: after a press the button is focused again,
+  // in case the fold redrew it, rather than the reader landing on the
+  // document. Only after a press: a mount that read the stored preference
+  // must not steal focus from wherever the reader is.
   const toggleRef = useRef<HTMLButtonElement | null>(null);
   const pressed = useRef(false);
+  // Whether the drawer was shut by the reader rather than by a link.
+  const returnToToggle = useRef(false);
+  const drawerRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!pressed.current) {
       return;
@@ -1314,167 +1328,194 @@ function DomainSidebar({
     : rest.startsWith("edit/")
       ? rest.slice(5)
       : "";
-  // Below the medium breakpoint the sidebar is a drawer over the page: a
-  // fixed sheet from the left edge with a scrim behind it. From the
-  // breakpoint up it is a column under the top bar that sticks while the
-  // page scrolls, in the chrome colour with a hairline on its right; the
-  // shadow carries that colour on to the window's left edge when the frame
-  // is capped narrower than the window.
-  const drawer = !wide;
-  // An opened drawer takes the keyboard, so Escape and the next Tab act on
-  // it rather than on the page under the scrim. The drawer itself rather
-  // than its close button, so no tooltip pops up on the way in.
-  const navRef = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    if (drawer && open) {
-      navRef.current?.focus();
-    }
-  }, [drawer, open]);
-  return (
-    <>
-      {drawer && open && (
-        <div
-          aria-hidden="true"
-          onClick={onClose}
-          className="fixed inset-0 z-40 bg-slate-900/40 print:hidden"
+  const content = rail ? (
+    /*
+      Folded: the two things somebody in the middle of reading still needs
+      from the frame. Names rather than bare glyphs, because an icon column is
+      exactly where a keyboard or a screen reader has the least to go on. The
+      way back out of the fold is in the foot, where the fold itself was.
+    */
+    <div className="flex flex-col items-center gap-1">
+      <IconButton
+        label="All domains"
+        icon={House}
+        onClick={() => {
+          void navigate("/");
+        }}
+      />
+      {/*
+        The same condition `DomainNav` puts on its own launcher, for the same
+        reason: the domain's home screen carries one beside its heading,
+        prefilled with the folder being browsed, and the frame offering a
+        second one would be two controls for one act.
+      */}
+      {permalink !== "" && canWrite && (
+        <IconButton
+          label="New engram"
+          icon={Plus}
+          onClick={(event) => {
+            setLauncher(event.currentTarget);
+            setCreating(true);
+          }}
         />
       )}
-      <nav
-        ref={navRef}
-        tabIndex={drawer ? -1 : undefined}
-        id="domain-sidebar"
-        aria-label={domain === "" ? "Domains" : `Domain ${domain}`}
-        onKeyDown={
-          drawer
-            ? (event) => {
-                // Only for the drawer's own rows: a dialog opened from it is
-                // a portal, and React bubbles its Escape through here too.
-                if (
-                  event.key === "Escape" &&
-                  event.currentTarget.contains(event.target as Node)
-                ) {
-                  onClose();
-                }
-              }
-            : undefined
-        }
-        className={`${open ? "flex" : "hidden"} fixed inset-y-0 left-0 z-50 w-[300px] max-w-[85vw] shrink-0 flex-col bg-chrome shadow-pop outline-none print:hidden md:sticky md:top-14 md:bottom-auto md:z-auto md:flex md:h-[calc(100dvh-3.5rem)] md:max-w-none md:self-start md:border-r md:border-hair ${
-          rail
-            ? "md:w-12 md:shadow-[-48px_0_0_var(--chrome),-96px_0_0_var(--chrome),-144px_0_0_var(--chrome),-192px_0_0_var(--chrome)]"
-            : "md:w-64 md:shadow-[-256px_0_0_var(--chrome)]"
-        }`}
+    </div>
+  ) : domain === "" ? (
+    <DomainList
+      domains={listing.data?.domains}
+      pending={listing.isPending}
+      error={listing.error}
+      // Only for the session that may register one. The server refuses
+      // everyone else anyway, so this is the difference between a sidebar
+      // that offers what you can do and one that offers a door that will not
+      // open.
+      onCreateDomain={capabilities.canAdminister ? onCreateDomain : null}
+    />
+  ) : reflectionPath !== null ? (
+    <LazyBoundary fallback={null}>
+      <ReflectionNav domain={domain} path={reflectionPath} />
+    </LazyBoundary>
+  ) : (
+    <>
+      {/*
+        A listing that failed is said here as it is in the flat mode. The
+        tree is drawn either way: it comes from the domain's own address, so
+        it works even when nothing could be listed.
+      */}
+      {listing.error && <SidebarProblem error={listing.error} />}
+      <DomainNav domain={domain} permalink={permalink} />
+    </>
+  );
+  const label = domain === "" ? "Domains" : `Domain ${domain}`;
+
+  // Below the medium breakpoint the sidebar is a drawer: a modal dialog from
+  // the left edge, on the same radix primitive every other dialog here uses,
+  // so the focus trap, Escape, the scroll lock and hiding the page from a
+  // screen reader come with it. Its head names the domain and carries the
+  // way shut.
+  if (!wide) {
+    return (
+      <Dialog.Root
+        open={open}
+        onOpenChange={(next) => {
+          if (!next) {
+            returnToToggle.current = true;
+            onDismiss();
+          }
+        }}
       >
-        {drawer && (
-          /*
-            The drawer's own head: which domain this is the way around, and
-            the way to shut it without reaching back up to the bar.
-          */
-          <div className="flex items-center gap-2 px-3 pt-3 pb-1">
-            <span className="min-w-0 grow truncate px-2.5 font-semibold text-ink">
-              {domain === "" ? "All domains" : domain}
-            </span>
-            <IconButton label="Close the sidebar" icon={X} onClick={onClose} />
-          </div>
-        )}
-        {/*
-          The rows scroll on their own, under a foot that stays put. The side
-          padding is wide enough for the focus ring: a box that scrolls on
-          one axis clips the other one too.
-        */}
-        <div
-          className={`min-h-0 flex-1 overflow-y-auto py-4 ${rail ? "px-2" : "px-3"}`}
-        >
-          {rail ? (
-            /*
-              Folded: the two things somebody in the middle of reading still
-              needs from the frame. Names rather than bare glyphs, because an
-              icon column is exactly where a keyboard or a screen reader has
-              the least to go on. The way back out of the fold is in the foot,
-              where the fold itself was.
-            */
-            <div className="flex flex-col items-center gap-1">
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 print:hidden" />
+          <Dialog.Content
+            ref={drawerRef}
+            aria-describedby={undefined}
+            aria-modal="true"
+            // The drawer itself takes the keyboard rather than its close
+            // button, so no tooltip pops up on the way in.
+            onOpenAutoFocus={(event) => {
+              event.preventDefault();
+              (event.currentTarget as HTMLElement).focus();
+            }}
+            // Escape belongs to the dialog on top. Radix's own layer check
+            // misses a dialog whose lazy body was already loaded, so a
+            // second open dialog is asked about here directly.
+            onEscapeKeyDown={(event) => {
+              const dialogs = document.querySelectorAll(
+                "[role=dialog], [role=alertdialog]",
+              );
+              if (
+                Array.from(dialogs).some(
+                  (dialog) => dialog !== drawerRef.current,
+                )
+              ) {
+                event.preventDefault();
+              }
+            }}
+            // Back to the bar's toggle when the reader shut it; a link
+            // followed out of it leaves the keyboard to the new screen.
+            onCloseAutoFocus={(event) => {
+              event.preventDefault();
+              if (returnToToggle.current) {
+                drawerToggle.current?.focus();
+              }
+              returnToToggle.current = false;
+            }}
+            className="fixed inset-y-0 left-0 z-50 flex w-[300px] max-w-[85vw] flex-col bg-chrome shadow-pop outline-none print:hidden"
+          >
+            <div className="flex items-center gap-2 px-3 pt-3 pb-1">
+              <Dialog.Title className="min-w-0 grow truncate px-2.5 text-base font-semibold text-ink">
+                {domain === "" ? "All domains" : domain}
+              </Dialog.Title>
               <IconButton
-                label="All domains"
-                icon={House}
+                label="Close the sidebar"
+                icon={X}
                 onClick={() => {
-                  void navigate("/");
+                  returnToToggle.current = true;
+                  onDismiss();
                 }}
               />
-              {/*
-                The same condition `DomainNav` puts on its own launcher, for
-                the same reason: the domain's home screen carries one beside
-                its heading, prefilled with the folder being browsed, and the
-                frame offering a second one would be two controls for one act.
-              */}
-              {permalink !== "" && canWrite && (
-                <IconButton
-                  label="New engram"
-                  icon={Plus}
-                  onClick={() => {
-                    setCreating(true);
-                  }}
-                />
-              )}
             </div>
-          ) : domain === "" ? (
-            <DomainList
-              domains={listing.data?.domains}
-              pending={listing.isPending}
-              error={listing.error}
-              // Only for the session that may register one. The server
-              // refuses everyone else anyway, so this is the difference
-              // between a sidebar that offers what you can do and one that
-              // offers a door that will not open.
-              onCreateDomain={
-                capabilities.canAdminister ? onCreateDomain : null
-              }
-            />
-          ) : reflectionPath !== null ? (
-            <LazyBoundary fallback={null}>
-              <ReflectionNav domain={domain} path={reflectionPath} />
-            </LazyBoundary>
-          ) : (
-            <>
-              {/*
-                A listing that failed is said here as it is in the flat mode.
-                The tree is drawn either way: it comes from the domain's own
-                address, so it works even when nothing could be listed.
-              */}
-              {listing.error && <SidebarProblem error={listing.error} />}
-              <DomainNav domain={domain} permalink={permalink} />
-            </>
-          )}
-        </div>
-        {/*
-          The fold, in the foot at the bottom right (spec 4.4), only where
-          there is a rail to fold into: below the medium breakpoint the
-          sidebar is a drawer with its own close button in its head.
-        */}
-        {wide && (
-          <div
-            className={`flex shrink-0 py-2 ${rail ? "justify-center" : "justify-end px-3"}`}
-          >
-            <IconButton
-              ref={toggleRef}
-              label={rail ? "Expand the sidebar" : "Collapse the sidebar"}
-              icon={rail ? PanelLeftOpen : PanelLeftClose}
-              aria-expanded={!rail}
-              aria-controls="domain-sidebar"
-              onClick={fold}
-            />
-          </div>
-        )}
-        {creating && (
-          <CreateEngramDialog
-            domain={domain}
-            initialFolder=""
-            onClose={() => {
-              setCreating(false);
-            }}
-          />
-        )}
-      </nav>
-    </>
+            <nav
+              id="domain-sidebar"
+              aria-label={label}
+              className="min-h-0 flex-1 overflow-y-auto px-3 py-4"
+            >
+              {content}
+            </nav>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+    );
+  }
+
+  // From the breakpoint up it is a column under the top bar that sticks
+  // while the page scrolls, in the chrome colour with a hairline on its
+  // right; the shadow carries that colour on to the window's left edge when
+  // the frame is capped narrower than the window.
+  return (
+    <nav
+      id="domain-sidebar"
+      aria-label={label}
+      className={`sticky top-14 flex h-[calc(100dvh-3.5rem)] shrink-0 flex-col self-start border-r border-hair bg-chrome print:hidden ${
+        rail
+          ? "w-12 shadow-[-48px_0_0_var(--chrome),-96px_0_0_var(--chrome),-144px_0_0_var(--chrome),-192px_0_0_var(--chrome)]"
+          : "w-64 shadow-[-256px_0_0_var(--chrome)]"
+      }`}
+    >
+      {/*
+        The rows scroll on their own, under a foot that stays put. The side
+        padding is wide enough for the focus ring: a box that scrolls on one
+        axis clips the other one too.
+      */}
+      <div
+        className={`min-h-0 flex-1 overflow-y-auto py-4 ${rail ? "px-2" : "px-3"}`}
+      >
+        {content}
+      </div>
+      {/* The fold, in the foot at the bottom right (spec 4.4). */}
+      <div
+        className={`flex shrink-0 py-2 ${rail ? "justify-center" : "justify-end px-3"}`}
+      >
+        <IconButton
+          ref={toggleRef}
+          label={rail ? "Expand the sidebar" : "Collapse the sidebar"}
+          icon={rail ? PanelLeftOpen : PanelLeftClose}
+          aria-expanded={!rail}
+          aria-controls="domain-sidebar"
+          onClick={fold}
+        />
+      </div>
+      {creating && (
+        <CreateEngramDialog
+          domain={domain}
+          initialFolder=""
+          returnFocusTo={launcher}
+          onClose={() => {
+            setCreating(false);
+          }}
+        />
+      )}
+    </nav>
   );
 }
 
@@ -1506,13 +1547,10 @@ function DomainList({
   const noReflections = reflections.data?.length === 0 || reflections.isError;
   return (
     <>
-      <h2 className="text-caption px-2 pb-2 font-semibold text-slate-500 dark:text-slate-400">
-        Domains
-      </h2>
+      {/* The first label of the column, so it does not need the gap above it. */}
+      <h2 className={SIDE.label.replace("pt-[18px]", "pt-0")}>Domains</h2>
       {pending && (
-        <p className="px-2 text-sm text-slate-500 dark:text-slate-400">
-          Loading domains
-        </p>
+        <p className="px-2.5 py-1.5 text-sm text-muted">Loading domains</p>
       )}
       {error && <SidebarProblem error={error} />}
       <ul className="flex flex-col gap-0.5">
@@ -1523,7 +1561,7 @@ function DomainList({
         ))}
       </ul>
       {domains?.length === 0 && noReflections && (
-        <p className="px-2 text-sm text-slate-500 dark:text-slate-400">
+        <p className="px-2.5 py-1.5 text-sm text-muted">
           No domains are registered on this instance yet.
         </p>
       )}
@@ -1545,8 +1583,14 @@ function DomainList({
         <button
           type="button"
           onClick={onCreateDomain}
-          className="mt-2 w-full rounded border border-slate-300 px-2 py-1 text-sm hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-accent-600 dark:focus-visible:ring-accent-400 focus-visible:outline-none dark:border-slate-700 dark:hover:bg-slate-800"
+          className={`${SIDE.row} ${SIDE.add} mt-1.5 w-full`}
         >
+          <Plus
+            aria-hidden="true"
+            size={16}
+            strokeWidth={1.75}
+            className={SIDE.icon}
+          />
           New domain
         </button>
       )}
@@ -1559,9 +1603,7 @@ function DomainLink({ domain }: { domain: DomainSummary }) {
     <NavLink
       to={domainRoute(domain.name)}
       className={({ isActive }) =>
-        `flex items-baseline justify-between gap-2 rounded px-2 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-800 ${FOCUS_RING} ${
-          isActive ? "bg-slate-100 font-medium dark:bg-slate-800" : ""
-        }`
+        `${SIDE.row} justify-between ${isActive ? SIDE.current : ""}`
       }
     >
       {/*
@@ -1572,14 +1614,12 @@ function DomainLink({ domain }: { domain: DomainSummary }) {
         it would be the one part of the row that does not take a click. The
         link then reads "lab private 12", which is the row said out loud.
       */}
-      <span className="flex min-w-0 items-baseline gap-1.5">
+      <span className="flex min-w-0 items-center gap-1.5">
         <span className="truncate">{domain.name}</span>
         {domain.private && <Chip variant="accent">private</Chip>}
       </span>
       {domain.engrams !== null && (
-        <span className="text-xs text-slate-500 tabular-nums dark:text-slate-400">
-          {domain.engrams}
-        </span>
+        <span className={SIDE.count}>{domain.engrams}</span>
       )}
     </NavLink>
   );

@@ -929,7 +929,7 @@ describe("the sidebar inside a domain", () => {
     ).toHaveAttribute("aria-current", "page");
   });
 
-  it("fades a retired engram in the tree rather than dropping it", async () => {
+  it("sets a retired engram apart in the tree rather than dropping it", async () => {
     serveInDomain();
 
     renderApp("/d/eng");
@@ -938,7 +938,10 @@ describe("the sidebar inside a domain", () => {
       name: "Old Way",
     });
     expect(retired).toBeVisible();
-    expect(retired.className).toContain("opacity-60");
+    // Slanted and in a lighter ink, not faded by opacity: the fade took the
+    // row under 4.5:1.
+    expect(retired.className).toContain("italic");
+    expect(retired.className).not.toContain("opacity-60");
   });
 
   it("keeps the MANIFEST out of the tree, and pins no row for it", async () => {
@@ -1123,6 +1126,11 @@ describe("the sidebar's own width", () => {
 
     renderApp("/");
 
+    // The one control a narrow window offers says what the drawer is doing,
+    // with nothing beside it to contradict it.
+    const toggle = await screen.findByRole("button", { name: "Domains" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(toggle);
     const nav = await screen.findByRole("navigation", { name: "Domains" });
     expect(
       await within(nav).findByRole("link", { name: /^eng/ }),
@@ -1130,54 +1138,56 @@ describe("the sidebar's own width", () => {
     expect(
       screen.queryByRole("button", { name: "Expand the sidebar" }),
     ).toBeNull();
-    // And the one control a narrow window does offer says what the drawer is
-    // doing, with nothing beside it to contradict it.
-    expect(screen.getByRole("button", { name: "Domains" })).toHaveAttribute(
-      "aria-expanded",
-      "false",
-    );
   });
 
-  it("heads the phone drawer with the domain and a close button", async () => {
+  it("opens the phone drawer as a modal dialog headed by the domain", async () => {
     stubNarrowWindow();
     serveInDomain();
 
     renderApp("/d/eng/e/alpha");
     const user = userEvent.setup();
     const toggle = await screen.findByRole("button", { name: "Domains" });
+    // Shut, there is no drawer to reach.
+    expect(screen.queryByRole("dialog")).toBeNull();
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
-    const nav = await sidebar();
-    // The opened drawer takes the keyboard.
-    expect(document.activeElement).toBe(nav);
-    // The drawer says which domain it is the way around, then offers the
-    // tree for the current mode, and no fold control: there is no rail.
-    expect(within(nav).getByText("eng")).toBeVisible();
+    const drawer = await screen.findByRole("dialog", { name: "eng" });
+    expect(drawer).toHaveAttribute("aria-modal", "true");
+    // The drawer takes the keyboard, and holds the tree for the current mode
+    // with no fold control: there is no rail on a phone.
+    expect(document.activeElement).toBe(drawer);
+    const nav = within(drawer).getByRole("navigation", { name: "Domain eng" });
     expect(
       await within(nav).findByRole("link", { name: "Overview" }),
     ).toBeVisible();
     expect(
-      within(nav).queryByRole("button", { name: "Collapse the sidebar" }),
+      screen.queryByRole("button", { name: "Collapse the sidebar" }),
     ).toBeNull();
 
-    await user.click(
-      within(nav).getByRole("button", { name: "Close the sidebar" }),
-    );
+    // Tab never leaves it: from the last control it wraps to the first.
+    const close = within(drawer).getByRole("button", {
+      name: "Close the sidebar",
+    });
+    close.focus();
+    await user.tab({ shift: true });
+    expect(drawer.contains(document.activeElement)).toBe(true);
+    for (let i = 0; i < 12; i += 1) {
+      await user.tab();
+      expect(drawer.contains(document.activeElement)).toBe(true);
+    }
+
+    await user.click(close);
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     // The keyboard goes back to the control that opened it.
-    expect(document.activeElement).toBe(toggle);
-
-    // Escape shuts it too, and so does following a link out of it.
-    await user.click(toggle);
-    await user.keyboard("{Escape}");
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    await user.click(toggle);
-    await user.click(within(nav).getByRole("link", { name: "Overview" }));
-    await screen.findByRole("heading", { level: 1, name: "eng" });
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => {
+      expect(document.activeElement).toBe(toggle);
+    });
   });
 
-  it("keeps the drawer open when Escape shuts a dialog opened from it", async () => {
+  it("shuts the drawer on Escape from anywhere in it, and on a followed link", async () => {
     stubNarrowWindow();
     serveInDomain();
 
@@ -1185,16 +1195,105 @@ describe("the sidebar's own width", () => {
     const user = userEvent.setup();
     const toggle = await screen.findByRole("button", { name: "Domains" });
     await user.click(toggle);
-    const nav = await sidebar();
-    await user.click(
-      await within(nav).findByRole("button", { name: "New engram" }),
-    );
-    await screen.findByRole("dialog");
+    await screen.findByRole("dialog", { name: "eng" });
     await user.keyboard("{Escape}");
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).toBeNull();
     });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => {
+      expect(document.activeElement).toBe(toggle);
+    });
+
+    await user.click(toggle);
+    const drawer = await screen.findByRole("dialog", { name: "eng" });
+    await user.click(
+      await within(drawer).findByRole("link", { name: "Overview" }),
+    );
+    await screen.findByRole("heading", { level: 1, name: "eng" });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps the drawer open when Escape shuts a dialog opened from it, and returns to the launcher", async () => {
+    stubNarrowWindow();
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    const toggle = await screen.findByRole("button", { name: "Domains" });
+    await user.click(toggle);
+    const drawer = await screen.findByRole("dialog", { name: "eng" });
+    const launcher = await within(drawer).findByRole("button", {
+      name: "New engram",
+    });
+    await user.click(launcher);
+    await screen.findByRole("dialog", { name: /^New engram in/ });
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("dialog", { name: /^New engram in/ }),
+      ).toBeNull();
+    });
     expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("dialog", { name: "eng" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(document.activeElement).toBe(launcher);
+    });
+  });
+
+  it("shuts the drawer for good when the window grows past the breakpoint", async () => {
+    let wide = false;
+    const listeners = new Set<(event: { matches: boolean }) => void>();
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        get matches() {
+          return query.includes("min-width") ? wide : false;
+        },
+        media: query,
+        addEventListener: (
+          _: string,
+          fn: (event: { matches: boolean }) => void,
+        ) => {
+          if (query.includes("min-width")) {
+            listeners.add(fn);
+          }
+        },
+        removeEventListener: (
+          _: string,
+          fn: (event: { matches: boolean }) => void,
+        ) => {
+          listeners.delete(fn);
+        },
+      }),
+    });
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    const toggle = await screen.findByRole("button", { name: "Domains" });
+    await user.click(toggle);
+    await screen.findByRole("dialog", { name: "eng" });
+
+    act(() => {
+      wide = true;
+      listeners.forEach((fn) => {
+        fn({ matches: wide });
+      });
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    act(() => {
+      wide = false;
+      listeners.forEach((fn) => {
+        fn({ matches: wide });
+      });
+    });
+    // Narrow again, and the drawer stays shut until it is asked for.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
   });
 
   it("names the drawer All domains outside a domain", async () => {
@@ -1202,11 +1301,48 @@ describe("the sidebar's own width", () => {
     serveSignedIn();
 
     renderApp("/");
-    const nav = await screen.findByRole("navigation", { name: "Domains" });
-    expect(within(nav).getByText("All domains")).toBeVisible();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Domains" }),
+    );
+    const drawer = await screen.findByRole("dialog", { name: "All domains" });
     expect(
-      within(nav).getByRole("button", { name: "Close the sidebar" }),
+      within(drawer).getByRole("navigation", { name: "Domains" }),
     ).toBeVisible();
+    expect(
+      within(drawer).getByRole("button", { name: "Close the sidebar" }),
+    ).toBeVisible();
+  });
+
+  it("gives the keyboard back to New engram when its dialog is dismissed", async () => {
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    const nav = await sidebar();
+    const launcher = await within(nav).findByRole("button", {
+      name: "New engram",
+    });
+    await user.click(launcher);
+    await screen.findByRole("dialog", { name: /^New engram in/ });
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(launcher);
+    });
+
+    // The same from the rail's own launcher.
+    await user.click(
+      within(nav).getByRole("button", { name: "Collapse the sidebar" }),
+    );
+    const rail = within(nav).getByRole("button", { name: "New engram" });
+    await user.click(rail);
+    await screen.findByRole("dialog", { name: /^New engram in/ });
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(rail);
+    });
   });
 
   it("offers New engram in the sidebar on an engram page but not on the front page", async () => {

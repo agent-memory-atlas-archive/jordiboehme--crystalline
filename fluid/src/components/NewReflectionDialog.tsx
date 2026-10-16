@@ -11,7 +11,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Dialog } from "radix-ui";
 import type { ReactElement } from "react";
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 
 import { problemDetail } from "../api/client";
@@ -34,11 +34,16 @@ export function NewReflectionDialog({
   domain,
   folder,
   onClose,
+  returnFocusTo,
 }: {
   domain: string;
   folder: string;
   onClose: () => void;
+  /** Where the keyboard goes back to when the dialog is dismissed. */
+  returnFocusTo?: HTMLElement | null;
 }): ReactElement {
+  // A create moves on to the editor; only a dismissal returns the keyboard.
+  const wasCreated = useRef(false);
   const [where, setWhere] = useState(folder);
   const [title, setTitle] = useState("");
   const folderId = useId();
@@ -51,6 +56,7 @@ export function NewReflectionDialog({
       saveReflection(domain, path, `# ${title.trim()}\n`, { create: true }),
     onSuccess: () => {
       invalidateReflection(queryClient, domain);
+      wasCreated.current = true;
       onClose();
       void navigate(reflectionEditRoute(domain, path));
     },
@@ -66,7 +72,15 @@ export function NewReflectionDialog({
     >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-slate-900/40" />
-        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+        <Dialog.Content
+          onCloseAutoFocus={(event) => {
+            if (!wasCreated.current && returnFocusTo?.isConnected === true) {
+              event.preventDefault();
+              returnFocusTo.focus();
+            }
+          }}
+          className="fixed top-1/2 left-1/2 z-50 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900"
+        >
           <Dialog.Title className="text-lg font-semibold">
             New page
           </Dialog.Title>

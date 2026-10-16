@@ -54,7 +54,7 @@ import type { EngramRow } from "../api/engrams";
 import { hasFilters } from "../api/engrams";
 import { useDomainWritable } from "../domainWritable";
 import { frontmatterFilters } from "../filters";
-import { RETIRED_CLASS, isRetired } from "../lifecycle";
+import { isRetired } from "../lifecycle";
 import { domainRoute, engramRoute, folderRoute } from "../paths";
 import { ENGRAM_PREFETCH } from "../prefetch";
 import { CreateEngramDialog } from "./CreateEngramDialog";
@@ -73,6 +73,7 @@ export interface DomainNavProps {
 export function DomainNav({ domain, permalink }: DomainNavProps) {
   const { canWrite } = useDomainWritable(domain);
   const [creating, setCreating] = useState(false);
+  const [launcher, setLauncher] = useState<HTMLElement | null>(null);
   const [params] = useSearchParams();
   // Whether the domain's own page is what stands beside the tree: the exact
   // route, no engram, no editor. Only that page writes `path`, so the folder
@@ -131,7 +132,8 @@ export function DomainNav({ domain, permalink }: DomainNavProps) {
       {canWrite && permalink !== "" && (
         <button
           type="button"
-          onClick={() => {
+          onClick={(event) => {
+            setLauncher(event.currentTarget);
             setCreating(true);
           }}
           className={`${SIDE.row} ${SIDE.add} mt-1.5 w-full`}
@@ -149,6 +151,7 @@ export function DomainNav({ domain, permalink }: DomainNavProps) {
         <CreateEngramDialog
           domain={domain}
           initialFolder=""
+          returnFocusTo={launcher}
           onClose={() => {
             setCreating(false);
           }}
@@ -444,8 +447,8 @@ function Folder({
  *
  * Named by its title alone, behind a document glyph that is drawn and not
  * spoken: this is navigation, and the row that says what an engram is made
- * of is the list on the screen beside it. A retired one is
- * faded and still there, which is the rule everywhere else in this app.
+ * of is the list on the screen beside it. A retired one is still there,
+ * set apart in a slanted, lighter ink that keeps its contrast.
  */
 function EngramLink({ row, current }: { row: EngramRow; current: boolean }) {
   const retired = isRetired(row.status);
@@ -455,7 +458,7 @@ function EngramLink({ row, current }: { row: EngramRow; current: boolean }) {
       {...ENGRAM_PREFETCH}
       aria-current={current ? "page" : undefined}
       className={`${SIDE.row} ${current ? SIDE.current : ""} ${
-        retired ? RETIRED_CLASS : ""
+        retired ? SIDE.retired : ""
       }`}
     >
       <FileText

@@ -41,11 +41,15 @@ export const SIDE = {
     "bg-accent-tint font-medium text-accent-800 dark:text-accent-200 [&_svg]:text-accent-500 dark:[&_svg]:text-accent-300",
   icon: "shrink-0 text-faint",
   label:
-    "px-2.5 pt-[18px] pb-1.5 text-[11.5px] font-semibold tracking-[0.04em] text-faint uppercase",
+    "px-2.5 pt-[18px] pb-1.5 text-[11.5px] font-semibold tracking-[0.04em] text-muted uppercase",
   // Slate-600 rather than muted in light: these sit on the sunken hover
   // wash, where slate-500 is 4.34:1, under the 4.5:1 floor.
   add: "text-slate-600 dark:text-muted",
   count: "ml-auto pl-2 text-xs text-slate-600 tabular-nums dark:text-muted",
+  // A retired row: set apart by slant and a lighter ink rather than by
+  // opacity, which took ink-3 down to 3.31:1. Slate-600 keeps 6.92:1 even on
+  // the hover wash.
+  retired: "italic [&>span]:text-slate-600 dark:[&>span]:text-muted",
 };
 
 // eslint-disable-next-line react-refresh/only-export-components

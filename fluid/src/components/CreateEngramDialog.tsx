@@ -19,6 +19,12 @@ export interface CreateEngramDialogProps {
   /** The folder the launcher was looking at; "" is the root. */
   initialFolder: string;
   onClose: () => void;
+  /**
+   * Where the keyboard goes back to when the dialog is dismissed without a
+   * create: its launcher. The lazy body loses radix's own return, which
+   * would otherwise drop focus on the document.
+   */
+  returnFocusTo?: HTMLElement | null;
 }
 
 export function CreateEngramDialog(

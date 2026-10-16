@@ -87,6 +87,7 @@ export function ReflectionNav({
   const mayCurate =
     status.data !== undefined && atLeast(status.data.right, "curate");
   const [creating, setCreating] = useState(false);
+  const [launcher, setLauncher] = useState<HTMLElement | null>(null);
   const pact = tree.data?.pact;
   const threads = tree.data === undefined ? 0 : openThreadCount(tree.data);
   return (
@@ -147,6 +148,7 @@ export function ReflectionNav({
           {threads > 0 && (
             <span
               aria-hidden="true"
+              title={plural(threads, "open thread", "open threads")}
               className="ml-auto rounded-full bg-accent-tint px-[7px] py-px text-[11.5px] font-semibold text-accent-800 tabular-nums dark:text-accent-200"
             >
               {threads}
@@ -181,7 +183,8 @@ export function ReflectionNav({
       {mayEdit && (
         <button
           type="button"
-          onClick={() => {
+          onClick={(event) => {
+            setLauncher(event.currentTarget);
             setCreating(true);
           }}
           className={`${ROW} ${SIDE.add} mt-1.5 w-full`}
@@ -199,6 +202,7 @@ export function ReflectionNav({
         <LazyBoundary fallback={null}>
           <NewReflectionDialog
             domain={domain}
+            returnFocusTo={launcher}
             folder={
               path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ""
             }

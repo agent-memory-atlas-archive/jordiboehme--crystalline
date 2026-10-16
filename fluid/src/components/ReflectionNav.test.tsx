@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation, useNavigate } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -159,13 +159,11 @@ describe("the reflection tree", () => {
       within(nav).getByRole("heading", { level: 2, name: "Pages" }),
     ).toBeVisible();
     // Pages are named by their titles, never by their file names.
-    expect(within(nav).getByRole("link", { name: "Top page" })).toHaveAttribute(
-      "href",
-      "/d/eng/reflection/top.md",
-    );
+    const top = within(nav).getByRole("link", { name: "Top page" });
+    expect(top).toHaveAttribute("href", "/d/eng/reflection/top.md");
     expect(within(nav).queryByText("top.md")).toBeNull();
     expect(within(nav).getByText("2 open threads")).toBeInTheDocument();
-    expect(within(nav).getByTitle("2 open threads")).toBeInTheDocument();
+    expect(within(top).getByTitle("2 open threads")).toBeInTheDocument();
   });
 
   it("badges Review with the open threads of the whole tree", async () => {
@@ -183,6 +181,7 @@ describe("the reflection tree", () => {
     // Two on the top page and one on the pact: three, drawn in the row and
     // said in words beside it, so the link's name stays "Review".
     expect(review).toHaveTextContent("3");
+    expect(within(review).getByTitle("3 open threads")).toBeInTheDocument();
     expect(within(nav).getByText("3 open threads in all")).toBeInTheDocument();
     expect(review).not.toHaveAttribute("aria-current");
     // Away from the home, Overview is not the current row.
@@ -291,6 +290,27 @@ describe("the reflection tree", () => {
     ).toBeNull();
     // New page is still offered to the editor.
     expect(within(nav).getByRole("button", { name: "New page" })).toBeVisible();
+  });
+
+  it("gives the keyboard back to New page when its dialog is dismissed", async () => {
+    serve();
+    renderApp("/d/eng/reflection/top.md");
+    const nav = await screen.findByRole("navigation", {
+      name: "Reflection of eng",
+    });
+    const user = userEvent.setup();
+    const launcher = await within(nav).findByRole("button", {
+      name: "New page",
+    });
+    await user.click(launcher);
+    await screen.findByRole("dialog", { name: "New page" });
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(launcher);
+    });
   });
 
   it("folds a folder from its own button without leaving the page", async () => {
