@@ -234,6 +234,9 @@ impl Engine {
         // is compared in any letter case, as the write paths do: a
         // case-insensitive filesystem (the macOS and Windows defaults) opens
         // `manifest.md` as the very `MANIFEST.md` routing reads.
+        // The text the screens below read, kept so the move can tell whether
+        // the text it reads again under its locks is still that text.
+        let mut screened: Option<String> = None;
         if names_the_manifest(&dest_rel) {
             // In a reviewing domain the move writes the mover's draft, so the
             // text that lands is what they see: their own draft when they hold
@@ -254,6 +257,7 @@ impl Engine {
             // No MANIFEST stands there before the move.
             self.screen_manifest_write(&dest_domain, Some(""), &text)
                 .await?;
+            screened = Some(text);
         }
 
         // The third place a move can land, and it is two writes rather than
@@ -394,6 +398,18 @@ impl Engine {
         // Read here for the write, inside the locks, by the strict reader the
         // MANIFEST check above uses too (see [`Engine::move_source_text`]).
         let original = self.move_source_text(&src_source, &src, &p.domain).await?;
+        // The screens above read the source before these locks were taken, so
+        // an edit may have landed in between. A text that changed since is
+        // screened again here, where it can no longer change. The screens
+        // take no file lock, so running them under these is safe.
+        if let Some(screened) = &screened
+            && *screened != original
+        {
+            self.refuse_read_only_switch_on(&dest_domain, &original, scope)
+                .await?;
+            self.screen_manifest_write(&dest_domain, Some(""), &original)
+                .await?;
+        }
         // A move writes the engram anew, so it lands as LF whatever line
         // endings it was read with, a plain rename included.
         let original = crystalline_core::to_lf(&original).into_owned();

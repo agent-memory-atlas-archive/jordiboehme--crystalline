@@ -9875,6 +9875,69 @@ mod lock_tests {
         );
     }
 
+    /// A move onto the MANIFEST is screened against the text it writes. The
+    /// screens run before the move takes its locks, so the text they read can
+    /// change before the move reads it again under the locks. Here alpha is
+    /// switched-off text when the move screens it and says `reflection: on`
+    /// by the time the move holds its lock; reflections/ holds an engram, so
+    /// switching on is refused, and the move must refuse too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_move_onto_the_manifest_screens_the_text_it_read_under_the_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(root.join("reflections")).unwrap();
+        std::fs::write(root.join("alpha.md"), engram("Alpha", "alpha", "Routing.")).unwrap();
+        std::fs::write(
+            root.join("reflections/held.md"),
+            engram("Held", "reflections/held", "An engram in the way."),
+        )
+        .unwrap();
+        let engine = file_engine(&root).await;
+
+        let abs = root.join("alpha.md");
+        let lock = engine.write_lock(&abs);
+        let held = lock.lock().await;
+        let mover = engine.clone();
+        let task = tokio::spawn(async move {
+            mover
+                .move_engram(
+                    &MoveParams {
+                        identifier: "alpha".to_string(),
+                        domain: "eng".to_string(),
+                        destination: "MANIFEST.md".to_string(),
+                        destination_domain: None,
+                        permalink: None,
+                        update_links: None,
+                    },
+                    &crate::scope::Scope::Unrestricted,
+                )
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while Arc::strong_count(&lock) < 3 && !task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the move reaches alpha's lock or finishes");
+        assert!(!task.is_finished(), "the move waits for alpha's lock");
+
+        std::fs::write(
+            &abs,
+            engram("Alpha", "alpha", "Routing.").replacen("---\n\n", "reflection: on\n---\n\n", 1),
+        )
+        .unwrap();
+        drop(held);
+
+        let err = task
+            .await
+            .unwrap()
+            .expect_err("the switch-on text is screened");
+        assert!(err.to_string().contains("reflections/"), "{err}");
+        assert!(abs.exists(), "nothing moved");
+        assert!(!root.join("MANIFEST.md").exists(), "nothing landed");
+    }
+
     /// Two moves of engrams that link each other's address, run at once, leave
     /// no link to an old address behind and no old file in place.
     ///
