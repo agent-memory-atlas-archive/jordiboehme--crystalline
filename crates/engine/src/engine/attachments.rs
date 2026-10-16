@@ -835,46 +835,35 @@ impl Engine {
             // The successor's side of the pair goes through the same one arm,
             // for the same reasons: in review mode nothing this verb writes
             // belongs in the folder the team reviewed, and a successor
-            // somebody has open is a document rather than a file. The text the
-            // "already said this" test reads is that same text, so a
-            // re-retirement appends nothing twice whichever of the three the
-            // successor is living in at that moment.
-            let current = match self.live_text_at(succ_desc, &view).await {
-                Some(live) => live.text,
-                None => match overlay {
-                    Some(_) => view.text_at(succ_source, succ_desc).await?.ok_or_else(|| {
-                        EngineError::NotFound(format!(
-                            "no engram '{}' in domain '{}'",
-                            succ_desc.permalink, succ_desc.domain
-                        ))
-                    })?,
-                    None => self.load_content(succ_source, succ_desc).await?,
-                },
-            };
-            if !already(&current) {
-                let succ_warning = self
-                    .apply_source_edit(
-                        succ_desc,
-                        succ_source,
-                        &view,
-                        None,
-                        &actor,
-                        None,
-                        scope,
-                        // Asked again of the text the edit is applied to,
-                        // which is not the text looked at above when the room
-                        // would not take the edit and it went to the source.
-                        |c| {
-                            Ok(if already(c) {
-                                c.to_string()
-                            } else {
-                                append_body(c, &line)
-                            })
-                        },
-                    )
-                    .await?;
-                warning = warning.or(succ_warning);
-            }
+            // somebody has open is a document rather than a file. The
+            // "already said this" test reads the very text the edit is applied
+            // to, whichever of the three the successor is living in at that
+            // moment, and an edit that then changes nothing writes nothing, so
+            // a re-retirement appends nothing twice and stamps nothing.
+            let succ_warning = self
+                .apply_source_edit_staged(
+                    succ_desc,
+                    succ_source,
+                    &view,
+                    None,
+                    &actor,
+                    None,
+                    scope,
+                    None,
+                    true,
+                    false,
+                    |c| {
+                        Ok(if already(c) {
+                            c.to_string()
+                        } else {
+                            append_body(c, &line)
+                        })
+                    },
+                )
+                .await
+                .map(|edited| edited.warning)
+                .map_err(|failure| failure.error)?;
+            warning = warning.or(succ_warning);
         }
         self.nudge_embed();
 

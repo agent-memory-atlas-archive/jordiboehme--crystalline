@@ -2279,6 +2279,74 @@ async fn a_successor_open_in_a_room_that_cannot_save_gets_its_supersedes_line_on
     );
 }
 
+/// A successor that already says it supersedes the retired engram is not
+/// written at all: no second line, and no fresh `generated` stamp either.
+#[tokio::test]
+async fn a_successor_that_already_says_so_is_left_as_it_is() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let beta = tmp.path().join("eng/beta.md");
+    let before = format!("{BETA}\n- supersedes [[alpha]]\n");
+    std::fs::write(&beta, &before).unwrap();
+    engine.sync(None).await.unwrap();
+
+    engine
+        .retire_engram(&crystalline_service::params::RetireParams {
+            domain: "eng".to_string(),
+            identifier: "alpha".to_string(),
+            status: "superseded".to_string(),
+            successor: Some("beta".to_string()),
+            valid_to: None,
+        })
+        .await
+        .expect("the retirement lands");
+    assert_eq!(std::fs::read_to_string(&beta).unwrap(), before);
+}
+
+/// The other way round: the room that cannot save holds the supersedes line
+/// and the file does not. The line goes to the file, where the edit lands.
+#[tokio::test]
+async fn a_successor_whose_unsaving_room_holds_the_line_gets_it_in_the_file() {
+    use crystalline_service::collab::control::{self, Control};
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let beta = tmp.path().join("eng/beta.md");
+    std::fs::write(&beta, BETA).unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "beta", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    replace_all(&joined, &doc, "no frontmatter\n\n- supersedes [[alpha]]\n").await;
+    joined
+        .session
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .await;
+    joined.session.tick_save(Instant::now()).await;
+    assert!(
+        !sessions
+            .live_text("eng", "beta", None)
+            .await
+            .unwrap()
+            .saving
+    );
+
+    engine
+        .retire_engram(&crystalline_service::params::RetireParams {
+            domain: "eng".to_string(),
+            identifier: "alpha".to_string(),
+            status: "superseded".to_string(),
+            successor: Some("beta".to_string()),
+            valid_to: None,
+        })
+        .await
+        .expect("the retirement lands");
+    let on_disk = std::fs::read_to_string(&beta).unwrap();
+    assert_eq!(
+        on_disk.matches("supersedes [[alpha]]").count(),
+        1,
+        "{on_disk:?}"
+    );
+}
+
 /// **The brief's first test.** An agent that works in somebody's open document
 /// is a peer in it: the room hears an awareness state carrying the agent's own
 /// label, flagged as an agent so the strip can draw it as one.
