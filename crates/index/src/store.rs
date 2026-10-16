@@ -2802,6 +2802,12 @@ pub trait Store: Send + Sync {
     /// it and the files on disk decide what is pending.
     async fn has_engram_rows(&self, domain: DomainId) -> Result<bool>;
 
+    /// Whether the domain's Reflection has any row: a page, the pact or a
+    /// file under `reflections/assets/`. Two `LIMIT 1` seeks, never a
+    /// listing, so the check after every change under `reflections/` costs
+    /// the same however many pages the Reflection holds.
+    async fn has_reflection_rows(&self, domain: DomainId) -> Result<bool>;
+
     /// The base engram rows of `domain` holding one of `permalinks`, with
     /// what a cited source is held against: title, status, checksum and
     /// mtime. A permalink no base row holds has no answer, a permalink named

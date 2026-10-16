@@ -304,7 +304,7 @@ impl FileRows {
                 })))
             }
             FileRows::Reflections => {
-                let content = std::fs::read_to_string(&c.abs)?;
+                let content = read_page(&c.abs)?;
                 Ok(Some(FileRow::Reflection(ReflectionRow {
                     title: crystalline_core::reflection::title_of(&content, &c.rel),
                     sha256: sha256_hex(content.as_bytes()),
@@ -505,28 +505,45 @@ fn pending_engrams_on_disk(root: &Path, limit: Option<usize>) -> Vec<String> {
 }
 
 /// Whether the Reflection's folder of the domain at `root` holds a file that
-/// a walk with the Reflection in effect gives a row: a page, the pact or a
-/// file under `reflections/assets/`. Stops at the first one. A folder the
-/// walk cannot read counts as holding one, since it may (the walk that
-/// follows decides).
+/// a walk with the Reflection in effect gives a row: a page or the pact that
+/// reads as text, or a file under `reflections/assets/` the attachment rules
+/// take (its extension, its size, the folder's spelling). Stops at the first
+/// one. The rules are the walk's own (`read_page`,
+/// `reflection_asset_candidate`), so a folder whose files the walk skips
+/// never asks for a walk that would skip them again. An entry that cannot
+/// be read is skipped the same way: the walk gives it no row either.
 pub fn reflection_files_on_disk(root: &Path) -> bool {
     let layout = DomainLayout::at(root, ReflectionMode::Effective);
     for folder in crystalline_core::reflection::reflection_folders(root) {
         let walk = WalkDir::new(root.join(&folder))
             .into_iter()
             .filter_entry(|e| e.depth() == 0 || layout.enters_dir(&slash_rel(root, e.path())));
-        for item in walk {
-            let Ok(item) = item else {
-                return true;
+        for item in walk.flatten() {
+            if !item.file_type().is_file() {
+                continue;
+            }
+            let rel = slash_rel(root, item.path());
+            let gets_a_row = match layout.classify(&rel) {
+                PathClass::Reflection(ReflectionFile::Page(_) | ReflectionFile::Pact) => {
+                    read_page(item.path()).is_ok()
+                }
+                PathClass::Reflection(ReflectionFile::Asset(_)) => {
+                    item.metadata().is_ok_and(|meta| {
+                        let fname = item.file_name().to_string_lossy();
+                        reflection_asset_candidate(
+                            root,
+                            &rel,
+                            item.path(),
+                            &fname,
+                            file_mtime(&meta),
+                            meta.len(),
+                        )
+                        .is_some()
+                    })
+                }
+                _ => false,
             };
-            if item.file_type().is_file()
-                && matches!(
-                    layout.classify(&slash_rel(root, item.path())),
-                    PathClass::Reflection(
-                        ReflectionFile::Page(_) | ReflectionFile::Pact | ReflectionFile::Asset(_)
-                    )
-                )
-            {
+            if gets_a_row {
                 return true;
             }
         }
@@ -534,17 +551,26 @@ pub fn reflection_files_on_disk(root: &Path) -> bool {
     false
 }
 
-/// Whether the index holds a row of the domain's Reflection: a page, the
-/// pact or a file under `reflections/assets/`.
-pub async fn reflection_rows_present<S: Store + ?Sized>(
-    store: &S,
-    domain: DomainId,
-) -> Result<bool> {
-    Ok(!store.list_reflection_stamps(domain).await?.is_empty()
-        || !store
-            .list_assets(AssetTable::Reflection, domain)
-            .await?
-            .is_empty())
+/// The text of the Reflection page or pact at `abs`, as its row is built
+/// from it: a page that is not UTF-8 gets no row.
+fn read_page(abs: &Path) -> std::io::Result<String> {
+    std::fs::read_to_string(abs)
+}
+
+/// [`asset_candidate`] for a file under `reflections/assets/`, at the
+/// domain-relative `rel`: rooted at the Reflection folder as it is spelled
+/// on disk, so its canonical fold and its existence probe work as they do
+/// at the domain root, and keyed by its path inside that folder.
+fn reflection_asset_candidate(
+    root: &Path,
+    rel: &str,
+    abs: &Path,
+    fname: &str,
+    mtime: i64,
+    size: u64,
+) -> Option<FileCandidate> {
+    let (folder, inner) = rel.split_once('/').unwrap_or((rel, ""));
+    asset_candidate(&root.join(folder), inner, abs, fname, mtime, size)
 }
 
 /// Whether the domain at `root` has a Reflection in effect.
@@ -997,15 +1023,14 @@ pub async fn scan_domain(
             // it is spelled on disk, so its canonical fold and its existence
             // probe work as they do at the domain root.
             PathClass::Reflection(ReflectionFile::Asset(_)) => {
-                let (folder, inner) = rel.split_once('/').unwrap_or((rel.as_str(), ""));
                 let Ok(meta) = entry.metadata() else {
                     unread += 1;
                     unread_reflections = true;
                     continue;
                 };
-                if let Some(candidate) = asset_candidate(
-                    &root.join(folder),
-                    inner,
+                if let Some(candidate) = reflection_asset_candidate(
+                    root,
+                    &rel,
                     entry.path(),
                     &fname,
                     file_mtime(&meta),

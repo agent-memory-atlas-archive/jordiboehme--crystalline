@@ -8574,8 +8574,10 @@ async fn reflection_rows_roundtrip(store: &dyn Store) {
         .upsert_domain("ops", Some("/k/ops"), DomainKind::File)
         .await
         .unwrap();
+    assert!(!store.has_reflection_rows(did).await.unwrap());
     let row = reflection_row("guides/deploying.md", "Deploying", "# Deploying\n");
     store.upsert_reflection(did, &row).await.unwrap();
+    assert!(store.has_reflection_rows(did).await.unwrap(), "a page row");
     assert_eq!(
         store
             .get_reflection(did, "guides/deploying.md")
@@ -8614,6 +8616,21 @@ async fn reflection_rows_roundtrip(store: &dyn Store) {
     assert!(
         store.list_reflections(did).await.unwrap().is_empty(),
         "clear_domain takes them"
+    );
+    assert!(!store.has_reflection_rows(did).await.unwrap());
+    // A Reflection file alone is a row too.
+    store
+        .upsert_asset(
+            AssetTable::Reflection,
+            did,
+            &attachment("assets/pic.png", "sha", "image/png", 3),
+        )
+        .await
+        .unwrap();
+    assert!(store.has_reflection_rows(did).await.unwrap(), "a file row");
+    assert!(
+        store.has_reflection_rows(other).await.unwrap(),
+        "the other domain's page"
     );
     assert_eq!(
         store.list_reflections(other).await.unwrap().len(),

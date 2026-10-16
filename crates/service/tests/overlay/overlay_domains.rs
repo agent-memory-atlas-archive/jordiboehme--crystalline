@@ -5461,6 +5461,80 @@ async fn a_review_mode_discard_clears_exactly_the_named_drafts() {
     assert!(read.get("draft").is_none(), "{read}");
 }
 
+/// A discard that puts back a MANIFEST saying `reflection: on` (the folder's
+/// copy said off) moves the Reflection's mode through a targeted pass over
+/// that one file: the pages under `reflections/` leave the engram index and
+/// get their page rows at once, without a sync.
+#[tokio::test]
+async fn a_discard_that_puts_the_reflection_switch_back_makes_the_reflection_whole() {
+    let f = origin_fixture().await;
+    let root = f.domain_root("team");
+    let on = MANIFEST.replace("status: stable\n", "status: stable\nreflection: on\n");
+    std::fs::write(root.join("MANIFEST.md"), &on).unwrap();
+    std::fs::create_dir_all(root.join("reflections")).unwrap();
+    let page = "# B\n\nFor people.\n\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n";
+    std::fs::write(root.join("reflections/b.md"), page).unwrap();
+    f.engine.sync(None).await.unwrap();
+    f.snapshot_origin("team");
+    for rel in ["MANIFEST.md", "plan.md", "reflections/b.md"] {
+        crystalline_remote::state::write_base_file(
+            &f.origins.join("team"),
+            rel,
+            &std::fs::read(root.join(rel)).unwrap(),
+        )
+        .unwrap();
+    }
+    // Switched off by hand and synced: the page is an engram now.
+    std::fs::write(root.join("MANIFEST.md"), MANIFEST).unwrap();
+    f.engine.sync(None).await.unwrap();
+    let rows = |f: &Fixture| {
+        let store = f.store.clone();
+        async move {
+            let store = store.lock().await;
+            let id = store.domain_id("team").await.unwrap().unwrap();
+            let engrams: Vec<String> = store.file_stamps(id).await.unwrap().into_keys().collect();
+            let pages: Vec<String> = store
+                .list_reflection_stamps(id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|s| s.path)
+                .collect();
+            (engrams, pages)
+        }
+    };
+    let (engrams, pages) = rows(&f).await;
+    assert!(
+        engrams.contains(&"reflections/b.md".to_string()),
+        "{engrams:?}"
+    );
+    assert!(pages.is_empty(), "{pages:?}");
+
+    let report = f
+        .engine
+        .discard_local_changes(
+            "team",
+            &[DiscardTarget {
+                path: "MANIFEST.md".to_string(),
+                sha256: None,
+            }],
+            &ShareActor::Owner,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        report["restored"],
+        serde_json::json!(["MANIFEST.md"]),
+        "{report}"
+    );
+    let (engrams, pages) = rows(&f).await;
+    assert!(
+        !engrams.iter().any(|p| p.starts_with("reflections/")),
+        "{engrams:?}"
+    );
+    assert_eq!(pages, vec!["b.md"]);
+}
+
 /// A team domain lists the working tree against its base, diffs one path and
 /// puts it back, re-indexing exactly what moved.
 #[tokio::test]

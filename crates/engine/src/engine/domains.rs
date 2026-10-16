@@ -605,6 +605,10 @@ impl Engine {
         }));
 
         self.refresh_routing_cache().await;
+        // A switch written here moves the Reflection's mode for every file
+        // in the folder; the index follows before the switch is announced,
+        // so a client that refetches on the announce sees it whole.
+        self.heal_reflection_rows_after(domain, "MANIFEST.md").await;
         self.announce_switch_if_moved(domain, switch_before, change_label(scope));
 
         Ok(json!({

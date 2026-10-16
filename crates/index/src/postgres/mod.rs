@@ -1425,6 +1425,17 @@ pub const HAS_ENGRAM_ROWS_SQL: &str =
 pub const REFLECTION_STAMPS_SQL: &str =
     "SELECT path, title, sha256, size, modified FROM reflection WHERE domain_id=$1";
 
+/// Whether the domain has any reflection row, half of
+/// [`Store::has_reflection_rows`].
+#[doc(hidden)]
+pub const HAS_REFLECTION_PAGE_SQL: &str = "SELECT 1 FROM reflection WHERE domain_id=$1 LIMIT 1";
+
+/// Whether the domain has any Reflection file row, the other half of
+/// [`Store::has_reflection_rows`].
+#[doc(hidden)]
+pub const HAS_REFLECTION_ASSET_SQL: &str =
+    "SELECT 1 FROM reflection_asset WHERE domain_id=$1 LIMIT 1";
+
 /// The probe behind every upsert, the twin of the turso one: two arms, each a
 /// full-key seek of its own unique index. Run with `persistent(false)` (see
 /// `upsert_row`).
@@ -2204,6 +2215,19 @@ impl Store for PostgresStore {
         )
         .await?;
         Ok(!rows.is_empty())
+    }
+
+    async fn has_reflection_rows(&self, domain: DomainId) -> Result<bool> {
+        let mut conn = self.acquire().await?;
+        for sql in [HAS_REFLECTION_PAGE_SQL, HAS_REFLECTION_ASSET_SQL] {
+            if !query_all(conn.as_mut(), sql, vec![Param::Int(domain.0)])
+                .await?
+                .is_empty()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn cited_engrams(

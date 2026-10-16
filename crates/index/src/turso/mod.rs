@@ -1284,6 +1284,17 @@ pub const HAS_ENGRAM_ROWS_SQL: &str =
 pub const REFLECTION_STAMPS_SQL: &str =
     "SELECT path, title, sha256, size, modified FROM reflection WHERE domain_id=?1";
 
+/// Whether the domain has any reflection row, half of
+/// [`Store::has_reflection_rows`].
+#[doc(hidden)]
+pub const HAS_REFLECTION_PAGE_SQL: &str = "SELECT 1 FROM reflection WHERE domain_id=?1 LIMIT 1";
+
+/// Whether the domain has any Reflection file row, the other half of
+/// [`Store::has_reflection_rows`].
+#[doc(hidden)]
+pub const HAS_REFLECTION_ASSET_SQL: &str =
+    "SELECT 1 FROM reflection_asset WHERE domain_id=?1 LIMIT 1";
+
 /// The probe behind every upsert: the row of this actor at this path (an
 /// update), and any row of this actor that already holds this permalink
 /// under another path (a duplicate the batch reports instead of failing on).
@@ -2123,6 +2134,18 @@ impl Store for TursoStore {
         )
         .await?
         .is_some())
+    }
+
+    async fn has_reflection_rows(&self, domain: DomainId) -> Result<bool> {
+        for sql in [HAS_REFLECTION_PAGE_SQL, HAS_REFLECTION_ASSET_SQL] {
+            if query_first(&self.conn, sql, vec![Value::Integer(domain.0)])
+                .await?
+                .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn cited_engrams(

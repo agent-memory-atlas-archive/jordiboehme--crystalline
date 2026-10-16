@@ -678,3 +678,22 @@ mod unreadable_path {
         );
     }
 }
+
+/// The probe that asks for a whole walk when a Reflection has no row
+/// applies the walk's own rules: a file the walk skips (here an attachment
+/// over the size cap) asks for nothing, or every check would walk again.
+#[test]
+fn the_reflection_disk_probe_skips_what_the_walk_skips() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("reflections/assets")).unwrap();
+    let big = std::fs::File::create(root.join("reflections/assets/huge.png")).unwrap();
+    big.set_len(crystalline_core::MAX_ATTACHMENT_BYTES + 1)
+        .unwrap();
+    assert!(
+        !crystalline_index::reflection_files_on_disk(root),
+        "an attachment over the cap gets no row"
+    );
+    std::fs::write(root.join("reflections/assets/small.png"), b"png").unwrap();
+    assert!(crystalline_index::reflection_files_on_disk(root));
+}

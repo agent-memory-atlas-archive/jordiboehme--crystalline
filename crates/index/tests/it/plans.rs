@@ -381,6 +381,40 @@ pub fn registry() -> Vec<HotStatement> {
             postgres_must_seek: &[],
         },
         HotStatement {
+            // Asked after every change under `reflections/`, by the check
+            // that the rows follow the Reflection's mode: one seek of the
+            // domain's reflection rows, stopped at the first.
+            issued_by: "Store::has_reflection_rows (pages)",
+            turso: || crystalline_index::turso::HAS_REFLECTION_PAGE_SQL.to_string(),
+            #[cfg(feature = "postgres")]
+            postgres: || crystalline_index::postgres::HAS_REFLECTION_PAGE_SQL.to_string(),
+            literals: &["1"],
+            #[cfg(feature = "postgres")]
+            literals_pg: None,
+            scan_expected: &[],
+            #[cfg(feature = "postgres")]
+            scan_expected_pg: None,
+            turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
+            postgres_must_seek: &[],
+        },
+        HotStatement {
+            // The same check's second half, over the Reflection's files.
+            issued_by: "Store::has_reflection_rows (files)",
+            turso: || crystalline_index::turso::HAS_REFLECTION_ASSET_SQL.to_string(),
+            #[cfg(feature = "postgres")]
+            postgres: || crystalline_index::postgres::HAS_REFLECTION_ASSET_SQL.to_string(),
+            literals: &["1"],
+            #[cfg(feature = "postgres")]
+            literals_pg: None,
+            scan_expected: &[],
+            #[cfg(feature = "postgres")]
+            scan_expected_pg: None,
+            turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
+            postgres_must_seek: &[],
+        },
+        HotStatement {
             // A cited page's read asks this once per cited permalink: one
             // full-key seek of the unique (domain_id, permalink, actor), so
             // the read costs the page's sources, never the domain's rows.

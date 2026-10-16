@@ -383,8 +383,17 @@ impl Engine {
                 tracing::info!(
                     "the Reflection of '{name}' changed its mode; walking the domain whole"
                 );
-                if let Err(e) = self.sync(Some(name)).await {
-                    tracing::warn!("walking '{name}' after its Reflection changed failed: {e}");
+                match self.sync(Some(name)).await {
+                    Ok(_) => {}
+                    // Another instance hosts the domain (or this engine walks
+                    // none on a shared database): the host's own pass mends
+                    // its rows, so this is no fault here.
+                    Err(EngineError::Conflict(why)) => {
+                        tracing::info!("the walk of '{name}' is left to its host: {why}");
+                    }
+                    Err(e) => {
+                        tracing::warn!("walking '{name}' after its Reflection changed failed: {e}");
+                    }
                 }
             }
             Err(e) => {
@@ -434,7 +443,7 @@ impl Engine {
             {
                 return Ok(true);
             }
-            let rows = crystalline_index::reflection_rows_present(&*store, id).await?;
+            let rows = store.has_reflection_rows(id).await?;
             match mode {
                 crystalline_core::ReflectionMode::Off => return Ok(rows),
                 crystalline_core::ReflectionMode::Effective if rows => return Ok(false),

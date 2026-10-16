@@ -292,6 +292,13 @@ async fn deleting_the_last_engram_makes_the_reflection_whole() {
     let fx = fx_with("", &[("reflections/old.md", &old)]).await;
     std::fs::write(fx.root.join("MANIFEST.md"), manifest("reflection: on\n")).unwrap();
     fx.engine.sync(None).await.unwrap();
+    assert!(
+        matches!(
+            fx.engine.reflection_state("eng").await.unwrap(),
+            ReflectionState::Pending { .. }
+        ),
+        "the engram holds the switch before the delete"
+    );
     fx.engine
         .delete_engram(&delete_params("reflections/old"))
         .await
@@ -391,4 +398,179 @@ async fn a_switch_by_hand_makes_the_index_whole_both_ways_on_postgres() {
         .await
         .unwrap();
     assert_engrams(&fx).await;
+}
+
+/// The Fluid MANIFEST editor (`save_manifest`, the REST PUT) switches the
+/// Reflection on and off with the whole document.
+#[tokio::test]
+async fn the_manifest_editor_makes_the_index_whole_both_ways() {
+    let fx = fx_with("", &[]).await;
+    let current =
+        |fx: &Fx| crate::support::sha256_hex(&std::fs::read(fx.root.join("MANIFEST.md")).unwrap());
+    fx.engine
+        .save_manifest(
+            "eng",
+            &manifest("reflection: on\n"),
+            &current(&fx),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_whole(&fx).await;
+    fx.engine
+        .save_manifest("eng", &manifest(""), &current(&fx), &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_engrams(&fx).await;
+}
+
+/// `restore_engram` writes a MANIFEST back that a plain editor deleted
+/// while the Reflection was on: the Reflection comes back whole.
+#[tokio::test]
+async fn restoring_a_deleted_manifest_that_says_on_makes_the_reflection_whole() {
+    let fx = fx_with("reflection: on\n", &[]).await;
+    std::fs::remove_file(fx.root.join("MANIFEST.md")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let (engrams, pages, _) = rows(&fx).await;
+    assert!(
+        engrams.contains(&"reflections/b.md".to_string()) && pages.is_empty(),
+        "without a MANIFEST the switch is off: {engrams:?} {pages:?}"
+    );
+    fx.engine
+        .restore_engram(
+            "eng",
+            "MANIFEST.md",
+            &manifest("reflection: on\n"),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_whole(&fx).await;
+}
+
+/// A co-editing room over the MANIFEST that saves `reflection: on`.
+#[tokio::test]
+async fn a_room_save_of_the_manifest_that_switches_on_makes_the_reflection_whole() {
+    use crystalline_service::collab::session::CollabSessions;
+    use yrs::sync::{Message, MessageReader, SyncMessage};
+    use yrs::updates::decoder::{Decode, DecoderV1};
+    use yrs::updates::encoder::Encode;
+    use yrs::{Doc, GetString, Options, ReadTxn, Text, Transact, Update};
+
+    let fx = fx_with("", &[]).await;
+    let sessions = CollabSessions::new(fx.engine.clone());
+    let joined = sessions.join("eng", "manifest", None).await.unwrap();
+    let doc = Doc::with_options(Options {
+        offset_kind: yrs::OffsetKind::Utf16,
+        ..Options::default()
+    });
+    let sv = doc.transact().state_vector();
+    let replies = joined
+        .session
+        .handle_frame(
+            joined.conn,
+            &Message::Sync(SyncMessage::SyncStep1(sv)).encode_v1(),
+        )
+        .await;
+    let mut decoder = DecoderV1::from(replies[0].as_slice());
+    let first = MessageReader::new(&mut decoder).next().unwrap().unwrap();
+    let Message::Sync(SyncMessage::SyncStep2(update)) = first else {
+        panic!("step1 is answered with step2");
+    };
+    doc.transact_mut()
+        .apply_update(Update::decode_v1(&update).unwrap())
+        .unwrap();
+    let text = doc.get_or_insert_text("content");
+    let update = {
+        let mut txn = doc.transact_mut();
+        let len = text.get_string(&txn).encode_utf16().count() as u32;
+        text.remove_range(&mut txn, 0, len);
+        text.insert(&mut txn, 0, &manifest("reflection: on\n"));
+        txn.encode_update_v1()
+    };
+    joined
+        .session
+        .handle_frame(
+            joined.conn,
+            &Message::Sync(SyncMessage::Update(update)).encode_v1(),
+        )
+        .await;
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    sessions.dispose_if_empty(&joined.session).await;
+    assert!(
+        std::fs::read_to_string(fx.root.join("MANIFEST.md"))
+            .unwrap()
+            .contains("reflection: on"),
+        "the room saved"
+    );
+    assert_whole(&fx).await;
+}
+
+/// A move from another domain onto this domain's missing MANIFEST switches
+/// the Reflection on here: the destination is made whole. (A move into
+/// another domain's `reflections/` never moves its mode: with the switch on
+/// the engram tools refuse that folder, and with it off it stays off.)
+#[tokio::test]
+async fn a_cross_domain_move_onto_the_manifest_makes_the_destination_whole() {
+    let fx = fx_with("", &[]).await;
+    let ops = fx.tmp.path().join("ops");
+    std::fs::create_dir_all(&ops).unwrap();
+    std::fs::write(
+        ops.join("MANIFEST.md"),
+        manifest("").replace("title: eng", "title: ops"),
+    )
+    .unwrap();
+    std::fs::write(
+        ops.join("next.md"),
+        manifest("reflection: on\n").replace("permalink: manifest", "permalink: next"),
+    )
+    .unwrap();
+    fx.engine
+        .domain_add_local(Some("ops"), Some(ops.to_str().unwrap()))
+        .await
+        .unwrap();
+    std::fs::remove_file(fx.root.join("MANIFEST.md")).unwrap();
+    fx.engine.sync(Some("eng")).await.unwrap();
+    let mut p = move_params("next", "MANIFEST.md");
+    p.domain = "ops".into();
+    p.destination_domain = Some("eng".into());
+    p.permalink = Some("manifest".into());
+    fx.engine
+        .move_engram(&p, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_whole(&fx).await;
+}
+
+/// An archive import never moves the mode, so it needs no walk: it leaves
+/// the MANIFEST out (the domain keeps its own) and, with the switch on, the
+/// files under `reflections/` too. Pinned so a change to either rule is met
+/// by the heal its targeted pass already runs.
+#[tokio::test]
+async fn an_import_never_moves_the_mode() {
+    let fx = fx_with("", &[]).await;
+    let unmarked = engram("B", "reflections/b", "For people.");
+    std::fs::write(fx.root.join("reflections/b.md"), &unmarked).unwrap();
+    std::fs::write(fx.root.join("MANIFEST.md"), manifest("reflection: on\n")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let marked = format!("{unmarked}\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n");
+    let report = fx
+        .engine
+        .import_domain_files(
+            "eng",
+            &[
+                ("reflections/b.md".to_string(), marked),
+                ("MANIFEST.md".to_string(), manifest("")),
+            ],
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(report["ignored"], 2, "{report}");
+    assert!(matches!(
+        fx.engine.reflection_state("eng").await.unwrap(),
+        ReflectionState::Pending { .. }
+    ));
 }
