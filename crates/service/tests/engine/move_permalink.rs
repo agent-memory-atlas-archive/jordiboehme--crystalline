@@ -980,9 +980,68 @@ async fn a_virtual_linker_is_rewritten_by_compare_and_swap() {
         .expect("the move itself lands");
     assert_eq!(receipt["to"]["permalink"], "kept/target", "{receipt}");
     assert_eq!(receipt["links_rewritten"], 0, "{receipt}");
+    let failed = &receipt["links_failed"][0];
+    assert_eq!(failed["domain"], "vault", "{receipt}");
+    assert_eq!(failed["path"], "pointer.md", "{receipt}");
+    assert!(
+        failed["reason"].as_str().unwrap().contains("stale edit"),
+        "{receipt}"
+    );
     let pointer = f.content("vault", "pointer").await;
     assert!(
         pointer.contains("points at [[target]]"),
         "a refused swap writes nothing: {pointer}"
     );
+}
+
+/// After a move landed, a linking engram whose references cannot be
+/// rewritten is named in the receipt, the way a reflection move names its
+/// pages, and the move is not reported as failed. A receipt with nothing to
+/// name carries no `links_failed` at all.
+#[tokio::test]
+async fn an_engram_move_names_a_linker_it_could_not_rewrite() {
+    let f = Fixture::new().await;
+    seed(
+        f.notes(),
+        "target.md",
+        &engram("Target", "target", "the target body"),
+    );
+    seed(
+        f.notes(),
+        "linker.md",
+        &engram("Linker", "linker", "See [[target]] for details."),
+    );
+    seed(
+        f.notes(),
+        "other.md",
+        &engram("Other", "other", "Also [[target]]."),
+    );
+    f.sync().await;
+    // Not UTF-8 any more: the rewrite cannot read it.
+    std::fs::write(
+        f.notes().join("linker.md"),
+        b"---\ntitle: Linker\n---\n\xff\xfe [[target]]\n",
+    )
+    .unwrap();
+
+    let receipt = f
+        .mv("target", "notes", "moved.md", None, None)
+        .await
+        .expect("the move itself lands");
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    let failed = receipt["links_failed"].as_array().expect("{receipt}");
+    assert_eq!(failed.len(), 1, "{receipt}");
+    assert_eq!(failed[0]["domain"], "notes", "{receipt}");
+    assert_eq!(failed[0]["path"], "linker.md", "{receipt}");
+    assert!(
+        failed[0]["reason"].as_str().is_some_and(|r| !r.is_empty()),
+        "{receipt}"
+    );
+    assert!(read(f.notes(), "other.md").contains("Also [[moved]]."));
+
+    let receipt = f
+        .mv("other", "notes", "elsewhere.md", None, None)
+        .await
+        .unwrap();
+    assert!(receipt.get("links_failed").is_none(), "{receipt}");
 }

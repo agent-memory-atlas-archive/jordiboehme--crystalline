@@ -565,7 +565,7 @@ pub struct MoveReflectionBody {
             status = 200,
             description = "Moved with its threads and baseline; links to it \
                            rewritten: `{ from, to, links_rewritten, threads_moved }`. \
-                           `links_failed`, `[{ path, reason }]`, appears only \
+                           `links_failed`, `[{ domain, path, reason }]`, appears only \
                            when a page that links it could not be rewritten \
                            after the move.",
             body = Object,
@@ -1521,7 +1521,7 @@ pub async fn asset_remove(
             status = 200,
             description = "Moved: `{ domain, from, to, links_rewritten }`. \
                            Two keys appear only when needed: `links_failed`, \
-                           `[{ path, reason }]` for each page whose link \
+                           `[{ domain, path, reason }]` for each page whose link \
                            could not be rewritten after the file moved, and \
                            `note`, a sentence saying the file moved and its \
                            index row did not follow (the next sync brings it \

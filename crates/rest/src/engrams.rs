@@ -1462,7 +1462,11 @@ pub async fn retire(
                            `attachment_warnings` lists the attachments the \
                            move could not carry, one sentence each and empty \
                            when everything travelled; those files stay whole \
-                           in the source domain.",
+                           in the source domain.\n\n\
+                           `links_failed`, `[{ domain, path, reason }]`, \
+                           appears only when an engram that links the moved \
+                           one could not be rewritten after the move; the \
+                           move itself has landed.",
             body = Object,
             example = json!({
                 "from": { "domain": "eng", "permalink": "beta", "path": "beta.md" },

@@ -1150,6 +1150,7 @@ async fn a_page_that_cannot_be_relinked_is_named_in_the_move_receipt() {
     assert!(fx.root.join("reflections/b.md").exists(), "the move landed");
     assert_eq!(moved["links_rewritten"], 0, "{moved}");
     assert_eq!(moved["links_failed"][0]["path"], "home.md", "{moved}");
+    assert_eq!(moved["links_failed"][0]["domain"], "eng", "{moved}");
 }
 
 /// A reflection's row and its chunks commit together: a write whose index

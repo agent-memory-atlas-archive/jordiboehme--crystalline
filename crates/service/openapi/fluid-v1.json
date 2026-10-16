@@ -4387,7 +4387,7 @@
         },
         "responses": {
           "200": {
-            "description": "The move receipt: where the engram came from, where it landed, whether the move crossed domains and which references followed it.\n\n`to.permalink` is the address the engram answers to after the move, which is not always the one it went in with: a permalink in step with the path follows the file, and `new_permalink` can ask for another.\n\n`links_rewritten` counts the engrams whose references were rewritten, `references_rewritten` the references inside them, and `rewritten` names those engrams by domain and permalink.\n\n`attachment_warnings` lists the attachments the move could not carry, one sentence each and empty when everything travelled; those files stay whole in the source domain.",
+            "description": "The move receipt: where the engram came from, where it landed, whether the move crossed domains and which references followed it.\n\n`to.permalink` is the address the engram answers to after the move, which is not always the one it went in with: a permalink in step with the path follows the file, and `new_permalink` can ask for another.\n\n`links_rewritten` counts the engrams whose references were rewritten, `references_rewritten` the references inside them, and `rewritten` names those engrams by domain and permalink.\n\n`attachment_warnings` lists the attachments the move could not carry, one sentence each and empty when everything travelled; those files stay whole in the source domain.\n\n`links_failed`, `[{ domain, path, reason }]`, appears only when an engram that links the moved one could not be rewritten after the move; the move itself has landed.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5017,7 +5017,7 @@
         },
         "responses": {
           "200": {
-            "description": "Moved with its threads and baseline; links to it rewritten: `{ from, to, links_rewritten, threads_moved }`. `links_failed`, `[{ path, reason }]`, appears only when a page that links it could not be rewritten after the move.",
+            "description": "Moved with its threads and baseline; links to it rewritten: `{ from, to, links_rewritten, threads_moved }`. `links_failed`, `[{ domain, path, reason }]`, appears only when a page that links it could not be rewritten after the move.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5116,7 +5116,7 @@
         },
         "responses": {
           "200": {
-            "description": "Moved: `{ domain, from, to, links_rewritten }`. Two keys appear only when needed: `links_failed`, `[{ path, reason }]` for each page whose link could not be rewritten after the file moved, and `note`, a sentence saying the file moved and its index row did not follow (the next sync brings it up to date).",
+            "description": "Moved: `{ domain, from, to, links_rewritten }`. Two keys appear only when needed: `links_failed`, `[{ domain, path, reason }]` for each page whose link could not be rewritten after the file moved, and `note`, a sentence saying the file moved and its index row did not follow (the next sync brings it up to date).",
             "content": {
               "application/json": {
                 "schema": {

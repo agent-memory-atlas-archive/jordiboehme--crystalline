@@ -187,7 +187,7 @@ impl Engine {
                         page = inner,
                         "a link to the moved file could not be rewritten: {e}"
                     );
-                    failed.push(json!({ "path": inner, "reason": e.to_string() }));
+                    super::move_::note_link_failure(&mut failed, domain, inner, &e);
                 }
             }
         }

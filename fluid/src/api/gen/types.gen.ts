@@ -4197,6 +4197,8 @@ export type MoveEngramResponses = {
      * `links_rewritten` counts the engrams whose references were rewritten, `references_rewritten` the references inside them, and `rewritten` names those engrams by domain and permalink.
      *
      * `attachment_warnings` lists the attachments the move could not carry, one sentence each and empty when everything travelled; those files stay whole in the source domain.
+     *
+     * `links_failed`, `[{ domain, path, reason }]`, appears only when an engram that links the moved one could not be rewritten after the move; the move itself has landed.
      */
     200: {
         [key: string]: unknown;
@@ -4509,7 +4511,7 @@ export type MoveReflectionError = MoveReflectionErrors[keyof MoveReflectionError
 
 export type MoveReflectionResponses = {
     /**
-     * Moved with its threads and baseline; links to it rewritten: `{ from, to, links_rewritten, threads_moved }`. `links_failed`, `[{ path, reason }]`, appears only when a page that links it could not be rewritten after the move.
+     * Moved with its threads and baseline; links to it rewritten: `{ from, to, links_rewritten, threads_moved }`. `links_failed`, `[{ domain, path, reason }]`, appears only when a page that links it could not be rewritten after the move.
      */
     200: {
         [key: string]: unknown;
@@ -4557,7 +4559,7 @@ export type MoveReflectionAssetError = MoveReflectionAssetErrors[keyof MoveRefle
 
 export type MoveReflectionAssetResponses = {
     /**
-     * Moved: `{ domain, from, to, links_rewritten }`. Two keys appear only when needed: `links_failed`, `[{ path, reason }]` for each page whose link could not be rewritten after the file moved, and `note`, a sentence saying the file moved and its index row did not follow (the next sync brings it up to date).
+     * Moved: `{ domain, from, to, links_rewritten }`. Two keys appear only when needed: `links_failed`, `[{ domain, path, reason }]` for each page whose link could not be rewritten after the file moved, and `note`, a sentence saying the file moved and its index row did not follow (the next sync brings it up to date).
      */
     200: {
         [key: string]: unknown;

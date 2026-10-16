@@ -2232,7 +2232,7 @@ impl Engine {
                 page = path,
                 "a link to the moved reflection could not be rewritten: {e}"
             );
-            failed.push(json!({ "path": path, "reason": e.to_string() }));
+            super::move_::note_link_failure(&mut failed, domain, path, &e);
         };
         let mut links = 0;
         for row in rows.iter().filter(|row| row.path != from && row.path != to) {

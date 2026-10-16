@@ -1,6 +1,20 @@
 use super::*;
 use crate::collab::session::RoomDoc;
 
+/// Name one linking page or engram a move could not rewrite, in the shape
+/// every move receipt's `links_failed` carries: `{ domain, path, reason }`.
+/// Shared by the engram move, the reflection move and the reflection file
+/// move, so the three receipts never drift apart. The caller logs it with
+/// the context it has.
+pub(super) fn note_link_failure(
+    failed: &mut Vec<Value>,
+    domain: &str,
+    path: &str,
+    e: &EngineError,
+) {
+    failed.push(json!({ "domain": domain, "path": path, "reason": e.to_string() }));
+}
+
 impl Engine {
     // --- move ----------------------------------------------------------------
 
@@ -490,9 +504,11 @@ impl Engine {
         // configured `identity.actor`), not the moving client. A referencing
         // engram that cannot be rewritten is logged and skipped rather than
         // failing the call: the move is committed by this line, and an error
-        // now would report a move that happened as one that did not.
+        // now would report a move that happened as one that did not. The
+        // receipt names it in `links_failed`, as a reflection move does.
         let linker_actor = self.actor(None);
         let mut rewritten: Vec<Value> = Vec::new();
+        let mut failed: Vec<Value> = Vec::new();
         let mut references = 0usize;
         for linker in &linkers {
             match self
@@ -504,11 +520,14 @@ impl Engine {
                     rewritten.push(json!({ "domain": linker.domain, "permalink": permalink }));
                 }
                 Ok(None) => {}
-                Err(e) => tracing::warn!(
-                    domain = linker.domain.as_str(),
-                    path = linker.path.as_str(),
-                    "the move could not rewrite the references in this engram: {e}"
-                ),
+                Err(e) => {
+                    tracing::warn!(
+                        domain = linker.domain.as_str(),
+                        path = linker.path.as_str(),
+                        "the move could not rewrite the references in this engram: {e}"
+                    );
+                    note_link_failure(&mut failed, &linker.domain, &linker.path, &e);
+                }
             }
         }
 
@@ -608,7 +627,8 @@ impl Engine {
         // `links_rewritten` counts engrams, as it always has; the references
         // inside them are `references_rewritten`, and `rewritten` names the
         // engrams so a caller can re-read what changed under it.
-        Ok(json!({
+        // `links_failed` appears only when a linker could not be rewritten.
+        let mut receipt = json!({
             "from": { "domain": p.domain, "permalink": src.permalink, "path": src.path },
             "to": { "domain": dest_domain, "permalink": dest_permalink, "path": dest_rel },
             "cross_domain": cross,
@@ -616,7 +636,11 @@ impl Engine {
             "references_rewritten": references,
             "rewritten": rewritten,
             "attachment_warnings": attachment_warnings,
-        }))
+        });
+        if !failed.is_empty() {
+            receipt["links_failed"] = json!(failed);
+        }
+        Ok(receipt)
     }
 
     /// The permalink a moved engram answers to at `dest_rel`.
