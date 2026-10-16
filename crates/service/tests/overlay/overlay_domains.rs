@@ -7056,6 +7056,8 @@ fn every_instance_write_guard_meets_the_domain_flag() {
         "DomainView::for_write(",
         "DomainView::for_write_joined(",
         "refuse_read_only_domain(",
+        // The read-only half alone, for a preview that must claim no host lock.
+        "refuse_read_only_flag(",
         "domain_is_read_only(",
     ]
     .iter()

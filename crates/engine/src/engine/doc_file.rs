@@ -139,21 +139,22 @@ impl Engine {
     }
 
     /// Lock, read, compare and write `text` (as LF). On success the lock
-    /// comes back, so the caller reindexes under it; on a refusal nothing
-    /// was written.
+    /// comes back, so the caller reindexes under it, with the text the write
+    /// replaced, read under the same lock, for a caller that may have to put
+    /// it back; on a refusal nothing was written.
     pub(super) async fn write_checked(
         &self,
         abs: &Path,
         swap: Swap<'_>,
         text: &str,
-    ) -> Result<std::result::Result<FileLock, SwapRefused>> {
+    ) -> Result<std::result::Result<(FileLock, Option<String>), SwapRefused>> {
         let lock = self.lock_file(abs).await;
         let current = read_opt(abs)?;
         if let Err(refused) = check_swap(current.as_deref(), &swap) {
             return Ok(Err(refused));
         }
         write_file(abs, text)?;
-        Ok(Ok(lock))
+        Ok(Ok((lock, current)))
     }
 }
 

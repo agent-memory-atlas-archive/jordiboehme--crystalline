@@ -4617,6 +4617,16 @@ impl Engine {
         let claim = claimed.claim;
         if self.is_one_shot() && claim.is_acquired() {
             self.taken.lock().unwrap().insert(name.to_string());
+            // Also kept for the end of the process, whatever path it leaves
+            // by ([`release_command_locks_everywhere`]).
+            if let Some(lease) = self.leases.lock().unwrap().get(name).cloned() {
+                COMMAND_LEASES.lock().unwrap().push(CommandLease {
+                    store: self.store.clone(),
+                    domain: id,
+                    instance_id: self.instance_id.clone(),
+                    lease,
+                });
+            }
         }
         let moved = match &claim {
             HostClaim::Acquired { .. } => self
@@ -4964,11 +4974,52 @@ impl Engine {
         name: &str,
         scope: &crate::scope::Scope,
     ) -> Result<()> {
+        self.refuse_read_only_flag(name, scope).await?;
+        self.require_file_host(name, scope).await
+    }
+
+    /// The read-only half of [`Engine::refuse_read_only_domain`] alone, for
+    /// a preview (a dry run) that must say what a write would meet without
+    /// claiming a host lock.
+    pub(crate) async fn refuse_read_only_flag(
+        &self,
+        name: &str,
+        scope: &crate::scope::Scope,
+    ) -> Result<()> {
         if self.domain_is_read_only(name).await {
             self.require_domain(name, scope).await?;
             return Err(EngineError::DomainReadOnly(read_only_sentence(name)));
         }
-        self.require_file_host(name, scope).await
+        Ok(())
+    }
+
+    /// Whether this instance may write `name` in a sweep over several
+    /// domains: a virtual domain always, a file domain unless another live
+    /// instance holds its lock. With `claim`, a lock nobody holds or whose
+    /// holder went silent is claimed through the host gate, as a write
+    /// claims it; without (a dry run), nothing is claimed. A sweep leaves
+    /// the others out and names them.
+    pub(crate) async fn writes_domain_here(&self, name: &str, claim: bool) -> bool {
+        if matches!(self.content_source(name), Ok(ContentSource::Virtual))
+            || self.writes_here(name).await
+        {
+            return true;
+        }
+        if claim {
+            return self
+                .require_file_host(name, &crate::scope::Scope::Unrestricted)
+                .await
+                .is_ok();
+        }
+        let store = self.store.lock().await;
+        let holder = match store.domain_id(name).await {
+            Ok(Some(id)) => store.domain_host(id).await.ok().flatten(),
+            _ => None,
+        };
+        drop(store);
+        holder.is_none_or(|host| {
+            host.instance_id == self.instance_id || self.lock_is_stale(&host.heartbeat_at)
+        })
     }
 
     /// The host gate of a write into a file domain on a shared database:
@@ -7717,10 +7768,51 @@ fn yaml_number(value: Option<&YamlValue>) -> Option<f64> {
 /// database (see `Engine::walks_no_file_domain`).
 pub const REFUSED_ANONYMOUS_WALK: &str = "this process does not sync file domains on a shared database: it has no instance id, so it cannot hold a domain's host lock. Start the daemon (crystalline serve), or run crystalline sync";
 
+/// A host lock a command without a daemon claimed, kept until the process
+/// gives it back ([`release_command_locks_everywhere`]).
+struct CommandLease {
+    store: Arc<Mutex<dyn Store>>,
+    domain: DomainId,
+    instance_id: String,
+    lease: crystalline_index::HostLease,
+}
+
+/// Every host lock a command without a daemon claimed in this process. A
+/// give-back is a compare-and-delete on the claim's token, so giving one
+/// back twice, or after the command's own walk gave it back, changes
+/// nothing.
+static COMMAND_LEASES: std::sync::Mutex<Vec<CommandLease>> = std::sync::Mutex::new(Vec::new());
+
+/// Give back every host lock a command without a daemon claimed in this
+/// process: the CLI calls this when a command ends, on every path it ends
+/// by, so a command never leaves a lock it sends no heartbeat for. A lock
+/// it took from a live claim of this machine goes back to that claim.
+pub async fn release_command_locks_everywhere() {
+    let leases: Vec<CommandLease> = std::mem::take(&mut *COMMAND_LEASES.lock().unwrap());
+    for held in leases {
+        let store = held.store.lock().await;
+        if let Err(e) =
+            crystalline_index::give_back(&*store, held.domain, &held.instance_id, &held.lease).await
+        {
+            tracing::debug!("could not give back a command's host lock: {e}");
+        }
+    }
+}
+
 /// What every refusal of a write on an instance that does not host the file
 /// domain carries, so each surface can
 /// tell it apart (409 over REST).
 pub const FILE_HOSTED_MARK: &str = ", the instance that hosts it;";
+
+/// What the refusal of a write into a file domain whose lock nobody holds
+/// any more carries (409 over REST, as [`FILE_HOSTED_MARK`]).
+pub const FILE_NO_HOST_MARK: &str = " has no host right now;";
+
+/// Why a write into a file domain is refused when nobody holds its lock
+/// any more (its holder released it while the write waited).
+pub(crate) fn file_no_host_refusal(name: &str) -> EngineError {
+    EngineError::Conflict(format!("domain '{name}'{FILE_NO_HOST_MARK} try again"))
+}
 
 /// Why a write into a file domain is refused on an instance that does not
 /// host it: names the host and the two ways on.

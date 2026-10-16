@@ -1148,16 +1148,15 @@ impl Engine {
                     self.close_reflection_rooms_if_switching_off(&desc.domain, Some(&content))
                         .await;
                 }
-                // What the save replaces, kept so a save the host-lock fence
-                // refuses puts the file back.
-                let before = std::fs::read(&abs).ok();
                 // Held across the comparison, the write and the reindex. See
-                // `Engine::write_lock`.
-                let _lock = match self
+                // `Engine::write_lock`. What the save replaced, read under the
+                // same lock, is kept so a save the host-lock fence refuses
+                // puts the file back.
+                let (_lock, before) = match self
                     .write_checked(&abs, Swap::Expect(&p.expected_checksum), &content)
                     .await?
                 {
-                    Ok(lock) => lock,
+                    Ok(locked) => locked,
                     Err(SwapRefused::Stale { found }) => {
                         return Err(EngineError::Conflict(stale_edit_message(
                             &p.expected_checksum,
@@ -1191,7 +1190,7 @@ impl Engine {
                         e,
                         &desc.domain,
                         &abs,
-                        before.as_deref(),
+                        before.as_deref().map(str::as_bytes),
                         crystalline_core::to_lf(&content).as_bytes(),
                         Some(super::fence::EngramKeep {
                             rel: &desc.path,

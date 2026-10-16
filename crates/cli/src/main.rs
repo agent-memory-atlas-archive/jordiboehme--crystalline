@@ -4054,7 +4054,14 @@ where
                 tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
                     .build()?
-                    .block_on(make()),
+                    .block_on(async {
+                        let out = make().await;
+                        // A command without a daemon gives back every host
+                        // lock it claimed on a shared database, on every
+                        // path it ends by.
+                        crystalline_service::engine::release_command_locks_everywhere().await;
+                        out
+                    }),
             )
         })?;
     match worker.join() {
@@ -4105,7 +4112,14 @@ where
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?
-                    .block_on(make()),
+                    .block_on(async {
+                        let out = make().await;
+                        // A command without a daemon gives back every host
+                        // lock it claimed on a shared database, on every
+                        // path it ends by.
+                        crystalline_service::engine::release_command_locks_everywhere().await;
+                        out
+                    }),
             )
         })?;
     match worker.join() {

@@ -472,7 +472,8 @@ pub(crate) type FileChange = (PathBuf, Option<Vec<u8>>, Option<Vec<u8>>);
 /// Whether `e` is the refusal of a write into a file domain on an instance
 /// that does not host it (the gate's or the fence's).
 pub(crate) fn is_file_host_refusal(e: &EngineError) -> bool {
-    matches!(e, EngineError::Conflict(text) if text.contains(super::FILE_HOSTED_MARK))
+    matches!(e, EngineError::Conflict(text)
+        if text.contains(super::FILE_HOSTED_MARK) || text.contains(super::FILE_NO_HOST_MARK))
 }
 
 /// What a refused engram write sent, to keep: its path in the domain, the
@@ -517,15 +518,14 @@ impl Engine {
         let name = self
             .domain_at_root(root)
             .unwrap_or_else(|| "<domain>".to_string());
-        let label = match &holder {
-            Some(host) => host.label.clone(),
-            None => "no instance now".to_string(),
+        let Some(host) = holder else {
+            return Err(super::file_no_host_refusal(&name));
         };
-        if holder.is_some() && self.hosted.write().unwrap().remove(&name).is_some() {
+        if self.hosted.write().unwrap().remove(&name).is_some() {
             tracing::warn!("lost the host lock for domain '{name}'; another instance took over");
             self.announce_host_moved(&name);
         }
-        Err(super::file_host_refusal(&name, &label))
+        Err(super::file_host_refusal(&name, &host.label))
     }
 
     /// The registered file domain whose folder is `root`.

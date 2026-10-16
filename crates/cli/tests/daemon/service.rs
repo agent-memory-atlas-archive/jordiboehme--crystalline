@@ -6418,3 +6418,85 @@ fn serve_refuses_a_half_done_admin_configuration_on_a_fresh_instance() {
     );
     assert!(!text.contains("never-printed-value"), "{text}");
 }
+
+/// A command without a daemon gives back every host lock its writes claimed
+/// on a shared database, also outside the tool path: a tag rename named to
+/// one domain and one across every domain leave no lock row of this
+/// machine behind. Skipped with a note unless
+/// `CRYSTALLINE_TEST_POSTGRES_URL` is set and `psql` runs.
+#[test]
+fn a_daemonless_command_leaves_no_host_lock_behind_on_postgres() {
+    let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+        eprintln!("note: skipping the postgres leg (CRYSTALLINE_TEST_POSTGRES_URL is unset)");
+        return;
+    };
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cmdlock_{nanos}");
+    let psql = |sql: &str| {
+        Command::new("psql")
+            .args(["-v", "ON_ERROR_STOP=1", "-q", "-d", &url, "-c", sql])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    if !psql(&format!("CREATE SCHEMA {schema}")) {
+        eprintln!("note: skipping the postgres leg (psql could not create a schema)");
+        return;
+    }
+    struct DropSchema<'a>(&'a dyn Fn(&str) -> bool, String);
+    impl Drop for DropSchema<'_> {
+        fn drop(&mut self) {
+            (self.0)(&format!("DROP SCHEMA IF EXISTS {} CASCADE", self.1));
+        }
+    }
+    let _cleanup = DropSchema(&psql, schema.clone());
+
+    let env = Env::new("cmdlock");
+    let sep = if url.contains('?') { '&' } else { '?' };
+    let db_url = format!("{url}{sep}options=-c%20search_path%3D{schema},public");
+    std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();
+    std::fs::write(
+        env.config_path(),
+        format!(
+            "database:\n  backend: postgres\n  url: \"{db_url}\"\nservice:\n  response_format: json\n"
+        ),
+    )
+    .unwrap();
+    env.setup_domain("eng");
+    let config_path = env.config_path();
+    let config_arg = config_path.to_str().unwrap();
+    let no_lock_left = |what: &str| {
+        assert!(
+            psql(&format!(
+                "DO $$ BEGIN IF EXISTS (SELECT 1 FROM {schema}.domain_lock) \
+                 THEN RAISE EXCEPTION 'a lock row stayed'; END IF; END $$"
+            )),
+            "{what} left a host lock behind"
+        );
+    };
+    no_lock_left("domain add");
+    let (ok, out, err) = env.run_full(&[
+        "tags", "rename", "t", "t-two", "--domain", "eng", "--yes", "--config", config_arg,
+    ]);
+    assert!(ok, "{out}{err}");
+    no_lock_left("a tag rename in one domain");
+    let (ok, out, err) = env.run_full(&[
+        "tags", "rename", "t-two", "t-three", "--yes", "--config", config_arg,
+    ]);
+    assert!(ok, "{out}{err}");
+    no_lock_left("a tag rename across every domain");
+    let (ok, out, err) = env.run_full(&[
+        "write",
+        "eng",
+        "Later",
+        "--content",
+        "x",
+        "--config",
+        config_arg,
+    ]);
+    assert!(ok, "{out}{err}");
+    no_lock_left("a write");
+}

@@ -442,3 +442,171 @@ async fn writes_after_the_lock_moved_land_nothing_on_postgres() {
     assert!(err.to_string().contains("is written by inst-b"), "{err}");
     assert!(!a_root.join("assets/flow.png").exists());
 }
+
+/// An instance whose configuration registers `domains`, each a file domain
+/// with one engram tagged `old-tag`, on its own disk.
+async fn instance_with(
+    scratch: &crystalline_index::ScratchSchema,
+    base: &std::path::Path,
+    id: &str,
+    domains: &[&str],
+    tweak: impl FnOnce(&mut GlobalConfig),
+) -> Arc<Engine> {
+    let mut cfg = GlobalConfig::default();
+    for name in domains {
+        let root = base.join(id).join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("MANIFEST.md"), manifest()).unwrap();
+        std::fs::write(
+            root.join("tagged.md"),
+            "---\ntype: engram\ntitle: Tagged\npermalink: tagged\ntags:\n  - old-tag\n  - keep\nstatus: current\nrecorded_at: 2026-01-01\n---\n\n# Tagged\n\nbody\n",
+        )
+        .unwrap();
+        cfg.domains
+            .insert(name.to_string(), DomainEntry::file(root.clone()));
+    }
+    tweak(&mut cfg);
+    let config = base.join(id).join("config.yaml");
+    crystalline_core::config::save_yaml(&config, &cfg).unwrap();
+    Arc::new(
+        Engine::new(store_on(scratch).await, cfg, None, Some(config))
+            .with_state_dir(base.join(id).join("state"))
+            .with_instance_id(id.to_string()),
+    )
+}
+
+/// A tag rename across every domain on an instance retags the domains it
+/// writes, names the file domain another live instance hosts, and leaves
+/// that domain's files on this disk and its rows as they were; its dry
+/// run claims nothing.
+#[tokio::test]
+async fn a_retag_across_domains_skips_and_names_a_domain_hosted_elsewhere_on_postgres() {
+    let Some(scratch) = crate::support::scratch_schema("fhr") else {
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let alpha = instance_with(&scratch, tmp.path(), "inst-a", &["eng"], |_| {}).await;
+    alpha.sync(None).await.unwrap();
+    let beta = instance_with(&scratch, tmp.path(), "inst-b", &["eng", "ops"], |_| {}).await;
+    beta.sync(None).await.unwrap();
+    let eng_on_beta = tmp.path().join("inst-b/eng/tagged.md");
+    let before = std::fs::read(&eng_on_beta).unwrap();
+    let eng_row = || async {
+        let store = store_on(&scratch).await;
+        let store = store.lock().await;
+        let id = store.domain_id("eng").await.unwrap().unwrap();
+        store.file_stamps(id).await.unwrap()["tagged.md"]
+            .sha256
+            .clone()
+    };
+    let row_before = eng_row().await;
+
+    let dry = beta
+        .retag("old-tag", "new-tag", None, false, true, false)
+        .await
+        .unwrap();
+    assert_eq!(dry["hosted_elsewhere_skipped"], json!(["eng"]), "{dry}");
+    let done = beta
+        .retag("old-tag", "new-tag", None, false, false, false)
+        .await
+        .unwrap();
+    assert_eq!(done["hosted_elsewhere_skipped"], json!(["eng"]), "{done}");
+    assert_eq!(done["rewritten"], 1, "{done}");
+    assert!(
+        std::fs::read_to_string(tmp.path().join("inst-b/ops/tagged.md"))
+            .unwrap()
+            .contains("new-tag")
+    );
+    assert_eq!(
+        std::fs::read(&eng_on_beta).unwrap(),
+        before,
+        "eng's file here is untouched"
+    );
+    assert_eq!(eng_row().await, row_before, "eng's row is untouched");
+    let store = store_on(&scratch).await;
+    let store = store.lock().await;
+    let id = store.domain_id("eng").await.unwrap().unwrap();
+    assert_eq!(
+        store.domain_host(id).await.unwrap().unwrap().instance_id,
+        "inst-a"
+    );
+}
+
+/// A team update of a domain another instance hosts is refused with the
+/// hosted sentence before anything is pulled or written.
+#[tokio::test]
+async fn a_team_update_on_an_instance_that_does_not_host_is_refused_on_postgres() {
+    let Some(scratch) = crate::support::scratch_schema("fho") else {
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let with_origin = |cfg: &mut GlobalConfig| {
+        let entry = cfg.domains.get_mut("eng").unwrap();
+        entry.origin = Some(params(json!({ "repo": "team/eng" })));
+        cfg.github = Some(params(json!({ "enabled": true })));
+    };
+    let alpha = instance_with(&scratch, tmp.path(), "inst-a", &["eng"], with_origin).await;
+    alpha.sync(None).await.unwrap();
+    let beta = instance_with(&scratch, tmp.path(), "inst-b", &["eng"], with_origin).await;
+    let listing = || {
+        let mut names: Vec<String> = std::fs::read_dir(tmp.path().join("inst-b/eng"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = listing();
+    let answer = beta
+        .origin_update(Some("eng"), &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let error = answer["errors"][0]["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("domain 'eng' is written by inst-a, the instance that hosts it"),
+        "{answer}"
+    );
+    assert_eq!(listing(), before, "no file landed");
+}
+
+/// When nobody holds the lock any more by the time the rows commit (its
+/// holder released it), the write says so in its own sentence.
+#[tokio::test]
+async fn a_write_with_no_host_left_says_so_on_postgres() {
+    let Some(p) = pair().await else { return };
+    let (entered, release) = p.alpha.hold_next_row_fence_until();
+    let orphan: WriteParams = params(json!({
+        "domain": "eng", "title": "Orphan", "content": "Nobody hosts this now."
+    }));
+    let write = p.alpha.write_engram(&orphan);
+    tokio::pin!(write);
+    tokio::select! {
+        written = &mut write => panic!("the write never reached its rows: {:?}", written.err()),
+        () = entered.notified() => {}
+    }
+    {
+        let store = store_on(&p.scratch).await;
+        let store = store.lock().await;
+        let id = store.domain_id("eng").await.unwrap().unwrap();
+        let (now, stale) = crystalline_index::claim_window(90);
+        let token = match store
+            .claim_domain_host(id, "zeta", "zeta", &now, &stale, true)
+            .await
+            .unwrap()
+        {
+            crystalline_index::HostClaim::Acquired { token } => token,
+            other => panic!("{other:?}"),
+        };
+        assert!(store.release_domain_host(id, "zeta", &token).await.unwrap());
+    }
+    release.notify_one();
+    let err = write.await.unwrap_err().to_string();
+    assert_eq!(
+        err,
+        format!(
+            "domain 'eng' has no host right now; try again{}",
+            crystalline_service::engine::KEPT_HERE
+        )
+    );
+    assert!(!p.a_root().join("orphan.md").exists());
+}

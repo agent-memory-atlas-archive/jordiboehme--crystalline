@@ -1366,9 +1366,16 @@ impl Engine {
         }
         // A retag of one read-only domain is refused; across every domain it
         // skips the read-only ones and names them (decision D7).
+        // A dry run only previews: it meets the read-only check, never the
+        // host gate, which may claim a lock.
         if let Some(d) = domain {
-            self.refuse_read_only_domain(d, &crate::scope::Scope::Unrestricted)
-                .await?;
+            if dry_run {
+                self.refuse_read_only_flag(d, &crate::scope::Scope::Unrestricted)
+                    .await?;
+            } else {
+                self.refuse_read_only_domain(d, &crate::scope::Scope::Unrestricted)
+                    .await?;
+            }
         }
         let old_f = old.trim().to_lowercase();
         let new_f = new.trim().to_lowercase();
@@ -1429,11 +1436,39 @@ impl Engine {
         // the list is built: `listed`, the dry run, the rewrite loop, the count
         // and the alias recording all read from it, so one filter covers all of
         // them and no later addition can forget it.
-        let (targets, read_only_skipped) = {
+        let (targets, read_only_skipped, hosted_elsewhere_skipped) = {
             let store = self.store.lock().await;
             let mut found = store.engrams_with_tag(&old_f, domain).await?;
             drop(store);
             found.retain(|d| !unregistered.contains(&d.domain));
+            // Across every domain, a file domain another instance writes on
+            // this shared database is left out and named, never claimed: its
+            // files are that instance's. A named domain met the host gate
+            // above (or, for a dry run, is previewed as it stands).
+            let mut elsewhere: Vec<String> = Vec::new();
+            if domain.is_none() {
+                let mut here: HashMap<String, bool> = HashMap::new();
+                let mut kept = Vec::with_capacity(found.len());
+                for d in found {
+                    let writes = match here.get(&d.domain) {
+                        Some(known) => *known,
+                        None => {
+                            let known = self.writes_domain_here(&d.domain, !dry_run).await;
+                            here.insert(d.domain.clone(), known);
+                            known
+                        }
+                    };
+                    if writes {
+                        kept.push(d);
+                    }
+                }
+                found = kept;
+                elsewhere = here
+                    .into_iter()
+                    .filter_map(|(name, writes)| (!writes).then_some(name))
+                    .collect();
+                elsewhere.sort();
+            }
             // A read-only domain is left out here too, for the same reason:
             // one filter covers the dry run, the rewrite and the alias
             // recording into its MANIFEST. Asked once per domain, after the
@@ -1458,7 +1493,7 @@ impl Engine {
                 .filter_map(|(name, is_locked)| is_locked.then_some(name))
                 .collect();
             skipped.sort();
-            (kept, skipped)
+            (kept, skipped, elsewhere)
         };
         let listed: Vec<Value> = targets
             .iter()
@@ -1472,6 +1507,9 @@ impl Engine {
             });
             if !read_only_skipped.is_empty() {
                 dry["read_only_skipped"] = json!(read_only_skipped);
+            }
+            if !hosted_elsewhere_skipped.is_empty() {
+                dry["hosted_elsewhere_skipped"] = json!(hosted_elsewhere_skipped);
             }
             return Ok(dry);
         }
@@ -1542,6 +1580,9 @@ impl Engine {
         });
         if !read_only_skipped.is_empty() {
             response["read_only_skipped"] = json!(read_only_skipped);
+        }
+        if !hosted_elsewhere_skipped.is_empty() {
+            response["hosted_elsewhere_skipped"] = json!(hosted_elsewhere_skipped);
         }
 
         // Record the fold as a tag alias in each affected domain's MANIFEST, once

@@ -697,6 +697,11 @@ impl Engine {
     pub(super) async fn origin_update_one(&self, name: &str, entry: &DomainEntry) -> Result<Value> {
         let lock = self.origin_lock(name);
         let _guard = lock.lock().await;
+        // A pull writes the domain's files: only its host pulls, before any
+        // file lands. A lock nobody holds, or whose holder went silent, is
+        // claimed as a sync claims it.
+        self.require_file_host(name, &crate::scope::Scope::Unrestricted)
+            .await?;
 
         let (spec, root, state_dir) = self.origin_spec_for(name, entry)?;
 
@@ -870,6 +875,12 @@ impl Engine {
                 .flatten()
                 .is_some();
             if has_state {
+                continue;
+            }
+            if !self.writes_domain_here(&name, false).await {
+                tracing::debug!(
+                    "env-defined team domain '{name}' is hosted by another instance; it bootstraps there"
+                );
                 continue;
             }
             match self.origin_update_one(&name, &entry).await {
@@ -1282,6 +1293,12 @@ impl Engine {
             self.origin_poller
                 .schedule(&name, now + jitter, wall_now + jitter_chrono);
 
+            // A domain another live instance hosts is that instance's to
+            // pull: skipped quietly, never claimed from a live host.
+            if !self.writes_domain_here(&name, false).await {
+                tracing::debug!("origin poll: '{name}' is hosted by another instance; skipped");
+                continue;
+            }
             match self.origin_update_one(&name, &entry).await {
                 Ok(v) => {
                     let up_to_date = v["up_to_date"].as_bool().unwrap_or(false);
@@ -1929,7 +1946,9 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
-        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+        // A preview only reads: it meets the read-only check, never the host
+        // gate, which may claim a lock.
+        self.refuse_read_only_flag(domain, &crate::scope::Scope::Unrestricted)
             .await?;
         let lock = self.origin_lock_registered(domain)?;
         let _guard = lock.lock().await;
@@ -2498,6 +2517,10 @@ impl Engine {
         self.local_changes_need_an_origin(domain)?;
         let lock = self.origin_lock_registered(domain)?;
         let _guard = lock.lock().await;
+        // A discard puts the domain's files back: only its host does that,
+        // refused before any file is touched.
+        self.require_file_host(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         let drafting = self.overlay_share_identity(domain, actor)?;
         if let Some(who) = drafting {
             return self.discard_into_overlay(domain, &who, targets).await;
