@@ -33,7 +33,13 @@ import {
   reflectionOfferKey,
   reflectionRoomKey,
 } from "./collab/reflectionDraftKeys";
-import { clearDraft, moveDraft } from "./editor/drafts";
+import {
+  addOffer,
+  clearDraft,
+  mergeOffers,
+  moveDraft,
+  readDraft,
+} from "./editor/drafts";
 
 const KEYS = [reflectionRoomKey, reflectionOfferKey];
 
@@ -50,9 +56,11 @@ export function discardPageDrafts(
 
 /**
  * Carry both drafts to the new path of a moved page, in `toDomain` when the
- * page left its domain (a rename of the domain). Unsaved text is never
- * dropped: a draft already sitting at the new path stays as it is and the old
- * one stays where it was.
+ * page left its domain (a rename of the domain). Unsaved text is never left
+ * behind at a path that no longer exists: when the new path already holds
+ * drafts of its own, the old offers join its history of offers (the newest
+ * three by when they were saved), and the old live copy joins it as one
+ * more offer rather than overwriting the new path's copy.
  */
 export function movePageDrafts(
   account: string,
@@ -61,11 +69,26 @@ export function movePageDrafts(
   to: string,
   toDomain: string = domain,
 ): void {
-  for (const keyOf of KEYS) {
+  if (domain === toDomain && from === to) {
+    return;
+  }
+  mergeOffers(
+    account,
+    { domain, slot: reflectionOfferKey(from) },
+    { domain: toDomain, slot: reflectionOfferKey(to) },
+  );
+  const copy = readDraft(account, domain, reflectionRoomKey(from));
+  if (copy === null) {
+    return;
+  }
+  if (readDraft(account, toDomain, reflectionRoomKey(to)) === null) {
     moveDraft(
       account,
-      { domain, slot: keyOf(from) },
-      { domain: toDomain, slot: keyOf(to) },
+      { domain, slot: reflectionRoomKey(from) },
+      { domain: toDomain, slot: reflectionRoomKey(to) },
     );
+  } else {
+    addOffer(account, toDomain, reflectionOfferKey(to), copy);
+    clearDraft(account, domain, reflectionRoomKey(from));
   }
 }

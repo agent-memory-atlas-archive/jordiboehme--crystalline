@@ -84,7 +84,11 @@ import { baseExtensions } from "../editor/setup";
 import { useAttachmentUploads } from "../editor/useAttachmentUploads";
 import { useRoomExit } from "../editor/useRoomExit";
 import { formatInstant } from "../format";
-import { reflectionEditRoute, reflectionPageRoute } from "../paths";
+import {
+  reflectionEditRoute,
+  reflectionPageRoute,
+  reflectionRoute,
+} from "../paths";
 import { movePageDrafts } from "../reflectionPageDrafts";
 import { firstTitle, stripIdLines, stripProvenance } from "../reflectionText";
 import { useTheme } from "../theme/context";
@@ -726,13 +730,27 @@ function Surface({
    * Done waits a moment for a save the room still owes, and keeps the text as
    * a draft if it cannot land (see `useRoomExit`).
    */
+  /*
+   * Where Done goes. The page, as a rule; once the room ended because the
+   * page moved, the page at its new path when this reader may open it, and
+   * the domain's Reflection when they may not or the page was deleted: the
+   * old path answers nothing any more.
+   */
+  const movedTo = ended ? collab.movedTo : null;
+  const doneTo =
+    movedTo !== null
+      ? reflectionPageRoute(movedTo.domain, movedTo.path)
+      : ended &&
+          (collab.closedReason === "moved" || collab.closedReason === "deleted")
+        ? reflectionRoute(domain)
+        : reflectionPageRoute(domain, path);
   const roomExit = useRoomExit(
     collab,
     () => {
       keep();
     },
     () => {
-      void navigate(reflectionPageRoute(domain, path));
+      void navigate(doneTo);
     },
     ended,
   );
@@ -770,8 +788,22 @@ function Surface({
           />
           <SaveState state={saveState} room />
           <Link
-            to={reflectionPageRoute(domain, path)}
+            to={doneTo}
             onClick={(event) => {
+              if (movedTo !== null) {
+                // As "Open it there": the text in this tab goes with it.
+                if (leaving.current) {
+                  keep();
+                }
+                movePageDrafts(
+                  account,
+                  domain,
+                  path,
+                  movedTo.path,
+                  movedTo.domain,
+                );
+                carried.current = true;
+              }
               roomExit.onDone(event);
               void queryClient.invalidateQueries({
                 queryKey: reflectionKey(domain),

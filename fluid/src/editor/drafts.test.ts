@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   addOffer,
   clearDraft,
   draftKey,
+  mergeOffers,
   moveDraft,
   OFFER_LIMIT,
   readDraft,
@@ -90,6 +91,48 @@ describe("draft snapshots", () => {
       expect(readOffers("ada", "eng", "offer")).toEqual([at(1)]);
       removeOffers("ada", "eng", "offer", [at(1)]);
       expect(localStorage.getItem(draftKey("ada", "eng", "offer"))).toBeNull();
+    });
+
+    it("keeps the newest by time when an older text is added late", () => {
+      for (const n of [2, 3, 4]) {
+        addOffer("ada", "eng", "offer", at(n));
+      }
+      addOffer("ada", "eng", "offer", at(1));
+      expect(readOffers("ada", "eng", "offer")).toEqual([at(4), at(3), at(2)]);
+    });
+
+    it("drops the oldest and keeps the newest when storage is full", () => {
+      addOffer("ada", "eng", "offer", at(1));
+      addOffer("ada", "eng", "offer", at(2));
+      const setItem = Storage.prototype.setItem;
+      let refused = false;
+      const spy = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+          if (!refused) {
+            refused = true;
+            throw new DOMException("full", "QuotaExceededError");
+          }
+          setItem.call(this, key, value);
+        });
+      addOffer("ada", "eng", "offer", at(3));
+      spy.mockRestore();
+      expect(readOffers("ada", "eng", "offer")).toEqual([at(3), at(2)]);
+    });
+
+    it("merges two histories, each text once, the newest three", () => {
+      addOffer("ada", "eng", "old", at(1));
+      addOffer("ada", "eng", "old", at(4));
+      addOffer("ada", "eng", "new", at(2));
+      addOffer("ada", "eng", "new", at(3));
+      addOffer("ada", "eng", "new", { ...at(4), savedAt: at(0).savedAt });
+      mergeOffers(
+        "ada",
+        { domain: "eng", slot: "old" },
+        { domain: "eng", slot: "new" },
+      );
+      expect(readOffers("ada", "eng", "new")).toEqual([at(4), at(3), at(2)]);
+      expect(readOffers("ada", "eng", "old")).toEqual([]);
     });
 
     it("moves a whole history with its page", () => {

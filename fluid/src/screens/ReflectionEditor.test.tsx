@@ -859,6 +859,28 @@ describe("the reflection editor when its page was moved", () => {
     expect(screen.queryByText(/This page was moved/)).toBeNull();
   });
 
+  it.each([
+    [
+      "the page at its new path",
+      { domain: "eng", path: "guides/b.md", permalink: null },
+      "moved",
+      "/d/eng/reflection/guides/b.md",
+    ],
+    ["the domain's Reflection", null, "moved", "/d/eng/reflection"],
+    ["the domain's Reflection", null, "deleted", "/d/eng/reflection"],
+  ] as const)(
+    "sends Done to %s once the room ended (%s, %s)",
+    async (_, movedTo, closedReason, href) => {
+      serve("edit");
+      live({ ...room(PAGE), closed: true, closedReason, movedTo });
+      await openEditor();
+      expect(screen.getByRole("link", { name: "Done" })).toHaveAttribute(
+        "href",
+        href,
+      );
+    },
+  );
+
   it("keeps the text and names no place when the page moved where this person cannot go", async () => {
     serve("edit");
     live({

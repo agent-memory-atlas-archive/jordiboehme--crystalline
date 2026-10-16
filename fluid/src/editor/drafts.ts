@@ -136,6 +136,24 @@ export function moveDraft(
 /** How many texts one slot keeps on offer. */
 export const OFFER_LIMIT = 3;
 
+/** When a draft was saved, for ordering; one with no readable time sorts last. */
+function savedTime(draft: Draft): number {
+  const at = Date.parse(draft.savedAt);
+  return Number.isNaN(at) ? Number.NEGATIVE_INFINITY : at;
+}
+
+/**
+ * Offers newest first by when each was saved, not by when it was added: two
+ * tabs can add offers out of order. A sort is stable, so offers with the
+ * same time (or none) keep the order they came in.
+ */
+function newestFirst(offers: readonly Draft[]): Draft[] {
+  return offers
+    .map((draft, index) => ({ draft, index, at: savedTime(draft) }))
+    .sort((a, b) => b.at - a.at || a.index - b.index)
+    .map(({ draft }) => draft);
+}
+
 /**
  * A short history of texts set aside for a later offer, newest first, at
  * most {@link OFFER_LIMIT}. Stored as one draft, the newest, whose `earlier`
@@ -144,12 +162,6 @@ export const OFFER_LIMIT = 3;
  * written before the history existed reads as a history of one. A newer
  * text no longer replaces an offer nobody answered; the oldest of four goes.
  */
-/** When a draft was saved, for ordering; one with no readable time sorts last. */
-function savedTime(draft: Draft): number {
-  const at = Date.parse(draft.savedAt);
-  return Number.isNaN(at) ? Number.NEGATIVE_INFINITY : at;
-}
-
 export function readOffers(
   user: string,
   domain: string,
@@ -176,38 +188,48 @@ export function readOffers(
           return draft === null ? [] : [draft];
         })
       : [];
-    // Newest first by when each was saved, not by when it was added here:
-    // two tabs can add offers out of order. A sort is stable, so offers
-    // with the same time (or none) keep the order they were stored in.
-    return [newest, ...earlier]
-      .map((draft, index) => ({ draft, index, at: savedTime(draft) }))
-      .sort((a, b) => b.at - a.at || a.index - b.index)
-      .map(({ draft }) => draft)
-      .slice(0, OFFER_LIMIT);
+    return newestFirst([newest, ...earlier]).slice(0, OFFER_LIMIT);
   } catch {
     return [];
   }
 }
 
-/** Store a history of offers, newest first; an empty one clears the slot. */
+/**
+ * Store a history of offers: the newest {@link OFFER_LIMIT} by when they
+ * were saved, so an older text added late never pushes out a newer one. An
+ * empty history clears the slot. When storage refuses the write (full), the
+ * oldest entry is dropped and the write tried once more, so the newest text
+ * is the one that is kept.
+ */
 function writeOffers(
   user: string,
   domain: string,
   slot: string,
   offers: readonly Draft[],
 ): void {
-  const [newest, ...earlier] = offers.slice(0, OFFER_LIMIT);
-  if (newest === undefined) {
+  const kept = newestFirst(offers).slice(0, OFFER_LIMIT);
+  if (kept.length === 0) {
     clearDraft(user, domain, slot);
     return;
   }
-  try {
-    localStorage.setItem(
-      draftKey(user, domain, slot),
-      JSON.stringify({ ...newest, earlier }),
-    );
-  } catch {
-    // Full or blocked storage: as for a single draft.
+  const store = (history: readonly Draft[]): boolean => {
+    const [newest, ...earlier] = history;
+    if (newest === undefined) {
+      return true;
+    }
+    try {
+      localStorage.setItem(
+        draftKey(user, domain, slot),
+        JSON.stringify({ ...newest, earlier }),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (!store(kept) && kept.length > 1) {
+    // Full or blocked storage: as for a single draft once this fails too.
+    store(kept.slice(0, -1));
   }
 }
 
@@ -247,4 +269,36 @@ export function removeOffers(
   if (left.length !== offers.length) {
     writeOffers(user, domain, slot, left);
   }
+}
+
+/**
+ * Carry the offers of one slot into another, as a page move does when the
+ * new path already holds offers of its own: the two histories become one,
+ * each text once, the newest {@link OFFER_LIMIT} by when they were saved.
+ * Unsaved text is never dropped on purpose: what the cap pushes out is the
+ * oldest. The old slot is cleared once the merged history is written.
+ */
+export function mergeOffers(
+  user: string,
+  from: { domain: string; slot: string },
+  to: { domain: string; slot: string },
+): void {
+  if (from.domain === to.domain && from.slot === to.slot) {
+    return;
+  }
+  const moving = readOffers(user, from.domain, from.slot);
+  if (moving.length === 0) {
+    return;
+  }
+  const merged: Draft[] = [];
+  for (const offer of newestFirst([
+    ...readOffers(user, to.domain, to.slot),
+    ...moving,
+  ])) {
+    if (!merged.some((m) => m.content === offer.content)) {
+      merged.push(offer);
+    }
+  }
+  writeOffers(user, to.domain, to.slot, merged);
+  clearDraft(user, from.domain, from.slot);
 }
