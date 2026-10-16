@@ -1227,4 +1227,30 @@ mod tests {
         assert_eq!(lines, vec![(7, 8), (9, 9)]);
         assert_eq!(engram.observations[0].content, "one continued");
     }
+
+    // The Fluid engram page shows this field on its meta line, so a block
+    // scalar, a plain continuation and a trailing comment must all come out
+    // as the one-line text a reader sees.
+    #[test]
+    fn description_reads_block_scalars_continuations_and_comments() {
+        let engram = |description: &str| {
+            let source =
+                format!("---\ntype: guide\ntitle: T\ndescription: {description}\n---\n\n# T\n");
+            parse_engram(&source).unwrap().frontmatter.description
+        };
+        assert_eq!(
+            engram(">-\n  Why we deploy\n  at night").as_deref(),
+            Some("Why we deploy at night")
+        );
+        assert_eq!(engram("|-\n  one\n  two").as_deref(), Some("one\ntwo"));
+        assert_eq!(
+            engram("Plain text\n  that continues").as_deref(),
+            Some("Plain text that continues")
+        );
+        assert_eq!(
+            engram("\"quoted\n  across lines\"").as_deref(),
+            Some("quoted across lines")
+        );
+        assert_eq!(engram("kept # a comment").as_deref(), Some("kept"));
+    }
 }
