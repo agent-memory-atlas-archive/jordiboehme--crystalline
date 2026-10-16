@@ -1685,9 +1685,11 @@ async fn an_edit_that_never_finds_a_gap_in_the_typing_lands_in_the_file() {
         release.notify_one();
     }
     let receipt = editing.await.unwrap().expect("the edit lands");
-    // The room took the file in by its three-way merge: the title line and
-    // the typed lines are far enough apart not to collide.
-    assert_eq!(receipt["landed"], "live", "{receipt}");
+    // The edit went to the file, never into the room, so the receipt never
+    // says live. The room took the file in by its three-way merge (the
+    // title line and the typed lines are far enough apart not to collide),
+    // so nothing waits on the person and there is no room note.
+    assert_eq!(receipt["landed"], "file", "{receipt}");
     assert!(receipt.get("room").is_none(), "{receipt}");
 
     let on_disk = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();

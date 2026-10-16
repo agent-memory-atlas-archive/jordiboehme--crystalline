@@ -1,6 +1,6 @@
 use super::evolve::FOLDER_PAIR_RULE;
 use super::*;
-use crate::collab::session::{ComposeRefused, RoomDoc};
+use crate::collab::session::{Absorbed, ComposeRefused, RoomDoc};
 
 /// How many times an edit without an `expected_checksum` is applied to a
 /// virtual engram before a race with another writer is reported: the first
@@ -359,11 +359,13 @@ impl Engine {
     }
 
     /// Tell an open room an edit went past it to the source, and say on the
-    /// receipt what the people in it meet: `landed: live` when the room
-    /// merged the change in, `landed: file` with `room` and `room_note`
-    /// when it collides with their unsaved text or waits behind a conflict
-    /// or a failed save of the room's own. A room that has said goodbye, or
-    /// closed meanwhile, gets nothing and the receipt says nothing about it.
+    /// receipt what the people in it meet. It is always `landed: file`,
+    /// never `live`: the edit went to the source, not into the room. With
+    /// `room` and `room_note` when the change collides with their unsaved
+    /// text or waits behind a conflict or a failed save of the room's own;
+    /// a room that merged it in owes the person nothing to be told. A room
+    /// that has said goodbye, or closed meanwhile, gets nothing and the
+    /// receipt says nothing about it.
     async fn note_passed_room(
         &self,
         receipt: &mut Value,
@@ -397,7 +399,15 @@ impl Engine {
             None => None,
         };
         let present = rooms.participants(&desc.domain, &doc, overlay, mine).await;
-        super::reflection::note_room_outcome(receipt, absorbed, present);
+        match absorbed {
+            Absorbed::Merged => {
+                receipt["landed"] = json!("file");
+                receipt["present"] = json!(present);
+            }
+            Absorbed::Conflict | Absorbed::Deferred => {
+                super::reflection::note_room_outcome(receipt, absorbed, present);
+            }
+        }
     }
 
     /// Read an engram's source, hand it to `apply`, and write the result back:
