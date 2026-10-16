@@ -4476,3 +4476,28 @@ async fn the_direct_hand_over_works_on_a_registered_domain_a_stranger_holds_priv
          re-registration first"
     );
 }
+
+/// A domain name that differs from a registered one only in letter case is
+/// refused with 409: on a disk that ignores case the two would share one
+/// state folder. Nothing is registered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn creating_a_domain_whose_name_differs_only_in_case_is_a_conflict() {
+    let _serialized = crate::support::maintenance_guard().await;
+    let fx = serve(Options::default()).await;
+    let root = login(fx.addr, "root", "rootpw").await;
+    for mode in ["local", "virtual"] {
+        let response = as_session(fx.addr, reqwest::Method::POST, "/api/v1/domains", &root)
+            .json(&serde_json::json!({ "mode": mode, "name": "ENG" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 409, "{mode}");
+        let body: serde_json::Value = response.json().await.unwrap();
+        let detail = body["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("'ENG' differs from the domain 'eng' only in letter case"),
+            "{mode}: {detail}"
+        );
+    }
+    assert!(!fx.engine.config().domains.contains_key("ENG"));
+}

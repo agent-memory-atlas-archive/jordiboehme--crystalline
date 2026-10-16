@@ -21,8 +21,8 @@ use std::time::Instant;
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
 use crystalline_core::config::registration::{
-    Registration, RegistrationRequest, choose_domain_name, decide_registration, infer_name_origin,
-    needs_manifest_write_back, validate_domain_name,
+    Registration, RegistrationRequest, case_twin, case_twin_refusal, choose_domain_name,
+    decide_registration, infer_name_origin, needs_manifest_write_back, validate_domain_name,
 };
 use crystalline_core::config::{
     DomainEntry, DomainKind as CoreDomainKind, GlobalConfig, NameOrigin, OriginConfig,
@@ -7674,6 +7674,11 @@ fn existing_file_domain_at<'a>(canonical: &Path, cfg: &'a GlobalConfig) -> Optio
 /// domain already using `name` counts as taken, since it has no path to
 /// compare. Drives [`unique_domain_name`]'s collision search.
 fn name_taken_by_other(name: &str, canonical: &Path, cfg: &GlobalConfig) -> bool {
+    // A name that folds onto another domain's name or alias is taken too:
+    // the two would share one state folder on a disk that ignores case.
+    if case_twin(name, None, cfg.domains.iter()).is_some() {
+        return true;
+    }
     match cfg.domains.get(name) {
         None => false,
         Some(entry) => canonicalized_file_path(entry).as_deref() != Some(canonical),

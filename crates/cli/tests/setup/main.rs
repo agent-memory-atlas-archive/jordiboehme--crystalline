@@ -19,6 +19,7 @@ mod daemon_task;
 mod desktop_state;
 mod doctor;
 mod doctor_names;
+mod domain_case;
 #[cfg(unix)]
 mod harness_install;
 #[cfg(unix)]

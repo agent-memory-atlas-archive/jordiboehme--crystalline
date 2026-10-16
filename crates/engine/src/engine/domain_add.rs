@@ -110,7 +110,10 @@ impl Engine {
                 &RegistrationRequest::File { root: &planned },
             ) {
                 Registration::Adopt => (n.to_string(), true, NameOrigin::Explicit),
-                Registration::Register => (n.to_string(), false, NameOrigin::Explicit),
+                Registration::Register => {
+                    self.refuse_case_twin(n, None, scope).await?;
+                    (n.to_string(), false, NameOrigin::Explicit)
+                }
                 Registration::Conflict(msg) => return Err(EngineError::Conflict(msg)),
             },
             // No name: adopt an existing registration of this exact folder,
@@ -128,6 +131,7 @@ impl Engine {
                         |candidate| {
                             cfg.domains.contains_key(candidate)
                                 || table.resolve(candidate).is_some()
+                                || case_twin(candidate, None, cfg.domains.iter()).is_some()
                         },
                     );
                     let name = self.beside_mounts(&choice.name);
@@ -273,6 +277,7 @@ impl Engine {
                 Registration::Adopt => false,
                 Registration::Register => {
                     validate_domain_name(name).map_err(EngineError::Invalid)?;
+                    self.refuse_case_twin(name, None, scope).await?;
                     true
                 }
                 Registration::Conflict(msg) => return Err(EngineError::Conflict(msg)),
@@ -293,6 +298,9 @@ impl Engine {
                 Registration::Conflict(msg) => return Err(EngineError::Conflict(msg)),
                 Registration::Adopt => {}
                 Registration::Register => {
+                    if let Some(twin) = case_twin(name, None, file.domains.iter()) {
+                        return Err(EngineError::Conflict(case_twin_refusal(name, &twin)));
+                    }
                     file.domains.insert(
                         name.to_string(),
                         DomainEntry::virtual_domain().with_name_origin(NameOrigin::Explicit),
@@ -696,6 +704,28 @@ impl Engine {
             return None;
         }
         Some(Some(held.counts()))
+    }
+
+    /// Refuse `name` for a new domain, or as `own`'s new name, when it
+    /// differs only in letter case from another registered domain's name
+    /// or alias: the two would share one state folder on a disk that
+    /// ignores case. A twin `scope` may not see is not named.
+    pub(super) async fn refuse_case_twin(
+        &self,
+        name: &str,
+        own: Option<&str>,
+        scope: &crate::scope::Scope,
+    ) -> Result<()> {
+        let entries = self.registered_domain_entries();
+        let Some(twin) = case_twin(name, own, entries.iter()) else {
+            return Ok(());
+        };
+        let hidden = self.hidden_for(scope).await?;
+        Err(EngineError::Conflict(if hidden.contains(&twin) {
+            format!("'{name}' cannot be used as a name here")
+        } else {
+            case_twin_refusal(name, &twin)
+        }))
     }
 
     /// Sweep a domain's overlay journal as part of ending it, answering with

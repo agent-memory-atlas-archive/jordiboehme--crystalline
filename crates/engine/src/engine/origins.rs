@@ -167,7 +167,9 @@ impl Engine {
                     declared.as_deref(),
                     || origin::default_domain_name(repo),
                     |candidate| {
-                        entries.contains_key(candidate) || table.resolve(candidate).is_some()
+                        entries.contains_key(candidate)
+                            || table.resolve(candidate).is_some()
+                            || case_twin(candidate, None, entries.iter()).is_some()
                     },
                 );
                 let declared_by_manifest = declared
@@ -190,6 +192,7 @@ impl Engine {
         // or not, that validates); an explicit one may not.
         if self.domain_entry(&domain_name).is_err() {
             validate_domain_name(&domain_name).map_err(EngineError::Invalid)?;
+            self.refuse_case_twin(&domain_name, None, scope).await?;
         }
         // An explicit name and the repository default
         // keep adopting an origin-less domain that holds them in place, as

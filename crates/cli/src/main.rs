@@ -1280,7 +1280,9 @@ enum DomainCommand {
     /// same virtual domain) changes nothing and indexes it again, so the
     /// command is safe to repeat; a name registered at another folder or as
     /// the other kind is refused, naming what holds it. A new name uses
-    /// letters, digits, hyphens, underscores and dots, 64 characters at most.
+    /// letters, digits, hyphens, underscores and dots, 64 characters at most,
+    /// and must not differ from a registered domain's name only in letter
+    /// case.
     ///
     /// A lone positional argument is always the NAME, never a path - naming a
     /// file domain is optional, and pointing at its folder instead (the

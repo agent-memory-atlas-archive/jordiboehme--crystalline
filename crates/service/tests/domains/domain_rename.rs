@@ -2768,3 +2768,80 @@ both_backends!(
     a_move_relinking_in_its_own_domain_finishes_while_a_rename_waits,
     a_move_relinking_in_its_own_domain_finishes_while_a_rename_waits_body
 );
+
+/// A rename onto a name that differs from another domain's only in letter
+/// case is refused before any step: the two would share one state folder on
+/// a disk that ignores case. Nothing moves and no journal is left.
+async fn a_rename_onto_another_domains_name_in_other_case_is_refused_body(
+    store: Arc<Mutex<dyn Store>>,
+) {
+    let m = machine(store).await;
+    let engine = m.engine(true).await;
+    let before = std::fs::read_to_string(m.config_path()).unwrap();
+    let err = engine
+        .rename_domain_local("eng", "OPS", NameOrigin::Explicit, &Scope::Unrestricted)
+        .await
+        .expect_err("a case twin of ops is refused");
+    assert!(
+        matches!(err, EngineError::Conflict(_))
+            && err
+                .to_string()
+                .contains("'OPS' differs from the domain 'ops' only in letter case"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read_to_string(m.config_path()).unwrap(), before);
+    assert!(!m.journal().exists());
+}
+both_backends!(
+    a_rename_onto_another_domains_name_in_other_case_is_refused,
+    a_rename_onto_another_domains_name_in_other_case_is_refused_body
+);
+
+/// A domain renamed to its own name in another letter case keeps working,
+/// and its state folders follow under the new spelling, through a
+/// temporary name, so a disk that ignores case never loses them: the kept
+/// texts and the draft journal are there, byte for byte, under `Eng`.
+async fn a_case_only_rename_moves_the_state_folders_body(store: Arc<Mutex<dyn Store>>) {
+    let m = machine(store).await;
+    let engine = m.engine(true).await;
+    let kept_root = m.state().join("kept");
+    crystalline_core::kept::write(
+        &kept_root,
+        "eng",
+        None,
+        crystalline_core::kept::KeptKind::Engram,
+        "alpha.md",
+        chrono::Utc::now(),
+        "typed",
+    )
+    .unwrap();
+    let journal = m.state().join("overlays/eng/someone");
+    std::fs::create_dir_all(&journal).unwrap();
+    std::fs::write(journal.join("note.md"), "draft").unwrap();
+
+    let report = engine
+        .rename_domain_local("eng", "Eng", NameOrigin::Explicit, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(report["domain"], "Eng", "{report}");
+    let listed = |dir: PathBuf| -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    };
+    assert_eq!(listed(kept_root.clone()), vec!["Eng".to_string()]);
+    assert_eq!(listed(m.state().join("overlays")), vec!["Eng".to_string()]);
+    let found = crystalline_core::kept::scan(&kept_root);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].domain, "Eng");
+    assert_eq!(crystalline_core::kept::read(&found[0]).unwrap(), "typed");
+    assert_eq!(
+        std::fs::read_to_string(m.state().join("overlays/Eng/someone/note.md")).unwrap(),
+        "draft"
+    );
+}
+both_backends!(
+    a_case_only_rename_moves_the_state_folders,
+    a_case_only_rename_moves_the_state_folders_body
+);

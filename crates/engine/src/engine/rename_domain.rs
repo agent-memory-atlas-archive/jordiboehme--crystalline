@@ -295,6 +295,10 @@ impl Engine {
                 )
             }));
         }
+        // A name that differs only in letter case from another domain's
+        // name or alias would share its state folders on a disk that ignores
+        // case. A case-only rename of this domain itself stays allowed.
+        self.refuse_case_twin(new, Some(old), scope).await?;
         // A name a connected server holds (mounted, or kept for a domain it
         // does not offer right now) is that source's (decision D13): the
         // renamed domain would be hidden under it at once. One check for both

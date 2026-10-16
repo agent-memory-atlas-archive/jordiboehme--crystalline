@@ -13,8 +13,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use crystalline_core::config::{
     self, DatabaseBackend, DomainEntry, EmbeddingsConfig, GlobalConfig, NameOrigin,
     registration::{
-        Registration, RegistrationRequest, canonical_root, choose_domain_name, decide_registration,
-        derive_domain_name, needs_manifest_write_back, validate_domain_name,
+        Registration, RegistrationRequest, canonical_root, case_twin, case_twin_refusal,
+        choose_domain_name, decide_registration, derive_domain_name, needs_manifest_write_back,
+        validate_domain_name,
     },
 };
 use crystalline_core::names::{NameInput, NameTable};
@@ -443,6 +444,9 @@ pub(crate) fn domain_add_register(
                 Registration::Adopt => Ok((name.to_string(), abs, true, None)),
                 Registration::Conflict(message) => bail!("{message}"),
                 Registration::Register => {
+                    if let Some(twin) = case_twin(name, None, loaded.file.domains.iter()) {
+                        bail!("{}", case_twin_refusal(name, &twin));
+                    }
                     let entry =
                         DomainEntry::file(abs.clone()).with_name_origin(NameOrigin::Explicit);
                     let mut cfg = loaded.file;
@@ -470,11 +474,18 @@ pub(crate) fn domain_add_register(
                         .file_name()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_else(|| abs.display().to_string());
+                    // A name folding onto a registered one is taken too: the
+                    // two would share one state folder on a disk that ignores
+                    // case.
+                    let taken = |c: &str| {
+                        table.resolve(c).is_some()
+                            || case_twin(c, None, loaded.file.domains.iter()).is_some()
+                    };
                     let choice = choose_domain_name(
                         None,
                         manifest_name.as_deref(),
-                        || derive_domain_name(&basename, |c| table.resolve(c).is_some()),
-                        |c| table.resolve(c).is_some(),
+                        || derive_domain_name(&basename, taken),
+                        taken,
                     );
                     let entry = DomainEntry::file(abs.clone()).with_name_origin(choice.origin);
                     let mut cfg = loaded.file;
@@ -619,6 +630,9 @@ pub(crate) fn domain_add_register_virtual(
         Registration::Conflict(message) => bail!("{message}"),
         Registration::Register => {
             validate_domain_name(name).map_err(|e| anyhow!(e))?;
+            if let Some(twin) = case_twin(name, None, loaded.file.domains.iter()) {
+                bail!("{}", case_twin_refusal(name, &twin));
+            }
             false
         }
     };

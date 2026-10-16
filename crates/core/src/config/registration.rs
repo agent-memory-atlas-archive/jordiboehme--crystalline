@@ -149,6 +149,46 @@ pub fn decide_registration(
     }
 }
 
+/// A domain name folded the way a disk that ignores letter case folds it:
+/// Unicode lowercase. Two names that fold equal would share one state folder
+/// (`kept/`, `overlays/`, `origins/`) on such a disk, so they never name two
+/// domains on one machine, on any platform.
+pub fn fold_domain_name(name: &str) -> String {
+    name.to_lowercase()
+}
+
+/// The registered domain, other than `own`, that `name` would share its
+/// state folders with: one whose local name differs from `name` only in
+/// letter case. Only local names name folders (`kept/<name>`,
+/// `overlays/<name>`, `origins/<name>`); an alias names none, and a declared
+/// name may take a name another domain keeps only as an alias. A domain
+/// spelled exactly `name` is not answered here; registering, adopting or
+/// refusing that one is [`decide_registration`]'s decision.
+pub fn case_twin<'a>(
+    name: &str,
+    own: Option<&str>,
+    domains: impl IntoIterator<Item = (&'a String, &'a DomainEntry)>,
+) -> Option<String> {
+    let folded = fold_domain_name(name);
+    domains
+        .into_iter()
+        .map(|(other, _)| other)
+        .find(|other| {
+            Some(other.as_str()) != own
+                && other.as_str() != name
+                && fold_domain_name(other) == folded
+        })
+        .cloned()
+}
+
+/// The refusal for a name [`case_twin`] found a twin for.
+pub fn case_twin_refusal(name: &str, twin: &str) -> String {
+    format!(
+        "'{name}' differs from the domain '{twin}' only in letter case; two such names would \
+         share one state folder, so pick another name"
+    )
+}
+
 /// A domain name derived from free text (a folder's basename, a repository's
 /// name) that always passes [`validate_domain_name`]: slugified the way a
 /// permalink is, `domain` when that leaves nothing, cut to fit the length cap
@@ -315,6 +355,31 @@ pub fn needs_manifest_write_back(entry: &DomainEntry, manifest_declares: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A name twins a domain whose local name folds equal to it, never
+    /// itself and never the exact name; an alias is no twin, because it
+    /// names no folder.
+    #[test]
+    fn a_case_twin_is_another_domains_name_in_other_case() {
+        let mut domains = indexmap::IndexMap::new();
+        domains.insert("Eng".to_string(), DomainEntry::virtual_domain());
+        let mut ops = DomainEntry::virtual_domain();
+        ops.aliases = vec!["Operations".to_string()];
+        domains.insert("ops".to_string(), ops);
+        let twin = |name: &str, own: Option<&str>| case_twin(name, own, domains.iter());
+        assert_eq!(twin("eng", None).as_deref(), Some("Eng"));
+        assert_eq!(twin("ENG", None).as_deref(), Some("Eng"));
+        assert_eq!(twin("ÉNG", None), None);
+        assert_eq!(twin("Eng", None), None, "the exact name is not a twin");
+        assert_eq!(
+            twin("eng", Some("Eng")),
+            None,
+            "a domain is not its own twin"
+        );
+        assert_eq!(twin("operations", None), None, "an alias names no folder");
+        assert_eq!(twin("OPS", None).as_deref(), Some("ops"));
+        assert!(case_twin_refusal("eng", "Eng").contains("only in letter case"));
+    }
     use crate::config::OriginConfig;
 
     #[test]

@@ -8941,3 +8941,21 @@ async fn the_reflection_gate_states_are_call_time_refusals() {
         "{text}"
     );
 }
+
+/// `add_domain` refuses a name that differs from a registered domain only in
+/// letter case, for a folder and for a virtual domain, and says why in the
+/// error an agent reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn add_domain_refuses_a_name_that_differs_only_in_case() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    for args in [
+        json!({ "domain": "ENG", "virtual": true }),
+        json!({ "domain": "Eng" }),
+    ] {
+        let err = call(client.peer(), "add_domain", args.clone())
+            .await
+            .expect_err("a case twin is refused");
+        assert!(err.contains("only in letter case"), "{args}: {err}");
+    }
+}

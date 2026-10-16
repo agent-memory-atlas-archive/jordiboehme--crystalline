@@ -1399,6 +1399,10 @@ pub struct DoctorReport {
     /// Why `--merge-desktop-state` stopped, such as a daemon from the
     /// private folder that still runs.
     pub merge_error: Option<String>,
+    /// Registered domains whose names differ only in letter case, as
+    /// pairs. Each is a warning, never a counted problem: both keep
+    /// working, and the remedy is a rename the person chooses.
+    pub case_twins: Vec<[String; 2]>,
     /// The texts the server kept when a co-editing room could not save,
     /// oldest first; only the `--domain` one's on a `--domain` run. Never a
     /// problem and never touched by `--fix`: each is the last copy of
@@ -1951,6 +1955,7 @@ pub async fn run(
     let daemon_task = check_task(fix);
 
     let kept = check_kept(crate::kept::scan_here(), domain_filter, chrono::Utc::now());
+    let case_twins = check_case_twins(cfg);
 
     Ok(DoctorReport {
         index,
@@ -1975,6 +1980,7 @@ pub async fn run(
         merge,
         merge_error,
         kept,
+        case_twins,
     })
 }
 
@@ -5397,9 +5403,12 @@ pub fn render_human(report: &DoctorReport) -> String {
         }
     }
 
-    if let Some(names) = &report.names {
-        render_names(&mut out, names, report.fix);
-    }
+    render_names(
+        &mut out,
+        report.names.as_ref(),
+        &report.case_twins,
+        report.fix,
+    );
 
     if let Some(rename) = &report.rename {
         render_rename(&mut out, rename);
@@ -5577,9 +5586,15 @@ fn orphaned_domain_line(d: &OrphanedDomainDoctor) -> String {
 }
 
 /// The domain name section: nothing at all when there is nothing to say.
-fn render_names(out: &mut String, names: &NamesDoctor, fix: bool) {
+fn render_names(
+    out: &mut String,
+    names: Option<&NamesDoctor>,
+    case_twins: &[[String; 2]],
+    fix: bool,
+) {
     use std::fmt::Write as _;
-    let lines = name_lines(names, fix);
+    let mut lines = names.map(|n| name_lines(n, fix)).unwrap_or_default();
+    lines.extend(case_twins.iter().map(|[a, b]| case_twin_line(a, b)));
     if lines.is_empty() {
         return;
     }
@@ -5587,6 +5602,34 @@ fn render_names(out: &mut String, names: &NamesDoctor, fix: bool) {
     for line in lines {
         let _ = writeln!(out, "  {line}");
     }
+}
+
+/// The warning for two registered domains whose names differ only in
+/// letter case.
+fn case_twin_line(a: &str, b: &str) -> String {
+    format!(
+        "[warning] '{a}' and '{b}' differ only in letter case, so on a disk that ignores case \
+         they share one state folder (kept texts, drafts, origin state); rename one: \
+         crystalline domain rename {b} <new name>"
+    )
+}
+
+/// Every pair of registered domains whose names fold equal (see
+/// [`crystalline_core::config::registration::fold_domain_name`]), each pair
+/// in registration order. Registration refuses such a pair since 0.27.0;
+/// an older install may still hold one, and it keeps working.
+fn check_case_twins(cfg: &GlobalConfig) -> Vec<[String; 2]> {
+    use crystalline_core::config::registration::fold_domain_name;
+    let names: Vec<&String> = cfg.domains.keys().collect();
+    let mut pairs = Vec::new();
+    for (i, a) in names.iter().enumerate() {
+        for b in &names[i + 1..] {
+            if fold_domain_name(a) == fold_domain_name(b) {
+                pairs.push([a.to_string(), b.to_string()]);
+            }
+        }
+    }
+    pairs
 }
 
 /// One line per name finding, each naming its next step. Only the
