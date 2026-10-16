@@ -421,27 +421,34 @@ test.describe.serial("the Reflection journeys", () => {
     await expect.poll(painted).toBeGreaterThan(0);
     const before = await painted();
 
+    // The page has to be quiet first: a refetch that redraws the passage
+    // replaces its text nodes and drops the selection under the keys.
+    await page.waitForLoadState("networkidle");
+    const selected = () =>
+      page.evaluate(() => window.getSelection()?.toString() ?? "");
     // Start on the first letter of "after" (a caret alone is not kept in text
-    // that cannot be edited) and grow the selection one key at a time.
-    await passage.evaluate((el, word) => {
-      const text = el.firstChild?.firstChild ?? el.firstChild;
-      if (text === null || text === undefined) {
-        throw new Error("no text node");
+    // that cannot be edited) and grow the selection one key at a time. If the
+    // selection is lost on the way, start again from the first letter.
+    await expect(async () => {
+      await passage.evaluate((el, word) => {
+        const text = el.firstChild?.firstChild ?? el.firstChild;
+        if (text === null || text === undefined) {
+          throw new Error("no text node");
+        }
+        const at = (text.textContent ?? "").indexOf(word);
+        const range = document.createRange();
+        range.setStart(text, at);
+        range.setEnd(text, at + 1);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }, phrase);
+      await expect.poll(selected, { timeout: 2_000 }).toBe(phrase[0]);
+      for (let i = 1; i < phrase.length; i += 1) {
+        await page.keyboard.press("Shift+ArrowRight");
       }
-      const at = (text.textContent ?? "").indexOf(word);
-      const range = document.createRange();
-      range.setStart(text, at);
-      range.setEnd(text, at + 1);
-      const selection = window.getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-    }, phrase);
-    for (let i = 1; i < phrase.length; i += 1) {
-      await page.keyboard.press("Shift+ArrowRight");
-    }
-    expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(
-      phrase,
-    );
+      await expect.poll(selected, { timeout: 2_000 }).toBe(phrase);
+    }).toPass({ timeout: 20_000 });
 
     // Tab on to the Comment button and open it with Enter; the selection stays.
     const threads = page.getByRole("complementary", { name: "Threads" });
