@@ -307,6 +307,87 @@ describe("the reflection page", () => {
     expect(screen.queryByRole("button", { name: /^Sources for/ })).toBeNull();
   });
 
+  it("counts a section's sources at the right end of its heading, with a dot when one changed", async () => {
+    serve("curate", true);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const control = await screen.findByRole("button", {
+      name: "Sources for Night deploys",
+    });
+    expect(control).toHaveTextContent("1 source");
+    const heading = screen.getByRole("heading", {
+      name: "Night deploys",
+      level: 2,
+    });
+    expect(heading).toContainElement(control);
+    expect(control.closest("[data-anchor-skip]")).not.toBeNull();
+    expect(within(control).getByTestId("sources-changed")).toBeInTheDocument();
+    expect(control).toHaveAccessibleDescription("A source changed.");
+    // The list opens over the text, and Escape shuts it with focus back on
+    // the control.
+    await userEvent.click(control);
+    expect(control).toHaveAttribute("aria-expanded", "true");
+    const list = document.getElementById(
+      control.getAttribute("aria-controls") as string,
+    ) as HTMLElement;
+    expect(list).toHaveClass("absolute");
+    expect(
+      within(list).getByRole("link", { name: "Deploy runbook" }),
+    ).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    expect(control).toHaveAttribute("aria-expanded", "false");
+    expect(control).toHaveFocus();
+    await userEvent.click(control);
+    await userEvent.click(screen.getByText("Deploys run at night."));
+    expect(control).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("draws no dot when every source is current, and nothing for a section without sources", async () => {
+    serve("curate", true, {
+      "/domains/eng/reflections/guides/deploying.md": () =>
+        doc({
+          markdown: `${MARKDOWN}\n## Day deploys\n<!-- r:1a2b3c4d -->\n\nRarely.\n`,
+          sections: [
+            {
+              id: "7f3a9c2e",
+              heading: "Night deploys",
+              line: 14,
+              changed: false,
+              sources: [
+                {
+                  permalink: "runbooks/deploy",
+                  title: "Deploy runbook",
+                  state: "current",
+                },
+                {
+                  permalink: "runbooks/night",
+                  title: "Night runbook",
+                  state: "current",
+                },
+              ],
+            },
+            {
+              id: "1a2b3c4d",
+              heading: "Day deploys",
+              line: 19,
+              changed: false,
+              sources: [],
+            },
+          ],
+        }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const control = await screen.findByRole("button", {
+      name: "Sources for Night deploys",
+    });
+    expect(control).toHaveTextContent("2 sources");
+    expect(within(control).queryByTestId("sources-changed")).toBeNull();
+    expect(control).not.toHaveAccessibleDescription();
+    expect(await screen.findByText("Rarely.")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Sources for Day deploys" }),
+    ).toBeNull();
+  });
+
   it("points the toggle at a list that exists while closed", async () => {
     serve("curate", true);
     renderApp("/d/eng/reflection/guides/deploying.md");

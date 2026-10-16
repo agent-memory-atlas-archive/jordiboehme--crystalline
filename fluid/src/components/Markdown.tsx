@@ -13,6 +13,7 @@
  * in `MarkdownBody.tsx`.
  */
 
+import type { ReactNode } from "react";
 import { Suspense, lazy } from "react";
 
 import type { AssetResolver } from "../api/files";
@@ -72,19 +73,11 @@ export interface MarkdownProps {
   sourceSpans?: boolean;
   /** A line drawn under the first `# Title`, outside the text (see `MarkdownBody`). */
   titleNote?: string;
+  /** A control at the right end of the first heading, outside the text. */
+  headingAside?: ReactNode;
 }
 
-export function Markdown({
-  source,
-  wikilinks,
-  foldTitle,
-  domain,
-  assets,
-  documentName,
-  anchors,
-  sourceSpans,
-  titleNote,
-}: MarkdownProps) {
+export function Markdown(props: MarkdownProps) {
   return (
     <Suspense
       fallback={
@@ -115,17 +108,11 @@ export function Markdown({
         </div>
       }
     >
-      <MarkdownBody
-        source={source}
-        {...(wikilinks ? { wikilinks } : {})}
-        {...(foldTitle === undefined ? {} : { foldTitle })}
-        {...(domain === undefined ? {} : { domain })}
-        {...(assets === undefined ? {} : { assets })}
-        {...(documentName === undefined ? {} : { documentName })}
-        {...(anchors === undefined ? {} : { anchors })}
-        {...(sourceSpans ? { sourceSpans } : {})}
-        {...(titleNote === undefined ? {} : { titleNote })}
-      />
+      {/*
+        Handed on whole: every prop means the same to the body, and one
+        spread costs the eager bundle less than a line per prop.
+      */}
+      <MarkdownBody {...props} />
     </Suspense>
   );
 }

@@ -365,7 +365,7 @@
     background-color: var(--mark-active);
     color: var(--ink);
     text-decoration: underline;
-    text-decoration-color: var(--mark-rule);
+    text-decoration-color: var(--color-accent-400);
     text-decoration-thickness: 2px;
   }
 

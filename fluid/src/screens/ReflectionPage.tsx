@@ -17,7 +17,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { FolderInput, Trash2 } from "lucide-react";
+import { FolderInput, Layers, Trash2 } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 
 import { ApiProblem, problemDetail } from "../api/client";
@@ -48,7 +48,7 @@ import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { ReflectionThreads, sourceChip } from "../components/ReflectionThreads";
 import { ActionItem, EditLink, MoreActions } from "../components/PageActions";
-import { BUTTON } from "../components/primitives";
+import { FOCUS_RING } from "../components/primitives";
 import { Breadcrumbs, reflectionCrumbsOf } from "../components/Breadcrumbs";
 import { plural } from "../format";
 import { Skeleton } from "../components/Skeleton";
@@ -59,7 +59,7 @@ import { lazyChunk } from "../lazyChunk";
 import { discardPageDrafts } from "../reflectionPageDrafts";
 import { SECTION_ATTR } from "../reflectionQuotes";
 import type { SectionText } from "../reflectionText";
-import { sectionTexts } from "../reflectionText";
+import { TOP_SECTION, sectionTexts } from "../reflectionText";
 
 const MoveReflectionDialog = lazyChunk(() =>
   import("../components/MoveReflectionDialog").then((m) => ({
@@ -354,152 +354,159 @@ function PageBody({
   const curate = atLeast(right, "curate");
   const metaLine = reflectionMetaLine(page, engramsVisible);
   return (
-    <div className="flex flex-col gap-6">
-      <header className={`flex flex-col gap-2 ${ownTitle ? "-mb-2" : ""}`}>
-        <div className="flex items-center justify-between gap-2">
-          <Breadcrumbs crumbs={reflectionCrumbsOf(domain, path, page.title)} />
-          <div className="flex shrink-0 items-center gap-2 print:hidden">
-            {mayEditPage(right, path) && (
-              <EditLink to={reflectionEditRoute(domain, path)} />
-            )}
-            {/*
+    // Below the width where the threads column fits, its pill floats over
+    // the foot of the page: the padding keeps the last line clear of it.
+    <div className="grid gap-6 pb-16 xl:grid-cols-[minmax(0,1fr)_340px] xl:gap-14 xl:pb-0">
+      <div className="flex min-w-0 flex-col gap-6">
+        <header className={`flex flex-col gap-2 ${ownTitle ? "-mb-2" : ""}`}>
+          <div className="flex items-center justify-between gap-2">
+            <Breadcrumbs
+              crumbs={reflectionCrumbsOf(domain, path, page.title)}
+            />
+            <div className="flex shrink-0 items-center gap-2 print:hidden">
+              {mayEditPage(right, path) && (
+                <EditLink to={reflectionEditRoute(domain, path)} />
+              )}
+              {/*
               Move and Delete are curate verbs and rare ones, so they live
               behind the menu, Delete in red. No menu at all for a reader who
               has neither, and none on the pact, which can be neither moved
               nor deleted.
             */}
-            {atLeast(right, "edit") && path !== PACT_PATH && (
-              <MoreActions
-                triggerRef={moreRef}
-                onCloseAutoFocus={(event) => {
-                  // Delete hands focus to its confirmation, not back here.
-                  if (skipRefocus.current) {
-                    skipRefocus.current = false;
-                    event.preventDefault();
-                    confirmRef.current
-                      ?.querySelector<HTMLElement>("button[aria-label]")
-                      ?.focus();
+              {atLeast(right, "edit") && path !== PACT_PATH && (
+                <MoreActions
+                  triggerRef={moreRef}
+                  onCloseAutoFocus={(event) => {
+                    // Delete hands focus to its confirmation, not back here.
+                    if (skipRefocus.current) {
+                      skipRefocus.current = false;
+                      event.preventDefault();
+                      confirmRef.current
+                        ?.querySelector<HTMLElement>("button[aria-label]")
+                        ?.focus();
+                    }
+                  }}
+                >
+                  <ActionItem
+                    label="Move"
+                    icon={FolderInput}
+                    onSelect={() => {
+                      onMove(page.title);
+                    }}
+                  />
+                  <ActionItem
+                    label="Delete"
+                    icon={Trash2}
+                    destructive
+                    onSelect={() => {
+                      skipRefocus.current = true;
+                      setConfirmingDelete(true);
+                    }}
+                  />
+                </MoreActions>
+              )}
+            </div>
+          </div>
+          {confirmingDelete && atLeast(right, "edit") && path !== PACT_PATH && (
+            <div ref={confirmRef}>
+              <DestructiveAction
+                label="Delete"
+                confirmLabel="Confirm delete"
+                hideTrigger
+                confirming={confirmingDelete}
+                onConfirmingChange={(open) => {
+                  setConfirmingDelete(open);
+                  if (!open) {
+                    moreRef.current?.focus();
                   }
                 }}
-              >
-                <ActionItem
-                  label="Move"
-                  icon={FolderInput}
-                  onSelect={() => {
-                    onMove(page.title);
-                  }}
-                />
-                <ActionItem
-                  label="Delete"
-                  icon={Trash2}
-                  destructive
-                  onSelect={() => {
-                    skipRefocus.current = true;
-                    setConfirmingDelete(true);
-                  }}
-                />
-              </MoreActions>
-            )}
-          </div>
-        </div>
-        {confirmingDelete && atLeast(right, "edit") && path !== PACT_PATH && (
-          <div ref={confirmRef}>
-            <DestructiveAction
-              label="Delete"
-              confirmLabel="Confirm delete"
-              hideTrigger
-              confirming={confirmingDelete}
-              onConfirmingChange={(open) => {
-                setConfirmingDelete(open);
-                if (!open) {
-                  moreRef.current?.focus();
-                }
-              }}
-              pending={remove.isPending}
-              onConfirm={() => {
-                remove.mutate();
-              }}
-            />
-          </div>
-        )}
-        {remove.error && (
-          <p
-            role="alert"
-            className="rounded bg-red-50 px-2 py-1 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
-          >
-            {problemDetail(remove.error)}
-          </p>
-        )}
-        {!ownTitle && <h1 className="text-display">{page.title}</h1>}
-        {!ownTitle && metaLine !== "" && (
-          <p className="text-sm text-ink-3">{metaLine}</p>
-        )}
-        {page.livePresent.length > 0 && (
-          <p
-            role="status"
-            className="text-sm text-slate-500 dark:text-slate-400"
-          >
-            {`${page.livePresent.join(", ")} editing now`}
-          </p>
-        )}
-      </header>
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <div className="flex min-w-0 flex-col gap-6">
-          <article ref={articleRef} className="flex flex-col gap-4">
-            {sections.map((section, index) => (
-              <PageSection
-                key={section.id ?? `h${index}:${section.heading}`}
-                domain={domain}
-                assets={assets}
-                index={index}
-                // The meta line goes under the body's own title when it has
-                // one; without one the header draws title and line itself.
-                titleNote={
-                  index === 0 && ownTitle && metaLine !== ""
-                    ? metaLine
-                    : undefined
-                }
-                section={section}
-                engramsVisible={engramsVisible}
-                view={
-                  page.sections.find(
-                    (s) => s.id === section.id && s.heading === section.heading,
-                  ) ?? null
-                }
+                pending={remove.isPending}
+                onConfirm={() => {
+                  remove.mutate();
+                }}
               />
-            ))}
-          </article>
-          {/*
+            </div>
+          )}
+          {remove.error && (
+            <p
+              role="alert"
+              className="rounded bg-red-50 px-2 py-1 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
+            >
+              {problemDetail(remove.error)}
+            </p>
+          )}
+          {!ownTitle && <h1 className="text-display">{page.title}</h1>}
+          {!ownTitle && metaLine !== "" && (
+            <p className="text-sm text-ink-3">{metaLine}</p>
+          )}
+          {page.livePresent.length > 0 && (
+            <p
+              role="status"
+              className="text-sm text-slate-500 dark:text-slate-400"
+            >
+              {`${page.livePresent.join(", ")} editing now`}
+            </p>
+          )}
+        </header>
+        <article ref={articleRef} className="flex flex-col gap-4">
+          {sections.map((section, index) => (
+            <PageSection
+              key={section.id ?? `h${index}:${section.heading}`}
+              domain={domain}
+              assets={assets}
+              index={index}
+              // The meta line goes under the body's own title when it has
+              // one; without one the header draws title and line itself.
+              titleNote={
+                index === 0 && ownTitle && metaLine !== ""
+                  ? metaLine
+                  : undefined
+              }
+              section={section}
+              // The intro has a heading of its own only when the page
+              // carries its own title; every other section starts with one.
+              headed={section.id !== TOP_SECTION || ownTitle}
+              engramsVisible={engramsVisible}
+              view={
+                page.sections.find(
+                  (s) => s.id === section.id && s.heading === section.heading,
+                ) ?? null
+              }
+            />
+          ))}
+        </article>
+        {/*
           Outside the article: selections for threads are read against it,
           and this list is not part of the page's text.
         */}
-          <AttachmentsSection
-            domain={domain}
-            body={page.markdown}
-            home={assets}
-            canDelete={curate}
-            canReplace={curate}
-            onMove={curate ? onMoveFile : undefined}
-            onRemoved={() => {
-              invalidateReflection(queryClient, domain);
-              void queryClient.invalidateQueries({
-                queryKey: reflectionAssetsKey(domain),
-              });
-            }}
-            confirmText={removeFileText}
-          />
-        </div>
-        <aside aria-label="Threads" className="flex flex-col gap-3">
-          <ReflectionThreads
-            domain={domain}
-            path={path}
-            doc={page}
-            sections={sections}
-            right={right}
-            articleRef={articleRef}
-          />
-        </aside>
+        <AttachmentsSection
+          domain={domain}
+          body={page.markdown}
+          home={assets}
+          canDelete={curate}
+          canReplace={curate}
+          onMove={curate ? onMoveFile : undefined}
+          onRemoved={() => {
+            invalidateReflection(queryClient, domain);
+            void queryClient.invalidateQueries({
+              queryKey: reflectionAssetsKey(domain),
+            });
+          }}
+          confirmText={removeFileText}
+        />
       </div>
+      {/*
+          The column beside the page from `xl` up, a pill and a sheet below
+          it: the threads draw their own frame for either.
+        */}
+      <ReflectionThreads
+        domain={domain}
+        path={path}
+        doc={page}
+        sections={sections}
+        right={right}
+        articleRef={articleRef}
+      />
     </div>
   );
 }
@@ -509,10 +516,13 @@ function PageSection({
   assets,
   index,
   section,
+  headed,
   engramsVisible,
   view,
   titleNote,
 }: {
+  /** Whether the section's text starts with a heading to carry its sources. */
+  headed: boolean;
   /** A line under the section's first `# Title`, outside its text. */
   titleNote?: string | undefined;
   /** For the source links only; the rendered body takes no domain (see above). */
@@ -529,6 +539,13 @@ function PageSection({
   // A section without an id yet has no stable address; its position keeps
   // two same-named headings apart.
   const domId = section.id === null ? `s-h${index}` : `s-${section.id}`;
+  const sources =
+    engramsVisible &&
+    view?.sources !== null &&
+    view?.sources !== undefined &&
+    view.sources.length > 0 ? (
+      <Sources domain={domain} heading={section.heading} view={view} />
+    ) : null;
   return (
     <section
       id={domId}
@@ -539,22 +556,32 @@ function PageSection({
         No `domain`: it would resolve `assets/` links through the engram
         files route. `assets` resolves them through the Reflection's own.
       */}
+      {/*
+        A section with no heading of its own carries its sources on a line
+        of their own above the text, skipped by the anchoring like the rest.
+      */}
+      {sources !== null && !headed && (
+        <div data-anchor-skip="" className="flex justify-end select-none">
+          {sources}
+        </div>
+      )}
       <Markdown
         source={section.text}
         assets={assets}
         sourceSpans
         {...(titleNote === undefined ? {} : { titleNote })}
+        {...(sources !== null && headed ? { headingAside: sources } : {})}
       />
-      {engramsVisible &&
-        view?.sources !== null &&
-        view?.sources !== undefined &&
-        view.sources.length > 0 && (
-          <Sources domain={domain} heading={section.heading} view={view} />
-        )}
     </section>
   );
 }
 
+/**
+ * The engrams a section was built from, as a small count at the right end of
+ * its heading: "1 source", with an amber dot when one of them changed since
+ * (or was retired or is missing). It opens the list over the text rather
+ * than pushing the text down; Escape or a press elsewhere shuts it.
+ */
 function Sources({
   domain,
   heading,
@@ -566,23 +593,75 @@ function Sources({
 }): ReactElement {
   const [open, setOpen] = useState(false);
   const panel = useId();
+  const note = useId();
+  const box = useRef<HTMLSpanElement | null>(null);
+  const button = useRef<HTMLButtonElement | null>(null);
+  const sources = view.sources ?? [];
+  const changed = sources.some((source) => source.state === "changed");
+  const stale = sources.some((source) => source.state !== "current");
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const away = (event: PointerEvent) => {
+      if (!box.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", away);
+    return () => {
+      document.removeEventListener("pointerdown", away);
+    };
+  }, [open]);
   return (
-    <div className="text-sm">
+    <span
+      ref={box}
+      className="relative inline-flex"
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && open) {
+          event.stopPropagation();
+          setOpen(false);
+          button.current?.focus();
+        }
+      }}
+    >
       <button
+        ref={button}
         type="button"
         aria-expanded={open}
         aria-controls={panel}
         aria-label={`Sources for ${heading}`}
+        aria-describedby={stale ? note : undefined}
         onClick={() => {
           setOpen(!open);
         }}
-        className={BUTTON.ghost}
+        className={`inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[12.5px] leading-5 font-medium text-muted hover:bg-sunken hover:text-ink-3 ${FOCUS_RING}`}
       >
-        Sources
+        <Layers aria-hidden size={14} />
+        {plural(sources.length, "source", "sources")}
+        {stale && (
+          <span
+            aria-hidden
+            data-testid="sources-changed"
+            className="size-1.5 rounded-full bg-(--mark-rule)"
+          />
+        )}
       </button>
-      <ul id={panel} hidden={!open} className="mt-1 flex flex-col gap-1 pl-2">
-        {(view.sources ?? []).map((source) => (
-          <li key={source.permalink} className="flex items-center gap-2">
+      {stale && (
+        <span id={note} hidden>
+          {changed ? "A source changed." : "A source is retired or missing."}
+        </span>
+      )}
+      <ul
+        id={panel}
+        hidden={!open}
+        className="absolute top-full right-0 z-30 mt-1.5 flex w-max max-w-[min(22rem,calc(100vw-2rem))] flex-col gap-1 rounded-lg border border-hair bg-raised p-2 text-sm text-ink shadow-pop"
+      >
+        {sources.map((source) => (
+          <li
+            key={source.permalink}
+            className="flex items-center gap-2 px-1 py-0.5"
+          >
             <Link to={engramRoute(domain, source.permalink)} className={LINK}>
               {source.title}
             </Link>
@@ -590,6 +669,6 @@ function Sources({
           </li>
         ))}
       </ul>
-    </div>
+    </span>
   );
 }

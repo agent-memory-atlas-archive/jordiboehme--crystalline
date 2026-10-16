@@ -328,13 +328,49 @@ test.describe.serial("the Reflection journeys", () => {
     // Resolved threads leave the column until somebody asks for them.
     await expect(card).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Show resolved threads" }).click();
+    await page.getByRole("switch", { name: "Show resolved threads" }).click();
     await expect(card).toContainText("Resolved: Checked with the night shift.");
     await card.getByRole("button", { name: "Reopen" }).click();
     await expect(card).toContainText("Reopened");
     await expect(
       card.getByRole("button", { name: "Answer", exact: true }),
     ).toBeVisible();
+  });
+
+  test("on a phone the threads are a sheet behind a pill, and a tap on a quote opens it at its thread", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await signIn(page, USER, PASSWORD);
+    await page.goto(WELCOME);
+    const passage = page.getByText(
+      "Deploys run at night, after the batch window.",
+    );
+    await expect(passage).toBeVisible();
+    await expect(
+      page.getByRole("complementary", { name: "Threads" }),
+    ).toHaveCount(0);
+    const pill = page.getByRole("button", { name: "Show 1 thread" });
+    await pill.click();
+    const sheet = page.getByRole("dialog", { name: "Threads" });
+    await expect(
+      sheet.getByRole("article", { name: "Thread on Night deploys" }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(sheet).toHaveCount(0);
+    await expect(pill).toBeFocused();
+    // The quote is "Deploys run at night": a tap on its first word.
+    const box = await passage.boundingBox();
+    if (box === null) {
+      throw new Error("the passage has no box");
+    }
+    await page.mouse.click(box.x + 8, box.y + 10);
+    const card = sheet.getByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    await expect(card).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(sheet).toHaveCount(0);
   });
 
   test("a contributor attaches a file in the live editor", async ({ page }) => {

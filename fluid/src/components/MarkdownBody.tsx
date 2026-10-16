@@ -339,6 +339,18 @@ const FIRST_TITLE = "dataFirstTitle";
 const FIRST_TITLE_PROP = "data-first-title";
 
 /**
+ * A small control drawn at the right end of the document's first heading,
+ * outside its text, handed down the same way as `titleNote` and for the same
+ * reason: a changed control re-renders its heading and remounts nothing.
+ */
+const HeadingAsideContext = createContext<ReactNode>(undefined);
+
+/** The marker the first heading of any level carries for `headingAside`. */
+const FIRST_HEADING = "dataFirstHeading";
+/** The same marker as the component receives it. */
+const FIRST_HEADING_PROP = "data-first-heading";
+
+/**
  * Mark the document's first `<h1>`, in document order, so the heading
  * component can draw a note straight under it. Walks the tree once and
  * changes nothing but that one property; first in the chain, before the
@@ -354,6 +366,14 @@ function markFirstTitle() {
       return (node.children ?? []).some(walk);
     };
     walk(tree as HastNode);
+    const first = (node: HastNode): boolean => {
+      if (node.type === "element" && /^h[1-6]$/.test(node.tagName ?? "")) {
+        node.properties = { ...node.properties, [FIRST_HEADING]: "true" };
+        return true;
+      }
+      return (node.children ?? []).some(first);
+    };
+    first(tree as HastNode);
   };
 }
 
@@ -1031,6 +1051,7 @@ function heading(
     children?: ReactNode | undefined;
     id?: string | undefined;
     [FIRST_TITLE_PROP]?: string | undefined;
+    [FIRST_HEADING_PROP]?: string | undefined;
   }) {
     // Generated rather than derived from the slug: a heading literally called
     // "Auth text" would collide with a `${slug}-text` spelling, and two
@@ -1049,6 +1070,40 @@ function heading(
           {titleNote}
         </p>
       ) : null;
+    const aside = useContext(HeadingAsideContext);
+    // The control is no part of the heading's words either: unstamped,
+    // unselectable, passed over by the anchoring, and left out of the
+    // heading's name by naming it from the span around its text.
+    const side =
+      aside !== undefined &&
+      aside !== null &&
+      aside !== false &&
+      rest[FIRST_HEADING_PROP] === "true" ? (
+        <span
+          data-anchor-skip=""
+          className="ml-auto shrink-0 self-center text-sm font-normal tracking-normal select-none print:hidden"
+        >
+          {aside}
+        </span>
+      ) : null;
+    if (side !== null) {
+      return (
+        <>
+          <Tag
+            id={id}
+            className={`${className} flex items-baseline gap-3`}
+            aria-labelledby={textId}
+          >
+            <span id={textId} className="min-w-0">
+              {children}
+            </span>
+            {anchored && id !== undefined && <SectionLink id={id} />}
+            {side}
+          </Tag>
+          {note}
+        </>
+      );
+    }
     if (!anchored || id === undefined) {
       return (
         <>
@@ -1150,8 +1205,14 @@ export default function MarkdownBody({
   anchors,
   sourceSpans,
   titleNote,
+  headingAside,
 }: {
   source: string;
+  /**
+   * A small control drawn at the right end of the document's first heading
+   * and counted as no part of it (see `HeadingAsideContext`).
+   */
+  headingAside?: ReactNode;
   /**
    * One line of text drawn straight under the document's first level-one
    * heading and counted as no part of it: unstamped, unselectable, passed
@@ -1308,14 +1369,16 @@ export default function MarkdownBody({
     // prop, because every markdown surface is a reading surface.
     <div ref={rootRef} className="measured text-body">
       <TitleNoteContext.Provider value={titleNote}>
-        {anchors ? (
-          <SectionAnchorProvider pageUrl={anchors.pageUrl}>
-            {rendered}
-            <SectionLinkStatus />
-          </SectionAnchorProvider>
-        ) : (
-          rendered
-        )}
+        <HeadingAsideContext.Provider value={headingAside}>
+          {anchors ? (
+            <SectionAnchorProvider pageUrl={anchors.pageUrl}>
+              {rendered}
+              <SectionLinkStatus />
+            </SectionAnchorProvider>
+          ) : (
+            rendered
+          )}
+        </HeadingAsideContext.Provider>
       </TitleNoteContext.Provider>
     </div>
   );

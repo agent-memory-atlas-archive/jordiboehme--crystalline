@@ -143,6 +143,7 @@ function Waiting({
               thread={thread}
               heading={null}
               state={thread.anchor.state}
+              boxed
               actions={
                 <p className="text-caption text-slate-500 dark:text-slate-400">
                   <Link
