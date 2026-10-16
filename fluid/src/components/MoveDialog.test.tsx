@@ -272,6 +272,15 @@ describe("the move dialog", () => {
     expect(listed).toHaveTextContent("beta.md (the file is locked)");
     expect(listed).toHaveTextContent("ops / runbook.md");
     expect(within(dialog).getByText("The engram moved.")).toBeInTheDocument();
+    // The way on names what it leaves behind, and a long list scrolls
+    // inside the dialog rather than pushing the button off screen.
+    const onward = within(dialog).getByRole("button", {
+      name: "Continue to the engram",
+    });
+    expect(onward).toHaveAccessibleDescription(
+      expect.stringContaining("These engrams still link the old address:"),
+    );
+    expect(dialog).toHaveClass("overflow-y-auto");
     expect(within(dialog).queryByRole("alert")).toBeNull();
     expect(reads("/domains/eng/engrams/guides/alpha")).toBe(0);
 

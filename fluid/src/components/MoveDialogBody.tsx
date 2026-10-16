@@ -30,7 +30,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Dialog } from "radix-ui";
 import type { ReactElement } from "react";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useNavigate } from "react-router";
 
 import { problemDetail } from "../api/client";
@@ -74,6 +74,9 @@ export default function MoveDialogBody({
   const [matchPermalink, setMatchPermalink] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [warned, setWarned] = useState<MoveReceipt | null>(null);
+  // The list of engrams that still link the old address, which the button
+  // that leaves the dialog points at: a long list can scroll it off screen.
+  const unlinkedId = useId();
 
   const destFile = destinationFile(destination);
   // In a reviewing domain the move lands in the author's draft, which keeps
@@ -185,7 +188,7 @@ export default function MoveDialogBody({
     >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-slate-900/40" />
-        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 max-h-[calc(100vh-4rem)] w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900">
           <Dialog.Title className="text-lg font-semibold">
             Move {engram.title}
           </Dialog.Title>
@@ -227,7 +230,7 @@ export default function MoveDialogBody({
               {warned.linksFailed.length > 0 && (
                 // A status, as on the page move dialog: the move landed, and
                 // this names where a link still points at the old address.
-                <div role="status" className="text-sm">
+                <div id={unlinkedId} role="status" className="text-sm">
                   <p>These engrams still link the old address:</p>
                   <ul className="list-disc pl-5">
                     {warned.linksFailed.map((linker, index) => (
@@ -248,6 +251,9 @@ export default function MoveDialogBody({
                 <button
                   type="button"
                   autoFocus
+                  aria-describedby={
+                    warned.linksFailed.length > 0 ? unlinkedId : undefined
+                  }
                   onClick={() => {
                     settle(warned);
                   }}
