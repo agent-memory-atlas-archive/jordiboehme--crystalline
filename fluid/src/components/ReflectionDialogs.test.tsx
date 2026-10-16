@@ -12,7 +12,12 @@ import {
   reflectionKey,
   reflectionStatusKey,
 } from "../api/reflectionDomains";
-import { clearDraft, readDraft, writeDraft } from "../editor/drafts";
+import {
+  clearDraft,
+  readDraft,
+  readOffers,
+  writeDraft,
+} from "../editor/drafts";
 import { reflectionOfferKey, reflectionRoomKey } from "../collab/provider";
 
 import { ApiProblem, api } from "../api/client";
@@ -483,7 +488,7 @@ describe("after a create, move or delete", () => {
     }
   });
 
-  it("keeps a draft that already sits at the new path and leaves the old one", async () => {
+  it("keeps a draft that already sits at the new path and offers the old one there", async () => {
     const other = { ...DRAFT, content: "# newer\n" };
     writeDraft("ann", "eng", reflectionRoomKey("guides/a.md"), DRAFT);
     writeDraft("ann", "eng", reflectionRoomKey("howto/a.md"), other);
@@ -494,10 +499,16 @@ describe("after a create, move or delete", () => {
     expect(readDraft("ann", "eng", reflectionRoomKey("howto/a.md"))).toEqual(
       other,
     );
-    expect(readDraft("ann", "eng", reflectionRoomKey("guides/a.md"))).toEqual(
+    // Nothing is left at a path that no longer exists: the old copy is
+    // offered at the new one.
+    expect(
+      readDraft("ann", "eng", reflectionRoomKey("guides/a.md")),
+    ).toBeNull();
+    expect(readOffers("ann", "eng", reflectionOfferKey("howto/a.md"))).toEqual([
       DRAFT,
-    );
-    clearDraft("ann", "eng", reflectionRoomKey("guides/a.md"));
+    ]);
+    clearDraft("ann", "eng", reflectionRoomKey("howto/a.md"));
+    clearDraft("ann", "eng", reflectionOfferKey("howto/a.md"));
   });
 
   it("refreshes the status on a move", async () => {
