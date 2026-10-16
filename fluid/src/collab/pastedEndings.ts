@@ -4,8 +4,7 @@
  * and the reflection editor, so neither room can drift from the other.
  */
 
-import type { Transaction } from "@codemirror/state";
-import { EditorState } from "@codemirror/state";
+import { EditorState, Transaction } from "@codemirror/state";
 import type { YSyncConfig } from "y-codemirror.next";
 import { ySyncFacet } from "y-codemirror.next";
 import type * as Y from "yjs";
@@ -84,6 +83,11 @@ export const normalizePastedEndings = EditorState.transactionFilter.of((tr) => {
   //
   // Rebuilding drops the transaction's annotations, which is why the room's
   // own write-back is let through above: this path only ever rebuilds a local
-  // edit, whose annotations nothing downstream depends on.
-  return { changes };
+  // edit. Its user event is carried over, because the filters that run after
+  // this one (the section ids' guard in the reflection editor) steer only a
+  // person's own edits and recognize them by it.
+  const userEvent = tr.annotation(Transaction.userEvent);
+  return userEvent === undefined
+    ? { changes }
+    : { changes, userEvent, scrollIntoView: tr.scrollIntoView };
 });

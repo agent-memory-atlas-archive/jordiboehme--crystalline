@@ -1,12 +1,20 @@
 import {
+  defaultKeymap,
   deleteCharBackward,
   deleteCharForward,
+  deleteLine,
+  history,
   insertNewlineAndIndent,
+  redo,
+  selectLine,
+  undo,
 } from "@codemirror/commands";
+import type { Extension } from "@codemirror/state";
 import { EditorSelection, EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorView, keymap } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { normalizePastedEndings } from "../collab/pastedEndings";
 import { hiddenIdLines } from "./hiddenIdLines";
 import { insertBlock } from "./toolbar";
 
@@ -16,9 +24,16 @@ afterEach(() => {
   view = null;
 });
 
-function mount(doc: string): EditorView {
+function mount(doc: string, extra: Extension[] = []): EditorView {
   view = new EditorView({
-    state: EditorState.create({ doc, extensions: [hiddenIdLines()] }),
+    state: EditorState.create({
+      doc,
+      extensions: [
+        EditorState.lineSeparator.of("\n"),
+        ...extra,
+        hiddenIdLines(),
+      ],
+    }),
     parent: document.body,
   });
   return view;
@@ -216,6 +231,164 @@ describe("hiddenIdLines keeps an id with its heading", () => {
       const v = selected(two, two.indexOf("Second.") + "Se".length);
       deleteCharBackward(v);
       expect(v.state.doc.toString()).toBe("## Ocond.\n<!-- r:aaaa1111 -->\n");
+    });
+  });
+
+  describe("the line break after a heading, id and all", () => {
+    const TWO = `${PAGE}## Two\n<!-- r:bbbb2222 -->\nSecond.\n`;
+
+    it("takes the id with a whole heading typed over", () => {
+      const v = mount(PAGE);
+      v.dispatch({ selection: EditorSelection.cursor(3) });
+      selectLine(v);
+      v.dispatch(v.state.replaceSelection("X"), { userEvent: "input.type" });
+      expect(v.state.doc.toString()).toBe("XFirst.\n");
+    });
+
+    it("takes the id with a deleted heading line", () => {
+      const v = mount(PAGE);
+      v.dispatch({ selection: EditorSelection.cursor(3) });
+      deleteLine(v);
+      expect(v.state.doc.toString()).toBe("First.\n");
+    });
+
+    it("never merges the id into the heading when the selection ends at the next line", () => {
+      const v = mount(PAGE);
+      v.dispatch({ selection: EditorSelection.range(4, "## One\n".length) });
+      deleteCharBackward(v);
+      expect(v.state.doc.toString()).toBe("## OFirst.\n<!-- r:aaaa1111 -->\n");
+    });
+
+    it("lets a later heading's id go when the selection ends at it", () => {
+      const v = mount(TWO);
+      v.dispatch({
+        selection: EditorSelection.range(4, TWO.indexOf("<!-- r:bbbb")),
+      });
+      deleteCharBackward(v);
+      expect(v.state.doc.toString()).toBe("## OSecond.\n<!-- r:aaaa1111 -->\n");
+    });
+
+    it("leaves one id when two selections end on one line", () => {
+      const v = mount(TWO, [EditorState.allowMultipleSelections.of(true)]);
+      const b = TWO.indexOf("## Two");
+      v.dispatch({
+        selection: EditorSelection.create([
+          EditorSelection.range(4, b + 3),
+          EditorSelection.range(b + 4, TWO.indexOf("Second.") + 2),
+        ]),
+      });
+      deleteCharBackward(v);
+      expect(v.state.doc.toString()).toBe("## OTcond.\n<!-- r:aaaa1111 -->\n");
+    });
+
+    it("keeps each id when two selections run from two headings", () => {
+      const v = mount(TWO, [EditorState.allowMultipleSelections.of(true)]);
+      const b = TWO.indexOf("## Two");
+      v.dispatch({
+        selection: EditorSelection.create([
+          EditorSelection.range(4, TWO.indexOf("First.") + 2),
+          EditorSelection.range(b + 4, TWO.indexOf("Second.") + 2),
+        ]),
+      });
+      v.dispatch(v.state.replaceSelection("X"), { userEvent: "input.type" });
+      expect(v.state.doc.toString()).toBe(
+        "## OXrst.\n<!-- r:aaaa1111 -->\n## TXcond.\n<!-- r:bbbb2222 -->\n",
+      );
+    });
+
+    it.each([["A\r\nB"], ["A\rB"]])(
+      "puts the id below the heading when a paste carries %j",
+      (text) => {
+        const v = mount(PAGE, [normalizePastedEndings]);
+        v.dispatch({
+          selection: EditorSelection.range(4, PAGE.indexOf("First.") + 2),
+        });
+        v.dispatch(v.state.replaceSelection(text), {
+          userEvent: "input.paste",
+        });
+        expect(v.state.doc.toString()).toBe(
+          "## OA\n<!-- r:aaaa1111 -->\nBrst.\n",
+        );
+      },
+    );
+
+    it("strips ids out of pasted text", () => {
+      const v = mount(PAGE);
+      v.dispatch({
+        selection: EditorSelection.range(4, PAGE.indexOf("First.") + 2),
+      });
+      const paste = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(paste, "clipboardData", {
+        value: {
+          getData: (type: string) =>
+            type === "text/plain" ? "A\n## Z\n<!-- r:aaaa1111 -->\nB" : "",
+          types: ["text/plain"],
+          files: [],
+        },
+      });
+      v.contentDOM.dispatchEvent(paste);
+      expect(v.state.doc.toString()).toBe(
+        "## OA\n<!-- r:aaaa1111 -->\n## Z\nBrst.\n",
+      );
+    });
+
+    it("takes both back with one undo and puts both back with one redo", () => {
+      const v = mount(PAGE, [history()]);
+      v.dispatch({
+        selection: EditorSelection.range(4, PAGE.indexOf("First.") + 2),
+      });
+      deleteCharBackward(v);
+      const after = v.state.doc.toString();
+      undo(v);
+      expect(v.state.doc.toString()).toBe(PAGE);
+      redo(v);
+      expect(v.state.doc.toString()).toBe(after);
+    });
+  });
+
+  describe("moving lines", () => {
+    const TWO = `${PAGE}## Two\n<!-- r:bbbb2222 -->\nSecond.\n`;
+
+    function press(v: EditorView, key: "ArrowUp" | "ArrowDown") {
+      v.contentDOM.dispatchEvent(
+        new KeyboardEvent("keydown", { key, altKey: true, bubbles: true }),
+      );
+    }
+
+    it("moves a heading down with its id, past a line", () => {
+      const v = mount(PAGE, [keymap.of(defaultKeymap)]);
+      v.dispatch({ selection: EditorSelection.cursor(3) });
+      press(v, "ArrowDown");
+      expect(v.state.doc.toString()).toBe(
+        "First.\n## One\n<!-- r:aaaa1111 -->\n",
+      );
+      expect(v.state.selection.main.head).toBe("First.\n## ".length);
+    });
+
+    it("moves a line up past a heading and its id together", () => {
+      const v = mount(PAGE, [keymap.of(defaultKeymap)]);
+      v.dispatch({ selection: EditorSelection.cursor(PAGE.indexOf("First.")) });
+      press(v, "ArrowUp");
+      expect(v.state.doc.toString()).toBe(
+        "First.\n## One\n<!-- r:aaaa1111 -->\n",
+      );
+    });
+
+    it("moves a heading up past another heading, both with their ids", () => {
+      const v = mount(TWO, [keymap.of(defaultKeymap)]);
+      v.dispatch({ selection: EditorSelection.cursor(TWO.indexOf("## Two")) });
+      press(v, "ArrowUp");
+      press(v, "ArrowUp");
+      expect(v.state.doc.toString()).toBe(
+        "## Two\n<!-- r:bbbb2222 -->\n## One\n<!-- r:aaaa1111 -->\nFirst.\nSecond.\n",
+      );
+    });
+
+    it("leaves a move with no id in reach to the default command", () => {
+      const v = mount("a\nb\n", [keymap.of(defaultKeymap)]);
+      v.dispatch({ selection: EditorSelection.cursor(0) });
+      press(v, "ArrowDown");
+      expect(v.state.doc.toString()).toBe("b\na\n");
     });
   });
 

@@ -22,15 +22,23 @@
  * room carries no user event and is applied as it came.
  */
 
-import type { Extension, TransactionSpec } from "@codemirror/state";
+import type {
+  Extension,
+  Line,
+  SelectionRange,
+  Text,
+  TransactionSpec,
+} from "@codemirror/state";
 import {
+  ChangeSet,
   EditorSelection,
   EditorState,
+  Prec,
   RangeSetBuilder,
   StateField,
 } from "@codemirror/state";
 import type { DecorationSet } from "@codemirror/view";
-import { Decoration, EditorView } from "@codemirror/view";
+import { Decoration, EditorView, keymap } from "@codemirror/view";
 
 import { isIdLine, stripIdLines } from "../reflectionText";
 
@@ -171,57 +179,254 @@ const keepIdLines = EditorState.transactionFilter.of((tr) => {
 });
 
 /**
- * A selection that starts inside a heading (or at its end) and runs past its
- * id line, deleted, cut, typed over or pasted over. The edit happens as the
- * person sees it, since the id line is invisible to them, and the heading's
- * id is then put back on the line right below what is left of the heading:
- * below the first line of a pasted text that holds line breaks. The heading
- * still starts where it started, so its section keeps its id and its threads.
- * A selection that starts at the heading's first character takes the whole
- * heading and its id with it, and so does every heading the selection holds
- * whole. When the line below already holds an id (the selection ended inside
- * a later heading, whose id stayed), the surviving heading's own id takes
- * that place, as the heading text that is left is this heading's.
+ * A change that crosses the line break after a heading: a selection deleted,
+ * cut, typed over, pasted over or dropped, or a whole line deleted. The id
+ * line is hidden, so the line break a person sees after a heading is the
+ * whole stretch from the heading's end to the start of the next visible line,
+ * id and all, and the edit is read that way:
+ *
+ * - The heading's first character goes (a selection from the heading's start,
+ *   a triple-click, a deleted line): the whole heading goes, and its id with
+ *   it, wherever the change ended inside that stretch.
+ * - The heading's start stays: the id goes back on the line right below what
+ *   is left of the heading (below the first line of a pasted text), wherever
+ *   the change left it. When the line below already holds an id, the
+ *   surviving heading's own id takes that place: the text that is left is
+ *   this heading's, and the heading that id belonged to has gone.
+ *
+ * A heading counts as gone too when the line break before it was deleted,
+ * so two selections that end on one line leave one id there, not two. The
+ * edit itself happens as the person made it; the ids are put right in the
+ * same transaction, so one Undo takes both back.
  */
-const keepHeadingIds = EditorState.transactionFilter.of((tr) => {
-  if (
-    !tr.docChanged ||
-    !(
-      tr.isUserEvent("input") ||
-      tr.isUserEvent("delete") ||
-      tr.isUserEvent("move")
-    )
-  ) {
-    return tr;
+const keepHeadingIds = Prec.high(
+  EditorState.transactionFilter.of((tr) => {
+    if (
+      !tr.docChanged ||
+      tr.isUserEvent("delete.backward") ||
+      tr.isUserEvent("delete.forward") ||
+      tr.isUserEvent("move.line") ||
+      !(
+        tr.isUserEvent("input") ||
+        tr.isUserEvent("delete") ||
+        tr.isUserEvent("move")
+      )
+    ) {
+      return tr;
+    }
+    const doc = tr.startState.doc;
+    const changes: { fromA: number; toA: number }[] = [];
+    tr.changes.iterChanges((fromA, toA) => {
+      changes.push({ fromA, toA });
+    });
+    // The headings whose line break the transaction reached into.
+    const touched: { heading: Line; id: Line; survives: boolean }[] = [];
+    const seen = new Set<number>();
+    for (const { fromA, toA } of changes) {
+      if (fromA === toA) {
+        continue; // a pure insert: `newLineBelowId` places it
+      }
+      const first = doc.lineAt(fromA).number;
+      const last = doc.lineAt(toA).number;
+      for (let n = Math.max(1, first - 1); n <= last; n += 1) {
+        if (n >= doc.lines || seen.has(n)) {
+          continue;
+        }
+        const heading = doc.line(n);
+        const id = doc.line(n + 1);
+        if (!isIdLine(id.text)) {
+          continue;
+        }
+        const seamEnd = n + 1 < doc.lines ? id.to + 1 : id.to;
+        if (!(fromA < seamEnd && toA > heading.to)) {
+          continue;
+        }
+        seen.add(n);
+        const survives = !changes.some(
+          (c) =>
+            (c.fromA <= heading.from && c.toA > heading.from) ||
+            (heading.from > 0 &&
+              c.fromA < heading.from &&
+              c.toA >= heading.from),
+        );
+        touched.push({ heading, id, survives });
+      }
+    }
+    if (touched.length === 0) {
+      return tr;
+    }
+    const after = tr.newDoc;
+    // First: every id text the change left standing goes, with one line
+    // break beside it, unless it already sits alone below its heading.
+    const removals: { from: number; to: number }[] = [];
+    const placing: { headingAt: number; id: string }[] = [];
+    for (const { heading, id, survives } of touched) {
+      const intact = !changes.some((c) => c.fromA < id.to && c.toA > id.from);
+      const headingAt = tr.changes.mapPos(heading.from, -1);
+      if (intact) {
+        const at = tr.changes.mapPos(id.from, 1);
+        const end = at + id.text.length;
+        if (survives) {
+          const line = after.lineAt(headingAt);
+          if (
+            line.number < after.lines &&
+            after.line(line.number + 1).from === at &&
+            after.line(line.number + 1).to === end
+          ) {
+            continue; // still alone right below its heading
+          }
+        }
+        if (end < after.length && after.sliceString(end, end + 1) === "\n") {
+          removals.push({ from: at, to: end + 1 });
+        } else if (at > 0 && after.sliceString(at - 1, at) === "\n") {
+          removals.push({ from: at - 1, to: end });
+        } else {
+          removals.push({ from: at, to: end });
+        }
+      }
+      if (survives) {
+        placing.push({ headingAt, id: id.text });
+      }
+    }
+    const removed = ChangeSet.of(removals, after.length);
+    const middle = removed.apply(after);
+    const inserts: { from: number; to: number; insert: string }[] = [];
+    const lines = new Set<number>();
+    for (const { headingAt, id } of placing) {
+      const line = middle.lineAt(removed.mapPos(headingAt, -1));
+      if (lines.has(line.number)) {
+        continue;
+      }
+      lines.add(line.number);
+      const below =
+        line.number < middle.lines ? middle.line(line.number + 1) : null;
+      if (below !== null && isIdLine(below.text)) {
+        if (below.text !== id) {
+          inserts.push({ from: below.from, to: below.to, insert: id });
+        }
+      } else {
+        inserts.push({ from: line.to, to: line.to, insert: `\n${id}` });
+      }
+    }
+    const specs: TransactionSpec[] = [tr];
+    if (removals.length > 0) {
+      specs.push({ changes: removals, sequential: true });
+    }
+    if (inserts.length > 0) {
+      specs.push({ changes: inserts, sequential: true });
+    }
+    return specs.length === 1 ? tr : specs;
+  }),
+);
+
+/**
+ * The lines a move takes along: a heading with the id line below it, or the
+ * one line. An id line on its own is taken with the heading above it.
+ */
+function unitAt(doc: Text, n: number): { first: number; last: number } {
+  if (isIdLine(doc.line(n).text) && n > 1) {
+    return { first: n - 1, last: n };
   }
-  const doc = tr.startState.doc;
-  const restore: { from: number; to: number; insert: string }[] = [];
-  tr.changes.iterChanges((fromA, toA, fromB) => {
-    if (fromA === toA) {
-      return;
+  if (n < doc.lines && isIdLine(doc.line(n + 1).text)) {
+    return { first: n, last: n + 1 };
+  }
+  return { first: n, last: n };
+}
+
+/**
+ * Move the selected lines up or down past the next line, with a heading and
+ * its id line moved as one: neither the lines that move nor the line they
+ * pass can separate a heading from its id. Without an id line in reach it
+ * leaves the move to the default command.
+ */
+function moveLinesWithIds(view: EditorView, forward: boolean): boolean {
+  const { state } = view;
+  if (state.readOnly) {
+    return false;
+  }
+  const doc = state.doc;
+  const blocks: { first: number; last: number; ranges: SelectionRange[] }[] =
+    [];
+  for (const range of state.selection.ranges) {
+    let last = doc.lineAt(range.to).number;
+    const first = doc.lineAt(range.from).number;
+    if (!range.empty && range.to === doc.line(last).from && last > first) {
+      last -= 1;
     }
-    const heading = doc.lineAt(fromA);
-    if (fromA === heading.from || heading.number >= doc.lines) {
-      return;
-    }
-    const id = doc.line(heading.number + 1);
-    if (!isIdLine(id.text) || toA < id.to) {
-      return;
-    }
-    const left = tr.newDoc.lineAt(fromB);
-    const below =
-      left.number < tr.newDoc.lines ? tr.newDoc.line(left.number + 1) : null;
-    if (below !== null && isIdLine(below.text)) {
-      restore.push({ from: below.from, to: below.to, insert: id.text });
+    const block = {
+      first: unitAt(doc, first).first,
+      last: unitAt(doc, last).last,
+      ranges: [range],
+    };
+    const previous = blocks.at(-1);
+    if (previous !== undefined && block.first <= previous.last) {
+      previous.last = Math.max(previous.last, block.last);
+      previous.ranges.push(range);
     } else {
-      restore.push({ from: left.to, to: left.to, insert: `\n${id.text}` });
+      blocks.push(block);
     }
-  });
-  if (restore.length === 0) {
-    return tr;
   }
-  return [tr, { changes: restore, sequential: true }];
-});
+  let ids = false;
+  const changes: { from: number; to: number; insert: string }[] = [];
+  const ranges: SelectionRange[] = [];
+  for (const block of blocks) {
+    if (forward ? block.last === doc.lines : block.first === 1) {
+      ranges.push(...block.ranges);
+      continue;
+    }
+    const pass = unitAt(doc, forward ? block.last + 1 : block.first - 1);
+    const low = Math.min(block.first, pass.first);
+    const high = Math.max(block.last, pass.last);
+    for (let n = low; n <= high && !ids; n += 1) {
+      ids = isIdLine(doc.line(n).text);
+    }
+    const from = doc.line(block.first).from;
+    const to = doc.line(block.last).to;
+    const passFrom = doc.line(pass.first).from;
+    const passTo = doc.line(pass.last).to;
+    const text = doc.sliceString(from, to);
+    const passed = doc.sliceString(passFrom, passTo);
+    const shift = (passed.length + state.lineBreak.length) * (forward ? 1 : -1);
+    changes.push(
+      forward
+        ? { from, to: passTo, insert: `${passed}${state.lineBreak}${text}` }
+        : { from: passFrom, to, insert: `${text}${state.lineBreak}${passed}` },
+    );
+    for (const r of block.ranges) {
+      ranges.push(EditorSelection.range(r.anchor + shift, r.head + shift));
+    }
+  }
+  if (!ids || changes.length === 0) {
+    return false;
+  }
+  const sorted = [...changes].sort((x, y) => x.from - y.from);
+  if (sorted.some((c, i) => i > 0 && c.from < (sorted[i - 1]?.to ?? 0))) {
+    return false;
+  }
+  view.dispatch({
+    changes,
+    selection: EditorSelection.create(ranges, state.selection.mainIndex),
+    scrollIntoView: true,
+    userEvent: "move.line",
+  });
+  return true;
+}
+
+const moveWithIds = Prec.high(
+  keymap.of([
+    { key: "Alt-ArrowUp", run: (view) => moveLinesWithIds(view, false) },
+    { key: "Alt-ArrowDown", run: (view) => moveLinesWithIds(view, true) },
+  ]),
+);
+
+/**
+ * Pasted text without ids: an id copied from elsewhere (another page, or this
+ * one through a channel the copy filter does not see) would give a second
+ * section the id, and the threads, of the first.
+ */
+const pasteWithoutIds = EditorView.clipboardInputFilter.of((text) =>
+  stripIdLines(text),
+);
 
 /** Copied text without the ids: a pasted copy must not take a section's id. */
 const copyWithoutIds = EditorView.clipboardOutputFilter.of((text) =>
@@ -229,5 +434,13 @@ const copyWithoutIds = EditorView.clipboardOutputFilter.of((text) =>
 );
 
 export function hiddenIdLines(): Extension {
-  return [field, newLineBelowId, keepIdLines, keepHeadingIds, copyWithoutIds];
+  return [
+    field,
+    newLineBelowId,
+    keepIdLines,
+    keepHeadingIds,
+    moveWithIds,
+    copyWithoutIds,
+    pasteWithoutIds,
+  ];
 }
