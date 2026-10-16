@@ -188,7 +188,7 @@ impl Engine {
     }
 
     /// At start, before anything is served: set aside every `kept/<name>`
-    /// folder no registered domain owns, as [`Engine::set_aside_orphan_kept`]
+    /// folder no registered domain owns, as `Engine::set_aside_orphan_kept`
     /// does for one name, so a domain that reached the configuration
     /// without going through a registration (a hand-edited file) never
     /// sees texts left under its name. Runs only while this process holds
