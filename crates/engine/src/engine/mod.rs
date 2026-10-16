@@ -997,9 +997,9 @@ pub struct Engine {
     // `release`. See `Engine::hold_next_apply_until`.
     #[cfg(any(test, feature = "testing"))]
     hold_next_apply: std::sync::Mutex<Option<RoomScreenGate>>,
-    // A gate: when armed, the next try of an edit's live arm
-    // signals `entered` after it read the room's text and computed its
-    // target, then waits for `release` before it composes. See
+    // A gate: when armed, the next try of an edit's live arm, or an
+    // overwrite's, signals `entered` after it looked at the room and computed
+    // its target, then waits for `release` before it composes. See
     // `Engine::hold_next_live_compose_until`.
     #[cfg(any(test, feature = "testing"))]
     hold_next_live_compose: std::sync::Mutex<Option<RoomScreenGate>>,
@@ -2492,8 +2492,8 @@ impl Engine {
         handles
     }
 
-    /// Hold the next try of an edit's live arm between its look at the room
-    /// and its compose: it signals `entered` there and waits for `release`.
+    /// Hold the next try of an edit's live arm, or of an overwrite's,
+    /// between its look at the room and its compose: it signals `entered` there and waits for `release`.
     /// Lets a test type into the room inside that window, which a real
     /// person's typing cannot be timed to hit. Armed for one try and consumed
     /// by it; a test that arms it again before it releases holds the next try

@@ -1934,6 +1934,51 @@ async fn a_room_checksum_is_stale_once_another_writer_changed_the_file() {
     );
 }
 
+/// **Task 41b review.** The room closes between the overwrite's look and its
+/// compose. There is no room to refuse on behalf of any more, so the
+/// overwrite takes the ordinary path and replaces the file, as it does for
+/// a page nobody has open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_overwrite_whose_room_closed_before_the_compose_replaces_the_file() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed before leaving").await;
+
+    let (entered, release) = engine.hold_next_live_compose_until();
+    let writing = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .write_engram_present(
+                    &wholesale_capture("Alpha", REPLACEMENT, true),
+                    None,
+                    &crystalline_service::Scope::Unrestricted,
+                    None,
+                    None,
+                )
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .expect("the overwrite reaches the room");
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    sessions.dispose_if_empty(&joined.session).await;
+    release.notify_one();
+    let receipt = writing
+        .await
+        .unwrap()
+        .expect("the overwrite takes the ordinary path");
+    assert!(receipt.get("landed").is_none(), "{receipt}");
+    assert_eq!(receipt["action"], "written", "{receipt}");
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();
+    assert!(on_disk.contains(REPLACEMENT), "{on_disk:?}");
+}
+
 /// **Task 41b.** A wholesale replace of a page whose room cannot save is
 /// refused: it would land over text the room holds and nobody has saved,
 /// and composing it into the room would land nowhere. The refusal names who

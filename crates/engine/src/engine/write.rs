@@ -575,12 +575,53 @@ impl Engine {
             // it is given, and writing the file behind it would land over
             // text it holds and nobody has saved. So the replace is refused
             // there, naming who is in the room. A replacement was computed
-            // from no text, so there is no base to check.
-            let applied = match rooms
-                .compose_while_saving(&p.domain, &permalink, overlay, None, markdown, &actor, peer)
+            // from no text, so there is no base to check. A room that closed
+            // since the look above is no room at all: the replace then takes
+            // the ordinary path below, as it does for a page nobody has open.
+            self.take_live_compose_hold().await;
+            match rooms
+                .compose_while_saving(
+                    &p.domain,
+                    &permalink,
+                    overlay,
+                    None,
+                    markdown.clone(),
+                    &actor,
+                    peer,
+                )
                 .await
             {
-                Ok(applied) => applied,
+                Ok(applied) => {
+                    if let Some(text) = manifest_text {
+                        note_manifest_findings(
+                            &mut receipt,
+                            &text,
+                            domain_verify_config(&source).as_ref(),
+                        );
+                    }
+                    if overlay.is_some() {
+                        receipt["draft"] = json!(true);
+                    }
+                    if let Some(owner) = view.joined() {
+                        receipt["joined"] = json!(format!("landed in {owner}'s draft"));
+                    }
+                    // Where it went, in the words the live edit says it in:
+                    // `present` names who is about to watch the page change
+                    // under them.
+                    receipt["landed"] = json!("live");
+                    receipt["present"] = json!(applied.participants);
+                    // The tails, and which of them this arm owes: none of
+                    // them. The generated folder indexes, the embedding nudge
+                    // and - for a virtual domain whose MANIFEST is the one
+                    // engram whose text is also configuration - the routing
+                    // cache all describe bytes that are nowhere yet, so all
+                    // three belong to the room's saver, which runs them when
+                    // the text lands (`Engine::save_engram`), pinned end to
+                    // end by
+                    // `a_virtual_manifest_replaced_in_its_room_reaches_the_routing_cache`.
+                    return Ok(receipt);
+                }
+                Err(_) if !rooms.has_live_room(&p.domain, &permalink, overlay).await => {}
                 Err(_) => {
                     let mine = match peer {
                         Some(peer) => {
@@ -602,29 +643,7 @@ impl Engine {
                         &p.domain, &permalink, &present,
                     )));
                 }
-            };
-            if let Some(text) = manifest_text {
-                note_manifest_findings(&mut receipt, &text, domain_verify_config(&source).as_ref());
             }
-            if overlay.is_some() {
-                receipt["draft"] = json!(true);
-            }
-            if let Some(owner) = view.joined() {
-                receipt["joined"] = json!(format!("landed in {owner}'s draft"));
-            }
-            // Where it went, in the words the live edit says it in: `present`
-            // names who is about to watch the page change under them.
-            receipt["landed"] = json!("live");
-            receipt["present"] = json!(applied.participants);
-            // The tails, and which of them this arm owes: none of them. The
-            // generated folder indexes, the embedding nudge and - for a
-            // virtual domain whose MANIFEST is the one engram whose text is
-            // also configuration - the routing cache all describe bytes that
-            // are nowhere yet, so all three belong to the room's saver, which
-            // runs them when the text lands (`Engine::save_engram`), pinned
-            // end to end by
-            // `a_virtual_manifest_replaced_in_its_room_reaches_the_routing_cache`.
-            return Ok(receipt);
         }
 
         // The whole existence-check-then-write under one lock: the check and
