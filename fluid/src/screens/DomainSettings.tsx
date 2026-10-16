@@ -11,7 +11,7 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 
@@ -20,7 +20,7 @@ import {
   fetchSyncStatus,
   syncStatusKey,
 } from "../api/admin";
-import { fetchManifest, manifestKey } from "../api/domain";
+import { fetchManifest, manifestKey, treeQuery } from "../api/domain";
 import type { ManifestSections } from "../api/domain";
 import { useAuth } from "../auth/AuthContext";
 import { navigateTo } from "../base";
@@ -38,23 +38,49 @@ import {
 import { MembersCard } from "../components/MembersCard";
 import { RenameDomainDialog } from "../components/RenameDomainDialog";
 import { ReviewModeCard } from "../components/ReviewModeCard";
+import { Skeleton } from "../components/Skeleton";
 import { CHROME_LINK } from "../components/primitives";
 import { useDomainWritable } from "../domainWritable";
 import { isMissing, useDomainRights } from "../domainRights";
 import { domainRoute, manifestEditRoute } from "../paths";
+import { MissingOrReflection } from "./DomainMissing";
 
 export default function DomainSettings() {
   const { domain = "" } = useParams();
+  // The tree says whether the domain exists for this caller at all, the way
+  // the front page asks: a 404 is a wrong address or a Reflection-only
+  // reader, and both are answered as the front page answers them.
+  const tree = useQuery(treeQuery(domain, ""));
+  if (isMissing(tree.error)) {
+    return <MissingOrReflection domain={domain} />;
+  }
+  return <Settings key={domain} domain={domain} />;
+}
+
+function Settings({ domain }: { domain: string }) {
   const { capabilities } = useAuth();
   const { canWrite } = useDomainWritable(domain);
   const navigate = useNavigate();
   const location = useLocation();
-  const { summary, members, own, isRenaming } = useDomainRights(domain);
+  const { summary, listing, members, own, isRenaming } =
+    useDomainRights(domain);
   // The front page's palette row "Unregister domain" lands here armed: the
-  // question is asked by the card that owns it, never skipped.
+  // question is asked by the card that owns it, never skipped. The arming is
+  // taken once and cleared from the history entry, so a reload or a step
+  // back and forth does not ask again.
   const [confirmingUnregister, setConfirmingUnregister] = useState(
     (location.state as { unregister?: boolean } | null)?.unregister === true,
   );
+  const armedOnArrival = useRef(confirmingUnregister);
+  useEffect(() => {
+    if (armedOnArrival.current) {
+      armedOnArrival.current = false;
+      void navigate(
+        { pathname: location.pathname, hash: location.hash },
+        { replace: true, state: null },
+      );
+    }
+  }, [location.hash, location.pathname, navigate]);
   const [importing, setImporting] = useState(false);
   const [renamingOpen, setRenamingOpen] = useState(false);
   const manifest = useQuery({
@@ -81,15 +107,33 @@ export default function DomainSettings() {
         }
       : null;
 
-  // A link from the front page's rail opens at its block.
+  // Everything a block on this screen waits for has answered, one way or
+  // the other: a refused members read is an answer too. Latched, because a
+  // card mounting below asks a refused read again, and the screen must not
+  // fold back into its loading state (and unmount that card) while it does.
+  const answered =
+    !listing.isPending &&
+    !members.isPending &&
+    !manifest.isPending &&
+    !(capabilities.canShare && syncStatus.isPending);
+  const [settled, setSettled] = useState(answered);
+  if (answered && !settled) {
+    setSettled(true);
+  }
+  // A link from the front page's rail opens at its block, once the blocks
+  // above it are drawn and it has stopped moving.
   const hash = location.hash;
-  const loaded = members.data !== undefined && summary !== undefined;
+  const scrolled = useRef("");
   useEffect(() => {
-    if (hash === "" || !loaded) {
+    if (hash === "" || !settled || scrolled.current === hash) {
       return;
     }
-    document.getElementById(hash.slice(1))?.scrollIntoView?.();
-  }, [hash, loaded]);
+    const target = document.getElementById(hash.slice(1));
+    if (target !== null) {
+      scrolled.current = hash;
+      target.scrollIntoView?.({ block: "start" });
+    }
+  });
 
   const commands = useMemo<readonly PaletteCommand[]>(() => {
     const rows: PaletteCommand[] = [];
@@ -124,14 +168,26 @@ export default function DomainSettings() {
   }, [capabilities.canAdminister, canWrite, domain, isRenaming, own]);
   useRegisterCommands(commands);
 
+  const header = (
+    <header>
+      <Link to={domainRoute(domain)} className={`text-sm ${CHROME_LINK}`}>
+        {domain}
+      </Link>
+      <h1 className="text-display">Domain settings</h1>
+    </header>
+  );
+  if (!settled) {
+    return (
+      <div className="flex max-w-[720px] flex-col gap-8">
+        {header}
+        <Skeleton label="Loading the settings" rows={6} />
+      </div>
+    );
+  }
+
   return (
     <div className="flex max-w-[720px] flex-col gap-8">
-      <header>
-        <Link to={domainRoute(domain)} className={`text-sm ${CHROME_LINK}`}>
-          {domain}
-        </Link>
-        <h1 className="text-display">Domain settings</h1>
-      </header>
+      {header}
 
       {members.data !== undefined && (
         <div id="members" className="scroll-mt-20">
@@ -176,13 +232,15 @@ export default function DomainSettings() {
         </div>
       )}
 
-      <DangerZoneCard
-        domain={domain}
-        kind={summary?.kind ?? null}
-        confirming={confirmingUnregister}
-        onConfirmingChange={setConfirmingUnregister}
-        renaming={isRenaming}
-      />
+      <div id="danger-zone" className="scroll-mt-20">
+        <DangerZoneCard
+          domain={domain}
+          kind={summary?.kind ?? null}
+          confirming={confirmingUnregister}
+          onConfirmingChange={setConfirmingUnregister}
+          renaming={isRenaming}
+        />
+      </div>
 
       {importing && (
         <ImportArchiveDialog

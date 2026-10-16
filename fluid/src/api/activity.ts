@@ -13,10 +13,7 @@ import { readEngramRow } from "./engrams";
 import { asArray, asObject, asString } from "./json";
 
 /** One entry of the feed: a row, plus the day it was recorded. */
-export interface ActivityItem extends EngramRow {
-  /** The `recorded_at` date, as written, or null when there was none. */
-  recordedAt: string | null;
-}
+export type ActivityItem = EngramRow;
 
 /** The feed, and the window it covers. */
 export interface Activity {
@@ -37,7 +34,7 @@ export function readActivity(payload: unknown): Activity {
     if (row === null) {
       continue;
     }
-    items.push({ ...row, recordedAt: asString(asObject(entry)?.recorded_at) });
+    items.push(row);
   }
   return { timeframe: asString(record?.timeframe), items };
 }

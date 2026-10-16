@@ -1,15 +1,13 @@
 /**
  * The right rail of a domain's front page (spec 5.3): what the domain holds
- * and how it is kept, the MANIFEST's configuration sections shown once, the
- * ways into its settings, and what was recorded here lately. Blocks are
+ * and how it is kept, the MANIFEST's configuration sections shown once and
+ * the ways into its settings. Blocks are
  * separated by hairlines, not boxes, the way the engram details rail is.
  *
  * Nothing here asks the server for a value only the rail would show: the
- * settings rows carry a value where the page already read one, and the
- * recent rows come from the activity feed Home reads, under the same key.
+ * settings rows carry a value where the page already read one.
  */
 
-import { useQuery } from "@tanstack/react-query";
 import type { LucideIcon } from "lucide-react";
 import {
   DatabaseBackup,
@@ -20,21 +18,15 @@ import {
 import type { ReactElement, ReactNode } from "react";
 import { Link } from "react-router";
 
-import { ACTIVITY_QUERY_KEY, fetchActivity } from "../api/activity";
 import type { ManifestSections } from "../api/domain";
 import type { DomainSummary } from "../api/domains";
 import type { MembersResponse } from "../api/model";
-import { formatDayLong, formatInstant, plural } from "../format";
-import { RETIRED_CLASS, isRetired } from "../lifecycle";
+import { formatInstant, plural, relativeTime } from "../format";
 import type { ManifestSection } from "../manifestProse";
-import { domainSettingsRoute, engramRoute } from "../paths";
-import { ENGRAM_PREFETCH } from "../prefetch";
+import { domainSettingsRoute } from "../paths";
 import { Problems } from "./ManifestStarter";
 import { Markdown } from "./Markdown";
 import { FOCUS_RING, RAIL_LABEL } from "./primitives";
-
-/** How many recent engrams the rail lists. */
-const RECENT_ROWS = 5;
 
 export function DomainRail({
   domain,
@@ -118,7 +110,6 @@ export function DomainRail({
           )}
         </ul>
       </section>
-      <Recent domain={domain} />
     </aside>
   );
 }
@@ -163,8 +154,12 @@ function About({
         )}
         {summary.lastSync !== null && (
           <Row label="Synced">
-            <span className="tabular-nums" title={summary.lastSync}>
-              {formatInstant(summary.lastSync)}
+            <span
+              className="tabular-nums"
+              title={formatInstant(summary.lastSync)}
+            >
+              {relativeTime(summary.lastSync, new Date()) ??
+                formatInstant(summary.lastSync)}
             </span>
           </Row>
         )}
@@ -203,6 +198,7 @@ function ConfigBlock({
           ))}
         </dl>
         <Problems items={sections.provisioning.problems} />
+        <Notes source={section.notes} domain={domain} />
       </>
     );
   } else if (section.key === "tag aliases" && sections?.tagAliases != null) {
@@ -221,11 +217,12 @@ function ConfigBlock({
           ))}
         </ul>
         <Problems items={sections.tagAliases.problems} />
+        <Notes source={section.notes} domain={domain} />
       </>
     );
   } else {
     body = (
-      <div className="text-[13px]">
+      <div className="[&_.text-body]:text-[13px] [&_.text-body]:leading-normal [&_.text-body>:first-child]:mt-0">
         <Markdown source={section.body} domain={domain} />
       </div>
     );
@@ -237,6 +234,21 @@ function ConfigBlock({
       </h2>
       {body}
     </section>
+  );
+}
+
+/**
+ * What a configuration section says beside its declarations, compact under
+ * them: the MANIFEST's prose is shown, not lost with the bullets.
+ */
+function Notes({ source, domain }: { source: string; domain: string }) {
+  if (source === "") {
+    return null;
+  }
+  return (
+    <div className="mt-2 text-muted [&_.text-body]:text-[13px] [&_.text-body]:leading-normal [&_.text-body]:text-inherit [&_.text-body>:first-child]:mt-0">
+      <Markdown source={source} domain={domain} />
+    </div>
   );
 }
 
@@ -273,65 +285,6 @@ function SettingRow({
         )}
       </Link>
     </li>
-  );
-}
-
-/**
- * What was recorded here lately: the activity feed, under the key Home reads
- * it by, kept to this domain. The window is the engine's and is quoted.
- */
-function Recent({ domain }: { domain: string }) {
-  const activity = useQuery({
-    queryKey: ACTIVITY_QUERY_KEY,
-    queryFn: fetchActivity,
-  });
-  if (activity.data === undefined) {
-    // Loading or refused: the rail says nothing rather than a second error
-    // under a page that has its own.
-    return null;
-  }
-  const rows = activity.data.items
-    .filter((item) => item.domain === domain)
-    .slice(0, RECENT_ROWS);
-  const covered = activity.data.timeframe;
-  return (
-    <section aria-labelledby="rail-recent">
-      <h2 id="rail-recent" className={`mb-2 ${RAIL_LABEL}`}>
-        Recently recorded
-      </h2>
-      {rows.length === 0 ? (
-        <p className="text-muted">
-          {covered === null
-            ? "Nothing recorded here lately."
-            : `Nothing recorded here in the last ${covered}.`}
-        </p>
-      ) : (
-        <ul className="flex flex-col">
-          {rows.map((item) => (
-            <li
-              key={item.permalink}
-              className={`flex items-baseline gap-3 py-1 ${isRetired(item.status) ? RETIRED_CLASS : ""}`}
-            >
-              <Link
-                to={engramRoute(item.domain, item.permalink)}
-                {...ENGRAM_PREFETCH}
-                className={`min-w-0 truncate rounded text-link underline decoration-accent-300 underline-offset-[3px] hover:decoration-current dark:decoration-accent-800 ${FOCUS_RING}`}
-              >
-                {item.title}
-              </Link>
-              {item.recordedAt !== null && (
-                <span
-                  className="ml-auto shrink-0 text-xs text-muted tabular-nums"
-                  title={item.recordedAt}
-                >
-                  {formatDayLong(item.recordedAt)}
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
   );
 }
 

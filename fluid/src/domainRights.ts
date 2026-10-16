@@ -65,6 +65,7 @@ export function useDomainRights(domain: string) {
   const writeDisabledReason = isRenaming ? RENAMING_REASON : undefined;
   return {
     summary,
+    listing,
     members,
     own,
     isRenaming,

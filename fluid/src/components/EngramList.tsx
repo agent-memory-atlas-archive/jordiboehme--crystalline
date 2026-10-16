@@ -24,6 +24,7 @@ import { Link } from "react-router";
 import { problemDetail } from "../api/client";
 import type { EngramPage, EngramRow } from "../api/engrams";
 import { hasNextPage as envelopeHasNext } from "../api/engrams";
+import { formatDayLong } from "../format";
 import { RETIRED_CLASS, isRetired } from "../lifecycle";
 import { engramRoute } from "../paths";
 import { ENGRAM_PREFETCH } from "../prefetch";
@@ -90,6 +91,11 @@ export interface EngramListProps {
    * and the type on the right. Search keeps the boxed list.
    */
   plain?: boolean;
+  /**
+   * A row this list leaves out: the domain's front page is its MANIFEST, so
+   * the MANIFEST is not listed again under itself.
+   */
+  skip?: (row: EngramRow) => boolean;
 }
 
 export function EngramList({
@@ -102,6 +108,7 @@ export function EngramList({
   emptyActions,
   showDomain = false,
   plain = false,
+  skip,
 }: EngramListProps) {
   const scroller = useRef<HTMLDivElement>(null);
 
@@ -114,10 +121,10 @@ export function EngramList({
   });
   const { data, hasNextPage, isFetchingNextPage, fetchNextPage } = query;
 
-  const rows = useMemo(
-    () => data?.pages.flatMap((page) => page.hits) ?? [],
-    [data],
-  );
+  const rows = useMemo(() => {
+    const all = data?.pages.flatMap((page) => page.hits) ?? [];
+    return skip === undefined ? all : all.filter((row) => !skip(row));
+  }, [data, skip]);
   const total = data?.pages[data.pages.length - 1]?.total ?? rows.length;
 
   // The virtualizer hands back functions rather than values, which the React
@@ -440,6 +447,14 @@ function PlainRow({
           {row.status !== null && (
             <span {...(retired ? { title: "A retired status" } : {})}>
               <Chip variant={statusVariant(row.status)}>{row.status}</Chip>
+            </span>
+          )}
+          {row.recordedAt !== null && (
+            <span
+              className="ml-1 text-muted tabular-nums"
+              title={row.recordedAt}
+            >
+              {formatDayLong(row.recordedAt)}
             </span>
           )}
         </span>

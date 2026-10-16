@@ -7,10 +7,12 @@
  * configuration section, and the palette row the front page hands over.
  */
 
-import { screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter, useLocation } from "react-router";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import App from "../App";
 import { ApiProblem, api } from "../api/client";
 import type { Answer } from "../test/harness";
 import {
@@ -253,7 +255,7 @@ describe("the domain settings screen", () => {
     expect(editor.textContent).toContain("k8s -> kubernetes");
   });
 
-  it("arrives armed from the front page's Unregister domain palette row", async () => {
+  it("arrives armed from the front page's Unregister domain palette row, at the question and focused", async () => {
     serve();
     const user = userEvent.setup();
 
@@ -264,11 +266,111 @@ describe("the domain settings screen", () => {
       await screen.findByRole("option", { name: /unregister domain/i }),
     );
 
-    // The row asks, it does not act: the question waits in the danger zone.
+    // The row asks, it does not act: the question waits in the danger zone,
+    // in view and with the typed field focused.
+    const card = await screen.findByRole("region", { name: "Danger zone" });
+    const field = await within(card).findByLabelText("Type eng to confirm");
+    await waitFor(() => {
+      expect(field).toHaveFocus();
+    });
+    expect(card.closest("#danger-zone")).not.toBeNull();
+  });
+
+  it("clears the arming from the history entry, so a reload or a step back does not ask again", async () => {
+    serve();
+    let seen: unknown = "unset";
+    function Probe() {
+      seen = useLocation().state;
+      return null;
+    }
+
+    render(
+      <MemoryRouter
+        initialEntries={[
+          {
+            pathname: "/d/eng/settings",
+            hash: "#danger-zone",
+            state: { unregister: true },
+          },
+        ]}
+      >
+        <App />
+        <Probe />
+      </MemoryRouter>,
+    );
+
     const card = await screen.findByRole("region", { name: "Danger zone" });
     expect(
       await within(card).findByLabelText("Type eng to confirm"),
     ).toBeVisible();
+    // Replaced in place: same address, block kept, the arming gone.
+    await waitFor(() => {
+      expect(seen).toBeNull();
+    });
+  });
+
+  it("answers an unknown domain the way the front page does", async () => {
+    serve({
+      "/domains/eng/tree": () => {
+        throw new ApiProblem(404, "not found", "no domain");
+      },
+      "/reflection/domains": () => ({ domains: [] }),
+    });
+
+    renderApp("/d/eng/settings");
+
+    expect(
+      await screen.findByRole("heading", { name: "Domain not found" }),
+    ).toBeVisible();
+  });
+
+  it("waits behind one loading state until its reads have answered", async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    serve({
+      "/domains/eng/members": async () => {
+        await held;
+        return { owner: null, visibility: "shared", members: [] };
+      },
+    });
+
+    renderApp("/d/eng/settings");
+
+    expect(
+      await screen.findByRole("status", { name: "Loading the settings" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "Domain policies" }),
+    ).toBeNull();
+    release();
+    expect(
+      await screen.findByRole("region", { name: "Members" }),
+    ).toBeVisible();
+  });
+
+  it("opens a rail link at its block once the screen has loaded, also when members is refused", async () => {
+    const scrolled: string[] = [];
+    const spy = vi
+      .spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(function (this: Element) {
+        scrolled.push(this.id);
+      });
+    try {
+      serve({
+        "/domains/eng/members": () => {
+          throw new ApiProblem(403, "forbidden", "not a member");
+        },
+      });
+      renderApp("/d/eng/settings#policies");
+      await screen.findByRole("region", { name: "Domain policies" });
+      await waitFor(() => {
+        expect(scrolled).toContain("policies");
+      });
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("shuts unregistering and the visibility switch while a rename runs", async () => {

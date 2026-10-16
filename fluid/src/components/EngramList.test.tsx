@@ -35,6 +35,7 @@ function row(index: number, overrides: Partial<EngramRow> = {}): EngramRow {
     kind: "engram",
     line: null,
     snippet: null,
+    recordedAt: null,
     ...overrides,
   };
 }

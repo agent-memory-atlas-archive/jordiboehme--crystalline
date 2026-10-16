@@ -127,6 +127,7 @@ describe("the retire dialog", () => {
             kind: null,
             line: null,
             snippet: null,
+            recordedAt: null,
           },
         ]),
     });

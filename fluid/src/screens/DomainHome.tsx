@@ -35,6 +35,7 @@ import {
 } from "@tanstack/react-query";
 import type { LucideIcon } from "lucide-react";
 import {
+  ChevronDown,
   Download,
   ListFilter,
   Plus,
@@ -47,27 +48,32 @@ import { Fragment, useEffect, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   Link,
-  Navigate,
   useLocation,
   useNavigate,
   useParams,
   useSearchParams,
 } from "react-router";
 
-import { archiveDownloadUrl, renameReportKey } from "../api/admin";
+import {
+  archiveDownloadUrl,
+  fetchSyncStatus,
+  renameReportKey,
+  syncStatusKey,
+} from "../api/admin";
 import type { RenameReport } from "../api/admin";
 import { problemDetail } from "../api/client";
 import { fetchManifest, manifestKey, treeQuery } from "../api/domain";
 import type { ManifestView } from "../api/domain";
 import { fetchReflectionTree, reflectionTreeKey } from "../api/reflection";
 import type { TreeNode } from "../api/reflection";
-import {
-  REFLECTION_DOMAINS_KEY,
-  fetchReflectionDomains,
-} from "../api/reflectionDomains";
 import { DomainLockChip } from "../components/DomainLockChip";
 import { useDomainWritable } from "../domainWritable";
-import type { EngramFilters, EngramPage, ListingOrder } from "../api/engrams";
+import type {
+  EngramFilters,
+  EngramPage,
+  EngramRow,
+  ListingOrder,
+} from "../api/engrams";
 import {
   NO_FILTERS,
   domainEngramsKey,
@@ -101,25 +107,27 @@ import { RenameDomainDialog } from "../components/RenameDomainDialog";
 import { Skeleton } from "../components/Skeleton";
 import { SyncCard } from "../components/SyncCard";
 import { ITEM_CLASSES } from "../components/menu";
-import {
-  BUTTON,
-  CHROME_LINK,
-  Chip,
-  FOCUS_RING,
-} from "../components/primitives";
+import { BUTTON, Chip, FOCUS_RING } from "../components/primitives";
+import { slugAssigner } from "../anchors";
+import { MissingOrReflection } from "./DomainMissing";
 import { isMissing, useDomainRights } from "../domainRights";
 import { orderQuery, useEngramsOrder } from "../engramsOrder";
 import { frontmatterFilters } from "../filters";
 import { isWebAddress, plural } from "../format";
-import { WHEN_TO_USE_KEY, configKeys, splitManifest } from "../manifestProse";
+import {
+  WHEN_TO_USE_KEY,
+  configKeys,
+  sectionKey,
+  splitManifest,
+} from "../manifestProse";
 import type { ManifestProse } from "../manifestProse";
 import {
   WHOLE_MANIFEST,
   domainRoute,
   domainSettingsRoute,
   folderRoute,
+  isDomainManifestPath,
   manifestEditRoute,
-  reflectionRoute,
 } from "../paths";
 import {
   HomeElsewhere,
@@ -401,7 +409,7 @@ function DomainPage({
         id: "unregister-domain",
         title: "Unregister domain",
         run: () => {
-          void navigate(domainSettingsRoute(domain), {
+          void navigate(domainSettingsRoute(domain, "danger-zone"), {
             state: { unregister: true },
           });
         },
@@ -429,15 +437,35 @@ function DomainPage({
     [manifest.data, keys],
   );
 
+  // The MANIFEST's H1 over the domain's name, unless it only says that name
+  // again, as the scaffold every new domain starts from (`# <name>`) does.
+  const eyebrow =
+    prose?.eyebrow == null ||
+    prose.eyebrow === "" ||
+    sectionKey(prose.eyebrow) === sectionKey(domain) ||
+    (summary?.canonicalName != null &&
+      sectionKey(prose.eyebrow) === sectionKey(summary.canonicalName))
+      ? null
+      : prose.eyebrow;
+  // The MANIFEST is the page itself, so it is not listed again below it.
+  const manifestListed =
+    rootListing.data?.pages.some((page) => page.hits.some(isManifestRow)) ===
+    true;
+  const listedTotal =
+    engramTotal === null
+      ? null
+      : Math.max(0, engramTotal - (manifestListed ? 1 : 0));
+
   return (
     <div className="grid gap-x-14 gap-y-10 lg:grid-cols-[minmax(0,1fr)_18.75rem]">
-      <div className="flex min-w-0 flex-col gap-6">
+      {/* The lead sits close under the heading, as in the mockup. */}
+      <div className="flex min-w-0 flex-col gap-3">
         <header>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              {prose?.eyebrow != null && prose.eyebrow !== "" && (
+              {eyebrow !== null && (
                 <p className="mb-1 text-sm font-semibold text-accent-700 dark:text-accent-300">
-                  <InlineMarkdown source={prose.eyebrow} />
+                  <InlineMarkdown source={eyebrow} />
                 </p>
               )}
               <div className="flex flex-wrap items-center gap-2">
@@ -607,8 +635,7 @@ function DomainPage({
           behind them are gated the same way; each draws nothing on a domain
           with no origin.
         */}
-        {capabilities.canShare && <SyncCard domain={domain} />}
-        {capabilities.canShare && <ProposalsCard domain={domain} />}
+        {capabilities.canShare && <TeamBanners domain={domain} />}
 
         <ManifestProsePanel
           domain={domain}
@@ -617,19 +644,6 @@ function DomainPage({
           pending={manifest.isPending}
           error={manifest.error}
           onStart={onStart}
-        />
-      </div>
-
-      <div className="min-w-0 lg:row-span-2">
-        <DomainRail
-          domain={domain}
-          summary={summary}
-          pages={pages}
-          sections={sections}
-          config={prose?.config ?? []}
-          members={members.data}
-          showReviewMode={capabilities.canShare}
-          showBackup={capabilities.canAdminister}
         />
       </div>
 
@@ -647,7 +661,24 @@ function DomainPage({
           onCreatingChange={setCreating}
           onApply={apply}
           renaming={isRenaming}
-          total={engramTotal}
+          total={listedTotal}
+        />
+      </div>
+
+      {/*
+        Last in the document, so a phone reads the prose, then the engrams,
+        then the rail; beside both from lg up.
+      */}
+      <div className="min-w-0 lg:col-start-2 lg:row-span-2 lg:row-start-1">
+        <DomainRail
+          domain={domain}
+          summary={summary}
+          pages={pages}
+          sections={sections}
+          config={prose?.config ?? []}
+          members={members.data}
+          showReviewMode={capabilities.canShare}
+          showBackup={capabilities.canAdminister}
         />
       </div>
 
@@ -668,6 +699,60 @@ function DomainPage({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * The team's sync and proposals as compact banners above the lead. On a
+ * phone they fold behind one line that says what is waiting, so the
+ * MANIFEST is still the first thing on the screen; from `md` up they are
+ * always open. The status read is the sync card's own, under its key, so the
+ * line costs no request; a domain with no origin draws nothing at all.
+ */
+function TeamBanners({ domain }: { domain: string }) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  const status = useQuery({
+    queryKey: syncStatusKey(domain),
+    queryFn: () => fetchSyncStatus(domain),
+    retry: false,
+  });
+  const sync = status.data ?? null;
+  // Siblings in the page's column rather than a box of their own, so an
+  // origin-less domain (both cards draw nothing) leaves no gap behind.
+  return (
+    <>
+      {sync !== null && (
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={panelId}
+          onClick={() => {
+            setOpen(!open);
+          }}
+          className={`flex items-center justify-between gap-2 rounded-lg border border-hair bg-chrome px-4 py-2.5 text-left text-sm md:hidden ${FOCUS_RING}`}
+        >
+          <span className="min-w-0">
+            <span className="font-semibold">Team sync</span>{" "}
+            <span className="text-muted">
+              {`· ${plural(sync.localChanges, "local change", "local changes")}, ${plural(sync.openProposals, "open proposal", "open proposals")}`}
+            </span>
+          </span>
+          <ChevronDown
+            aria-hidden="true"
+            size={16}
+            className={`shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`}
+          />
+        </button>
+      )}
+      <div
+        id={panelId}
+        className={`flex-col gap-3 empty:hidden md:flex md:empty:hidden ${open || sync === null ? "flex" : "hidden"}`}
+      >
+        <SyncCard domain={domain} />
+        <ProposalsCard domain={domain} />
+      </div>
+    </>
   );
 }
 
@@ -872,6 +957,16 @@ function ManifestProsePanel({
         : sections.routing === "scope"
           ? "Agents read Scope to decide when to use this domain, because When to Use is empty."
           : "Agents cannot route here until When to Use has a bullet.";
+  // The ids the document renderer gives its H2s, in the order they are drawn
+  // here, so a section is addressed the same way on every page.
+  const slug = slugAssigner();
+  const whenToUseHeading = whenToUse[0]?.heading ?? "When to Use";
+  const whenToUseId =
+    whenToUse.length > 0 || missing("When to Use")
+      ? slug(headingText(whenToUseHeading))
+      : "";
+  const scopeId = missing("Scope") ? slug("Scope") : "";
+  const restIds = rest.map((section) => slug(headingText(section.heading)));
   return (
     <article aria-label="MANIFEST" className="flex flex-col gap-8">
       {empty && (
@@ -892,7 +987,11 @@ function ManifestProsePanel({
         </button>
       )}
       {prose !== null && prose.lead !== null && (
-        <div className="manifest-lead">
+        <div
+          // The lead (spec 3.3): 18px at 1.6 in ink-3, through the lg token
+          // so large text grows it with the rest of the document.
+          className="[&_.text-body]:text-lg [&_.text-body]:leading-[1.6] [&_.text-body]:text-ink-3 [&_p:first-of-type]:mt-0"
+        >
           <Markdown source={prose.lead} domain={domain} />
         </div>
       )}
@@ -903,8 +1002,9 @@ function ManifestProsePanel({
       )}
       {(whenToUse.length > 0 || missing("When to Use")) && (
         <ProseSection
+          id={whenToUseId}
           domain={domain}
-          heading={whenToUse[0]?.heading ?? "When to Use"}
+          heading={whenToUseHeading}
           hint={routingHint ?? undefined}
           body={whenToUse.map((s) => s.body).join("\n\n")}
         >
@@ -925,7 +1025,7 @@ function ManifestProsePanel({
           <p className="text-sm text-muted">{routingHint}</p>
         )}
       {missing("Scope") && sections !== null && (
-        <ProseSection domain={domain} heading="Scope" body="">
+        <ProseSection id={scopeId} domain={domain} heading="Scope" body="">
           <EmptySection
             starter={starterFor(sections, "Scope")}
             fallback="No Scope section"
@@ -937,6 +1037,7 @@ function ManifestProsePanel({
         <ProseSection
           // A heading may repeat; its place in the file does not.
           key={`${section.key}:${String(index)}`}
+          id={restIds[index] ?? ""}
           domain={domain}
           heading={section.heading}
           body={section.body}
@@ -946,26 +1047,41 @@ function ManifestProsePanel({
   );
 }
 
+/**
+ * A heading's text as it reads, for its slug: inline markup and a link's
+ * target dropped, the way the rendered heading's text has none of them.
+ */
+function headingText(heading: string): string {
+  return heading
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[*`~]/g, "");
+}
+
 /** One section of the MANIFEST, under its own heading as written. */
 function ProseSection({
+  id,
   domain,
   heading,
   hint,
   body,
   children,
 }: {
+  /** The heading's id, the slug the document renderer would give it. */
+  id: string;
   domain: string;
   heading: string;
   hint?: string | undefined;
   body: string;
   children?: ReactNode;
 }) {
-  const id = useId();
   return (
     <section aria-labelledby={id} className="measured">
       <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h2 id={id} className="text-[21px] leading-7 font-[620] text-ink">
-          {heading}
+        <h2
+          id={id}
+          className="scroll-mt-20 text-[21px] leading-7 font-[620] text-ink"
+        >
+          <InlineMarkdown source={heading} />
         </h2>
         {hint !== undefined && <p className="text-[13px] text-muted">{hint}</p>}
       </div>
@@ -1179,7 +1295,8 @@ function EngramsSection({
             <span className="text-sm text-muted tabular-nums">{total}</span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <EngramsOrderMenu />
           <button
             type="button"
             aria-expanded={filterOpen}
@@ -1262,21 +1379,16 @@ function EngramsSection({
       </div>
 
       {/*
-        The row directly above the list, carrying what the list below is a
-        list of and the order it is in. At the root that is the order alone,
-        the count being beside the heading. In a folder or under a filter the
-        scope is named here, because it is a fact about the request rather
-        than about any page it answers.
+        In a folder or under a filter the scope is named above the list,
+        because it is a fact about the request rather than about any page it
+        answers. The order sits in the heading row, beside Filter.
       */}
       {(filtering || path !== "") && (
-        <div className="flex flex-wrap items-center justify-between gap-3 py-3">
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            {filtering
-              ? "Filtered across the whole domain, every folder included."
-              : `Browsing ${path}, subfolders included.`}
-          </p>
-          <EngramsOrderMenu />
-        </div>
+        <p className="py-3 text-sm text-slate-500 dark:text-slate-400">
+          {filtering
+            ? "Filtered across the whole domain, every folder included."
+            : `Browsing ${path}, subfolders included.`}
+        </p>
       )}
 
       {filtering ? (
@@ -1289,6 +1401,7 @@ function EngramsSection({
           emptyMessage="No engram matches these filters."
           summary={() => null}
           plain
+          skip={isManifestRow}
         />
       ) : (
         <EngramList
@@ -1300,25 +1413,23 @@ function EngramsSection({
             fetchDomainEngrams(domain, browse, page, listingOrder)
           }
           label={`Engrams in ${domain}`}
-          summary={
-            path === ""
-              ? () => (
-                  <div className="flex justify-end pt-3 pb-2">
-                    <EngramsOrderMenu />
-                  </div>
-                )
-              : () => null
-          }
+          summary={path === "" ? () => <div className="pt-3" /> : () => null}
           emptyMessage={
             path === ""
               ? "This domain has no engrams yet."
               : "This folder has no engrams."
           }
           plain
+          skip={isManifestRow}
         />
       )}
     </section>
   );
+}
+
+/** The domain's MANIFEST, as a listing row: the front page is that file. */
+function isManifestRow(row: EngramRow): boolean {
+  return isDomainManifestPath(`${row.permalink}.md`);
 }
 
 /** A secondary action (spec 3.1): 32px tall, a hairline border, an icon. */
@@ -1417,55 +1528,6 @@ function FilterBar({
           onChange({ tags: next });
         }}
       />
-    </div>
-  );
-}
-
-/**
- * A domain whose engrams this caller cannot read. For a person with
- * knowledge `none` that is every domain it works on: the engram tree answers
- * 404 exactly as for a stranger, and the Reflection listing is what tells the
- * two apart. A listed domain goes to its Reflection; anything else is the
- * wrong address it always was, and nothing here says more than that.
- */
-function MissingOrReflection({ domain }: { domain: string }) {
-  const listing = useQuery({
-    queryKey: REFLECTION_DOMAINS_KEY,
-    queryFn: fetchReflectionDomains,
-  });
-  if (listing.isPending) {
-    return <Skeleton label="Loading the domain" rows={3} />;
-  }
-  // A pending, homeless or hosted_elsewhere Reflection still goes to its
-  // home, which shows the notice. One that lives elsewhere stays here: this
-  // instance has neither its engrams nor its Reflection, and Home's
-  // Reflection listing is where the home link is shown. A row whose engrams
-  // the caller reads never redirects: for that caller the 404 is a missing
-  // folder or domain, not a door to the Reflection.
-  if (
-    listing.data?.some(
-      (row) =>
-        row.domain === domain &&
-        !row.engramsVisible &&
-        row.state !== "elsewhere",
-    )
-  ) {
-    return <Navigate to={reflectionRoute(domain)} replace />;
-  }
-  return <DomainNotFound domain={domain} />;
-}
-
-/** The wrong-address screen, which is not the same thing as an empty domain. */
-function DomainNotFound({ domain }: { domain: string }) {
-  return (
-    <div className="flex flex-col items-start gap-3">
-      <h1 className="text-display">Domain not found</h1>
-      <p className="text-sm">
-        No domain named {`"${domain}"`} is registered on this instance.
-      </p>
-      <Link to="/" className={`text-sm ${CHROME_LINK}`}>
-        See the domains that are
-      </Link>
     </div>
   );
 }

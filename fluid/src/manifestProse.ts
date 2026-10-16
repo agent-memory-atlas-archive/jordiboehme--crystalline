@@ -24,6 +24,8 @@ export interface ManifestSection {
   key: string;
   /** The markdown under the heading, up to the next H1 or H2. */
   body: string;
+  /** The body without its top-level bullets: what it says beside them. */
+  notes: string;
 }
 
 /** The MANIFEST as the front page draws it. */
@@ -79,16 +81,21 @@ export function configKeys(sections: ManifestSections | null): Set<string> {
   return keys;
 }
 
-/** The body without its frontmatter block. */
-function stripFrontmatter(markdown: string): string {
-  const lines = markdown.split("\n");
+/** The lines of a text, a CRLF file read the same as an LF one. */
+function linesOf(text: string): string[] {
+  return text.split(/\r?\n/);
+}
+
+/** The body's lines, without its frontmatter block. */
+function bodyLines(markdown: string): string[] {
+  const lines = linesOf(markdown);
   if (lines[0]?.trim() !== "---") {
-    return markdown;
+    return lines;
   }
   const end = lines.findIndex(
     (line, index) => index > 0 && line.trim() === "---",
   );
-  return end === -1 ? markdown : lines.slice(end + 1).join("\n");
+  return end === -1 ? lines : lines.slice(end + 1);
 }
 
 /** `{ level, text }` for an ATX heading line, or null. */
@@ -100,9 +107,36 @@ function heading(line: string): { level: number; text: string } | null {
   return { level: match[1]?.length ?? 0, text: (match[2] ?? "").trim() };
 }
 
-/** Whether a line opens or closes a fenced code block. */
-function isFence(line: string): boolean {
-  return /^ {0,3}(```|~~~)/.test(line);
+/** A fence marker: its character and length, or null (`fence_marker`). */
+function fenceMarker(line: string): { char: string; count: number } | null {
+  const match = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+  const run = match?.[1];
+  return run === undefined ? null : { char: run[0] ?? "", count: run.length };
+}
+
+/**
+ * The core crate's `FenceTracker`: a fence opens on a marker and closes only
+ * on a marker of the same character, at least as long, with nothing after
+ * it. `inFence` is true for both marker lines and every line between.
+ */
+function fenceTracker(): (line: string) => boolean {
+  let open: { char: string; count: number } | null = null;
+  return (line) => {
+    const marker = fenceMarker(line);
+    if (open === null) {
+      open = marker;
+      return marker !== null;
+    }
+    if (
+      marker !== null &&
+      marker.char === open.char &&
+      marker.count >= open.count &&
+      line.trimStart().slice(marker.count).trim() === ""
+    ) {
+      open = null;
+    }
+    return true;
+  };
 }
 
 /** Split `markdown` (frontmatter and all) for the front page. */
@@ -110,17 +144,14 @@ export function splitManifest(
   markdown: string,
   config: Set<string>,
 ): ManifestProse {
-  const lines = stripFrontmatter(markdown).split("\n");
+  const lines = bodyLines(markdown);
   let eyebrow: string | null = null;
   const head: string[] = [];
   const sections: ManifestSection[] = [];
   let current: { heading: string; key: string; lines: string[] } | null = null;
-  let inFence = false;
+  const inFence = fenceTracker();
   for (const line of lines) {
-    if (isFence(line)) {
-      inFence = !inFence;
-    }
-    const h = inFence || isFence(line) ? null : heading(line);
+    const h = inFence(line) ? null : heading(line);
     if (h !== null && h.level === 2) {
       if (current !== null) {
         sections.push(finish(current));
@@ -146,13 +177,23 @@ export function splitManifest(
   if (current !== null) {
     sections.push(finish(current));
   }
+  // A configuration heading the parser has already seen is ignored by it
+  // (first duplicate wins), so the rail keeps the first one only.
+  const seen = new Set<string>();
+  const configSections = sections.filter((s) => {
+    if (!config.has(s.key) || seen.has(s.key)) {
+      return false;
+    }
+    seen.add(s.key);
+    return true;
+  });
   const { lead, rest } = firstParagraph(head);
   return {
     eyebrow,
     lead,
     intro: rest,
     sections: sections.filter((s) => !config.has(s.key)),
-    config: sections.filter((s) => config.has(s.key)),
+    config: configSections,
   };
 }
 
@@ -161,10 +202,20 @@ function finish(section: {
   key: string;
   lines: string[];
 }): ManifestSection {
+  // What a configuration section says beside its declarations: every line
+  // that is not a top-level bullet, the bullets being what the parser reads.
+  const inFence = fenceTracker();
+  const notes = section.lines.filter(
+    (line) => inFence(line) || !line.startsWith("- "),
+  );
   return {
     heading: section.heading,
     key: section.key,
     body: section.lines.join("\n").trim(),
+    notes: notes
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim(),
   };
 }
 

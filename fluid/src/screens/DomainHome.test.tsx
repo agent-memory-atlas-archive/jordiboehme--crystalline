@@ -479,7 +479,7 @@ describe("the domain screen", () => {
     });
   });
 
-  it("lists the engrams as rows: title, folder, description and type", async () => {
+  it("lists the engrams as rows: title, folder, description, type and date", async () => {
     serve({
       "/domains/eng/engrams": (path) => {
         const page = engramsResponse(path) as {
@@ -490,6 +490,7 @@ describe("the domain screen", () => {
           hits: page.hits.map((hit) => ({
             ...hit,
             snippet: `About ${String(hit.title)}.`,
+            recorded_at: "2026-09-12",
           })),
         };
       },
@@ -507,6 +508,10 @@ describe("the domain screen", () => {
     expect(within(beta).getByText("notes")).toHaveClass("font-mono");
     expect(within(beta).getByText("About Beta.")).toBeVisible();
     expect(within(beta).getByText("engram")).toBeVisible();
+    // The recorded day, once the listing carries it.
+    expect(within(beta).getByTitle("2026-09-12")).toHaveTextContent(
+      /12 Sep 2026|Sep 12, 2026/,
+    );
     // The folders as chips above the list, the domain's root as "All".
     const folders = within(engrams).getByRole("navigation", {
       name: "Folders",
@@ -596,6 +601,8 @@ describe("the domain screen", () => {
     "",
     "## Provisioning",
     "",
+    "Installed by the setup script.",
+    "",
     "- skills: skills",
     "- agents: ../agents",
     "",
@@ -670,6 +677,13 @@ describe("the domain screen", () => {
     });
     expect(within(provisioning).getAllByText("skills")).toHaveLength(2);
     expect(within(provisioning).getByText("agents")).toBeVisible();
+    // What the section says beside its declarations is shown with them.
+    expect(
+      await within(provisioning).findByText("Installed by the setup script."),
+    ).toBeVisible();
+    expect(
+      within(manifest).queryByText("Installed by the setup script."),
+    ).toBeNull();
     expect(within(provisioning).getByText("../agents")).toBeVisible();
     const aliases = within(rail).getByRole("region", { name: "Tag Aliases" });
     expect(within(aliases).getByText(/Multi_Word/)).toBeVisible();
@@ -704,36 +718,15 @@ describe("the domain screen", () => {
     expect(await within(block).findByText("something: on")).toBeVisible();
   });
 
-  it("fills the rail: about, settings with their values, and what was recorded here lately", async () => {
+  it("fills the rail: about and the settings with their values, and nothing the list already says", async () => {
+    const synced = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
     serve(
       {
         "/domains": () => ({
           ...domainsResponse(),
-          domains: [
-            {
-              ...domainsResponse().domains[0],
-              last_sync: "2026-10-16T07:52:00Z",
-            },
-          ],
+          domains: [{ ...domainsResponse().domains[0], last_sync: synced }],
         }),
         "/domains/eng/manifest": fullManifest(),
-        "/activity": () => ({
-          timeframe: "7d",
-          engrams: [
-            {
-              domain: "eng",
-              permalink: "alpha",
-              title: "Alpha",
-              recorded_at: "2026-09-12",
-            },
-            {
-              domain: "other",
-              permalink: "elsewhere",
-              title: "Elsewhere",
-              recorded_at: "2026-09-13",
-            },
-          ],
-        }),
       },
       "admin",
     );
@@ -747,7 +740,9 @@ describe("the domain screen", () => {
     expect(await within(about).findByText("4 engrams")).toBeVisible();
     expect(within(about).getByText("Shared with everyone")).toBeVisible();
     expect(within(about).getByText("Files on disk")).toBeVisible();
-    expect(within(about).getByText("Synced")).toBeVisible();
+    // When it last synced in a reader's words, the instant in the title.
+    const when = within(about).getByText("2 hours ago");
+    expect(when).toHaveAttribute("title", expect.stringMatching(/^\d{4}-/));
 
     const settings = within(rail).getByRole("region", { name: "Settings" });
     expect(
@@ -763,15 +758,137 @@ describe("the domain screen", () => {
       within(settings).getByRole("link", { name: "Backup and import" }),
     ).toHaveAttribute("href", "/d/eng/settings#backup");
 
-    // The activity feed, kept to this domain.
-    const recent = within(rail).getByRole("region", {
-      name: "Recently recorded",
+    // What was recorded lately is the list below, newest first: the rail
+    // does not say it a second time.
+    expect(
+      within(rail).queryByRole("region", { name: "Recently recorded" }),
+    ).toBeNull();
+    expect(requested()).not.toContain("/activity");
+  });
+
+  it("draws no eyebrow over a MANIFEST whose title is the domain's own name", async () => {
+    serve();
+
+    renderApp("/d/eng");
+
+    // The scaffold every new domain starts from is \`# <name>\`, which
+    // would only say the heading twice.
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
+    await within(manifest).findByText(
+      "What this domain is for, in one paragraph.",
+    );
+    const heading = screen.getByRole("heading", { level: 1, name: "eng" });
+    const header = heading.closest("header") as HTMLElement;
+    expect(within(header).getAllByText("eng", { exact: true })).toEqual([
+      heading,
+    ]);
+  });
+
+  it("reads a MANIFEST written with CRLF line endings", async () => {
+    serve({
+      "/domains/eng/manifest": () => ({
+        domain: "eng",
+        markdown: FULL_MANIFEST.replace(/\n/g, "\r\n"),
+        sections: fullManifest()().sections,
+      }),
+    });
+
+    renderApp("/d/eng");
+
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
+    expect(
+      await within(await screenBody()).findByText("Engineering"),
+    ).toBeVisible();
+    expect(
+      within(manifest)
+        .getAllByRole("heading", { level: 2 })
+        .map((h) => h.textContent),
+    ).toEqual(["When to Use", "Scope", "Notes for Agents"]);
+    expect(within(manifest).queryByText(/Multi_Word/)).toBeNull();
+  });
+
+  it("gives each section heading the id the document renderer would, and draws its markdown", async () => {
+    serve({
+      "/domains/eng/manifest": () => ({
+        domain: "eng",
+        markdown:
+          "# eng\n\nLead.\n\n## When to Use\n\n- a\n\n## The `deploy` flow\n\nText.\n",
+        sections: sectionsResponse(),
+      }),
+    });
+
+    renderApp("/d/eng");
+
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
+    const flow = await within(manifest).findByRole("heading", {
+      level: 2,
+      name: "The deploy flow",
+    });
+    expect(flow).toHaveAttribute("id", "the-deploy-flow");
+    expect(within(flow).getByText("deploy").tagName).toBe("CODE");
+    expect(
+      within(manifest).getByRole("heading", { level: 2, name: "When to Use" }),
+    ).toHaveAttribute("id", "when-to-use");
+  });
+
+  it("does not list the MANIFEST under itself", async () => {
+    serve({
+      "/domains/eng/engrams": (path) => {
+        const page = engramsResponse(path) as {
+          total: number;
+          count: number;
+          hits: Record<string, unknown>[];
+        };
+        return path.includes("tags=")
+          ? page
+          : {
+              ...page,
+              total: page.total + 1,
+              count: page.count + 1,
+              hits: [
+                {
+                  domain: "eng",
+                  permalink: "manifest",
+                  title: "MANIFEST",
+                  engram_type: "manifest",
+                  kind: "engram",
+                  status: "current",
+                  tags: [],
+                },
+                ...page.hits,
+              ],
+            };
+      },
+    });
+
+    renderApp("/d/eng");
+
+    const engrams = await screen.findByRole("region", { name: "Engrams" });
+    await within(engrams).findByRole("link", { name: /Alpha/ });
+    expect(
+      within(engrams).queryByRole("link", { name: /MANIFEST/ }),
+    ).toBeNull();
+    // And the count beside the heading leaves it out too.
+    expect(await within(engrams).findByText("2")).toBeVisible();
+  });
+
+  it("reads prose, then the engrams, then the rail, in document order", async () => {
+    serve();
+
+    renderApp("/d/eng");
+
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
+    const engrams = await screen.findByRole("region", { name: "Engrams" });
+    const rail = await screen.findByRole("complementary", {
+      name: "About this domain",
     });
     expect(
-      await within(recent).findByRole("link", { name: "Alpha" }),
-    ).toHaveAttribute("href", "/d/eng/e/alpha");
-    expect(within(recent).queryByText("Elsewhere")).toBeNull();
-    expect(within(recent).getByText(/12 Sep 2026|Sep 12, 2026/)).toBeVisible();
+      manifest.compareDocumentPosition(engrams) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      engrams.compareDocumentPosition(rail) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("keeps the backup link and the review mode row from a caller who would be refused there", async () => {
@@ -1713,6 +1830,28 @@ describe("the domain screen", () => {
 });
 
 describe("the team sync card", () => {
+  it("folds the team banners behind one line on a phone", async () => {
+    serve({ "/domains/eng/sync": () => syncResponse() }, "admin");
+
+    renderApp("/d/eng");
+    const body = await screenBody();
+
+    // The line says what waits; the cards behind it open on a press. From
+    // md up the line is hidden and the cards always show (CSS, not jsdom's).
+    const line = await within(body).findByRole("button", {
+      name: "Team sync · 2 local changes, 1 open proposal",
+    });
+    expect(line).toHaveAttribute("aria-expanded", "false");
+    const panel = document.getElementById(
+      line.getAttribute("aria-controls") ?? "",
+    ) as HTMLElement;
+    expect(panel.className).toMatch(/(^| )hidden( |$)/);
+    expect(panel.className).toContain("md:flex");
+    await userEvent.click(line);
+    expect(line).toHaveAttribute("aria-expanded", "true");
+    expect(panel.className).not.toMatch(/(^| )hidden( |$)/);
+  });
+
   it("shows the sync card for an admin on a team domain", async () => {
     serve({ "/domains/eng/sync": () => syncResponse() }, "admin");
 

@@ -33,6 +33,11 @@ export interface EngramRow {
   line: number | null;
   /** The matched text a search payload carries, when it carries one. */
   snippet: string | null;
+  /**
+   * Its `recorded_at` day, when the payload carries one. The domain listing
+   * does not yet; the front page's rows draw it once it does.
+   */
+  recordedAt: string | null;
 }
 
 /** The engine's page envelope, which every list here pages the same way. */
@@ -140,6 +145,7 @@ export function readEngramRow(
     kind: asString(record.kind),
     line: asNumber(record.line),
     snippet: asString(record.snippet),
+    recordedAt: asString(record.recorded_at),
   };
 }
 

@@ -103,6 +103,85 @@ describe("splitManifest", () => {
   });
 });
 
+describe("splitManifest, the edges the core parser defines", () => {
+  const keys = configKeys(
+    sections(["When to Use", "Scope", "Provisioning", "Tag Aliases"]),
+  );
+
+  it("reads a CRLF file the way it reads an LF one", () => {
+    const split = splitManifest(SOURCE.replace(/\n/g, "\r\n"), keys);
+    expect(split.eyebrow).toBe("Platform Team");
+    expect(split.lead).toBe("What the platform team knows\nabout production.");
+    expect(split.sections.map((s) => s.heading)).toEqual([
+      "Scope",
+      "When to Use",
+      "Notes for Agents",
+    ]);
+    expect(split.config.map((s) => s.key)).toEqual([
+      "provisioning",
+      "tag aliases",
+    ]);
+    expect(split.sections[1]?.body).not.toContain("\r");
+  });
+
+  it("closes a fence only on the same character, at least as long, with nothing after it", () => {
+    const source = [
+      "# T",
+      "",
+      "## Notes",
+      "",
+      "````md",
+      "```",
+      "## Provisioning",
+      "``` not a close",
+      "~~~~",
+      "````",
+      "",
+      "## Provisioning",
+      "",
+      "- skills: skills",
+    ].join("\n");
+    const split = splitManifest(source, keys);
+    expect(split.sections.map((s) => s.heading)).toEqual(["Notes"]);
+    expect(split.sections[0]?.body).toContain("## Provisioning");
+    expect(split.config).toHaveLength(1);
+    expect(split.config[0]?.body).toBe("- skills: skills");
+  });
+
+  it("keeps the first of two configuration headings, as the parser does", () => {
+    const source = [
+      "# T",
+      "",
+      "## Tag Aliases",
+      "",
+      "- a -> b",
+      "",
+      "## Tag aliases",
+      "",
+      "- c -> d",
+    ].join("\n");
+    const split = splitManifest(source, keys);
+    expect(split.config).toHaveLength(1);
+    expect(split.config[0]?.body).toBe("- a -> b");
+    expect(split.sections).toEqual([]);
+  });
+
+  it("keeps what a configuration section says beside its bullets", () => {
+    const source = [
+      "# T",
+      "",
+      "## Provisioning",
+      "",
+      "Installed by the platform team.",
+      "",
+      "- skills: skills",
+      "- agents: agents",
+    ].join("\n");
+    const split = splitManifest(source, keys);
+    expect(split.config[0]?.notes).toBe("Installed by the platform team.");
+  });
+});
+
 describe("configKeys", () => {
   it("treats every registered section but the two routing ones as configuration", () => {
     expect([
