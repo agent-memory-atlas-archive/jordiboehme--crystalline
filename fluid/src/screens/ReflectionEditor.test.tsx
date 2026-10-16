@@ -682,6 +682,19 @@ describe("the reflection editor's offer history", () => {
     );
   });
 
+  it("names an offer with no line to show by its time alone", async () => {
+    serve("edit");
+    live(room(PAGE));
+    addOffer("ann", "eng", OFFER, at("08", "\n\n"));
+    addOffer("ann", "eng", OFFER, at("09", "other\n"));
+    await openEditor();
+    expect(
+      screen.getByRole("button", {
+        name: `Put it back: ${formatInstant("2026-10-16T08:00:00Z")}`,
+      }),
+    ).toBeInTheDocument();
+  });
+
   it("lists a text set aside in another tab before an older copy", async () => {
     serve("edit");
     live(room(PAGE));

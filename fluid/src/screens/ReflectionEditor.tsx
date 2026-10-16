@@ -927,7 +927,11 @@ function Surface({
                       {!ended && (
                         <button
                           type="button"
-                          aria-label={`Put it back: ${when}, ${preview}`}
+                          aria-label={
+                            preview === ""
+                              ? `Put it back: ${when}`
+                              : `Put it back: ${when}, ${preview}`
+                          }
                           className={BANNER_BUTTON}
                           onClick={() => {
                             putBack(offer);

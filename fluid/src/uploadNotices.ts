@@ -20,6 +20,26 @@ export interface UploadNotice {
   title: string;
   /** What went wrong, in the upload flow's own words. */
   detail: string;
+  /**
+   * Set when the notice came while a modal dialog was open. Such a dialog
+   * hides the rest of the page from assistive technology and keeps the
+   * focus inside itself, so the notice waits and is shown (and announced)
+   * once the dialog has closed.
+   */
+  held: boolean;
+}
+
+/**
+ * Whether a modal dialog is open, which hides everything outside it: one
+ * that says `aria-modal`, or one that hid the rest of the page the way the
+ * dialog library does, marking every hidden node `data-aria-hidden`.
+ */
+export function modalOpen(): boolean {
+  return (
+    typeof document !== "undefined" &&
+    document.querySelector('[aria-modal="true"], [data-aria-hidden="true"]') !==
+      null
+  );
 }
 
 let notices: readonly UploadNotice[] = [];
@@ -61,9 +81,26 @@ export function reportOrphanUpload(
 ): void {
   notices = [
     ...notices,
-    { id: next, files, title: titleOf(files, page, kind), detail },
+    {
+      id: next,
+      files,
+      title: titleOf(files, page, kind),
+      detail,
+      held: modalOpen(),
+    },
   ];
   next += 1;
+  emit();
+}
+
+/** Show the notices that waited for a modal dialog to close. */
+export function releaseHeldNotices(): void {
+  if (!notices.some((notice) => notice.held)) {
+    return;
+  }
+  notices = notices.map((notice) =>
+    notice.held ? { ...notice, held: false } : notice,
+  );
   emit();
 }
 

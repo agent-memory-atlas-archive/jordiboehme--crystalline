@@ -69,12 +69,36 @@ describe("the upload notices", () => {
     act(() => {
       reportOrphanUpload(["a.png"], "Page", "the disk is full");
     });
+    // The dialog hides the rest of the page, so the notice waits for it.
+    expect(
+      screen.queryByText("The upload of a.png to Page did not finish."),
+    ).toBeNull();
     await userEvent.click(screen.getByLabelText("inside"));
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Open dialog" })).toBeNull();
+    // Once it has closed, the notice appears as an alert, which is announced.
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "The upload of a.png to Page did not finish.",
+    );
+  });
+
+  it("shows a notice that came before a dialog opened, and names each Dismiss apart", () => {
+    render(<UploadNotices />);
+    act(() => {
+      reportOrphanUpload(["flow.png"], "Page", "one");
+      reportOrphanUpload(["flow.png"], "Other page", "two");
+    });
     expect(
-      screen.getByText("The upload of a.png to Page did not finish."),
+      screen.getByRole("button", { name: "Dismiss: flow.png (1 of 2)" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Dismiss: flow.png (2 of 2)" }),
+    ).toBeInTheDocument();
+    // A long stack scrolls inside its corner.
+    expect(screen.getByRole("region", { name: "Upload notices" })).toHaveClass(
+      "overflow-y-auto",
+    );
   });
 
   it("stays on an Escape pressed elsewhere", async () => {

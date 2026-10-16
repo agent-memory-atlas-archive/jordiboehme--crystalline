@@ -11,31 +11,81 @@
  * that arrived while a dialog was open would keep that dialog from closing.
  * Only the Dismiss button takes a notice down. When the last one goes and it
  * held the focus, the focus goes back to where it was before it came here.
+ * A notice that comes while a modal dialog is open waits for it to close:
+ * the dialog hides the rest of the page, so the notice would be neither
+ * announced nor reachable. Once the dialog has gone it is shown, and as an
+ * alert that appears it is announced then.
  */
 
 import type { FocusEvent, ReactElement } from "react";
-import { useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 
 import type { UploadNotice } from "../uploadNotices";
 import {
   dismissUploadNotice,
+  modalOpen,
+  releaseHeldNotices,
   subscribeUploadNotices,
   uploadNotices,
 } from "../uploadNotices";
 
+/**
+ * The name of a notice's Dismiss: the files it names, and a number when
+ * another notice on screen names the same files, so every name is its own.
+ */
+function dismissLabel(
+  notice: UploadNotice,
+  shown: readonly UploadNotice[],
+): string {
+  const files = notice.files.join(", ");
+  const same = shown.filter((other) => other.files.join(", ") === files);
+  if (same.length < 2) {
+    return `Dismiss: ${files}`;
+  }
+  return `Dismiss: ${files} (${String(same.indexOf(notice) + 1)} of ${String(same.length)})`;
+}
+
 export function UploadNotices(): ReactElement | null {
   const notices = useSyncExternalStore(subscribeUploadNotices, uploadNotices);
+  // Watched only while a notice waits for a modal dialog to close: the
+  // observer then sees the dialog go, and the waiting notices are shown.
+  const waiting = notices.some((notice) => notice.held);
+  const watchModal = useCallback(
+    (changed: () => void) => {
+      if (!waiting) {
+        return () => undefined;
+      }
+      const observer = new MutationObserver(changed);
+      observer.observe(document.body, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ["aria-modal", "data-aria-hidden"],
+      });
+      return () => {
+        observer.disconnect();
+      };
+    },
+    [waiting],
+  );
+  const modal = useSyncExternalStore(watchModal, modalOpen);
+  useEffect(() => {
+    if (waiting && !modal) {
+      releaseHeldNotices();
+    }
+  }, [waiting, modal]);
   const region = useRef<HTMLElement | null>(null);
   // Where the focus was before it entered the notices.
   const before = useRef<HTMLElement | null>(null);
-  if (notices.length === 0) {
+  const shown = notices.filter((notice) => !notice.held);
+  if (shown.length === 0) {
     return null;
   }
   const dismiss = (notice: UploadNotice) => {
     const held =
       region.current !== null &&
       region.current.contains(document.activeElement);
-    const rest = notices.filter((other) => other.id !== notice.id);
+    const rest = shown.filter((other) => other.id !== notice.id);
     dismissUploadNotice(notice.id);
     if (!held) {
       return;
@@ -65,9 +115,9 @@ export function UploadNotices(): ReactElement | null {
           before.current = from;
         }
       }}
-      className="pointer-events-auto flex w-full max-w-md flex-col gap-2"
+      className="pointer-events-auto flex max-h-[50vh] w-full max-w-md flex-col gap-2 overflow-y-auto"
     >
-      {notices.map((notice) => (
+      {shown.map((notice) => (
         <div
           key={notice.id}
           role="alert"
@@ -80,7 +130,7 @@ export function UploadNotices(): ReactElement | null {
           <button
             type="button"
             data-notice={notice.id}
-            aria-label={`Dismiss: ${notice.files.join(", ")}`}
+            aria-label={dismissLabel(notice, shown)}
             onClick={() => {
               dismiss(notice);
             }}
