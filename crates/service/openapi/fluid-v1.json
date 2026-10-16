@@ -3317,6 +3317,16 @@
               }
             }
           },
+          "409": {
+            "description": "The path is a file only the previous host of a host move has; the detail names the remedy.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
           "412": {
             "description": "`If-None-Match: *` and the path already holds a file; nothing was stored. Pick another name.",
             "content": {
@@ -5104,7 +5114,7 @@
             }
           },
           "409": {
-            "description": "The Reflection is not here (then possibly `home_url`).",
+            "description": "The path is a file only the previous host of a host move has, or the Reflection is not here (then possibly `home_url`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5305,7 +5315,7 @@
             }
           },
           "409": {
-            "description": "Somebody is editing it, or the Reflection is not here.",
+            "description": "Somebody is editing it, the new path is a page only the previous host of a host move has, or the Reflection is not here.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5404,7 +5414,7 @@
             }
           },
           "409": {
-            "description": "The new path already holds a file, a page that links it is open in a co-editing room, or the Reflection is not here (then possibly `home_url`).",
+            "description": "The new path already holds a file or is a file only the previous host of a host move has, a page that links it is open in a co-editing room, or the Reflection is not here (then possibly `home_url`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -6344,7 +6354,7 @@
             }
           },
           "409": {
-            "description": "A stale `expected_checksum` (detail starting \"stale edit\"), a create over an existing page, or the Reflection is not here (then possibly `home_url`).",
+            "description": "A stale `expected_checksum` (detail starting \"stale edit\"), a create over an existing page, a page only the previous host of a host move has (the detail names the remedy), or the Reflection is not here (then possibly `home_url`).",
             "content": {
               "application/problem+json": {
                 "schema": {

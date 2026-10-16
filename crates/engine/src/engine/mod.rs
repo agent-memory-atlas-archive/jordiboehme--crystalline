@@ -738,6 +738,12 @@ pub enum WatchEvent {
     Remove(String),
 }
 
+/// The middle of the sentence a write is refused with when it would create
+/// a page or file only the previous host of a host move has, after the
+/// host's name and before the domain. Public so a surface answers this
+/// refusal with its own status (REST: 409).
+pub const ONLY_ELSEWHERE: &str = ", which hosted this domain before; copy the domain folder over or restore it, then sync, or drop it with: crystalline sync --domain ";
+
 /// A row [`Engine::refuse_only_elsewhere`] looks for: a Reflection page by
 /// its path inside `reflections/`, or a file by its table and path.
 #[derive(Clone, Copy, Debug)]
@@ -4097,7 +4103,7 @@ impl Engine {
             .as_deref()
             .unwrap_or("another instance");
         Err(EngineError::Conflict(format!(
-            "'{path}' exists only on {host}, which hosted this domain before; copy the domain folder over or restore it, then sync, or drop it with: crystalline sync --domain {domain} --accept-disk"
+            "'{path}' exists only on {host}{ONLY_ELSEWHERE}{domain} --accept-disk"
         )))
     }
 

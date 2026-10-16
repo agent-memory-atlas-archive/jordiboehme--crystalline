@@ -41,7 +41,7 @@ use super::{
     ApiError, ApiPath, ProblemDetail, REVALIDATE, RestState, create_only, if_none_match_matches,
     refuse_read_only, require_domain_read, require_domain_write,
 };
-use crate::engine::{ASSET_EXISTS, EngineError};
+use crate::engine::{ASSET_EXISTS, EngineError, ONLY_ELSEWHERE};
 
 /// The `Content-Security-Policy` every attachment is served under: no origin
 /// may be reached for anything, and the response is sandboxed into a unique
@@ -400,6 +400,13 @@ pub(crate) fn attachment_response(
             content_type = "application/problem+json",
         ),
         (
+            status = 409,
+            description = "The path is a file only the previous host of a host \
+                           move has; the detail names the remedy.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
             status = 412,
             description = "`If-None-Match: *` and the path already holds a \
                            file; nothing was stored. Pick another name.",
@@ -623,14 +630,19 @@ pub async fn list(
 /// The distinction this preserves is the one a client acts on: 400 means the
 /// request itself is malformed and the caller can correct it, 404 means the
 /// address is fine and nothing is there. A create-only upload onto a path
-/// that holds a file is 412, its own precondition having failed. Every other
-/// variant keeps its usual status.
-fn malformed_path_is_a_bad_request(e: EngineError) -> ApiError {
+/// that holds a file is 412, its own precondition having failed, and an
+/// upload onto a path only the previous host of a host move has is 409. Every
+/// other variant keeps its usual status.
+pub(crate) fn malformed_path_is_a_bad_request(e: EngineError) -> ApiError {
     match e {
         EngineError::Invalid(detail) => ApiError::bad_request(detail),
         // A create-only upload onto a path that holds a file.
         EngineError::Conflict(detail) if detail.ends_with(ASSET_EXISTS) => {
             ApiError::precondition_failed_plain(detail)
+        }
+        // An upload onto a path only the previous host of a host move has.
+        EngineError::Conflict(detail) if detail.contains(ONLY_ELSEWHERE) => {
+            ApiError::conflict(detail)
         }
         other => other.into(),
     }

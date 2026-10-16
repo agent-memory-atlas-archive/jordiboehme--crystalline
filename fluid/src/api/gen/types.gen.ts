@@ -3833,6 +3833,10 @@ export type WriteAttachmentErrors = {
      */
     404: ProblemDetail;
     /**
+     * The path is a file only the previous host of a host move has; the detail names the remedy.
+     */
+    409: ProblemDetail;
+    /**
      * `If-None-Match: *` and the path already holds a file; nothing was stored. Pick another name.
      */
     412: ProblemDetail;
@@ -4645,7 +4649,7 @@ export type WriteReflectionAssetErrors = {
      */
     404: ProblemDetail;
     /**
-     * The Reflection is not here (then possibly `home_url`).
+     * The path is a file only the previous host of a host move has, or the Reflection is not here (then possibly `home_url`).
      */
     409: ProblemDetail;
     /**
@@ -4699,7 +4703,7 @@ export type MoveReflectionErrors = {
      */
     404: ProblemDetail;
     /**
-     * Somebody is editing it, or the Reflection is not here.
+     * Somebody is editing it, the new path is a page only the previous host of a host move has, or the Reflection is not here.
      */
     409: ProblemDetail;
     /**
@@ -4747,7 +4751,7 @@ export type MoveReflectionAssetErrors = {
      */
     404: ProblemDetail;
     /**
-     * The new path already holds a file, a page that links it is open in a co-editing room, or the Reflection is not here (then possibly `home_url`).
+     * The new path already holds a file or is a file only the previous host of a host move has, a page that links it is open in a co-editing room, or the Reflection is not here (then possibly `home_url`).
      */
     409: ProblemDetail;
     /**
@@ -5214,7 +5218,7 @@ export type SaveReflectionErrors = {
      */
     404: ProblemDetail;
     /**
-     * A stale `expected_checksum` (detail starting "stale edit"), a create over an existing page, or the Reflection is not here (then possibly `home_url`).
+     * A stale `expected_checksum` (detail starting "stale edit"), a create over an existing page, a page only the previous host of a host move has (the detail names the remedy), or the Reflection is not here (then possibly `home_url`).
      */
     409: ProblemDetail;
     /**
