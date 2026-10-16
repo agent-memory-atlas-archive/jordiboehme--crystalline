@@ -2625,11 +2625,12 @@ both_backends!(
     a_local_rename_of_a_locked_domain_is_allowed_body
 );
 
-/// A move that rewrites a link in a domain being renamed waits for that
-/// rename like any other write into it, and is then not written there: the
-/// linker is named in the receipt, and no index row comes back under the old
-/// name.
-async fn a_move_waits_for_the_rename_of_a_linkers_domain_body(store: Arc<Mutex<dyn Store>>) {
+/// A move that would rewrite a link in a domain being renamed does not wait
+/// for that rename: the linker is not written, it is named in the receipt at
+/// once, and the move finishes while the rename is still running. Waiting
+/// would hold every other move back for as long as the rename may take
+/// (moves run one at a time). No index row comes back under the old name.
+async fn a_move_skips_a_linker_whose_domain_is_being_renamed_body(store: Arc<Mutex<dyn Store>>) {
     let m = machine(store).await;
     let engine = m.engine(true).await;
     // A write into ops is running when the rename starts, so the rename has
@@ -2683,30 +2684,17 @@ async fn a_move_waits_for_the_rename_of_a_linkers_domain_body(store: Arc<Mutex<d
                 .await
         })
     };
-    // Waited for, not slept on: the move's ticket into ops waits on the
-    // pause, which the engine counts.
-    tokio::time::timeout(Duration::from_secs(20), async {
-        while engine.writes_waiting_for_rename() < 1 && !mover.is_finished() {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("the move waits on the pause or finishes");
-    assert!(
-        !mover.is_finished(),
-        "the move waits for the rename of the domain it writes into"
-    );
+    let receipt = tokio::time::timeout(Duration::from_secs(10), mover)
+        .await
+        .expect("the move does not wait for the rename")
+        .unwrap()
+        .expect("the move itself lands");
     assert!(
         std::fs::read_to_string(m.root.join("ops/pager.md"))
             .unwrap()
             .contains(&format!("[[{}:alpha]]", m.eng)),
         "nothing was rewritten in the paused domain"
     );
-
-    write_hold.release();
-    writer.await.unwrap().unwrap();
-    renamer.await.unwrap().unwrap();
-    let receipt = mover.await.unwrap().expect("the move itself lands");
     let failed = receipt["links_failed"].as_array().expect("{receipt}");
     assert_eq!(failed.len(), 1, "{receipt}");
     assert_eq!(failed[0]["domain"], m.ops, "{receipt}");
@@ -2715,9 +2703,13 @@ async fn a_move_waits_for_the_rename_of_a_linkers_domain_body(store: Arc<Mutex<d
         failed[0]["reason"]
             .as_str()
             .unwrap()
-            .contains("was renamed while this request waited"),
+            .contains("is being renamed"),
         "{receipt}"
     );
+
+    write_hold.release();
+    writer.await.unwrap().unwrap();
+    renamer.await.unwrap().unwrap();
     assert_eq!(
         domain_id(&m.store, &m.ops).await,
         None,
@@ -2725,8 +2717,8 @@ async fn a_move_waits_for_the_rename_of_a_linkers_domain_body(store: Arc<Mutex<d
     );
 }
 both_backends!(
-    a_move_waits_for_the_rename_of_a_linkers_domain,
-    a_move_waits_for_the_rename_of_a_linkers_domain_body
+    a_move_skips_a_linker_whose_domain_is_being_renamed,
+    a_move_skips_a_linker_whose_domain_is_being_renamed_body
 );
 
 /// A move that relinks an engram in its own source domain never asks that

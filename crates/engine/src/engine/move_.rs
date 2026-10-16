@@ -337,9 +337,10 @@ impl Engine {
         // rename of a linker's domain waits for the move instead of racing
         // its rewrite. Entered once, up front, and never for a domain this
         // move already holds: a rename that paused it would wait for this
-        // move while this move waited for the rename. A domain whose rename
-        // ran while this waited is not written; its linkers are named in the
-        // receipt.
+        // move while this move waited for the rename. A domain a rename has
+        // paused is not waited for: moves run one at a time, so waiting
+        // would hold every other move back for as long as the rename may
+        // take. Its linkers are not written and are named in the receipt.
         let mut linker_tickets = Vec::new();
         let mut paused: HashMap<String, EngineError> = HashMap::new();
         for linker in &linkers {
@@ -351,7 +352,7 @@ impl Engine {
             {
                 continue;
             }
-            match self.enter_write(domain).await {
+            match self.try_enter_write(domain) {
                 Ok(ticket) => linker_tickets.push((domain.to_string(), ticket)),
                 Err(e) => {
                     paused.insert(domain.to_string(), e);

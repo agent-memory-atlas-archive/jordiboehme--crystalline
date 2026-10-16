@@ -815,6 +815,25 @@ impl Engine {
         }
     }
 
+    /// [`Engine::enter_write`] without the wait: a domain a rename has paused
+    /// is refused at once rather than waited for. For a write that is one
+    /// part of a larger verb, which may report the part it skipped and must
+    /// not hold its other parts back for as long as a rename may run.
+    pub(super) fn try_enter_write(&self, name: &str) -> Result<WriteTicket<'_>> {
+        if !self.holds_domain_in_memory(name) && !self.registered_domain_names().contains(name) {
+            return Err(EngineError::Conflict(format!(
+                "domain '{name}' is not registered here any more (renamed or removed \
+                 while this request ran); send it again"
+            )));
+        }
+        self.rename_pause.try_enter(name).ok_or_else(|| {
+            EngineError::Conflict(format!(
+                "domain '{name}' is being renamed, so nothing was written in it; \
+                 the link still names the old address"
+            ))
+        })
+    }
+
     /// Count one pass of a sync or the watcher into `name`, or `None` when a
     /// rename has it paused: the pass is skipped, and the sync that ends the
     /// rename covers it.
