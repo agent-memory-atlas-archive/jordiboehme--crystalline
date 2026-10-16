@@ -86,7 +86,7 @@ pub fn what(k: &KeptText) -> String {
         out.push_str(&format!(" ({owner}'s draft)"));
     }
     if let Some(sender) = &k.sender {
-        out.push_str(&format!(" (sent by {sender})"));
+        out.push_str(&format!(" (sent by {})", sender.name));
     }
     if k.removed {
         out.push_str(" (removed domain)");

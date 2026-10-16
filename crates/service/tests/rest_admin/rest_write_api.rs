@@ -3041,9 +3041,9 @@ fn write_ops() -> Vec<WriteOp> {
             read_only_exempt: false,
         },
         // A kept text is dropped by a person who may write its source, and a
-        // kept comment by whoever may comment, a reader of the Reflection:
-        // a viewer gets past authorization to the 404 of an id that names
-        // none.
+        // kept comment also by its sender, who may be a reader of the
+        // Reflection: a viewer gets past authorization to the 404 of an id
+        // that names none.
         WriteOp {
             method: Method::DELETE,
             path: "/api/v1/domains/eng/kept/abc12345",

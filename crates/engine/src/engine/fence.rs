@@ -163,8 +163,9 @@ pub(crate) struct KeepText<'a> {
     pub path: &'a str,
     /// The text as sent.
     pub text: &'a str,
-    /// Who sent it, recorded beside the kept text and logged.
-    pub actor: &'a str,
+    /// Who sent it: the caller, whose account is recorded beside the kept
+    /// text (an agent's is the account it acts for) with its name.
+    pub caller: &'a crate::scope::ReflectionCaller,
     /// The file on this disk that holds the text the write wrote: left as
     /// written when the text cannot be kept.
     pub holds: &'a Path,
@@ -349,23 +350,46 @@ impl Engine {
                     .kept_dir()
                     .ok_or_else(|| "this process knows no state folder".to_string())
                     .and_then(|root| {
-                        crystalline_core::kept::write_from(
+                        crystalline_core::kept::write(
                             &root,
                             domain,
+                            None,
                             keep.kind,
                             keep.path,
                             chrono::Utc::now(),
                             keep.text,
-                            keep.actor,
                         )
                         .map_err(|e| e.to_string())
                     });
+                let actor = keep.caller.author.name.as_str();
                 match kept {
                     Ok(file) => {
+                        match crate::scope::overlay_actor(&keep.caller.scope) {
+                            Some(account) => {
+                                let sender = crystalline_core::kept::Sender {
+                                    account,
+                                    name: actor.to_string(),
+                                };
+                                if let Err(e) =
+                                    crystalline_core::kept::record_sender(&file, &sender)
+                                {
+                                    tracing::error!(
+                                        domain,
+                                        kept = %file.display(),
+                                        "the sender of this kept text could not be recorded, so only people who edit the Reflection reach it: {e}"
+                                    );
+                                }
+                            }
+                            None => tracing::warn!(
+                                domain,
+                                kept = %file.display(),
+                                "this kept text was sent by nobody signed in, so only people who edit the Reflection reach it"
+                            ),
+                        }
                         tracing::warn!(
                             domain,
                             path = keep.path,
-                            actor = keep.actor,
+                            actor,
                             kept = %file.display(),
                             "a Reflection write was refused because this instance no longer holds the domain's host lock ({answer}); the text sent is kept here; crystalline kept list shows it"
                         );
@@ -375,7 +399,7 @@ impl Engine {
                         tracing::error!(
                             domain,
                             path = keep.path,
-                            actor = keep.actor,
+                            actor,
                             "a Reflection write was refused because this instance no longer holds the domain's host lock ({answer}), and keeping the text sent failed: {e}"
                         );
                         not_kept = Some(keep.holds);

@@ -192,17 +192,17 @@ async fn each_entry_needs_the_right_to_write_its_own_source() {
     assert_eq!(left, vec![KeptKind::Engram], "the engram's text stays");
 }
 
-/// A reader of the domain (`vera`) may handle kept comments only: she gets
-/// an empty listing and none of the page or engram texts; a person who
+/// A reader of the domain (`vera`) may handle only kept comments she sent:
+/// she gets an empty listing and none of the page or engram texts; a person who
 /// may not see the domain (`nora`) meets an unknown domain. Nothing is
 /// dropped.
 #[tokio::test]
 async fn a_reader_gets_no_page_text_and_a_stranger_meets_an_unknown_domain() {
     let s = serve().await;
     let (page_id, engram_id) = keep(&s);
-    // Vera reads the Reflection, so she may handle a kept comment: the
-    // listing answers, with none of the texts kept here, and each of them
-    // answers as unknown.
+    // Vera reads the Reflection, so she may handle a kept comment she sent:
+    // the listing answers, with none of the texts kept here, and each of
+    // them answers as unknown.
     let vera = Session::login(s.addr, "vera").await;
     let (status, body) = vera.get("/api/v1/domains/eng/kept").await;
     assert_eq!(status, 200, "{body}");
@@ -643,4 +643,106 @@ async fn a_hand_added_case_twin_leaves_the_registered_domains_texts() {
         "{:?}",
         kept::scan(&root)
     );
+}
+
+/// A kept comment goes to its sender, matched on the account recorded
+/// beside it, and to people who edit the Reflection; another reader gets
+/// nothing. A kept comment with no recorded sender is for editors only.
+#[tokio::test]
+async fn a_kept_comment_goes_to_its_sender_and_to_editors() {
+    let s = serve().await;
+    s.auth
+        .add_user("rita", "rita", None, Role::Viewer, "pw12345678")
+        .await
+        .unwrap();
+    s.auth
+        .upsert_domain_member("eng", "rita", MemberLevel::Viewer, None, "keeper")
+        .await
+        .unwrap();
+    let root = s.fx.tmp.path().join("state").join(kept::KEPT_DIR);
+    let at = chrono::Utc.with_ymd_and_hms(2026, 10, 15, 8, 0, 0).unwrap();
+    let hers = kept::write(
+        &root,
+        "eng",
+        None,
+        KeptKind::Comment,
+        PAGE,
+        at,
+        "Vera asks.\n",
+    )
+    .unwrap();
+    kept::record_sender(
+        &hers,
+        &kept::Sender {
+            account: "vera".to_string(),
+            // A display name proves nothing: rights match the account.
+            name: "rita".to_string(),
+        },
+    )
+    .unwrap();
+    let later = at + chrono::Duration::minutes(1);
+    kept::write(
+        &root,
+        "eng",
+        None,
+        KeptKind::Comment,
+        PAGE,
+        later,
+        "Nobody's.\n",
+    )
+    .unwrap();
+    let found = kept::scan(&root);
+    let id_of = |text: &str| {
+        found
+            .iter()
+            .find(|k| std::fs::read_to_string(&k.file).unwrap() == text)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let (hers, nobodys) = (id_of("Vera asks.\n"), id_of("Nobody's.\n"));
+
+    let vera = Session::login(s.addr, "vera").await;
+    let (status, body) = vera.get("/api/v1/domains/eng/kept").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        listed(&body),
+        vec![("comment".to_string(), PAGE.to_string())]
+    );
+    assert_eq!(body["kept"][0]["id"], hers.as_str());
+    assert_eq!(body["kept"][0]["sender"], "rita");
+    let (status, _) = vera
+        .get(&format!("/api/v1/domains/eng/kept/{nobodys}"))
+        .await;
+    assert_eq!(status, 404, "no recorded sender: editors only");
+
+    let rita = Session::login(s.addr, "rita").await;
+    let (status, body) = rita.get("/api/v1/domains/eng/kept").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body["kept"],
+        serde_json::json!([]),
+        "another reader gets nothing"
+    );
+    let (status, _) = rita.get(&format!("/api/v1/domains/eng/kept/{hers}")).await;
+    assert_eq!(status, 404);
+
+    let ed = Session::login(s.addr, "ed").await;
+    let (status, body) = ed.get("/api/v1/domains/eng/kept").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body["kept"].as_array().unwrap().len(),
+        2,
+        "an editor sees both: {body}"
+    );
+
+    let (status, _) = vera
+        .send(
+            Method::DELETE,
+            &format!("/api/v1/domains/eng/kept/{hers}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 204, "the sender drops her own");
+    assert_eq!(kept::scan(&root).len(), 1);
 }

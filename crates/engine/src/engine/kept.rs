@@ -5,8 +5,10 @@
 //! goes only to somebody who may write that source: a Reflection text needs
 //! `edit` on the domain's Reflection (`curate` for PACT.md), the right its
 //! room needs, and an engram text needs the right to write engrams there. A
-//! thread comment a refused write kept needs what commenting needs, `read`
-//! on the Reflection. Each entry is decided by its own kind, and a text
+//! thread comment a refused write kept goes to its sender (matched on the
+//! account recorded beside it, never on a display name) while they read the
+//! Reflection, and to everybody who edits the Reflection; one with no
+//! recorded sender is for editors only. Each entry is decided by its own kind, and a text
 //! kept from a review draft goes to the draft's owner only. Neither right
 //! asks the Reflection's state: it is often off exactly because a switch-off
 //! is why the text was kept.
@@ -28,11 +30,12 @@ struct KeptRights {
 }
 
 impl KeptRights {
-    /// Whether these rights may handle `k`: an engram text needs write
-    /// access to the engrams; a Reflection text needs what saving its page
-    /// in a room needs, `edit`, and `curate` for PACT.md (as
-    /// `require_reflection_edit` decides for the room).
-    fn allows(self, k: &KeptText) -> bool {
+    /// Whether these rights may handle `k` for the account `mine`: an
+    /// engram text needs write access to the engrams; a Reflection text
+    /// needs what saving its page in a room needs, `edit`, and `curate` for
+    /// PACT.md (as `require_reflection_edit` decides for the room); a kept
+    /// comment needs `edit`, or `read` and being its recorded sender.
+    fn allows(self, k: &KeptText, mine: Option<&str>) -> bool {
         match k.kind {
             KeptKind::Engram => self.engram,
             KeptKind::Reflection => {
@@ -43,8 +46,12 @@ impl KeptRights {
                 };
                 self.reflection >= need
             }
-            // Whoever may comment on the page may handle a kept comment.
-            KeptKind::Comment => self.reflection >= ReflectionRight::Read,
+            KeptKind::Comment => {
+                self.reflection >= ReflectionRight::Edit
+                    || (self.reflection >= ReflectionRight::Read
+                        && mine.is_some()
+                        && k.sender.as_ref().map(|s| s.account.as_str()) == mine)
+            }
         }
     }
 }
@@ -124,7 +131,7 @@ impl Engine {
                 k.domain == domain
                     && !k.removed
                     && !k.unfinished
-                    && rights.allows(k)
+                    && rights.allows(k, mine.as_deref())
                     && (k.owner.is_none() || k.owner == mine)
             })
             .collect()

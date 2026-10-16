@@ -3865,6 +3865,10 @@ pub trait Store: Send + Sync {
     /// a domain it last hosted), or `None`.
     async fn own_label(&self, instance_id: &str) -> Result<Option<String>>;
 
+    /// The instance ids holding a lock under `label` whose heartbeat is not
+    /// older than `stale_before`.
+    async fn live_label_holders(&self, label: &str, stale_before: &str) -> Result<Vec<String>>;
+
     /// Release a lock this instance holds (graceful shutdown, or the end of a
     /// one-shot command's walk): a compare-and-delete on `token`, the one
     /// its claim returned ([`HostClaim::Acquired`]). A no-op when the row

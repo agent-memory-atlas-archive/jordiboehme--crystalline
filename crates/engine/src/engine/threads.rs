@@ -308,7 +308,7 @@ impl Engine {
                         kind: crystalline_core::kept::KeptKind::Comment,
                         path,
                         text,
-                        actor: &caller.author.name,
+                        caller,
                         holds: &threads_abs,
                     }),
                 };
@@ -401,7 +401,7 @@ impl Engine {
                             kind: crystalline_core::kept::KeptKind::Comment,
                             path,
                             text,
-                            actor: &caller.author.name,
+                            caller,
                             holds: &threads_abs,
                         }),
                     },

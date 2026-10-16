@@ -4319,6 +4319,19 @@ impl Store for TursoStore {
         Ok(n > 0)
     }
 
+    async fn live_label_holders(&self, label: &str, stale_before: &str) -> Result<Vec<String>> {
+        let rows = query_all(
+            &self.conn,
+            "SELECT DISTINCT holder_instance_id FROM domain_lock WHERE holder_label=?1 AND heartbeat_at>=?2",
+            vec![
+                Value::Text(label.to_string()),
+                Value::Text(stale_before.to_string()),
+            ],
+        )
+        .await?;
+        Ok(rows.iter().filter_map(|r| cell_text(r, 0)).collect())
+    }
+
     async fn own_label(&self, instance_id: &str) -> Result<Option<String>> {
         let row = query_first(
             &self.conn,

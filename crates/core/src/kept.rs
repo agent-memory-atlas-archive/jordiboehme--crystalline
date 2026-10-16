@@ -13,8 +13,9 @@
 //! a Reflection write could not land (its host lost the domain's host lock
 //! mid-write); its `<path>` is the page the comment was on. A text kept for
 //! a write rather than a room may name who sent it in a file beside it,
-//! `<kept file>.from`, which [`scan`] reads as [`KeptText::sender`]. A second text kept under the same name in the same
-//! second gets `-2`, `-3` and so on after the time. A room over somebody's
+//! `<kept file>.from` (JSON: the sender's account and display name), which
+//! [`scan`] reads as [`KeptText::sender`]. A second text kept under the same
+//! name in the same second gets `-2`, `-3` and so on after the time. A room over somebody's
 //! review draft keeps its text under `<domain>/draft/<owner>/` instead of
 //! `<domain>/`, because a draft is private to its owner.
 //!
@@ -160,31 +161,52 @@ pub struct KeptText {
     #[serde(skip)]
     pub file: PathBuf,
     /// Who sent the text, when it was kept for a write that names its
-    /// sender ([`write_from`]); `None` for a room's text.
-    pub sender: Option<String>,
+    /// sender ([`record_sender`]); `None` for a room's text, or when the
+    /// sender could not be recorded.
+    pub sender: Option<Sender>,
+}
+
+/// Who sent a kept text: the account it was sent as, which rights are
+/// matched on, and the name it was shown under.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct Sender {
+    /// The account the sender acted as (an agent's is the account it acts
+    /// for).
+    pub account: String,
+    /// The display name, for people.
+    pub name: String,
 }
 
 /// The end of the name of the file beside a kept text that names its
 /// sender.
 const SENDER_SUFFIX: &str = ".from";
 
-/// [`write`](fn@write) for a text one sender sent (a write refused after
-/// its files were written), recording `sender` beside it. The text is kept
-/// first; a sender that cannot be recorded leaves the text kept without it.
-pub fn write_from(
-    root: &Path,
-    domain: &str,
-    kind: KeptKind,
-    path: &str,
-    at: DateTime<Utc>,
-    text: &str,
-    sender: &str,
-) -> std::io::Result<PathBuf> {
-    let file = write(root, domain, None, kind, path, at, text)?;
-    if !sender.is_empty() {
-        let _ = std::fs::write(sender_file(&file), sender);
+/// Record who sent the kept text at `file` (as [`write`](fn@write)
+/// answered it), in the file beside it. Written to a temporary name and
+/// renamed, so a reader never meets half a record. The text is kept
+/// already; a failure here leaves it without a sender, and the caller says
+/// so.
+pub fn record_sender(file: &Path, sender: &Sender) -> std::io::Result<()> {
+    let target = sender_file(file);
+    let mut temp = target.as_os_str().to_owned();
+    temp.push(format!(
+        ".{}-{}{TEMP_SUFFIX}",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let temp = PathBuf::from(temp);
+    let json = serde_json::to_string(sender).map_err(std::io::Error::other)?;
+    let written = write_new(&temp, &json).and_then(|()| std::fs::rename(&temp, &target));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
     }
-    Ok(file)
+    written
+}
+
+/// The sender recorded beside `file`, if a whole record is there.
+fn read_sender(file: &Path) -> Option<Sender> {
+    let text = std::fs::read_to_string(sender_file(file)).ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 /// The file beside `kept` that names its sender.
@@ -480,10 +502,7 @@ fn walk(place: &Place<'_>, dir: &Path, rel: &str, found: &mut Vec<KeptText>) {
             path,
             kept_at,
             bytes: entry.len,
-            sender: std::fs::read_to_string(sender_file(&entry.path))
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty()),
+            sender: read_sender(&entry.path),
             file: entry.path,
         });
     }
@@ -582,16 +601,21 @@ mod tests {
     fn a_kept_comment_names_its_sender() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let file = write_from(
+        let file = write(
             root,
             "eng",
+            None,
             KeptKind::Comment,
             "guides/a.md",
             Utc::now(),
             "Is this still true?",
-            "ada",
         )
         .unwrap();
+        let ada = Sender {
+            account: "ada".to_string(),
+            name: "Ada".to_string(),
+        };
+        record_sender(&file, &ada).unwrap();
         let found = scan(root);
         assert_eq!(
             found.len(),
@@ -601,7 +625,7 @@ mod tests {
         let kept = &found[0];
         assert_eq!(kept.kind, KeptKind::Comment);
         assert_eq!(kept.path, "guides/a.md");
-        assert_eq!(kept.sender.as_deref(), Some("ada"));
+        assert_eq!(kept.sender.as_ref(), Some(&ada));
         remove(root, kept).unwrap();
         assert!(!sender_file(&file).exists());
         assert!(scan(root).is_empty());

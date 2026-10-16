@@ -13069,6 +13069,44 @@ async fn an_instance_keeps_its_label(store: &dyn Store) {
         "build-box (9c1b)"
     );
 }
+/// Two instances whose first claims raced both hold the bare name: the
+/// one with the greater id takes its short id when it resolves its label
+/// again (its next claim or renewal); the other keeps the bare name.
+async fn raced_twins_read_apart(store: &dyn Store) {
+    let mut ids = Vec::new();
+    for name in ["eng", "ops"] {
+        ids.push(
+            store
+                .upsert_domain(name, Some(&format!("/tmp/{name}")), DomainKind::File)
+                .await
+                .unwrap(),
+        );
+    }
+    let (now, stale_before) = crystalline_index::claim_window(90);
+    for (domain, id) in [(ids[0], "3f2a0000-aaaa"), (ids[1], "9c1b0000-bbbb")] {
+        store
+            .claim_domain_host(domain, id, "build-box", &now, &stale_before, false)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        crystalline_index::instance_label(store, "build-box", "9c1b0000-bbbb")
+            .await
+            .unwrap(),
+        "build-box (9c1b)"
+    );
+    assert_eq!(
+        crystalline_index::instance_label(store, "build-box", "3f2a0000-aaaa")
+            .await
+            .unwrap(),
+        "build-box"
+    );
+}
+parity!(
+    raced_twins_read_apart_on_both_backends,
+    raced_twins_read_apart
+);
+
 parity!(
     an_instance_keeps_its_label_on_both_backends,
     an_instance_keeps_its_label

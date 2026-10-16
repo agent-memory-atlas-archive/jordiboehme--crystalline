@@ -1044,7 +1044,7 @@ pub struct Engine {
     // `service.public_url`, else the machine's hostname, set by
     // `with_instance_label`; the instance id when nothing named it.
     label: String,
-    // The label this instance's first acquired claim recorded
+    // The label this instance's latest claim or heartbeat resolved
     // (`crystalline_index::instance_label`), which the heartbeat writes on
     // every lock it renews, so one instance shows one label.
     resolved_label: std::sync::Mutex<Option<String>>,
@@ -4612,10 +4612,7 @@ impl Engine {
             }
         }
         if claimed.claim.is_acquired() {
-            self.resolved_label
-                .lock()
-                .unwrap()
-                .get_or_insert_with(|| claimed.label.clone());
+            *self.resolved_label.lock().unwrap() = Some(claimed.label.clone());
         }
         let claim = claimed.claim;
         if self.is_one_shot() && claim.is_acquired() {
@@ -4755,13 +4752,26 @@ impl Engine {
             return;
         }
         let now = now_offset().to_rfc3339();
-        let label = self
-            .resolved_label
-            .lock()
-            .unwrap()
-            .clone()
-            .unwrap_or_default();
         let store = self.store.lock().await;
+        // The label is resolved again on each beat, so an instance that
+        // raced a twin to the same bare name takes its short id here
+        // ([`crystalline_index::instance_label`]).
+        let label = match crystalline_index::instance_label(&*store, &self.label, &self.instance_id)
+            .await
+        {
+            Ok(label) => {
+                *self.resolved_label.lock().unwrap() = Some(label.clone());
+                label
+            }
+            Err(e) => {
+                tracing::warn!("could not resolve this instance's label: {e}");
+                self.resolved_label
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_default()
+            }
+        };
         for (name, id) in hosted {
             match store
                 .renew_domain_host(id, &self.instance_id, &label, &now)

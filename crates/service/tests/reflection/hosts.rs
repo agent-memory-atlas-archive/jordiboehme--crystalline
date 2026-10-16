@@ -1517,7 +1517,7 @@ async fn kept_on(fx: &Fx) -> Vec<(String, String, String, Option<String>)> {
                 k.kind.as_str().to_string(),
                 k.path.clone(),
                 std::fs::read_to_string(&k.file).unwrap(),
-                k.sender.clone(),
+                k.sender.as_ref().map(|s| s.name.clone()),
             )
         })
         .collect()
@@ -2107,4 +2107,46 @@ async fn a_one_shot_rename_respells_the_pages_on_postgres() {
     assert_eq!(report["left_behind"], serde_json::json!([]), "{report}");
     let page = std::fs::read_to_string(alpha.root.join("reflections/guides/links.md")).unwrap();
     assert!(page.contains("[[platform:runbooks/deploy]]"), "{page}");
+}
+
+/// Opening a page in the editor is a write: on a host lock whose holder
+/// sent no heartbeat for 90 seconds, the room join takes it over, as a page
+/// write does; on a live holder it is refused, naming the host.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_room_join_takes_over_a_stale_lock_and_not_a_live_one_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    let beta = instance(db.open().await, "beta").await;
+    alpha
+        .engine
+        .write_reflection(&crate::docs::write(PAGE, V1), &ReflectionCaller::owner())
+        .await
+        .unwrap();
+    let err = beta
+        .engine
+        .require_reflection_edit("eng", PAGE, &ReflectionCaller::owner())
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), refusal("alpha"), "a live host keeps it");
+    // Alpha's laptop sleeps: its last heartbeat is 91 seconds old.
+    {
+        let store = db.open().await;
+        let store = store.lock().await;
+        let id = store.domain_id("eng").await.unwrap().unwrap();
+        let beat = crystalline_index::claim_window(91).1;
+        store
+            .claim_domain_host(id, "alpha", "alpha", &beat, &beat, true)
+            .await
+            .unwrap();
+    }
+    beta.engine
+        .require_reflection_edit("eng", PAGE, &ReflectionCaller::owner())
+        .await
+        .unwrap();
+    assert_eq!(
+        lock_and_move(&db).await.0.unwrap().instance_id,
+        "beta",
+        "the room join took the lock over"
+    );
 }

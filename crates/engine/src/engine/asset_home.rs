@@ -232,7 +232,29 @@ impl Engine {
                     return Ok((bytes, row));
                 }
                 let row = attachment_row(path, &bytes, modified)?;
-                store.upsert_asset(home.table(), domain_id, &row).await?;
+                match home {
+                    // A Reflection file's row heals behind the host-lock
+                    // fence like every other write of one; an instance that
+                    // no longer hosts the domain serves the bytes and leaves
+                    // the row to the host.
+                    AssetHome::Reflection => {
+                        drop(store);
+                        match self
+                            .commit_reflection_rows(
+                                domain_id,
+                                &[RowOp::PutAsset(&row)],
+                                OnRefusal::put_back(domain, DiskUndo::default()),
+                            )
+                            .await
+                        {
+                            Err(e) if is_fence_refusal(&e) => {}
+                            other => other?,
+                        }
+                    }
+                    AssetHome::Engram => {
+                        store.upsert_asset(home.table(), domain_id, &row).await?;
+                    }
+                }
                 Ok((bytes, row))
             }
             (AssetHome::Engram, ContentSource::Virtual) => {

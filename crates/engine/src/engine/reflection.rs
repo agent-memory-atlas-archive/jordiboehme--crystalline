@@ -1653,7 +1653,7 @@ impl Engine {
                     kind: crystalline_core::kept::KeptKind::Reflection,
                     path: &p.path,
                     text: &final_text,
-                    actor: &caller.author.name,
+                    caller,
                     holds: &abs,
                 }),
             },
@@ -1950,7 +1950,9 @@ impl Engine {
 
     /// The right to be in a reflection's room: edit, curate for `PACT.md`
     /// (as its `PUT` takes). Public because `require_reflection` is
-    /// engine-private.
+    /// engine-private. A room is opened to write, so this is the write gate:
+    /// a host lock whose holder went stale is taken over for a signed-in
+    /// caller with the right, as a page write takes it.
     pub async fn require_reflection_edit(
         &self,
         domain: &str,
@@ -1962,7 +1964,7 @@ impl Engine {
         } else {
             ReflectionRight::Edit
         };
-        self.require_reflection(domain, caller, need)
+        self.require_reflection_to_write(domain, caller, need)
             .await
             .map(|_| ())
     }

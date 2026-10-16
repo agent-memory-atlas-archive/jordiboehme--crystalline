@@ -82,7 +82,7 @@ fn entry(kept: KeptText) -> KeptTextEntry {
         path: kept.path,
         kept_at: kept.kept_at,
         bytes: kept.bytes,
-        sender: kept.sender,
+        sender: kept.sender.map(|s| s.name),
     }
 }
 

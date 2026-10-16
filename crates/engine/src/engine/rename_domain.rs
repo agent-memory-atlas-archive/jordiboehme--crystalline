@@ -1249,7 +1249,11 @@ impl Engine {
             if needs_writes && !self.instance_id.is_empty() {
                 let claim = {
                     let store = self.store.lock().await;
-                    self.claim_file_host(&*store, &domain, &root, false).await
+                    // Not handed to the watcher: a rename may be under way
+                    // for this very domain, and the sync that ends it arms
+                    // the watch under the name it ends with.
+                    self.claim_file_host_as(&*store, &domain, &root, false, false)
+                        .await
                 };
                 match claim {
                     Ok(HostClaim::Acquired { .. }) => {}
