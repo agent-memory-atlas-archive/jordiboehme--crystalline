@@ -493,7 +493,7 @@ describe("the Reflection home", () => {
     );
     expect(
       await within(card).findByText(
-        "2 threads wait for the agent. 1 thread waits for people. 2 pages need an update from a changed engram.",
+        "2 threads wait for the agent. 1 thread waits for people. 2 pages need an update.",
       ),
     ).toBeVisible();
   });

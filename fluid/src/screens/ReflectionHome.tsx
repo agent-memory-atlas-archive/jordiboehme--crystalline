@@ -224,7 +224,7 @@ function reviewSentence(summary: ReflectionHomeSummary): string {
     people > 0 &&
       `${plural(people, "thread waits", "threads wait")} for people.`,
     updates > 0 &&
-      `${plural(updates, "page needs", "pages need")} an update from a changed engram.`,
+      `${plural(updates, "page needs", "pages need")} an update.`,
   ].filter((part): part is string => part !== false);
   return parts.length > 0 ? parts.join(" ") : "Nothing waits for review.";
 }
