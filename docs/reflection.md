@@ -145,7 +145,7 @@ The Reflection's rights decide, and the knowledge rights play no part:
 
 - A reader reads every file.
 - A contributor adds a new file.
-- A curator replaces, moves and removes files. A move rewrites every link to the file. A move keeps the file's extension, and a change of letter case alone (`a.png` to `A.png`) is a plain rename. A change only in Unicode normal form is refused as a move onto an existing file.
+- A curator replaces, moves and removes files. A move rewrites every link to the file. A move keeps the file's extension, and a change of letter case alone (`a.png` to `A.png`) is a plain rename. A change only in Unicode normal form may be refused as a move onto an existing file.
 
 These files are not engram attachments. The engram sweep never reports them as orphans. `reflect` reports a file no page links and a link to a file that is missing. The backup branch and the domain export carry them.
 
