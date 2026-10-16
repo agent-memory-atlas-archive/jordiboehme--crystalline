@@ -2624,3 +2624,178 @@ both_backends!(
     a_local_rename_of_a_locked_domain_is_allowed,
     a_local_rename_of_a_locked_domain_is_allowed_body
 );
+
+/// A move that rewrites a link in a domain being renamed waits for that
+/// rename like any other write into it, and is then not written there: the
+/// linker is named in the receipt, and no index row comes back under the old
+/// name.
+async fn a_move_waits_for_the_rename_of_a_linkers_domain_body(store: Arc<Mutex<dyn Store>>) {
+    let m = machine(store).await;
+    let engine = m.engine(true).await;
+    // A write into ops is running when the rename starts, so the rename has
+    // paused ops and waits for that write before its first step.
+    let write_hold = engine.hold_next_write();
+    let writer = {
+        let engine = engine.clone();
+        let ops = m.ops.clone();
+        tokio::spawn(async move {
+            engine
+                .write_engram(&write_params(&ops, "Note", "written before the rename"))
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(20), write_hold.reached())
+        .await
+        .expect("the write into ops is counted and held");
+    let renamer = {
+        let engine = engine.clone();
+        let ops = m.ops.clone();
+        tokio::spawn(async move {
+            engine
+                .rename_domain_local(&ops, "runbooks", NameOrigin::Explicit, &Scope::Unrestricted)
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !engine.is_renaming(&m.ops) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the rename has paused ops");
+
+    let mover = {
+        let engine = engine.clone();
+        let eng = m.eng.clone();
+        tokio::spawn(async move {
+            engine
+                .move_engram(
+                    &MoveParams {
+                        identifier: "alpha".to_string(),
+                        domain: eng,
+                        destination: "gamma.md".to_string(),
+                        destination_domain: None,
+                        permalink: None,
+                        update_links: None,
+                    },
+                    &Scope::Unrestricted,
+                )
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !mover.is_finished(),
+        "the move waits for the rename of the domain it writes into"
+    );
+    assert!(
+        std::fs::read_to_string(m.root.join("ops/pager.md"))
+            .unwrap()
+            .contains(&format!("[[{}:alpha]]", m.eng)),
+        "nothing was rewritten in the paused domain"
+    );
+
+    write_hold.release();
+    writer.await.unwrap().unwrap();
+    renamer.await.unwrap().unwrap();
+    let receipt = mover.await.unwrap().expect("the move itself lands");
+    let failed = receipt["links_failed"].as_array().expect("{receipt}");
+    assert_eq!(failed.len(), 1, "{receipt}");
+    assert_eq!(failed[0]["domain"], m.ops, "{receipt}");
+    assert_eq!(failed[0]["path"], "pager.md", "{receipt}");
+    assert!(
+        failed[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("was renamed while this request waited"),
+        "{receipt}"
+    );
+    assert_eq!(
+        domain_id(&m.store, &m.ops).await,
+        None,
+        "no index row came back under the old name"
+    );
+}
+both_backends!(
+    a_move_waits_for_the_rename_of_a_linkers_domain,
+    a_move_waits_for_the_rename_of_a_linkers_domain_body
+);
+
+/// A move that relinks an engram in its own source domain never asks that
+/// domain for a second ticket: a rename that paused the source waits for the
+/// move, and a move waiting for that rename would stall both until the wait
+/// ran out.
+async fn a_move_relinking_in_its_own_domain_finishes_while_a_rename_waits_body(
+    store: Arc<Mutex<dyn Store>>,
+) {
+    let m = machine(store).await;
+    std::fs::write(
+        m.root.join("eng/beta.md"),
+        engram("Beta", "beta", "See [[alpha]] first."),
+    )
+    .unwrap();
+    let engine = m.engine(true).await;
+    engine.sync(None).await.unwrap();
+
+    // The move is held right after its source counted it.
+    let write_hold = engine.hold_next_write();
+    let mover = {
+        let engine = engine.clone();
+        let eng = m.eng.clone();
+        tokio::spawn(async move {
+            engine
+                .move_engram(
+                    &MoveParams {
+                        identifier: "alpha".to_string(),
+                        domain: eng,
+                        destination: "gamma.md".to_string(),
+                        destination_domain: None,
+                        permalink: None,
+                        update_links: None,
+                    },
+                    &Scope::Unrestricted,
+                )
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(20), write_hold.reached())
+        .await
+        .expect("the move is counted in its source and held");
+
+    let renamer = {
+        let engine = engine.clone();
+        let (eng, platform) = (m.eng.clone(), m.platform.clone());
+        tokio::spawn(async move {
+            engine
+                .rename_domain_local(&eng, &platform, NameOrigin::Explicit, &Scope::Unrestricted)
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !engine.is_renaming(&m.eng) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the rename has paused the source domain");
+
+    write_hold.release();
+    let receipt = tokio::time::timeout(Duration::from_secs(10), mover)
+        .await
+        .expect("the move finishes while the rename waits for it")
+        .unwrap()
+        .expect("the move lands");
+    assert_eq!(receipt["links_rewritten"], 2, "{receipt}");
+    assert!(receipt.get("links_failed").is_none(), "{receipt}");
+    assert!(
+        std::fs::read_to_string(m.root.join("eng/beta.md"))
+            .unwrap()
+            .contains("See [[gamma]] first."),
+        "the same-domain linker is rewritten"
+    );
+    renamer.await.unwrap().unwrap();
+}
+both_backends!(
+    a_move_relinking_in_its_own_domain_finishes_while_a_rename_waits,
+    a_move_relinking_in_its_own_domain_finishes_while_a_rename_waits_body
+);

@@ -975,6 +975,11 @@ pub struct Engine {
     detection_walks: std::sync::atomic::AtomicU64,
     #[cfg(any(test, feature = "testing"))]
     fail_next_source_edit: std::sync::atomic::AtomicBool,
+    // Beside it: when armed, the next swap a move's rewrite of a virtual
+    // linker makes loses as if another writer had won, once, and is retried.
+    // See `Engine::lose_next_relink_swap`.
+    #[cfg(any(test, feature = "testing"))]
+    lose_next_relink_swap: std::sync::atomic::AtomicBool,
     // The second, and it is a stopwatch rather than a failure: when armed, the
     // next edit of a draft sleeps this many milliseconds between reading the
     // draft and writing it back, holding whatever it holds. See
@@ -2272,6 +2277,8 @@ impl Engine {
             #[cfg(any(test, feature = "testing"))]
             fail_next_source_edit: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "testing"))]
+            lose_next_relink_swap: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "testing"))]
             hold_next_draft_edit: std::sync::atomic::AtomicU64::new(0),
             #[cfg(any(test, feature = "testing"))]
             hold_next_room_screen: std::sync::Mutex::new(None),
@@ -2499,6 +2506,31 @@ impl Engine {
         #[cfg(any(test, feature = "testing"))]
         {
             self.fail_next_source_edit
+                .swap(false, std::sync::atomic::Ordering::Relaxed)
+        }
+        #[cfg(not(any(test, feature = "testing")))]
+        {
+            false
+        }
+    }
+
+    /// Make the next compare and swap of a move's rewrite of a virtual linker
+    /// lose once, the way it loses when another instance wrote the row in
+    /// between, so the retry that applies the rewrite again to the stored row
+    /// can be driven. A real lost race cannot be timed from a test. Unlike
+    /// [`Engine::fail_next_source_edit`], which stands for a conflict and is
+    /// never retried, this stands for a race.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn lose_next_relink_swap(&self) {
+        self.lose_next_relink_swap
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The arming above, consumed. `false` outside a test build.
+    fn take_lost_relink_swap(&self) -> bool {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            self.lose_next_relink_swap
                 .swap(false, std::sync::atomic::Ordering::Relaxed)
         }
         #[cfg(not(any(test, feature = "testing")))]
@@ -9631,13 +9663,32 @@ mod lock_tests {
                 .await
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Waited for, not slept on: a task waiting on the lock holds a clone
+        // of its `Arc` (`lock_owned`), so a third count means the move has
+        // reached the linker's lock. Before the fix the move never waits
+        // there and finishes instead.
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while Arc::strong_count(&lock) < 3 && !task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the move reaches the linker's lock or finishes");
         assert!(
             !task.is_finished(),
             "the move must be waiting on the linker's file lock, not already past its rewrite"
         );
+        assert!(root.join("gamma.md").is_file(), "alpha has moved");
+        assert!(
+            std::fs::read_to_string(&abs)
+                .unwrap()
+                .contains("See [[alpha]]."),
+            "and beta is not rewritten yet"
+        );
 
-        // The other writer's change lands while the move is blocked.
+        // The other writer's change lands while the move is blocked, after
+        // the move reached the lock: a move that read beta before taking the
+        // lock would write this change away.
         std::fs::write(
             &abs,
             engram("Beta", "beta", "See [[alpha]].\n\nFrom the browser."),

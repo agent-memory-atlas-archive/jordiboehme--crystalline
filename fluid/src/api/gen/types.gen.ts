@@ -4194,7 +4194,7 @@ export type MoveEngramResponses = {
      *
      * `to.permalink` is the address the engram answers to after the move, which is not always the one it went in with: a permalink in step with the path follows the file, and `new_permalink` can ask for another.
      *
-     * `links_rewritten` counts the engrams whose references were rewritten, `references_rewritten` the references inside them, and `rewritten` names those engrams by domain and permalink.
+     * `links_rewritten` counts the engrams whose references were rewritten, `references_rewritten` the references inside them, and `rewritten` names those engrams by domain and permalink. An entry with `landed: "live"` went into a page somebody has open in the editor, whose save writes it.
      *
      * `attachment_warnings` lists the attachments the move could not carry, one sentence each and empty when everything travelled; those files stay whole in the source domain.
      *

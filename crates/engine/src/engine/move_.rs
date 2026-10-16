@@ -1,5 +1,16 @@
 use super::*;
-use crate::collab::session::RoomDoc;
+use crate::collab::session::{ComposeRefused, RoomDoc};
+
+/// What [`Engine::relink_engram`] rewrote in one linking engram.
+pub(super) struct Relinked {
+    /// How many references changed.
+    pub(super) references: usize,
+    /// The linker's permalink.
+    pub(super) permalink: String,
+    /// Whether the rewrite composed into an open room rather than the file
+    /// or the row.
+    pub(super) live: bool,
+}
 
 /// Name one linking page or engram a move could not rewrite, in the shape
 /// every move receipt's `links_failed` carries: `{ domain, path, reason }`.
@@ -310,6 +321,32 @@ impl Engine {
         } else {
             Vec::new()
         };
+        // Every other domain the rewrite will write into is counted for the
+        // rest of the move, as the source and the destination are, so a
+        // rename of a linker's domain waits for the move instead of racing
+        // its rewrite. Entered once, up front, and never for a domain this
+        // move already holds: a rename that paused it would wait for this
+        // move while this move waited for the rename. A domain whose rename
+        // ran while this waited is not written; its linkers are named in the
+        // receipt.
+        let mut linker_tickets = Vec::new();
+        let mut paused: HashMap<String, EngineError> = HashMap::new();
+        for linker in &linkers {
+            let domain = linker.domain.as_str();
+            if domain == p.domain
+                || domain == dest_domain
+                || paused.contains_key(domain)
+                || linker_tickets.iter().any(|(held, _)| held == domain)
+            {
+                continue;
+            }
+            match self.enter_write(domain).await {
+                Ok(ticket) => linker_tickets.push((domain.to_string(), ticket)),
+                Err(e) => {
+                    paused.insert(domain.to_string(), e);
+                }
+            }
+        }
         let spec = Relink {
             from_domain: &p.domain,
             from_permalink: &src.permalink,
@@ -511,13 +548,28 @@ impl Engine {
         let mut failed: Vec<Value> = Vec::new();
         let mut references = 0usize;
         for linker in &linkers {
+            if let Some(e) = paused.get(&linker.domain) {
+                tracing::warn!(
+                    domain = linker.domain.as_str(),
+                    path = linker.path.as_str(),
+                    "the move could not rewrite the references in this engram: {e}"
+                );
+                note_link_failure(&mut failed, &linker.domain, &linker.path, e);
+                continue;
+            }
             match self
                 .relink_engram(linker, &spec, &linker_actor, &hidden)
                 .await
             {
-                Ok(Some((count, permalink))) => {
-                    references += count;
-                    rewritten.push(json!({ "domain": linker.domain, "permalink": permalink }));
+                Ok(Some(relinked)) => {
+                    references += relinked.references;
+                    let mut entry =
+                        json!({ "domain": linker.domain, "permalink": relinked.permalink });
+                    // Written into a room somebody has open, which saves it.
+                    if relinked.live {
+                        entry["landed"] = json!("live");
+                    }
+                    rewritten.push(entry);
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -863,13 +915,19 @@ impl Engine {
     /// a refused swap is applied again to the row stored now, as an unguarded
     /// edit is.
     ///
-    /// While a co-editing room is open over the linker, the room's text IS
-    /// the engram, so the rewrite composes into it, the way an edit's live
-    /// arm does: computed from the live text, it never collides with what a
-    /// person is typing, and the room's own save writes it down and announces
-    /// it. Neither the file nor the row is written behind the room. A room
-    /// that closed between the look and the compose saved its text on the
-    /// way out, so the rewrite then goes to the file or the row.
+    /// While a co-editing room that will save is open over the linker, the
+    /// room's text IS the engram, so the rewrite composes into it, the way an
+    /// edit's live arm does: computed from the live text, it never collides
+    /// with what a person is typing, and the room's own save writes it down
+    /// and announces it. Neither the file nor the row is written behind that
+    /// room, and the receipt marks the linker `landed: live`.
+    ///
+    /// A room that will not save what it is given (a conflict, a failed save,
+    /// or one whose last connection left, whose final save has run or is
+    /// running) gets nothing: the rewrite goes to the file or the row, and the
+    /// room meets it as an external change on its next save, by its compare
+    /// and swap and a three-way merge. The same holds when the room keeps
+    /// moving under the compose because somebody is typing.
     ///
     /// Lock order: the room first, holding nothing else, then the file lock,
     /// then the store lock, as `edit_engram` takes them and as a room's save
@@ -882,31 +940,60 @@ impl Engine {
         spec: &Relink<'_>,
         actor: &str,
         hidden: &HashSet<String>,
-    ) -> Result<Option<(usize, String)>> {
+    ) -> Result<Option<Relinked>> {
         // The live arm. The room is keyed on the linker's permalink, which
-        // the index knows; asked before any lock is taken.
+        // the index knows; asked before any lock is taken, and only when a
+        // room over one of this domain's engrams is open at all.
         if let Some(rooms) = self.collab_rooms()
+            && rooms.has_engram_rooms_in(&linker.domain).await
             && let Some(desc) = self.descriptor_at(&linker.domain, &linker.path).await?
-            && let Some(live) = rooms.live_text(&linker.domain, &desc.permalink, None).await
         {
-            let Some((edited, count)) = self
-                .relinked_text(&live.text, linker, spec, actor, hidden)
-                .await
-            else {
-                return Ok(None);
-            };
-            match rooms
-                .apply_text(&linker.domain, &desc.permalink, None, edited, actor, None)
-                .await
-            {
-                Ok(_) => return Ok(Some((count, desc.permalink))),
-                Err(e) => tracing::debug!(
-                    domain = linker.domain.as_str(),
-                    path = linker.path.as_str(),
-                    "the room over this linker closed before the move's rewrite \
-                     reached it, so the rewrite goes to its source: {e}"
-                ),
+            for _ in 0..super::edit::UNGUARDED_EDIT_ATTEMPTS {
+                let Some(live) = rooms.live_text(&linker.domain, &desc.permalink, None).await
+                else {
+                    break;
+                };
+                let Some((edited, references)) = self
+                    .relinked_text(&live.text, linker, spec, actor, hidden)
+                    .await
+                else {
+                    // The room holds no such reference. When it saves, that
+                    // is what lands; when it does not, the source still may.
+                    if live.saving {
+                        return Ok(None);
+                    }
+                    break;
+                };
+                // Whether the room saves is decided again inside the compose,
+                // under the lock the compose holds; that is the decision that
+                // counts.
+                match rooms
+                    .compose_while_saving(
+                        &linker.domain,
+                        &desc.permalink,
+                        &live.text,
+                        edited,
+                        actor,
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        return Ok(Some(Relinked {
+                            references,
+                            permalink: desc.permalink,
+                            live: true,
+                        }));
+                    }
+                    Err(ComposeRefused::Moved) => continue,
+                    Err(ComposeRefused::NotSaving) => break,
+                }
             }
+            tracing::debug!(
+                domain = linker.domain.as_str(),
+                path = linker.path.as_str(),
+                "the room over this linker will not take the move's rewrite, \
+                 so it goes to the source and the room merges it on its next save"
+            );
         }
         let source = self.read_source(&linker.domain);
         let (replaced, count, _lock) = match &source {
@@ -951,7 +1038,14 @@ impl Engine {
                     // The seam an edit's virtual arm has: a token nothing can
                     // match, never retried. See `Engine::fail_next_source_edit`.
                     let armed = self.take_armed_failure();
-                    let expected = if armed { "0".repeat(64) } else { expected };
+                    // And the race seam, which is retried like a real race.
+                    // See `Engine::lose_next_relink_swap`.
+                    let lost = self.take_lost_relink_swap();
+                    let expected = if armed || lost {
+                        "0".repeat(64)
+                    } else {
+                        expected
+                    };
                     let store = self.store.lock().await;
                     let indexed = self
                         .index_markdown(
@@ -1004,7 +1098,11 @@ impl Engine {
             draft_of: None,
             audience: None,
         }));
-        Ok(Some((count, permalink)))
+        Ok(Some(Relinked {
+            references: count,
+            permalink,
+            live: false,
+        }))
     }
 
     /// The linker's text with the moved engram's references rewritten,

@@ -1458,7 +1458,9 @@ pub async fn retire(
                            references were rewritten, \
                            `references_rewritten` the references inside \
                            them, and `rewritten` names those engrams by \
-                           domain and permalink.\n\n\
+                           domain and permalink. An entry with `landed: \
+                           \"live\"` went into a page somebody has open in \
+                           the editor, whose save writes it.\n\n\
                            `attachment_warnings` lists the attachments the \
                            move could not carry, one sentence each and empty \
                            when everything travelled; those files stay whole \

@@ -119,6 +119,13 @@ pub struct LiveText {
     /// or after it closes still holds even when the file is CRLF; the
     /// checksum of `text` once anything was typed.
     pub checksum: String,
+    /// Whether the room will save what it holds: its save state is ok and
+    /// somebody is still connected. A room in conflict, with a failed save,
+    /// or whose last connection left and whose final save ran, holds text
+    /// that may never reach the file. Read at the moment of the look;
+    /// [`CollabSessions::compose_while_saving`] decides it again under the
+    /// compose's own lock.
+    pub saving: bool,
 }
 
 /// Why a join did not produce a session.
@@ -206,6 +213,20 @@ pub struct AbsorbOutcome {
     pub absorbed: Absorbed,
     /// Who is in the room, as [`LiveApplied::participants`] names them.
     pub participants: Vec<String>,
+}
+
+/// Why [`CollabSessions::compose_while_saving`] did not compose. Either way
+/// nothing reached the room, and the caller writes the file or the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComposeRefused {
+    /// No room is open over the document any more, it closed, or it will
+    /// not save what it is given: its save is in conflict or failed, or
+    /// its last connection has left and its final save has run or is
+    /// running. Text composed into it now could be lost without a trace.
+    NotSaving,
+    /// The room's text is no longer the text the target was computed from:
+    /// somebody typed in between. Composing would undo their typing.
+    Moved,
 }
 
 /// An agent in a room, as the room shows it.
@@ -745,6 +766,37 @@ impl CollabSessions {
         .await
     }
 
+    /// [`CollabSessions::apply_text`] for a write that has a source to fall
+    /// back on: it composes only while the room will save it, and only onto
+    /// the very text `target` was computed from.
+    ///
+    /// Both are decided under the room's state lock, the one the compose
+    /// itself holds, so neither can change between the check and the
+    /// compose. A room saves what it holds while its save state is ok and
+    /// somebody is connected; once the last connection left, the final save
+    /// runs, and a compose after it would sit in a room nobody saves again.
+    /// A room in conflict or with a failed save may never write it either.
+    /// `base` is the live text `target` was computed from: when it moved,
+    /// composing the diff to `target` would take back what was typed since.
+    pub async fn compose_while_saving(
+        &self,
+        domain: &str,
+        permalink: &str,
+        base: &str,
+        target: String,
+        agent_label: &str,
+    ) -> Result<LiveApplied, ComposeRefused> {
+        let Some(session) = self
+            .live_room(domain, &RoomDoc::Engram(permalink.to_string()), None)
+            .await
+        else {
+            return Err(ComposeRefused::NotSaving);
+        };
+        session
+            .apply_agent_text_while_saving(base, &target, agent_label)
+            .await
+    }
+
     /// Have the room over `doc` take in a change an engine verb just wrote
     /// to its file, now rather than on its next idle probe: a three-way merge
     /// of the file into the room's own live text, against the text the room
@@ -833,6 +885,16 @@ impl CollabSessions {
     }
 
     /// [`CollabSessions::has_live_room`] for a room over any kind of document.
+    /// Whether any room over an engram of `domain`'s own text (not a draft)
+    /// is registered. A cheap look at the registry alone, for a caller about
+    /// to ask the index which engram a path holds only when a room might be
+    /// open over it.
+    pub async fn has_engram_rooms_in(&self, domain: &str) -> bool {
+        self.sessions.lock().await.keys().any(|(d, doc, overlay)| {
+            d == domain && overlay.is_none() && matches!(doc, RoomDoc::Engram(_))
+        })
+    }
+
     pub async fn has_live_doc(&self, domain: &str, doc: &RoomDoc, overlay: Option<&str>) -> bool {
         self.live_room(domain, doc, overlay).await.is_some()
     }
@@ -1608,7 +1670,14 @@ impl CollabSession {
         } else {
             crate::engine::sha256_hex(text.as_bytes())
         };
-        LiveText { text, checksum }
+        let saving = !state.closed
+            && !state.conns.is_empty()
+            && matches!(state.save_state, SaveStateTag::Ok);
+        LiveText {
+            text,
+            checksum,
+            saving,
+        }
     }
 
     /// The session text, and whether it differs from the last saved text.
@@ -2556,10 +2625,44 @@ impl CollabSession {
                 "this co-editing session ended while the write was being prepared".to_string(),
             );
         }
+        Ok(self.compose_locked(&mut state, target, origin, peer))
+    }
+
+    /// [`CollabSession::apply_agent_text`] for
+    /// [`CollabSessions::compose_while_saving`]: refused, with nothing
+    /// composed, unless the room will save the text and still holds `base`.
+    async fn apply_agent_text_while_saving(
+        &self,
+        base: &str,
+        target: &str,
+        origin: &str,
+    ) -> Result<LiveApplied, ComposeRefused> {
+        if self.is_disposed() {
+            return Err(ComposeRefused::NotSaving);
+        }
+        let mut state = self.state.lock().await;
+        if state.closed || state.conns.is_empty() || !matches!(state.save_state, SaveStateTag::Ok) {
+            return Err(ComposeRefused::NotSaving);
+        }
+        if Self::file_text_locked(&state) != base {
+            return Err(ComposeRefused::Moved);
+        }
+        Ok(self.compose_locked(&mut state, target, origin, None))
+    }
+
+    /// The compose itself, over the locked state: converge the document to
+    /// `target`, arm the saver and stand the agent in the strip.
+    fn compose_locked(
+        &self,
+        state: &mut SessionState,
+        target: &str,
+        origin: &str,
+        peer: Option<&AgentPeer>,
+    ) -> LiveApplied {
         // The room's text is LF only, whatever line endings the engine verb's
         // text carried.
         let target = to_lf(target);
-        self.converge_with(&mut state, &target, Some(origin));
+        self.converge_with(state, &target, Some(origin));
         // Armed exactly as an update from a socket arms it (see
         // `CollabSession::handle_frame`), so the agent's text saves on the
         // same debounce a person's typing does. Forcing a flush instead would
@@ -2571,14 +2674,14 @@ impl CollabSession {
         state.oldest_unsaved.get_or_insert(now);
         // The agent joins the strip under the same guard its text landed
         // under, so a person sees the chip and the change together.
-        let mine = peer.and_then(|peer| self.touch_agent_locked(&mut state, peer));
-        Ok(LiveApplied {
+        let mine = peer.and_then(|peer| self.touch_agent_locked(state, peer));
+        LiveApplied {
             // Everybody in the room EXCEPT this agent. `present` is what the
             // agent is told about who is in there with it, and its own slot -
             // minted a line ago, or standing from a call a moment ago - is not
             // news to the one that put it there. Another agent's is.
-            participants: Self::participants_locked(&state, mine),
-        })
+            participants: Self::participants_locked(state, mine),
+        }
     }
 
     /// Who is in this room, by the name their client publishes in awareness.

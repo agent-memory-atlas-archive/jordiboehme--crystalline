@@ -1033,6 +1033,10 @@ async fn a_move_relinks_a_linker_open_in_a_room_and_keeps_the_typing() {
         .await
         .expect("the move lands");
     assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    assert_eq!(
+        receipt["rewritten"][0]["landed"], "live",
+        "the receipt says the rewrite went into the open room: {receipt}"
+    );
 
     let on_disk = std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap();
     assert!(
@@ -1058,6 +1062,101 @@ async fn a_move_relinks_a_linker_open_in_a_room_and_keeps_the_typing() {
     assert!(
         on_disk.contains("See [[gamma]].") && on_disk.contains("typed while alpha moved"),
         "the room's save writes both: {on_disk:?}"
+    );
+}
+
+/// The linker every room test below opens: `beta`, linking `alpha`.
+const BETA: &str = "---\ntype: engram\ntitle: Beta\npermalink: beta\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Beta\n\nSee [[alpha]].\n";
+
+/// Move `alpha` to `gamma.md`, so every link to it follows.
+async fn move_alpha_to_gamma(engine: &Engine) -> Value {
+    engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".to_string(),
+                domain: "eng".to_string(),
+                destination: "gamma.md".to_string(),
+                destination_domain: None,
+                permalink: None,
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("the move lands")
+}
+
+/// A room whose last connection left and whose final save ran saves nothing
+/// any more, even while it still stands in the registry for the moment
+/// before it is disposed. A move in that moment writes the linker's file, so
+/// its rewrite is not composed into a room nobody saves again.
+#[tokio::test]
+async fn a_move_writes_the_file_of_a_linker_whose_room_already_said_goodbye() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    std::fs::write(tmp.path().join("eng/beta.md"), BETA).unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "beta", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed before leaving").await;
+    assert!(
+        joined.session.remove_conn(joined.conn).await,
+        "the last one left"
+    );
+    joined.session.final_save().await;
+    // Not disposed yet: the socket's teardown disposes right after this.
+
+    let receipt = move_alpha_to_gamma(&engine).await;
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    assert!(
+        receipt["rewritten"][0].get("landed").is_none(),
+        "not a live landing: {receipt}"
+    );
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap();
+    assert!(
+        on_disk.contains("See [[gamma]].") && on_disk.contains("typed before leaving"),
+        "the rewrite is in the file, beside what the final save wrote: {on_disk:?}"
+    );
+}
+
+/// A room in conflict saves nothing until a person resolves it, and may then
+/// keep the other side. A move writes the linker's file instead of composing
+/// into such a room, so the rewrite does not hang on how the conflict ends.
+#[tokio::test]
+async fn a_move_writes_the_file_of_a_linker_whose_room_is_in_conflict() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let beta = tmp.path().join("eng/beta.md");
+    std::fs::write(&beta, BETA).unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "beta", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed in the room").await;
+    // Another writer appended a different line at the same place.
+    std::fs::write(&beta, format!("{BETA}written on disk\n")).unwrap();
+    engine.sync(None).await.unwrap();
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+    let live = sessions
+        .live_text("eng", "beta", None)
+        .await
+        .expect("the room stands");
+    assert!(!live.saving, "the room is in conflict and saves nothing");
+
+    let receipt = move_alpha_to_gamma(&engine).await;
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    assert!(
+        receipt["rewritten"][0].get("landed").is_none(),
+        "not a live landing: {receipt}"
+    );
+    let on_disk = std::fs::read_to_string(&beta).unwrap();
+    assert!(
+        on_disk.contains("See [[gamma]].") && on_disk.contains("written on disk"),
+        "the rewrite is in the file: {on_disk:?}"
     );
 }
 
@@ -2137,7 +2236,7 @@ fn no_engine_function_composes_into_a_room_under_a_file_write_lock() {
     /// lock: the writes (an engram's, a reflection's merge), the reads and
     /// the disposals, and the switch-off's close of a domain's reflection
     /// rooms, which takes the registry and then each room's state.
-    const ROOM_ENTRY_NEEDLES: [&str; 13] = [
+    const ROOM_ENTRY_NEEDLES: [&str; 15] = [
         ".apply_text(",
         ".apply_doc_text(",
         ".absorb_doc_change(",
@@ -2151,6 +2250,8 @@ fn no_engine_function_composes_into_a_room_under_a_file_write_lock() {
         ".close_docs(",
         ".close_reflection_rooms(",
         ".close_reflection_rooms_if_switching_off(",
+        ".compose_while_saving(",
+        ".has_engram_rooms_in(",
     ];
 
     /// Every way an engine function takes a per-path write lock: the file's
