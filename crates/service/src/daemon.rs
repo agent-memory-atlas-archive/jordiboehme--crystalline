@@ -481,7 +481,10 @@ pub async fn run_serve(
     if let Ok(state) = config::state_dir() {
         engine = engine.with_state_dir(state);
     }
-    let engine = Arc::new(engine);
+    // The name other instances show for this one: the public URL's host, else
+    // this machine's hostname.
+    let name = engine.config().instance_name();
+    let engine = Arc::new(engine.with_instance_label(name));
     tokio::spawn(crate::engine::run_embed_worker(engine.clone(), embed_rx));
     // Its own task, never a shutdown step: a model download or a scoring
     // batch in flight is abandoned by `Departure`'s exit, not waited for.
@@ -1289,7 +1292,8 @@ async fn run_watcher(
             }
             Ok(HostClaim::HeldByOther(host)) => {
                 tracing::info!(
-                    "domain '{name}' is hosted by instance {} (last heartbeat {}); not watching, serving read-from-database only",
+                    "domain '{name}' is hosted by {} (instance {}, last heartbeat {}); not watching, serving read-from-database only",
+                    host.label,
                     host.instance_id,
                     host.heartbeat_at
                 );
@@ -1345,7 +1349,8 @@ async fn run_watcher(
                                 }
                                 Ok(HostClaim::HeldByOther(host)) => {
                                     tracing::info!(
-                                        "new domain '{name}' is hosted by instance {}; not watching, serving read-from-database only",
+                                        "new domain '{name}' is hosted by {} (instance {}); not watching, serving read-from-database only",
+                                        host.label,
                                         host.instance_id
                                     );
                                 }

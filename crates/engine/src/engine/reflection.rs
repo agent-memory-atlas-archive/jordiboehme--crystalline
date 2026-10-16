@@ -625,9 +625,12 @@ impl Engine {
         // A one-shot command never claims a domain to serve its Reflection:
         // it holds no lock past a walk and sends no heartbeat, and a read
         // must change no durable state (no lock row, no host-move mark). It
-        // serves the Reflection only while this machine's daemon holds the
-        // lock live, the same disk under the same id; otherwise nobody here
-        // serves it, and the gate says to start the daemon.
+        // serves the Reflection only while this machine holds the lock live:
+        // its daemon, an `mcp --embedded` session or another command's walk,
+        // all the same disk under the same id, and no other instance can
+        // claim the lock from a live holder without `--take-over`. Which of
+        // them holds it does not matter and the row cannot tell. Otherwise
+        // nobody here serves it, and the gate says to start the daemon.
         if self.is_one_shot() {
             let stale_before = (now_offset() - Duration::seconds(self.stale_secs)).to_rfc3339();
             let daemon_holds = host.is_some_and(|host| {

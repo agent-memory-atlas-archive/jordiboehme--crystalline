@@ -156,6 +156,25 @@ impl GlobalConfig {
             .filter(|s| !s.is_empty())
     }
 
+    /// The name this instance shows people on a shared database: the host
+    /// of `service.public_url` when it is set, else this machine's hostname
+    /// (without a trailing `.local`). `None` when neither is known; the
+    /// instance id stands in then. Two instances under one name get a short
+    /// id added where the name is recorded.
+    pub fn instance_name(&self) -> Option<String> {
+        let from_url = self
+            .service_public_url()
+            .and_then(|u| url::Url::parse(u).ok())
+            .and_then(|u| u.host_str().map(str::to_string));
+        from_url
+            .or_else(|| whoami::hostname().ok())
+            .map(|name| {
+                let name = name.trim();
+                name.strip_suffix(".local").unwrap_or(name).to_string()
+            })
+            .filter(|name| !name.is_empty())
+    }
+
     /// How the MCP server encodes list-shaped tool results, from
     /// `service.response_format`. Absent config or an absent key means TOON,
     /// the token-efficient default; `json` restores plain compact JSON for
@@ -1933,6 +1952,37 @@ mod tests {
     /// spelling of "nothing was written here" answers `None`: an absent
     /// `service` block, an absent key, an empty string and a string of blanks
     /// all mean the address is derived per caller instead.
+    #[test]
+    fn the_instance_name_is_the_public_url_host_else_the_hostname() {
+        let with = |value: &str| GlobalConfig {
+            service: Some(ServiceConfig {
+                public_url: Some(value.to_string()),
+                ..ServiceConfig::default()
+            }),
+            ..GlobalConfig::default()
+        };
+        assert_eq!(
+            with("https://crystalline.example.org/fluid").instance_name(),
+            Some("crystalline.example.org".to_string())
+        );
+        assert_eq!(
+            with("http://10.0.0.5:7411").instance_name(),
+            Some("10.0.0.5".to_string())
+        );
+        let hostname = whoami::hostname().ok().map(|h| {
+            let h = h.trim();
+            h.strip_suffix(".local").unwrap_or(h).to_string()
+        });
+        assert_eq!(
+            GlobalConfig::default().instance_name(),
+            hostname.filter(|h| !h.is_empty())
+        );
+        assert_eq!(
+            with("  ").instance_name(),
+            GlobalConfig::default().instance_name()
+        );
+    }
+
     #[test]
     fn service_public_url_is_none_when_unset_or_blank() {
         assert_eq!(GlobalConfig::default().service_public_url(), None);

@@ -1083,7 +1083,7 @@ fn cell_text(row: &Row, idx: usize) -> Option<String> {
 
 /// The read of a domain's host lock row, in [`domain_host_of`]'s column
 /// order.
-const DOMAIN_HOST_SQL: &str = "SELECT holder_instance_id, holder_label, heartbeat_at, acquired_at FROM domain_lock WHERE domain_id=?1";
+const DOMAIN_HOST_SQL: &str = "SELECT holder_instance_id, COALESCE(NULLIF(holder_label,''), holder_instance_id), heartbeat_at, acquired_at FROM domain_lock WHERE domain_id=?1";
 
 /// A [`DomainHost`] from a row read by [`DOMAIN_HOST_SQL`]'s columns.
 fn domain_host_of(r: &Row) -> DomainHost {
@@ -4044,7 +4044,7 @@ impl Store for TursoStore {
               WHERE l.domain_id=d.id AND e.actor = ''), \
              (SELECT count(*) FROM link l JOIN engram e ON e.id=l.engram_id \
               WHERE l.domain_id=d.id AND l.to_id IS NULL AND e.actor = ''), \
-             dl.holder_instance_id, dl.holder_label, dl.heartbeat_at, \
+             dl.holder_instance_id, COALESCE(NULLIF(dl.holder_label,''), dl.holder_instance_id), dl.heartbeat_at, \
              d.last_registered, d.rebuild_started, d.rebuild_kind, d.host_move \
              FROM domain d LEFT JOIN domain_lock dl ON dl.domain_id=d.id ORDER BY d.id",
             vec![],
@@ -4391,8 +4391,25 @@ impl Store for TursoStore {
         .await?;
         Ok(row.and_then(|r| {
             let id = cell_text(&r, 0)?;
-            Some((id, cell_text(&r, 1).unwrap_or_default()))
+            let label = cell_text(&r, 1)
+                .filter(|l| !l.is_empty())
+                .unwrap_or_else(|| id.clone());
+            Some((id, label))
         }))
+    }
+
+    async fn label_taken(&self, label: &str, instance_id: &str) -> Result<bool> {
+        let row = query_first(
+            &self.conn,
+            "SELECT EXISTS(SELECT 1 FROM domain_lock WHERE holder_label=?1 AND holder_instance_id<>?2) \
+             OR EXISTS(SELECT 1 FROM domain WHERE last_host_label=?1 AND last_host_id<>?2)",
+            vec![
+                Value::Text(label.to_string()),
+                Value::Text(instance_id.to_string()),
+            ],
+        )
+        .await?;
+        Ok(row.and_then(|r| cell_i64(&r, 0)).unwrap_or(0) != 0)
     }
 
     async fn set_last_domain_host(

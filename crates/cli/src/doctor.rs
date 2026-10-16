@@ -179,6 +179,10 @@ pub struct DomainDoctor {
     /// which never take a host lock).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_instance_id: Option<String>,
+    /// The host's name for people (its public URL's host or hostname, the
+    /// id for a lock written before labels), when hosted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_label: Option<String>,
     /// The host's last heartbeat, RFC 3339, when hosted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_heartbeat_at: Option<String>,
@@ -2799,6 +2803,7 @@ async fn check_domain_checks(
             && let Ok(Some(host)) = store.domain_host(domain_id).await
         {
             d.host_instance_id = Some(host.instance_id);
+            d.host_label = Some(host.label);
             d.host_heartbeat_at = Some(host.heartbeat_at);
         }
     }
@@ -4478,13 +4483,14 @@ pub fn render_human(report: &DoctorReport) -> String {
         let _ = writeln!(out, "{} ({})", d.name, d.path);
         // Ownership in a shared database: who hosts this file domain. Unhosted
         // domains print nothing extra.
-        if let Some(host) = &d.host_instance_id {
+        if let Some(id) = &d.host_instance_id {
+            let host = d.host_label.as_ref().unwrap_or(id);
             let hb = d
                 .host_heartbeat_at
                 .as_deref()
                 .map(|h| format!(" (last heartbeat {h})"))
                 .unwrap_or_default();
-            let _ = writeln!(out, "  hosted by instance {host}{hb}");
+            let _ = writeln!(out, "  hosted by {host}{hb}");
         }
         // A rebuild that was stamped and never cleared. Nothing was destroyed -
         // the rows below are the complete ones from before it - so the finding
@@ -6148,6 +6154,27 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    /// The host line names the host by its label; a report with no label
+    /// (an older daemon's answer) names the instance id.
+    #[test]
+    fn the_host_line_names_the_label_else_the_id() {
+        let mut report = report_with_orphans(IndexAccess::default(), &[]);
+        report.domains[0].host_instance_id = Some("3f2a-alpha".to_string());
+        report.domains[0].host_label = Some("build-box (3f2a)".to_string());
+        report.domains[0].host_heartbeat_at = Some("2026-10-16T10:00:00+00:00".to_string());
+        let out = render_human(&report);
+        assert!(
+            out.contains("  hosted by build-box (3f2a) (last heartbeat 2026-10-16T10:00:00+00:00)"),
+            "{out}"
+        );
+        report.domains[0].host_label = None;
+        let out = render_human(&report);
+        assert!(
+            out.contains("  hosted by 3f2a-alpha (last heartbeat"),
+            "{out}"
+        );
     }
 
     /// A `--domain` run lists that domain's kept texts only; one kept more

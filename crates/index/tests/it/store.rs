@@ -12929,3 +12929,75 @@ parity!(
     hybrid_search_blends_its_two_signals_on_both_backends,
     hybrid_search_blends_its_two_signals
 );
+
+/// A host lock records the instance's name as its label: the first instance
+/// under a name keeps it bare, a second one under the same name adds the
+/// start of its id, and that stays so on every later claim. A lock written
+/// before labels (an empty label) reads back as the instance id.
+async fn a_host_label_is_the_name_with_a_short_id_on_a_clash(store: &dyn Store) {
+    let mut ids = Vec::new();
+    for name in ["eng", "ops", "web"] {
+        ids.push(
+            store
+                .upsert_domain(name, Some(&format!("/tmp/{name}")), DomainKind::File)
+                .await
+                .unwrap(),
+        );
+    }
+    let (now, stale_before) = crystalline_index::claim_window(90);
+    let claim = |domain: DomainId, id: &'static str, name: &'static str| {
+        let (now, stale_before) = (now.clone(), stale_before.clone());
+        async move {
+            crystalline_index::claim_host_marking_moves(
+                store,
+                domain,
+                id,
+                name,
+                &now,
+                &stale_before,
+                false,
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let first = claim(ids[0], "3f2a0000-aaaa", "build-box").await;
+    assert_eq!(first.label, "build-box");
+    let second = claim(ids[1], "9c1b0000-bbbb", "build-box").await;
+    assert_eq!(second.label, "build-box (9c1b)");
+    assert_eq!(
+        store.domain_host(ids[1]).await.unwrap().unwrap().label,
+        "build-box (9c1b)"
+    );
+    assert_eq!(
+        claim(ids[0], "3f2a0000-aaaa", "build-box").await.label,
+        "build-box",
+        "the first instance keeps the bare name"
+    );
+    // Only a shared database records the last host on the domain row.
+    if store.shares_database() {
+        assert_eq!(
+            store.last_domain_host(ids[0]).await.unwrap(),
+            Some(("3f2a0000-aaaa".to_string(), "build-box".to_string()))
+        );
+    }
+    // No name, or the id as the name, records the id.
+    assert_eq!(claim(ids[2], "old-host-id", "").await.label, "old-host-id");
+
+    // A row written before labels reads as its id.
+    store
+        .claim_domain_host(ids[2], "old-host-id", "", &now, &stale_before, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.domain_host(ids[2]).await.unwrap().unwrap().label,
+        "old-host-id"
+    );
+    let stats = store.domain_stats().await.unwrap();
+    let web = stats.iter().find(|d| d.name == "web").unwrap();
+    assert_eq!(web.host_label.as_deref(), Some("old-host-id"));
+}
+parity!(
+    a_host_label_is_the_name_with_a_short_id_on_a_clash_on_both_backends,
+    a_host_label_is_the_name_with_a_short_id_on_a_clash
+);

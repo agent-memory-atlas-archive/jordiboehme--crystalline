@@ -323,6 +323,66 @@ async fn a_released_host_lock_goes_to_exactly_one_instance_on_postgres() {
     );
 }
 
+/// Instances name themselves by their `service.public_url` host: the
+/// non-host's status, its refusal and its host listing show that name, not
+/// the instance id. Two instances behind one address are told apart by the
+/// start of the later one's id.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_host_is_named_by_its_address_and_twins_by_a_short_id_on_postgres() {
+    use crate::fixture::instance_at;
+
+    let Some(db) = Shared::new() else {
+        return;
+    };
+    let files = files();
+    let files: Vec<(&str, &str)> = files.iter().map(|(p, b)| (*p, b.as_str())).collect();
+    const URL: &str = "https://crystalline.example.org/";
+    let alpha = instance_at(db.open().await, "3f2a-alpha", URL, &files).await;
+    let beta = instance_at(db.open().await, "9c1b-beta", URL, &files).await;
+    assert_eq!(alpha.engine.reflection_state("eng").await.unwrap(), LOCAL);
+    assert_eq!(
+        beta.engine.reflection_state("eng").await.unwrap(),
+        hosted_by("crystalline.example.org")
+    );
+    let err = beta
+        .engine
+        .write_reflection(
+            &crate::docs::write("guides/new.md", "# New\n"),
+            &ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), refusal("crystalline.example.org"));
+    let stats = beta
+        .engine
+        .store()
+        .lock()
+        .await
+        .domain_stats()
+        .await
+        .unwrap();
+    let eng = stats.iter().find(|d| d.name == "eng").unwrap();
+    assert_eq!(eng.host_instance_id.as_deref(), Some("3f2a-alpha"));
+    assert_eq!(eng.host_label.as_deref(), Some("crystalline.example.org"));
+
+    beta.engine.sync_take_over(Some("eng"), true).await.unwrap();
+    let err = alpha
+        .engine
+        .write_reflection(
+            &crate::docs::write("guides/new.md", "# New\n"),
+            &ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), refusal("crystalline.example.org (9c1b)"));
+    assert_eq!(
+        alpha.engine.reflection_state("eng").await.unwrap(),
+        hosted_by("crystalline.example.org (9c1b)"),
+        "the second instance under one name adds the start of its id"
+    );
+}
+
 /// A Postgres schema of its own, dropped with the value even when the test
 /// fails, and an opener for one store on it per instance.
 #[cfg(feature = "postgres")]
@@ -974,8 +1034,9 @@ async fn lock_and_move(
 /// sends no heartbeat and holds nothing past a walk, and a read changes no
 /// durable state. On a free lock it answers as a non-host, says to start
 /// the daemon and leaves no lock row and no host-move mark behind. While
-/// this machine's daemon holds the lock live, the command serves the
-/// Reflection from the same disk and leaves that lock as it was.
+/// this machine holds the lock live (its daemon, an `mcp --embedded`
+/// session), the command serves the Reflection from the same disk and
+/// leaves that lock as it was; a stale claim of this machine serves nothing.
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn a_one_shot_command_claims_no_domain_to_serve_its_reflection_on_postgres() {
@@ -1047,7 +1108,21 @@ async fn a_one_shot_command_claims_no_domain_to_serve_its_reflection_on_postgres
             .unwrap(),
         "the command did not claim over the daemon"
     );
+
+    // Any live claim of this machine counts, the row cannot tell a daemon
+    // from an `mcp --embedded` session; a claim of this machine that went
+    // stale does not, since another instance may take it at any time.
+    let long_ago = "2000-01-01T00:00:00+00:00";
+    store
+        .claim_domain_host(did, "beta", "beta", long_ago, long_ago, true)
+        .await
+        .unwrap();
     drop(store);
+    assert_eq!(
+        cmd.reflection_state("eng").await.unwrap(),
+        ReflectionState::HostedElsewhere { label: None },
+        "a stale claim of this machine serves nothing"
+    );
 }
 
 /// A one-shot command's targeted sync of a domain another live instance

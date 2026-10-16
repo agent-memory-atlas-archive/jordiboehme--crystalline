@@ -189,6 +189,29 @@ pub async fn instance_on(
     instance_watched(store, instance_id, files).await.0
 }
 
+/// [`instance_on`] for an instance whose `service.public_url` is `url`, so
+/// it names itself by that URL's host.
+pub async fn instance_at(
+    store: Arc<Mutex<dyn Store>>,
+    instance_id: &str,
+    url: &str,
+    files: &[(&str, &str)],
+) -> Fx {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    build(
+        store,
+        Some((instance_id, tx)),
+        files,
+        |cfg, _| {
+            cfg.service.get_or_insert_with(Default::default).public_url = Some(url.to_string());
+        },
+        None,
+        None,
+        None,
+    )
+    .await
+}
+
 /// [`instance_on`] with the daemon's watch channel wired, so a test sees the
 /// domains the engine hands its watcher.
 pub async fn instance_watched(
@@ -257,6 +280,10 @@ async fn build(
     tweak(&mut cfg, &base);
     let config_path = base.join("config.yaml");
     crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
+    // A test that gives an instance a public URL names it by that URL's
+    // host, as the daemon does; every other instance keeps its id as its
+    // label (this machine's hostname would be the same for all of them).
+    let name = cfg.service_public_url().and(cfg.instance_name());
     let mut engine = Engine::new(store.clone(), cfg, provider, Some(config_path))
         .with_state_dir(base.join("state"))
         // Origin state (base snapshots, the backup state) lands in the
@@ -271,6 +298,7 @@ async fn build(
     if let Some((id, watch)) = instance {
         engine = engine
             .with_instance_id(id.to_string())
+            .with_instance_label(name)
             .with_watch_channel(watch);
     } else {
         engine = crate::support::as_this_machine(engine, &store).await;

@@ -3920,6 +3920,12 @@ pub trait Store: Send + Sync {
     /// domain row, so it outlives a release, which deletes the lock row.
     async fn last_domain_host(&self, domain: DomainId) -> Result<Option<(String, String)>>;
 
+    /// Whether another instance than `instance_id` is recorded under
+    /// `label`, as a lock's holder or as a domain's last host: two instances
+    /// on one machine name, or behind one address, would show the same name,
+    /// so the later one adds a short id ([`crate::instance_label`]).
+    async fn label_taken(&self, label: &str, instance_id: &str) -> Result<bool>;
+
     /// Record the instance that just acquired a file domain's host lock.
     async fn set_last_domain_host(
         &self,

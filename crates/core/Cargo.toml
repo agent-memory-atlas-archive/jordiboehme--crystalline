@@ -27,6 +27,7 @@ uuid = { workspace = true }
 url = { workspace = true }
 sha2 = { workspace = true }
 anyhow = { workspace = true }
+whoami = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 # The roaming folder from the known-folder API (`config::roaming_root`): the

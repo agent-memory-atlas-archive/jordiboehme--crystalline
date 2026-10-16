@@ -710,7 +710,7 @@ pub(crate) async fn sync_domain_direct(
     let route = reach_index(None, &cfg, config_override, db_override, OpenAs::Write).await?;
     let store = local_store(route, "domain add")?;
     let params = chunk_params(&cfg);
-    let host = DirectHost::of(&store).await?;
+    let host = DirectHost::of(&store, &cfg).await?;
     let mut claimed = Vec::new();
     let applied = async {
         // First lock window: resolve the domain id, claim the host lock on a
@@ -763,18 +763,25 @@ pub(crate) async fn sync_domain_direct(
 /// release hands it back to that claim instead of deleting it.
 pub(crate) struct DirectHost {
     instance_id: String,
+    /// This machine's name for people, recorded as the lock's label.
+    name: String,
     stale_secs: i64,
 }
 
 impl DirectHost {
-    pub(crate) async fn of(store: &Arc<TokioMutex<dyn Store>>) -> Result<Option<DirectHost>> {
+    pub(crate) async fn of(
+        store: &Arc<TokioMutex<dyn Store>>,
+        cfg: &GlobalConfig,
+    ) -> Result<Option<DirectHost>> {
         if !store.lock().await.shares_database() {
             return Ok(None);
         }
         let instance_id = crystalline_core::config::read_or_create_instance_id()
             .map_err(|e| anyhow!("could not read this machine's instance id: {e}"))?;
+        let name = cfg.instance_name().unwrap_or_default();
         Ok(Some(DirectHost {
             instance_id,
+            name,
             stale_secs: crystalline_index::stale_secs(),
         }))
     }
@@ -792,7 +799,7 @@ impl DirectHost {
             store,
             domain,
             &self.instance_id,
-            &self.instance_id,
+            &self.name,
             &now,
             &stale_before,
             take_over,
@@ -1978,6 +1985,7 @@ struct ListedStats {
     name: String,
     engrams: i64,
     host_instance_id: Option<String>,
+    host_label: Option<String>,
     host_heartbeat_at: Option<String>,
 }
 
@@ -1987,6 +1995,7 @@ impl ListedStats {
             name: d.name.clone(),
             engrams: d.engrams,
             host_instance_id: d.host_instance_id.clone(),
+            host_label: d.host_label.clone(),
             host_heartbeat_at: d.host_heartbeat_at.clone(),
         }
     }
@@ -2001,6 +2010,7 @@ impl ListedStats {
             name: text("name")?,
             engrams: v.get("engrams").and_then(serde_json::Value::as_i64)?,
             host_instance_id: text("host_instance_id"),
+            host_label: text("host_label"),
             host_heartbeat_at: text("host_heartbeat_at"),
         })
     }
@@ -2203,11 +2213,14 @@ pub async fn domain_list(
     let count_for = |name: &str| -> Option<i64> { stat_for(name).map(|d| d.engrams) };
     // The current host of a file domain in a shared database, `None` when
     // unhosted (every domain in a single-instance deployment, every virtual one).
-    let host_for = |name: &str| -> Option<(String, Option<String>)> {
+    // Its label is what a person reads; a row written before labels named
+    // the instance carries the id there.
+    let host_for = |name: &str| -> Option<(String, String, Option<String>)> {
         stat_for(name).and_then(|d| {
-            d.host_instance_id
-                .clone()
-                .map(|id| (id, d.host_heartbeat_at.clone()))
+            d.host_instance_id.clone().map(|id| {
+                let label = d.host_label.clone().unwrap_or_else(|| id.clone());
+                (id, label, d.host_heartbeat_at.clone())
+            })
         })
     };
 
@@ -2229,8 +2242,9 @@ pub async fn domain_list(
                     "path": entry.file_path().map(|p| p.display().to_string()),
                     "engrams": count_for(name),
                     "source": source,
-                    "host": host_for(name).map(|(id, hb)| serde_json::json!({
+                    "host": host_for(name).map(|(id, label, hb)| serde_json::json!({
                         "instance_id": id,
+                        "label": label,
                         "heartbeat_at": hb,
                     })),
                     "canonical_name": name_table.canonical(name).unwrap_or(name),
@@ -2272,12 +2286,12 @@ pub async fn domain_list(
         // In a shared database a file domain names the instance that hosts
         // it, along with how recently it last heartbeat.
         let host = host_for(name)
-            .map(|(id, hb)| {
+            .map(|(_, label, hb)| {
                 let heartbeat = hb.as_deref().map(relative_time).unwrap_or_default();
                 if heartbeat.is_empty() {
-                    format!("\thosted by {id}")
+                    format!("\thosted by {label}")
                 } else {
-                    format!("\thosted by {id} (heartbeat {heartbeat})")
+                    format!("\thosted by {label} (heartbeat {heartbeat})")
                 }
             })
             .unwrap_or_default();
@@ -2350,7 +2364,7 @@ pub async fn sync(
     json: bool,
 ) -> Result<()> {
     let targets = select_domains(cfg, only)?;
-    let host = DirectHost::of(&store).await?;
+    let host = DirectHost::of(&store, cfg).await?;
     let mut claimed = Vec::new();
     let walked = sync_targets(
         &store,
@@ -2679,7 +2693,7 @@ pub async fn reindex(
     // On a shared database each domain is claimed as the daemon's reindex
     // claims it: a domain another live instance hosts is left alone, and a
     // walk applies only while the claim holds.
-    let host = DirectHost::of(&store).await?;
+    let host = DirectHost::of(&store, cfg).await?;
     let hooks = DirectReindexHooks {
         host: host.as_ref(),
         claimed: std::sync::Mutex::new(Vec::new()),

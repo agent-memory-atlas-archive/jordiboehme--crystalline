@@ -1034,8 +1034,10 @@ pub struct Engine {
     // Only a non-empty id claims host locks, scopes embedding and refuses a
     // non-host sync; the `serve` daemon sets it via `with_instance_id`.
     instance_id: String,
-    // The human label recorded alongside the host lock (currently the instance
-    // id; a stable, greppable handle in a shared database).
+    // The name this instance shows people, recorded with the host lock as its
+    // label (`crystalline_index::instance_label`): the host of
+    // `service.public_url`, else the machine's hostname, set by
+    // `with_instance_label`; the instance id when nothing named it.
     label: String,
     // The file domains this instance currently hosts, name to id, populated by a
     // successful `claim_domain_host` and renewed by the heartbeat timer. Drives
@@ -3750,6 +3752,19 @@ impl Engine {
     pub fn with_instance_id(mut self, instance_id: String) -> Engine {
         self.label = instance_id.clone();
         self.instance_id = instance_id;
+        self
+    }
+
+    /// Name this instance for people: the label its host locks record, so
+    /// another instance's refusal, `crystalline status` and the Reflection
+    /// status show it instead of the id ([`GlobalConfig::instance_name`]).
+    /// Call it after [`Engine::with_instance_id`]; `None` keeps the id.
+    ///
+    /// [`GlobalConfig::instance_name`]: crystalline_core::config::GlobalConfig::instance_name
+    pub fn with_instance_label(mut self, name: Option<String>) -> Engine {
+        if let Some(name) = name.filter(|n| !n.trim().is_empty()) {
+            self.label = name;
+        }
         self
     }
 
@@ -7226,7 +7241,10 @@ pub async fn open_standalone(
     if engine.store.lock().await.shares_database() {
         let id = crystalline_core::config::read_or_create_instance_id()
             .map_err(|e| anyhow::anyhow!("could not read this machine's instance id: {e}"))?;
-        engine = engine.with_one_shot_instance_id(id);
+        let name = engine.config().instance_name();
+        engine = engine
+            .with_one_shot_instance_id(id)
+            .with_instance_label(name);
     }
     // The daemonless engine is told where this machine's state directory is,
     // rather than leaving [`Engine::journal_state_dir`] to resolve it. Both

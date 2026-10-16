@@ -8,7 +8,7 @@
 //! rows it does not see until that is resolved (see [`crate::apply_scan`]).
 
 use crate::error::Result;
-use crate::store::{DomainId, HostClaim, HostMove, OnlyElsewhere, Store};
+use crate::store::{DomainHost, DomainId, HostClaim, HostMove, OnlyElsewhere, Store};
 
 /// A claim of [`claim_host_marking_moves`]: the claim itself, and when it
 /// replaced a live claim of this same instance id (this machine's daemon,
@@ -22,6 +22,12 @@ pub struct Claimed {
     /// The token of the live claim under the same instance id this claim
     /// replaced, if any.
     pub over: Option<String>,
+    /// The label the claim recorded for this instance ([`instance_label`]).
+    pub label: String,
+    /// The claim of another instance this claim replaced, when it acquired
+    /// the lock from one: with `--take-over`, or because that instance sent
+    /// no heartbeat for the stale threshold.
+    pub took_from: Option<DomainHost>,
 }
 
 /// What a holder keeps of a claim it acquired, to give the lock back with.
@@ -73,6 +79,25 @@ pub async fn give_back(
     Ok(())
 }
 
+/// The label an instance records for people to read: its `name` (the
+/// host of its `service.public_url`, else the machine's hostname), with the
+/// first four characters of its id in parentheses when another instance is
+/// already recorded under that name, for example `build-box (3f2a)`. The
+/// instance that came first keeps the bare name, so a label never changes
+/// once two instances share a name. An empty name, or one equal to the id,
+/// is the id.
+pub async fn instance_label(store: &dyn Store, name: &str, instance_id: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() || name == instance_id {
+        return Ok(instance_id.to_string());
+    }
+    if store.label_taken(name, instance_id).await? {
+        let short: String = instance_id.chars().take(4).collect();
+        return Ok(format!("{name} ({short})"));
+    }
+    Ok(name.to_string())
+}
+
 /// The default host-lock stale threshold, seconds (three missed heartbeats
 /// of 30 s). A lock whose last heartbeat is older is takeable by another
 /// instance.
@@ -117,8 +142,9 @@ pub const ACCEPT_DISK_NEEDS_DOMAIN: &str =
 /// transaction, so a failed mark write or a crash between the steps never
 /// leaves the lock naming this instance without the mark: the next claim
 /// would read "this instance", mark nothing, and its walk would drop the
-/// rows only the previous host has. Every other argument is
-/// [`Store::claim_domain_host`]'s. Off a shared database this is that claim
+/// rows only the previous host has. `label` is this instance's name, which
+/// the claim records as [`instance_label`] makes it; every other argument
+/// is [`Store::claim_domain_host`]'s. Off a shared database this is that claim
 /// and nothing more, since one instance owns the database.
 ///
 /// The answer also names the live claim of this same instance id the claim
@@ -133,11 +159,19 @@ pub async fn claim_host_marking_moves(
     take_over: bool,
 ) -> Result<Claimed> {
     if !store.shares_database() {
-        let over = live_own_token(store, domain, instance_id, stale_before).await?;
+        let holder = store.domain_host(domain).await?;
+        let over = live_own_token(holder.as_ref(), instance_id, stale_before);
+        let label = instance_label(store, label, instance_id).await?;
         let claim = store
-            .claim_domain_host(domain, instance_id, label, now, stale_before, take_over)
+            .claim_domain_host(domain, instance_id, &label, now, stale_before, take_over)
             .await?;
-        return Ok(Claimed { claim, over });
+        let took_from = foreign(holder, instance_id, &claim);
+        return Ok(Claimed {
+            claim,
+            over,
+            label,
+            took_from,
+        });
     }
     store.begin().await?;
     let claimed = claim_and_mark(
@@ -162,18 +196,23 @@ pub async fn claim_host_marking_moves(
     }
 }
 
-/// The token of a live claim this instance id holds on `domain`, if any.
-async fn live_own_token(
-    store: &dyn Store,
-    domain: DomainId,
+/// The token of a live claim this instance id holds, if `holder` is one.
+fn live_own_token(
+    holder: Option<&DomainHost>,
     instance_id: &str,
     stale_before: &str,
-) -> Result<Option<String>> {
-    Ok(store
-        .domain_host(domain)
-        .await?
+) -> Option<String> {
+    holder
         .filter(|h| h.instance_id == instance_id && h.heartbeat_at.as_str() >= stale_before)
-        .map(|h| h.token))
+        .map(|h| h.token.clone())
+}
+
+/// The holder a claim replaced when it acquired the lock from another
+/// instance.
+fn foreign(holder: Option<DomainHost>, instance_id: &str, claim: &HostClaim) -> Option<DomainHost> {
+    holder.filter(|h| {
+        claim.is_acquired() && !h.instance_id.is_empty() && h.instance_id != instance_id
+    })
 }
 
 /// The body of [`claim_host_marking_moves`] on a shared database, inside
@@ -188,15 +227,17 @@ async fn claim_and_mark(
     take_over: bool,
 ) -> Result<Claimed> {
     let holder = store.domain_host(domain).await?;
-    let over = holder
-        .as_ref()
-        .filter(|h| h.instance_id == instance_id && h.heartbeat_at.as_str() >= stale_before)
-        .map(|h| h.token.clone());
+    let over = live_own_token(holder.as_ref(), instance_id, stale_before);
     let last = store.last_domain_host(domain).await?;
-    let previous = holder.map(|h| (h.instance_id, h.label)).or(last.clone());
+    let previous = holder
+        .as_ref()
+        .map(|h| (h.instance_id.clone(), h.label.clone()))
+        .or(last.clone());
+    let label = instance_label(store, label, instance_id).await?;
     let claim = store
-        .claim_domain_host(domain, instance_id, label, now, stale_before, take_over)
+        .claim_domain_host(domain, instance_id, &label, now, stale_before, take_over)
         .await?;
+    let took_from = foreign(holder, instance_id, &claim);
     if claim.is_acquired() {
         if previous.as_ref().map(|(id, _)| id.as_str()) != Some(instance_id) {
             let mark = HostMove {
@@ -212,13 +253,18 @@ async fn claim_and_mark(
             seam::fail_mark_of(instance_id)?;
             store.set_host_move(domain, Some(&mark)).await?;
         }
-        if last.as_ref().map(|(id, _)| id.as_str()) != Some(instance_id) {
+        if last.as_ref() != Some(&(instance_id.to_string(), label.clone())) {
             store
-                .set_last_domain_host(domain, instance_id, label)
+                .set_last_domain_host(domain, instance_id, &label)
                 .await?;
         }
     }
-    Ok(Claimed { claim, over })
+    Ok(Claimed {
+        claim,
+        over,
+        label,
+        took_from,
+    })
 }
 
 /// A failure injected into the mark write, for the test that proves a

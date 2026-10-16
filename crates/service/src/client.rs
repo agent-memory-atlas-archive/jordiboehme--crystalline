@@ -771,7 +771,10 @@ async fn build_embedded(
     // this machine's daemon is not running beside it.
     let shared_database = engine.store().lock().await.shares_database();
     if shared_database {
-        engine = engine.with_instance_id(crystalline_core::config::read_or_create_instance_id()?);
+        let name = engine.config().instance_name();
+        engine = engine
+            .with_instance_id(crystalline_core::config::read_or_create_instance_id()?)
+            .with_instance_label(name);
     }
     let engine = Arc::new(engine);
     tokio::spawn(crate::engine::run_embed_worker(engine.clone(), embed_rx));
