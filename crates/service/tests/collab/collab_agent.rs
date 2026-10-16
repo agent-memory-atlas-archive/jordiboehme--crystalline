@@ -3752,3 +3752,43 @@ both_backends!(
     a_live_preview_for_a_domain_with_no_row_answers_none_and_registers_nothing,
     a_live_preview_for_a_domain_with_no_row_answers_none_and_registers_nothing_body
 );
+
+/// A draft never starts from the body alone. A file domain's index row
+/// holds an engram's body only, so with the file gone from this disk
+/// (deleted by hand before the next sync) there is no whole engram to start
+/// from: the edit is refused with the way out, and no draft is written.
+/// Before, the draft kept the body and lost the frontmatter (title, type,
+/// tags, permalink).
+#[tokio::test]
+async fn a_draft_never_starts_from_the_body_alone() {
+    let (tmp, engine, _scratch) = engine_fixture(true).await;
+    std::fs::remove_file(tmp.path().join("eng/alpha.md")).unwrap();
+    let ada = crystalline_service::Scope::User {
+        account: "ada".into(),
+        admin: false,
+    };
+    let edited = engine
+        .edit_engram_as(
+            &EditParams {
+                identifier: "alpha".into(),
+                domain: "eng".into(),
+                operation: "append".into(),
+                content: Some("ada adds a line".into()),
+                ..Default::default()
+            },
+            None,
+            &ada,
+        )
+        .await;
+    let store = engine.store();
+    let store = store.lock().await;
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    let draft = store.overlay_entry(did, "ada", "alpha.md").await.unwrap();
+    let err = edited.expect_err("no draft starts from the body alone");
+    assert!(
+        matches!(err, crystalline_service::EngineError::NotFound(_))
+            && err.to_string().contains("is not on this disk"),
+        "{err}"
+    );
+    assert!(draft.is_none(), "{draft:?}");
+}
