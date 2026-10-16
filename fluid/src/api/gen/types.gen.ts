@@ -3360,7 +3360,7 @@ export type CreateEngramErrors = {
      */
     404: ProblemDetail;
     /**
-     * That permalink is already taken in this domain.
+     * That permalink is already taken in this domain, or an overwrite lands on an engram only the previous host of a host move has (the detail names the remedy).
      */
     409: ProblemDetail;
     /**
@@ -3717,6 +3717,10 @@ export type DeleteAttachmentErrors = {
      * No such domain, or no attachment at that path.
      */
     404: ProblemDetail;
+    /**
+     * The file is one only the previous host of a host move has, whose row a delete here would drop; the detail names the remedy.
+     */
+    409: ProblemDetail;
     /**
      * A teaching refusal from a domain that reviews changes: a deletion aimed at the folder the team reviewed rather than at a draft, a path where a share-link shows somebody else's draft and this session has not joined it, or a caller with no account of their own. The detail is the sentence that says what to do instead.
      */
@@ -4368,7 +4372,7 @@ export type MoveEngramErrors = {
      */
     404: ProblemDetail;
     /**
-     * The destination already exists in the target domain, another engram there already answers to the new permalink, or the engram is open in the editor and its address would change under it.
+     * The destination already exists in the target domain or is an engram only the previous host of a host move has, another engram there already answers to the new permalink, or the engram is open in the editor and its address would change under it.
      */
     409: ProblemDetail;
     /**
@@ -4548,7 +4552,7 @@ export type DeleteReflectionAssetErrors = {
      */
     404: ProblemDetail;
     /**
-     * The Reflection is not here (then possibly `home_url`).
+     * The file is one only the previous host of a host move has, whose row a delete here would drop; or the Reflection is not here (then possibly `home_url`).
      */
     409: ProblemDetail;
     /**

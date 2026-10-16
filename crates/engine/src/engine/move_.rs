@@ -1561,7 +1561,22 @@ impl Engine {
                 let itself = !cross
                     && matches!(src_source, ContentSource::File { root: r }
                         if is_case_only_rename(&join_rel(r, src_rel), &dest_abs, src_rel, dest_rel));
-                dest_abs.exists() && !itself
+                let taken = dest_abs.exists() && !itself;
+                if !taken && !itself {
+                    // A destination whose file is missing here may still
+                    // be the row of an engram only the previous host of a
+                    // host move has.
+                    let dest_id = self.store.lock().await.domain_id(dest_domain).await?;
+                    if let Some(dest_id) = dest_id {
+                        self.refuse_only_elsewhere(
+                            dest_domain,
+                            dest_id,
+                            ElsewhereRow::Engram(dest_rel),
+                        )
+                        .await?;
+                    }
+                }
+                taken
             }
             ContentSource::Virtual => {
                 let store = self.store.lock().await;

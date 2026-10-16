@@ -821,7 +821,10 @@ pub struct MoveBody {
         ),
         (
             status = 409,
-            description = "That permalink is already taken in this domain.",
+            description = "That permalink is already taken in this domain, or \
+                           an overwrite lands on an engram only the previous \
+                           host of a host move has (the detail names the \
+                           remedy).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -1504,9 +1507,11 @@ pub async fn retire(
         (
             status = 409,
             description = "The destination already exists in the target \
-                           domain, another engram there already answers to \
-                           the new permalink, or the engram is open in the \
-                           editor and its address would change under it.",
+                           domain or is an engram only the previous host of a \
+                           host move has, another engram there already \
+                           answers to the new permalink, or the engram is open \
+                           in the editor and its address would change under \
+                           it.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),

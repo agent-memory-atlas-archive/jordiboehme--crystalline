@@ -29,7 +29,7 @@ use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use serde::de::DeserializeOwned;
 
-use crate::engine::EngineError;
+use crate::engine::{EngineError, ONLY_ELSEWHERE};
 
 /// An error response in RFC 9457 shape. `title` is a short stable slug a
 /// client may match on; `detail` carries the engine's own message verbatim,
@@ -648,6 +648,12 @@ impl From<EngineError> for ApiError {
             // read as an authorization problem and 422 as a malformed request,
             // and it is neither.
             EngineError::ConnectInProgress | EngineError::ConfirmationRequired(_) => {
+                ApiError::conflict(detail)
+            }
+            // And a fifth: a write onto a path only the previous host of a
+            // host move has. The request is fine and this instance's disk is
+            // not, on every route that writes engrams, pages or files.
+            EngineError::Conflict(ref text) if text.contains(ONLY_ELSEWHERE) => {
                 ApiError::conflict(detail)
             }
             // And a fourth shares the 422 with the malformed requests: the

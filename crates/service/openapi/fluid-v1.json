@@ -2434,7 +2434,7 @@
             }
           },
           "409": {
-            "description": "That permalink is already taken in this domain.",
+            "description": "That permalink is already taken in this domain, or an overwrite lands on an engram only the previous host of a host move has (the detail names the remedy).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3435,6 +3435,16 @@
           },
           "404": {
             "description": "No such domain, or no attachment at that path.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The file is one only the previous host of a host move has, whose row a delete here would drop; the detail names the remedy.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4679,7 +4689,7 @@
             }
           },
           "409": {
-            "description": "The destination already exists in the target domain, another engram there already answers to the new permalink, or the engram is open in the editor and its address would change under it.",
+            "description": "The destination already exists in the target domain or is an engram only the previous host of a host move has, another engram there already answers to the new permalink, or the engram is open in the editor and its address would change under it.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5217,7 +5227,7 @@
             }
           },
           "409": {
-            "description": "The Reflection is not here (then possibly `home_url`).",
+            "description": "The file is one only the previous host of a host move has, whose row a delete here would drop; or the Reflection is not here (then possibly `home_url`).",
             "content": {
               "application/problem+json": {
                 "schema": {

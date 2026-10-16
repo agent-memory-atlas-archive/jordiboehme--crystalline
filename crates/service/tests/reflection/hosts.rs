@@ -606,6 +606,84 @@ async fn no_write_recreates_a_page_or_file_only_the_previous_host_has_on_postgre
     );
 }
 
+/// The same for an engram only alpha's disk has: an overwriting capture
+/// onto its path and an engram move onto it are refused with the remedy, and so is a
+/// delete of a Reflection file only alpha has, which would otherwise drop
+/// its only shared copy unseen. The rows stay alpha's; a new engram beside
+/// them is written as usual.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn no_write_recreates_an_engram_only_the_previous_host_has_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    let beta = instance(db.open().await, "beta").await;
+    alpha_writes(&alpha).await;
+    alpha.engine.release_hosts().await;
+    assert_eq!(beta.engine.reflection_state("eng").await.unwrap(), LOCAL);
+    beta.engine.sync(Some("eng")).await.unwrap();
+    let engram_row = |fx: &Fx| {
+        let store = fx.engine.store();
+        async move {
+            let store = store.lock().await;
+            let did = store.domain_id("eng").await.unwrap().unwrap();
+            store.engram_content(did, ALPHA_ENGRAM).await.unwrap()
+        }
+    };
+    let before = engram_row(&beta).await;
+    assert!(before.is_some(), "alpha's engram has a row");
+
+    beta.engine
+        .write_engram(&crate::fixture::write_params(
+            "Other",
+            Some("runbooks"),
+            "- [fact] written on beta",
+        ))
+        .await
+        .expect("an engram nobody else has is written");
+    let moved: crystalline_service::params::MoveParams =
+        serde_json::from_value(serde_json::json!({
+            "identifier": "runbooks/other",
+            "domain": "eng",
+            "destination": ALPHA_ENGRAM,
+        }))
+        .unwrap();
+    // A plain capture is refused by the permalink the row holds; an
+    // overwrite finds no file here and would land over the row.
+    let mut again = crate::fixture::write_params(
+        "Only On Alpha",
+        Some("runbooks"),
+        "- [fact] written again on beta",
+    );
+    again.overwrite = true;
+    let refusals = [
+        beta.engine.write_engram(&again).await.map(|_| ()),
+        beta.engine
+            .move_engram(&moved, &crystalline_service::Scope::Unrestricted)
+            .await
+            .map(|_| ()),
+        beta.engine
+            .reflection_asset_delete("eng", ALPHA_FILE, &ReflectionCaller::owner())
+            .await,
+    ];
+    for refused in refusals {
+        let err = refused.expect_err("a path only alpha has is not written here");
+        let text = err.to_string();
+        assert!(
+            matches!(err, crystalline_service::EngineError::Conflict(_))
+                && text.contains("exists only on alpha")
+                && text.contains("crystalline sync --domain eng --accept-disk"),
+            "{text}"
+        );
+    }
+    assert!(!beta.root.join(ALPHA_ENGRAM).exists(), "nothing is written");
+    assert!(
+        beta.root.join("runbooks/other.md").is_file(),
+        "nothing moved"
+    );
+    assert_eq!(engram_row(&beta).await, before, "alpha's row is untouched");
+    assert_eq!(alpha_rows(&beta).await, (true, true, true));
+}
+
 /// Two complete walks that race right after a take-over both keep the rows
 /// they did not see: the mark is read where each walk applies and cleared
 /// only by a walk that found nothing missing.

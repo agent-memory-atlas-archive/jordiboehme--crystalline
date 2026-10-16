@@ -15,9 +15,9 @@ use utoipa::{IntoParams, ToSchema};
 use super::auth::Identity;
 use super::{ApiError, ApiJson, ApiPath, ApiQuery, ProblemDetail, RestState, refuse_read_only};
 use crate::engine::{
-    ANONYMOUS_COMMENT, ASSET_EXISTS, EngineError, MOVE_ONTO_A_FILE, ONLY_ELSEWHERE,
-    REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_HOSTED_START, REFUSED_OFF_START,
-    REFUSED_PENDING, REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED,
+    ANONYMOUS_COMMENT, ASSET_EXISTS, EngineError, MOVE_ONTO_A_FILE, REFUSED_ELSEWHERE_START,
+    REFUSED_HOMELESS, REFUSED_HOSTED_START, REFUSED_OFF_START, REFUSED_PENDING,
+    REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED,
     REFUSED_PENDING_UNREADABLE, ReflectionSearch,
 };
 use crate::files::{AttachmentView, attachment_response};
@@ -66,9 +66,10 @@ pub(crate) async fn refuse_anonymous(
 /// verb refuses on are 409 (the request is fine, the Reflection is not where
 /// it could serve it), with `home_url` when it lives elsewhere; a stale
 /// checksum, a create over an existing page, a move or delete of a page
-/// somebody is editing, a file move onto a path that already holds a file
-/// and a write onto a path only the previous host has are 409 (the shared
-/// mapping answers every other `Conflict` 422);
+/// somebody is editing and a file move onto a path that already holds a
+/// file are 409 (the shared mapping answers a write onto a path only the
+/// previous host of a host move has 409 too, and every other `Conflict`
+/// 422);
 /// everything else keeps the shared mapping.
 pub(crate) fn reflection_error(e: EngineError) -> ApiError {
     match &e {
@@ -102,11 +103,7 @@ pub(crate) fn reflection_error(e: EngineError) -> ApiError {
             if text.starts_with("stale edit")
                 || text.starts_with("a reflection already lives at")
                 || text.starts_with("somebody is editing")
-                || text.ends_with(MOVE_ONTO_A_FILE)
-                // A write that would recreate a page or file only the
-                // previous host of a host move has: the request is fine,
-                // this instance's disk is not.
-                || text.contains(ONLY_ELSEWHERE) =>
+                || text.ends_with(MOVE_ONTO_A_FILE) =>
         {
             ApiError::conflict(text.clone())
         }
@@ -1516,7 +1513,9 @@ pub async fn asset_write(
         ),
         (
             status = 409,
-            description = "The Reflection is not here (then possibly `home_url`).",
+            description = "The file is one only the previous host of a host move \
+                           has, whose row a delete here would drop; or the \
+                           Reflection is not here (then possibly `home_url`).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -1631,9 +1630,11 @@ mod tests {
     use super::*;
 
     /// A write onto a page or file only the previous host has is 409, on
-    /// this surface and on the engram files routes.
+    /// this surface, on the engram files routes and through the shared
+    /// mapping every engram route uses.
     #[test]
     fn a_write_onto_a_path_only_the_previous_host_has_is_a_conflict() {
+        use crate::engine::ONLY_ELSEWHERE;
         let text =
             format!("'guides/kept.md' exists only on alpha{ONLY_ELSEWHERE}eng --accept-disk");
         assert_eq!(
@@ -1641,8 +1642,18 @@ mod tests {
             StatusCode::CONFLICT
         );
         assert_eq!(
-            crate::files::malformed_path_is_a_bad_request(EngineError::Conflict(text)).status,
+            crate::files::malformed_path_is_a_bad_request(EngineError::Conflict(text.clone()))
+                .status,
             StatusCode::CONFLICT
+        );
+        assert_eq!(
+            ApiError::from(EngineError::Conflict(text)).status,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            ApiError::from(EngineError::Conflict("another conflict".into())).status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "every other conflict keeps its 422"
         );
     }
 

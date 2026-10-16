@@ -242,6 +242,15 @@ impl Engine {
             }
         }
         match view.occupant_at(domain_id, source, &path).await? {
+            // A folder write onto a path whose file is missing here may
+            // land over the row of an engram only the previous host of a
+            // host move has. A draft writes its own row and never that one.
+            Occupant::Free
+                if view.actor().is_none() && matches!(source, ContentSource::File { .. }) =>
+            {
+                self.refuse_only_elsewhere(domain, domain_id, ElsewhereRow::Engram(&path))
+                    .await?;
+            }
             Occupant::Free => {}
             Occupant::Engram {
                 permalink: held,

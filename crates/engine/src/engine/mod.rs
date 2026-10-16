@@ -745,11 +745,14 @@ pub enum WatchEvent {
 pub const ONLY_ELSEWHERE: &str = ", which hosted this domain before; copy the domain folder over or restore it, then sync, or drop it with: crystalline sync --domain ";
 
 /// A row [`Engine::refuse_only_elsewhere`] looks for: a Reflection page by
-/// its path inside `reflections/`, or a file by its table and path.
+/// its path inside `reflections/`, an engram by its path in the domain, or a
+/// file by its table and path.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ElsewhereRow<'a> {
     /// A Reflection page.
     Page(&'a str),
+    /// An engram file, by its domain-relative path.
+    Engram(&'a str),
     /// An engram attachment or a Reflection file.
     Asset(crystalline_index::AssetTable, &'a str),
 }
@@ -4089,6 +4092,9 @@ impl Engine {
             ElsewhereRow::Page(path) => {
                 (path, store.get_reflection(domain_id, path).await?.is_some())
             }
+            ElsewhereRow::Engram(path) => {
+                (path, store.engram_content(domain_id, path).await?.is_some())
+            }
             ElsewhereRow::Asset(table, path) => (
                 path,
                 store.get_asset(table, domain_id, path).await?.is_some(),
@@ -4097,6 +4103,12 @@ impl Engine {
         if !kept {
             return Ok(());
         }
+        // Not only a previous host's file: a row this host wrote after the
+        // move, whose file somebody then deleted by hand, is refused too.
+        // The walk cannot tell the two apart while the move is open; the
+        // remedy the sentence names (copy the folder over, or
+        // `--accept-disk`) resolves both, so the refusal stays on the safe
+        // side.
         let host = mark
             .only_elsewhere
             .previous_host

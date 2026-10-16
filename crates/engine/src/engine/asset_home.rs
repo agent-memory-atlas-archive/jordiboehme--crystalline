@@ -415,7 +415,17 @@ impl Engine {
                 let _guard = lock.lock().await;
                 match std::fs::remove_file(&abs) {
                     Ok(()) => file_removed = true,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    // The row of a file only the previous host of a host
+                    // move has is the only shared copy of it: a delete here
+                    // must not drop it unseen. `--accept-disk` is the way.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        self.refuse_only_elsewhere(
+                            domain,
+                            domain_id,
+                            ElsewhereRow::Asset(home.table(), path),
+                        )
+                        .await?;
+                    }
                     Err(source) => {
                         return Err(EngineError::Io {
                             path: abs.display().to_string(),
