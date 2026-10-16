@@ -73,7 +73,8 @@ export function classifyReflectionTarget(
       ? ENGRAM
       : OTHER;
   }
-  if (target === "" || target.includes("://") || target.startsWith("mailto:")) {
+  // Any other URL scheme (RFC 3986, case-insensitive) is a URL, never a file.
+  if (target === "" || /^[a-z][a-z0-9+.-]*:/i.test(target)) {
     return OTHER;
   }
   // A browser reads `\` as `/` in a relative link.

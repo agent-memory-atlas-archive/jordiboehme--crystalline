@@ -154,7 +154,7 @@
     "page": "a.md",
     "body": "![x](assets/gr%C3%B6%C3%9Fe.png)",
     "refs": [
-      "assets/größe.png"
+      "assets/gr\u00f6\u00dfe.png"
     ],
     "engram": []
   },
@@ -331,5 +331,72 @@
     "body": "![x](crystalline:///assets/a.png)",
     "refs": [],
     "engram": []
+  },
+  {
+    "name": "a javascript scheme with ../ is other",
+    "page": "a.md",
+    "body": "![x](javascript:alert(1)//../../assets/x.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "a vbscript scheme with ../ is other",
+    "page": "a.md",
+    "body": "![x](vbscript:run//../../assets/x.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "a data scheme with ../ is other",
+    "page": "a.md",
+    "body": "![x](data:image/png;base64,AAAA//../../assets/x.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "a scheme folds case",
+    "page": "a.md",
+    "body": "![x](JavaScript:alert(1)//../../assets/x.png) ![y](HTTPS:../../assets/y.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "a scheme followed by // and ../ is other",
+    "page": "a.md",
+    "body": "![x](foo://../../assets/x.png) ![y](foo:///../assets/y.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "a Windows drive letter reads as a scheme and is other",
+    "page": "a.md",
+    "body": "![x](C:/assets/x.png) ![y](c:../assets/y.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "mailto with a path-like tail is other",
+    "page": "a.md",
+    "body": "[x](mailto:a@x.test?subject=../../assets/x.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "a colon after the first slash is no scheme",
+    "page": "a.md",
+    "body": "![x](assets/a:b.png)",
+    "refs": [
+      "assets/a:b.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "a colon after a dot segment is no scheme",
+    "page": "a.md",
+    "body": "![x](../assets/a:b.png)",
+    "refs": [],
+    "engram": [
+      "../assets/a:b.png"
+    ]
   }
 ]
