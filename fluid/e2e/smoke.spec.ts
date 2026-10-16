@@ -731,6 +731,35 @@ test("the command palette opens on the keyboard and jumps", async ({
   ).toBeVisible();
 });
 
+test("the command palette recovers when its chunk fails once", async ({
+  page,
+}) => {
+  // The first request for the palette's chunk is refused, as a dropped
+  // connection would; every later one goes through.
+  let refused = 0;
+  await page.route(/CommandPaletteBody-[^/]*\.js$/, async (route) => {
+    if (refused === 0) {
+      refused += 1;
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.keyboard.press("ControlOrMeta+k");
+
+  const card = page.getByRole("dialog", { name: "Not loaded" });
+  await expect(card).toBeVisible();
+  await expect(card.getByRole("button", { name: "Try again" })).toBeFocused();
+
+  await card.getByRole("button", { name: "Try again" }).click();
+
+  await expect(
+    page.getByPlaceholder("Jump to a domain, or find an engram by title"),
+  ).toBeVisible();
+  expect(refused).toBe(1);
+});
+
 test("an engram is created, edited, saved and retired", async ({ page }) => {
   await page
     .locator("main")

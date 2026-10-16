@@ -31,6 +31,9 @@ export class ChunkLoadError extends Error {
 export const lazyChunk: typeof lazy = (load) =>
   lazy(() =>
     load().catch((cause: unknown) => {
+      // The screen says "could not load" for a module that threw while it
+      // evaluated as well as for a missing chunk; keep the original visible.
+      console.error(cause);
       throw new ChunkLoadError(cause);
     }),
   );

@@ -217,20 +217,24 @@ describe("the screens behind a lazy boundary", () => {
       { timeout: SLOW },
     );
 
-    await userEvent.click(
-      await screen.findByRole(
-        "button",
-        { name: "Ada Lovelace" },
-        { timeout: SLOW },
-      ),
+    const avatar = await screen.findByRole(
+      "button",
+      { name: "Ada Lovelace" },
+      { timeout: SLOW },
     );
-    await userEvent.click(
-      await screen.findByRole(
-        "menuitem",
-        { name: "Maintenance" },
-        { timeout: SLOW },
-      ),
+    await userEvent.click(avatar);
+    const item = await screen.findByRole(
+      "menuitem",
+      { name: "Maintenance" },
+      { timeout: SLOW },
     );
+    // Radix hands the focus back to the avatar a tick after the menu closes.
+    // Record every time it gets the focus from the navigation on.
+    let avatarFocused = 0;
+    avatar.addEventListener("focusin", () => {
+      avatarFocused += 1;
+    });
+    await userEvent.click(item);
 
     // The screen arrives after its chunk, inside the same main region, and
     // nothing it draws takes the focus the route change put there.
@@ -241,10 +245,46 @@ describe("the screens behind a lazy boundary", () => {
         { timeout: SLOW },
       ),
     ).toBeVisible();
-    // Radix returns the focus to the avatar a tick after the menu closes;
-    // give that tick time to happen, then check it did not take the focus.
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await waitFor(() => {
+      expect(screen.getByRole("main")).toHaveFocus();
+    });
+    // The avatar may have the focus for a moment before the screen takes it;
+    // what must not happen is the avatar taking it back afterwards. Let the
+    // menu's own timers run, counting from the moment main has the focus.
+    avatarFocused = 0;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.getByRole("main")).toHaveFocus();
+    expect(avatarFocused).toBe(0);
+  }, 30_000);
+
+  it("clicking away from the avatar menu closes it without sending the focus to the avatar", async () => {
+    serveFrame();
+    renderApp("/graph");
+    const heading = await screen.findByRole(
+      "heading",
+      { name: "Graph", level: 1 },
+      { timeout: SLOW },
+    );
+    const avatar = await screen.findByRole(
+      "button",
+      { name: "Ada Lovelace" },
+      { timeout: SLOW },
+    );
+    await userEvent.click(avatar);
+    await screen.findByRole("menuitem", { name: "Maintenance" });
+
+    // Radix switches pointer events off outside an open menu, so the click
+    // is sent without the check, as a pointer outside the menu would be.
+    await userEvent.setup({ pointerEventsCheck: 0 }).click(heading);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("menuitem", { name: "Maintenance" }),
+      ).toBeNull();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(avatar).not.toHaveFocus();
   }, 30_000);
 
   it("closing the avatar menu with Escape still returns the focus to the avatar", async () => {

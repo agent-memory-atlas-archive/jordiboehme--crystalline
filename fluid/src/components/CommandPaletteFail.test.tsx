@@ -64,23 +64,23 @@ describe("the command palette when its chunk does not arrive", () => {
     box.focus();
     await user.keyboard("{Meta>}k{/Meta}");
 
-    const alert = await screen.findByRole("alert");
+    const alert = await screen.findByRole("dialog", { name: "Not loaded" });
     expect(alert).toHaveTextContent("This part did not load. Try again.");
 
     await user.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() => {
-      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.queryByRole("dialog", { name: "Not loaded" })).toBeNull();
     });
     expect(box).toHaveFocus();
 
     // The failed import is not cached for good: opening again starts a new
     // one, which fails here as well, and Try again then gets through.
     await user.keyboard("{Meta>}k{/Meta}");
-    await screen.findByRole("alert");
+    await screen.findByRole("dialog", { name: "Not loaded" });
     await user.click(screen.getByRole("button", { name: "Try again" }));
     expect(
       await screen.findByRole("dialog", { name: /command palette/i }),
     ).toBeVisible();
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Not loaded" })).toBeNull();
   });
 });

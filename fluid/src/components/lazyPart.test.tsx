@@ -107,9 +107,97 @@ describe("lazyPart", () => {
     );
     render(<Part overlay fallback={null} onClose={onClose} />);
 
-    await screen.findByRole("alert");
+    const card = await screen.findByRole("dialog", { name: "Not loaded" });
+    expect(card).toHaveAttribute("aria-modal", "true");
     await userEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts the focus on Try again, keeps it in the card and closes on Escape", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const onClose = vi.fn();
+    const Part = lazyPart<{ onClose: () => void }>(() =>
+      Promise.reject(new TypeError("offline")),
+    );
+    render(<Part overlay fallback={null} onClose={onClose} />);
+
+    const retry = await screen.findByRole("button", { name: "Try again" });
+    expect(retry).toHaveFocus();
+    await userEvent.tab();
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();
+    await userEvent.tab();
+    expect(retry).toHaveFocus();
+    await userEvent.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();
+
+    await userEvent.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives the focus back to returnFocusTo on Close", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const opener = document.createElement("button");
+    document.body.append(opener);
+    const Part = lazyPart<{
+      onClose: () => void;
+      returnFocusTo: HTMLElement;
+    }>(() => Promise.reject(new TypeError("offline")));
+    render(
+      <Part
+        overlay
+        fallback={null}
+        onClose={() => {}}
+        returnFocusTo={opener}
+      />,
+    );
+    await screen.findByRole("dialog", { name: "Not loaded" });
+    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(opener).toHaveFocus();
+    opener.remove();
+  });
+
+  it("gives the focus back to what had it when the part mounted", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const opener = document.createElement("button");
+    document.body.append(opener);
+    opener.focus();
+    const Part = lazyPart<{ onClose: () => void }>(() =>
+      Promise.reject(new TypeError("offline")),
+    );
+    render(<Part overlay fallback={null} onClose={() => {}} />);
+    await screen.findByRole("dialog", { name: "Not loaded" });
+    expect(opener).not.toHaveFocus();
+    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(opener).toHaveFocus();
+    opener.remove();
+  });
+
+  it("offers a reload after a second failure in a row", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const reload = vi.fn();
+    vi.stubGlobal("location", { ...window.location, reload });
+    const Part = lazyPart<object>(() => Promise.reject(new TypeError("gone")));
+    render(<Part fallback={null} />);
+
+    await screen.findByRole("alert");
+    expect(
+      screen.queryByRole("button", { name: "Reload the page" }),
+    ).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Reload the page" }),
+    );
+    expect(reload).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("logs the original error behind the message", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const cause = new Error("module threw while evaluating");
+    const Part = lazyPart<object>(() => Promise.reject(cause));
+    render(<Part fallback={null} />);
+    await screen.findByRole("alert");
+    expect(log).toHaveBeenCalledWith(cause);
   });
 
   it("does not catch an error thrown while the part renders", async () => {

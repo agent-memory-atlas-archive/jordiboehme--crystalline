@@ -12,7 +12,8 @@
  * Trying again has to call `import()` again. React keeps a rejected lazy
  * component for the life of the page, so the retry builds a fresh `lazy` over
  * the same loader. The new one is made only when the old one failed, so a
- * part that loaded stays mounted as it was.
+ * part that loaded stays mounted as it was. A second failure in a row also
+ * offers a reload, which is what a chunk removed by a deploy needs.
  */
 
 import { Suspense, lazy, useState } from "react";
@@ -43,12 +44,25 @@ export function lazyPart<P extends object>(
   load: Loader<P>,
 ): ComponentType<P & PartFrame> {
   let failed = false;
+  // How many imports of this part have failed since one last worked.
+  let failures = 0;
   const make = () =>
     lazy<ComponentType<P>>(() =>
-      load().catch((cause: unknown) => {
-        failed = true;
-        throw new ChunkLoadError(cause);
-      }),
+      load().then(
+        (module) => {
+          failures = 0;
+          return module;
+        },
+        (cause: unknown) => {
+          failed = true;
+          failures += 1;
+          // The part shows "did not load" for a module that threw while it
+          // evaluated as well as for a chunk that never arrived; the original
+          // stays in the console so that bug is not hidden by the message.
+          console.error(cause);
+          throw new ChunkLoadError(cause);
+        },
+      ),
     );
   let Body = make();
 
@@ -70,11 +84,21 @@ export function lazyPart<P extends object>(
     // starts a new import rather than meeting the old rejection.
     useState(retry);
     const { fallback, overlay = false, ...rest } = all;
-    const close = (rest as { onClose?: unknown }).onClose;
+    const { onClose, returnFocusTo } = rest as {
+      onClose?: unknown;
+      returnFocusTo?: unknown;
+    };
+    // Where the focus goes when the failure card is closed: the opener the
+    // part names, else whatever had the focus when the part was mounted.
+    const [cameFrom] = useState(() => document.activeElement);
+    const goesTo =
+      returnFocusTo instanceof HTMLElement ? returnFocusTo : cameFrom;
     return (
       <PartBoundary
         overlay={overlay}
-        onClose={typeof close === "function" ? (close as () => void) : null}
+        onClose={typeof onClose === "function" ? (onClose as () => void) : null}
+        returnTo={goesTo instanceof HTMLElement ? goesTo : null}
+        failures={() => failures}
         onRetry={retry}
       >
         <Suspense fallback={fallback}>
