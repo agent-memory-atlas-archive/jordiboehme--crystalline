@@ -280,6 +280,7 @@ impl Engine {
             if let Some(host) = s.and_then(|d| d.host_instance_id.clone()) {
                 let hosted_here = !self.instance_id.is_empty() && host == self.instance_id;
                 obj["host"] = json!({
+                    "label": s.and_then(|d| d.host_label.clone()).unwrap_or_else(|| host.clone()),
                     "instance_id": host,
                     "heartbeat_at": s.and_then(|d| d.host_heartbeat_at.clone()),
                     "hosted_here": hosted_here,

@@ -57,6 +57,11 @@ services:
 
   crystalline:
     image: ghcr.io/jordiboehme/crystalline:latest
+    # The name the other instances show for this one when it hosts a domain
+    # (unless service.public_url is set, whose host is used instead). Without
+    # it a container is named by its container id, which changes on every
+    # recreate.
+    hostname: crystalline-a
     # Alternative with the embedding model baked in (no first-start download):
     # image: ghcr.io/jordiboehme/crystalline:with-model
     # The image already defaults to serve with CRYSTALLINE_SERVICE_HTTP set, so
@@ -86,6 +91,7 @@ services:
   #
   # crystalline-b:
   #   image: ghcr.io/jordiboehme/crystalline:latest
+  #   hostname: crystalline-b
   #   environment:
   #     CRYSTALLINE_SERVICE_HTTP: "0.0.0.0:7411"
   #     CRYSTALLINE_DATABASE_BACKEND: postgres

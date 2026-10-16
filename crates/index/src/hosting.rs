@@ -547,8 +547,8 @@ mod tests {
     /// `--take-over` never both get it. Each claim is one upsert whose
     /// condition (`heartbeat_at < stale_before`) Postgres checks under the
     /// row lock: the second waits for the first to commit, then reads the
-    /// winner's fresh heartbeat and leaves the row alone. Run many times so
-    /// both orders happen.
+    /// winner's fresh heartbeat and leaves the row alone. Run many times, so
+    /// the two claims overlap in more than one way.
     #[cfg(feature = "postgres")]
     #[tokio::test]
     async fn two_claims_of_a_stale_lock_give_it_to_exactly_one() {

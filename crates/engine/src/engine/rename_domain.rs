@@ -1756,7 +1756,10 @@ impl Engine {
                 "domain '{old}' is in an index that instance {} also serves (last heartbeat {}); \
                  a rename on this machine alone would rename it under that instance too. Stop \
                  that instance first, then rename",
-                row.host_instance_id.as_deref().unwrap_or_default(),
+                row.host_label
+                    .as_deref()
+                    .or(row.host_instance_id.as_deref())
+                    .unwrap_or_default(),
                 row.host_heartbeat_at.as_deref().unwrap_or("unknown")
             )));
         }

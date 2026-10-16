@@ -137,6 +137,10 @@ async fn collaboration_flow(store: Arc<Mutex<dyn Store>>) {
         .find(|d| d["name"] == "eng")
         .unwrap();
     assert_eq!(eng_entry["host"]["instance_id"], "inst-a");
+    assert_eq!(
+        eng_entry["host"]["label"], "inst-a",
+        "no name given: the id"
+    );
     assert_eq!(eng_entry["host"]["hosted_here"], true);
 
     // B is refused a named sync of the hosted file domain, error naming A.
