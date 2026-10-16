@@ -989,6 +989,13 @@ test("a domain is registered, filled from an archive and unregistered", async ({
 test("the station launches from the C64 screen and returns to the same page", async ({
   page,
 }) => {
+  // The station is the one journey that loads a whole game: its lazy chunk,
+  // a WebGL context and a generated room. Each of those waits below has been
+  // seen to outrun the 15 s default on a machine under heavy load, so the
+  // three launch waits get a bounded 45 s of their own and the journey 150 s.
+  // A launch that never completes still fails, just later.
+  test.setTimeout(150_000);
+  const LAUNCH = { timeout: 45_000 };
   // Signed in by `beforeEach`.
   const route = `/d/${DOMAIN}/e/${DEEP_PERMALINK}`;
   // Relative, so the goto stays under the base; `route` keeps its slash for
@@ -1004,8 +1011,8 @@ test("the station launches from the C64 screen and returns to the same page", as
     page.getByRole("dialog", { name: "About Crystalline" }),
   ).toBeVisible();
   await page.getByRole("link", { name: 'LOAD"GAME",8,1' }).click();
-  await expect(page).toHaveURL(new RegExp(`/%CF%80${route}$`));
-  await expect(page.locator("canvas")).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/%CF%80${route}$`), LAUNCH);
+  await expect(page.locator("canvas")).toBeVisible(LAUNCH);
   await expect(page.getByText("?DEVICE NOT PRESENT ERROR")).toHaveCount(0);
   // Log the renderer once, so the CI job shows what drew the canvas.
   const renderer = await page.evaluate(() => {
@@ -1020,7 +1027,7 @@ test("the station launches from the C64 screen and returns to the same page", as
   // sound, and skips on any key; the connecting screen follows and skips
   // the same way.
   const opening = page.getByRole("dialog", { name: "Opening" });
-  await expect(opening).toBeVisible();
+  await expect(opening).toBeVisible(LAUNCH);
   await page.keyboard.press("Shift");
   await expect(opening).toHaveCount(0);
   const connecting = page.getByRole("dialog", { name: "Connecting" });
@@ -1032,6 +1039,7 @@ test("the station launches from the C64 screen and returns to the same page", as
   // only the mouse hint).
   await expect(page.locator('[data-hud="status"]')).toContainText(
     "DEEP GAMMA NOTE",
+    LAUNCH,
   );
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "Paused" })).toBeVisible();

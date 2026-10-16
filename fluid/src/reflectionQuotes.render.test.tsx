@@ -6,7 +6,7 @@
 
 import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AssetResolver } from "./api/files";
 import { Markdown } from "./components/Markdown";
@@ -14,6 +14,13 @@ import { domRange, selectionAnchor } from "./reflectionQuotes";
 import { locateQuote } from "./reflectionText";
 import type { SectionText } from "./reflectionText";
 import { ThemeProvider } from "./theme/ThemeProvider";
+
+// The Markdown renderer loads its pipeline lazily, and the first render in a
+// worker waits for that import. On a quiet machine it settles in well under a
+// second; with every core busy it has been seen still on its placeholder after
+// the 3 s default wait, so the wait below and the test budget are widened
+// together. Passing runs return the moment the body is drawn.
+vi.setConfig({ testTimeout: 60_000 });
 
 /** Render each text as its own section, the way the reflection page does. */
 async function renderSections(
@@ -42,9 +49,12 @@ async function renderSections(
       </ThemeProvider>
     </MemoryRouter>,
   );
-  await waitFor(() => {
-    expect(screen.queryByText("crystallizing")).toBeNull();
-  });
+  await waitFor(
+    () => {
+      expect(screen.queryByText("crystallizing")).toBeNull();
+    },
+    { timeout: 30_000 },
+  );
   const elements = Array.from(
     result.container.querySelectorAll("section[data-section]"),
   );

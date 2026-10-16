@@ -205,7 +205,12 @@ describe("SyncCard", () => {
 
       await vi.advanceTimersByTimeAsync(60_000);
 
-      expect(within(region).getByText(/, 1 minute ago$/)).toBeInTheDocument();
+      // The tick sets state outside act, so React draws it on its own
+      // schedule, not inside the timer advance above; on a loaded machine
+      // that draw can land after the advance returns. Wait for it.
+      expect(
+        await within(region).findByText(/, 1 minute ago$/),
+      ).toBeInTheDocument();
       // The tick redraws the sentence; it never asks the server again.
       expect(sync).toHaveBeenCalledTimes(1);
     });

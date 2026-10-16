@@ -287,7 +287,10 @@ describe("the decal recipe", () => {
         for (const d of decals)
           for (const t of text) expect(coplanarOverlap(d, t, 0.05)).toBe(false);
       }
-  }, 30_000);
+    // Every decal against every text quad in twelve rooms: about 9 s of CPU
+    // on a quiet machine and well over 15 s with every core busy, so the
+    // budget is several times the loaded time rather than twice it.
+  }, 120_000);
 
   it("sets every possible stencil through allowed marks only (Review Focus 3)", () => {
     // Mutation caught: a stencil drawn from a template string ("DECK 23"),
