@@ -3332,7 +3332,7 @@ export type ListEngramsError = ListEngramsErrors[keyof ListEngramsErrors];
 
 export type ListEngramsResponses = {
     /**
-     * The engine's page envelope, unchanged. Under `path`, its `total` is the folder's recursive count, not the tree's per-level one.
+     * The engine's page envelope, unchanged. Under `path`, its `total` is the folder's recursive count, not the tree's per-level one. A hit carries its engram's `recorded_at` as written, and none when the engram has no date.
      */
     200: {
         [key: string]: unknown;

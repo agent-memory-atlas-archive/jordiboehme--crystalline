@@ -2283,7 +2283,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The engine's page envelope, unchanged. Under `path`, its `total` is the folder's recursive count, not the tree's per-level one.",
+            "description": "The engine's page envelope, unchanged. Under `path`, its `total` is the folder's recursive count, not the tree's per-level one. A hit carries its engram's `recorded_at` as written, and none when the engram has no date.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2297,6 +2297,7 @@
                       "engram_type": "engram",
                       "kind": "engram",
                       "permalink": "alpha",
+                      "recorded_at": "2026-01-31",
                       "score": 1.0,
                       "snippet": "The first engram in this domain.",
                       "status": "stable",

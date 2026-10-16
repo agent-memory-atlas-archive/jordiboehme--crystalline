@@ -34,8 +34,8 @@ export interface EngramRow {
   /** The matched text a search payload carries, when it carries one. */
   snippet: string | null;
   /**
-   * Its `recorded_at` day, when the payload carries one. The domain listing
-   * does not yet; the front page's rows draw it once it does.
+   * Its `recorded_at` day, when the payload carries one: the domain listing
+   * does for every dated engram, and the front page's rows draw it.
    */
   recordedAt: string | null;
 }

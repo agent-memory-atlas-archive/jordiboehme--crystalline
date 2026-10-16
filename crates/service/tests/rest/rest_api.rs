@@ -1808,6 +1808,8 @@ async fn domain_tree_walks_folders_and_filters_by_glob() {
         "{root} {listed}"
     );
     assert!(listed["total"].as_u64().unwrap() >= 2, "{listed}");
+    // A listing hit says when its engram was recorded.
+    assert_eq!(listed["hits"][0]["recorded_at"], "2026-01-01", "{listed}");
     // A row says what state its engram is in, not only where it lives: a tree
     // is what a navigation sidebar is drawn from, and fading a retired engram
     // there would otherwise cost a second request per folder.

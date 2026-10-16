@@ -1241,6 +1241,11 @@ pub struct SearchHit {
     /// engram is untagged. Every hit passively teaches the querying agent the
     /// existing vocabulary. Observation-kind hits carry their engram's tags.
     pub tags: Vec<String>,
+    /// The engram's `recorded_at` as stored, on a filter-only page (the
+    /// listing, which sorts by it); `None` on a ranked search and for an
+    /// undated engram, and then left out of the answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recorded_at: Option<String>,
     /// Whether the hit is the engram or one of its observations.
     #[serde(flatten)]
     pub kind: HitKind,

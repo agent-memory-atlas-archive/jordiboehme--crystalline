@@ -2531,6 +2531,16 @@ impl McpServer {
             .search_engrams(&p, &caller.scope)
             .await
             .map_err(to_error)?;
+        // A filter-only page dates its dated hits for the web listing; the
+        // tool's rows keep one shape, which is what lets them encode as a
+        // table.
+        if let Some(hits) = v.get_mut("hits").and_then(Value::as_array_mut) {
+            for hit in hits {
+                if let Some(obj) = hit.as_object_mut() {
+                    obj.remove("recorded_at");
+                }
+            }
+        }
         crate::web_url::attach_template(&mut v, &caller.base);
         Ok(v)
     }

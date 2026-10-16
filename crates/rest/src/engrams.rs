@@ -166,7 +166,9 @@ pub struct ListQuery {
             status = 200,
             description = "The engine's page envelope, unchanged. Under \
                            `path`, its `total` is the folder's recursive \
-                           count, not the tree's per-level one.",
+                           count, not the tree's per-level one. A hit \
+                           carries its engram's `recorded_at` as written, \
+                           and none when the engram has no date.",
             body = Object,
             example = json!({
                 "mode": "text",
@@ -183,6 +185,7 @@ pub struct ListQuery {
                     "engram_type": "engram",
                     "status": "stable",
                     "tags": ["eng"],
+                    "recorded_at": "2026-01-31",
                     "kind": "engram"
                 }]
             }),

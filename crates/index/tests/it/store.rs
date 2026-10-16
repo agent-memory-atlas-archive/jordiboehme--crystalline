@@ -5400,6 +5400,62 @@ parity!(
     filter_only_orders_by_the_readers_choice
 );
 
+/// A filter-only page dates each hit with its `recorded_at` as stored, and
+/// an undated engram's hit carries none; a ranked search dates nothing, so a
+/// search answer keeps its shape.
+async fn filter_only_hits_carry_recorded_at(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "jan.md",
+        "---\ntype: engram\ntitle: Jan\npermalink: jan\ntags:\n  - t\nstatus: current\nrecorded_at: 2026-01-01\n---\n\nharborword\n",
+    );
+    write(
+        root,
+        "undated.md",
+        "---\ntype: engram\ntitle: Undated\npermalink: undated\ntags:\n  - t\nstatus: current\n---\n\nharborword\n",
+    );
+    sync_domain(store, "eng", root).await.unwrap();
+    let listed = store
+        .search(&SearchQuery {
+            domains: Some(vec!["eng".to_string()]),
+            limit: 10,
+            page: 1,
+            ..SearchQuery::default()
+        })
+        .await
+        .unwrap();
+    let dated: Vec<(String, Option<String>)> = listed
+        .items
+        .iter()
+        .map(|h| (h.permalink.clone(), h.recorded_at.clone()))
+        .collect();
+    assert_eq!(
+        dated,
+        vec![
+            ("jan".to_string(), Some("2026-01-01".to_string())),
+            ("undated".to_string(), None),
+        ]
+    );
+    let json = serde_json::to_value(&listed.items[1]).unwrap();
+    assert!(json.get("recorded_at").is_none(), "{json}");
+    let found = store
+        .search(&SearchQuery {
+            domains: Some(vec!["eng".to_string()]),
+            mode: SearchMode::Text,
+            ..SearchQuery::text("harborword")
+        })
+        .await
+        .unwrap();
+    assert_eq!(found.items.len(), 2);
+    assert!(found.items.iter().all(|h| h.recorded_at.is_none()));
+}
+parity!(
+    a_filter_only_hit_carries_its_recorded_at,
+    filter_only_hits_carry_recorded_at
+);
+
 async fn neighbors_cross_domain(store: &dyn Store) {
     // domain2 holds the cross-domain target C.
     let d2 = tempfile::tempdir().unwrap();

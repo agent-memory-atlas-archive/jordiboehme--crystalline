@@ -373,6 +373,7 @@ async fn filter_only(
                     engram_type: c.engram_type,
                     status: c.status,
                     tags: Vec::new(),
+                    recorded_at: cell_text(r, RECORDED_AT_COLUMN),
                     kind: HitKind::Engram,
                 },
             )
@@ -604,6 +605,11 @@ fn order_keys(order: SearchOrder) -> &'static str {
     }
 }
 
+/// Where the filter-only page puts `recorded_at`: right after
+/// [`CANDIDATE_COLUMNS`], which every candidate statement shares and which
+/// the page alone extends, so a listing row can say when it was recorded.
+const RECORDED_AT_COLUMN: usize = 9;
+
 /// The filter-only page: the statement behind a listing with no query text,
 /// which is what the domain page and every folder view page through.
 ///
@@ -625,7 +631,7 @@ pub fn filter_only_sql(
 ) -> String {
     let order_keys = order_keys(order);
     format!(
-        "SELECT {CANDIDATE_COLUMNS} FROM engram e JOIN domain d ON d.id=e.domain_id \
+        "SELECT {CANDIDATE_COLUMNS}, e.recorded_at FROM engram e JOIN domain d ON d.id=e.domain_id \
          {CONTENT_JOIN} WHERE {actor_screen} {and_filters} \
          ORDER BY {order_keys} LIMIT {limit} OFFSET {offset}"
     )
@@ -1204,6 +1210,7 @@ impl Candidate {
             let content = cell_text(&row, 1).unwrap_or_default();
             return Ok(SearchHit {
                 snippet: make_snippet(&content, terms),
+                recorded_at: None,
                 kind: HitKind::Observation { line },
                 domain: self.domain,
                 permalink: self.permalink,
@@ -1230,6 +1237,7 @@ impl Candidate {
 
         Ok(SearchHit {
             snippet: make_snippet(&snippet_src, terms),
+            recorded_at: None,
             kind: HitKind::Engram,
             domain: self.domain,
             permalink: self.permalink,
@@ -1276,6 +1284,7 @@ impl Candidate {
             engram_type: self.engram_type,
             status: self.status,
             tags: Vec::new(),
+            recorded_at: None,
             kind: HitKind::Engram,
         }
     }
