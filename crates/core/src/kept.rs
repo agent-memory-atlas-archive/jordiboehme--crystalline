@@ -223,6 +223,10 @@ const OPEN_TRIES: u32 = 5;
 /// The end of a temporary keep's name: `.<name>.<stamp>.<pid>-<n>.keeping`.
 const TEMP_SUFFIX: &str = ".keeping";
 
+/// How long a temporary keep stays unchanged before it counts as an
+/// unfinished keep rather than one still being written.
+pub const UNFINISHED_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The counter in a temporary keep's name, one per keep in this process.
 static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -408,9 +412,13 @@ fn walk(place: &Place<'_>, dir: &Path, rel: &str, found: &mut Vec<KeptText>) {
         }
         let (name, kept_at, unfinished) = match parse_name(&entry.name) {
             Some((name, kept_at)) => (name, kept_at, false),
+            // A keep in progress holds its temporary name for a moment; only
+            // one left this long is an unfinished keep.
             None => match parse_temp_name(&entry.name) {
-                Some((name, kept_at)) => (name, kept_at, true),
-                None => continue,
+                Some((name, kept_at)) if entry.idle_for >= UNFINISHED_AFTER => {
+                    (name, kept_at, true)
+                }
+                _ => continue,
             },
         };
         let path = if rel.is_empty() {
@@ -481,6 +489,8 @@ struct Entry {
     is_dir: bool,
     is_file: bool,
     len: u64,
+    /// How long ago it last changed; zero when that cannot be told.
+    idle_for: std::time::Duration,
 }
 
 /// The entries of `dir` with UTF-8 names, by name, without following
@@ -500,6 +510,11 @@ fn dir_entries(dir: &Path) -> Vec<Entry> {
                 is_dir: meta.is_dir(),
                 is_file: meta.is_file(),
                 len: meta.len(),
+                idle_for: meta
+                    .modified()
+                    .ok()
+                    .and_then(|m| m.elapsed().ok())
+                    .unwrap_or_default(),
             })
         })
         .collect();
@@ -542,6 +557,35 @@ mod tests {
         });
     }
 
+    /// Make `file` look last changed two minutes ago.
+    fn age(file: &Path) {
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        std::fs::File::options()
+            .write(true)
+            .open(file)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+
+    /// A keep in progress holds its temporary name for a moment and is not
+    /// listed; the same file left for more than a minute is.
+    #[test]
+    fn only_a_temporary_keep_left_a_while_is_unfinished() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("eng/engram");
+        std::fs::create_dir_all(&folder).unwrap();
+        let fresh = folder.join(".a.md.20261015T080000Z.42-0.keeping");
+        let aged = folder.join(".b.md.20261015T080000Z.42-1.keeping");
+        std::fs::write(&fresh, "being written").unwrap();
+        std::fs::write(&aged, "left behind").unwrap();
+        age(&aged);
+        let found = scan(dir.path());
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].path, "b.md");
+        assert!(found[0].unfinished);
+    }
+
     /// A temporary name another keep holds is passed over: the text is kept
     /// under its own name all the same, and the other file is left alone.
     /// Two keeps of one path in one second get two temporary names.
@@ -553,6 +597,12 @@ mod tests {
         let file = write(root, "eng", None, KeptKind::Engram, "a.md", at(8), "mine").unwrap();
         TAKES.with(|left| left.set(0));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "mine");
+        for entry in std::fs::read_dir(file.parent().unwrap()).unwrap() {
+            let path = entry.unwrap().path();
+            if path.to_string_lossy().ends_with(".keeping") {
+                age(&path);
+            }
+        }
         let found = scan(root);
         assert_eq!(
             found.iter().filter(|k| k.unfinished).count(),
@@ -577,6 +627,7 @@ mod tests {
             ".deploy.md.20261015T080000Z.42.keeping",
         ] {
             std::fs::write(folder.join(name), "half").unwrap();
+            age(&folder.join(name));
         }
         std::fs::write(folder.join(".deploy.md.x.42.keeping"), "not a keep").unwrap();
         let found = scan(dir.path());

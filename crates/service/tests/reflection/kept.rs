@@ -289,11 +289,14 @@ async fn an_unfinished_keep_is_not_served() {
     let s = serve().await;
     let folder = s.fx.tmp.path().join("state/kept/eng/reflection/guides");
     std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(
-        folder.join(".deploying.md.20261015T080000Z.42-0.keeping"),
-        "Half kept.\n",
-    )
-    .unwrap();
+    let file = folder.join(".deploying.md.20261015T080000Z.42-0.keeping");
+    std::fs::write(&file, "Half kept.\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(120))
+        .unwrap();
     let root = s.fx.tmp.path().join("state/kept");
     let id = kept::scan(&root)[0].id.clone();
     let keeper = Session::login(s.addr, "keeper").await;

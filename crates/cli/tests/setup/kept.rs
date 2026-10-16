@@ -257,6 +257,13 @@ fn an_unfinished_keep_is_listed_shown_and_warned_about() {
     std::fs::create_dir_all(&folder).unwrap();
     let file = folder.join(".deploy.md.20261015T080000Z.42-0.keeping");
     std::fs::write(&file, "Half kept.\n").unwrap();
+    // Left more than a minute: a keep still being written is not listed.
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(120))
+        .unwrap();
 
     let all = listed(home.path(), &[]);
     assert_eq!(all.len(), 1, "{all:?}");
