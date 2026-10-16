@@ -1347,7 +1347,12 @@ function DomainSidebar({
         onKeyDown={
           drawer
             ? (event) => {
-                if (event.key === "Escape") {
+                // Only for the drawer's own rows: a dialog opened from it is
+                // a portal, and React bubbles its Escape through here too.
+                if (
+                  event.key === "Escape" &&
+                  event.currentTarget.contains(event.target as Node)
+                ) {
                   onClose();
                 }
               }

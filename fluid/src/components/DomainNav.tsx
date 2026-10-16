@@ -395,7 +395,7 @@ function Folder({
           onClick={() => {
             setOpen((wasOpen) => !wasOpen);
           }}
-          className={`self-stretch rounded-[7px] pr-1 pl-2.5 text-faint ${FOCUS_RING}`}
+          className={`self-stretch rounded-[7px] pr-1 pl-2.5 text-muted ${FOCUS_RING}`}
         >
           {open ? (
             <FolderOpen

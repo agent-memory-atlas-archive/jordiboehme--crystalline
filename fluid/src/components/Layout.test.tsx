@@ -1177,6 +1177,26 @@ describe("the sidebar's own width", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "false");
   });
 
+  it("keeps the drawer open when Escape shuts a dialog opened from it", async () => {
+    stubNarrowWindow();
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    const toggle = await screen.findByRole("button", { name: "Domains" });
+    await user.click(toggle);
+    const nav = await sidebar();
+    await user.click(
+      await within(nav).findByRole("button", { name: "New engram" }),
+    );
+    await screen.findByRole("dialog");
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("names the drawer All domains outside a domain", async () => {
     stubNarrowWindow();
     serveSignedIn();

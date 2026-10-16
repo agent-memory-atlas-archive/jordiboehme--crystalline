@@ -42,8 +42,10 @@ export const SIDE = {
   icon: "shrink-0 text-faint",
   label:
     "px-2.5 pt-[18px] pb-1.5 text-[11.5px] font-semibold tracking-[0.04em] text-faint uppercase",
-  add: "text-muted",
-  count: "ml-auto pl-2 text-xs text-muted tabular-nums",
+  // Slate-600 rather than muted in light: these sit on the sunken hover
+  // wash, where slate-500 is 4.34:1, under the 4.5:1 floor.
+  add: "text-slate-600 dark:text-muted",
+  count: "ml-auto pl-2 text-xs text-slate-600 tabular-nums dark:text-muted",
 };
 
 // eslint-disable-next-line react-refresh/only-export-components
