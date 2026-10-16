@@ -119,41 +119,6 @@ fn semantic_query(text: &str, provider: &FakeProvider) -> SearchQuery {
 
 // --- backend runner (mirrored from tests/it/store.rs) -----------------------------
 
-#[cfg(feature = "postgres")]
-fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres parity leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
-/// A distinct schema name per test invocation. The pid keeps runs apart, the
-/// counter keeps tests within a run apart; both stay well under Postgres's
-/// 63-byte identifier limit.
-/// A hash salt keeps a recycled pid from adopting a schema a panicking run left behind.
-#[cfg(feature = "postgres")]
-fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "ct_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
-}
-
 /// Run a parity body against Turso (always) and Postgres (when configured),
 /// giving each backend a fresh, isolated store.
 macro_rules! parity {
@@ -166,16 +131,14 @@ macro_rules! parity {
             }
             #[cfg(feature = "postgres")]
             {
-                if let Some(url) = pg_url() {
-                    let schema = unique_schema();
-                    let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .expect("open the postgres test schema");
+                if let Some(scratch) = crate::pg::scratch("ct") {
+                    let store = crystalline_index::PostgresStore::open_in_schema(
+                        scratch.url(),
+                        scratch.name(),
+                    )
+                    .await
+                    .expect("open the postgres test schema");
                     $body(&store).await;
-                    store
-                        .drop_schema()
-                        .await
-                        .expect("drop the postgres test schema");
                 }
             }
         }

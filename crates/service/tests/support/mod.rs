@@ -33,6 +33,33 @@ use flate2::write::GzEncoder;
 use sha2::{Digest, Sha256};
 use tar::Header;
 
+/// The Postgres URL the parity legs run against, or `None` with a note when
+/// `CRYSTALLINE_TEST_POSTGRES_URL` is unset.
+#[cfg(feature = "postgres")]
+pub fn pg_url() -> Option<String> {
+    use std::sync::Once;
+    static NOTE: Once = Once::new();
+    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
+        Ok(u) if !u.is_empty() => Some(u),
+        _ => {
+            NOTE.call_once(|| {
+                eprintln!(
+                    "note: skipping the postgres legs (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
+                )
+            });
+            None
+        }
+    }
+}
+
+/// A scratch schema named from `prefix`, dropped when it goes out of scope
+/// even if the test fails, or `None` without a URL. Declare it before any
+/// store opened in it, so it drops last.
+#[cfg(feature = "postgres")]
+pub fn scratch_schema(prefix: &str) -> Option<crystalline_index::ScratchSchema> {
+    pg_url().map(|url| crystalline_index::ScratchSchema::new(&url, prefix))
+}
+
 /// The instance id every engine of one test takes on a shared database,
 /// as one machine's daemon and its commands share theirs. An engine with no
 /// instance id walks no file domain there (`REFUSED_ANONYMOUS_WALK`), so a

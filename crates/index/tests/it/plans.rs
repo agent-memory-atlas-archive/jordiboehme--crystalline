@@ -2316,41 +2316,6 @@ mod postgres_plans {
     use crystalline_index::PostgresStore;
     use serde_json::Value;
 
-    /// Mirrored from `tests/it/store.rs`, like every other standalone suite here:
-    /// lifting the helpers into a shared module would touch five suites for one
-    /// test.
-    fn pg_url() -> Option<String> {
-        use std::sync::Once;
-        static NOTE: Once = Once::new();
-        match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-            Ok(u) if !u.is_empty() => Some(u),
-            _ => {
-                NOTE.call_once(|| {
-                    eprintln!(
-                        "note: skipping the postgres plan leg (CRYSTALLINE_TEST_POSTGRES_URL is unset)"
-                    )
-                });
-                None
-            }
-        }
-    }
-
-    /// A distinct schema name per test invocation. The pid keeps runs apart, the
-    /// counter keeps tests within a run apart, and the hash salt keeps a
-    /// recycled pid from adopting a schema a panicking run left behind.
-    fn unique_schema() -> String {
-        use std::hash::{BuildHasher, RandomState};
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        format!(
-            "cp_{}_{}_{:x}",
-            std::process::id(),
-            n,
-            RandomState::new().hash_one(n)
-        )
-    }
-
     /// Every node in the plan tree, flattened.
     fn nodes(plan: &Value, out: &mut Vec<Value>) {
         match plan {
@@ -2504,9 +2469,10 @@ mod postgres_plans {
     /// [`planned_at_scale`] entries after [`grow_to_scale`].
     #[tokio::test]
     async fn every_hot_statement_is_index_served_on_postgres() {
-        let Some(url) = pg_url() else { return };
-        let schema = unique_schema();
-        let store = open_seeded(&url, &schema).await;
+        let Some(scratch) = crate::pg::scratch("cp") else {
+            return;
+        };
+        let store = open_seeded(scratch.url(), scratch.name()).await;
         let (at_scale, plain): (Vec<HotStatement>, Vec<HotStatement>) =
             registry().into_iter().partition(planned_at_scale);
         assert_eq!(
@@ -2517,7 +2483,7 @@ mod postgres_plans {
 
         for (pass, entries) in [plain, at_scale].into_iter().enumerate() {
             if pass == 1 {
-                grow_to_scale(&store, &url, &schema).await;
+                grow_to_scale(&store, scratch.url(), scratch.name()).await;
             }
             for entry in entries {
                 let sql = bind_literals(
@@ -2597,7 +2563,6 @@ mod postgres_plans {
                 }
             }
         }
-        store.drop_schema().await.unwrap();
     }
 
     /// The postgres twin of `the_contains_filter_drives_from_the_side_table`:
@@ -2611,10 +2576,11 @@ mod postgres_plans {
     /// the claim is about the fixture's real statistics.
     #[tokio::test]
     async fn the_contains_filter_drives_from_the_side_table_on_postgres() {
-        let Some(url) = pg_url() else { return };
-        let schema = unique_schema();
-        let store = open_seeded(&url, &schema).await;
-        grow_to_scale(&store, &url, &schema).await;
+        let Some(scratch) = crate::pg::scratch("cp") else {
+            return;
+        };
+        let store = open_seeded(scratch.url(), scratch.name()).await;
+        grow_to_scale(&store, scratch.url(), scratch.name()).await;
         let entries: Vec<HotStatement> = registry()
             .into_iter()
             .filter(|entry| entry.issued_by.starts_with("search::metadata_clause"))
@@ -2660,7 +2626,6 @@ mod postgres_plans {
                 entry.issued_by
             );
         }
-        store.drop_schema().await.unwrap();
     }
 
     /// The postgres guard fails when an index it depends on is gone.
@@ -2669,9 +2634,10 @@ mod postgres_plans {
     /// has seen fail is a plan test nobody knows the teeth of.
     #[tokio::test]
     async fn a_dropped_index_is_caught_by_the_postgres_plan_guard() {
-        let Some(url) = pg_url() else { return };
-        let schema = unique_schema();
-        let store = open_seeded(&url, &schema).await;
+        let Some(scratch) = crate::pg::scratch("cp") else {
+            return;
+        };
+        let store = open_seeded(scratch.url(), scratch.name()).await;
         // All four, not three: `idx_engram_title_lower` is
         // `(domain_id, lower(title))`, so its leading column serves
         // `domain_id=$1` on its own and leaving it in place left the plan a
@@ -2708,7 +2674,6 @@ mod postgres_plans {
             "with every engram index dropped the plan must be a scan, so the green run \
              means something: {plan}"
         );
-        store.drop_schema().await.unwrap();
     }
 }
 

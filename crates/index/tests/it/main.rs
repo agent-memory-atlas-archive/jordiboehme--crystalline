@@ -12,6 +12,8 @@ mod lead_vectors;
 mod nli_model;
 mod perf;
 mod perf_meta;
+#[cfg(feature = "postgres")]
+mod pg;
 mod plans;
 mod recovery;
 mod reflection_search;

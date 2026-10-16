@@ -280,31 +280,12 @@ async fn build(
     Fx { tmp, engine, root }
 }
 
-/// The Postgres URL the parity legs run against, or `None` with a note
-/// when `CRYSTALLINE_TEST_POSTGRES_URL` is unset.
-#[cfg(feature = "postgres")]
-pub fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres reflection leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
 /// A scratch schema in the postgres the parity legs run against, dropped when
 /// it goes out of scope even if the test fails, or `None` without a URL.
 /// Declare it before any store opened in it so it drops last.
 #[cfg(feature = "postgres")]
 pub fn scratch_schema() -> Option<crystalline_index::ScratchSchema> {
-    pg_url().map(|url| crystalline_index::ScratchSchema::new(&url, "refl"))
+    crate::support::scratch_schema("refl")
 }
 
 /// A deterministic provider over eight hashed word buckets: texts sharing

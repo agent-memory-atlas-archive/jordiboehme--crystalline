@@ -35,38 +35,6 @@ use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::Encode;
 use yrs::{ClientID, Doc, GetString, Options, ReadTxn, Text, Transact, Update};
 
-#[cfg(feature = "postgres")]
-fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres virtual-domain leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
-/// A recycled pid must never adopt a schema a panicking run left behind.
-#[cfg(feature = "postgres")]
-fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "ctv_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
-}
-
 /// Run a body against Turso (always) and Postgres (when configured), each with a
 /// fresh, isolated store handed to the engine as a trait object.
 macro_rules! both_backends {
@@ -80,19 +48,15 @@ macro_rules! both_backends {
             }
             #[cfg(feature = "postgres")]
             {
-                if let Some(url) = pg_url() {
-                    let schema = unique_schema();
-                    let pg = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .expect("open the postgres test schema");
+                if let Some(scratch) = crate::support::scratch_schema("ctv") {
+                    let pg = crystalline_index::PostgresStore::open_in_schema(
+                        scratch.url(),
+                        scratch.name(),
+                    )
+                    .await
+                    .expect("open the postgres test schema");
                     let store: Arc<Mutex<dyn Store>> = Arc::new(Mutex::new(pg));
                     $body(store).await;
-                    // Drop the schema through a fresh connection (the boxed store
-                    // no longer exposes the inherent drop_schema).
-                    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .unwrap();
-                    cleanup.drop_schema().await.unwrap();
                 }
             }
         }
