@@ -14,6 +14,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+#[cfg(feature = "fluid-ui")]
 mod nginx_base_path;
 mod nginx_body_cap;
 mod no_cors;

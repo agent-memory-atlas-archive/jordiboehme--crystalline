@@ -8,7 +8,9 @@ use crystalline_index::{Store, TursoStore};
 use crystalline_service::{ReflectionCaller, ReflectionHome, ReflectionState};
 use tokio::sync::Mutex;
 
-use crate::fixture::{Fx, engram, instance_on, instance_watched, manifest};
+#[cfg(feature = "postgres")]
+use crate::fixture::instance_watched;
+use crate::fixture::{Fx, engram, instance_on, manifest};
 
 fn files() -> Vec<(&'static str, String)> {
     vec![
@@ -30,6 +32,7 @@ const LOCAL: ReflectionState = ReflectionState::On {
     home: ReflectionHome::Local,
 };
 
+#[cfg(feature = "postgres")]
 fn hosted_by(label: &str) -> ReflectionState {
     ReflectionState::HostedElsewhere {
         label: Some(label.to_string()),
@@ -37,6 +40,7 @@ fn hosted_by(label: &str) -> ReflectionState {
 }
 
 /// The refusal a non-host answers, in R92's words.
+#[cfg(feature = "postgres")]
 fn refusal(label: &str) -> String {
     format!(
         "this domain's Reflection is served by {label}; move it with crystalline serve --take-over"

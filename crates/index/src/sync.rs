@@ -1702,6 +1702,8 @@ pub(crate) mod apply_seam {
 
     /// Arm the hold for the next apply walked by `walker`: it signals the
     /// first `Notify` there and waits for the second.
+    // Only the postgres-gated host tests arm a hold.
+    #[cfg(feature = "postgres")]
     pub(crate) fn arm(walker: &str) -> Gate {
         let gate = (Arc::new(Notify::new()), Arc::new(Notify::new()));
         HOLDS

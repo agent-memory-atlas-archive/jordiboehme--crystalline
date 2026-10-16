@@ -70,6 +70,7 @@ pub struct HotStatement {
     /// The turso text, obtained the same way the turso code obtains it.
     pub turso: fn() -> String,
     /// The postgres text, obtained the same way the postgres code obtains it.
+    #[cfg(feature = "postgres")]
     pub postgres: fn() -> String,
     /// SQL literals for `?1`/`$1` onward, in order.
     ///
@@ -84,6 +85,7 @@ pub struct HotStatement {
     /// different number of values. The semantic query vector is a blob in
     /// turso and a `vector` literal in postgres; the three line vector
     /// statements name one hash on turso and a hash list on postgres.
+    #[cfg(feature = "postgres")]
     pub literals_pg: Option<&'static [&'static str]>,
     /// Tables whose full pass IS the intended plan on TURSO, each with the
     /// reason. Empty for all but one; a non-empty one is a claim a reviewer has
@@ -100,6 +102,7 @@ pub struct HotStatement {
     /// on postgres into a sequential scan of the chunk table with this test
     /// still green - the statement the registry most wants to watch would be
     /// the one it stopped watching.
+    #[cfg(feature = "postgres")]
     pub scan_expected_pg: Option<&'static [(&'static str, &'static str)]>,
     /// Indexes the turso plan must name in full, where the entry's claim is
     /// about WHICH index serves it rather than merely that one does.
@@ -115,6 +118,7 @@ pub struct HotStatement {
     /// would pin a planner's mood as if it were a design. What IS a claim on
     /// postgres is the index that stands between entry 6 and a sequential scan
     /// of `chunk`, which is the other half of the fix for the same finding.
+    #[cfg(feature = "postgres")]
     pub postgres_must_seek: &'static [&'static str],
 }
 
@@ -213,6 +217,7 @@ const OV_FULL_KEY_SEEK: &str = "sqlite_autoindex_observation_vector_1 (model=? A
 /// fails the statement on a type error rather than on a plan, which would be a
 /// green this file has no business giving.
 const QVEC_TURSO: &str = "x'00'";
+#[cfg(feature = "postgres")]
 const QVEC_PG: &str = "'[0,0,0,0,0,0,0,0]'::vector";
 
 /// The side table's index, which the four `$contains` entries name in full.
@@ -249,6 +254,7 @@ macro_rules! filter_only_entry {
                     0,
                 )
             },
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::postgres::filter_only_sql(
                     BASE_SCREEN,
@@ -259,10 +265,13 @@ macro_rules! filter_only_entry {
                 )
             },
             literals: &["'d'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         }
     };
@@ -279,6 +288,7 @@ const LEXICAL_SCOPE_AND_TERM_TURSO: &str = "AND d.name IN (?1) AND (lower(e.titl
      OR lower(e.description) LIKE ?3 ESCAPE '\\' OR lower(ec.content) LIKE ?4 ESCAPE '\\')";
 
 /// [`LEXICAL_SCOPE_AND_TERM_TURSO`] in the postgres dialect.
+#[cfg(feature = "postgres")]
 const LEXICAL_SCOPE_AND_TERM_PG: &str = "AND d.name IN ($1) AND (lower(e.title) LIKE $2 ESCAPE '\\' \
      OR lower(e.description) LIKE $3 ESCAPE '\\' OR lower(ec.content) LIKE $4 ESCAPE '\\')";
 
@@ -289,35 +299,47 @@ pub fn registry() -> Vec<HotStatement> {
             // Reflection queue, reads the domain's host move.
             issued_by: "Store::host_move",
             turso: || crystalline_index::turso::HOST_MOVE_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::HOST_MOVE_SQL.to_string(),
             literals: &["1"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             // Every apply stamps its domain's last sync.
             issued_by: "Store::record_sync",
             turso: || crystalline_index::turso::RECORD_SYNC_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::RECORD_SYNC_SQL.to_string(),
             literals: &["'2026-10-15T00:00:00+00:00'", "1"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "Store::file_stamps",
             turso: || crystalline_index::turso::FILE_STAMPS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::FILE_STAMPS_SQL.to_string(),
             literals: &["1"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
@@ -325,16 +347,20 @@ pub fn registry() -> Vec<HotStatement> {
             // folder in any letter case, within one domain.
             issued_by: "Store::engram_rows_under_reflections",
             turso: || crystalline_index::turso::ENGRAM_ROWS_UNDER_REFLECTIONS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::ENGRAM_ROWS_UNDER_REFLECTIONS_SQL.to_string(),
             literals: &["1", "64"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             // The expression index, not merely an index: a walk of
             // `idx_engram_domain` is a search too, and it reads every row of
             // the domain on an effective Reflection, where the LIMIT is never
             // reached.
             turso_must_seek: &["idx_engram_reflection_head"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_engram_reflection_head"],
         },
         HotStatement {
@@ -342,12 +368,16 @@ pub fn registry() -> Vec<HotStatement> {
             // folder: does the index hold any row of the domain at all.
             issued_by: "Store::has_engram_rows",
             turso: || crystalline_index::turso::HAS_ENGRAM_ROWS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::HAS_ENGRAM_ROWS_SQL.to_string(),
             literals: &["1"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
@@ -355,12 +385,16 @@ pub fn registry() -> Vec<HotStatement> {
             // reflection rows, through the table's unique (domain_id, path).
             issued_by: "Store::list_reflection_stamps",
             turso: || crystalline_index::turso::REFLECTION_STAMPS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::REFLECTION_STAMPS_SQL.to_string(),
             literals: &["1"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
@@ -371,10 +405,13 @@ pub fn registry() -> Vec<HotStatement> {
             // `COLLATE "C"` range, so v19 adds `idx_engram_base_path_c`.
             issued_by: "Store::folder_holds_other",
             turso: || crystalline_index::turso::FOLDER_HOLDS_OTHER_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::FOLDER_HOLDS_OTHER_SQL.to_string(),
             literals: &["1", "'notes/'", "'notes0'", "'notes/x.md'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_engram_path_actor"],
             // Not named here: on this fixture's 200 rows a domain postgres
@@ -382,6 +419,7 @@ pub fn registry() -> Vec<HotStatement> {
             // still no scan. The claim that the C-collated index serves the
             // range at scale is pinned where the index is made, in the v19
             // migration test, over 4,400 rows.
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
@@ -394,15 +432,19 @@ pub fn registry() -> Vec<HotStatement> {
             // `idx_engram_domain` that still reads as a SEARCH.
             issued_by: "Store::upsert_engram (probe)",
             turso: || crystalline_index::turso::UPSERT_PROBE_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::UPSERT_PROBE_SQL.to_string(),
             literals: &["1", "'notes/e1.md'", "'p1'", "''"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[
                 "idx_engram_path_actor (domain_id=? AND path=? AND actor=?)",
                 "idx_engram_permalink_actor (domain_id=? AND permalink=? AND actor=?)",
             ],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_engram_path_actor", "idx_engram_permalink_actor"],
         },
         HotStatement {
@@ -414,23 +456,31 @@ pub fn registry() -> Vec<HotStatement> {
             // cost this lookup the index its path ordering is served from.
             issued_by: "Store::find_engram",
             turso: || crystalline_index::turso::FIND_ENGRAM_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::FIND_ENGRAM_SQL.to_string(),
             literals: &["'d'", "'p0'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "Store::list_engrams",
             turso: || crystalline_index::turso::list_engrams_sql("d.name=?1"),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::list_engrams_sql("d.name=$1"),
             literals: &["'d'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
@@ -444,14 +494,18 @@ pub fn registry() -> Vec<HotStatement> {
             // `(domain_id, path)` prefix.
             issued_by: "Store::browse_level (folder derivation)",
             turso: || crystalline_index::turso::folder_level_sql("substr(e.path, 1)", "d.name=?1"),
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::postgres::folder_level_sql("substr(e.path, 1)", "d.name=$1")
             },
             literals: &["'d'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_engram_path_actor"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
@@ -468,6 +522,7 @@ pub fn registry() -> Vec<HotStatement> {
                     500,
                 )
             },
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::postgres::lexical_candidate_sql(
                     BASE_SCREEN,
@@ -476,10 +531,13 @@ pub fn registry() -> Vec<HotStatement> {
                 )
             },
             literals: &["'d'", "'%engram 7%'", "'%engram 7%'", "'%engram 7%'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_engram_domain"],
         },
         filter_only_entry!(
@@ -497,10 +555,12 @@ pub fn registry() -> Vec<HotStatement> {
             turso: || {
                 crystalline_index::turso::semantic_phase1_sql(BASE_SCREEN, "AND c.model = ?2")
             },
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::postgres::semantic_phase1_sql(BASE_SCREEN, "AND c.model = $2")
             },
             literals: &[QVEC_TURSO, "'fake'"],
+            #[cfg(feature = "postgres")]
             literals_pg: Some(&[QVEC_PG, "'fake'"]),
             // The only permission in the registry, written from the plans as
             // observed rather than guessed, and granted on turso ALONE. This is
@@ -534,12 +594,14 @@ pub fn registry() -> Vec<HotStatement> {
                 "chunk",
                 "the exact distance scan, which no nearest-neighbour index can serve",
             )],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: Some(&[(
                 "engram",
                 "an unscoped semantic query filters `engram` on nothing, so every chunk \
                  of the model meets its parent row; bounded by the engram count",
             )]),
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_chunk_model"],
         },
         HotStatement {
@@ -557,12 +619,16 @@ pub fn registry() -> Vec<HotStatement> {
             // pass on either, so no permission; the domain index is named
             // because it is what keeps the read to one domain.
             turso: || crystalline_index::turso::REFLECTION_VECTOR_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::REFLECTION_VECTOR_SQL.to_string(),
             literals: &[QVEC_TURSO, "1", "'fake'", "8"],
+            #[cfg(feature = "postgres")]
             literals_pg: Some(&[QVEC_PG, "1", "'fake'", "8"]),
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_reflection_chunk_domain_model"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_reflection_chunk_domain_model"],
         },
         HotStatement {
@@ -573,12 +639,16 @@ pub fn registry() -> Vec<HotStatement> {
             // whose next two columns are the group keys; a table-wide pass
             // here would cost every search every domain's chunks.
             turso: || crystalline_index::turso::REFLECTION_COVERAGE_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::REFLECTION_COVERAGE_SQL.to_string(),
             literals: &["1"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_reflection_chunk_domain_model"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_reflection_chunk_domain_model"],
         },
         HotStatement {
@@ -589,12 +659,16 @@ pub fn registry() -> Vec<HotStatement> {
             // the chunks of each (`idx_chunk_engram`). A table-wide pass over
             // `chunk` would cost every named search every domain's chunks.
             turso: || crystalline_index::turso::ENGRAM_COVERAGE_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::ENGRAM_COVERAGE_SQL.to_string(),
             literals: &["1"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_engram_domain", "idx_chunk_engram"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_engram_domain"],
         },
         HotStatement {
@@ -604,61 +678,80 @@ pub fn registry() -> Vec<HotStatement> {
             // width, so a full pass is the plan on purpose; the cache and the
             // mutators' invalidation keep it to one pass per change.
             turso: || crystalline_index::turso::ENGRAM_COVERAGE_ALL_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::ENGRAM_COVERAGE_ALL_SQL.to_string(),
             literals: &[],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[(
                 "chunk",
                 "the whole-table count, cached until a chunk changes",
             )],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "Store::embedding_coverage_in (reflection, whole table)",
             // The same for the reflection chunks.
             turso: || crystalline_index::turso::REFLECTION_COVERAGE_ALL_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::REFLECTION_COVERAGE_ALL_SQL.to_string(),
             literals: &[],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[(
                 "reflection_chunk",
                 "the whole-table count, cached until a chunk changes",
             )],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "search::semantic_hydrate_sql",
             turso: || crystalline_index::turso::semantic_hydrate_sql(BASE_SCREEN, "1,2,3"),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::semantic_hydrate_sql(BASE_SCREEN, "1,2,3"),
             literals: &[],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "Store::lead_vectors",
             turso: || crystalline_index::turso::lead_vectors_sql(BASE_SCREEN),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::lead_vectors_sql(BASE_SCREEN, 0),
             literals: &["1", "'fake'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "Store::resolve_pending_relations",
             turso: || crystalline_index::resolve_pending_sql("relation", "?1"),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::resolve_pending_sql("relation", "$1"),
             literals: &["1"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             // The driving index only: this pins that the pass itself stays
             // bounded by the partial unresolved index. Which index each of the
@@ -671,17 +764,22 @@ pub fn registry() -> Vec<HotStatement> {
             // Each reference's domain spelling is looked up by its key, per
             // row of the pass: a scan of `domain_spelling` there would be a
             // full pass per reference.
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["domain_spelling_pkey"],
         },
         HotStatement {
             issued_by: "Store::resolve_pending_links",
             turso: || crystalline_index::resolve_pending_sql("link", "?1"),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::resolve_pending_sql("link", "$1"),
             literals: &["1"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_link_unresolved"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["domain_spelling_pkey"],
         },
         HotStatement {
@@ -693,6 +791,7 @@ pub fn registry() -> Vec<HotStatement> {
                     "l.to_id IS NULL",
                 )
             },
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::postgres::unresolved_refs_sql(
                     BASE_SCREEN,
@@ -701,12 +800,15 @@ pub fn registry() -> Vec<HotStatement> {
                 )
             },
             literals: &["1"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             // The pair of partial indexes exists for exactly these two arms, so
             // this entry names both rather than settling for any index at all.
             turso_must_seek: &["idx_relation_unresolved", "idx_link_unresolved"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
@@ -719,6 +821,7 @@ pub fn registry() -> Vec<HotStatement> {
                     "",
                 )
             },
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::relation_frontier_sql(
                     "1,2",
@@ -728,10 +831,13 @@ pub fn registry() -> Vec<HotStatement> {
                 )
             },
             literals: &[],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
@@ -739,25 +845,33 @@ pub fn registry() -> Vec<HotStatement> {
             turso: || {
                 crystalline_index::link_frontier_sql("1,2", "src.actor = ''", "dst.actor = ''", "")
             },
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::link_frontier_sql("1,2", "src.actor = ''", "dst.actor = ''", "")
             },
             literals: &[],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "search::neighbors (node hydrate)",
             turso: || crystalline_index::turso::node_hydrate_sql(BASE_SCREEN, "1,2"),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::node_hydrate_sql(BASE_SCREEN, "1,2"),
             literals: &[],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
@@ -766,12 +880,16 @@ pub fn registry() -> Vec<HotStatement> {
             // `to_domain` index, so it reads only rows that carry a prefix.
             issued_by: "Store::spelled_references",
             turso: || crystalline_index::spelled_references_sql("?1", "?2"),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::spelled_references_sql("$1", "$2"),
             literals: &["1", "'d'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_relation_to_domain", "idx_link_to_domain"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_relation_to_domain", "idx_link_to_domain"],
         },
         HotStatement {
@@ -779,34 +897,46 @@ pub fn registry() -> Vec<HotStatement> {
             // `to_domain` indexes keep it to the rows that carry a prefix.
             issued_by: "Store::engrams_referencing_domains (edge half)",
             turso: || crystalline_index::referencing_domains_sql("?1"),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::referencing_domains_sql("$1"),
             literals: &["'d'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_relation_to_domain", "idx_link_to_domain"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_relation_to_domain", "idx_link_to_domain"],
         },
         HotStatement {
             issued_by: "Store::reset_references_to_spellings (relation)",
             turso: || crystalline_index::reset_spelled_references_sql("relation", "?1"),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::reset_spelled_references_sql("relation", "$1"),
             literals: &["'d'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_relation_to_domain"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_relation_to_domain"],
         },
         HotStatement {
             issued_by: "Store::reset_references_to_spellings (link)",
             turso: || crystalline_index::reset_spelled_references_sql("link", "?1"),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::reset_spelled_references_sql("link", "$1"),
             literals: &["'d'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_link_to_domain"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_link_to_domain"],
         },
         HotStatement {
@@ -814,23 +944,31 @@ pub fn registry() -> Vec<HotStatement> {
             // the new domain's names, reached through the partial index.
             issued_by: "Store::resolve_references_to_spellings (relation)",
             turso: || crystalline_index::resolve_spelled_references_sql("relation", "?1"),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::resolve_spelled_references_sql("relation", "$1"),
             literals: &["'d'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_relation_to_domain"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_relation_to_domain"],
         },
         HotStatement {
             issued_by: "Store::resolve_references_to_spellings (link)",
             turso: || crystalline_index::resolve_spelled_references_sql("link", "?1"),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::resolve_spelled_references_sql("link", "$1"),
             literals: &["'d'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_link_to_domain"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_link_to_domain"],
         },
         HotStatement {
@@ -840,27 +978,35 @@ pub fn registry() -> Vec<HotStatement> {
             turso: || {
                 crystalline_index::resolve_references_to_sql("relation", "?1", "?2", "lower(?3)")
             },
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::resolve_references_to_sql("relation", "$1", "$2", "lower($3)")
             },
             literals: &["1", "'d'", "'runbook'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "Store::resolve_references_to (link)",
             turso: || crystalline_index::resolve_references_to_sql("link", "?1", "?2", "lower(?3)"),
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::resolve_references_to_sql("link", "$1", "$2", "lower($3)")
             },
             literals: &["1", "'d'", "'runbook'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
@@ -869,64 +1015,84 @@ pub fn registry() -> Vec<HotStatement> {
             turso: || {
                 crystalline_index::count_references_to_sql("relation", "?1", "?2", "lower(?3)")
             },
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::count_references_to_sql("relation", "$1", "$2", "lower($3)")
             },
             literals: &["1", "'d'", "'runbook'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "Store::resolve_references_to (link count)",
             turso: || crystalline_index::count_references_to_sql("link", "?1", "?2", "lower(?3)"),
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::count_references_to_sql("link", "$1", "$2", "lower($3)")
             },
             literals: &["1", "'d'", "'runbook'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "Store::contradiction_pairs_scored",
             turso: || crystalline_index::turso::CONTRADICTION_PAIRS_SCORED_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::CONTRADICTION_PAIRS_SCORED_SQL.to_string(),
             literals: &["1", "'m'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_contradiction_pair_domain"],
             // Postgres costs `idx_contradiction_pair_domain` and
             // `idx_contradiction_pair_model` plus a Sort within a fraction of a
             // point on this fixture, and a concurrent workspace run tips it
             // either way. Both seek; the postgres guard names them.
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "Store::scored_pair_count",
             turso: || crystalline_index::turso::SCORED_PAIR_COUNT_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::SCORED_PAIR_COUNT_SQL.to_string(),
             literals: &["'m'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_contradiction_pair_model"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_contradiction_pair_model"],
         },
         HotStatement {
             issued_by: "Store::contradictions",
             turso: || crystalline_index::turso::CONTRADICTIONS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::CONTRADICTIONS_SQL.to_string(),
             literals: &["1", "'m'", "0.5"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_contradiction_domain"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_contradiction_domain"],
         },
         // The pair write: both `EXISTS` probes seek the engram primary key,
@@ -934,12 +1100,16 @@ pub fn registry() -> Vec<HotStatement> {
         HotStatement {
             issued_by: "Store::replace_contradictions (contradiction_pair)",
             turso: || crystalline_index::turso::INSERT_CONTRADICTION_PAIR_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::INSERT_CONTRADICTION_PAIR_SQL.to_string(),
             literals: &["1", "5", "6", "'ca'", "'cb'", "0.9", "'m'", "'t'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         // The two per-pair deletes of a rescore and of an expired engram's
@@ -947,23 +1117,31 @@ pub fn registry() -> Vec<HotStatement> {
         HotStatement {
             issued_by: "Store::replace_contradictions and Store::delete_contradiction_pair (contradiction)",
             turso: || crystalline_index::turso::DELETE_PAIR_CONTRADICTIONS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::DELETE_PAIR_CONTRADICTIONS_SQL.to_string(),
             literals: &["5", "6", "'m'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "Store::replace_contradictions and Store::delete_contradiction_pair (contradiction_pair)",
             turso: || crystalline_index::turso::DELETE_CONTRADICTION_PAIR_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::DELETE_CONTRADICTION_PAIR_SQL.to_string(),
             literals: &["5", "6", "'m'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         // The two per-engram deletes: the primary key serves `engram_a`, the
@@ -971,25 +1149,33 @@ pub fn registry() -> Vec<HotStatement> {
         HotStatement {
             issued_by: "Store::delete_engram (contradiction)",
             turso: || crystalline_index::turso::DELETE_ENGRAM_CONTRADICTIONS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::DELETE_ENGRAM_CONTRADICTIONS_SQL.to_string(),
             literals: &["5"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_contradiction_engram_b"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_contradiction_engram_b"],
         },
         HotStatement {
             issued_by: "Store::delete_engram (contradiction_pair)",
             turso: || crystalline_index::turso::DELETE_ENGRAM_CONTRADICTION_PAIRS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::postgres::DELETE_ENGRAM_CONTRADICTION_PAIRS_SQL.to_string()
             },
             literals: &["5"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_contradiction_pair_engram_b"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_contradiction_pair_engram_b"],
         },
         // Unbinding the references into a deleted engram: one seek per table
@@ -997,23 +1183,31 @@ pub fn registry() -> Vec<HotStatement> {
         HotStatement {
             issued_by: "Store::delete_engram (inbound links)",
             turso: || crystalline_index::turso::UNBIND_INBOUND_LINKS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::UNBIND_INBOUND_LINKS_SQL.to_string(),
             literals: &["5"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_link_to"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_link_to"],
         },
         HotStatement {
             issued_by: "Store::delete_engram (inbound relations)",
             turso: || crystalline_index::turso::UNBIND_INBOUND_RELATIONS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::UNBIND_INBOUND_RELATIONS_SQL.to_string(),
             literals: &["5"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_relation_to"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_relation_to"],
         },
         // Unbinding the references into a domain being cleared: the engram
@@ -1022,14 +1216,18 @@ pub fn registry() -> Vec<HotStatement> {
         HotStatement {
             issued_by: "Store::clear_domain (inbound links)",
             turso: || crystalline_index::turso::CLEAR_DOMAIN_UNBIND_INBOUND_LINKS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::postgres::CLEAR_DOMAIN_UNBIND_INBOUND_LINKS_SQL.to_string()
             },
             literals: &["1"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_link_to"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_link_to"],
         },
         HotStatement {
@@ -1037,14 +1235,18 @@ pub fn registry() -> Vec<HotStatement> {
             turso: || {
                 crystalline_index::turso::CLEAR_DOMAIN_UNBIND_INBOUND_RELATIONS_SQL.to_string()
             },
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::postgres::CLEAR_DOMAIN_UNBIND_INBOUND_RELATIONS_SQL.to_string()
             },
             literals: &["1"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_relation_to"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_relation_to"],
         },
         // The contradiction check's per-domain off switch: each delete seeks
@@ -1052,54 +1254,70 @@ pub fn registry() -> Vec<HotStatement> {
         HotStatement {
             issued_by: "Store::clear_contradictions (contradiction)",
             turso: || crystalline_index::turso::CLEAR_DOMAIN_CONTRADICTIONS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::CLEAR_DOMAIN_CONTRADICTIONS_SQL.to_string(),
             literals: &["1"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_contradiction_domain"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_contradiction_domain"],
         },
         HotStatement {
             issued_by: "Store::clear_contradictions (contradiction_pair)",
             turso: || crystalline_index::turso::CLEAR_DOMAIN_CONTRADICTION_PAIRS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::postgres::CLEAR_DOMAIN_CONTRADICTION_PAIRS_SQL.to_string()
             },
             literals: &["1"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &["idx_contradiction_pair_domain"],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["idx_contradiction_pair_domain"],
         },
         // The same off switch over every domain: whole-table deletes by design.
         HotStatement {
             issued_by: "Store::clear_contradictions (every contradiction)",
             turso: || crystalline_index::turso::CLEAR_ALL_CONTRADICTIONS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::CLEAR_ALL_CONTRADICTIONS_SQL.to_string(),
             literals: &[],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[(
                 "contradiction",
                 "every row, the contradiction check's off switch",
             )],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "Store::clear_contradictions (every contradiction_pair)",
             turso: || crystalline_index::turso::CLEAR_ALL_CONTRADICTION_PAIRS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::CLEAR_ALL_CONTRADICTION_PAIRS_SQL.to_string(),
             literals: &[],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[(
                 "contradiction_pair",
                 "every row, the contradiction check's off switch",
             )],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         // The line vectors: every read names the model and one hash (turso)
@@ -1112,45 +1330,61 @@ pub fn registry() -> Vec<HotStatement> {
         HotStatement {
             issued_by: "Store::observation_vectors_present",
             turso: || crystalline_index::turso::OBSERVATION_VECTOR_PRESENT_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::observation_vectors_present_sql(3),
             literals: &["'fake'", "'h1'"],
+            #[cfg(feature = "postgres")]
             literals_pg: Some(&["'fake'", "'h1'", "'h2'", "'h3'"]),
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[OV_FULL_KEY_SEEK],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["observation_vector_pkey"],
         },
         HotStatement {
             issued_by: "Store::observation_vectors",
             turso: || crystalline_index::turso::OBSERVATION_VECTOR_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::observation_vectors_sql(3),
             literals: &["'fake'", "'h1'"],
+            #[cfg(feature = "postgres")]
             literals_pg: Some(&["'fake'", "'h1'", "'h2'", "'h3'"]),
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[OV_FULL_KEY_SEEK],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["observation_vector_pkey"],
         },
         HotStatement {
             issued_by: "Store::observation_vector_hashes",
             turso: || crystalline_index::turso::OBSERVATION_VECTOR_HASHES_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::OBSERVATION_VECTOR_HASHES_SQL.to_string(),
             literals: &["'fake'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["observation_vector_pkey"],
         },
         HotStatement {
             issued_by: "Store::delete_observation_vectors",
             turso: || crystalline_index::turso::DELETE_OBSERVATION_VECTOR_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::delete_observation_vectors_sql(3),
             literals: &["'fake'", "'h1'"],
+            #[cfg(feature = "postgres")]
             literals_pg: Some(&["'fake'", "'h1'", "'h2'", "'h3'"]),
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[OV_FULL_KEY_SEEK],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &["observation_vector_pkey"],
         },
         // The two whole-table line vector deletes are full passes by design
@@ -1158,31 +1392,39 @@ pub fn registry() -> Vec<HotStatement> {
         HotStatement {
             issued_by: "Store::delete_observation_vectors_except",
             turso: || crystalline_index::turso::DELETE_OBSERVATION_VECTORS_EXCEPT_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::postgres::DELETE_OBSERVATION_VECTORS_EXCEPT_SQL.to_string()
             },
             literals: &["'fake'"],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[(
                 "observation_vector",
                 "every other model's vectors, which `<>` cannot seek; runs once per process",
             )],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "Store::clear_observation_vectors",
             turso: || crystalline_index::turso::CLEAR_OBSERVATION_VECTORS_SQL.to_string(),
+            #[cfg(feature = "postgres")]
             postgres: || crystalline_index::postgres::CLEAR_OBSERVATION_VECTORS_SQL.to_string(),
             literals: &[],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[(
                 "observation_vector",
                 "every row, the contradiction check's off switch",
             )],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[],
         },
         // `$contains` and `$contains_any` on a key that is not promoted, built
@@ -1207,6 +1449,7 @@ pub fn registry() -> Vec<HotStatement> {
                     0,
                 )
             },
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::postgres::filter_only_sql(
                     BASE_SCREEN,
@@ -1220,10 +1463,13 @@ pub fn registry() -> Vec<HotStatement> {
                 )
             },
             literals: &["'sources'", SHARED_ANCHOR],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[META_VALUE_INDEX],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[META_VALUE_INDEX],
         },
         HotStatement {
@@ -1241,6 +1487,7 @@ pub fn registry() -> Vec<HotStatement> {
                     0,
                 )
             },
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::postgres::filter_only_sql(
                     BASE_SCREEN,
@@ -1254,10 +1501,13 @@ pub fn registry() -> Vec<HotStatement> {
                 )
             },
             literals: &["'d'", "'sources'", SHARED_ANCHOR],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[META_VALUE_INDEX],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[META_VALUE_INDEX],
         },
         HotStatement {
@@ -1277,6 +1527,7 @@ pub fn registry() -> Vec<HotStatement> {
                     0,
                 )
             },
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::postgres::filter_only_sql(
                     BASE_SCREEN,
@@ -1293,10 +1544,13 @@ pub fn registry() -> Vec<HotStatement> {
                 )
             },
             literals: &["'sources'", SHARED_ANCHOR, OWN_ANCHOR],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[META_VALUE_INDEX],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[META_VALUE_INDEX],
         },
         HotStatement {
@@ -1317,6 +1571,7 @@ pub fn registry() -> Vec<HotStatement> {
                     0,
                 )
             },
+            #[cfg(feature = "postgres")]
             postgres: || {
                 crystalline_index::postgres::filter_only_sql(
                     BASE_SCREEN,
@@ -1333,10 +1588,13 @@ pub fn registry() -> Vec<HotStatement> {
                 )
             },
             literals: &["'d'", "'sources'", SHARED_ANCHOR, OWN_ANCHOR],
+            #[cfg(feature = "postgres")]
             literals_pg: None,
             scan_expected: &[],
+            #[cfg(feature = "postgres")]
             scan_expected_pg: None,
             turso_must_seek: &[META_VALUE_INDEX],
+            #[cfg(feature = "postgres")]
             postgres_must_seek: &[META_VALUE_INDEX],
         },
     ]
@@ -2461,6 +2719,7 @@ mod postgres_plans {
 /// on `(domain_id, actor)` and filters path or permalink, which walks the whole
 /// domain on every probe: 9.9 ms and 19,999 rows removed at 20,000 engrams
 /// (2026-10-10). `persistent(false)` plans it against the table as it is.
+#[cfg(feature = "postgres")]
 #[test]
 fn the_postgres_upsert_probe_is_planned_per_call() {
     let src = include_str!("../../src/postgres/mod.rs");
@@ -2503,6 +2762,7 @@ fn the_postgres_child_delete_is_one_statement() {
 }
 
 /// The six child tables an upsert recreates, and so the child delete must clear.
+#[cfg(feature = "postgres")]
 const CHILD_TABLES: [&str; 6] = [
     "observation_tag",
     "observation",
@@ -2513,6 +2773,7 @@ const CHILD_TABLES: [&str; 6] = [
 ];
 
 /// The child tables the statement does not delete from.
+#[cfg(feature = "postgres")]
 fn child_tables_not_deleted(sql: &str) -> Vec<&'static str> {
     CHILD_TABLES
         .into_iter()
@@ -2523,6 +2784,7 @@ fn child_tables_not_deleted(sql: &str) -> Vec<&'static str> {
 /// The one-statement child delete still names all six tables the six old
 /// statements deleted from. Folding six statements into one `WITH` chain makes
 /// a dropped arm a silent leak of stale child rows, which no other test sees.
+#[cfg(feature = "postgres")]
 #[test]
 fn the_postgres_child_delete_names_all_six_child_tables() {
     let sql = crystalline_index::postgres::DELETE_CHILDREN_SQL;

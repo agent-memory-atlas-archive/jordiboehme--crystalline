@@ -322,6 +322,18 @@ jobs:
         if: ${{ needs.changes.outputs.tested != 'true' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # The feature-gated code paths: without the default features candle,
+      # sqlx and the embedded Fluid bundle are gone, and a test or helper that
+      # only the gated legs use must carry its own cfg. One Linux leg is
+      # enough, the cfg does not depend on the OS. Only the four workspace
+      # crates that have features of their own are checked.
+      - name: cargo clippy (no default features)
+        if: ${{ matrix.os == 'ubuntu-latest' && needs.changes.outputs.tested != 'true' }}
+        run: |
+          for crate in crystalline-index crystalline-engine crystalline-service crystalline; do
+            cargo clippy -p "$crate" --no-default-features --all-targets --locked -- -D warnings
+          done
+
       # The postgres backend's tests, on the x86_64 ubuntu leg only (not the
       # arm one): every test of the workspace run below that reads
       # CRYSTALLINE_TEST_POSTGRES_URL runs its postgres leg against this

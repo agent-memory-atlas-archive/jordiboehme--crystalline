@@ -231,6 +231,8 @@ mod seam {
 
     static FAILING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
+    // Only the postgres-gated host tests arm it.
+    #[cfg(feature = "postgres")]
     pub(super) fn fail_marks_of(instance_id: &str) {
         FAILING
             .lock()
