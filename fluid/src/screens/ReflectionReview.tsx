@@ -26,10 +26,7 @@ import {
   reflectionAssetUrl,
   reflectionReviewKey,
 } from "../api/reflection";
-import {
-  ReflectionModeSwitch,
-  useReflectionStatus,
-} from "../components/ReflectionModeSwitch";
+import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { ThreadCard, sourceChip } from "../components/ReflectionThreads";
 import { Skeleton } from "../components/Skeleton";
@@ -59,7 +56,6 @@ export default function ReflectionReview(): ReactElement {
             {`${domain}, Reflection`}
           </p>
         </div>
-        <ReflectionModeSwitch domain={domain} current="reflection" />
       </header>
       {status.data && <ReflectionStateNotice status={status.data} />}
       {(status.isPending ||

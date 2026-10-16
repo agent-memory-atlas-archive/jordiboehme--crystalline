@@ -34,6 +34,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  Search,
   Share2,
   Stethoscope,
   Sun,
@@ -118,9 +119,11 @@ import { CommandPalette } from "./CommandPalette";
 import { CreateDomainDialog } from "./CreateDomainDialog";
 import { CreateEngramDialog } from "./CreateEngramDialog";
 import { DomainNav } from "./DomainNav";
+import { DomainSwitcher } from "./DomainSwitcher";
 import { HelpOverlay } from "./HelpOverlay";
 import { JoinedDraftBar } from "./JoinedDraftBar";
 import { LazyBoundary } from "./LazyBoundary";
+import { ReflectionModeSwitch } from "./ReflectionModeSwitch";
 import { ShareDialog } from "./ShareDialog";
 import { SharePickerDialog } from "./SharePickerDialog";
 import { ShatterGem } from "./ShatterGem";
@@ -854,7 +857,15 @@ export function Layout() {
                   setHelpReturn(opener);
                   setHelpOpen(true);
                 }}
+                onCreateDomain={
+                  capabilities.canAdminister
+                    ? () => {
+                        setCreatingDomain(true);
+                      }
+                    : null
+                }
               />
+              <PhoneModeRow />
               {/*
           Above everything, on every screen, for as long as this window is
           inside somebody else's draft. Working in another person's unfolded
@@ -992,6 +1003,7 @@ function TopBar({
   onToggleNav,
   onShare,
   onHelp,
+  onCreateDomain,
 }: {
   navOpen: boolean;
   onToggleNav: () => void;
@@ -999,9 +1011,13 @@ function TopBar({
   onShare: (domain: string | null) => void;
   /** Open the keyboard shortcut map, the same one `?` opens. */
   onHelp: (opener: HTMLElement | null) => void;
+  /** Register a domain, or null for a session that may not. */
+  onCreateDomain: (() => void) | null;
 }) {
   const { capabilities } = useAuth();
   const { fullWidth } = useFullWidth();
+  const wide = useWide();
+  const { domain, mode } = useDomainMode();
 
   return (
     <header className="sticky top-0 z-40 border-b border-hair bg-canvas/90 backdrop-blur print:hidden">
@@ -1014,7 +1030,7 @@ function TopBar({
         controls keep aligning with the content's edge at either width.
       */}
       <div
-        className={`mx-auto flex h-14 w-full items-center gap-0.5 px-1 md:gap-3 md:px-4 ${
+        className={`mx-auto flex h-14 w-full items-center gap-0.5 px-1 md:gap-2.5 md:pr-4 md:pl-5 ${
           fullWidth ? "" : "max-w-350"
         }`}
       >
@@ -1029,13 +1045,47 @@ function TopBar({
 
         <Link
           to="/"
-          className={`flex min-h-6 min-w-6 items-center gap-1.5 rounded text-lg font-semibold tracking-tight hover:opacity-80 ${FOCUS_RING}`}
+          className={`flex min-h-6 min-w-6 shrink-0 items-center gap-2 rounded text-[17px] font-semibold tracking-tight text-ink hover:opacity-80 lg:pr-1.5 ${FOCUS_RING}`}
         >
           <ShatterGem />
-          <span className="sr-only md:not-sr-only">Fluid</span>
+          <span className="sr-only lg:not-sr-only">Fluid</span>
         </Link>
 
+        {/*
+          The domain, then the mode inside it: what a reader is looking at,
+          read from left to right. The slash is drawn, not spoken.
+        */}
+        <span
+          aria-hidden="true"
+          className="mx-1 h-5.5 w-px shrink-0 rotate-[18deg] bg-hair-strong"
+        />
+        <DomainSwitcher domain={domain} onCreateDomain={onCreateDomain} />
+        {wide && domain !== "" && (
+          <span className="ml-1.5">
+            <ReflectionModeSwitch domain={domain} current={mode} />
+          </span>
+        )}
+
+        <span className="grow" />
+
+        {/*
+          Both are drawn and the stylesheet picks one: below the large
+          breakpoint the bar has no room left for a field, so search is an
+          icon that opens the palette. The palette listens for its own
+          shortcut on the window and has no other way in, so the icon presses
+          that shortcut for the reader.
+        */}
         <SearchBox />
+        <IconButton
+          label="Open search"
+          icon={Search}
+          className="lg:hidden"
+          onClick={() => {
+            window.dispatchEvent(
+              new KeyboardEvent("keydown", { key: "k", ctrlKey: true }),
+            );
+          }}
+        />
 
         <ShareChanges onShare={onShare} />
 
@@ -1056,6 +1106,45 @@ function TopBar({
         <UserMenu />
       </div>
     </header>
+  );
+}
+
+/**
+ * The domain the address is inside ("" outside every domain) and which of
+ * its two modes the screen belongs to.
+ *
+ * `useMatch` rather than `useParams`, for the reason `DomainSidebar` spells
+ * out: inside a layout route the params are the layout's own, which are none.
+ */
+function useDomainMode(): {
+  domain: string;
+  mode: "engrams" | "reflection";
+} {
+  const match = useMatch("/d/:domain/*");
+  return {
+    domain: match?.params.domain ?? "",
+    mode:
+      reflectionPathOf(match?.params["*"] ?? "") === null
+        ? "engrams"
+        : "reflection",
+  };
+}
+
+/**
+ * The mode switch on a phone: a row of its own under the bar, at full width,
+ * scrolling away with the page (spec 4.5). Above the medium breakpoint it
+ * sits in the bar instead; one place at a time, never both.
+ */
+function PhoneModeRow() {
+  const wide = useWide();
+  const { domain, mode } = useDomainMode();
+  if (wide || domain === "") {
+    return null;
+  }
+  return (
+    <div className="border-b border-hair px-3 py-2 empty:hidden print:hidden">
+      <ReflectionModeSwitch domain={domain} current={mode} fill />
+    </div>
   );
 }
 
@@ -1165,7 +1254,13 @@ function MaintenanceLink() {
   );
 }
 
-/** The search box. It only routes; the search screen owns the query itself. */
+/**
+ * The search box. It only routes; the search screen owns the query itself.
+ *
+ * It searches every domain, inside a domain too (the search screen narrows
+ * with its own domain chips), so the placeholder says so everywhere rather
+ * than naming the domain on screen.
+ */
 function SearchBox() {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
@@ -1173,7 +1268,7 @@ function SearchBox() {
   return (
     <form
       role="search"
-      className="mx-auto w-full max-w-xl min-w-0 flex-1"
+      className="hidden w-full max-w-[340px] min-w-0 shrink lg:block"
       onSubmit={(event) => {
         event.preventDefault();
         const trimmed = query.trim();
@@ -1193,20 +1288,26 @@ function SearchBox() {
         the way of a screen reader, which has the label above instead.
       */}
       <div className="relative">
+        <Search
+          aria-hidden="true"
+          size={16}
+          strokeWidth={1.75}
+          className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-faint"
+        />
         <input
           id="topbar-search"
           type="search"
           name="q"
           value={query}
-          placeholder="Search this instance"
+          placeholder="Search everything"
           onChange={(event) => {
             setQuery(event.target.value);
           }}
-          className="w-full rounded border border-slate-300 bg-white py-1.5 px-2 text-sm outline-none md:pr-16 md:pl-3 focus-visible:ring-2 focus-visible:ring-accent-600 dark:focus-visible:ring-accent-400 dark:border-slate-700 dark:bg-slate-900"
+          className={`h-[34px] w-full rounded-lg border border-transparent bg-sunken pr-14 pl-8.5 text-[13.5px] text-ink outline-none placeholder:text-faint ${FOCUS_RING}`}
         />
         <kbd
           aria-hidden="true"
-          className="text-caption pointer-events-none absolute top-1/2 right-2 hidden -translate-y-1/2 rounded border border-slate-300 px-1 py-0.5 text-slate-500 md:block dark:border-slate-700 dark:text-slate-400"
+          className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border border-hair-strong bg-raised px-1.5 text-[11px] text-muted"
         >
           {PALETTE_HINT}
         </kbd>
@@ -1672,11 +1773,7 @@ function DomainSidebar({
                 could be listed to switch to.
               */}
               {listing.error && <SidebarProblem error={listing.error} />}
-              <DomainNav
-                domain={domain}
-                permalink={permalink}
-                domains={listing.data?.domains ?? []}
-              />
+              <DomainNav domain={domain} permalink={permalink} />
             </>
           )}
         </>

@@ -150,7 +150,7 @@ test("the sidebar collapse control is desktop only", async ({ page }) => {
   // exercises the thing it is meant to guard.
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("./");
-  await page.getByRole("button", { name: "Domains" }).click();
+  await page.getByRole("button", { name: "Domains", exact: true }).click();
   await expect(page.getByRole("navigation", { name: "Domains" })).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Collapse the sidebar" }),
@@ -220,8 +220,12 @@ async function topBarBoxes(page: Page, width: number) {
   );
   return page.evaluate(() => {
     const row = document.querySelector("header > div");
-    const input =
+    const field =
       document.querySelector<HTMLInputElement>("input[type=search]");
+    // Below the large breakpoint the field is hidden and an icon that opens
+    // the palette stands in for it.
+    const input = field && field.getClientRects().length > 0 ? field : null;
+    const icon = document.querySelector('[aria-label="Open search"]');
     const style = input ? getComputedStyle(input) : null;
     const typing = input
       ? input.clientWidth -
@@ -241,6 +245,12 @@ async function topBarBoxes(page: Page, width: number) {
       rowOverflow: row ? row.scrollWidth - row.clientWidth : 0,
       accountRight: account ? account.right : null,
       hasSearch: input !== null,
+      hasSearchIcon: icon !== null && icon.getClientRects().length > 0,
+      modes: document.querySelector('header nav[aria-label="Domain view"]')
+        ? "bar"
+        : document.querySelector('nav[aria-label="Domain view"]')
+          ? "row"
+          : "none",
       typing,
       // What a failure needs to say which number moved.
       innerWidth: window.innerWidth,
@@ -267,8 +277,42 @@ async function topBarBoxes(page: Page, width: number) {
   });
 }
 
+/** The domain whose Reflection is on, so the bar carries the mode switch. */
+const PAGES_DOMAIN = process.env.FLUID_E2E_REFLECTION_DOMAIN ?? "smoke-pages";
+
+for (const inDomain of [false, true]) {
+  for (const width of [360, 768, 1024]) {
+    test(`the top bar fits ${width} px ${inDomain ? "inside a domain with both modes" : "on the home screen"}`, async ({
+      page,
+    }) => {
+      if (inDomain) {
+        await page.goto(`d/${PAGES_DOMAIN}`);
+        // The switch draws itself from a read of its own; wait for it.
+        await expect(
+          page.getByRole("navigation", { name: "Domain view" }),
+        ).toBeVisible();
+      }
+      const boxes = await topBarBoxes(page, width);
+      await test.info().attach("boxes", {
+        body: JSON.stringify(boxes),
+        contentType: "application/json",
+      });
+      expect(boxes.rowOverflow).toBeLessThanOrEqual(0);
+      expect(boxes.accountRight!).toBeLessThanOrEqual(boxes.viewport);
+      // The field from the large breakpoint up, the icon below it.
+      expect(boxes.hasSearch).toBe(width >= 1024);
+      expect(boxes.hasSearchIcon).toBe(width < 1024);
+      // The mode switch sits in the bar from the medium breakpoint up and in
+      // a row of its own under it on a phone; outside a domain, nowhere.
+      expect(boxes.modes).toBe(
+        inDomain ? (width >= 768 ? "bar" : "row") : "none",
+      );
+    });
+  }
+}
+
 for (const share of [false, true]) {
-  for (const width of [360, 640, 767, 768]) {
+  for (const width of [360, 640, 767, 768, 1024]) {
     test(`the top bar fits ${width} px${share ? " with Share and a long name" : ""}`, async ({
       page,
     }) => {
@@ -304,18 +348,21 @@ for (const share of [false, true]) {
         body: JSON.stringify(boxes),
         contentType: "application/json",
       });
-      expect(boxes.hasSearch).toBe(true);
+      expect(boxes.hasSearch || boxes.hasSearchIcon).toBe(true);
       expect(boxes.accountRight).not.toBeNull();
       expect(boxes.accountRight!).toBeLessThanOrEqual(boxes.viewport);
       expect(boxes.rowOverflow).toBeLessThanOrEqual(0);
-      // The room left to type in: the box minus its padding. 40 px is about
-      // five characters, the least that still reads as a field.
+      // The room left to type in, where there is a field: the box minus its
+      // padding. 40 px is about five characters, the least that still reads
+      // as a field.
       //
       // Headless hides the scrollbar, which a visible one takes 15 px of the
       // width from: the field is checked with that scrollbar counted, so a
       // layout that only fits without it fails here too.
       const SCROLLBAR = 15;
-      expect(boxes.typing - SCROLLBAR).toBeGreaterThanOrEqual(40);
+      if (boxes.hasSearch) {
+        expect(boxes.typing - SCROLLBAR).toBeGreaterThanOrEqual(40);
+      }
       if (share) {
         // A refetch the app starts while the page closes must not fail the
         // test from a canned handler that has nothing left to answer.
@@ -804,9 +851,12 @@ test("a domain is registered, filled from an archive and unregistered", async ({
   //
   // Reached the way every other journey reaches a domain: from the home screen
   // and its card. Inside a domain the sidebar is that domain's own tree rather
-  // than the listing, and `All domains` is the way back out of it that the
-  // sidebar itself offers.
-  await page.getByRole("link", { name: "All domains" }).click();
+  // than the listing, and `All domains` in the top bar's switcher is the way
+  // back out of it.
+  await page
+    .getByRole("button", { name: `${RESTORE_DOMAIN}, switch domain` })
+    .click();
+  await page.getByRole("menuitem", { name: /^All domains/ }).click();
   await page
     .locator("main")
     .getByRole("link", { name: DOMAIN, exact: true })
@@ -823,7 +873,8 @@ test("a domain is registered, filled from an archive and unregistered", async ({
 
   // And straight back up into the new domain: a dry run first, which is the
   // whole point of the two-step dialog, then the write it described.
-  await page.getByRole("link", { name: "All domains" }).click();
+  await page.getByRole("button", { name: `${DOMAIN}, switch domain` }).click();
+  await page.getByRole("menuitem", { name: /^All domains/ }).click();
   await page
     .locator("main")
     .getByRole("link", { name: RESTORE_DOMAIN, exact: true })

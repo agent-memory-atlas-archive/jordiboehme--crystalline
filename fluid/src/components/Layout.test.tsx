@@ -579,15 +579,15 @@ describe("the sidebar inside a domain", () => {
     const row = await within(nav).findByRole("link", { name: "eng" });
     expect(row).toHaveAttribute("href", "/d/eng");
     expect(row).toHaveAttribute("aria-current", "page");
-    // And the control that moves you stands beside it, named for the act.
+    // The way across and the way back out are the top bar's switcher now,
+    // so the sidebar no longer carries either.
     expect(
-      within(nav).getByRole("button", { name: "Switch domain" }),
+      within(nav).queryByRole("button", { name: /switch domain/i }),
+    ).toBeNull();
+    expect(within(nav).queryByRole("link", { name: "All domains" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "eng, switch domain" }),
     ).toBeVisible();
-    // The way back to everything stays on screen rather than being a browser
-    // button somebody has to remember.
-    expect(
-      within(nav).getByRole("link", { name: "All domains" }),
-    ).toHaveAttribute("href", "/");
     // And below it, what this domain holds: its folders and its engrams.
     expect(
       await within(nav).findByRole("button", { name: "Expand notes" }),
@@ -627,12 +627,12 @@ describe("the sidebar inside a domain", () => {
     renderApp("/d/eng");
     const user = userEvent.setup();
     await user.click(
-      await screen.findByRole("button", { name: "Switch domain" }),
+      await screen.findByRole("button", { name: "eng, switch domain" }),
     );
 
     // Every domain is offered with what it holds, which is what makes the
     // choice between them a choice rather than a guess.
-    const other = await screen.findByRole("menuitemradio", { name: /^ops/ });
+    const other = await screen.findByRole("menuitem", { name: /^ops/ });
     expect(other).toHaveTextContent("2");
     await user.click(other);
 
@@ -667,14 +667,14 @@ describe("the sidebar inside a domain", () => {
     renderApp("/d/eng");
     const user = userEvent.setup();
     await user.click(
-      await screen.findByRole("button", { name: "Switch domain" }),
+      await screen.findByRole("button", { name: "eng, switch domain" }),
     );
 
     expect(
-      await screen.findByRole("menuitemradio", { name: /^ops/ }),
+      await screen.findByRole("menuitem", { name: /^ops/ }),
     ).toHaveTextContent("private");
     expect(
-      screen.getByRole("menuitemradio", { name: /^eng/ }),
+      screen.getByRole("menuitem", { name: /^eng/ }),
     ).not.toHaveTextContent("private");
   });
 
@@ -959,10 +959,13 @@ describe("the sidebar inside a domain", () => {
 
     const alert = await within(await sidebar()).findByRole("alert");
     expect(alert).toHaveTextContent("this account may not browse eng");
-    // The row and its switch button survive the failure: one domain refusing
+    // The row and the bar's switcher survive the failure: one domain refusing
     // to be browsed is not a reason to strand somebody in it.
     expect(
-      within(await sidebar()).getByRole("button", { name: "Switch domain" }),
+      within(await sidebar()).getByRole("link", { name: "eng" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "eng, switch domain" }),
     ).toBeVisible();
   });
 });
@@ -1457,5 +1460,224 @@ describe("the help menu", () => {
       "noopener,noreferrer",
     );
     open.mockRestore();
+  });
+});
+
+/**
+ * The domain switcher in the top bar (spec 4.1): the current domain by name,
+ * "All domains" outside one, and a menu with a filter field, the way home,
+ * every domain with its chip and count, a check on the current one, and
+ * "New domain" for an admin.
+ */
+describe("the domain switcher in the top bar", () => {
+  async function openSwitcher(name: string): Promise<HTMLElement> {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name }));
+    return screen.findByRole("menu");
+  }
+
+  it("reads All domains outside a domain and leads home with the count", async () => {
+    serveSignedIn({ "/reflection/domains": () => ({ domains: [] }) });
+    renderApp("/");
+    const menu = await openSwitcher("All domains, switch domain");
+    const home = await within(menu).findByRole("menuitem", {
+      name: /^All domains/,
+    });
+    expect(home).toHaveAttribute("href", "/");
+    expect(home).toHaveTextContent("1");
+  });
+
+  it("checks the current domain and no other", async () => {
+    serveInDomain({ "/reflection/domains": () => ({ domains: [] }) });
+    renderApp("/d/eng");
+    const menu = await openSwitcher("eng, switch domain");
+    const eng = await within(menu).findByRole("menuitem", { name: /^eng/ });
+    expect(eng).toHaveAttribute("aria-current", "true");
+    expect(eng).toHaveAttribute("href", "/d/eng");
+    expect(eng.querySelector("svg")).not.toBeNull();
+    const ops = within(menu).getByRole("menuitem", { name: /^ops/ });
+    expect(ops).not.toHaveAttribute("aria-current");
+    expect(ops.querySelector("svg")).toBeNull();
+  });
+
+  it("narrows the list as the filter is typed, and says when nothing matches", async () => {
+    serveInDomain({ "/reflection/domains": () => ({ domains: [] }) });
+    renderApp("/d/eng");
+    const menu = await openSwitcher("eng, switch domain");
+    const field = await within(menu).findByRole("searchbox", {
+      name: "Find a domain",
+    });
+    await waitFor(() => {
+      expect(field).toHaveFocus();
+    });
+    const user = userEvent.setup();
+    await user.type(field, "OP");
+    expect(field).toHaveValue("OP");
+    expect(within(menu).getByRole("menuitem", { name: /^ops/ })).toBeVisible();
+    expect(within(menu).queryByRole("menuitem", { name: /^eng/ })).toBeNull();
+    await user.type(field, "zz");
+    expect(within(menu).getByText("No domain matches.")).toBeVisible();
+    // The way home is never filtered away.
+    expect(
+      within(menu).getByRole("menuitem", { name: /^All domains/ }),
+    ).toBeVisible();
+  });
+
+  it("works from the keyboard: open, type, down into the list, Escape back", async () => {
+    serveInDomain({ "/reflection/domains": () => ({ domains: [] }) });
+    renderApp("/d/eng");
+    const trigger = await screen.findByRole("button", {
+      name: "eng, switch domain",
+    });
+    trigger.focus();
+    const user = userEvent.setup();
+    await user.keyboard("{Enter}");
+    const field = await screen.findByRole("searchbox", {
+      name: "Find a domain",
+    });
+    await waitFor(() => {
+      expect(field).toHaveFocus();
+    });
+    // A letter goes into the field, not to the menu's typeahead.
+    await user.keyboard("o");
+    expect(field).toHaveValue("o");
+    expect(field).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(
+      screen.getByRole("menuitem", { name: /^All domains/ }),
+    ).toHaveFocus();
+    await user.keyboard("{ArrowDown}{ArrowDown}");
+    expect(screen.getByRole("menuitem", { name: /^ops/ })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+    expect(trigger).toHaveFocus();
+  });
+
+  it("offers New domain to an admin only", async () => {
+    serveInDomain({ "/reflection/domains": () => ({ domains: [] }) });
+    renderApp("/d/eng");
+    const menu = await openSwitcher("eng, switch domain");
+    await within(menu).findByRole("menuitem", { name: /^eng/ });
+    expect(
+      within(menu).queryByRole("menuitem", { name: "New domain" }),
+    ).toBeNull();
+  });
+
+  it("opens the register dialog from New domain for an admin", async () => {
+    serveInDomain({
+      "/auth/me": () => meResponse({ user: userFixture({ role: "admin" }) }),
+      "/reflection/domains": () => ({ domains: [] }),
+      "/settings/github": () => ({ enabled: false, connected: false }),
+    });
+    renderApp("/d/eng");
+    const menu = await openSwitcher("eng, switch domain");
+    await userEvent.click(
+      await within(menu).findByRole("menuitem", { name: "New domain" }),
+    );
+    expect(await screen.findByRole("dialog")).toBeVisible();
+  });
+
+  it("lists a Reflection-only domain and marks Reflection, read-only and private rows", async () => {
+    serveInDomain({
+      "/domains": () => ({
+        behavior: [],
+        domains: [
+          { name: "eng", kind: "file", engrams: 4, when_to_use: [] },
+          {
+            name: "ops",
+            kind: "file",
+            engrams: 2,
+            read_only: true,
+            when_to_use: [],
+          },
+          {
+            name: "lab",
+            kind: "file",
+            engrams: 1,
+            private: true,
+            when_to_use: [],
+          },
+        ],
+      }),
+      "/reflection/domains": () => ({
+        domains: [
+          {
+            domain: "eng",
+            state: "on",
+            right: "curate",
+            engrams_visible: true,
+            home: "here",
+            home_url: null,
+            open_threads: 0,
+          },
+          {
+            domain: "guild",
+            state: "on",
+            right: "edit",
+            engrams_visible: false,
+            home: "here",
+            home_url: null,
+            open_threads: 0,
+          },
+        ],
+      }),
+    });
+    renderApp("/d/eng");
+    const menu = await openSwitcher("eng, switch domain");
+    const guild = await within(menu).findByRole("menuitem", {
+      name: /^guild/,
+    });
+    // A domain reached only through its Reflection leads into it.
+    expect(guild).toHaveAttribute("href", "/d/guild/reflection");
+    expect(guild).toHaveTextContent("Reflection");
+    expect(
+      within(menu).getByRole("menuitem", { name: /^eng/ }),
+    ).toHaveTextContent("Reflection");
+    expect(
+      within(menu).getByRole("menuitem", { name: /^ops/ }),
+    ).toHaveTextContent("read-only");
+    expect(
+      within(menu).getByRole("menuitem", { name: /^lab/ }),
+    ).toHaveTextContent("private");
+    // Four domains in all, the Reflection-only one included.
+    expect(
+      within(menu).getByRole("menuitem", { name: /^All domains/ }),
+    ).toHaveTextContent("4");
+  });
+});
+
+/**
+ * On a phone the bar has no room for the mode switch or a search field: the
+ * switch gets a row of its own under the bar, and search is an icon that
+ * opens the palette.
+ */
+describe("the top bar on a phone", () => {
+  it("puts the mode switch under the bar, and the search icon opens the palette", async () => {
+    stubNarrowWindow();
+    serveInDomain({
+      "/reflection/domains": () => ({ domains: [] }),
+      "/domains/eng/reflection": () => ({
+        domain: "eng",
+        enabled: true,
+        state: "on",
+        home: "local",
+        home_url: null,
+        right: "curate",
+        engrams_visible: true,
+        pending_engrams: [],
+      }),
+    });
+    renderApp("/d/eng");
+    const modes = await screen.findByRole("navigation", {
+      name: "Domain view",
+    });
+    const bar =
+      screen.getByRole("button", { name: "Domains" }).closest("header") ??
+      undefined;
+    expect(defined(bar, "the top bar").contains(modes)).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Open search" }));
+    expect(await screen.findByRole("dialog")).toBeVisible();
   });
 });

@@ -41,10 +41,7 @@ import {
   DestructiveAction,
   READ_ONLY_REASON,
 } from "../components/DestructiveAction";
-import {
-  ReflectionModeSwitch,
-  useReflectionStatus,
-} from "../components/ReflectionModeSwitch";
+import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { BUTTON, FIELD } from "../components/primitives";
 import { Skeleton } from "../components/Skeleton";
@@ -112,7 +109,6 @@ export default function ReflectionHome(): ReactElement {
               Reflection
             </p>
           </div>
-          <ReflectionModeSwitch domain={domain} current="reflection" />
         </div>
         <ReflectionStateNotice status={s} />
       </header>

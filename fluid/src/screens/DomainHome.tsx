@@ -95,7 +95,6 @@ import { InlineMarkdown } from "../components/InlineMarkdown";
 import { LazyBoundary } from "../components/LazyBoundary";
 import { Markdown } from "../components/Markdown";
 import { ProposalsCard } from "../components/ProposalsCard";
-import { ReflectionModeSwitch } from "../components/ReflectionModeSwitch";
 import { RenameDomainDialog } from "../components/RenameDomainDialog";
 import { Skeleton } from "../components/Skeleton";
 import { SyncCard } from "../components/SyncCard";
@@ -541,7 +540,6 @@ function DomainPage({
               Rename domain
             </button>
           )}
-          <ReflectionModeSwitch domain={domain} current="engrams" />
         </div>
         {own && renameDisabledReason !== undefined && (
           <span id={renameReasonId} className="sr-only">

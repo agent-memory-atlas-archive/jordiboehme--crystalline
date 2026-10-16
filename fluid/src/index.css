@@ -72,6 +72,9 @@
   --color-accent-tint: var(--accent-tint);
   --color-mark: var(--mark);
   --color-mark-active: var(--mark-active);
+  --color-seg: var(--seg);
+  --color-seg-on: var(--seg-on);
+  --shadow-pop: var(--pop);
 }
 
 @layer base {
@@ -102,6 +105,11 @@
     --mark: var(--color-amber-100);
     --mark-rule: var(--color-amber-500);
     --mark-active: var(--color-accent-200);
+    /* The mode switch's track and its raised half, and a menu's shadow. */
+    --seg: #f1f5f9;
+    --seg-on: #ffffff;
+    --pop:
+      0 10px 30px -8px rgb(15 23 42 / 0.18), 0 2px 6px rgb(15 23 42 / 0.06);
     /*
      * CodeMirror's highlight style is one static rule set for both schemes
      * (see `editor/setup.ts`), not a `dark:` utility, so a token color that
@@ -149,6 +157,9 @@
     --mark: color-mix(in srgb, var(--color-amber-400) 16%, transparent);
     --mark-rule: #d6a23a;
     --mark-active: color-mix(in srgb, var(--color-accent-400) 32%, transparent);
+    --seg: #161a24;
+    --seg-on: #262c3b;
+    --pop: 0 16px 40px -10px rgb(0 0 0 / 0.7);
 
     /*
      * Dark leaves the blue-leaning slate for a neutral ink: the slate steps

@@ -257,7 +257,7 @@ describe("the doors into the Reflection", () => {
     ).toBeNull();
   });
 
-  it("links to the home instance instead of the mode when the Reflection lives elsewhere", async () => {
+  it("turns the Reflection half of the switch into a link to the home instance when the Reflection lives elsewhere", async () => {
     asEditor({
       "/domains/eng/reflection": () =>
         status({
@@ -267,16 +267,19 @@ describe("the doors into the Reflection", () => {
         }),
     });
     renderApp("/d/eng");
-    const link = await screen.findByRole("link", {
-      name: "https://team.example.com",
+    const modes = await screen.findByRole("navigation", {
+      name: "Domain view",
     });
-    expect(link).toHaveAttribute("href", "https://team.example.com");
-    expect(link.closest("p")).toHaveTextContent(
-      "This domain's Reflection lives at https://team.example.com",
-    );
     expect(
-      screen.queryByRole("navigation", { name: "Domain view" }),
-    ).toBeNull();
+      within(modes).getByRole("link", { name: "Engrams" }),
+    ).toHaveAttribute("aria-current", "page");
+    const away = within(modes).getByRole("link", {
+      name: "Reflection (opens on another server)",
+    });
+    expect(away).toHaveAttribute("href", "https://team.example.com");
+    expect(away).not.toHaveAttribute("aria-current");
+    // The bar says it now; the domain page no longer carries the sentence.
+    expect(screen.queryByText(/This domain's Reflection lives at/)).toBeNull();
   });
 
   it("never turns a home address that is not a web address into a link", async () => {
@@ -290,11 +293,16 @@ describe("the doors into the Reflection", () => {
     });
     renderApp("/d/eng");
     expect(
-      await screen.findByText(/This domain's Reflection lives at/),
+      await screen.findByRole("heading", { name: "eng", level: 1 }),
     ).toBeVisible();
+    await waitFor(() => {
+      expect(apiMock).toHaveBeenCalledWith("/domains/eng/reflection");
+    });
+    // Nowhere safe to go, so no switch at all rather than a dead half.
     expect(
-      screen.queryByRole("link", { name: "javascript:alert(1)" }),
+      screen.queryByRole("navigation", { name: "Domain view" }),
     ).toBeNull();
+    expect(document.querySelector('a[href^="javascript"]')).toBeNull();
   });
 
   it("leaves a person with knowledge none on domain not found when the Reflection lives elsewhere", async () => {
@@ -362,11 +370,14 @@ describe("the Reflection home", () => {
   it("links the pact and the review screen with the open thread count", async () => {
     asEditor();
     renderApp("/d/eng/reflection");
+    // The sidebar names the pact too, so the home's own links are read
+    // inside the main region.
+    const main = await screen.findByRole("main");
     expect(
-      await screen.findByRole("link", { name: "How we write about eng" }),
+      await within(main).findByRole("link", { name: "How we write about eng" }),
     ).toHaveAttribute("href", "/d/eng/reflection/PACT.md");
     expect(
-      screen.getByRole("link", { name: "3 open threads" }),
+      within(main).getByRole("link", { name: "3 open threads" }),
     ).toHaveAttribute("href", "/d/eng/reflection/review");
   });
 
@@ -477,9 +488,13 @@ describe("the Reflection home", () => {
     expect(
       screen.getAllByText(/This domain's Reflection lives at/),
     ).toHaveLength(1);
+    // The bar keeps the switch, its Reflection half pointing at the home.
     expect(
-      screen.queryByRole("navigation", { name: "Domain view" }),
-    ).toBeNull();
+      within(screen.getByRole("navigation", { name: "Domain view" })).getByRole(
+        "link",
+        { name: "Reflection (opens on another server)" },
+      ),
+    ).toHaveAttribute("href", "https://team.example.com");
   });
 
   it("says a homeless Reflection has no home yet, never that it is off", async () => {
@@ -781,5 +796,106 @@ describe("the Reflection home, fix round 1", () => {
       ).toHaveValue("");
     });
     expect(screen.getByLabelText("Mode")).toHaveValue("hybrid");
+  });
+});
+
+/**
+ * The mode switch lives in the top bar on every screen inside a domain (spec
+ * 4.2): the Engrams half is current on the domain page, an engram and the
+ * editor, the Reflection half on every Reflection screen. Only the half
+ * whose address is on screen says "page"; the other screens of a mode say
+ * "true", because the reader is in that mode but not on that page.
+ */
+describe("the mode switch in the top bar", () => {
+  async function modes(): Promise<HTMLElement> {
+    return within(await screen.findByRole("banner")).findByRole("navigation", {
+      name: "Domain view",
+    });
+  }
+
+  it("draws no switch outside a domain", async () => {
+    asEditor({
+      "/activity": () => ({ timeframe: "7d", count: 0, engrams: [] }),
+    });
+    renderApp("/");
+    expect(
+      await screen.findByRole("button", { name: "All domains, switch domain" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("navigation", { name: "Domain view" }),
+    ).toBeNull();
+  });
+
+  it("marks Engrams as the mode of an engram page", async () => {
+    asEditor({
+      "/domains/eng/engrams/alpha": () => ({
+        domain: "eng",
+        permalink: "alpha",
+        title: "Alpha",
+        url: "crystalline://eng/alpha",
+        content: "# Alpha\n",
+        frontmatter: {},
+        observations: [],
+        relations: [],
+        links: [],
+      }),
+    });
+    renderApp("/d/eng/e/alpha");
+    const nav = await modes();
+    expect(within(nav).getByRole("link", { name: "Engrams" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(
+      within(nav).getByRole("link", { name: "Reflection" }),
+    ).not.toHaveAttribute("aria-current");
+  });
+
+  it("marks Reflection on the Reflection home as the page itself", async () => {
+    asEditor();
+    renderApp("/d/eng/reflection");
+    const nav = await modes();
+    expect(
+      within(nav).getByRole("link", { name: "Reflection" }),
+    ).toHaveAttribute("aria-current", "page");
+    // Moved, not copied: the screen's own header no longer carries one.
+    expect(
+      within(screen.getByRole("main")).queryByRole("navigation", {
+        name: "Domain view",
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps the switch on the review screen, with Reflection as its mode", async () => {
+    asEditor({
+      "/domains/eng/reflection/review": () => ({
+        domain: "eng",
+        threads: [],
+        queue: [],
+      }),
+    });
+    renderApp("/d/eng/reflection/review");
+    const nav = await modes();
+    expect(
+      within(nav).getByRole("link", { name: "Reflection" }),
+    ).toHaveAttribute("aria-current", "true");
+    expect(within(nav).getByRole("link", { name: "Engrams" })).toHaveAttribute(
+      "href",
+      "/d/eng",
+    );
+  });
+
+  it("draws no switch for a person with knowledge none, who has one mode", async () => {
+    asContributor();
+    renderApp("/d/eng/reflection");
+    expect(
+      await screen.findByRole("heading", { name: "eng", level: 1 }),
+    ).toBeVisible();
+    await waitFor(() => {
+      expect(apiMock).toHaveBeenCalledWith("/domains/eng/reflection");
+    });
+    expect(
+      screen.queryByRole("navigation", { name: "Domain view" }),
+    ).toBeNull();
   });
 });

@@ -43,10 +43,7 @@ import { AttachmentsSection } from "../components/AttachmentsSection";
 import { DestructiveAction } from "../components/DestructiveAction";
 import { LazyBoundary } from "../components/LazyBoundary";
 import { Markdown } from "../components/Markdown";
-import {
-  ReflectionModeSwitch,
-  useReflectionStatus,
-} from "../components/ReflectionModeSwitch";
+import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { ReflectionThreads, sourceChip } from "../components/ReflectionThreads";
 import { BUTTON } from "../components/primitives";
@@ -329,7 +326,6 @@ function PageBody({
             {` / ${path}`}
           </p>
           <div className="flex items-center gap-2">
-            <ReflectionModeSwitch domain={domain} current="reflection" />
             {mayEditPage(right, path) && (
               <Link
                 to={reflectionEditRoute(domain, path)}
