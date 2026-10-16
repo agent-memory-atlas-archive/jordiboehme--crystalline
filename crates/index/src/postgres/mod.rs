@@ -96,7 +96,7 @@ pub use search::{
     semantic_hydrate_sql, semantic_phase1_sql,
 };
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -2239,13 +2239,9 @@ impl Store for PostgresStore {
         Ok(false)
     }
 
-    async fn base_paths(
-        &self,
-        domain: DomainId,
-        paths: &[String],
-    ) -> Result<std::collections::HashSet<String>> {
-        let wanted: std::collections::BTreeSet<&str> = paths.iter().map(String::as_str).collect();
-        let mut out = std::collections::HashSet::new();
+    async fn base_paths(&self, domain: DomainId, paths: &[String]) -> Result<HashSet<String>> {
+        let wanted: BTreeSet<&str> = paths.iter().map(String::as_str).collect();
+        let mut out = HashSet::new();
         if wanted.is_empty() {
             return Ok(out);
         }

@@ -37,7 +37,7 @@ pub use search::{
     lexical_candidate_sql, node_hydrate_sql, semantic_hydrate_sql, semantic_phase1_sql,
 };
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -2157,13 +2157,9 @@ impl Store for TursoStore {
         Ok(false)
     }
 
-    async fn base_paths(
-        &self,
-        domain: DomainId,
-        paths: &[String],
-    ) -> Result<std::collections::HashSet<String>> {
-        let wanted: std::collections::BTreeSet<&str> = paths.iter().map(String::as_str).collect();
-        let mut out = std::collections::HashSet::new();
+    async fn base_paths(&self, domain: DomainId, paths: &[String]) -> Result<HashSet<String>> {
+        let wanted: BTreeSet<&str> = paths.iter().map(String::as_str).collect();
+        let mut out = HashSet::new();
         if wanted.is_empty() {
             return Ok(out);
         }

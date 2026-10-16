@@ -8964,6 +8964,74 @@ parity!(
     cited_engrams_by_permalink
 );
 
+/// Which paths hold a base engram row of the one domain: a base row is
+/// there, a path only an actor's draft or tombstone holds is not, the same
+/// path in another domain is not, an empty question has an empty answer and
+/// a path asked twice answers once.
+async fn base_paths_of_one_domain(store: &dyn Store) {
+    let did = store
+        .upsert_domain("eng", Some("/k/eng"), DomainKind::File)
+        .await
+        .unwrap();
+    let other = store
+        .upsert_domain("ops", Some("/k/ops"), DomainKind::File)
+        .await
+        .unwrap();
+    store
+        .upsert_engram(did, &record("notes/base.md", "notes/base", "x", "shaB"))
+        .await
+        .unwrap();
+    store
+        .upsert_overlay(
+            did,
+            "ada",
+            &record("notes/draft.md", "notes/draft", "y", "shaD"),
+        )
+        .await
+        .unwrap();
+    let mut gone = record("notes/tomb.md", "notes/tomb", "y", "shaT");
+    gone.tombstone = true;
+    store.upsert_overlay(did, "ada", &gone).await.unwrap();
+    store
+        .upsert_engram(
+            other,
+            &record("notes/elsewhere.md", "notes/elsewhere", "x", "shaE"),
+        )
+        .await
+        .unwrap();
+
+    let asked: Vec<String> = [
+        "notes/base.md",
+        "notes/draft.md",
+        "notes/tomb.md",
+        "notes/elsewhere.md",
+        "notes/nothing.md",
+        "notes/base.md",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    let got = store.base_paths(did, &asked).await.unwrap();
+    assert_eq!(
+        got,
+        std::collections::HashSet::from(["notes/base.md".to_string()]),
+        "only the base row of this domain, once"
+    );
+    assert!(store.base_paths(did, &[]).await.unwrap().is_empty());
+    assert_eq!(
+        store
+            .base_paths(other, &["notes/elsewhere.md".to_string()])
+            .await
+            .unwrap(),
+        std::collections::HashSet::from(["notes/elsewhere.md".to_string()]),
+        "the other domain's own row is its own"
+    );
+}
+parity!(
+    base_paths_answer_only_base_rows_of_the_domain,
+    base_paths_of_one_domain
+);
+
 // --- the sync routes `reflections/` (reflection core, Task 9) ----------------
 
 const MANIFEST_OFF: &str = "---\ntype: manifest\ntitle: eng\npermalink: manifest\ntags: [manifest]\nstatus: stable\n---\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n";
