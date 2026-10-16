@@ -791,6 +791,7 @@ mod tests {
         assert!(!is_session_closed(&control::encode(&Control::Saved {
             checksum: "abc".to_string(),
             permalink: "alpha".to_string(),
+            covers: Vec::new(),
         })));
         assert!(!is_session_closed(&[0xff, 0xff, 0xff]));
     }

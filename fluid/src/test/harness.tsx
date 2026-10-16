@@ -329,6 +329,7 @@ export function soloCollabSession(): CollabSession {
     participants: [],
     permalink: "alpha",
     flush: () => undefined,
+    covered: new Set<string>(),
     resolve: () => undefined,
     closed: false,
     closedReason: null,

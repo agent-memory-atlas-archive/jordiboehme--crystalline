@@ -113,6 +113,17 @@ export interface EditorSession {
   dirty: boolean;
   /** The text the last successful save stored (the mounted text before any). */
   savedText: string;
+  /**
+   * How many saves this session has started so far. Read when something
+   * needs to know which later save is the first to include it.
+   */
+  savesStarted: () => number;
+  /**
+   * The start number of the newest save that landed (`savesStarted` as it
+   * stood when that save began); 0 before any. A save numbered above a
+   * value read from `savesStarted` began after that read.
+   */
+  landedSave: number;
   checksum: string;
   viewRef: RefObject<EditorView | null>;
   onReady: (view: EditorView) => void;
@@ -295,7 +306,16 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
     [draftUser, draftDomain, draftSlot, checksum, asStoredDraft],
   );
 
+  // Every save gets the next number when it starts; the newest one that
+  // landed is remembered, so a caller can ask "did a save that began after
+  // this moment land yet?".
+  const saveStarts = useRef(0);
+  const [landedSave, setLandedSave] = useState(0);
   const save = useMutation({
+    onMutate: () => {
+      saveStarts.current += 1;
+      return { started: saveStarts.current };
+    },
     // The token travels with the content rather than being read from
     // `checksum` inside the mutation: a conflict's overwrite moves the
     // checksum state and fires the retry in the same handler, and a mutation
@@ -303,7 +323,8 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
     // value on that first tick.
     mutationFn: ({ content, token }: { content: string; token: string }) =>
       transportSave(content, token),
-    onSuccess: (saved, sent) => {
+    onSuccess: (saved, sent, context) => {
+      setLandedSave((was) => Math.max(was, context.started));
       const view = viewRef.current;
       // What the draft is for is the text the server does not have. A save
       // that carried the buffer as it stands has made the draft redundant and
@@ -449,6 +470,8 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
     setBuffer,
     dirty,
     savedText,
+    savesStarted: () => saveStarts.current,
+    landedSave,
     checksum,
     viewRef,
     onReady: (view) => {

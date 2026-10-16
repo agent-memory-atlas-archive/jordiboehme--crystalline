@@ -1454,7 +1454,10 @@ async fn room_whose_save_failed(
     replace_all(&joined, &doc, "no frontmatter, typed by a person\n").await;
     joined
         .session
-        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Flush { mark: None }),
+        )
         .await;
     joined.session.tick_save(Instant::now()).await;
     let live = sessions
@@ -2328,7 +2331,10 @@ async fn a_successor_whose_unsaving_room_holds_the_line_gets_it_in_the_file() {
     replace_all(&joined, &doc, "no frontmatter\n\n- supersedes [[alpha]]\n").await;
     joined
         .session
-        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Flush { mark: None }),
+        )
         .await;
     joined.session.tick_save(Instant::now()).await;
     assert!(

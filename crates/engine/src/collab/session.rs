@@ -63,6 +63,14 @@ pub const MAX_PARTICIPANTS: usize = 16;
 const BROADCAST_CAPACITY: usize = 256;
 /// How long a pause in typing lands the save after.
 pub const SAVE_DEBOUNCE_MS: u64 = 2_000;
+
+/// The most flush marks a room keeps waiting for a save; the oldest goes
+/// first beyond it.
+const MAX_FLUSH_MARKS: usize = 32;
+
+/// The longest flush mark a room keeps; a longer one is ignored.
+const MAX_MARK_LEN: usize = 64;
+
 /// The longest continuous typing goes without a save landing.
 pub const SAVE_MAX_LAG_MS: u64 = 15_000;
 /// How long a session sits idle before the external-change probe runs.
@@ -1553,6 +1561,10 @@ struct SessionState {
     oldest_unsaved: Option<Instant>,
     /// A client asked for a save now rather than on the debounce.
     flush_requested: bool,
+    /// The marks of flush requests no landed save has covered yet, oldest
+    /// first. A save takes the ones present when it begins and names them in
+    /// its `Saved`; a save that does not land leaves them for the next one.
+    flush_marks: Vec<String>,
     /// When the engine was last asked to write. Only a save-blocked session
     /// reads it, to space its retries out instead of hammering the engine
     /// every tick for as long as the document stays unsaveable.
@@ -1707,6 +1719,7 @@ impl CollabSession {
                 last_edit: None,
                 oldest_unsaved: None,
                 flush_requested: false,
+                flush_marks: Vec::new(),
                 last_attempt: None,
                 // The probe window starts at open, so a room that sits idle
                 // from its first tick still checks one window later.
@@ -1857,8 +1870,18 @@ impl CollabSession {
                     }
                 }
                 Message::Custom(control::CONTROL_TAG, payload) => match control::decode(&payload) {
-                    Some(Control::Flush) => {
+                    Some(Control::Flush { mark }) => {
                         state.flush_requested = true;
+                        if let Some(mark) =
+                            mark.filter(|m| !m.is_empty() && m.len() <= MAX_MARK_LEN)
+                        {
+                            // Bounded: a client that flushes in a loop
+                            // without ever seeing a save cannot grow this.
+                            if state.flush_marks.len() >= MAX_FLUSH_MARKS {
+                                state.flush_marks.remove(0);
+                            }
+                            state.flush_marks.push(mark);
+                        }
                     }
                     Some(Control::Resolve { choice }) => {
                         // Kept rather than overwritten: a frame carrying two
@@ -2609,6 +2632,9 @@ impl CollabSession {
         }
         let file = Self::file_text_locked(state);
         state.flush_requested = false;
+        // The flushes this save answers: every one that arrived before it
+        // began. Taken off only when a Saved names them.
+        let covers = state.flush_marks.clone();
         // A reflection room's ids come with its last save, so that save runs
         // even when nothing new was typed since the one before it.
         let closing_reflection =
@@ -2619,17 +2645,21 @@ impl CollabSession {
             // The document is the saved text again: nobody's change is pending.
             state.editors.clear();
             state.oldest_unsaved = None;
-            if !matches!(state.save_state, SaveStateTag::Ok) {
+            // A flush that asked for a receipt gets one: what it covers is
+            // the saved text already.
+            if !matches!(state.save_state, SaveStateTag::Ok) || !covers.is_empty() {
                 // The document matches the file again, so the standing save
                 // failure is over; the room is told so its alert clears.
                 state.save_state = SaveStateTag::Ok;
                 state.failure_detail = None;
+                state.flush_marks.retain(|m| !covers.contains(m));
                 let _ = self.tx.send(Frame {
                     from: None,
                     to: None,
                     bytes: Bytes::from(control::encode(&Control::Saved {
                         checksum: state.checksum.clone(),
                         permalink: state.permalink.clone(),
+                        covers,
                     })),
                 });
             }
@@ -2696,12 +2726,14 @@ impl CollabSession {
                 state.oldest_unsaved = None;
                 state.save_state = SaveStateTag::Ok;
                 state.failure_detail = None;
+                state.flush_marks.retain(|m| !covers.contains(m));
                 let _ = self.tx.send(Frame {
                     from: None,
                     to: None,
                     bytes: Bytes::from(control::encode(&Control::Saved {
                         checksum,
                         permalink,
+                        covers,
                     })),
                 });
                 SaveOutcome::Done(renamed)
@@ -3045,12 +3077,16 @@ impl CollabSession {
                 state.oldest_unsaved = None;
                 state.save_state = SaveStateTag::Ok;
                 state.failure_detail = None;
+                // "Mine" saved the room's text as it stood: every flush that
+                // arrived before is in it.
+                let covers = std::mem::take(&mut state.flush_marks);
                 let _ = self.tx.send(Frame {
                     from: None,
                     to: None,
                     bytes: Bytes::from(control::encode(&Control::Saved {
                         checksum,
                         permalink,
+                        covers,
                     })),
                 });
                 renamed

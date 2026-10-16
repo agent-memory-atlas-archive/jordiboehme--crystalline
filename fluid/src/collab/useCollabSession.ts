@@ -102,7 +102,11 @@ export interface CollabSession {
   participants: CollabParticipant[];
   /** The engram's current permalink per the last save receipt. */
   permalink: string;
-  flush: () => void;
+  /** Ask the room to save now. A `mark` comes back in `covered` once a save
+   *  that began after the request arrived has landed. */
+  flush: (mark?: string) => void;
+  /** The flush marks landed saves have covered, as this tab heard them. */
+  covered: ReadonlySet<string>;
   resolve: (choice: "mine" | "theirs") => void;
   /** True once the room has closed for good (the `closed` control): an
    *  external deletion, a switched-off Reflection, a server shutting down. */
@@ -194,6 +198,9 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
   const [hello, setHello] = useState<CollabHello | null>(null);
   const [saveState, setSaveState] = useState<CollabSession["saveState"]>("ok");
   const [saveDetail, setSaveDetail] = useState<string | null>(null);
+  const [covered, setCovered] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
   const [conflict, setConflict] = useState<CollabConflict | null>(null);
   const [closed, setClosed] = useState(false);
   const [closedReason, setClosedReason] = useState<string | null>(null);
@@ -350,6 +357,10 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
           }
           case "saved": {
             checksumRef.current = control.checksum;
+            const covers = control.covers ?? [];
+            if (covers.length > 0) {
+              setCovered((was) => new Set([...was, ...covers]));
+            }
             setPermalink(control.permalink);
             setSave("ok");
             setSaveDetail(null);
@@ -573,8 +584,8 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
     // a different room, and whatever the old one was still fetching is void.
   }, [hello, domain, generation]);
 
-  const flush = useCallback(() => {
-    docRef.current?.provider.flush();
+  const flush = useCallback((mark?: string) => {
+    docRef.current?.provider.flush(mark);
   }, []);
   const resolve = useCallback((choice: "mine" | "theirs") => {
     docRef.current?.provider.resolve(choice);
@@ -599,6 +610,7 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
     participants,
     permalink,
     flush,
+    covered,
     resolve,
     closed,
     closedReason,

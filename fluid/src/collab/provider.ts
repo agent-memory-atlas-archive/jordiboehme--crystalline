@@ -79,7 +79,13 @@ export interface CollabHello {
 
 export type CollabControl =
   | CollabHello
-  | { kind: "saved"; checksum: string; permalink: string }
+  | {
+      kind: "saved";
+      checksum: string;
+      permalink: string;
+      /** The marks of the flushes this save covers; absent when none. */
+      covers?: string[];
+    }
   | { kind: "save-failed"; detail: string }
   | { kind: "merged" }
   | {
@@ -239,8 +245,11 @@ export class CollabProvider {
     return this.statusValue;
   }
 
-  flush(): void {
-    this.sendControl({ kind: "flush" });
+  /** Ask for a save now; a `mark` comes back on the save that covers it. */
+  flush(mark?: string): void {
+    this.sendControl(
+      mark === undefined ? { kind: "flush" } : { kind: "flush", mark },
+    );
   }
 
   resolve(choice: "mine" | "theirs"): void {
@@ -529,7 +538,11 @@ export class CollabProvider {
     }
   }
 
-  private sendControl(control: { kind: string; choice?: string }): void {
+  private sendControl(control: {
+    kind: string;
+    choice?: string;
+    mark?: string;
+  }): void {
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_CONTROL);
     encoding.writeVarUint8Array(

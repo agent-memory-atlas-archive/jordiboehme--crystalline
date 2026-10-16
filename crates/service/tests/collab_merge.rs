@@ -192,7 +192,10 @@ async fn a_clean_external_edit_merges_into_the_room_and_the_file() {
 
     joined
         .session
-        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Flush { mark: None }),
+        )
         .await;
     joined.session.tick_save(Instant::now()).await;
 
@@ -262,7 +265,10 @@ async fn colliding_edits_suspend_saving_until_the_room_resolves_mine() {
 
     joined
         .session
-        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Flush { mark: None }),
+        )
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::Conflict {
@@ -312,7 +318,10 @@ async fn resolving_theirs_replaces_the_live_text_and_touches_nothing() {
     std::fs::write(&path, &theirs).unwrap();
     joined
         .session
-        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Flush { mark: None }),
+        )
         .await;
     joined.session.tick_save(Instant::now()).await;
     assert!(matches!(
@@ -353,7 +362,10 @@ async fn resolving_theirs_replaces_the_live_text_and_touches_nothing() {
     append_line(&joined, &doc, "after the storm").await;
     joined
         .session
-        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Flush { mark: None }),
+        )
         .await;
     joined.session.tick_save(Instant::now()).await;
     assert!(matches!(
@@ -378,7 +390,10 @@ async fn an_external_delete_is_its_own_conflict_and_mine_restores_the_file() {
 
     joined
         .session
-        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Flush { mark: None }),
+        )
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::Conflict {
@@ -437,7 +452,10 @@ async fn a_deleted_conflict_never_restores_over_a_file_that_came_back() {
 
     joined
         .session
-        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Flush { mark: None }),
+        )
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::Conflict { conflict_kind, .. } = next_control(&mut joined.rx).await else {
@@ -526,7 +544,10 @@ async fn accepting_an_external_delete_closes_the_session() {
     std::fs::remove_file(&path).unwrap();
     joined
         .session
-        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Flush { mark: None }),
+        )
         .await;
     joined.session.tick_save(Instant::now()).await;
     assert!(matches!(
@@ -586,7 +607,10 @@ async fn restoring_into_a_read_only_domain_is_refused_and_the_file_stays_gone() 
     std::fs::remove_file(tmp.path().join("eng/alpha.md")).unwrap();
     joined
         .session
-        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Flush { mark: None }),
+        )
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::Conflict { conflict_kind, .. } = next_control(&mut joined.rx).await else {
@@ -633,7 +657,10 @@ async fn a_room_does_not_switch_read_only_on() {
     .await;
     joined
         .session
-        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Flush { mark: None }),
+        )
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::SaveFailed { detail } = next_control(&mut joined.rx).await else {
@@ -663,7 +690,10 @@ async fn a_room_does_not_restore_a_switch_on() {
     std::fs::remove_file(&manifest).unwrap();
     joined
         .session
-        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .handle_frame(
+            joined.conn,
+            &control::encode(&Control::Flush { mark: None }),
+        )
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::Conflict { conflict_kind, .. } = next_control(&mut joined.rx).await else {

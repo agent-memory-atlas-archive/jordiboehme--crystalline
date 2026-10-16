@@ -257,6 +257,33 @@ describe("useCollabSession", () => {
     expect(sentControls(socket)).toContainEqual({ kind: "flush" });
   });
 
+  it("sends a flush mark and learns which marks a landed save covers", () => {
+    const { socket } = joinRoom();
+    expect(session().covered.size).toBe(0);
+    act(() => {
+      session().flush("m1");
+    });
+    expect(sentControls(socket)).toContainEqual({ kind: "flush", mark: "m1" });
+    // A receipt without covers changes nothing about the marks.
+    act(() => {
+      socket.receive(
+        controlFrame({ kind: "saved", checksum: "c2", permalink: "alpha" }),
+      );
+    });
+    expect(session().covered.has("m1")).toBe(false);
+    act(() => {
+      socket.receive(
+        controlFrame({
+          kind: "saved",
+          checksum: "c3",
+          permalink: "alpha",
+          covers: ["m1"],
+        }),
+      );
+    });
+    expect(session().covered.has("m1")).toBe(true);
+  });
+
   it("follows a rename receipt to the engram's new permalink", () => {
     const { socket } = joinRoom();
     act(() => {

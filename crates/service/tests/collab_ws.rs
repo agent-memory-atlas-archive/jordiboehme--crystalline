@@ -518,7 +518,7 @@ async fn restoring_a_draft_into_a_read_only_domain_is_refused() {
     apply(&doc, &step2);
     let update = append_line(&doc, "still typing");
     hers.send(binary(update_frame(&update))).await.unwrap();
-    hers.send(binary(control_frame(&Control::Flush)))
+    hers.send(binary(control_frame(&Control::Flush { mark: None })))
         .await
         .unwrap();
     let raised = wait_for_control(&mut hers, "conflict").await;
@@ -631,7 +631,7 @@ async fn two_sockets_sync_edit_and_the_save_lands_once() {
 
     // Alice flushes; the save lands on disk.
     alice
-        .send(binary(control_frame(&Control::Flush)))
+        .send(binary(control_frame(&Control::Flush { mark: None })))
         .await
         .unwrap();
     wait_for_control(&mut alice, "saved").await;
@@ -1109,7 +1109,7 @@ async fn a_reflection_room_records_the_signed_in_typist_and_nobody_else() {
     wait_for_awareness(&mut typist, "ann-in-the-room").await;
 
     typist
-        .send(binary(control_frame(&Control::Flush)))
+        .send(binary(control_frame(&Control::Flush { mark: None })))
         .await
         .unwrap();
     wait_for_control(&mut typist, "saved").await;
@@ -1399,7 +1399,7 @@ async fn a_grantee_join_lands_in_the_owners_document() {
     );
     let update = append_line(&doc, "bob was here");
     his.send(binary(update_frame(&update))).await.unwrap();
-    his.send(binary(control_frame(&Control::Flush)))
+    his.send(binary(control_frame(&Control::Flush { mark: None })))
         .await
         .unwrap();
     wait_for_control(&mut his, "saved").await;
@@ -1881,7 +1881,7 @@ async fn a_rooms_save_at_another_path_is_refused_and_the_room_stays_open() {
     let retargeted = TEAM_PLAN.replace("permalink: plan", "permalink: Plan");
     let update = replace_all(&doc, &retargeted);
     his.send(binary(update_frame(&update))).await.unwrap();
-    his.send(binary(control_frame(&Control::Flush)))
+    his.send(binary(control_frame(&Control::Flush { mark: None })))
         .await
         .unwrap();
     wait_for_control(&mut his, "saved").await;
@@ -1890,7 +1890,7 @@ async fn a_rooms_save_at_another_path_is_refused_and_the_room_stays_open() {
     // path nobody shared with him.
     let update = append_line(&doc, "and now somewhere else");
     his.send(binary(update_frame(&update))).await.unwrap();
-    his.send(binary(control_frame(&Control::Flush)))
+    his.send(binary(control_frame(&Control::Flush { mark: None })))
         .await
         .unwrap();
     let refused = wait_for_control(&mut his, "save-failed").await;
@@ -2168,7 +2168,7 @@ async fn a_discarded_draft_evicts_its_guest_and_leaves_its_author_the_conflict()
     apply(&doc, &step2);
     let update = append_line(&doc, "still typing");
     hers.send(binary(update_frame(&update))).await.unwrap();
-    hers.send(binary(control_frame(&Control::Flush)))
+    hers.send(binary(control_frame(&Control::Flush { mark: None })))
         .await
         .unwrap();
     let raised = wait_for_control(&mut hers, "conflict").await;
@@ -2279,7 +2279,7 @@ async fn a_joined_agent_edit_composes_into_the_owners_open_document() {
     );
 
     // And her session is what makes it durable, into her own draft row.
-    hers.send(binary(control_frame(&Control::Flush)))
+    hers.send(binary(control_frame(&Control::Flush { mark: None })))
         .await
         .unwrap();
     wait_for_control(&mut hers, "saved").await;
