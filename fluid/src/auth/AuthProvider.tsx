@@ -242,9 +242,12 @@ function Booting() {
   return (
     <div
       aria-busy="true"
-      className="flex min-h-screen items-center justify-center text-sm text-slate-500 dark:text-slate-400"
+      className="flex min-h-screen items-center justify-center font-mono text-sm tracking-wide text-muted uppercase"
     >
       Loading Fluid
+      <span aria-hidden className="loading-cursor">
+        {"█"}
+      </span>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { act, render, screen } from "@testing-library/react";
 import { useState } from "react";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { READY_MS, Loading, ReadyFlash } from "./Loading";
@@ -38,13 +39,17 @@ describe("Loading", () => {
     const caps = status.querySelector("[aria-hidden]");
     expect(caps).not.toBeNull();
     expect(caps?.textContent).toBe("SEARCHING FOR THE-PERMALINKLOADING█");
+    // The sentence is also real text inside the region, so it is announced.
+    expect(status.querySelector(".sr-only")?.textContent).toBe(
+      "Loading the engram",
+    );
     expect(status.getAttribute("data-loading")).toBe("full");
   });
 
   it("has a compact one-line variant", () => {
     render(<Loading compact label="Loading menu" />);
     const status = screen.getByRole("status", { name: "Loading menu" });
-    expect(status.textContent).toBe("LOADING█");
+    expect(status.textContent).toBe("Loading menuLOADING█");
     expect(status.getAttribute("data-loading")).toBe("compact");
   });
 
@@ -114,6 +119,55 @@ describe("READY.", () => {
       screen.getByText("next").click();
       await Promise.resolve();
     });
+    expect(screen.queryByText("READY.")).toBeNull();
+  });
+
+  it("does not appear when an error takes the loader's place", async () => {
+    const { rerender } = render(<Area arrived={false} />);
+    rerender(
+      <main className="relative">
+        <p role="alert">Could not load.</p>
+        <ReadyFlash />
+      </main>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByText("READY.")).toBeNull();
+  });
+
+  it("does not appear when the reader navigated away during the load", async () => {
+    function Loads() {
+      const navigate = useNavigate();
+      return (
+        <>
+          <Loading label="Loading" subject="a" />
+          <button
+            onClick={() => {
+              void navigate("/elsewhere");
+            }}
+          >
+            leave
+          </button>
+        </>
+      );
+    }
+    render(
+      <MemoryRouter>
+        <main className="relative">
+          <Routes>
+            <Route path="/" element={<Loads />} />
+            <Route path="/elsewhere" element={<p>Other</p>} />
+          </Routes>
+          <ReadyFlash />
+        </main>
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      screen.getByText("leave").click();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Other")).toBeInTheDocument();
     expect(screen.queryByText("READY.")).toBeNull();
   });
 

@@ -14,7 +14,8 @@
  * a loader, so it shows neither.
  */
 
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
+import { UNSAFE_LocationContext as LocationContext } from "react-router";
 
 import { loaderShown, onLoadingEvent } from "../loadingSignal";
 
@@ -45,7 +46,9 @@ export function Loading({
   compact?: boolean;
   className?: string;
 }) {
-  useEffect(() => (compact ? undefined : loaderShown()), [compact]);
+  // Outside a router (before the shell) there is no key, and no navigation.
+  const key = useContext(LocationContext)?.location.key ?? "";
+  useEffect(() => (compact ? undefined : loaderShown(key)), [compact, key]);
   if (compact) {
     return (
       <p
@@ -55,6 +58,7 @@ export function Loading({
         data-loading="compact"
         className={`${INK} ${className}`}
       >
+        <span className="sr-only">{label}</span>
         <span aria-hidden>
           {"LOADING"}
           <Cursor />
@@ -70,6 +74,7 @@ export function Loading({
       data-loading="full"
       className={`${INK} py-3 ${className}`}
     >
+      <span className="sr-only">{label}</span>
       <div aria-hidden>
         <p className="truncate">
           {`SEARCHING FOR ${(subject ?? "").trim().toUpperCase()}`.trimEnd()}
@@ -91,12 +96,25 @@ export function Loading({
  */
 export function ReadyFlash() {
   const [visible, setVisible] = useState(false);
+  const here = useContext(LocationContext)?.location.key ?? "";
+  const hereRef = useRef(here);
+  useEffect(() => {
+    hereRef.current = here;
+  });
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const stop = onLoadingEvent((event) => {
       clearTimeout(timer);
-      if (event === "busy") {
+      if (event.kind === "busy") {
         setVisible(false);
+        return;
+      }
+      // Not content arriving: the reader navigated away from the load, or
+      // an error took the loader's place.
+      if (
+        event.key !== hereRef.current ||
+        document.querySelector('main [role="alert"]') !== null
+      ) {
         return;
       }
       setVisible(true);

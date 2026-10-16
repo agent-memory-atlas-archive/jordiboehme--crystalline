@@ -254,9 +254,7 @@ const MAINTENANCE_FALLBACK = (
 );
 
 const GRANTED_DRAFT_FALLBACK = (
-  <p className="text-sm text-slate-500 dark:text-slate-400">
-    Opening the shared draft
-  </p>
+  <Loading label="Opening the shared draft" subject="the shared draft" />
 );
 
 export function AppRoutes() {

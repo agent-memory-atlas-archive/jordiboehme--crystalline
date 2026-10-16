@@ -251,9 +251,7 @@ export function EngramList({
         {!hasNextPage && rows.length > 0 && scrolled && <EndOfLine />}
       </div>
       {isFetchingNextPage && (
-        <p className="pt-2 text-xs text-slate-500 dark:text-slate-400">
-          Loading more
-        </p>
+        <Loading compact label="Loading more" className="pt-2" />
       )}
     </div>
   );

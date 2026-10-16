@@ -103,7 +103,9 @@ export default function Home() {
             }}
           />
         )}
-        {listing.isPending && <Loading compact label="Loading domains" />}
+        {listing.isPending && (
+          <Loading label="Loading domains" subject="the domains" />
+        )}
         {/*
           A failed listing is announced once, by the sidebar, which reads the
           same query. Saying it twice would have a screen reader hear the same
@@ -334,7 +336,9 @@ function ActivityFeed({
   firstDomain: string | null;
 }) {
   if (pending) {
-    return <Loading compact label="Loading recent activity" />;
+    return (
+      <Loading label="Loading recent activity" subject="recent activity" />
+    );
   }
   if (error) {
     return (

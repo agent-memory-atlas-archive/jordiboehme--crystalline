@@ -9,7 +9,10 @@
  * a microtask, after the commit's effects have all run.
  */
 
-export type LoadingEvent = "ready" | "busy";
+export type LoadingEvent =
+  | { kind: "busy" }
+  /** `key` is the router location key the loader mounted under. */
+  | { kind: "ready"; key: string };
 
 let shown = 0;
 const listeners = new Set<(event: LoadingEvent) => void>();
@@ -20,15 +23,19 @@ function emit(event: LoadingEvent): void {
   }
 }
 
-/** A loader appeared. Returns the call for when it goes away. */
-export function loaderShown(): () => void {
+/**
+ * A loader appeared under the router location `key`. Returns the call for
+ * when it goes away; the listener decides from the key whether that was
+ * navigation (not content arriving).
+ */
+export function loaderShown(key: string): () => void {
   shown += 1;
-  emit("busy");
+  emit({ kind: "busy" });
   return () => {
     shown -= 1;
     queueMicrotask(() => {
       if (shown === 0) {
-        emit("ready");
+        emit({ kind: "ready", key });
       }
     });
   };
