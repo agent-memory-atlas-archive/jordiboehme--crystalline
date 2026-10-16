@@ -75,7 +75,6 @@ import {
 } from "../editor/drafts";
 import { hiddenIdLines } from "../editor/hiddenIdLines";
 import { KeptTextNotice } from "../editor/KeptTextNotice";
-import { roomSaveMarks } from "../collab/saveMarks";
 import { imagePreviews } from "../editor/imagePreviews";
 import { readScalar } from "../editor/frontmatterFields";
 import { livePreview } from "../editor/preview";
@@ -981,7 +980,6 @@ function Surface({
         path={path}
         draft={false}
         ready={!ended && collab.live}
-        {...roomSaveMarks(collab)}
         onReplace={(text) => {
           // One change on the shared text, as Put it back makes it, so the
           // room's Undo takes it back; owed until the room saves it.

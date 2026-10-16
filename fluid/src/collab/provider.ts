@@ -75,26 +75,12 @@ export interface CollabHello {
    *  has words for it. Absent on a healthy room and on a conflict, whose body
    *  is re-derived rather than greeted. */
   detail?: string;
-  /** What the room can do beyond the common messages; `flush-marks` says a
-   *  flush mark comes back in a save receipt. Absent from an older room. */
-  features?: string[];
 }
-
-/** The feature a room names in its hello when it answers flush marks. */
-export const FLUSH_MARKS = "flush-marks";
 
 export type CollabControl =
   | CollabHello
-  | {
-      kind: "saved";
-      checksum: string;
-      permalink: string;
-      /** The marks of the flushes this save covers; absent when none. */
-      covers?: string[];
-    }
+  | { kind: "saved"; checksum: string; permalink: string }
   | { kind: "save-failed"; detail: string }
-  /** Flush marks a "theirs" choice gave up: no save will name them. */
-  | { kind: "discarded"; marks: string[] }
   | { kind: "merged" }
   | {
       kind: "conflict";
@@ -222,12 +208,10 @@ export class CollabProvider {
   private accepted = false;
   /**
    * Whether THIS connection is live: hello accepted AND the room's SyncStep1
-   * answered, so whatever this doc holds is already on the socket. A control
-   * that must come after the text (a marked flush) is only sent then.
+   * answered, so whatever this doc holds is already on the socket. Controls
+   * go out only then, never ahead of the text.
    */
   private live = false;
-  /** Controls asked for before the connection was live, sent once it is. */
-  private queued: { kind: string; choice?: string }[] = [];
 
   constructor(
     url: string,
@@ -270,35 +254,16 @@ export class CollabProvider {
     return this.live;
   }
 
-  /**
-   * Ask for a save now. A `mark` comes back on the save that covers it, so
-   * a marked flush is only ever sent on a live connection, after the text it
-   * stands for: refused (false) otherwise, never queued. A plain flush waits
-   * for the connection to be live.
-   */
-  flush(mark?: string): boolean {
-    if (mark !== undefined) {
-      if (!this.live) {
-        return false;
-      }
-      this.sendControl({ kind: "flush", mark });
-      return true;
-    }
-    this.sendOrQueue({ kind: "flush" });
-    return true;
+  /** Ask for a save now. Only on a live connection: false, and nothing
+   *  sent, otherwise. */
+  flush(): boolean {
+    return this.sendControl({ kind: "flush" });
   }
 
-  resolve(choice: "mine" | "theirs"): void {
-    this.sendOrQueue({ kind: "resolve", choice });
-  }
-
-  /** Send now on a live connection, else once the next one is live. */
-  private sendOrQueue(control: { kind: string; choice?: string }): void {
-    if (this.live) {
-      this.sendControl(control);
-    } else {
-      this.queued.push(control);
-    }
+  /** Resolve a conflict. Only on a live connection: false, and nothing
+   *  sent, otherwise, so a choice never meets a room it was not made for. */
+  resolve(choice: "mine" | "theirs"): boolean {
+    return this.sendControl({ kind: "resolve", choice });
   }
 
   /**
@@ -310,7 +275,6 @@ export class CollabProvider {
   private stop(): void {
     this.closed = true;
     this.live = false;
-    this.queued = [];
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -516,11 +480,6 @@ export class CollabProvider {
             // Our answer to the room's SyncStep1 carries everything typed
             // while away; from here a control is ordered after the text.
             this.live = true;
-            const queued = this.queued;
-            this.queued = [];
-            for (const control of queued) {
-              this.sendControl(control);
-            }
             this.handlers.onLive?.();
           }
           if (syncType === syncProtocol.messageYjsSyncStep2 && !this.synced) {
@@ -598,11 +557,10 @@ export class CollabProvider {
     }
   }
 
-  private sendControl(control: {
-    kind: string;
-    choice?: string;
-    mark?: string;
-  }): void {
+  private sendControl(control: { kind: string; choice?: string }): boolean {
+    if (!this.live) {
+      return false;
+    }
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_CONTROL);
     encoding.writeVarUint8Array(
@@ -610,5 +568,6 @@ export class CollabProvider {
       new TextEncoder().encode(JSON.stringify(control)),
     );
     this.send(encoding.toUint8Array(encoder));
+    return true;
   }
 }

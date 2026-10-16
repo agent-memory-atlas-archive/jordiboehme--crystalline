@@ -21,11 +21,7 @@ import * as Y from "yjs";
 import { ApiProblem, api } from "../api/client";
 import { JOIN_KEY_STORAGE } from "../api/draftLinks";
 import { TEXT_NAME } from "../collab/provider";
-import type {
-  CollabConflict,
-  CollabSession,
-  MarkStatus,
-} from "../collab/useCollabSession";
+import type { CollabConflict, CollabSession } from "../collab/useCollabSession";
 import { useCollabSession } from "../collab/useCollabSession";
 import type { Draft } from "../editor/drafts";
 import { readDraft } from "../editor/drafts";
@@ -3292,25 +3288,9 @@ describe("the engram editor's kept text notice", () => {
   }
 
   /** A room session the test can change while the editor is mounted. */
-  function liveRoom(marksSupported = true) {
-    // A room as the hook reports it once live: its own marks are followed
-    // here, the way the hook follows them.
-    const marks = new Map<string, MarkStatus>();
-    const flush = vi.fn((mark?: string) => {
-      if (mark !== undefined) {
-        marks.set(mark, "waiting");
-      }
-      return true;
-    });
-    const first = joinedSession({
-      live: true,
-      marksSupported,
-      flush,
-      markStatus: (mark) => marks.get(mark) ?? "unknown",
-      releaseMark: (mark) => {
-        marks.delete(mark);
-      },
-    });
+  /** A live room session the test can change while the editor is mounted. */
+  function liveRoom() {
+    const first = joinedSession({ live: true });
     let current: CollabSession = first.session;
     const listeners = new Set<() => void>();
     collabMock.mockImplementation(() =>
@@ -3322,22 +3302,15 @@ describe("the engram editor's kept text notice", () => {
         () => current,
       ),
     );
-    const set = (next: Partial<CollabSession>) => {
-      act(() => {
-        current = { ...current, ...next };
-        for (const listener of listeners) {
-          listener();
-        }
-      });
-    };
     return {
       ytext: first.ytext,
-      flush,
-      set,
-      /** A save receipt (or a choice) settles this tab's mark. */
-      settle: (mark: string, status: MarkStatus) => {
-        marks.set(mark, status);
-        set({ marksVersion: current.marksVersion + 1 });
+      set: (next: Partial<CollabSession>) => {
+        act(() => {
+          current = { ...current, ...next };
+          for (const listener of listeners) {
+            listener();
+          }
+        });
       },
     };
   }
@@ -3470,31 +3443,49 @@ describe("the engram editor's kept text notice", () => {
     expect(docText(view.state)).toBe(crlf);
   });
 
-  it("in a room, asks for a save and drops the kept copy only when a save covering the replace lands", async () => {
+  it("in a room, replaces the shared text and never drops the kept copy on its own", async () => {
     const dropped = serveKept([keptEntry()]);
     const room = liveRoom();
     renderApp("/d/eng/edit/alpha");
     await openBuffer();
-    await replace();
+    const notice = await replace();
     await waitFor(() => {
       expect(room.ytext.toJSON()).toBe(KEPT);
     });
-    expect(room.flush).toHaveBeenCalledTimes(1);
-    const mark = room.flush.mock.calls[0]?.[0] as string;
-    expect(typeof mark).toBe("string");
-    // A save that began before the replace lands: it names no mark of
-    // this tab's, and the kept copy stays.
-    room.set({ saveState: "ok", receipts: 1 });
+    expect(
+      await within(notice).findByText(
+        "Your text is back in the editor. Drop the kept copy once it is saved.",
+      ),
+    ).toBeVisible();
+    // The room saves on its own; the note claims nothing and drops nothing.
+    room.set({ saveState: "pending" });
+    room.set({ saveState: "ok" });
+    await settled();
     expect(dropped).toEqual([]);
-    expect(screen.getByText("Waiting for the save.")).toBeVisible();
-    // The save that began after the replace names its mark.
-    room.settle(mark, "saved");
+    expect(screen.queryByText("Waiting for the save.")).toBeNull();
+  });
+
+  it("in a room, Drop after the replace drops the kept copy", async () => {
+    const dropped = serveKept([keptEntry()]);
+    liveRoom();
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    const notice = await replace();
+    await within(notice).findByText(
+      "Your text is back in the editor. Drop the kept copy once it is saved.",
+    );
+    await userEvent.click(
+      within(notice).getByRole("button", { name: "Drop the kept text" }),
+    );
+    await userEvent.click(
+      within(notice).getByRole("button", { name: "Drop it" }),
+    );
     await waitFor(() => {
       expect(dropped).toEqual(["k1"]);
     });
   });
 
-  it("offers no replace while the room is away", async () => {
+  it("offers no replace while the room is not live, or once it is closed", async () => {
     serveKept([keptEntry()]);
     const room = liveRoom();
     renderApp("/d/eng/edit/alpha");
@@ -3503,53 +3494,19 @@ describe("the engram editor's kept text notice", () => {
     expect(
       within(notice).getByRole("button", { name: "Replace with it" }),
     ).toBeVisible();
-    // The socket is open again but the room has not taken this tab back
-    // yet: no replace until it is live.
+    // The socket is open again but the room has not taken this tab back.
     room.set({ status: "connected", live: false });
     expect(
       within(notice).queryByRole("button", { name: "Replace with it" }),
     ).toBeNull();
-  });
-
-  it("stops waiting and offers the text again when the room's session changed, dropping nothing", async () => {
-    const dropped = serveKept([keptEntry()]);
-    const room = liveRoom();
-    renderApp("/d/eng/edit/alpha");
-    await openBuffer();
-    const notice = await replace();
-    await within(notice).findByText("Waiting for the save.");
-    const mark = room.flush.mock.calls[0]?.[0] as string;
-    room.settle(mark, "lost");
-    expect(
-      await within(notice).findByText(
-        "The room changed before your text was saved. The kept copy stays.",
-      ),
-    ).toBeVisible();
+    room.set({ live: true });
     expect(
       within(notice).getByRole("button", { name: "Replace with it" }),
     ).toBeVisible();
-    expect(dropped).toEqual([]);
-  });
-
-  it("in a room from before marks, asks the person after the next save and never drops on its own", async () => {
-    const dropped = serveKept([keptEntry()]);
-    const room = liveRoom(false);
-    renderApp("/d/eng/edit/alpha");
-    await openBuffer();
-    const notice = await replace();
-    await within(notice).findByText("Waiting for the save.");
-    // A plain flush, no mark.
-    expect(room.flush).toHaveBeenCalledWith();
-    room.set({ receipts: 1 });
+    room.set({ closed: true, closedReason: "deleted" });
     expect(
-      await within(notice).findByText("Saved. Drop the kept copy now?"),
-    ).toBeVisible();
-    await settled();
-    expect(dropped).toEqual([]);
-    await userEvent.click(within(notice).getByRole("button", { name: "Drop" }));
-    await waitFor(() => {
-      expect(dropped).toEqual(["k1"]);
-    });
+      within(notice).queryByRole("button", { name: "Replace with it" }),
+    ).toBeNull();
   });
 
   it("changes and drops nothing when the room ends while the text is read", async () => {

@@ -10,13 +10,16 @@
  * "nothing kept here".
  *
  * The server copy is the last copy until the text is saved again, so
- * Replace with it never deletes it on its own. It reads the text, checks the
- * editor can still take it, puts it in as one change the person can undo,
- * and asks the editor whether it really landed. The kept copy goes with the
- * first save that began after that, whatever the text is by then: the
- * person chose to work on top of it. A save that was already under way
- * when the text went in does not count. Until then the note says it waits
- * for the save. Nothing is ever dropped for a text that went nowhere.
+ * Replace with it never deletes it on the spot. It reads the text, checks
+ * the editor can still take it, puts it in as one change the person can
+ * undo, and asks the editor whether it really landed. Then:
+ *
+ * - In the solo editor, which numbers its own saves, the kept copy goes with
+ *   the first save that began after that, whatever the text is by then (the
+ *   person chose to work on top of it). Until then the note waits for it.
+ * - In a room, the server saves on its own schedule and this tab cannot tell
+ *   which save holds the text, so the note never claims one did. It says the
+ *   text is back and leaves Drop to the person.
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -44,26 +47,20 @@ const NOTICE =
 const DANGER = `rounded font-medium text-red-700 underline underline-offset-[3px] hover:no-underline dark:text-red-300 ${FOCUS_RING}`;
 const ACTION = `rounded text-link underline decoration-(--link-line) underline-offset-[3px] hover:no-underline aria-disabled:cursor-default aria-disabled:opacity-50 ${FOCUS_RING}`;
 
-/** What an editor hands back to tell its later saves apart. */
-export type SaveMark = string | number;
-
-/** Where the save after a replace stands, as the editor tells it. */
-export type SaveStatus = "waiting" | "saved" | "lost";
-
-/** What `markSave` answers: the mark, and whether a save that answers it
- *  may drop the kept copy on its own (false: the person is asked). */
-export interface SaveMarked {
-  mark: SaveMark;
-  auto: boolean;
+/** How the solo editor tells the save after a replace apart. */
+export interface SoloSaves {
+  /** How many saves have started so far. */
+  started: () => number;
+  /** Whether a save that began after `started()` returned `count` has
+   *  landed. */
+  landedAfter: (count: number) => boolean;
 }
 
-/** A text put in the editor, waiting for the save that holds it. */
+/** A text put in the editor. */
 interface Placed {
   id: string;
-  /** The editor's mark for "saves from here on". */
-  mark: SaveMark;
-  /** Whether the save that answers the mark may drop the copy on its own. */
-  auto: boolean;
+  /** The solo editor's save count when the text went in; null in a room. */
+  savesBefore: number | null;
   /** A save held it, but the kept copy could not be dropped. */
   held?: boolean;
 }
@@ -75,9 +72,7 @@ export function KeptTextNotice({
   draft,
   ready,
   onReplace,
-  markSave,
-  saveStatus,
-  releaseMark,
+  soloSaves,
   onDropped,
 }: {
   domain: string;
@@ -95,15 +90,9 @@ export function KeptTextNotice({
   /** Put `text` in the editor as one undoable change; true only when it
    *  really landed. */
   onReplace: (text: string) => boolean;
-  /** Called right after the text landed: a mark that the first save that
-   *  began after this moment answers (a room is asked to save now), or null
-   *  when no such mark could be taken; the note then keeps its offer. */
-  markSave: () => SaveMarked | null;
-  /** Where the save after `mark` stands: `lost` when none will come (the
-   *  room ended or threw the text away). Read on every render. */
-  saveStatus: (mark: SaveMark) => SaveStatus;
-  /** Forget a mark once the note is done with it. */
-  releaseMark?: (mark: SaveMark) => void;
+  /** The solo editor's saves, so the kept copy goes with the first save
+   *  after the replace. Left out in a room: there the person drops it. */
+  soloSaves?: SoloSaves | undefined;
   /** Told after a person's Drop went through, to hand the focus back. */
   onDropped?: () => void;
 }): ReactElement | null {
@@ -114,7 +103,6 @@ export function KeptTextNotice({
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [placed, setPlaced] = useState<Placed | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
   const questionId = useId();
   const dropButton = useRef<HTMLButtonElement>(null);
@@ -169,38 +157,23 @@ export function KeptTextNotice({
       },
     );
 
-  // Where the save after the replace stands, read fresh on every render.
-  const status: SaveStatus | null =
-    placed === null || placed.held === true ? null : saveStatus(placed.mark);
-  if (placed !== null && status === "lost") {
-    // No save will answer it: stop waiting, drop nothing, offer it again.
-    setPlaced(null);
-    setNotice(
-      "The room changed before your text was saved. The kept copy stays.",
-    );
-  }
-  // The first save that began after the text went in lets the kept copy go,
-  // on its own where the editor can tell that save apart.
+  // In the solo editor, the first save that began after the text went in
+  // lets the kept copy go.
   const placedId = placed?.id ?? null;
-  const placedMark = placed?.mark ?? null;
-  const autoDrop = placed?.auto === true && status === "saved";
+  const savedAfter =
+    placed !== null &&
+    placed.held !== true &&
+    placed.savesBefore !== null &&
+    soloSaves !== undefined &&
+    soloSaves.landedAfter(placed.savesBefore);
   useEffect(() => {
-    if (placedId === null || !autoDrop) {
+    if (placedId === null || !savedAfter) {
       return;
     }
     void drop(placedId, true);
-    // `drop` is rebuilt every render; the save's answer is what matters.
+    // `drop` is rebuilt every render; the save is what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoDrop, placedId]);
-  // A mark is let go once the note is done with it.
-  useEffect(() => {
-    if (placedMark === null) {
-      return undefined;
-    }
-    return () => {
-      releaseMark?.(placedMark);
-    };
-  }, [placedMark, releaseMark]);
+  }, [savedAfter, placedId]);
 
   const entry =
     path === null || draft === null
@@ -212,8 +185,6 @@ export function KeptTextNotice({
   // A read-only instance refuses the delete: the note then only shows.
   const writable = !capabilities.readOnly;
   const waiting = placed !== null && placed.id === entry.id;
-  // A room that cannot tell its saves apart: the person decides.
-  const confirm = waiting && !placed.auto && status === "saved";
 
   const replace = async () => {
     if (busy || !live.current) {
@@ -248,14 +219,11 @@ export function KeptTextNotice({
         setProblem("The text did not reach the editor. Nothing changed.");
         return;
       }
-      setNotice(null);
-      const marked = markSave();
-      if (marked === null) {
-        setProblem("The room could not be asked to save. The kept copy stays.");
-        return;
-      }
       setProblem(null);
-      setPlaced({ id: entry.id, mark: marked.mark, auto: marked.auto });
+      setPlaced({
+        id: entry.id,
+        savesBefore: soloSaves === undefined ? null : soloSaves.started(),
+      });
     } finally {
       setBusy(false);
     }
@@ -264,31 +232,13 @@ export function KeptTextNotice({
   return (
     <aside role="note" aria-label="Kept text" className={NOTICE}>
       <span>{keptNoticeSentence(entry)}</span>
-      {waiting && placed.held !== true && !confirm && (
-        <span role="status">Waiting for the save.</span>
-      )}
-      {confirm && (
-        <span
-          role="status"
-          className="inline-flex flex-wrap items-center gap-3"
-        >
-          <span>Saved. Drop the kept copy now?</span>
-          <button
-            type="button"
-            className={DANGER}
-            onClick={() => {
-              void drop(entry.id, true).then((gone) => {
-                if (gone) {
-                  onDropped?.();
-                }
-              });
-            }}
-          >
-            Drop
-          </button>
+      {waiting && placed.held !== true && (
+        <span role="status">
+          {placed.savesBefore === null
+            ? "Your text is back in the editor. Drop the kept copy once it is saved."
+            : "Waiting for the save."}
         </span>
       )}
-      {notice !== null && <span role="status">{notice}</span>}
       <button
         type="button"
         className={ACTION}

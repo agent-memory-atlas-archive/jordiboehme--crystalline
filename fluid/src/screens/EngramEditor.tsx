@@ -72,8 +72,6 @@ import { FindingsPanel, jumpToLine } from "../editor/FindingsPanel";
 import { frontmatterFold } from "../editor/frontmatterFold";
 import { FrontmatterForm } from "../editor/FrontmatterForm";
 import { KeptTextNotice } from "../editor/KeptTextNotice";
-import type { SaveMark } from "../editor/KeptTextNotice";
-import { roomSaveMarks } from "../collab/saveMarks";
 import { livePreview } from "../editor/preview";
 import {
   RAW_MONO,
@@ -1344,16 +1342,12 @@ function Surface({
             draft={reviewing}
             ready={inRoom ? collab.live && !closed : view !== null}
             {...(inRoom
-              ? roomSaveMarks(collab)
+              ? {}
               : {
-                  markSave: () => ({
-                    mark: session.savesStarted(),
-                    auto: true,
-                  }),
-                  saveStatus: (mark: SaveMark) =>
-                    typeof mark === "number" && session.landedSave > mark
-                      ? "saved"
-                      : "waiting",
+                  soloSaves: {
+                    started: session.savesStarted,
+                    landedAfter: (count: number) => session.landedSave > count,
+                  },
                 })}
             onReplace={(text) => {
               // One ordinary change on the buffer, so Undo takes it back: in

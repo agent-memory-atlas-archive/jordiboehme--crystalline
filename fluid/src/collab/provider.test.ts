@@ -209,7 +209,7 @@ describe("CollabProvider", () => {
     provider.destroy();
   });
 
-  it("hands control messages to the handler and sends flush/resolve once live", () => {
+  it("hands control messages to the handler, and sends flush/resolve only once live", () => {
     const controls: object[] = [];
     const { provider, socket } = makeProvider({
       onControl: (control) => controls.push(control),
@@ -223,31 +223,27 @@ describe("CollabProvider", () => {
       detail: "no frontmatter",
     });
 
-    // Before the connection is live they wait; a marked flush is refused.
+    // Not live yet: refused, nothing sent, nothing kept for later.
     socket.sent = [];
-    expect(provider.flush()).toBe(true);
-    provider.resolve("mine");
-    expect(provider.flush("m1")).toBe(false);
+    expect(provider.flush()).toBe(false);
+    expect(provider.resolve("mine")).toBe(false);
     expect(decodeControls(socket.sent)).toEqual([]);
 
-    // Live once the room's SyncStep1 is answered: the waiting controls go,
-    // after the sync answer.
+    // Live once the room's SyncStep1 is answered.
     const server = new Y.Doc();
     socket.receive(concat(helloFrame("e1"), serverStep1(server)));
     expect(provider.isLive).toBe(true);
+    expect(decodeControls(socket.sent)).toEqual([]);
+    expect(provider.flush()).toBe(true);
+    expect(provider.resolve("mine")).toBe(true);
     expect(decodeControls(socket.sent)).toEqual([
       { kind: "flush" },
       { kind: "resolve", choice: "mine" },
     ]);
-    expect(provider.flush("m1")).toBe(true);
-    expect(decodeControls(socket.sent).at(-1)).toEqual({
-      kind: "flush",
-      mark: "m1",
-    });
     provider.destroy();
   });
 
-  it("never sends a mark ahead of the text typed while reconnecting", () => {
+  it("never sends a control ahead of the text typed while reconnecting", () => {
     vi.useFakeTimers();
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     let lives = 0;
@@ -268,16 +264,16 @@ describe("CollabProvider", () => {
     const second = FakeSocket.instances[1];
     if (!second) throw new Error("no second socket");
     second.open();
-    // The replace lands in this window: local only, nothing on the wire.
-    doc.getText("content").insert(0, "the kept text\n");
-    expect(provider.flush("m1")).toBe(false);
+    // Typing in this window stays local, and no control goes out.
+    doc.getText("content").insert(0, "typed while away\n");
+    expect(provider.flush()).toBe(false);
     expect(second.sent).toEqual([]);
 
     // Hello and the room's SyncStep1: the answer carries the text, and only
-    // after it may a mark go.
+    // after it may a control go.
     second.receive(concat(helloFrame("e1"), serverStep1(server)));
     expect(lives).toBe(2);
-    expect(provider.flush("m1")).toBe(true);
+    expect(provider.flush()).toBe(true);
     const kinds = second.sent.map((frame) => {
       const decoder = decoding.createDecoder(frame);
       const type = decoding.readVarUint(decoder);
@@ -290,7 +286,7 @@ describe("CollabProvider", () => {
     });
     expect(kinds.indexOf("step2")).toBeGreaterThanOrEqual(0);
     expect(kinds.indexOf("step2")).toBeLessThan(kinds.indexOf("control"));
-    // And the text the mark stands for is in that answer.
+    // And the text is in that answer.
     const answered = new Y.Doc();
     for (const frame of second.sent) {
       const decoder = decoding.createDecoder(frame);
@@ -302,7 +298,7 @@ describe("CollabProvider", () => {
         "test",
       );
     }
-    expect(answered.getText("content").toJSON()).toContain("the kept text");
+    expect(answered.getText("content").toJSON()).toContain("typed while away");
     provider.destroy();
     random.mockRestore();
     vi.useRealTimers();

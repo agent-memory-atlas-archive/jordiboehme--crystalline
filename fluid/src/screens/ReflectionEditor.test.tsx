@@ -10,7 +10,7 @@ import * as Y from "yjs";
 
 import { ApiProblem, api } from "../api/client";
 import { TEXT_NAME } from "../collab/provider";
-import type { CollabSession, MarkStatus } from "../collab/useCollabSession";
+import type { CollabSession } from "../collab/useCollabSession";
 import { useCollabSession } from "../collab/useCollabSession";
 import { addOffer, readDraft, readOffers, writeDraft } from "../editor/drafts";
 import { formatInstant } from "../format";
@@ -51,7 +51,6 @@ function room(text: string): CollabSession {
     // What the hook reports after the greeting: the inner path.
     permalink: "guides/a.md",
     live: true,
-    marksSupported: true,
   };
 }
 
@@ -1752,20 +1751,9 @@ describe("the reflection editor's kept text notice", () => {
     ).toHaveTextContent("First, as the room kept it.");
   });
 
-  it("Replace with it changes the room's text as one undoable change, and waits for the save that covers it", async () => {
+  it("Replace with it changes the room's text as one undoable change, and never drops the kept copy on its own", async () => {
     const dropped = serveKept(() => ({ domain: "eng", kept: [keptEntry()] }));
-    const marks = new Map<string, MarkStatus>();
-    const flush = vi.fn((mark?: string) => {
-      if (mark !== undefined) {
-        marks.set(mark, "waiting");
-      }
-      return true;
-    });
-    const session = live({
-      ...room(PAGE),
-      flush,
-      markStatus: (mark) => marks.get(mark) ?? "unknown",
-    });
+    const session = live(room(PAGE));
     await openEditor();
     const notice = await screen.findByRole("note", { name: "Kept text" });
     await userEvent.click(
@@ -1776,24 +1764,22 @@ describe("the reflection editor's kept text notice", () => {
       expect(ytext?.toJSON()).toBe(KEPT_PAGE);
     });
     expect(
-      await within(notice).findByText("Waiting for the save."),
+      await within(notice).findByText(
+        "Your text is back in the editor. Drop the kept copy once it is saved.",
+      ),
     ).toBeVisible();
-    // The room is asked to save now, with a mark of this replace.
-    expect(flush).toHaveBeenCalledTimes(1);
-    const mark = flush.mock.calls[0]?.[0] as string;
-    // A save that began earlier lands without the mark: the copy stays.
-    session.set({ saveState: "ok", receipts: 1 });
+    session.set({ saveState: "pending" });
+    session.set({ saveState: "ok" });
     expect(dropped).toEqual([]);
-    // Then the save that covers the replace.
-    marks.set(mark, "saved");
-    session.set({ marksVersion: 1 });
+    // Drop is the person's, and works.
+    await userEvent.click(
+      within(notice).getByRole("button", { name: "Drop the kept text" }),
+    );
+    await userEvent.click(
+      within(notice).getByRole("button", { name: "Drop it" }),
+    );
     await waitFor(() => {
       expect(dropped).toEqual(["k1"]);
-    });
-    await waitFor(() => {
-      expect(
-        screen.queryByText("The server kept unsaved text for this page."),
-      ).toBeNull();
     });
     // The room's own undo takes the whole change back.
     const host = screen
@@ -1806,6 +1792,17 @@ describe("the reflection editor's kept text notice", () => {
       undo?.run?.(view as EditorView);
     });
     expect(ytext?.toJSON()).toBe(PAGE);
+  });
+
+  it("offers no replace while the room is not live", async () => {
+    serveKept(() => ({ domain: "eng", kept: [keptEntry()] }));
+    const session = live(room(PAGE));
+    await openEditor();
+    const notice = await screen.findByRole("note", { name: "Kept text" });
+    session.set({ live: false });
+    expect(
+      within(notice).queryByRole("button", { name: "Replace with it" }),
+    ).toBeNull();
   });
 
   it("offers no replace once the room has ended", async () => {
