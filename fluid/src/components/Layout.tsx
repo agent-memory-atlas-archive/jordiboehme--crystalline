@@ -1358,8 +1358,10 @@ function DomainSidebar({
               }
             : undefined
         }
-        className={`${open ? "flex" : "hidden"} fixed inset-y-0 left-0 z-50 w-[300px] max-w-[85vw] shrink-0 flex-col bg-chrome shadow-pop outline-none print:hidden md:sticky md:top-14 md:bottom-auto md:z-auto md:flex md:h-[calc(100dvh-3.5rem)] md:max-w-none md:self-start md:border-r md:border-hair md:shadow-[-256px_0_0_var(--chrome)] ${
-          rail ? "md:w-12" : "md:w-64"
+        className={`${open ? "flex" : "hidden"} fixed inset-y-0 left-0 z-50 w-[300px] max-w-[85vw] shrink-0 flex-col bg-chrome shadow-pop outline-none print:hidden md:sticky md:top-14 md:bottom-auto md:z-auto md:flex md:h-[calc(100dvh-3.5rem)] md:max-w-none md:self-start md:border-r md:border-hair ${
+          rail
+            ? "md:w-12 md:shadow-[-48px_0_0_var(--chrome),-96px_0_0_var(--chrome),-144px_0_0_var(--chrome),-192px_0_0_var(--chrome)]"
+            : "md:w-64 md:shadow-[-256px_0_0_var(--chrome)]"
         }`}
       >
         {drawer && (
