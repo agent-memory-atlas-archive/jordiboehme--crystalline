@@ -144,7 +144,45 @@ impl Engine {
             Err(err) => tracing::warn!(
                 domain = name,
                 %err,
-                "the removed domain's kept texts could not be set aside; a domain registered under this name would reach them"
+                "the removed domain's kept texts could not be set aside now; they are set aside when a domain of this name is next registered or renamed to"
+            ),
+        }
+    }
+
+    /// Before `name` becomes a domain's name (a new registration, or a
+    /// rename's target before its journal exists), set aside a
+    /// `kept/<name>` folder no registered domain owns: texts of a domain
+    /// removed before removals set them aside, or whose set-aside failed.
+    /// The new domain never reaches them. A folder whose name folds onto a
+    /// registered domain's is that domain's on a disk that ignores case and
+    /// stays. Never on a rename's replay: by then `kept/<name>` may hold the
+    /// renamed domain's own texts.
+    pub(crate) fn set_aside_orphan_kept(&self, name: &str) {
+        let Some(root) = self.kept_dir() else {
+            return;
+        };
+        if !root.join(name).is_dir() {
+            return;
+        }
+        let folded = crystalline_core::config::registration::fold_domain_name(name);
+        if self
+            .registered_domain_entries()
+            .keys()
+            .any(|n| crystalline_core::config::registration::fold_domain_name(n) == folded)
+        {
+            return;
+        }
+        match kept::set_aside(&root, name, chrono::Utc::now()) {
+            Ok(Some(to)) => tracing::info!(
+                domain = name,
+                kept = %to.display(),
+                "kept texts no registered domain owns are set aside before the name is taken"
+            ),
+            Ok(None) => {}
+            Err(err) => tracing::warn!(
+                domain = name,
+                %err,
+                "kept texts no registered domain owns could not be set aside; the domain taking this name may see them"
             ),
         }
     }

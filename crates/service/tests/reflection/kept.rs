@@ -478,3 +478,62 @@ async fn a_renamed_domain_takes_its_kept_texts_along() {
     assert!(!root.join("eng").exists());
     assert!(root.join("platform").is_dir());
 }
+
+/// Kept texts left under a name no registered domain owns (a removal whose
+/// set-aside failed, or one from before removals set them aside) are set
+/// aside when a domain takes the name, by a registration or as a rename's
+/// target; the domain never reaches them.
+#[tokio::test]
+async fn a_name_taken_later_never_reaches_texts_left_under_it() {
+    let s = serve_opts(Opts {
+        anonymous: false,
+        private: false,
+        origin: false,
+    })
+    .await;
+    let root = s.fx.tmp.path().join("state").join(kept::KEPT_DIR);
+    let at = chrono::Utc.with_ymd_and_hms(2026, 10, 15, 8, 0, 0).unwrap();
+    for name in ["fresh", "platform"] {
+        kept::write(
+            &root,
+            name,
+            None,
+            KeptKind::Engram,
+            "old.md",
+            at,
+            "left over\n",
+        )
+        .unwrap();
+    }
+    let engine = &s.fx.engine;
+    engine.domain_add_virtual("fresh").await.unwrap();
+    engine
+        .rename_domain(
+            "eng",
+            "platform",
+            true,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let keeper = Session::login(s.addr, "keeper").await;
+    let (_, body) = keeper.get("/api/v1/domains/fresh/kept").await;
+    assert!(listed(&body).is_empty(), "{body}");
+    // `eng` kept nothing, so only the check at the rename's start can set
+    // the left-over folder aside (the rename step sets `kept/<new>` aside
+    // only when the domain has kept texts of its own to move there).
+    let (_, body) = keeper.get("/api/v1/domains/platform/kept").await;
+    assert!(listed(&body).is_empty(), "{body}");
+    let removed: Vec<(String, String)> = kept::scan(&root)
+        .into_iter()
+        .filter(|k| k.removed)
+        .map(|k| (k.domain, k.path))
+        .collect();
+    assert_eq!(
+        removed,
+        vec![
+            ("fresh".to_string(), "old.md".to_string()),
+            ("platform".to_string(), "old.md".to_string()),
+        ]
+    );
+}

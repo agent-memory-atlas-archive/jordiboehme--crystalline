@@ -247,6 +247,9 @@ impl Engine {
         }
 
         let adopts_registered = existing.is_some();
+        if !adopts_registered {
+            self.set_aside_orphan_kept(&domain_name);
+        }
         let (root, adopted_entry) = match existing {
             Some((r, entry)) => (r, Some(entry)),
             None => (

@@ -447,6 +447,7 @@ pub(crate) fn domain_add_register(
                     if let Some(twin) = case_twin(name, None, loaded.file.domains.iter()) {
                         bail!("{}", case_twin_refusal(name, &twin));
                     }
+                    crate::kept::set_aside_orphan(name, loaded.file.domains.keys());
                     let entry =
                         DomainEntry::file(abs.clone()).with_name_origin(NameOrigin::Explicit);
                     let mut cfg = loaded.file;
@@ -487,6 +488,7 @@ pub(crate) fn domain_add_register(
                         || derive_domain_name(&basename, taken),
                         taken,
                     );
+                    crate::kept::set_aside_orphan(&choice.name, loaded.file.domains.keys());
                     let entry = DomainEntry::file(abs.clone()).with_name_origin(choice.origin);
                     let mut cfg = loaded.file;
                     cfg.domains.insert(choice.name.clone(), entry.clone());
@@ -637,6 +639,7 @@ pub(crate) fn domain_add_register_virtual(
         }
     };
     if !adopted {
+        crate::kept::set_aside_orphan(name, loaded.file.domains.keys());
         let mut cfg = loaded.file;
         cfg.domains.insert(
             name.to_string(),

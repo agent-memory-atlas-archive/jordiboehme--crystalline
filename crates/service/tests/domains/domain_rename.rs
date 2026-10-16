@@ -2845,3 +2845,78 @@ both_backends!(
     a_case_only_rename_moves_the_state_folders,
     a_case_only_rename_moves_the_state_folders_body
 );
+
+/// A rename a crash stopped after its texts moved, finished by a restart or
+/// by sending the same rename again, keeps the renamed domain's kept texts
+/// under the new name: neither the replay of the step nor the registration
+/// check sets them aside, recorded step or not.
+async fn a_finished_rename_keeps_its_kept_texts_under_the_new_name_body(
+    store: Arc<Mutex<dyn Store>>,
+) {
+    for (step, unrecorded, resend) in [
+        (RenameStep::KeptDir, false, false),
+        (RenameStep::KeptDir, true, false),
+        (RenameStep::KeptDir, true, true),
+        (RenameStep::ProvisionReceipt, true, true),
+    ] {
+        let tag = format!("-k{step:?}{unrecorded}{resend}").to_lowercase();
+        let m = machine_tagged(store.clone(), &tag).await;
+        let kept_root = m.state().join("kept");
+        crystalline_core::kept::write(
+            &kept_root,
+            &m.eng,
+            None,
+            crystalline_core::kept::KeptKind::Engram,
+            "alpha.md",
+            chrono::Utc::now(),
+            "typed",
+        )
+        .unwrap();
+        let engine = m.engine(true).await;
+        engine.fail_rename_after(Some(step));
+        engine
+            .rename_domain_local(
+                &m.eng,
+                &m.platform,
+                NameOrigin::Explicit,
+                &Scope::Unrestricted,
+            )
+            .await
+            .expect_err("the failpoint stops the rename");
+        drop(engine);
+        if unrecorded {
+            let mut journal: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(m.journal()).unwrap()).unwrap();
+            journal["done"].as_array_mut().unwrap().pop();
+            std::fs::write(m.journal(), serde_json::to_vec(&journal).unwrap()).unwrap();
+        }
+        let restarted = m.engine(false).await;
+        if resend {
+            restarted
+                .rename_domain_local(
+                    &m.eng,
+                    &m.platform,
+                    NameOrigin::Explicit,
+                    &Scope::Unrestricted,
+                )
+                .await
+                .unwrap();
+        } else {
+            restarted.recover_rename_journal().await.unwrap().unwrap();
+        }
+        let found = crystalline_core::kept::scan(&kept_root);
+        assert_eq!(found.len(), 1, "{step:?} {unrecorded} {resend}: {found:?}");
+        assert_eq!(
+            found[0].domain, m.platform,
+            "{step:?} {unrecorded} {resend}"
+        );
+        assert!(
+            !found[0].removed,
+            "{step:?} {unrecorded} {resend}: set aside"
+        );
+    }
+}
+both_backends!(
+    a_finished_rename_keeps_its_kept_texts_under_the_new_name,
+    a_finished_rename_keeps_its_kept_texts_under_the_new_name_body
+);

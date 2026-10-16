@@ -141,6 +141,9 @@ impl Engine {
             },
         };
         let wanted = wanted.unwrap_or_else(|| domain_name.clone());
+        if !adopted {
+            self.set_aside_orphan_kept(&domain_name);
+        }
 
         // Decided: only now does the folder come into being.
         std::fs::create_dir_all(&root).map_err(|e| {
@@ -288,6 +291,7 @@ impl Engine {
         // A domain added this way is always named on purpose: there is no
         // repository or folder to derive a default from.
         if is_new {
+            self.set_aside_orphan_kept(name);
             let mut file_guard = self.file_config.write().unwrap();
             let mut file = self.fresh_file_config(&file_guard)?;
             // Asked again of the file as it is now, under the guard: another

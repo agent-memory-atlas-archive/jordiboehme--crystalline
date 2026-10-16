@@ -280,3 +280,26 @@ fn an_unfinished_keep_is_listed_shown_and_warned_about() {
     );
     assert!(file.is_file(), "nothing deletes it");
 }
+
+/// Kept texts left under a name no domain owns are set aside when a domain
+/// takes the name, so the new domain never reaches them.
+#[test]
+fn a_new_domain_never_reaches_texts_left_under_its_name() {
+    let home = tempfile::tempdir().unwrap();
+    kept::write(
+        &kept_root(home.path()),
+        "fresh",
+        None,
+        KeptKind::Engram,
+        "old.md",
+        Utc::now(),
+        "left over",
+    )
+    .unwrap();
+    let out = run(home.path(), &["domain", "add", "fresh", "--virtual"]);
+    assert!(out.status.success(), "{out:?}");
+    let all = listed(home.path(), &[]);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(all[0]["removed"], true, "{all:?}");
+    assert!(!kept_root(home.path()).join("fresh").exists());
+}

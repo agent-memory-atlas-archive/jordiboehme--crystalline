@@ -416,6 +416,13 @@ impl Engine {
                  moment.{closed}"
             )));
         }
+        // Before the journal exists, so never on a replay. A case-only
+        // rename's `kept/<new>` is its own folder on a disk that ignores case.
+        if crystalline_core::config::registration::fold_domain_name(new)
+            != crystalline_core::config::registration::fold_domain_name(old)
+        {
+            self.set_aside_orphan_kept(new);
+        }
         let journal = RenameJournal {
             version: 1,
             old: old.to_string(),
