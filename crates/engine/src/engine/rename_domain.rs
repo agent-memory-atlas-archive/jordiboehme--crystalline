@@ -729,12 +729,6 @@ impl Engine {
             || self.discovered_domains.read().unwrap().contains_key(name)
     }
 
-    /// How many writes wait right now for a rename's pause to lift.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn writes_waiting_for_rename(&self) -> usize {
-        self.rename_pause.waiting()
-    }
-
     /// Hold the next rename right after `step` until the answered hold is
     /// released.
     #[cfg(any(test, feature = "testing"))]

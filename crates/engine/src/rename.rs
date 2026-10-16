@@ -483,9 +483,6 @@ pub(crate) struct RenamePause {
     paused: std::sync::RwLock<HashSet<String>>,
     writers: std::sync::Mutex<HashMap<String, usize>>,
     changed: tokio::sync::Notify,
-    /// How many callers wait in [`RenamePause::wait_clear`] right now, so a
-    /// test can see that a write is held by a pause instead of sleeping.
-    waiting: std::sync::atomic::AtomicUsize,
 }
 
 impl RenamePause {
@@ -528,16 +525,8 @@ impl RenamePause {
         names: &[String],
         limit: Duration,
     ) -> Result<bool, String> {
-        /// One caller counted in `waiting` until it returns, however.
-        struct Waiting<'a>(&'a std::sync::atomic::AtomicUsize);
-        impl Drop for Waiting<'_> {
-            fn drop(&mut self) {
-                self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
         let deadline = tokio::time::Instant::now() + limit;
         let mut waited = false;
-        let mut _counted = None;
         loop {
             let notified = self.changed.notified();
             tokio::pin!(notified);
@@ -550,21 +539,10 @@ impl RenamePause {
                 return Ok(waited);
             };
             waited = true;
-            if _counted.is_none() {
-                self.waiting
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                _counted = Some(Waiting(&self.waiting));
-            }
             if tokio::time::timeout_at(deadline, notified).await.is_err() {
                 return Err(busy);
             }
         }
-    }
-
-    /// How many callers wait for a pause to lift right now.
-    #[cfg(any(test, feature = "testing"))]
-    pub(crate) fn waiting(&self) -> usize {
-        self.waiting.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Count a write into `name`, unless `name` is paused.
