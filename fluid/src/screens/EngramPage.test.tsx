@@ -271,9 +271,14 @@ describe("the engram page", () => {
     expect(
       screen.queryByRole("link", { name: "Edit" }),
     ).not.toBeInTheDocument();
+    // The menu stays for the utilities; the write rows are not in it.
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "More actions" }));
     expect(
-      screen.queryByRole("button", { name: "More actions" }),
-    ).not.toBeInTheDocument();
+      await screen.findByRole("menuitem", { name: "Share link" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("menuitem", { name: "Move" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Retire" })).toBeNull();
   });
 
   it("a domain off this caller's write list offers no Edit and wears no lock", async () => {
@@ -405,6 +410,7 @@ describe("the engram page", () => {
 
     renderApp("/d/eng/e/alpha");
 
+    // Status and type are on the meta line under the title, once.
     expect(await screen.findByText("decision")).toBeVisible();
     expect(screen.getByRole("link", { name: "#one" })).toHaveAttribute(
       "href",
@@ -561,12 +567,9 @@ describe("the engram page", () => {
     renderApp("/d/eng/e/alpha");
 
     const trail = await screen.findByRole("navigation", { name: "Breadcrumb" });
-    // The domain is the one crumb that leads somewhere: there is no route for
-    // a folder to point at, and the leaf is the page the reader is on.
-    expect(within(trail).getByRole("link", { name: "eng" })).toHaveAttribute(
-      "href",
-      "/d/eng",
-    );
+    // The domain is in the top bar: on screen the trail is folders and the
+    // title. The leaf is the page the reader is on.
+    expect(within(trail).queryByRole("link", { name: "eng" })).toBeNull();
     expect(within(trail).getByText("Alpha")).toHaveAttribute(
       "aria-current",
       "page",
@@ -726,45 +729,147 @@ describe("the engram page", () => {
     });
   });
 
-  it("puts the utilities on the row as icons and the writes behind one menu", async () => {
+  it("puts Edit as a secondary button and everything else behind More actions", async () => {
     serve();
 
     renderApp("/d/eng/e/alpha");
 
-    // A quiet strip of icons, then the one labelled thing somebody came to
-    // this header for. Each icon carries EXACTLY the name its menu row carried,
-    // because the name is the whole contract a keyboard or a screen reader
-    // holds over a control with no text in it.
-    for (const name of ["Share link", "Download as Markdown", "Print view"]) {
-      expect(await screen.findByRole("button", { name })).toBeVisible();
+    const edit = await screen.findByRole("link", { name: "Edit" });
+    expect(edit).toHaveAttribute("href", "/d/eng/edit/alpha");
+    // Secondary, not the filled primary (spec 3.1).
+    expect(edit.className).not.toContain("bg-accent-700");
+    expect(edit.className).toContain("border");
+    // None of the rows is a button on the row any more.
+    for (const name of [
+      "Share link",
+      "Download as Markdown",
+      "Print view",
+      "Move",
+      "Retire",
+    ]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
     }
-    expect(screen.getByRole("link", { name: "Edit" })).toHaveAttribute(
-      "href",
-      "/d/eng/edit/alpha",
-    );
-    expect(screen.queryByRole("button", { name: "Retire" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Move" })).toBeNull();
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "More actions" }));
 
-    // What is left behind the fold is what belongs there: the move, and the
-    // destructive one alone under a rule.
-    for (const name of ["Move", "Retire"]) {
-      expect(await screen.findByRole("menuitem", { name })).toBeVisible();
-    }
-    // And nothing is offered twice.
-    for (const name of ["Share link", "Download as Markdown", "Print view"]) {
-      expect(screen.queryByRole("menuitem", { name })).toBeNull();
+    // The utilities lead, then a rule, then Move and Retire.
+    const rows = (await screen.findAllByRole("menuitem")).map(
+      (row) => row.textContent,
+    );
+    expect(rows).toEqual([
+      "Share link",
+      "Download as Markdown",
+      "Print view",
+      "Move",
+      "Retire",
+    ]);
+    expect(screen.getAllByRole("separator")).toHaveLength(1);
+  });
+
+  it("draws Retire in red and no other row", async () => {
+    serve();
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    expect(
+      (await screen.findByRole("menuitem", { name: "Retire" })).className,
+    ).toContain("text-red-700");
+    for (const name of [
+      "Share link",
+      "Download as Markdown",
+      "Print view",
+      "Move",
+    ]) {
+      expect(screen.getByRole("menuitem", { name }).className).not.toContain(
+        "text-red",
+      );
     }
   });
 
-  it("names each icon on hover without renaming it", async () => {
+  it("opens with Enter, walks with the arrows and gives focus back on Escape", async () => {
+    serve();
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    const more = await screen.findByRole("button", { name: "More actions" });
+    more.focus();
+    await user.keyboard("{Enter}");
+    const share = await screen.findByRole("menuitem", { name: "Share link" });
+    await waitFor(() => {
+      expect(share).toHaveFocus();
+    });
+    await user.keyboard("{ArrowDown}");
+    expect(
+      screen.getByRole("menuitem", { name: "Download as Markdown" }),
+    ).toHaveFocus();
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+    expect(more).toHaveFocus();
+  });
+
+  it("offers an editor who may write the write rows and a read-only reader only the utilities", async () => {
+    serve({ "/auth/me": () => meResponse({ anonymous: true }) });
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    const rows = (await screen.findAllByRole("menuitem")).map(
+      (row) => row.textContent,
+    );
+    expect(rows).toEqual(["Share link", "Download as Markdown", "Print view"]);
+    expect(screen.queryByRole("separator")).toBeNull();
+  });
+
+  it("names the trail by folder and title, folders linking to their page", async () => {
+    serve({
+      "/domains/eng/engrams/deploy/night": () =>
+        detailResponse({
+          permalink: "deploy/night",
+          title: "Night Deploys",
+          path: "deploy/night.md",
+          url: "crystalline://eng/deploy/night",
+        }),
+    });
+    renderApp("/d/eng/e/deploy/night");
+    const trail = await screen.findByRole("navigation", { name: "Breadcrumb" });
+    expect(within(trail).getByRole("link", { name: "deploy" })).toHaveAttribute(
+      "href",
+      "/d/eng?path=deploy",
+    );
+    expect(within(trail).getByText("Night Deploys")).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    // The domain is in the bar; the trail holds it for print only.
+    expect(within(trail).queryByRole("link", { name: "eng" })).toBeNull();
+  });
+
+  it("puts status, type and the description on one line under the title", async () => {
+    serve({
+      "/domains/eng/engrams/alpha": () =>
+        detailResponse({
+          content:
+            "---\ndescription: Why we deploy at night\n---\n# Alpha\n\nBody.\n",
+        }),
+    });
+    renderApp("/d/eng/e/alpha");
+    const meta = await screen.findByLabelText("About this engram");
+    expect(meta).toHaveTextContent("superseded");
+    expect(meta).toHaveTextContent("decision");
+    expect(meta).toHaveTextContent("Why we deploy at night");
+  });
+
+  it("names the ellipsis on hover without renaming it", async () => {
     serve();
 
     renderApp("/d/eng/e/alpha");
 
-    const share = await screen.findByRole("button", { name: "Share link" });
+    const share = await screen.findByRole("button", { name: "More actions" });
     // Nothing hangs over the row until it is asked for, and when it is, the
     // words are the ones the control is already called. The browser's own
     // tooltip is gone: two labels for one button, drawn a beat apart, is
@@ -776,9 +881,9 @@ describe("the engram page", () => {
     await user.hover(share);
     expect(
       await screen.findByRole("tooltip", {}, { timeout: 2000 }),
-    ).toHaveTextContent("Share link");
+    ).toHaveTextContent("More actions");
     // The accessible name is still the label alone: a tooltip describes.
-    expect(screen.getByRole("button", { name: "Share link" })).toBe(share);
+    expect(screen.getByRole("button", { name: "More actions" })).toBe(share);
   });
 
   it("carries the actions in the trail's own row, leaving the title alone", async () => {
@@ -820,7 +925,12 @@ describe("the engram page", () => {
     renderApp("/d/eng/e/alpha");
 
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Print view" }));
+    await user.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Print view" }),
+    );
 
     expect(print).toHaveBeenCalled();
     print.mockRestore();
@@ -840,23 +950,6 @@ describe("the engram page", () => {
     expect(
       await screen.findByRole("button", { name: "Retire engram" }),
     ).toBeVisible();
-  });
-
-  it("offers a reader who may not write the utilities and nothing else", async () => {
-    serve({ "/auth/me": () => meResponse({ anonymous: true }) });
-
-    renderApp("/d/eng/e/alpha");
-
-    await screen.findByRole("heading", { name: "Alpha" });
-    expect(screen.queryByRole("link", { name: "Edit" })).toBeNull();
-
-    // The three utilities are everybody's, and they are the whole row now.
-    for (const name of ["Share link", "Download as Markdown", "Print view"]) {
-      expect(screen.getByRole("button", { name })).toBeVisible();
-    }
-    // The writes are absent, which leaves the menu with nothing to hold: an
-    // ellipsis that opens onto an empty panel is worse than no ellipsis.
-    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
   });
 
   it("keeps the graph folded away until somebody asks for it", async () => {
@@ -1207,7 +1300,10 @@ describe("the engram page at full width", () => {
       renderApp("/d/eng/e/alpha");
 
       await userEvent.click(
-        await screen.findByRole("button", { name: "Share link" }),
+        await screen.findByRole("button", { name: "More actions" }),
+      );
+      await userEvent.click(
+        await screen.findByRole("menuitem", { name: "Share link" }),
       );
 
       expect(writeText).toHaveBeenCalledWith(PAGE);
@@ -1700,8 +1796,14 @@ describe("a domain's MANIFEST on the engram page", () => {
     serveAt("MANIFEST.md", "file");
     renderApp("/d/eng/e/alpha");
     await screen.findByRole("link", { name: "Edit" });
-    // Nothing is left for the overflow menu to hold, so it is not drawn.
-    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
+    // The menu holds the utilities only: no Move, no Retire.
+    await userEvent.click(screen.getByRole("button", { name: "More actions" }));
+    expect(
+      await screen.findByRole("menuitem", { name: "Share link" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("menuitem", { name: "Move" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Retire" })).toBeNull();
+    await userEvent.keyboard("{Escape}");
     await userEvent.keyboard("{Meta>}k{/Meta}");
     expect(await screen.findByText("Edit engram")).toBeVisible();
     expect(screen.queryByText("Move engram")).toBeNull();

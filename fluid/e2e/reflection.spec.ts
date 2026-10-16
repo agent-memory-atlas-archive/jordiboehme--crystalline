@@ -431,7 +431,8 @@ test.describe.serial("the Reflection journeys", () => {
     ).toBeVisible();
     await expect(tree(page).getByRole("link", { name: "Tmp" })).toBeVisible();
 
-    await page.getByRole("button", { name: "Move", exact: true }).click();
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("menuitem", { name: "Move", exact: true }).click();
     const move = page.getByRole("dialog", { name: "Move Tmp" });
     await move
       .getByRole("textbox", { name: "New path" })
@@ -450,7 +451,8 @@ test.describe.serial("the Reflection journeys", () => {
       tree(page).getByRole("button", { name: /^(Expand|Collapse) scratch$/ }),
     ).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
     await page.getByRole("button", { name: "Confirm delete" }).click();
     await at(page, HOME);
     await expect(tree(page).getByRole("link", { name: "Tmp" })).toHaveCount(0);

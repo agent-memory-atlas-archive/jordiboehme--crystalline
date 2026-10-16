@@ -336,6 +336,137 @@ describe("the reflection page", () => {
   });
 });
 
+describe("the reflection page header", () => {
+  const THREAD = (id: string, status: string) => ({
+    id,
+    path: "guides/deploying.md",
+    anchor: {
+      section: "7f3a9c2e",
+      quote: null,
+      occurrence: 1,
+      state: "found",
+    },
+    status,
+    waiting_on: "people",
+    opened_at: "2026-10-01T10:00:00Z",
+    age_secs: 10,
+    entries: [],
+  });
+
+  it("names the trail Reflection, folder, then the page's title", async () => {
+    serve("curate", true);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const trail = await screen.findByRole("navigation", { name: "Breadcrumb" });
+    expect(
+      within(trail).getByRole("link", { name: "Reflection" }),
+    ).toHaveAttribute("href", "/d/eng/reflection");
+    expect(within(trail).getByText("guides")).toBeVisible();
+    expect(within(trail).getByText("Deploying")).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(trail.textContent).not.toContain("deploying.md");
+  });
+
+  it("draws Edit as a secondary button and Move and Delete behind More actions", async () => {
+    serve("curate", true);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const edit = await screen.findByRole("link", { name: "Edit" });
+    expect(edit.className).not.toContain("bg-accent-700");
+    // No red button at the top level any more.
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Move" })).toBeNull();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "More actions" }));
+    expect(
+      (await screen.findAllByRole("menuitem")).map((row) => row.textContent),
+    ).toEqual(["Move", "Delete"]);
+    expect(
+      screen.getByRole("menuitem", { name: "Delete" }).className,
+    ).toContain("text-red-700");
+    expect(
+      screen.getByRole("menuitem", { name: "Move" }).className,
+    ).not.toContain("text-red");
+  });
+
+  it("gives a commenter no menu and an editor the same two rows as a curator", async () => {
+    serve("comment", false);
+    const first = renderApp("/d/eng/reflection/guides/deploying.md");
+    await screen.findByRole("heading", { name: "Deploying", level: 1 });
+    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
+    first.unmount();
+    serve("edit", true);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    expect(
+      (await screen.findAllByRole("menuitem")).map((row) => row.textContent),
+    ).toEqual(["Move", "Delete"]);
+  });
+
+  it("opens with Enter, walks with the arrows and returns focus on Escape", async () => {
+    serve("curate", true);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const user = userEvent.setup();
+    const more = await screen.findByRole("button", { name: "More actions" });
+    more.focus();
+    await user.keyboard("{Enter}");
+    const move = await screen.findByRole("menuitem", { name: "Move" });
+    await waitFor(() => {
+      expect(move).toHaveFocus();
+    });
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+    expect(more).toHaveFocus();
+  });
+
+  it("asks twice before Delete and hands focus to the question", async () => {
+    serve("curate", true);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    await user.click(await screen.findByRole("menuitem", { name: "Delete" }));
+    const confirm = await screen.findByRole("button", {
+      name: "Confirm delete",
+    });
+    await waitFor(() => {
+      expect(confirm).toHaveFocus();
+    });
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("button", { name: "Confirm delete" })).toBeNull();
+    expect(screen.getByRole("button", { name: "More actions" })).toHaveFocus();
+  });
+
+  it("says sections, engrams and open threads on one line, leaving out zeros", async () => {
+    serve("curate", true, {
+      "/domains/eng/reflections/guides/deploying.md": () =>
+        doc({ threads: [THREAD("t-1", "open"), THREAD("t-2", "resolved")] }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    expect(
+      await screen.findByText(
+        "1 section \u00b7 Built from 1 engram \u00b7 1 open thread",
+      ),
+    ).toBeVisible();
+  });
+
+  it("leaves the engram part out for a reader without engram rights, and zero threads", async () => {
+    serve("comment", false);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    expect(await screen.findByText("1 section")).toBeVisible();
+    expect(screen.queryByText(/Built from/)).toBeNull();
+    expect(screen.queryByText(/open thread/)).toBeNull();
+  });
+});
+
 describe("a reflection's images and files", () => {
   function servePage(path: string, body: string) {
     serve("read", false, {

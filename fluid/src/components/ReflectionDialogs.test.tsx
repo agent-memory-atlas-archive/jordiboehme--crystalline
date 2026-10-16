@@ -232,7 +232,7 @@ describe("creating, moving and deleting pages", () => {
       }),
     });
     renderApp("/d/eng/reflection/guides/a.md");
-    await userEvent.click(await screen.findByRole("button", { name: "Move" }));
+    await choose("Move");
     const dialog = await screen.findByRole("dialog", { name: "Move A" });
     const field = within(dialog).getByRole("textbox", { name: "New path" });
     await userEvent.clear(field);
@@ -255,8 +255,11 @@ describe("creating, moving and deleting pages", () => {
         to: "howto/a.md",
       });
     });
+    // The trail follows the page to its new folder.
     expect(
-      await screen.findByText("/ howto/a.md", { exact: false }),
+      await within(
+        await screen.findByRole("navigation", { name: "Breadcrumb" }),
+      ).findByText("howto"),
     ).toBeVisible();
   });
 
@@ -280,7 +283,7 @@ describe("creating, moving and deleting pages", () => {
       }),
     });
     renderApp("/d/eng/reflection/guides/a.md");
-    await userEvent.click(await screen.findByRole("button", { name: "Move" }));
+    await choose("Move");
     const dialog = await screen.findByRole("dialog", { name: "Move A" });
     const field = within(dialog).getByRole("textbox", { name: "New path" });
     await userEvent.clear(field);
@@ -312,9 +315,7 @@ describe("creating, moving and deleting pages", () => {
             },
     });
     renderApp("/d/eng/reflection/guides/a.md");
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Delete" }),
-    );
+    await choose("Delete");
     await userEvent.click(
       screen.getByRole("button", { name: "Confirm delete" }),
     );
@@ -331,8 +332,8 @@ describe("creating, moving and deleting pages", () => {
     serve("curate");
     renderApp("/d/eng/reflection/PACT.md");
     await screen.findByRole("link", { name: "Edit" });
-    expect(screen.queryByRole("button", { name: "Move" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    // No menu at all: there is nothing in it for this reader or this page.
+    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
   });
 
   it("offers a commenter no New page, Move or Delete", async () => {
@@ -340,10 +341,18 @@ describe("creating, moving and deleting pages", () => {
     renderApp("/d/eng/reflection/guides/a.md");
     await screen.findByRole("heading", { name: "A" });
     expect(screen.queryByRole("button", { name: "New page" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Move" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    // No menu at all: there is nothing in it for this reader or this page.
+    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
   });
 });
+
+/** Opens the page's More actions menu and picks one row. */
+async function choose(name: string): Promise<void> {
+  await userEvent.click(
+    await screen.findByRole("button", { name: "More actions" }),
+  );
+  await userEvent.click(await screen.findByRole("menuitem", { name }));
+}
 
 function calls(path: string, method: string): number {
   return apiMock.mock.calls.filter(
@@ -387,9 +396,7 @@ describe("after a create, move or delete", () => {
         init?.method === "DELETE" ? undefined : PAGE("guides/a.md"),
     });
     renderApp("/d/eng/reflection/guides/a.md");
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Delete" }),
-    );
+    await choose("Delete");
     const status = calls("/domains/eng/reflection", "GET");
     await userEvent.click(
       screen.getByRole("button", { name: "Confirm delete" }),
@@ -413,9 +420,7 @@ describe("after a create, move or delete", () => {
         init?.method === "DELETE" ? undefined : PAGE("guides/a.md"),
     });
     renderApp("/d/eng/reflection/guides/a.md");
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Delete" }),
-    );
+    await choose("Delete");
     await userEvent.click(
       screen.getByRole("button", { name: "Confirm delete" }),
     );
@@ -429,7 +434,7 @@ describe("after a create, move or delete", () => {
   });
 
   async function move(to: string) {
-    await userEvent.click(await screen.findByRole("button", { name: "Move" }));
+    await choose("Move");
     const dialog = await screen.findByRole("dialog", { name: "Move A" });
     const field = within(dialog).getByRole("textbox", { name: "New path" });
     await userEvent.clear(field);
@@ -488,7 +493,7 @@ describe("after a create, move or delete", () => {
   it("refreshes the status on a move", async () => {
     serve("edit", MOVED);
     renderApp("/d/eng/reflection/guides/a.md");
-    await screen.findByRole("button", { name: "Move" });
+    await screen.findByRole("button", { name: "More actions" });
     const status = calls("/domains/eng/reflection", "GET");
     await move("howto/a.md");
     await waitFor(() => {
@@ -562,7 +567,7 @@ describe("dialog details", () => {
   it("disables Move page while the path is empty or unchanged", async () => {
     serve("edit");
     renderApp("/d/eng/reflection/guides/a.md");
-    await userEvent.click(await screen.findByRole("button", { name: "Move" }));
+    await choose("Move");
     const dialog = await screen.findByRole("dialog", { name: "Move A" });
     const button = within(dialog).getByRole("button", { name: "Move page" });
     expect(button).toBeDisabled();

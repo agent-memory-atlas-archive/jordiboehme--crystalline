@@ -2,19 +2,19 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { describe, expect, test } from "vitest";
 
-import { Breadcrumbs, crumbsOf } from "./Breadcrumbs";
+import { Breadcrumbs, crumbsOf, reflectionCrumbsOf } from "./Breadcrumbs";
 
 describe("crumbsOf", () => {
-  test("domain links home, folders are plain, the title is last", () => {
+  test("the domain is for print only, folders link to their page, the title is last", () => {
     const crumbs = crumbsOf(
       "playground",
       "notes/deep/gamma",
       "Deep Gamma Note",
     );
     expect(crumbs).toEqual([
-      { label: "playground", href: "/d/playground" },
-      { label: "notes", href: null },
-      { label: "deep", href: null },
+      { label: "playground", href: null, printOnly: true },
+      { label: "notes", href: "/d/playground?path=notes" },
+      { label: "deep", href: "/d/playground?path=notes%2Fdeep" },
       { label: "Deep Gamma Note", href: null },
     ]);
   });
@@ -23,8 +23,24 @@ describe("crumbsOf", () => {
     expect(
       crumbsOf("playground", "lantern-protocol", "Lantern Protocol"),
     ).toEqual([
-      { label: "playground", href: "/d/playground" },
+      { label: "playground", href: null, printOnly: true },
       { label: "Lantern Protocol", href: null },
+    ]);
+  });
+});
+
+describe("reflectionCrumbsOf", () => {
+  test("Reflection, the folders and the page's title, not its file name", () => {
+    expect(
+      reflectionCrumbsOf(
+        "platform",
+        "guides/deploying.md",
+        "Deploying to production",
+      ),
+    ).toEqual([
+      { label: "Reflection", href: "/d/platform/reflection" },
+      { label: "guides", href: null },
+      { label: "Deploying to production", href: null },
     ]);
   });
 });

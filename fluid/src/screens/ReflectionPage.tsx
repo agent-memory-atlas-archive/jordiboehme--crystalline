@@ -17,11 +17,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { FolderInput, Trash2 } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 
 import { ApiProblem, problemDetail } from "../api/client";
 import type { AssetResolver } from "../api/files";
-import type { SectionView } from "../api/reflection";
+import type { ReflectionDoc, SectionView } from "../api/reflection";
 import {
   changedVersions,
   deleteReflection,
@@ -46,7 +47,10 @@ import { Markdown } from "../components/Markdown";
 import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { ReflectionThreads, sourceChip } from "../components/ReflectionThreads";
+import { ActionItem, EditLink, MoreActions } from "../components/PageActions";
 import { BUTTON } from "../components/primitives";
+import { Breadcrumbs, reflectionCrumbsOf } from "../components/Breadcrumbs";
+import { plural } from "../format";
 import { Skeleton } from "../components/Skeleton";
 import { engramRoute, reflectionEditRoute, reflectionRoute } from "../paths";
 import { assetRefsIn } from "../editor/imageFormat";
@@ -112,6 +116,35 @@ function hasOwnTitle(intro: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * "3 sections · Built from 2 engrams · 3 open threads", from what the page
+ * already holds. The engram part is left out for a reader without engram
+ * rights (the server sends no sources then) and every zero part is left out.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function reflectionMetaLine(
+  page: Pick<ReflectionDoc, "sections" | "threads">,
+  engramsVisible: boolean,
+): string {
+  const parts: string[] = [];
+  if (page.sections.length > 0) {
+    parts.push(plural(page.sections.length, "section", "sections"));
+  }
+  if (engramsVisible) {
+    const sources = new Set(
+      page.sections.flatMap((s) => (s.sources ?? []).map((x) => x.permalink)),
+    );
+    if (sources.size > 0) {
+      parts.push(`Built from ${plural(sources.size, "engram", "engrams")}`);
+    }
+  }
+  const open = page.threads.filter((t) => t.status === "open").length;
+  if (open > 0) {
+    parts.push(plural(open, "open thread", "open threads"));
+  }
+  return parts.join(" \u00b7 ");
 }
 
 export default function ReflectionPage(): ReactElement {
@@ -215,6 +248,10 @@ function PageBody({
   account: string;
 }): ReactElement {
   const [deleted, setDeleted] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const moreRef = useRef<HTMLButtonElement | null>(null);
+  const skipRefocus = useRef(false);
+  const confirmRef = useRef<HTMLDivElement | null>(null);
   const doc = useQuery({
     queryKey: reflectionDocKey(domain, path),
     queryFn: () => fetchReflection(domain, path),
@@ -315,48 +352,76 @@ function PageBody({
   // only: a move waits while a linking page is open in a room, the
   // curator's own included.
   const curate = atLeast(right, "curate");
+  const metaLine = reflectionMetaLine(page, engramsVisible);
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-caption text-slate-500 dark:text-slate-400">
-            <Link to={reflectionRoute(domain)} className={LINK}>
-              {domain}
-            </Link>
-            {` / ${path}`}
-          </p>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <Breadcrumbs crumbs={reflectionCrumbsOf(domain, path, page.title)} />
+          <div className="flex shrink-0 items-center gap-2 print:hidden">
             {mayEditPage(right, path) && (
-              <Link
-                to={reflectionEditRoute(domain, path)}
-                className={BUTTON.primary}
-              >
-                Edit
-              </Link>
+              <EditLink to={reflectionEditRoute(domain, path)} />
             )}
+            {/*
+              Move and Delete are curate verbs and rare ones, so they live
+              behind the menu, Delete in red. No menu at all for a reader who
+              has neither, and none on the pact, which can be neither moved
+              nor deleted.
+            */}
             {atLeast(right, "edit") && path !== PACT_PATH && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => {
+              <MoreActions
+                triggerRef={moreRef}
+                onCloseAutoFocus={(event) => {
+                  // Delete hands focus to its confirmation, not back here.
+                  if (skipRefocus.current) {
+                    skipRefocus.current = false;
+                    event.preventDefault();
+                    confirmRef.current
+                      ?.querySelector<HTMLElement>("button[aria-label]")
+                      ?.focus();
+                  }
+                }}
+              >
+                <ActionItem
+                  label="Move"
+                  icon={FolderInput}
+                  onSelect={() => {
                     onMove(page.title);
                   }}
-                  className={BUTTON.secondary}
-                >
-                  Move
-                </button>
-                <DestructiveAction
+                />
+                <ActionItem
                   label="Delete"
-                  confirmLabel="Confirm delete"
-                  pending={remove.isPending}
-                  onConfirm={() => {
-                    remove.mutate();
+                  icon={Trash2}
+                  destructive
+                  onSelect={() => {
+                    skipRefocus.current = true;
+                    setConfirmingDelete(true);
                   }}
                 />
-              </>
+              </MoreActions>
             )}
           </div>
         </div>
+        {atLeast(right, "edit") && path !== PACT_PATH && (
+          <div ref={confirmRef}>
+            <DestructiveAction
+              label="Delete"
+              confirmLabel="Confirm delete"
+              hideTrigger
+              confirming={confirmingDelete}
+              onConfirmingChange={(open) => {
+                setConfirmingDelete(open);
+                if (!open) {
+                  moreRef.current?.focus();
+                }
+              }}
+              pending={remove.isPending}
+              onConfirm={() => {
+                remove.mutate();
+              }}
+            />
+          </div>
+        )}
         {remove.error && (
           <p
             role="alert"
@@ -366,6 +431,7 @@ function PageBody({
           </p>
         )}
         {!ownTitle && <h1 className="text-display">{page.title}</h1>}
+        {metaLine !== "" && <p className="text-sm text-ink-3">{metaLine}</p>}
         {page.livePresent.length > 0 && (
           <p
             role="status"

@@ -26,7 +26,7 @@ import type { EngramFrontmatter, VerifiedEntry } from "../api/engram";
 import { formatActor, formatDay } from "../format";
 import { tagRoute } from "../paths";
 import { AttachmentsSection } from "./AttachmentsSection";
-import { Chip, FOCUS_RING, IconButton, statusVariant } from "./primitives";
+import { Chip, FOCUS_RING, IconButton } from "./primitives";
 import { useSaid } from "./useSaid";
 
 export interface DetailsPanelProps {
@@ -53,15 +53,7 @@ export function DetailsPanel({
   body,
   canDelete = false,
 }: DetailsPanelProps) {
-  const {
-    type,
-    status,
-    tags,
-    salience,
-    verified,
-    generatedBy,
-    generatedModel,
-  } = frontmatter;
+  const { tags, salience, verified, generatedBy, generatedModel } = frontmatter;
   const validity = validityOf(frontmatter);
   const stamp = latestVerification(verified);
 
@@ -72,16 +64,6 @@ export function DetailsPanel({
           Details
         </h2>
         <dl className="flex flex-col divide-y divide-slate-100 dark:divide-slate-800">
-          {status !== null && (
-            <Row label="Status">
-              <Chip variant={statusVariant(status)}>{status}</Chip>
-            </Row>
-          )}
-          {type !== null && (
-            <Row label="Type">
-              <Chip>{type}</Chip>
-            </Row>
-          )}
           {tags.length > 0 && (
             <Row label="Tags">
               <span className="flex flex-wrap gap-1">

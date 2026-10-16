@@ -41,16 +41,18 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Archive,
   ChevronRight,
   Download,
+  FolderInput,
   Link2,
-  MoreHorizontal,
   Printer,
 } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 
+import { readScalar } from "../editor/frontmatterFields";
 import { discardChanges, refusalSentence } from "../api/admin";
 import { ApiProblem, problemDetail } from "../api/client";
 import { domainTreeKey } from "../api/domain";
@@ -90,9 +92,16 @@ import { NeighborhoodGraph } from "../components/NeighborhoodGraph";
 import {
   BUTTON,
   CHIP_VARIANTS,
+  Chip,
   FOCUS_RING,
-  IconButton,
+  statusVariant,
 } from "../components/primitives";
+import {
+  ActionItem,
+  ActionSeparator,
+  EditLink,
+  MoreActions,
+} from "../components/PageActions";
 import { RetireDialog } from "../components/RetireDialog";
 import { ShareDialog } from "../components/ShareDialog";
 import { Skeleton } from "../components/Skeleton";
@@ -445,6 +454,9 @@ export default function EngramPage() {
 
   const engram = detail.data;
   const backlinks = backlinksTo(graph.data, engram.domain, engram.permalink);
+  // The payload carries no description field of its own; the frontmatter in
+  // the file text does.
+  const description = readScalar(engram.content, "description");
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-2">
@@ -457,7 +469,7 @@ export default function EngramPage() {
           chrome and stay off the page, so this line is what says on paper
           which domain and which folders this document came out of.
         */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center justify-between gap-2">
           <Breadcrumbs
             crumbs={crumbsOf(engram.domain, engram.permalink, engram.title)}
           />
@@ -477,90 +489,73 @@ export default function EngramPage() {
             `EngramActions` builds the three and hands them over through that
             ref; it draws nothing here but the region that announces a copy.
           */}
-          <div className="flex flex-wrap items-center gap-2 print:hidden">
+          <div className="flex shrink-0 items-center gap-2 print:hidden">
             {/*
               At full width there is no details column to hold it, and this
               is the only control on the screen that copies the engram's
-              `crystalline://` name - "Share link" beside it copies the
+              `crystalline://` name - "Share link" in the menu copies the
               browser's URL, which is a different string for a different
               purpose. So it stands here instead of going with the column.
             */}
             {fullWidth && <CopyAddress address={engram.url} />}
-            <IconButton
-              label="Share link"
-              icon={Link2}
-              onClick={() => {
-                utilities.current?.share();
-              }}
-            />
-            <IconButton
-              label="Download as Markdown"
-              icon={Download}
-              onClick={() => {
-                utilities.current?.download();
-              }}
-            />
-            <IconButton
-              label="Print view"
-              icon={Printer}
-              onClick={() => {
-                utilities.current?.print();
-              }}
-            />
-            {/*
-              Both halves of the write surface hang off one gate: a reader who
-              may not write has nothing left for the menu to hold, and an
-              ellipsis that opens onto an empty panel is worse than no ellipsis.
-            */}
             {canWrite && (
-              <>
-                <Link
-                  to={editRoute(engram.domain, engram.permalink)}
-                  onPointerEnter={prefetchEngramEditor}
-                  onFocus={prefetchEngramEditor}
-                  className={BUTTON.primary}
-                >
-                  Edit
-                </Link>
-                {/*
-                    A file domain's MANIFEST can be neither moved nor deleted,
-                    and retiring the routing file makes no sense, so the menu
-                    would be empty: it is left out.
-                */}
-                {!keepsManifest && (
-                  <DropdownMenu.Root>
-                    <DropdownMenu.Trigger asChild>
-                      <IconButton label="More actions" icon={MoreHorizontal} />
-                    </DropdownMenu.Trigger>
-                    <DropdownMenu.Portal>
-                      <DropdownMenu.Content
-                        align="end"
-                        sideOffset={6}
-                        className={MENU_CLASSES}
-                      >
-                        <DropdownMenu.Item
-                          className={ITEM_CLASSES}
-                          onSelect={() => {
-                            setMoving(true);
-                          }}
-                        >
-                          Move
-                        </DropdownMenu.Item>
-                        <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
-                        <DropdownMenu.Item
-                          className={`${ITEM_CLASSES} text-red-700 dark:text-red-300`}
-                          onSelect={() => {
-                            setRetiring(true);
-                          }}
-                        >
-                          Retire
-                        </DropdownMenu.Item>
-                      </DropdownMenu.Content>
-                    </DropdownMenu.Portal>
-                  </DropdownMenu.Root>
-                )}
-              </>
+              <EditLink
+                to={editRoute(engram.domain, engram.permalink)}
+                onPointerEnter={prefetchEngramEditor}
+                onFocus={prefetchEngramEditor}
+              />
             )}
+            {/*
+              One menu for everybody: the three utilities a reader reaches for
+              rarely, then - for somebody who may write - Move and Retire under
+              a rule. Each row carries EXACTLY the name its icon button carried,
+              and the palette runs the same three through the same ref. A file
+              domain's MANIFEST can be neither moved nor retired, so it gets
+              the utilities only.
+            */}
+            <MoreActions>
+              <ActionItem
+                label="Share link"
+                icon={Link2}
+                onSelect={() => {
+                  utilities.current?.share();
+                }}
+              />
+              <ActionItem
+                label="Download as Markdown"
+                icon={Download}
+                onSelect={() => {
+                  utilities.current?.download();
+                }}
+              />
+              <ActionItem
+                label="Print view"
+                icon={Printer}
+                onSelect={() => {
+                  utilities.current?.print();
+                }}
+              />
+              {canWrite && !keepsManifest && (
+                <>
+                  <ActionSeparator />
+                  <ActionItem
+                    label="Move"
+                    icon={FolderInput}
+                    onSelect={() => {
+                      setMoving(true);
+                    }}
+                  />
+                  <ActionItem
+                    label="Retire"
+                    icon={Archive}
+                    destructive
+                    onSelect={() => {
+                      setRetiring(true);
+                    }}
+                  />
+                </>
+              )}
+            </MoreActions>
             <EngramActions engram={engram} handlers={utilities} />
           </div>
         </div>
@@ -635,6 +630,24 @@ export default function EngramPage() {
             </DropdownMenu.Root>
           )}
         </div>
+        {(engram.frontmatter.status !== null ||
+          engram.frontmatter.type !== null ||
+          description !== null) && (
+          <p
+            aria-label="About this engram"
+            className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-ink-3"
+          >
+            {engram.frontmatter.status !== null && (
+              <Chip variant={statusVariant(engram.frontmatter.status)}>
+                {engram.frontmatter.status}
+              </Chip>
+            )}
+            {engram.frontmatter.type !== null && (
+              <Chip>{engram.frontmatter.type}</Chip>
+            )}
+            {description !== null && <span>{description}</span>}
+          </p>
+        )}
         {discarding && (
           <DiscardConfirm
             question={`Discard the changes to ${changePath}?`}
