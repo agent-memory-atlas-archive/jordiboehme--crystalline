@@ -5,19 +5,43 @@
  *
  * Only the trigger and the menu's frame are in the entry; what the menu holds
  * is a lazy part (`DomainSwitcherMenu.tsx`), fetched when a pointer or the
- * keyboard reaches the trigger, so it is usually there before the click.
+ * keyboard reaches the trigger, and in any case a moment after the page has
+ * settled. It is kept here once it has arrived, so every
+ * open after that draws the list at once instead of a loading line first. A
+ * part that failed to arrive says so as a menu item a keyboard can reach,
+ * and the next open tries again.
  */
 
 import { ChevronsUpDown } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
+import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
 
-import { lazyChunk } from "../lazyChunk";
-import { LazyBoundary } from "./LazyBoundary";
+import type DomainSwitcherMenuType from "./DomainSwitcherMenu";
+import { ITEM_CLASSES } from "./menu";
 import { FOCUS_RING } from "./primitives";
 
-const load = () => import("./DomainSwitcherMenu");
-const DomainSwitcherMenu = lazyChunk(load);
+let Menu: typeof DomainSwitcherMenuType | undefined;
+let pending: Promise<void> | undefined;
+
+/** Fetch the menu's body once; a failure is forgotten so it can be retried. */
+function load(): Promise<void> {
+  pending ??= import("./DomainSwitcherMenu").then(
+    (module) => {
+      Menu = module.default;
+    },
+    (cause: unknown) => {
+      pending = undefined;
+      throw cause;
+    },
+  );
+  return pending;
+}
+
+/** Fetch ahead of a click, quietly: the open says so if it failed. */
+function preload(): void {
+  load().catch(() => undefined);
+}
 
 export function DomainSwitcher({
   domain,
@@ -28,14 +52,22 @@ export function DomainSwitcher({
   /** Register a domain, or null for a session that may not. */
   onCreateDomain: (() => void) | null;
 }): ReactElement {
+  // Fetched once the page has settled as well, so even the first open draws
+  // the list at once rather than a loading line that then grows.
+  useEffect(() => {
+    const timer = setTimeout(preload, 1500);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, []);
   const name = domain === "" ? "All domains" : domain;
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger
         aria-label={`${name}, switch domain`}
-        onPointerEnter={() => void load()}
-        onFocus={() => void load()}
-        className={`inline-flex h-8 min-w-0 shrink items-center gap-1.5 rounded-lg pr-2 pl-2.5 text-sm font-medium text-ink hover:bg-sunken data-[state=open]:bg-sunken ${FOCUS_RING}`}
+        onPointerEnter={preload}
+        onFocus={preload}
+        className={`switcher-trigger ${FOCUS_RING}`}
       >
         <span className="truncate">{name}</span>
         <ChevronsUpDown
@@ -49,18 +81,54 @@ export function DomainSwitcher({
         <DropdownMenu.Content
           align="start"
           sideOffset={6}
-          className="z-50 w-80 max-w-[calc(100vw-1rem)] rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] shadow-pop"
+          className="switcher-menu"
         >
-          <LazyBoundary
-            fallback={<p className="px-2.5 py-2 text-muted">Loading domains</p>}
-          >
-            <DomainSwitcherMenu
-              domain={domain}
-              onCreateDomain={onCreateDomain}
-            />
-          </LazyBoundary>
+          <Body domain={domain} onCreateDomain={onCreateDomain} />
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+  );
+}
+
+/**
+ * What the open menu holds. Mounted on every open, so it reads the module
+ * as it is then: the list at once when it has arrived, else a loading line
+ * until it does, or the reload item when it failed.
+ */
+function Body({
+  domain,
+  onCreateDomain,
+}: {
+  domain: string;
+  onCreateDomain: (() => void) | null;
+}): ReactElement {
+  const [failed, setFailed] = useState(false);
+  const [, setReady] = useState(false);
+  useEffect(() => {
+    if (Menu === undefined) {
+      load().then(
+        () => {
+          setReady(true);
+        },
+        () => {
+          setFailed(true);
+        },
+      );
+    }
+  }, []);
+  if (Menu !== undefined) {
+    return <Menu domain={domain} onCreateDomain={onCreateDomain} />;
+  }
+  return failed ? (
+    <DropdownMenu.Item
+      className={ITEM_CLASSES}
+      onSelect={() => {
+        location.reload();
+      }}
+    >
+      Could not load the domains. Reload
+    </DropdownMenu.Item>
+  ) : (
+    <p className="px-2.5 py-2 text-muted">Loading domains</p>
   );
 }

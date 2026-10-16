@@ -1493,6 +1493,8 @@ describe("the domain switcher in the top bar", () => {
     const menu = await openSwitcher("eng, switch domain");
     const eng = await within(menu).findByRole("menuitem", { name: /^eng/ });
     expect(eng).toHaveAttribute("aria-current", "true");
+    // Said in words too, for a reader that does not announce aria-current.
+    expect(eng).toHaveTextContent("(current)");
     expect(eng).toHaveAttribute("href", "/d/eng");
     expect(eng.querySelector("svg")).not.toBeNull();
     const ops = within(menu).getByRole("menuitem", { name: /^ops/ });
@@ -1546,13 +1548,56 @@ describe("the domain switcher in the top bar", () => {
     expect(
       screen.getByRole("menuitem", { name: /^All domains/ }),
     ).toHaveFocus();
-    await user.keyboard("{ArrowDown}{ArrowDown}");
+    // Up from the first row is back in the field.
+    await user.keyboard("{ArrowUp}");
+    expect(field).toHaveFocus();
+    await user.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}");
     expect(screen.getByRole("menuitem", { name: /^ops/ })).toHaveFocus();
     await user.keyboard("{Escape}");
     await waitFor(() => {
       expect(screen.queryByRole("menu")).toBeNull();
     });
     expect(trigger).toHaveFocus();
+  });
+
+  it("opens the one domain left by the filter on Enter", async () => {
+    serveInDomain({
+      "/reflection/domains": () => ({ domains: [] }),
+      "/domains/ops/tree": () => ({
+        domain: "ops",
+        path: "/",
+        folders: [],
+        engrams: [],
+      }),
+      "/domains/ops/manifest": () => ({ domain: "ops", markdown: "" }),
+      "/domains/ops/engrams": () => ({
+        mode: "text",
+        total: 0,
+        page: 1,
+        limit: 50,
+        count: 0,
+        hits: [],
+      }),
+    });
+    renderApp("/d/eng");
+    const menu = await openSwitcher("eng, switch domain");
+    const field = await within(menu).findByRole("searchbox", {
+      name: "Find a domain",
+    });
+    await waitFor(() => {
+      expect(field).toHaveFocus();
+    });
+    const user = userEvent.setup();
+    // Two matches: Enter does nothing yet.
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("menu")).toBeVisible();
+    await user.keyboard("op{Enter}");
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "ops" }),
+    ).toBeVisible();
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
   });
 
   it("offers New domain to an admin only", async () => {
@@ -1579,7 +1624,7 @@ describe("the domain switcher in the top bar", () => {
     expect(await screen.findByRole("dialog")).toBeVisible();
   });
 
-  it("lists a Reflection-only domain and marks Reflection, read-only and private rows", async () => {
+  it("lists a Reflection-only domain and marks Reflection, view only and private rows", async () => {
     serveInDomain({
       "/domains": () => ({
         behavior: [],
@@ -1637,7 +1682,7 @@ describe("the domain switcher in the top bar", () => {
     ).toHaveTextContent("Reflection");
     expect(
       within(menu).getByRole("menuitem", { name: /^ops/ }),
-    ).toHaveTextContent("read-only");
+    ).toHaveTextContent("view only");
     expect(
       within(menu).getByRole("menuitem", { name: /^lab/ }),
     ).toHaveTextContent("private");
@@ -1677,7 +1722,15 @@ describe("the top bar on a phone", () => {
       screen.getByRole("button", { name: "Domains" }).closest("header") ??
       undefined;
     expect(defined(bar, "the top bar").contains(modes)).toBe(false);
-    await userEvent.click(screen.getByRole("button", { name: "Open search" }));
+    const icon = screen.getByRole("button", { name: "Open search" });
+    expect(icon).toHaveAttribute("aria-haspopup", "dialog");
+    await userEvent.click(icon);
     expect(await screen.findByRole("dialog")).toBeVisible();
+    // Closing hands the focus back to the icon that opened it.
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(icon).toHaveFocus();
   });
 });

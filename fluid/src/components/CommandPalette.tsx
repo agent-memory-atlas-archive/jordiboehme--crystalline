@@ -119,6 +119,18 @@ function actionValue(id: string): string {
   return `action:${id}`;
 }
 
+/** The event the palette opens on besides its shortcut. */
+const OPEN_EVENT = "fluid:palette";
+
+/**
+ * Open the palette from a control rather than the keyboard (the phone's
+ * search icon), with the element focus goes back to when it closes.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function openPalette(invoker: HTMLElement): void {
+  window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: invoker }));
+}
+
 export function CommandPalette() {
   const navigate = useNavigate();
   // What the screen behind the palette can do, which is why the palette is
@@ -178,9 +190,15 @@ export function CommandPalette() {
           : null;
       setOpen(true);
     }
+    function onOpen(event: Event) {
+      invoker.current = (event as CustomEvent<HTMLElement>).detail;
+      setOpen(true);
+    }
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener(OPEN_EVENT, onOpen);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener(OPEN_EVENT, onOpen);
     };
   }, [open, close]);
 

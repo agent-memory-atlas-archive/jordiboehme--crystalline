@@ -41,6 +41,8 @@ export function useReflectionStatus(
   return useQuery({
     queryKey: reflectionStatusKey(domain),
     queryFn: () => fetchReflectionStatus(domain),
+    // Outside a domain there is nothing to ask about.
+    enabled: domain !== "",
   });
 }
 
@@ -64,6 +66,29 @@ export function HomeElsewhere({ url }: { url: string | null }): ReactElement {
   );
 }
 
+/** The four fields that decide the switch, on the status and the listing. */
+type SwitchFacts = Pick<
+  ReflectionStatus,
+  "state" | "right" | "engramsVisible" | "homeUrl"
+>;
+
+/**
+ * What the switch draws for these facts: false for no switch, null for both
+ * halves on this instance, or the web address the Reflection half links out
+ * to. The status and the eager Reflection listing carry the same fields, so
+ * the phone row can ask the listing before the status has answered.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function switchHome(s: SwitchFacts): false | null | string {
+  if (s.state === "off" || s.right === "none" || !s.engramsVisible) {
+    return false;
+  }
+  if (s.state !== "elsewhere") {
+    return null;
+  }
+  return s.homeUrl !== null && isWebAddress(s.homeUrl) ? s.homeUrl : false;
+}
+
 /**
  * The mode switch in the top bar: "Engrams | Reflection" as a segmented
  * control, the selected half a raised pill, `aria-current` and bold weight so
@@ -75,9 +100,10 @@ export function HomeElsewhere({ url }: { url: string | null }): ReactElement {
  * that page.
  *
  * A Reflection that lives on another instance keeps the switch, with its
- * Reflection half a link out to that instance. Only a web address becomes
- * that link: the value is MANIFEST text, and without a safe one there is
- * nowhere to go, so no switch is drawn.
+ * Reflection half a link out to that instance (current while one of this
+ * instance's Reflection screens says so). Only a web address becomes that
+ * link: the value is MANIFEST text, and without a safe one there is nowhere
+ * to go, so no switch is drawn and the domain page says where it lives.
  */
 export function ReflectionModeSwitch({
   domain,
@@ -91,55 +117,41 @@ export function ReflectionModeSwitch({
 }): ReactElement | null {
   const status = useReflectionStatus(domain);
   const { pathname } = useLocation();
-  const s = status.data;
-  if (
-    s === undefined ||
-    s.state === "off" ||
-    s.right === "none" ||
-    !s.engramsVisible
-  ) {
+  const away = status.data === undefined ? false : switchHome(status.data);
+  if (away === false) {
     return null;
   }
-  const away =
-    s.state === "elsewhere"
-      ? s.homeUrl !== null && isWebAddress(s.homeUrl)
-        ? s.homeUrl
-        : null
-      : undefined;
-  if (away === null) {
-    return null;
-  }
-  const half = `inline-flex items-center justify-center gap-1.5 rounded-[7px] px-3 text-[13.5px] ${
-    fill ? "h-8 flex-1" : "h-7"
-  } ${FOCUS_RING}`;
-  const mode = (name: "engrams" | "reflection", label: string, to: string) => (
-    <Link
-      to={to}
-      aria-current={
-        current === name ? (pathname === to ? "page" : "true") : undefined
-      }
-      className={`${half} ${
-        current === name
-          ? "bg-seg-on font-semibold text-ink shadow-[0_1px_2px_rgb(15_23_42/0.08),0_0_0_1px_rgb(15_23_42/0.04)]"
-          : "font-medium text-muted hover:text-ink"
-      }`}
-    >
-      {label}
-    </Link>
-  );
+  // The look lives in index.css (`.mode-half`), keyed on aria-current.
+  const half = `mode-half ${fill ? "h-8 flex-1" : ""} ${FOCUS_RING}`;
+  const here = (name: "engrams" | "reflection", to: string) =>
+    current === name ? (pathname === to ? "page" : "true") : undefined;
+  const reflection = reflectionRoute(domain);
   return (
     <nav
       aria-label="Domain view"
-      className={`${fill ? "flex" : "inline-flex"} shrink-0 gap-0.5 rounded-[9px] bg-seg p-[3px]`}
+      className={`${fill ? "flex" : "ml-1.5 inline-flex"} shrink-0 gap-0.5 rounded-[9px] bg-seg p-[3px]`}
     >
-      {mode("engrams", "Engrams", domainRoute(domain))}
-      {away === undefined ? (
-        mode("reflection", "Reflection", reflectionRoute(domain))
+      <Link
+        to={domainRoute(domain)}
+        aria-current={here("engrams", domainRoute(domain))}
+        className={half}
+      >
+        Engrams
+      </Link>
+      {away === null ? (
+        <Link
+          to={reflection}
+          aria-current={here("reflection", reflection)}
+          className={half}
+        >
+          Reflection
+        </Link>
       ) : (
         <a
           href={away}
-          aria-label="Reflection (opens on another server)"
-          className={`${half} font-medium text-muted hover:text-ink`}
+          aria-label="Reflection (opens on another instance)"
+          aria-current={current === "reflection" ? "true" : undefined}
+          className={half}
         >
           Reflection
           <ExternalLink aria-hidden="true" size={12} strokeWidth={1.75} />

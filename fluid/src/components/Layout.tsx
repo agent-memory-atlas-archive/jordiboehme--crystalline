@@ -115,7 +115,7 @@ import {
 } from "../paths";
 import { useTheme } from "../theme/context";
 import type { ThemePreference } from "../theme/context";
-import { CommandPalette } from "./CommandPalette";
+import { CommandPalette, openPalette } from "./CommandPalette";
 import { CreateDomainDialog } from "./CreateDomainDialog";
 import { CreateEngramDialog } from "./CreateEngramDialog";
 import { DomainNav } from "./DomainNav";
@@ -123,7 +123,11 @@ import { DomainSwitcher } from "./DomainSwitcher";
 import { HelpOverlay } from "./HelpOverlay";
 import { JoinedDraftBar } from "./JoinedDraftBar";
 import { LazyBoundary } from "./LazyBoundary";
-import { ReflectionModeSwitch } from "./ReflectionModeSwitch";
+import {
+  ReflectionModeSwitch,
+  switchHome,
+  useReflectionStatus,
+} from "./ReflectionModeSwitch";
 import { ShareDialog } from "./ShareDialog";
 import { SharePickerDialog } from "./SharePickerDialog";
 import { ShatterGem } from "./ShatterGem";
@@ -1061,9 +1065,7 @@ function TopBar({
         />
         <DomainSwitcher domain={domain} onCreateDomain={onCreateDomain} />
         {wide && domain !== "" && (
-          <span className="ml-1.5">
-            <ReflectionModeSwitch domain={domain} current={mode} />
-          </span>
+          <ReflectionModeSwitch domain={domain} current={mode} />
         )}
 
         <span className="grow" />
@@ -1071,19 +1073,17 @@ function TopBar({
         {/*
           Both are drawn and the stylesheet picks one: below the large
           breakpoint the bar has no room left for a field, so search is an
-          icon that opens the palette. The palette listens for its own
-          shortcut on the window and has no other way in, so the icon presses
-          that shortcut for the reader.
+          icon that opens the palette, handing itself over as the place the
+          focus goes back to (Safari does not focus a clicked button).
         */}
         <SearchBox />
         <IconButton
           label="Open search"
           icon={Search}
+          aria-haspopup="dialog"
           className="lg:hidden"
-          onClick={() => {
-            window.dispatchEvent(
-              new KeyboardEvent("keydown", { key: "k", ctrlKey: true }),
-            );
+          onClick={(event) => {
+            openPalette(event.currentTarget);
           }}
         />
 
@@ -1138,11 +1138,21 @@ function useDomainMode(): {
 function PhoneModeRow() {
   const wide = useWide();
   const { domain, mode } = useDomainMode();
-  if (wide || domain === "") {
+  const status = useReflectionStatus(domain);
+  // The listing is the eager answer that is usually there first, so the row
+  // keeps its height from the start instead of pushing the page down a beat
+  // later; the domain's own status decides once it has answered.
+  const listing = useQuery({
+    queryKey: REFLECTION_DOMAINS_KEY,
+    queryFn: fetchReflectionDomains,
+  });
+  const listed = listing.data?.find((row) => row.domain === domain);
+  const facts = status.data ?? listed;
+  if (wide || facts === undefined || switchHome(facts) === false) {
     return null;
   }
   return (
-    <div className="border-b border-hair px-3 py-2 empty:hidden print:hidden">
+    <div className="h-12 border-b border-hair px-3 py-2 print:hidden">
       <ReflectionModeSwitch domain={domain} current={mode} fill />
     </div>
   );

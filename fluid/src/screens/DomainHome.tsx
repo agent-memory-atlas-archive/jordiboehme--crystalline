@@ -106,7 +106,7 @@ import {
 } from "../components/primitives";
 import { orderQuery, useEngramsOrder } from "../engramsOrder";
 import { frontmatterFilters } from "../filters";
-import { plural } from "../format";
+import { isWebAddress, plural } from "../format";
 import {
   WHOLE_MANIFEST,
   domainRoute,
@@ -114,6 +114,10 @@ import {
   manifestEditRoute,
   reflectionRoute,
 } from "../paths";
+import {
+  HomeElsewhere,
+  useReflectionStatus,
+} from "../components/ReflectionModeSwitch";
 import { lazyChunk } from "../lazyChunk";
 import { prefetchManifestEditor } from "../prefetch";
 
@@ -541,6 +545,7 @@ function DomainPage({
             </button>
           )}
         </div>
+        <ElsewhereWithoutLink domain={domain} />
         {own && renameDisabledReason !== undefined && (
           <span id={renameReasonId} className="sr-only">
             {renameDisabledReason}
@@ -1706,4 +1711,22 @@ function DomainNotFound({ domain }: { domain: string }) {
 /** Whether this failure is the server saying there is nothing at that address. */
 function isMissing(error: unknown): boolean {
   return error instanceof ApiProblem && error.status === 404;
+}
+
+/**
+ * Where a Reflection that lives on another instance is, said in words when
+ * its address is not a web address: the bar's switch has nowhere safe to link
+ * its Reflection half to then, so it draws nothing, and this line is what is
+ * left of the way there.
+ */
+function ElsewhereWithoutLink({ domain }: { domain: string }) {
+  const s = useReflectionStatus(domain).data;
+  if (
+    s?.state !== "elsewhere" ||
+    s.right === "none" ||
+    (s.homeUrl !== null && isWebAddress(s.homeUrl))
+  ) {
+    return null;
+  }
+  return <HomeElsewhere url={s.homeUrl} />;
 }

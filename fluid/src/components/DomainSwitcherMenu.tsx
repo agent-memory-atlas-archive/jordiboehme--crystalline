@@ -15,7 +15,7 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { Check, House, Plus } from "lucide-react";
+import { Check, House, Plus, Search } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
@@ -80,12 +80,12 @@ export default function DomainSwitcherMenu({
     name: entry.name,
     to: domainRoute(entry.name),
     engrams: entry.engrams,
-    // "read-only" only where this session could write elsewhere: for a
-    // viewer every domain reads only, and a chip on every row says nothing.
+    // About this person, not the domain's lock (see domainWritable.ts), and
+    // only where they write elsewhere: for a viewer it would be every row.
     chip: entry.private
       ? "private"
       : capabilities.canWrite && entry.writeBlocked
-        ? "read-only"
+        ? "view only"
         : reflecting.has(entry.name)
           ? "Reflection"
           : null,
@@ -106,7 +106,13 @@ export default function DomainSwitcherMenu({
 
   return (
     <>
-      <div className="px-1 pt-1 pb-2">
+      <div className="relative px-1 pt-1 pb-2">
+        <Search
+          aria-hidden="true"
+          size={15}
+          strokeWidth={1.75}
+          className="pointer-events-none absolute top-[calc(50%-2px)] left-3.5 -translate-y-1/2 text-faint"
+        />
         <input
           ref={field}
           type="search"
@@ -117,21 +123,35 @@ export default function DomainSwitcherMenu({
             setFilter(event.target.value);
           }}
           onKeyDown={(event) => {
+            const items = event.currentTarget
+              .closest("[role=menu]")
+              ?.querySelectorAll<HTMLElement>("[role=menuitem]");
             if (event.key === "ArrowDown") {
               event.preventDefault();
-              event.currentTarget
-                .closest("[role=menu]")
-                ?.querySelector<HTMLElement>("[role=menuitem]")
-                ?.focus();
+              items?.[0]?.focus();
+            } else if (event.key === "Enter" && shown.length === 1) {
+              // One match left: Enter opens it, as a click on its row would.
+              event.preventDefault();
+              items?.[1]?.click();
             } else if (event.key !== "Escape") {
               // The menu's typeahead would take every letter otherwise.
               event.stopPropagation();
             }
           }}
-          className={`h-8 w-full rounded-lg border border-hair-strong bg-raised px-2.5 text-[13px] text-ink outline-none placeholder:text-faint ${FOCUS_RING}`}
+          className={`h-8 w-full rounded-lg border border-hair-strong bg-raised pr-2.5 pl-8 text-[13px] text-ink outline-none placeholder:text-faint ${FOCUS_RING}`}
         />
       </div>
-      <DropdownMenu.Item asChild className={ROW}>
+      <DropdownMenu.Item
+        asChild
+        className={ROW}
+        onKeyDown={(event) => {
+          // Up from the first row goes back to the field above it.
+          if (event.key === "ArrowUp") {
+            event.preventDefault();
+            field.current?.focus();
+          }
+        }}
+      >
         <Link to="/">
           <House
             aria-hidden="true"
@@ -171,9 +191,10 @@ export default function DomainSwitcherMenu({
               )}
             </span>
             <span className="truncate">{row.name}</span>
+            {row.name === domain && <span className="sr-only">(current)</span>}
             <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-faint tabular-nums">
               {row.chip !== null && (
-                <Chip variant={row.chip === "read-only" ? "neutral" : "accent"}>
+                <Chip variant={row.chip === "view only" ? "neutral" : "accent"}>
                   {row.chip}
                 </Chip>
               )}
