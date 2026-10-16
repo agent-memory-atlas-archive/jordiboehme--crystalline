@@ -853,6 +853,37 @@ async fn a_move_onto_a_file_or_of_a_missing_file_changes_nothing() {
     );
 }
 
+/// A move keeps the extension, in any letter case, and a refusal changes
+/// nothing: no page is rewritten and no file moves.
+#[tokio::test]
+async fn a_move_keeps_the_extension_and_a_refusal_changes_nothing() {
+    let fx = reflecting().await;
+    fx.engine
+        .reflection_asset_write("eng", "assets/a.png", PNG.to_vec(), &person())
+        .await
+        .unwrap();
+    let err = fx
+        .engine
+        .move_reflection_asset("eng", "assets/a.png", "assets/a.jpg", &agent())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("keeps the .png extension"), "{err}");
+    assert_eq!(
+        std::fs::read(fx.root.join("reflections/assets/a.png")).unwrap(),
+        PNG
+    );
+    assert!(!fx.root.join("reflections/assets/a.jpg").exists());
+    fx.engine
+        .move_reflection_asset("eng", "assets/a.png", "assets/a.PNG", &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(fx.root.join("reflections/assets/a.PNG")).unwrap(),
+        PNG
+    );
+}
+
 /// A read-only domain freezes the files: no add, replace, move or remove.
 #[tokio::test]
 async fn a_read_only_domain_freezes_the_files() {

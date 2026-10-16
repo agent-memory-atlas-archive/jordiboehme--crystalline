@@ -8,6 +8,7 @@
 
 use crystalline_core::reflection as r;
 
+use super::asset_home::refuse_extension_change;
 use super::reflection::rooms_to_rewrite;
 use super::*;
 use crate::scope::{ReflectionCaller, ReflectionRight, reflection_right_word};
@@ -156,6 +157,7 @@ impl Engine {
         // than that a page is open.
         validate_attachment_path(from)?;
         validate_attachment_path(to)?;
+        refuse_extension_change(from, to)?;
         if from == to {
             return Err(EngineError::Invalid(format!(
                 "'{from}' already is at '{to}'"

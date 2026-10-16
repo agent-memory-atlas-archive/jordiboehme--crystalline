@@ -458,6 +458,7 @@ impl Engine {
             .await?;
         validate_attachment_path(from)?;
         validate_attachment_path(to)?;
+        refuse_extension_change(from, to)?;
         let (domain_id, source) = self.domain_source(domain).await?;
         let ContentSource::File { root } = &source else {
             return Err(match home {
@@ -660,6 +661,23 @@ impl Engine {
     }
 }
 
+/// A move keeps the file's extension, in any letter case: the bytes of a PNG
+/// renamed to `.jpg` would be served as `image/jpeg`. `flow.png` to
+/// `flow.PNG` is fine.
+pub(crate) fn refuse_extension_change(from: &str, to: &str) -> Result<()> {
+    let ext = |path: &str| {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        name.rsplit_once('.')
+            .map(|(_, ext)| ext.to_ascii_lowercase())
+    };
+    match ext(from) {
+        Some(kept) if ext(to).as_deref() != Some(kept.as_str()) => Err(EngineError::Invalid(
+            format!("'{from}' cannot move to '{to}': a move keeps the .{kept} extension"),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// The row a moved file gets when its stored row still describes it: the
 /// same bytes at the new path, the mime read off the new name.
 fn moved_row(prior: AttachmentRow, to: &str) -> Result<AttachmentRow> {
@@ -679,6 +697,57 @@ fn moved_row(prior: AttachmentRow, to: &str) -> Result<AttachmentRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00flow";
+
+    async fn engine_over(root: &Path) -> Engine {
+        let store = crystalline_index::TursoStore::open_in_memory()
+            .await
+            .unwrap();
+        let mut config = GlobalConfig::default();
+        config
+            .domains
+            .insert("eng".to_string(), DomainEntry::file(root));
+        let engine = Engine::new(Arc::new(Mutex::new(store)), config, None, None);
+        engine.sync(None).await.unwrap();
+        engine
+    }
+
+    #[tokio::test]
+    async fn a_move_keeps_the_extension_in_both_homes_and_changes_nothing_when_refused() {
+        for home in [AssetHome::Engram, AssetHome::Reflection] {
+            let tmp = tempfile::tempdir().unwrap();
+            let engine = engine_over(tmp.path()).await;
+            let rel = |name: &str| home.on_disk_rel(tmp.path(), &format!("assets/{name}"));
+            let src = tmp.path().join(rel("flow.png"));
+            std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+            std::fs::write(&src, PNG).unwrap();
+            engine.sync(None).await.unwrap();
+
+            for to in ["assets/flow.jpg", "assets/flow.png.jpg"] {
+                let err = engine
+                    .asset_move_in(home, "eng", "assets/flow.png", to)
+                    .await
+                    .unwrap_err();
+                assert!(
+                    matches!(&err, EngineError::Invalid(m) if m.contains("keeps the .png extension")),
+                    "{home:?} {to}: {err}"
+                );
+                assert_eq!(std::fs::read(&src).unwrap(), PNG, "{home:?} {to}");
+                assert!(!tmp.path().join(rel("flow.jpg")).exists());
+            }
+
+            engine
+                .asset_move_in(home, "eng", "assets/flow.png", "assets/sub/flow.PNG")
+                .await
+                .unwrap();
+            assert!(!src.exists());
+            assert_eq!(
+                std::fs::read(tmp.path().join(rel("sub/flow.PNG"))).unwrap(),
+                PNG
+            );
+        }
+    }
 
     #[test]
     fn the_engram_home_is_assets_at_the_domain_root() {
