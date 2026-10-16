@@ -246,6 +246,127 @@ async fn every_update_trigger() {
     );
 }
 
+/// The home's summary counts what the review's queue counts, on a domain
+/// that owes every kind of work at once: a person's edit (feedback), a
+/// changed and a retired source, a page off the pact's structure, a pact
+/// edit, an unreflected engram and an open thread. `updates` is the queue's
+/// `kinds.update`, and `pages_to_update` the distinct pages of those rows.
+#[tokio::test]
+async fn the_summary_counts_the_updates_the_review_queues() {
+    let pact = "# Pact\n\n## Structure\n\n- guides/*.md\n";
+    let fx = curated(&[(
+        "notes/loose.md",
+        &engram("Loose", "notes/loose", "- [fact] nobody reflected this"),
+    )])
+    .await;
+    fx.engine
+        .write_reflection(&write("PACT.md", pact), &agent())
+        .await
+        .unwrap();
+    let pact_ids: Vec<String> = crystalline_core::reflection::split_sections(
+        &std::fs::read_to_string(fx.root.join("reflections/PACT.md")).unwrap(),
+    )
+    .into_iter()
+    .filter_map(|s| s.id)
+    .collect();
+    fx.engine
+        .settle_reflection("eng", "PACT.md", &pact_ids, "kept", &agent())
+        .await
+        .unwrap();
+    // One source changes, the other retires.
+    std::fs::write(
+        fx.root.join("runbooks/deploy.md"),
+        engram("Deploy", "runbooks/deploy", "- [fact] deploys run at dawn"),
+    )
+    .unwrap();
+    std::fs::write(
+        fx.root.join("runbooks/rollback.md"),
+        engram(
+            "Rollback",
+            "runbooks/rollback",
+            "- [fact] roll back with the script",
+        )
+        .replace("status: stable", "status: deprecated"),
+    )
+    .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    // A person's edit of the page, a page off the structure, a pact edit.
+    let page = std::fs::read_to_string(fx.root.join("reflections/guides/deploying.md"))
+        .unwrap()
+        .replace(
+            "Deploys run at night.",
+            "Deploys run at night, after the batch.",
+        );
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &page), &person())
+        .await
+        .unwrap();
+    fx.engine
+        .write_reflection(&write("misc/stray.md", "# Stray\n"), &person())
+        .await
+        .unwrap();
+    let edited_pact = std::fs::read_to_string(fx.root.join("reflections/PACT.md")).unwrap()
+        + "\n## Audience\n\nNew people.\n";
+    fx.engine
+        .write_reflection(&write("PACT.md", &edited_pact), &person())
+        .await
+        .unwrap();
+    fx.engine
+        .discuss(
+            &DiscussParams {
+                domain: "eng".into(),
+                path: Some("guides/deploying.md".into()),
+                section: Some("Rollback".into()),
+                text: Some("Which script?".into()),
+                ..Default::default()
+            },
+            &person(),
+        )
+        .await
+        .unwrap();
+
+    for caller in [agent(), person()] {
+        let review = fx.engine.reflection_review("eng", &caller).await.unwrap();
+        let summary = fx.engine.reflection_summary("eng", &caller).await.unwrap();
+        let rows = review["queue"]["queue"].as_array().unwrap();
+        let whats: Vec<&str> = rows.iter().filter_map(|r| r["what"].as_str()).collect();
+        for want in [
+            "changed",
+            "source_changed",
+            "source_retired",
+            "off_structure",
+            "pact_changed",
+            "unreflected",
+            "thread",
+        ] {
+            assert!(whats.contains(&want), "{want} missing: {review}");
+        }
+        assert!(
+            review["queue"]["total"].as_u64().unwrap() <= 50,
+            "one page holds the whole queue"
+        );
+        let mut pages: Vec<&str> = rows
+            .iter()
+            .filter(|r| r["kind"] == "update")
+            .filter_map(|r| r["path"].as_str())
+            .filter(|p| !p.is_empty())
+            .collect();
+        pages.sort_unstable();
+        pages.dedup();
+        assert_eq!(
+            pages,
+            ["PACT.md", "guides/deploying.md", "misc/stray.md"],
+            "{review}"
+        );
+        assert_eq!(
+            summary["updates"], review["queue"]["kinds"]["update"],
+            "{summary}"
+        );
+        assert_eq!(summary["pages_to_update"], pages.len(), "{summary}");
+        assert_eq!(summary["waiting_for_the_agent"], 1, "{summary}");
+    }
+}
+
 #[tokio::test]
 async fn a_deleted_source_is_an_update_item_not_an_error() {
     let fx = curated(&[]).await;
