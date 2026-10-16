@@ -23,7 +23,6 @@ import { LazyBoundary } from "./components/LazyBoundary";
 import { Skeleton } from "./components/Skeleton";
 import { lazyChunk } from "./lazyChunk";
 import { domainRoute } from "./paths";
-import DomainHome from "./screens/DomainHome";
 import Home from "./screens/Home";
 import NotFound from "./screens/NotFound";
 import OauthConsent from "./screens/OauthConsent";
@@ -40,6 +39,15 @@ import OauthConsent from "./screens/OauthConsent";
  * waits behind a plain labelled skeleton.
  */
 const Search = lazyChunk(() => import("./screens/Search"));
+
+/**
+ * A domain's front page and its folders, and the domain's settings. Lazy like
+ * the reading screen: the front page draws a MANIFEST through the markdown
+ * renderer, a rail and the engram list, and the settings carry every team
+ * card, none of which the app shell should pay for on every other screen.
+ */
+const DomainHome = lazyChunk(() => import("./screens/DomainHome"));
+const DomainSettings = lazyChunk(() => import("./screens/DomainSettings"));
 const GraphView = lazyChunk(() => import("./screens/GraphView"));
 const Maintenance = lazyChunk(() => import("./screens/Maintenance"));
 
@@ -202,6 +210,8 @@ const REFLECTION_FALLBACK = (
   <Skeleton label="Loading the Reflection" rows={4} />
 );
 
+const DOMAIN_FALLBACK = <Skeleton label="Loading the domain" rows={4} />;
+
 const SEARCH_FALLBACK = <Skeleton label="Loading search" rows={4} />;
 
 const GRAPH_FALLBACK = <Skeleton label="Loading the graph" rows={6} />;
@@ -278,7 +288,22 @@ export function AppRoutes() {
         />
         <Route element={<Layout />}>
           <Route index element={<Home />} />
-          <Route path="/d/:domain" element={<DomainHome />} />
+          <Route
+            path="/d/:domain"
+            element={
+              <LazyBoundary fallback={DOMAIN_FALLBACK}>
+                <DomainHome />
+              </LazyBoundary>
+            }
+          />
+          <Route
+            path="/d/:domain/settings"
+            element={
+              <LazyBoundary fallback={SETTINGS_FALLBACK}>
+                <DomainSettings />
+              </LazyBoundary>
+            }
+          />
           {/*
             The permalink is a path of its own, so it arrives through the
             splat rather than a named param: `/d/eng/e/notes/deep/gamma` is

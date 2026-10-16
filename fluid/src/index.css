@@ -385,6 +385,20 @@
   }
 
   /*
+   * The lead of a domain's front page: the MANIFEST's first paragraph at
+   * 18px in ink-3 (spec 3.3). Through the `lg` token, so large text grows it
+   * with the rest of the document.
+   */
+  .manifest-lead .text-body {
+    font-size: var(--text-lg);
+    line-height: 1.6;
+    color: var(--ink-3);
+  }
+  .manifest-lead .text-body > p:first-child {
+    margin-top: 0;
+  }
+
+  /*
    * Unless the frame says the content has the whole width. Here rather than
    * on any screen: the measure is one rule about every rendered document in
    * the app, and a screen that had to lift its own would be a screen that can

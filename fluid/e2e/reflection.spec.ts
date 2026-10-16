@@ -610,7 +610,8 @@ test.describe.serial("the Reflection journeys", () => {
 
   test("the domain policies card turns a Reflection on", async ({ page }) => {
     await signIn(page, USER, PASSWORD);
-    await page.goto(`d/${OFF_DOMAIN}`);
+    // The policies live on the domain's settings screen.
+    await page.goto(`d/${OFF_DOMAIN}/settings`);
     await expect(
       page.getByRole("navigation", { name: "Domain view" }),
     ).toHaveCount(0);
@@ -637,7 +638,8 @@ test.describe.serial("the Reflection journeys", () => {
     page,
   }) => {
     await signIn(page, USER, PASSWORD);
-    await page.goto(`d/${DOMAIN}`);
+    // The members card is on the domain's settings screen.
+    await page.goto(`d/${DOMAIN}/settings`);
     await expect(
       page.getByRole("combobox", { name: `Level for ${CONTRIBUTOR}` }),
     ).toHaveValue("none");

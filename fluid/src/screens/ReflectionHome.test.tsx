@@ -206,7 +206,9 @@ describe("the doors into the Reflection", () => {
     expect(
       await screen.findByRole("heading", { name: "eng", level: 1 }),
     ).toBeVisible();
-    expect(screen.getByText("Reflection", { selector: "p" })).toBeVisible();
+    expect(
+      await screen.findByText("Reflection", { selector: "p" }),
+    ).toBeVisible();
     // A contributor has one mode, so there is nothing to switch between.
     expect(
       screen.queryByRole("navigation", { name: "Domain view" }),

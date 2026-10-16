@@ -136,7 +136,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     const options = (name: string) =>
@@ -175,7 +175,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
     await userEvent.selectOptions(
       within(card).getByRole("combobox", { name: "Reflection for mem" }),
@@ -204,7 +204,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
     await userEvent.selectOptions(
       within(card).getByRole("combobox", { name: "Level for mem" }),
@@ -229,7 +229,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
     await userEvent.type(
       within(card).getByRole("textbox", { name: "Account" }),
@@ -266,7 +266,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
     await userEvent.type(
       within(card).getByRole("textbox", { name: "Account" }),
@@ -302,7 +302,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     expect(within(card).getByText("Private")).toBeVisible();
@@ -342,7 +342,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     // Neither direction, here or anywhere else on the page: a manager invites
@@ -392,7 +392,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     expect(within(card).queryByRole("combobox")).toBeNull();
@@ -420,7 +420,7 @@ describe("the members card", () => {
       "admin",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     expect(
@@ -455,7 +455,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     expect(
@@ -471,7 +471,7 @@ describe("the members card", () => {
   it("offers a non-admin nothing but the plain shared state", async () => {
     serve({}, "mem", "editor");
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     expect(
@@ -500,7 +500,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.type(within(card).getByLabelText("Account"), "newmem");
@@ -536,7 +536,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.type(within(card).getByLabelText("Account"), "nobody");
@@ -568,7 +568,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.selectOptions(
@@ -605,7 +605,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.click(
@@ -636,7 +636,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     const trigger = within(card).getByRole("button", { name: "Remove mem" });
@@ -675,7 +675,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.click(
@@ -711,7 +711,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.click(
@@ -746,7 +746,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.click(
@@ -786,7 +786,7 @@ describe("the members card", () => {
       "admin",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.click(
@@ -820,7 +820,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     expect(
@@ -857,7 +857,7 @@ describe("the members card", () => {
       "admin",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     const reason =
@@ -934,7 +934,7 @@ describe("the members card", () => {
       "admin",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     const reason =
@@ -984,7 +984,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     const trigger = within(card).getByRole("button", {

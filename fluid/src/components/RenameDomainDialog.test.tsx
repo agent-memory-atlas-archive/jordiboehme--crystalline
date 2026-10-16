@@ -97,8 +97,12 @@ function sentBody(path: string, method: string): unknown {
 }
 
 async function openDialog(): Promise<HTMLElement> {
+  // A row of the front page's More actions menu (spec 6.1).
   await userEvent.click(
-    await screen.findByRole("button", { name: "Rename domain" }),
+    await screen.findByRole("button", { name: "More actions" }),
+  );
+  await userEvent.click(
+    await screen.findByRole("menuitem", { name: "Rename domain" }),
   );
   return screen.findByRole("dialog", { name: "Rename domain" });
 }
@@ -466,7 +470,8 @@ describe("the rename dialog", () => {
     // exactly what exposed the StrictMode bug, since none of them touch
     // the rename summary directly. The summary must still be there once
     // they have.
-    await screen.findByRole("heading", { name: "Members" });
+    // The rail's Members row carries its value once the members read lands.
+    await screen.findByText("everyone");
     expect(screen.getByText("Renamed from eng.")).toBeVisible();
   });
 

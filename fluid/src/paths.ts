@@ -151,6 +151,16 @@ export function manifestEditRoute(domain: string): string {
 }
 
 /**
+ * A domain's settings: members, review mode, policies, backup and the danger
+ * zone, off the front page so the MANIFEST reads as the page. `part` is the
+ * block a link opens at (`members`, `policies`, ...), as a fragment.
+ */
+export function domainSettingsRoute(domain: string, part?: string): string {
+  const base = `${domainRoute(domain)}/settings`;
+  return part === undefined ? base : `${base}#${part}`;
+}
+
+/**
  * What the domain page asks the MANIFEST editor to write into the buffer, in
  * the navigation state of the hop between them.
  *

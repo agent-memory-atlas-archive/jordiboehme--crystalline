@@ -958,15 +958,20 @@ describe("the sidebar inside a domain", () => {
     // went, not only where they arrived.
     const body = await screen.findByRole("main");
     const user = userEvent.setup();
-    await user.click(within(body).getByRole("button", { name: "notes" }));
+    await user.click(
+      await within(body).findByRole("button", { name: "notes" }),
+    );
     await user.click(await within(body).findByRole("link", { name: /Beta/ }));
 
     await waitFor(() => {
       expect(folder).toHaveAttribute("aria-expanded", "true");
     });
-    expect(
-      await within(nav).findByRole("link", { name: "Beta" }),
-    ).toHaveAttribute("aria-current", "page");
+    // The engram screen is its own chunk, and the navigation holds the old
+    // screen until it arrives, so the row turns current with it.
+    const beta = await within(nav).findByRole("link", { name: "Beta" });
+    await waitFor(() => {
+      expect(beta).toHaveAttribute("aria-current", "page");
+    });
   });
 
   it("sets a retired engram apart in the tree rather than dropping it", async () => {

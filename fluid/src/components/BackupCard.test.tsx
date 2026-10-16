@@ -75,7 +75,7 @@ describe("the backup card", () => {
   it("offers the archive round trip to an admin", async () => {
     serve({}, "admin");
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await screen.findByRole("region", { name: "Backup" });
 
     // A link the browser saves rather than a fetch the app holds in memory:
@@ -95,7 +95,7 @@ describe("the backup card", () => {
   it("opens the import dialog from its own button", async () => {
     serve({}, "admin");
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await screen.findByRole("region", { name: "Backup" });
 
     await userEvent.click(
@@ -110,8 +110,11 @@ describe("the backup card", () => {
   it("draws no card at all below admin", async () => {
     serve();
 
-    renderApp("/d/eng");
-    await screen.findByRole("heading", { level: 1, name: "eng" });
+    renderApp("/d/eng/settings");
+    await screen.findByRole("heading", {
+      level: 1,
+      name: "Domain settings",
+    });
 
     // Both endpoints are admin-only, so neither control is drawn for anybody
     // who would be refused at it, and the box they live in goes with them.

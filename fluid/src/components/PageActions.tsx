@@ -22,22 +22,39 @@ export const DESTRUCTIVE_ITEM = `${ITEM_CLASSES} text-red-700 dark:text-red-300`
 /** A secondary button, 32px tall with a leading pencil: spec 3.1. */
 export function EditLink({
   to,
+  label = "Edit",
+  disabledReasonId,
   onPointerEnter,
   onFocus,
 }: {
   to: string;
+  /** The visible name; "Edit MANIFEST" on a domain's front page. */
+  label?: string;
+  /**
+   * The id of the sentence saying why the link will not act right now. Set,
+   * the link stays reachable and announced (`aria-disabled`) but goes nowhere.
+   */
+  disabledReasonId?: string | undefined;
   onPointerEnter?: () => void;
   onFocus?: () => void;
 }): ReactElement {
+  const disabled = disabledReasonId !== undefined;
   return (
     <Link
       to={to}
+      aria-disabled={disabled || undefined}
+      aria-describedby={disabledReasonId}
+      onClick={(event) => {
+        if (disabled) {
+          event.preventDefault();
+        }
+      }}
       onPointerEnter={onPointerEnter}
       onFocus={onFocus}
-      className={`inline-flex h-8 items-center gap-1.5 rounded border border-slate-300 bg-white px-3 text-sm font-medium text-ink hover:bg-slate-100 dark:border-slate-700 dark:bg-transparent dark:hover:bg-slate-800 ${FOCUS_RING}`}
+      className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded border border-slate-300 bg-white px-3 text-sm font-medium whitespace-nowrap text-ink hover:bg-slate-100 aria-disabled:cursor-default aria-disabled:opacity-50 dark:border-slate-700 dark:bg-transparent dark:hover:bg-slate-800 ${FOCUS_RING}`}
     >
       <Pencil aria-hidden="true" size={14} strokeWidth={1.75} />
-      Edit
+      {label}
     </Link>
   );
 }

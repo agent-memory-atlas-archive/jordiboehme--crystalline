@@ -408,9 +408,11 @@ test("the Rename dialog opens from the domain page and can be cancelled", async 
 }) => {
   await page.goto(`d/${DOMAIN}`);
 
-  // "Rename domain" is the launcher; the smoke signs in as the admin
-  // `run-smoke.sh` creates through setup, who sees it on every domain here.
-  await page.getByRole("button", { name: "Rename domain" }).click();
+  // "Rename domain" is the launcher, a row of the front page's More actions
+  // menu; the smoke signs in as the admin `run-smoke.sh` creates through
+  // setup, who sees it on every domain here.
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Rename domain" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Rename domain" });
   await expect(dialog).toBeVisible();
@@ -434,11 +436,12 @@ test("the Rename dialog opens from the domain page and can be cancelled", async 
 test("the same rename dialog also opens from the policies card's 'Change name'", async ({
   page,
 }) => {
-  await page.goto(`d/${DOMAIN}`);
+  await page.goto(`d/${DOMAIN}/settings`);
 
   // A second launcher for the one dialog above, not a second dialog: the
-  // accessible name is distinct from the header's own "Rename domain" so
-  // this test can address it on its own.
+  // accessible name is distinct from the menu's own "Rename domain" so
+  // this test can address it on its own. The policies live on the domain's
+  // settings screen.
   const policies = page.getByRole("region", { name: "Domain policies" });
   await policies.getByRole("button", { name: "Change name" }).click();
 
@@ -550,8 +553,9 @@ test("an undeclared MANIFEST section explains itself and can be started", async 
   // The fixture MANIFEST declares Scope and When to Use and nothing else, so
   // Tag aliases is the box with nothing in it. What it says and the example it
   // shows are the server's own registry, which is the half a jsdom test cannot
-  // reach: there the payload is a fixture, here it is the daemon.
-  await page.goto(`d/${DOMAIN}`);
+  // reach: there the payload is a fixture, here it is the daemon. The
+  // configuration sections are started from the domain's settings screen.
+  await page.goto(`d/${DOMAIN}/settings`);
   const aliases = page.getByRole("region", { name: "Tag aliases" });
   await expect(
     aliases.getByText(/Spellings that fold into one canonical tag/),
@@ -662,20 +666,23 @@ test("a read-only domain shows its lock and offers no edit until the owner switc
   await expect(page.getByText("read-only", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Edit" })).toHaveCount(0);
 
-  // The owner (the smoke's admin) switches it off in the domain policies...
-  await page.goto(`d/${LOCKED_DOMAIN}`);
+  // The owner (the smoke's admin) switches it off in the domain policies,
+  // on the domain's settings screen...
+  await page.goto(`d/${LOCKED_DOMAIN}/settings`);
   const policies = page.getByRole("region", { name: "Domain policies" });
-  await policies
-    .getByRole("combobox", { name: "read_only" })
-    .selectOption("off");
-  await expect(page.getByText("read-only", { exact: true })).toHaveCount(0);
+  const lock = policies.getByRole("combobox", { name: "read_only" });
+  await lock.selectOption("off");
+  await expect(lock).toHaveValue("off");
+  await page.goto(`d/${LOCKED_DOMAIN}`);
   await expect(page.getByRole("button", { name: "New engram" })).toBeVisible();
+  await expect(page.getByText("read-only", { exact: true })).toHaveCount(0);
 
   // ...and on again, which asks first, so the journey ends as it started.
-  await policies
-    .getByRole("combobox", { name: "read_only" })
-    .selectOption("on");
+  await page.goto(`d/${LOCKED_DOMAIN}/settings`);
+  await lock.selectOption("on");
   await policies.getByRole("button", { name: "Turn on read-only" }).click();
+  await expect(lock).toHaveValue("on");
+  await page.goto(`d/${LOCKED_DOMAIN}`);
   await expect(page.getByText("read-only", { exact: true })).toBeVisible();
 });
 
@@ -897,9 +904,11 @@ test("a domain is registered, filled from an archive and unregistered", async ({
   await expect(
     page.getByRole("heading", { name: DOMAIN, level: 1 }),
   ).toBeVisible();
+  // A row of the front page's More actions menu.
+  await page.getByRole("button", { name: "More actions" }).click();
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    page.getByRole("link", { name: "Download archive" }).click(),
+    page.getByRole("menuitem", { name: "Download archive" }).click(),
   ]);
   expect(download.suggestedFilename()).toBe(`${DOMAIN}-archive.zip`);
   const archivePath = await download.path();
@@ -915,7 +924,8 @@ test("a domain is registered, filled from an archive and unregistered", async ({
   await expect(
     page.getByRole("heading", { name: RESTORE_DOMAIN, level: 1 }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Import archive" }).click();
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Import archive" }).click();
   await page.getByLabel("Archive file").setInputFiles(archivePath);
   await page.getByRole("button", { name: "Preview" }).click();
 
@@ -928,8 +938,7 @@ test("a domain is registered, filled from an archive and unregistered", async ({
       .getByRole("row", { name: /MANIFEST\.md/ }),
   ).toContainText("ignored");
 
-  // `Import` exactly, which is the only control here that writes: `Import
-  // archive` is the launcher on the screen behind the dialog.
+  // `Import` exactly, which is the only control here that writes.
   await page.getByRole("button", { name: "Import", exact: true }).click();
   await expect(
     page.getByRole("table", { name: "What the import did" }),
@@ -955,7 +964,9 @@ test("a domain is registered, filled from an archive and unregistered", async ({
   // Unregistering, behind the second press that says what is lost - and what
   // is not: the files stay, which is the sentence the spec pins. The control
   // lives in the danger zone, behind the domain's own name typed into the
-  // field it opens.
+  // field it opens, on the domain's settings screen, reached from the menu.
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Domain settings" }).click();
   const dangerZone = page.getByRole("region", { name: "Danger zone" });
   await dangerZone.getByRole("button", { name: "Unregister domain" }).click();
   await expect(dangerZone.getByText(/files stay on disk/i)).toBeVisible();

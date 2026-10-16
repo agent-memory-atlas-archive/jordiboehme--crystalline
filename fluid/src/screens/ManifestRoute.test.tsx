@@ -98,7 +98,7 @@ describe("the MANIFEST route", () => {
       await screen.findByRole("heading", { name: "eng", level: 1 }),
     ).toBeInTheDocument();
     expect(
-      await screen.findByRole("heading", { name: "Manifest", level: 2 }),
+      await screen.findByRole("article", { name: "MANIFEST" }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "MANIFEST", level: 1 }),
