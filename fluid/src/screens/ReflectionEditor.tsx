@@ -63,7 +63,15 @@ import { AttachButton } from "../editor/AttachButton";
 import CmEditor from "../editor/CmEditor";
 import type { Draft } from "../editor/drafts";
 import { assetRefsIn } from "../editor/imageFormat";
-import { clearDraft, readDraft, writeDraft } from "../editor/drafts";
+import {
+  addOffer,
+  clearDraft,
+  OFFER_LIMIT,
+  readDraft,
+  readOffers,
+  removeOffers,
+  writeDraft,
+} from "../editor/drafts";
 import { hiddenIdLines } from "../editor/hiddenIdLines";
 import { KeptTextNotice } from "../editor/KeptTextNotice";
 import { imagePreviews } from "../editor/imagePreviews";
@@ -75,6 +83,7 @@ import { SaveState } from "../editor/SaveState";
 import { baseExtensions } from "../editor/setup";
 import { useAttachmentUploads } from "../editor/useAttachmentUploads";
 import { useRoomExit } from "../editor/useRoomExit";
+import { formatInstant } from "../format";
 import { reflectionEditRoute, reflectionPageRoute } from "../paths";
 import { movePageDrafts } from "../reflectionPageDrafts";
 import { firstTitle, stripIdLines, stripProvenance } from "../reflectionText";
@@ -342,6 +351,13 @@ function differsFromRoom(draft: Draft, room: string): boolean {
   return kept !== stripIdLines(room);
 }
 
+/** When an offered text was set aside, as the offer lists it. */
+function offerTime(offer: Draft): string {
+  return offer.savedAt === ""
+    ? "an earlier session"
+    : formatInstant(offer.savedAt);
+}
+
 /** The editor's switch for a room that has ended: the text stays, typing stops. */
 function readOnly(ended: boolean): Extension {
   return ended ? [View.editable.of(false), EditorState.readOnly.of(true)] : [];
@@ -427,26 +443,32 @@ function Surface({
 
   /*
    * What this mount finds: a copy left under `key` by an earlier mount (a
-   * refusal, a lost connection, an epoch gap) and an offer under `offerKey`.
-   * Either is offered when it says something the room does not; the copy is
-   * the newer work, so it wins and moves to the offer key (an older offer
-   * that differs as well is then replaced). Read here, moved by the effect
-   * below, so a render stays free of storage writes.
+   * refusal, a lost connection, an epoch gap) and the short history of
+   * offers under `offerKey` (`readOffers`, newest first). Each is offered
+   * when it says something the room does not; the copy is the newer work,
+   * so it joins the history as its newest entry rather than replacing an
+   * offer nobody answered. Read here, moved by the effect below, so a render
+   * stays free of storage writes.
    */
   const [found] = useState(() => {
     const room = ytext.toJSON();
     const copy = readDraft(account, domain, key);
-    const offered = readDraft(account, domain, offerKey);
+    const offered = readOffers(account, domain, offerKey);
     const copyDiffers = copy !== null && differsFromRoom(copy, room);
-    const offerDiffers = offered !== null && differsFromRoom(offered, room);
+    const differing = offered.filter((offer) => differsFromRoom(offer, room));
+    const offers =
+      copy !== null && copyDiffers
+        ? [copy, ...differing.filter((offer) => offer.content !== copy.content)]
+        : differing;
     return {
       copy,
-      offered,
       copyDiffers,
-      offer: copyDiffers ? copy : offerDiffers ? offered : null,
+      // Offers that only repeat the room: dropped by the effect below.
+      repeats: offered.filter((offer) => !differing.includes(offer)),
+      offers: offers.slice(0, OFFER_LIMIT),
     };
   });
-  const [kept, setKept] = useState<Draft | null>(found.offer);
+  const [kept, setKept] = useState<Draft[]>(found.offers);
   // Whether the copy under `key` is this mount's own.
   const wrote = useRef(false);
   const [resolving, setResolving] = useState(false);
@@ -583,32 +605,43 @@ function Surface({
   );
 
   /**
-   * Clear the offer key, but only while it still holds the offer on screen:
-   * text set aside after the banner appeared ("Take the file version")
-   * is newer, and stays for the next mount to offer.
+   * Drop the offers on screen from the offer key, and only those: text set
+   * aside after the note appeared ("Take the file version") is newer, and
+   * stays for the next mount to offer.
    */
-  const dropOffer = (shown: Draft) => {
-    const stored = readDraft(account, domain, offerKey);
-    if (
-      stored !== null &&
-      stored.content === shown.content &&
-      stored.savedAt === shown.savedAt
-    ) {
-      clearDraft(account, domain, offerKey);
-    }
+  const dropOffers = (shown: readonly Draft[]) => {
+    removeOffers(account, domain, offerKey, shown);
+  };
+
+  /**
+   * Put one offered text back as the room's text, in one change so the
+   * room's Undo takes it back. It answers the offer: every offer on screen
+   * goes, and the text is owed until the room saves it (the copy follows
+   * it there).
+   */
+  const putBack = (offer: Draft) => {
+    const text = offer.content.replace(/\r\n/g, "\n");
+    ytext.doc?.transact(() => {
+      ytext.delete(0, ytext.length);
+      ytext.insert(0, text);
+    });
+    dropOffers(kept);
+    setOwed(true);
+    setKept([]);
+    view?.focus();
   };
 
   // Declared before the copy below, so a copy this mount writes at once is
   // never the one moved away here.
   useEffect(() => {
+    if (found.repeats.length > 0) {
+      removeOffers(account, domain, offerKey, found.repeats);
+    }
     if (found.copy !== null) {
       clearDraft(account, domain, key);
       if (found.copyDiffers) {
-        writeDraft(account, domain, offerKey, found.copy);
+        addOffer(account, domain, offerKey, found.copy);
       }
-    }
-    if (found.offer === null && found.offered !== null) {
-      clearDraft(account, domain, offerKey); // only repeats the room
     }
   }, [found, account, domain, key, offerKey]);
 
@@ -797,24 +830,51 @@ function Surface({
         waits for a choice, it is not news that happened while the person
         was looking.
       */}
-      {kept !== null && (
+      {kept.length > 0 && (
         <aside role="note" className={AMBER_BANNER}>
-          <span>Text from an earlier session was kept.</span>
-          {!ended && (
+          {kept.length === 1 ? (
+            <span>Text from an earlier session was kept.</span>
+          ) : (
+            <>
+              <span className="basis-full">{`Texts from ${String(kept.length)} earlier sessions were kept. Newest first.`}</span>
+              {/*
+                A short history (the last few per page), by time. Choosing
+                one answers the offer: the text goes back and the others on
+                screen go with the note, as Discard all would drop them.
+              */}
+              <ul className="flex basis-full flex-col gap-1">
+                {kept.map((offer, index) => {
+                  const when = offerTime(offer);
+                  return (
+                    <li
+                      key={`${String(index)}-${offer.savedAt}`}
+                      className="flex flex-wrap items-baseline gap-3"
+                    >
+                      <span>{when}</span>
+                      {!ended && (
+                        <button
+                          type="button"
+                          aria-label={`Put it back: the text from ${when}`}
+                          className={BANNER_BUTTON}
+                          onClick={() => {
+                            putBack(offer);
+                          }}
+                        >
+                          Put it back
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
+          {!ended && kept.length === 1 && (
             <button
               type="button"
               className={BANNER_BUTTON}
               onClick={() => {
-                const text = kept.content.replace(/\r\n/g, "\n");
-                ytext.doc?.transact(() => {
-                  ytext.delete(0, ytext.length);
-                  ytext.insert(0, text);
-                });
-                // Owed until the room saves it: the copy follows it there.
-                dropOffer(kept);
-                setOwed(true);
-                setKept(null);
-                view?.focus();
+                putBack(kept[0] as Draft);
               }}
             >
               Put it back
@@ -824,12 +884,12 @@ function Surface({
             type="button"
             className={BANNER_BUTTON}
             onClick={() => {
-              dropOffer(kept);
-              setKept(null);
+              dropOffers(kept);
+              setKept([]);
               view?.focus();
             }}
           >
-            Discard
+            {kept.length === 1 ? "Discard" : "Discard all"}
           </button>
         </aside>
       )}
@@ -910,7 +970,7 @@ function Surface({
             if (choice === "theirs") {
               // Taking their text drops this tab's: set it aside for the
               // next mount to offer back.
-              writeDraft(account, domain, offerKey, {
+              addOffer(account, domain, offerKey, {
                 content: ytext.toJSON(),
                 baseChecksum: "",
                 savedAt: new Date().toISOString(),

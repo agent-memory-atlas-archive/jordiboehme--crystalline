@@ -1,6 +1,16 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { clearDraft, draftKey, readDraft, writeDraft } from "./drafts";
+import {
+  addOffer,
+  clearDraft,
+  draftKey,
+  moveDraft,
+  OFFER_LIMIT,
+  readDraft,
+  readOffers,
+  removeOffers,
+  writeDraft,
+} from "./drafts";
 
 describe("draft snapshots", () => {
   beforeEach(() => {
@@ -32,5 +42,54 @@ describe("draft snapshots", () => {
   it("treats an unreadable stored value as no draft", () => {
     localStorage.setItem(draftKey("ada", "eng", "alpha"), "{not json");
     expect(readDraft("ada", "eng", "alpha")).toBeNull();
+  });
+
+  describe("the offer history", () => {
+    const at = (n: number) => ({
+      content: `text ${String(n)}`,
+      baseChecksum: "",
+      savedAt: `2026-10-16T0${String(n)}:00:00Z`,
+    });
+
+    it("keeps the last few, newest first, each text once", () => {
+      for (const n of [1, 2, 3, 4]) {
+        addOffer("ada", "eng", "offer", at(n));
+      }
+      expect(readOffers("ada", "eng", "offer")).toEqual([at(4), at(3), at(2)]);
+      expect(OFFER_LIMIT).toBe(3);
+      // The same text again takes its old place rather than standing twice.
+      addOffer("ada", "eng", "offer", { ...at(2), savedAt: "later" });
+      expect(
+        readOffers("ada", "eng", "offer").map((offer) => offer.savedAt),
+      ).toEqual(["later", at(4).savedAt, at(3).savedAt]);
+      // A reader of one draft still finds the newest text.
+      expect(readDraft("ada", "eng", "offer")?.content).toBe("text 2");
+    });
+
+    it("reads a slot written as one draft as a history of one", () => {
+      writeDraft("ada", "eng", "offer", at(1));
+      expect(readOffers("ada", "eng", "offer")).toEqual([at(1)]);
+    });
+
+    it("drops only the offers named, and clears the slot when none is left", () => {
+      addOffer("ada", "eng", "offer", at(1));
+      addOffer("ada", "eng", "offer", at(2));
+      removeOffers("ada", "eng", "offer", [at(2)]);
+      expect(readOffers("ada", "eng", "offer")).toEqual([at(1)]);
+      removeOffers("ada", "eng", "offer", [at(1)]);
+      expect(localStorage.getItem(draftKey("ada", "eng", "offer"))).toBeNull();
+    });
+
+    it("moves a whole history with its page", () => {
+      addOffer("ada", "eng", "offer", at(1));
+      addOffer("ada", "eng", "offer", at(2));
+      moveDraft(
+        "ada",
+        { domain: "eng", slot: "offer" },
+        { domain: "ops", slot: "offer" },
+      );
+      expect(readOffers("ada", "eng", "offer")).toEqual([]);
+      expect(readOffers("ada", "ops", "offer")).toEqual([at(2), at(1)]);
+    });
   });
 });

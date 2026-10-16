@@ -12,7 +12,8 @@ import { ApiProblem, api } from "../api/client";
 import { TEXT_NAME } from "../collab/provider";
 import type { CollabSession } from "../collab/useCollabSession";
 import { useCollabSession } from "../collab/useCollabSession";
-import { readDraft, writeDraft } from "../editor/drafts";
+import { addOffer, readDraft, readOffers, writeDraft } from "../editor/drafts";
+import { formatInstant } from "../format";
 import {
   answersFor,
   meResponse,
@@ -626,6 +627,81 @@ describe("the reflection editor's older offer", () => {
       expect(readDraft("ann", "eng", OFFER)?.content).toBe(`${PAGE}mine\n`);
     });
   }
+});
+
+describe("the reflection editor's offer history", () => {
+  const at = (hour: string, content: string) => ({
+    content,
+    baseChecksum: "",
+    savedAt: `2026-10-16T${hour}:00:00Z`,
+  });
+
+  it("keeps an unanswered offer when a newer copy comes, and lists both by time", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    addOffer("ann", "eng", OFFER, at("08", "first try\n"));
+    writeDraft("ann", "eng", KEY, at("09", "second try\n"));
+    await openEditor();
+    const note = screen.getByRole("note");
+    expect(note).toHaveTextContent(
+      "Texts from 2 earlier sessions were kept. Newest first.",
+    );
+    const items = within(note).getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent(formatInstant("2026-10-16T09:00:00Z"));
+    expect(items[1]).toHaveTextContent(formatInstant("2026-10-16T08:00:00Z"));
+    // The newer copy joined the history instead of replacing the offer.
+    expect(
+      readOffers("ann", "eng", OFFER).map((offer) => offer.content),
+    ).toEqual(["second try\n", "first try\n"]);
+
+    // The older one is chosen: it goes back, and the offer is answered.
+    await userEvent.click(
+      within(items[1] as HTMLElement).getByRole("button", {
+        name: `Put it back: the text from ${formatInstant("2026-10-16T08:00:00Z")}`,
+      }),
+    );
+    expect(session.get().ytext?.toJSON()).toBe("first try\n");
+    expect(screen.queryByRole("note")).toBeNull();
+    expect(readOffers("ann", "eng", OFFER)).toEqual([]);
+  });
+
+  it("keeps the last three and drops them all on Discard all", async () => {
+    serve("edit");
+    live(room(PAGE));
+    for (const [hour, text] of [
+      ["06", "one\n"],
+      ["07", "two\n"],
+      ["08", "three\n"],
+      ["09", "four\n"],
+    ] as const) {
+      addOffer("ann", "eng", OFFER, at(hour, text));
+    }
+    await openEditor();
+    const note = screen.getByRole("note");
+    expect(within(note).getAllByRole("listitem")).toHaveLength(3);
+    expect(note).not.toHaveTextContent(formatInstant("2026-10-16T06:00:00Z"));
+    await userEvent.click(
+      within(note).getByRole("button", { name: "Discard all" }),
+    );
+    expect(screen.queryByRole("note")).toBeNull();
+    expect(readOffers("ann", "eng", OFFER)).toEqual([]);
+    expect(screen.getByRole("textbox", { name: "Page source" })).toHaveFocus();
+  });
+
+  it("leaves out an offer that only repeats the room", async () => {
+    serve("edit");
+    live(room(PAGE));
+    addOffer("ann", "eng", OFFER, at("07", PAGE));
+    addOffer("ann", "eng", OFFER, at("08", "other\n"));
+    await openEditor();
+    expect(
+      screen.getByText("Text from an earlier session was kept."),
+    ).toBeVisible();
+    expect(
+      readOffers("ann", "eng", OFFER).map((offer) => offer.content),
+    ).toEqual(["other\n"]);
+  });
 });
 
 describe("the reflection editor after it has opened", () => {

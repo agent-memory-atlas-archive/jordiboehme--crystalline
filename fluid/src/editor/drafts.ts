@@ -46,21 +46,28 @@ export function readDraft(
     return null;
   }
   try {
-    const parsed = JSON.parse(raw) as Partial<Draft>;
-    if (
-      typeof parsed.content !== "string" ||
-      typeof parsed.baseChecksum !== "string"
-    ) {
-      return null;
-    }
-    return {
-      content: parsed.content,
-      baseChecksum: parsed.baseChecksum,
-      savedAt: typeof parsed.savedAt === "string" ? parsed.savedAt : "",
-    };
+    return parseDraft(JSON.parse(raw));
   } catch {
     return null;
   }
+}
+
+function parseDraft(value: unknown): Draft | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const parsed = value as Partial<Draft>;
+  if (
+    typeof parsed.content !== "string" ||
+    typeof parsed.baseChecksum !== "string"
+  ) {
+    return null;
+  }
+  return {
+    content: parsed.content,
+    baseChecksum: parsed.baseChecksum,
+    savedAt: typeof parsed.savedAt === "string" ? parsed.savedAt : "",
+  };
 }
 
 /** Write a snapshot; a refused storage write is a lost snapshot, not an error. */
@@ -106,10 +113,125 @@ export function moveDraft(
   if (from.domain === to.domain && from.slot === to.slot) {
     return;
   }
-  const draft = readDraft(user, from.domain, from.slot);
-  if (draft === null || readDraft(user, to.domain, to.slot) !== null) {
+  if (
+    readDraft(user, from.domain, from.slot) === null ||
+    readDraft(user, to.domain, to.slot) !== null
+  ) {
     return;
   }
-  writeDraft(user, to.domain, to.slot, draft);
+  // The stored text as it is, so a slot holding a history of offers (see
+  // `readOffers`) moves whole rather than as its newest entry alone.
+  try {
+    const raw = localStorage.getItem(draftKey(user, from.domain, from.slot));
+    if (raw === null) {
+      return;
+    }
+    localStorage.setItem(draftKey(user, to.domain, to.slot), raw);
+  } catch {
+    return; // nothing moved: the draft stays where it was
+  }
   clearDraft(user, from.domain, from.slot);
+}
+
+/** How many texts one slot keeps on offer. */
+export const OFFER_LIMIT = 3;
+
+/**
+ * A short history of texts set aside for a later offer, newest first, at
+ * most {@link OFFER_LIMIT}. Stored as one draft, the newest, whose `earlier`
+ * field holds the older ones: whatever reads a slot as one draft (a move, a
+ * delete, an older build) still finds the newest text there, and a slot
+ * written before the history existed reads as a history of one. A newer
+ * text no longer replaces an offer nobody answered; the oldest of four goes.
+ */
+export function readOffers(
+  user: string,
+  domain: string,
+  slot: string,
+): Draft[] {
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(draftKey(user, domain, slot));
+  } catch {
+    return [];
+  }
+  if (raw === null) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw) as { earlier?: unknown };
+    const newest = parseDraft(parsed);
+    if (newest === null) {
+      return [];
+    }
+    const earlier = Array.isArray(parsed.earlier)
+      ? parsed.earlier.flatMap((entry) => {
+          const draft = parseDraft(entry);
+          return draft === null ? [] : [draft];
+        })
+      : [];
+    return [newest, ...earlier].slice(0, OFFER_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+/** Store a history of offers, newest first; an empty one clears the slot. */
+function writeOffers(
+  user: string,
+  domain: string,
+  slot: string,
+  offers: readonly Draft[],
+): void {
+  const [newest, ...earlier] = offers.slice(0, OFFER_LIMIT);
+  if (newest === undefined) {
+    clearDraft(user, domain, slot);
+    return;
+  }
+  try {
+    localStorage.setItem(
+      draftKey(user, domain, slot),
+      JSON.stringify({ ...newest, earlier }),
+    );
+  } catch {
+    // Full or blocked storage: as for a single draft.
+  }
+}
+
+/**
+ * Set a text aside as the newest offer. One that says the same as an
+ * offer already kept takes that offer's place rather than standing twice.
+ */
+export function addOffer(
+  user: string,
+  domain: string,
+  slot: string,
+  draft: Draft,
+): void {
+  const rest = readOffers(user, domain, slot).filter(
+    (offer) => offer.content !== draft.content,
+  );
+  writeOffers(user, domain, slot, [draft, ...rest]);
+}
+
+/**
+ * Drop the offers in `gone`, matched by text and time. Any other offer in
+ * the slot (set aside after these were shown) stays for a later offer.
+ */
+export function removeOffers(
+  user: string,
+  domain: string,
+  slot: string,
+  gone: readonly Draft[],
+): void {
+  const offers = readOffers(user, domain, slot);
+  const left = offers.filter(
+    (offer) =>
+      !gone.some(
+        (g) => g.content === offer.content && g.savedAt === offer.savedAt,
+      ),
+  );
+  if (left.length !== offers.length) {
+    writeOffers(user, domain, slot, left);
+  }
 }
