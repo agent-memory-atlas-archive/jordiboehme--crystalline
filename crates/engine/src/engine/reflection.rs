@@ -1023,12 +1023,12 @@ pub(super) fn rooms_to_rewrite<'a>(
     access: &ReflectionAccess,
     pages: impl Iterator<Item = &'a str>,
     rewrite: &dyn Fn(&str, &str) -> usize,
-) -> Vec<RoomDoc> {
+) -> Vec<String> {
     pages
         .filter(|inner| {
             matches!(read_opt(&access.abs(inner)), Ok(Some(text)) if rewrite(&text, inner) > 0)
         })
-        .map(|inner| RoomDoc::Reflection(inner.to_string()))
+        .map(str::to_string)
         .collect()
 }
 
@@ -2343,7 +2343,7 @@ impl Engine {
         let linking = rooms_to_rewrite(&access, others, &|text, inner| {
             r::rewrite_links_to(text, inner, from, to).1
         });
-        self.refuse_under_live_rooms(domain, &linking).await?;
+        self.refuse_under_live_pages(domain, &linking).await?;
         // The room over the page saves its text, is told where the page went
         // and closes; no room opens over the old path until the move is
         // done (the fence). After the gate, the path rules and the screens,
@@ -2584,7 +2584,7 @@ impl Engine {
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;
         // After the gate, as in `move_reflection`.
-        self.refuse_under_live_rooms(domain, &[RoomDoc::Reflection(inner.to_string())])
+        self.refuse_under_live_pages(domain, &[inner.to_string()])
             .await?;
         r::validate_reflection_path(inner).map_err(EngineError::Invalid)?;
         if inner == r::PACT_FILE {

@@ -1038,29 +1038,26 @@ impl Engine {
         Some(Box::pin(rooms.close_for_move(domain, &doc, overlay, &to)).await)
     }
 
-    pub(super) async fn refuse_under_live_rooms(
+    /// Refuse while a room is open over any of the reflection pages
+    /// `paths` (inside `reflections/`): a reflection room saves straight to
+    /// its file, so a delete, or a rewrite of its links, would race its next
+    /// save. A move of the page itself does not come here; it closes the
+    /// room instead (`Engine::close_room_for_move`).
+    pub(super) async fn refuse_under_live_pages(
         &self,
         domain: &str,
-        docs: &[RoomDoc],
+        paths: &[String],
     ) -> Result<()> {
         let Some(rooms) = self.collab_rooms() else {
             return Ok(());
         };
-        for doc in docs {
-            if !rooms.has_live_doc(domain, doc, None).await {
-                continue;
+        for path in paths {
+            let doc = RoomDoc::Reflection(path.clone());
+            if rooms.has_live_doc(domain, &doc, None).await {
+                return Err(EngineError::Conflict(format!(
+                    "somebody is editing '{path}'; try again once the page is closed"
+                )));
             }
-            return Err(EngineError::Conflict(match doc {
-                RoomDoc::Engram(permalink) => format!(
-                    "'{permalink}' is open in the editor right now, and moving it would change the \
-                     address the editor saves to; close the editor and move it again"
-                ),
-                // A reflection room saves straight to its file: a move or a
-                // delete, or a rewrite of its links, would race its next save.
-                RoomDoc::Reflection(path) => {
-                    format!("somebody is editing '{path}'; try again once the page is closed")
-                }
-            }));
         }
         Ok(())
     }

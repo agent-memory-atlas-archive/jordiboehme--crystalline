@@ -177,7 +177,7 @@ impl Engine {
             pages.iter().map(|p| p.path.as_str()),
             &|text, inner| r::rewrite_asset_links(text, inner, from, to).1,
         );
-        self.refuse_under_live_rooms(domain, &linking).await?;
+        self.refuse_under_live_pages(domain, &linking).await?;
         let row_behind = self
             .asset_move_in(AssetHome::Reflection, domain, from, to)
             .await?;
