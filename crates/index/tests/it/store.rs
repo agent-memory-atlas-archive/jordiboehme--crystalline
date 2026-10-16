@@ -6423,7 +6423,7 @@ async fn host_renew_takeover_release(store: &dyn Store) {
     let a_beat = "2026-07-03T10:00:25+00:00";
     assert!(
         store
-            .renew_domain_host(did, "inst-a", a_beat)
+            .renew_domain_host(did, "inst-a", "", a_beat)
             .await
             .unwrap()
     );
@@ -6433,7 +6433,7 @@ async fn host_renew_takeover_release(store: &dyn Store) {
     );
     assert!(
         !store
-            .renew_domain_host(did, "inst-b", a_beat)
+            .renew_domain_host(did, "inst-b", "", a_beat)
             .await
             .unwrap(),
         "a non-holder renew updates nothing"
@@ -12997,6 +12997,83 @@ async fn a_host_label_is_the_name_with_a_short_id_on_a_clash(store: &dyn Store) 
     let web = stats.iter().find(|d| d.name == "web").unwrap();
     assert_eq!(web.host_label.as_deref(), Some("old-host-id"));
 }
+/// One instance shows one label: the label it is already recorded under
+/// stays when the instance that made it add its short id is gone, and a
+/// renewal writes it onto a lock that still carried an older label.
+async fn an_instance_keeps_its_label(store: &dyn Store) {
+    let mut ids = Vec::new();
+    for name in ["eng", "ops", "web"] {
+        ids.push(
+            store
+                .upsert_domain(name, Some(&format!("/tmp/{name}")), DomainKind::File)
+                .await
+                .unwrap(),
+        );
+    }
+    let (now, stale_before) = crystalline_index::claim_window(90);
+    let claim = |domain: DomainId, id: &'static str, name: &'static str| {
+        let (now, stale_before) = (now.clone(), stale_before.clone());
+        async move {
+            crystalline_index::claim_host_marking_moves(
+                store,
+                domain,
+                id,
+                name,
+                &now,
+                &stale_before,
+                true,
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let first = claim(ids[0], "3f2a0000-aaaa", "build-box").await;
+    let second = claim(ids[1], "9c1b0000-bbbb", "build-box").await;
+    assert_eq!(second.label, "build-box (9c1b)");
+    // The first instance's lock goes, and the second takes its domain, so
+    // no other instance is recorded under the bare name any more.
+    let token = match first.claim {
+        HostClaim::Acquired { token } => token,
+        other => panic!("{other:?}"),
+    };
+    store
+        .release_domain_host(ids[0], "3f2a0000-aaaa", &token)
+        .await
+        .unwrap();
+    assert_eq!(
+        claim(ids[0], "9c1b0000-bbbb", "build-box").await.label,
+        "build-box (9c1b)",
+        "the label it has stays"
+    );
+    // A lock written with an older label shows the current one after the
+    // next renewal.
+    store
+        .claim_domain_host(
+            ids[2],
+            "9c1b0000-bbbb",
+            "9c1b0000-bbbb",
+            &now,
+            &stale_before,
+            true,
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .renew_domain_host(ids[2], "9c1b0000-bbbb", "build-box (9c1b)", &now)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store.domain_host(ids[2]).await.unwrap().unwrap().label,
+        "build-box (9c1b)"
+    );
+}
+parity!(
+    an_instance_keeps_its_label_on_both_backends,
+    an_instance_keeps_its_label
+);
+
 parity!(
     a_host_label_is_the_name_with_a_short_id_on_a_clash_on_both_backends,
     a_host_label_is_the_name_with_a_short_id_on_a_clash

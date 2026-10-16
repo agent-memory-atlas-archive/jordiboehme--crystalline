@@ -9,7 +9,11 @@
 //! ```
 //!
 //! `<path>` is the engram's file path in its domain, or the page's path
-//! inside `reflections/`. A second text kept under the same name in the same
+//! inside `reflections/`. A third kind, `comment`, holds a thread comment
+//! a Reflection write could not land (its host lost the domain's host lock
+//! mid-write); its `<path>` is the page the comment was on. A text kept for
+//! a write rather than a room may name who sent it in a file beside it,
+//! `<kept file>.from`, which [`scan`] reads as [`KeptText::sender`]. A second text kept under the same name in the same
 //! second gets `-2`, `-3` and so on after the time. A room over somebody's
 //! review draft keeps its text under `<domain>/draft/<owner>/` instead of
 //! `<domain>/`, because a draft is private to its owner.
@@ -94,8 +98,12 @@ fn removed_domain(folder: &str) -> Option<&str> {
 pub enum KeptKind {
     /// An engram's room; the path is the engram's file in its domain.
     Engram,
-    /// A Reflection page's room; the path is inside `reflections/`.
+    /// A Reflection page's room, or a page write; the path is inside
+    /// `reflections/`.
     Reflection,
+    /// A thread comment on a Reflection page; the path is the page's,
+    /// inside `reflections/`.
+    Comment,
 }
 
 impl KeptKind {
@@ -104,6 +112,7 @@ impl KeptKind {
         match self {
             KeptKind::Engram => "engram",
             KeptKind::Reflection => "reflection",
+            KeptKind::Comment => "comment",
         }
     }
 
@@ -111,6 +120,7 @@ impl KeptKind {
         match name {
             "engram" => Some(KeptKind::Engram),
             "reflection" => Some(KeptKind::Reflection),
+            "comment" => Some(KeptKind::Comment),
             _ => None,
         }
     }
@@ -149,6 +159,39 @@ pub struct KeptText {
     /// The file on disk. Never sent over the JSON API.
     #[serde(skip)]
     pub file: PathBuf,
+    /// Who sent the text, when it was kept for a write that names its
+    /// sender ([`write_from`]); `None` for a room's text.
+    pub sender: Option<String>,
+}
+
+/// The end of the name of the file beside a kept text that names its
+/// sender.
+const SENDER_SUFFIX: &str = ".from";
+
+/// [`write`](fn@write) for a text one sender sent (a write refused after
+/// its files were written), recording `sender` beside it. The text is kept
+/// first; a sender that cannot be recorded leaves the text kept without it.
+pub fn write_from(
+    root: &Path,
+    domain: &str,
+    kind: KeptKind,
+    path: &str,
+    at: DateTime<Utc>,
+    text: &str,
+    sender: &str,
+) -> std::io::Result<PathBuf> {
+    let file = write(root, domain, None, kind, path, at, text)?;
+    if !sender.is_empty() {
+        let _ = std::fs::write(sender_file(&file), sender);
+    }
+    Ok(file)
+}
+
+/// The file beside `kept` that names its sender.
+fn sender_file(kept: &Path) -> PathBuf {
+    let mut name = kept.as_os_str().to_owned();
+    name.push(SENDER_SUFFIX);
+    PathBuf::from(name)
 }
 
 /// Keep `text` for `domain`'s `path` under `root` (the kept folder), named
@@ -316,6 +359,7 @@ pub fn read(kept: &KeptText) -> std::io::Result<String> {
 /// including) `root`. Only ever on a person's request.
 pub fn remove(root: &Path, kept: &KeptText) -> std::io::Result<()> {
     std::fs::remove_file(&kept.file)?;
+    let _ = std::fs::remove_file(sender_file(&kept.file));
     let mut dir = kept.file.parent();
     while let Some(d) = dir {
         if d == root || !d.starts_with(root) {
@@ -436,6 +480,10 @@ fn walk(place: &Place<'_>, dir: &Path, rel: &str, found: &mut Vec<KeptText>) {
             path,
             kept_at,
             bytes: entry.len,
+            sender: std::fs::read_to_string(sender_file(&entry.path))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             file: entry.path,
         });
     }
@@ -527,6 +575,37 @@ fn dir_entries(dir: &Path) -> Vec<Entry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A comment kept for a refused write is its own kind, names its sender
+    /// from the file beside it, and goes with that file when removed.
+    #[test]
+    fn a_kept_comment_names_its_sender() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let file = write_from(
+            root,
+            "eng",
+            KeptKind::Comment,
+            "guides/a.md",
+            Utc::now(),
+            "Is this still true?",
+            "ada",
+        )
+        .unwrap();
+        let found = scan(root);
+        assert_eq!(
+            found.len(),
+            1,
+            "the sender's file is no kept text: {found:?}"
+        );
+        let kept = &found[0];
+        assert_eq!(kept.kind, KeptKind::Comment);
+        assert_eq!(kept.path, "guides/a.md");
+        assert_eq!(kept.sender.as_deref(), Some("ada"));
+        remove(root, kept).unwrap();
+        assert!(!sender_file(&file).exists());
+        assert!(scan(root).is_empty());
+    }
     use chrono::TimeZone;
     use std::cell::Cell;
 

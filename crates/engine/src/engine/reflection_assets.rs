@@ -89,7 +89,7 @@ impl Engine {
         create_only: bool,
     ) -> Result<WrittenReflectionAsset> {
         let access = self
-            .require_reflection(domain, caller, ReflectionRight::Edit)
+            .require_reflection_to_write(domain, caller, ReflectionRight::Edit)
             .await?;
         let replace = if create_only {
             ReplaceRule::CreateOnly
@@ -126,7 +126,7 @@ impl Engine {
         path: &str,
         caller: &ReflectionCaller,
     ) -> Result<()> {
-        self.require_reflection(domain, caller, ReflectionRight::Curate)
+        self.require_reflection_to_write(domain, caller, ReflectionRight::Curate)
             .await?;
         self.asset_delete_in(AssetHome::Reflection, domain, path)
             .await?;
@@ -151,7 +151,7 @@ impl Engine {
         caller: &ReflectionCaller,
     ) -> Result<Value> {
         let access = self
-            .require_reflection(domain, caller, ReflectionRight::Curate)
+            .require_reflection_to_write(domain, caller, ReflectionRight::Curate)
             .await?;
         // The paths first, so a move that cannot happen says why rather
         // than that a page is open.

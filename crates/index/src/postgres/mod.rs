@@ -4510,19 +4510,38 @@ impl Store for PostgresStore {
         &self,
         domain: DomainId,
         instance_id: &str,
+        label: &str,
         now: &str,
     ) -> Result<bool> {
         let mut conn = self.acquire().await?;
         let done = sqlx::query(
-            "UPDATE domain_lock SET heartbeat_at=$1 WHERE domain_id=$2 AND holder_instance_id=$3",
+            "UPDATE domain_lock SET heartbeat_at=$1, \
+             holder_label=CASE WHEN $4='' THEN holder_label ELSE $4 END \
+             WHERE domain_id=$2 AND holder_instance_id=$3",
         )
         .bind(now)
         .bind(domain.0)
         .bind(instance_id)
+        .bind(label)
         .execute(conn.as_mut())
         .await
         .map_err(IndexError::from)?;
         Ok(done.rows_affected() > 0)
+    }
+
+    async fn own_label(&self, instance_id: &str) -> Result<Option<String>> {
+        let mut conn = self.acquire().await?;
+        let row = sqlx::query(
+            "SELECT label FROM (\
+             SELECT holder_label AS label FROM domain_lock WHERE holder_instance_id=$1 AND holder_label<>'' \
+             UNION ALL SELECT last_host_label AS label FROM domain WHERE last_host_id=$1 AND last_host_label<>''\
+             ) AS own ORDER BY label COLLATE \"C\" LIMIT 1",
+        )
+        .bind(instance_id)
+        .fetch_optional(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(row.and_then(|r| cell_text(&r, 0)))
     }
 
     async fn release_domain_host(

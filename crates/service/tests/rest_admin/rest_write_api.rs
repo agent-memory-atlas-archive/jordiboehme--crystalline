@@ -3040,13 +3040,15 @@ fn write_ops() -> Vec<WriteOp> {
             min_role: Role::Admin,
             read_only_exempt: false,
         },
-        // A kept text is dropped by a person who may write its source; an
-        // editor gets past authorization to the 404 of an id that names none.
+        // A kept text is dropped by a person who may write its source, and a
+        // kept comment by whoever may comment, a reader of the Reflection:
+        // a viewer gets past authorization to the 404 of an id that names
+        // none.
         WriteOp {
             method: Method::DELETE,
             path: "/api/v1/domains/eng/kept/abc12345",
             body: None,
-            min_role: Role::Editor,
+            min_role: Role::Viewer,
             read_only_exempt: false,
         },
         // `eng` has no origin, so the allowed leg answers 409 - which is

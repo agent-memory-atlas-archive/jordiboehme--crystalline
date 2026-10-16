@@ -59,6 +59,9 @@ pub const REFUSED_NOT_BY_A_COMMAND: &str =
     "this domain's Reflection is not served by a command; start the daemon (crystalline serve)";
 
 /// The gate's refusal for a Reflection the instance labelled `label` serves.
+/// What a caller who is not signed in reads for the host's name.
+pub const ANOTHER_INSTANCE: &str = "another instance";
+
 pub(super) fn hosted_refusal(label: &str) -> EngineError {
     EngineError::Refused(format!(
         "{REFUSED_HOSTED_START}{label}; move it with crystalline serve --take-over"
@@ -540,8 +543,21 @@ impl Engine {
         )
     }
 
-    /// What this domain's Reflection is, seen from this instance.
+    /// What this domain's Reflection is, seen from this instance, for a
+    /// read: a host lock whose holder went stale is named, not taken over.
     pub async fn reflection_state(&self, domain: &str) -> Result<ReflectionState> {
+        self.reflection_state_as(domain, false).await
+    }
+
+    /// [`Engine::reflection_state`] for a write when `takes_over`: a host
+    /// lock whose holder sent no heartbeat for the stale threshold is taken
+    /// over here, as a sync takes it. Only a write by a caller who may make
+    /// it asks this; a status read, a listing and a sweep never do.
+    pub(crate) async fn reflection_state_as(
+        &self,
+        domain: &str,
+        takes_over: bool,
+    ) -> Result<ReflectionState> {
         if self.reflection_switch(domain) == crystalline_core::ReflectionSwitch::Off {
             return Ok(ReflectionState::Off);
         }
@@ -553,7 +569,10 @@ impl Engine {
         };
         // The host lock first (R92): on a shared database only its holder
         // serves the Reflection, whatever the rows say.
-        if let Some(label) = self.reflection_host_elsewhere(domain, &root).await? {
+        if let Some(label) = self
+            .reflection_host_elsewhere(domain, &root, takes_over)
+            .await?
+        {
             return Ok(ReflectionState::HostedElsewhere { label });
         }
         let engrams = self.pending_engrams(domain).await?;
@@ -592,9 +611,10 @@ impl Engine {
     /// Another instance's live holder keeps the lock, and the refusal names
     /// it and the way out (`--take-over`). A lock nobody holds (none yet, or
     /// the host released it on a graceful shutdown), one recorded under this
-    /// instance's own id (a restart before its first claim) and one whose
-    /// holder sent no heartbeat for the stale threshold (a host that
-    /// crashed, or slept) are claimed here and now, under the store lock,
+    /// instance's own id (a restart before its first claim) and, for a write
+    /// (`takes_over`), one whose holder sent no heartbeat for the stale
+    /// threshold (a host that crashed, or slept) are claimed here and now,
+    /// under the store lock,
     /// the way a plain sync claims them: two instances that ask at once
     /// resolve to one holder, since the claim is one conditional upsert
     /// whose condition the store checks again against the row the winner
@@ -611,6 +631,7 @@ impl Engine {
         &self,
         domain: &str,
         root: &std::path::Path,
+        takes_over: bool,
     ) -> Result<Option<Option<String>>> {
         if self.instance_id.is_empty() || self.hosted.read().unwrap().contains_key(domain) {
             return Ok(None);
@@ -624,12 +645,14 @@ impl Engine {
             None => None,
         };
         // Another instance's live claim stands. One that sent no heartbeat
-        // for the stale threshold is taken over below, by the claim a plain
-        // sync makes, which decides in the store whether it is stale. A
-        // command never claims for a Reflection, and a rename claims when
-        // it ends, so both keep naming the old holder.
+        // for the stale threshold is taken over below by a write, with the
+        // claim a plain sync makes, which decides in the store whether it is
+        // stale; a read names it. A command never claims for a Reflection,
+        // and a rename claims when it ends, so both keep naming the old
+        // holder.
         if let Some(host) = host.as_ref().filter(|host| self.foreign_holder(host))
-            && (self.is_one_shot()
+            && (!takes_over
+                || self.is_one_shot()
                 || self.is_renaming(domain)
                 || self.held_elsewhere(
                     Some(&host.instance_id),
@@ -674,6 +697,41 @@ impl Engine {
         }
     }
 
+    /// The refusal naming the host to `caller`: a signed-in caller reads its
+    /// label, and how long ago it was last seen when its heartbeat is stale
+    /// (a read never takes such a lock over); anybody else reads "another
+    /// instance".
+    async fn hosted_refusal_to(
+        &self,
+        domain: &str,
+        label: &str,
+        caller: &ReflectionCaller,
+    ) -> EngineError {
+        if !caller.may_comment() {
+            return hosted_refusal(ANOTHER_INSTANCE);
+        }
+        match self.stale_minutes(domain).await {
+            Some(minutes) => hosted_refusal(&format!(
+                "{label} (last seen {minutes} minute{} ago)",
+                if minutes == 1 { "" } else { "s" }
+            )),
+            None => hosted_refusal(label),
+        }
+    }
+
+    /// How many minutes ago the holder of `domain`'s host lock sent its
+    /// last heartbeat, when that is past the stale threshold. One query,
+    /// asked only on a refusal.
+    async fn stale_minutes(&self, domain: &str) -> Option<i64> {
+        let store = self.store.lock().await;
+        let id = store.domain_id(domain).await.ok().flatten()?;
+        let host = store.domain_host(id).await.ok().flatten()?;
+        drop(store);
+        let beat = DateTime::parse_from_rfc3339(&host.heartbeat_at).ok()?;
+        let since = chrono::Utc::now().signed_duration_since(beat.with_timezone(&chrono::Utc));
+        (since > Duration::seconds(self.stale_secs)).then(|| since.num_minutes().max(1))
+    }
+
     /// Whether `host` records another instance than this one as the holder.
     fn foreign_holder(&self, host: &crystalline_index::DomainHost) -> bool {
         !host.instance_id.is_empty() && host.instance_id != self.instance_id
@@ -711,16 +769,42 @@ impl Engine {
         Ok(Some(host.label))
     }
 
-    /// The one gate of every reflection verb: right, then state, then the
-    /// right this verb needs, in that order.
+    /// The one gate of every reflection verb that reads: right, then
+    /// state, then the right this verb needs, in that order. A host lock
+    /// whose holder went stale is named, never taken over, by a read.
     pub(crate) async fn require_reflection(
         &self,
         domain: &str,
         caller: &ReflectionCaller,
         need: ReflectionRight,
     ) -> Result<ReflectionAccess> {
+        self.require_reflection_as(domain, caller, need, false)
+            .await
+    }
+
+    /// [`Engine::require_reflection`] for a verb that writes (a page, a
+    /// thread, a file, a move, a delete, a settle): a host lock whose holder
+    /// went stale is taken over, but only for a caller who has the right
+    /// the verb needs and is signed in.
+    pub(crate) async fn require_reflection_to_write(
+        &self,
+        domain: &str,
+        caller: &ReflectionCaller,
+        need: ReflectionRight,
+    ) -> Result<ReflectionAccess> {
+        self.require_reflection_as(domain, caller, need, true).await
+    }
+
+    async fn require_reflection_as(
+        &self,
+        domain: &str,
+        caller: &ReflectionCaller,
+        need: ReflectionRight,
+        writes: bool,
+    ) -> Result<ReflectionAccess> {
         let (right, engrams_visible) = self.caller_reflection_right(domain, caller).await?;
-        match self.reflection_state(domain).await? {
+        let takes_over = writes && right >= need && caller.may_comment();
+        match self.reflection_state_as(domain, takes_over).await? {
             ReflectionState::On { .. } => {}
             ReflectionState::Off => {
                 return Err(EngineError::Refused(format!(
@@ -755,7 +839,7 @@ impl Engine {
                 )));
             }
             ReflectionState::HostedElsewhere { label: Some(label) } => {
-                return Err(hosted_refusal(&label));
+                return Err(self.hosted_refusal_to(domain, &label, caller).await);
             }
             ReflectionState::HostedElsewhere { label: None }
                 if self.is_one_shot() && !self.is_renaming(domain) =>
@@ -769,7 +853,7 @@ impl Engine {
             }
         };
         if let Some(label) = self.confirm_reflection_host(domain).await? {
-            return Err(hosted_refusal(&label));
+            return Err(self.hosted_refusal_to(domain, &label, caller).await);
         }
         if right < need {
             // When the write list is why the right fell short, say so and
@@ -819,10 +903,16 @@ impl Engine {
     ) -> Result<Value> {
         let (right, engrams_visible) = self.caller_reflection_right(domain, caller).await?;
         let state = self.reflection_state(domain).await?;
+        // The host's name is a machine's hostname or address: only a
+        // signed-in caller reads it.
+        let shown = |label: &Option<String>| match label {
+            Some(_) if !caller.may_comment() => Some(ANOTHER_INSTANCE.to_string()),
+            other => other.clone(),
+        };
         let (home, home_url, host_label) = match &state {
             ReflectionState::On { home } => (Some(home.as_str()), None, None),
             ReflectionState::Elsewhere { url } => (Some("elsewhere"), Some(url.clone()), None),
-            ReflectionState::HostedElsewhere { label } => (None, None, label.clone()),
+            ReflectionState::HostedElsewhere { label } => (None, None, shown(label)),
             ReflectionState::Off | ReflectionState::Pending { .. } | ReflectionState::Homeless => {
                 (None, None, None)
             }
@@ -1373,7 +1463,9 @@ impl Engine {
         } else {
             ReflectionRight::Curate
         };
-        let access = self.require_reflection(&p.domain, caller, need).await?;
+        let access = self
+            .require_reflection_to_write(&p.domain, caller, need)
+            .await?;
         self.refuse_read_only_domain(&p.domain, &crate::scope::Scope::Unrestricted)
             .await?;
         r::validate_reflection_path(&p.path).map_err(EngineError::Invalid)?;
@@ -1558,9 +1650,11 @@ impl Engine {
                 domain: &p.domain,
                 undo,
                 keep: Some(KeepText {
+                    kind: crystalline_core::kept::KeptKind::Reflection,
                     path: &p.path,
                     text: &final_text,
                     actor: &caller.author.name,
+                    holds: &abs,
                 }),
             },
         )
@@ -1743,7 +1837,7 @@ impl Engine {
         // took make the folder engram content again, or another instance's. The save waits (a refusal the room
         // shows and retries) instead of writing ids and bookkeeping into it.
         if !matches!(
-            self.reflection_state(domain).await?,
+            self.reflection_state_as(domain, true).await?,
             ReflectionState::On { .. }
         ) || self.confirm_reflection_host(domain).await?.is_some()
         {
@@ -2214,7 +2308,7 @@ impl Engine {
             return Err(EngineError::ReadOnly);
         }
         let access = self
-            .require_reflection(domain, caller, ReflectionRight::Edit)
+            .require_reflection_to_write(domain, caller, ReflectionRight::Edit)
             .await?;
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;
@@ -2292,15 +2386,18 @@ impl Engine {
         // The row is built from the text as written, so it matches the file.
         let page = crystalline_core::to_lf(&moved.page).into_owned();
         let mut undo = DiskUndo::default();
-        for rel in [
-            from.to_string(),
-            to.to_string(),
-            r::baseline_path(from),
-            r::baseline_path(to),
-            r::threads_path(from),
-            r::threads_path(to),
+        for (old_rel, new_rel) in [
+            (from.to_string(), to.to_string()),
+            (r::baseline_path(from), r::baseline_path(to)),
+            (r::threads_path(from), r::threads_path(to)),
         ] {
-            undo.record(&access.abs(&rel))?;
+            let (old, new) = (access.abs(&old_rel), access.abs(&new_rel));
+            if is_case_only_rename(&old, &new, &old_rel, &new_rel) {
+                undo.record_case_rename(&old, &new)?;
+            } else {
+                undo.record(&old)?;
+                undo.record(&new)?;
+            }
         }
         let replace = |old_rel: &str, new_rel: &str, text: &str| {
             let (old, new) = (access.abs(old_rel), access.abs(new_rel));
@@ -2462,7 +2559,7 @@ impl Engine {
             return Err(EngineError::ReadOnly);
         }
         let access = self
-            .require_reflection(domain, caller, ReflectionRight::Edit)
+            .require_reflection_to_write(domain, caller, ReflectionRight::Edit)
             .await?;
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;
@@ -2532,7 +2629,7 @@ impl Engine {
             ));
         }
         let access = self
-            .require_reflection(domain, caller, ReflectionRight::Curate)
+            .require_reflection_to_write(domain, caller, ReflectionRight::Curate)
             .await?;
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;

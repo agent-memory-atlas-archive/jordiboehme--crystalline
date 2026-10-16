@@ -4,7 +4,9 @@
 //! A kept text holds what a person typed into a page or an engram, so it
 //! goes only to somebody who may write that source: a Reflection text needs
 //! `edit` on the domain's Reflection (`curate` for PACT.md), the right its
-//! room needs, and an engram text needs the right to write engrams there. Each entry is decided by its own kind, and a text
+//! room needs, and an engram text needs the right to write engrams there. A
+//! thread comment a refused write kept needs what commenting needs, `read`
+//! on the Reflection. Each entry is decided by its own kind, and a text
 //! kept from a review draft goes to the draft's owner only. Neither right
 //! asks the Reflection's state: it is often off exactly because a switch-off
 //! is why the text was kept.
@@ -15,8 +17,8 @@ use super::*;
 use crate::scope::{DomainRight, ReflectionCaller, ReflectionRight, Scope};
 
 /// The refusal for a caller who may handle neither kind of kept text.
-const NO_KEPT_RIGHT: &str = "kept texts need write access to this domain's engrams or edit \
-                             access to its Reflection";
+const NO_KEPT_RIGHT: &str = "kept texts need write access to this domain's engrams or access \
+                             to its Reflection";
 
 /// Which kinds of kept text a caller may handle on one domain.
 #[derive(Clone, Copy, Debug)]
@@ -41,6 +43,8 @@ impl KeptRights {
                 };
                 self.reflection >= need
             }
+            // Whoever may comment on the page may handle a kept comment.
+            KeptKind::Comment => self.reflection >= ReflectionRight::Read,
         }
     }
 }
@@ -99,7 +103,7 @@ impl Engine {
             engram: engrams_visible && self.write_right(scope, domain).await? >= DomainRight::Write,
             reflection,
         };
-        if !rights.engram && rights.reflection < ReflectionRight::Edit {
+        if !rights.engram && rights.reflection < ReflectionRight::Read {
             return Err(EngineError::Forbidden(NO_KEPT_RIGHT.to_string()));
         }
         Ok(rights)

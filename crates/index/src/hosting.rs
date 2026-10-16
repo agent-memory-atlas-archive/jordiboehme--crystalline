@@ -83,17 +83,27 @@ pub async fn give_back(
 /// host of its `service.public_url`, else the machine's hostname), with the
 /// first four characters of its id in parentheses when another instance is
 /// already recorded under that name, for example `build-box (3f2a)`. The
-/// instance that came first keeps the bare name, so a label never changes
-/// once two instances share a name. An empty name, or one equal to the id,
-/// is the id.
+/// instance that came first keeps the bare name. A label this instance is
+/// already recorded under for this name is kept, so one instance never
+/// shows two labels while its name stays. An empty name, or one equal to
+/// the id, is the id.
 pub async fn instance_label(store: &dyn Store, name: &str, instance_id: &str) -> Result<String> {
     let name = name.trim();
     if name.is_empty() || name == instance_id {
         return Ok(instance_id.to_string());
     }
+    // The label this instance already uses under this name stays, so one
+    // instance never shows two labels: a later claim, another process of
+    // this machine, a restart.
+    let short: String = instance_id.chars().take(4).collect();
+    let suffixed = format!("{name} ({short})");
+    if let Some(own) = store.own_label(instance_id).await?
+        && (own == name || own == suffixed)
+    {
+        return Ok(own);
+    }
     if store.label_taken(name, instance_id).await? {
-        let short: String = instance_id.chars().take(4).collect();
-        return Ok(format!("{name} ({short})"));
+        return Ok(suffixed);
     }
     Ok(name.to_string())
 }

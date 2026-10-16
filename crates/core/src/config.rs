@@ -157,7 +157,8 @@ impl GlobalConfig {
     }
 
     /// The name this instance shows people on a shared database: the host
-    /// of `service.public_url` when it is set, else this machine's hostname
+    /// of `service.public_url` (with its port when that is not the scheme's
+    /// own) when it is set, else this machine's hostname
     /// (without a trailing `.local`). `None` when neither is known; the
     /// instance id stands in then. Two instances under one name get a short
     /// id added where the name is recorded.
@@ -165,7 +166,15 @@ impl GlobalConfig {
         let from_url = self
             .service_public_url()
             .and_then(|u| url::Url::parse(u).ok())
-            .and_then(|u| u.host_str().map(str::to_string));
+            .and_then(|u| {
+                let host = u.host_str()?;
+                // A port that is not the scheme's own tells two instances
+                // on one machine apart.
+                Some(match u.port() {
+                    Some(port) => format!("{host}:{port}"),
+                    None => host.to_string(),
+                })
+            });
         from_url
             .or_else(|| whoami::hostname().ok())
             .map(|name| {
@@ -1967,7 +1976,11 @@ mod tests {
         );
         assert_eq!(
             with("http://10.0.0.5:7411").instance_name(),
-            Some("10.0.0.5".to_string())
+            Some("10.0.0.5:7411".to_string())
+        );
+        assert_eq!(
+            with("https://crystalline.example.org:443/").instance_name(),
+            Some("crystalline.example.org".to_string())
         );
         let hostname = whoami::hostname().ok().map(|h| {
             let h = h.trim();

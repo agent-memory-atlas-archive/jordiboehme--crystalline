@@ -13,10 +13,13 @@
 //! A refused write keeps what the person or agent sent in the kept folder
 //! (as a room keeps a text it could not save), puts every file it already
 //! changed on this disk back to what it was, and answers the
-//! `hosted_elsewhere` refusal naming the new host. A file that cannot be
-//! put back stays as the write left it and is logged; nothing is ever
-//! deleted that is the only copy of anything, since the sent text is kept
-//! first.
+//! `hosted_elsewhere` refusal naming the new host. A file is put back only
+//! while it still holds exactly what this write left there: on a volume
+//! several hosts share, another host may have written it since, and that
+//! newer file stays. A file that cannot be put back stays as the write left
+//! it and is logged. The file that holds the sent text is put back only
+//! once that text is kept, so nothing is ever deleted that is the only copy
+//! of anything.
 
 use std::path::{Path, PathBuf};
 
@@ -26,48 +29,125 @@ use crystalline_index::AssetTable;
 use super::reflection::{REFUSED_HOSTED_START, hosted_refusal};
 use super::*;
 
+/// One file a Reflection write changed: what it held before the write and
+/// what the write left there (`None`: no file).
+struct Undone {
+    abs: PathBuf,
+    before: Option<Vec<u8>>,
+    /// Read when the write is done ([`DiskUndo::seal`]); `None` until then.
+    after: Option<Option<Vec<u8>>>,
+}
+
 /// The files a Reflection write changed on this disk, each with what it
-/// held before (`None`: it did not exist), recorded before the write so a
-/// refused write can put them back.
+/// held before, recorded before the write, and what the write left there,
+/// recorded once it is done, so a refused write can put them back without
+/// undoing somebody else's newer file.
 #[derive(Default)]
 pub(crate) struct DiskUndo {
-    files: Vec<(PathBuf, Option<Vec<u8>>)>,
+    files: Vec<Undone>,
+    /// Letter-case renames to turn back, `(new spelling, old spelling)`,
+    /// after the file's content is back.
+    renamed: Vec<(PathBuf, PathBuf)>,
+}
+
+/// What `abs` holds now, `None` for no file.
+fn bytes_at(abs: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(abs) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(EngineError::Io {
+            path: abs.display().to_string(),
+            source,
+        }),
+    }
 }
 
 impl DiskUndo {
     /// Record what `abs` holds now, once per path: the first record is the
     /// state before the write.
     pub(crate) fn record(&mut self, abs: &Path) -> Result<()> {
-        if self.files.iter().any(|(path, _)| path == abs) {
+        if self.files.iter().any(|f| f.abs == abs) {
             return Ok(());
         }
-        let before = match std::fs::read(abs) {
-            Ok(bytes) => Some(bytes),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(source) => {
-                return Err(EngineError::Io {
-                    path: abs.display().to_string(),
-                    source,
-                });
-            }
-        };
-        self.files.push((abs.to_path_buf(), before));
+        let before = bytes_at(abs)?;
+        self.files.push(Undone {
+            abs: abs.to_path_buf(),
+            before,
+            after: None,
+        });
         Ok(())
     }
 
-    /// Put every recorded file back, the last change first. A file that
-    /// cannot be put back is left as the write left it, and said loudly.
-    pub(crate) fn put_back(self, domain: &str) {
-        for (abs, before) in self.files.into_iter().rev() {
-            let done = match &before {
-                Some(bytes) => write_bytes(&abs, bytes),
-                None => remove_if_there(&abs).map(|_| ()),
-            };
-            if let Err(e) = done {
+    /// Record a letter-case rename of one file (`from` and `to` name the
+    /// same file on a case-insensitive disk): its content is recorded under
+    /// `to`, and a put-back gives it its old spelling again.
+    pub(crate) fn record_case_rename(&mut self, from: &Path, to: &Path) -> Result<()> {
+        self.record(to)?;
+        self.renamed.push((to.to_path_buf(), from.to_path_buf()));
+        Ok(())
+    }
+
+    /// Record what the write left in every recorded file. Called once the
+    /// write is done, still under its file lock, before the rows commit.
+    pub(crate) fn seal(&mut self) {
+        for file in &mut self.files {
+            file.after = Some(bytes_at(&file.abs).unwrap_or(None));
+        }
+    }
+
+    /// Put every recorded file back, the last change first, except `keep`
+    /// (the file holding a text that could not be kept). A file that no
+    /// longer holds what the write left, or that cannot be put back, stays
+    /// as it is, and that is said loudly.
+    pub(crate) fn put_back(self, domain: &str, keep: Option<&Path>) {
+        let mut left: Vec<PathBuf> = Vec::new();
+        for file in self.files.into_iter().rev() {
+            let abs = &file.abs;
+            if keep == Some(abs.as_path()) {
+                left.push(abs.clone());
                 tracing::error!(
                     domain,
                     file = %abs.display(),
-                    "a Reflection write this instance may no longer make could not put this file back, so it stays as the write left it: {e}"
+                    "a refused Reflection write leaves this file as it wrote it: the text sent could not be kept anywhere else"
+                );
+                continue;
+            }
+            let now = bytes_at(abs);
+            let unchanged = matches!((&now, &file.after), (Ok(now), Some(after)) if now == after);
+            if !unchanged {
+                left.push(abs.clone());
+                tracing::error!(
+                    domain,
+                    file = %abs.display(),
+                    "a refused Reflection write leaves this file as it is: it changed since the write, so it is not put back"
+                );
+                continue;
+            }
+            if now.ok().flatten() == file.before {
+                continue;
+            }
+            let done = match &file.before {
+                Some(bytes) => write_bytes(abs, bytes),
+                None => remove_if_there(abs).map(|_| ()),
+            };
+            if let Err(e) = done {
+                left.push(abs.clone());
+                tracing::error!(
+                    domain,
+                    file = %abs.display(),
+                    "a refused Reflection write could not put this file back, so it stays as the write left it: {e}"
+                );
+            }
+        }
+        for (to, from) in self.renamed.into_iter().rev() {
+            if left.contains(&to) {
+                continue;
+            }
+            if let Err(e) = std::fs::rename(&to, &from) {
+                tracing::error!(
+                    domain,
+                    file = %to.display(),
+                    "a refused Reflection write could not give this file its old spelling back: {e}"
                 );
             }
         }
@@ -75,14 +155,19 @@ impl DiskUndo {
 }
 
 /// What a refused write keeps in the kept folder: the text the person or
-/// agent sent, under the page (or threads file) path inside `reflections/`.
+/// agent sent, under the page path inside `reflections/`.
 pub(crate) struct KeepText<'a> {
-    /// The path inside `reflections/`.
+    /// A page text, or a thread comment on the page.
+    pub kind: crystalline_core::kept::KeptKind,
+    /// The page's path inside `reflections/`.
     pub path: &'a str,
     /// The text as sent.
     pub text: &'a str,
-    /// Who sent it, for the log.
+    /// Who sent it, recorded beside the kept text and logged.
     pub actor: &'a str,
+    /// The file on this disk that holds the text the write wrote: left as
+    /// written when the text cannot be kept.
+    pub holds: &'a Path,
 }
 
 /// What a fenced write does when the fence refuses it.
@@ -128,6 +213,9 @@ pub(crate) fn is_fence_refusal(e: &EngineError) -> bool {
     matches!(e, EngineError::Refused(text) if text.starts_with(REFUSED_HOSTED_START))
 }
 
+/// What a fence refusal adds when it kept the text sent.
+pub const KEPT_HERE: &str = "; your text is kept on this instance (crystalline kept list shows it)";
+
 /// The sentence of a fence refusal when no instance holds the lock now.
 fn nobody_holds() -> EngineError {
     EngineError::Refused(format!("{REFUSED_HOSTED_START}no instance now; try again"))
@@ -167,6 +255,8 @@ impl Engine {
         ops: &[RowOp<'_>],
         on_refusal: OnRefusal<'_>,
     ) -> Result<()> {
+        let mut on_refusal = on_refusal;
+        on_refusal.undo.seal();
         self.take_row_fence_hold().await;
         let store = self.store.lock().await;
         store.begin().await?;
@@ -242,7 +332,8 @@ impl Engine {
     }
 
     /// The refusal of a fenced write: keep the sent text, put the files
-    /// back, stop hosting a domain another instance took, and answer.
+    /// back, stop hosting a domain another instance took, and answer. The
+    /// answer says when the text was kept here.
     fn refuse_fenced(
         &self,
         refusal: EngineError,
@@ -250,46 +341,56 @@ impl Engine {
         on_refusal: OnRefusal<'_>,
     ) -> EngineError {
         let OnRefusal { domain, undo, keep } = on_refusal;
-        if let Some(keep) = keep.filter(|k| !k.text.trim().is_empty()) {
-            let kept = self
-                .kept_dir()
-                .ok_or_else(|| "this process knows no state folder".to_string());
-            match kept.and_then(|root| {
-                crystalline_core::kept::write(
-                    &root,
-                    domain,
-                    None,
-                    crystalline_core::kept::KeptKind::Reflection,
-                    keep.path,
-                    chrono::Utc::now(),
-                    keep.text,
-                )
-                .map_err(|e| e.to_string())
-            }) {
-                Ok(file) => tracing::warn!(
-                    domain,
-                    path = keep.path,
-                    actor = keep.actor,
-                    kept = %file.display(),
-                    "a Reflection write was refused because this instance no longer holds the domain's host lock ({refusal}); the text sent is kept here; crystalline kept list shows it"
-                ),
-                Err(e) => tracing::error!(
-                    domain,
-                    path = keep.path,
-                    actor = keep.actor,
-                    "a Reflection write was refused because this instance no longer holds the domain's host lock ({refusal}), and keeping the text sent failed: {e}"
-                ),
+        let mut answer = refusal;
+        let mut not_kept = None;
+        match keep.filter(|k| !k.text.trim().is_empty()) {
+            Some(keep) => {
+                let kept = self
+                    .kept_dir()
+                    .ok_or_else(|| "this process knows no state folder".to_string())
+                    .and_then(|root| {
+                        crystalline_core::kept::write_from(
+                            &root,
+                            domain,
+                            keep.kind,
+                            keep.path,
+                            chrono::Utc::now(),
+                            keep.text,
+                            keep.actor,
+                        )
+                        .map_err(|e| e.to_string())
+                    });
+                match kept {
+                    Ok(file) => {
+                        tracing::warn!(
+                            domain,
+                            path = keep.path,
+                            actor = keep.actor,
+                            kept = %file.display(),
+                            "a Reflection write was refused because this instance no longer holds the domain's host lock ({answer}); the text sent is kept here; crystalline kept list shows it"
+                        );
+                        answer = EngineError::Refused(format!("{answer}{KEPT_HERE}"));
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            domain,
+                            path = keep.path,
+                            actor = keep.actor,
+                            "a Reflection write was refused because this instance no longer holds the domain's host lock ({answer}), and keeping the text sent failed: {e}"
+                        );
+                        not_kept = Some(keep.holds);
+                    }
+                }
             }
-        } else {
-            tracing::warn!(
+            None => tracing::warn!(
                 domain,
-                "a Reflection write was refused because this instance no longer holds the domain's host lock: {refusal}"
-            );
+                "a Reflection write was refused because this instance no longer holds the domain's host lock: {answer}"
+            ),
         }
-        undo.put_back(domain);
+        undo.put_back(domain, not_kept);
         if foreign && self.hosted.write().unwrap().remove(domain).is_some() {
             self.announce_host_moved(domain);
         }
-        refusal
+        answer
     }
 }

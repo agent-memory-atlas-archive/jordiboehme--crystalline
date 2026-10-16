@@ -690,7 +690,8 @@ export type KeptTextEntry = {
      */
     kept_at: string;
     /**
-     * `engram` or `reflection`: the kind of room it was kept from.
+     * `engram` or `reflection`: the kind of room (or page write) it was
+     * kept from; `comment` for a thread comment on the page at `path`.
      */
     kind: string;
     /**
@@ -698,6 +699,12 @@ export type KeptTextEntry = {
      * `reflections/`.
      */
     path: string;
+    /**
+     * Who sent the text, for a text kept from a write that was refused
+     * after its instance lost the domain's host lock; `null` for a room's
+     * text.
+     */
+    sender?: string | null;
 };
 
 /**

@@ -1240,6 +1240,29 @@ impl Engine {
             };
             let writable = journal.writable.binary_search(&domain).is_ok();
             let folder = super::reflection::reflection_dir(&root);
+            // A page's row is written only by the domain's host (the
+            // host-lock fence), so the step claims each domain it respells
+            // as a sync would, a one-shot command included, which gives the
+            // lock back when the step is done. A domain another live
+            // instance holds stops the step, so it runs again.
+            let needs_writes = writable && rows.iter().any(|row| respell(&row.content).1 > 0);
+            if needs_writes && !self.instance_id.is_empty() {
+                let claim = {
+                    let store = self.store.lock().await;
+                    self.claim_file_host(&*store, &domain, &root, false).await
+                };
+                match claim {
+                    Ok(HostClaim::Acquired { .. }) => {}
+                    Ok(HostClaim::HeldByOther(host)) => {
+                        self.release_taken_hosts().await;
+                        return Err(EngineError::Conflict(host_refusal(&domain, &host)));
+                    }
+                    Err(e) => {
+                        self.release_taken_hosts().await;
+                        return Err(e);
+                    }
+                }
+            }
             for row in rows {
                 let references = respell(&row.content).1;
                 if references == 0 {
@@ -1277,6 +1300,13 @@ impl Engine {
                         counts.0 += 1;
                         counts.1 += references;
                     }
+                    // The fence refused: this instance lost the domain's lock
+                    // meanwhile. The step is not done; the next run tries
+                    // again.
+                    Err(e) if super::fence::is_fence_refusal(&e) => {
+                        self.release_taken_hosts().await;
+                        return Err(e);
+                    }
                     Err(e) => {
                         tracing::warn!(
                             domain = domain.as_str(),
@@ -1293,6 +1323,7 @@ impl Engine {
                 }
             }
         }
+        self.release_taken_hosts().await;
         Ok(())
     }
 

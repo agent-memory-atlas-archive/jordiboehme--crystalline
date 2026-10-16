@@ -94,6 +94,18 @@ async fn a_reflection_on_a_shared_database_is_served_by_its_host_only_on_postgre
         .unwrap();
     assert_eq!(host["state"], "on", "{host}");
     assert!(host["host_label"].is_null(), "{host}");
+    // Somebody who is not signed in never reads the host's name, a
+    // machine's hostname or address.
+    let anonymous = ReflectionCaller::person(crystalline_service::Scope::Anonymous, "");
+    let seen = b.engine.reflection_status("eng", &anonymous).await.unwrap();
+    assert_eq!(seen["host_label"], "another instance", "{seen}");
+    let err = b
+        .engine
+        .read_reflection_tree("eng", &anonymous)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(err, refusal("another instance"));
 
     let s = serve_fx(b, false).await;
     let ed = Session::login(s.addr, "ed").await;
@@ -239,10 +251,48 @@ async fn a_reflection_on_a_shared_database_is_served_by_its_host_only_on_postgre
         s.fx.engine.reflection_state("eng").await.unwrap(),
         hosted_by("gamma")
     );
-    // A holder that sent no heartbeat for 90 seconds is taken over by the
-    // next Reflection request, as a plain sync takes it, and the take-over
-    // marks a host move from it.
+    // A holder that sent no heartbeat for 90 seconds is not taken over by
+    // a read: the status, the listing and a page read name it, the read
+    // says when it was last seen, and the lock stays where it is.
     gamma_beat(crystalline_index::claim_window(91).1).await;
+    assert_eq!(
+        s.fx.engine.reflection_state("eng").await.unwrap(),
+        hosted_by("gamma")
+    );
+    let (_, body) = ed.get("/api/v1/domains/eng/reflection").await;
+    assert_eq!(body["host_label"], "gamma", "{body}");
+    let (_, listing) = ed.get("/api/v1/reflection/domains").await;
+    assert_eq!(listing["domains"][0]["host_label"], "gamma", "{listing}");
+    let err =
+        s.fx.engine
+            .read_reflection_tree("eng", &ReflectionCaller::owner())
+            .await
+            .unwrap_err()
+            .to_string();
+    assert_eq!(
+        err,
+        refusal("gamma (last seen 1 minute ago)"),
+        "a read names the stale host"
+    );
+    {
+        let store = s.fx.engine.store();
+        let store = store.lock().await;
+        let id = store.domain_id("eng").await.unwrap().unwrap();
+        assert_eq!(
+            store.domain_host(id).await.unwrap().unwrap().instance_id,
+            "gamma",
+            "no read moved the lock"
+        );
+    }
+    // The next write takes it over, as a plain sync takes it, and the
+    // take-over marks a host move from it.
+    s.fx.engine
+        .write_reflection(
+            &crate::docs::write("guides/after.md", "# After\n"),
+            &ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
     assert_eq!(s.fx.engine.reflection_state("eng").await.unwrap(), LOCAL);
     let store = s.fx.engine.store();
     let store = store.lock().await;
@@ -340,9 +390,9 @@ async fn a_released_host_lock_goes_to_exactly_one_instance_on_postgres() {
 }
 
 /// A host that crashed (or slept) keeps its lock until its heartbeat is 90
-/// seconds old. Then two running daemons that want the domain at the same
-/// moment, one through a sync and one through a Reflection request, do not
-/// both get it: the claim is one conditional upsert, and the second waits
+/// seconds old. A status read takes nothing over. Then two running daemons
+/// that want the domain at the same moment, one through a sync and one
+/// through a Reflection write, do not both get it: the claim is one conditional upsert, and the second waits
 /// on the row the first wrote and finds a live heartbeat there. The winner
 /// watches the domain and marks the host move from the old host; the old
 /// host refuses from its next request and names the winner.
@@ -373,17 +423,25 @@ async fn a_stale_host_lock_goes_to_exactly_one_running_daemon_on_postgres() {
             .unwrap();
     }
 
-    let (synced, asked) = tokio::join!(
-        beta.engine.sync(Some("eng")),
-        gamma.engine.reflection_state("eng")
+    // A status read takes nothing over.
+    assert_eq!(
+        gamma.engine.reflection_state("eng").await.unwrap(),
+        hosted_by("alpha")
     );
-    let asked = asked.unwrap();
-    let (winner, winner_name, winner_watch, loser_watch) = match (&synced, &asked) {
-        (Ok(_), ReflectionState::HostedElsewhere { label }) => {
-            assert_eq!(label.as_deref(), Some("beta"), "gamma names the winner");
+    let (race, owner) = (
+        crate::docs::write("guides/race.md", "# Race\n"),
+        ReflectionCaller::owner(),
+    );
+    let (synced, wrote) = tokio::join!(
+        beta.engine.sync(Some("eng")),
+        gamma.engine.write_reflection(&race, &owner)
+    );
+    let (winner, winner_name, winner_watch, loser_watch) = match (&synced, &wrote) {
+        (Ok(_), Err(e)) => {
+            assert_eq!(e.to_string(), refusal("beta"), "gamma names the winner");
             (&beta, "beta", &mut beta_watch, &mut gamma_watch)
         }
-        (Err(e), ReflectionState::On { .. }) => {
+        (Err(e), Ok(_)) => {
             assert!(e.to_string().contains("is hosted by gamma"), "{e}");
             (&gamma, "gamma", &mut gamma_watch, &mut beta_watch)
         }
@@ -1412,14 +1470,14 @@ async fn a_turso_instance_always_serves_its_reflection() {
     }
 }
 
-/// Beta takes `eng` over while alpha's next fenced Reflection write sits
-/// between its files and its rows (a host that paused there), then the
-/// write goes on. Answers the write's result.
+/// Run `write` on alpha, and `meanwhile` while it sits between its files
+/// and its rows (a host that paused there); then the write goes on.
+/// Answers the write's result.
 #[cfg(feature = "postgres")]
-async fn written_while_beta_takes_over<T>(
+async fn in_the_window<T>(
     alpha: &Fx,
-    beta: &Fx,
     write: impl std::future::Future<Output = Result<T, crystalline_service::EngineError>>,
+    meanwhile: impl std::future::Future<Output = ()>,
 ) -> Result<T, crystalline_service::EngineError> {
     let (entered, release) = alpha.engine.hold_next_row_fence_until();
     tokio::pin!(write);
@@ -1427,56 +1485,137 @@ async fn written_while_beta_takes_over<T>(
         written = &mut write => panic!("the write never reached its rows: {:?}", written.err()),
         () = entered.notified() => {}
     }
-    beta.engine.sync_take_over(Some("eng"), true).await.unwrap();
+    meanwhile.await;
     release.notify_one();
     write.await
 }
 
-/// What alpha keeps in its kept folder for `eng`, as (path, text).
+/// [`in_the_window`] with beta taking `eng` over in the window.
 #[cfg(feature = "postgres")]
-async fn kept_on(fx: &Fx) -> Vec<(String, String)> {
+async fn written_while_beta_takes_over<T>(
+    alpha: &Fx,
+    beta: &Fx,
+    write: impl std::future::Future<Output = Result<T, crystalline_service::EngineError>>,
+) -> Result<T, crystalline_service::EngineError> {
+    in_the_window(alpha, write, async {
+        beta.engine.sync_take_over(Some("eng"), true).await.unwrap();
+    })
+    .await
+}
+
+/// What `fx` keeps in its kept folder for `eng`, as (kind, path, text,
+/// sender).
+#[cfg(feature = "postgres")]
+async fn kept_on(fx: &Fx) -> Vec<(String, String, String, Option<String>)> {
     fx.engine
         .kept_texts("eng", &crystalline_service::Scope::Unrestricted)
         .await
         .unwrap()
         .into_iter()
-        .map(|k| (k.path.clone(), std::fs::read_to_string(&k.file).unwrap()))
+        .map(|k| {
+            (
+                k.kind.as_str().to_string(),
+                k.path.clone(),
+                std::fs::read_to_string(&k.file).unwrap(),
+                k.sender.clone(),
+            )
+        })
         .collect()
 }
 
-/// A host that loses the lock between its gate and its rows (it paused
-/// there) writes no row: the page write, the thread, the page delete and
-/// the file upload are each refused with the hosted_elsewhere sentence naming the new host,
-/// the text sent goes to the kept folder, the files the write changed on
-/// the old host's disk are put back, and the new host's rows stay as they
-/// were.
+/// The refusal of a write whose text the fence kept.
 #[cfg(feature = "postgres")]
-#[tokio::test]
-async fn a_host_that_lost_the_lock_mid_write_writes_no_row_on_postgres() {
-    use crystalline_service::params::DiscussParams;
+fn kept_refusal(label: &str) -> String {
+    format!(
+        "{}{}",
+        refusal(label),
+        crystalline_service::engine::KEPT_HERE
+    )
+}
 
-    let Some(db) = Shared::new() else { return };
+/// The owner's name, the sender a kept text names.
+#[cfg(feature = "postgres")]
+fn owner_name() -> Option<String> {
+    Some(ReflectionCaller::owner().author.name)
+}
+
+/// What beta's index holds for page `path`.
+#[cfg(feature = "postgres")]
+async fn row_of(fx: &Fx, path: &str) -> Option<crystalline_index::ReflectionRow> {
+    let store = fx.engine.store();
+    let store = store.lock().await;
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    store.get_reflection(did, path).await.unwrap()
+}
+
+/// What `fx`'s index holds for Reflection file `path`.
+#[cfg(feature = "postgres")]
+async fn file_row_of(fx: &Fx, path: &str) -> bool {
+    let store = fx.engine.store();
+    let store = store.lock().await;
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    store
+        .get_asset(crystalline_index::AssetTable::Reflection, did, path)
+        .await
+        .unwrap()
+        .is_some()
+}
+
+/// The page every fence test starts from, with a baseline and a threads
+/// file beside it, written by alpha while it hosts `eng`.
+#[cfg(feature = "postgres")]
+const PAGE: &str = "guides/paused.md";
+#[cfg(feature = "postgres")]
+const V1: &str = "# Paused\n\n## Facts\n\nVersion one.\n";
+
+/// Alpha hosting `eng` with [`PAGE`] written and a baseline and a threads
+/// file beside it, and beta on the same database.
+#[cfg(feature = "postgres")]
+async fn fenced_pair(db: &Shared) -> (Fx, Fx) {
     let alpha = instance(db.open().await, "alpha").await;
     let beta = instance(db.open().await, "beta").await;
-    const PAGE: &str = "guides/paused.md";
-    const V1: &str = "# Paused\n\n## Facts\n\nVersion one.\n";
     alpha
         .engine
         .write_reflection(&crate::docs::write(PAGE, V1), &ReflectionCaller::owner())
         .await
         .unwrap();
-    let page_abs = alpha.root.join("reflections").join(PAGE);
-    let before = std::fs::read(&page_abs).unwrap();
-    let beta_row = |path: &'static str| {
-        let store = beta.engine.store();
-        async move {
-            let store = store.lock().await;
-            let did = store.domain_id("eng").await.unwrap().unwrap();
-            store.get_reflection(did, path).await.unwrap()
-        }
-    };
+    let folder = alpha.root.join("reflections");
+    std::fs::create_dir_all(folder.join(".reflected/guides")).unwrap();
+    std::fs::write(folder.join(".reflected").join(PAGE), V1).unwrap();
+    std::fs::write(folder.join("guides/paused.threads.md"), "").unwrap();
+    (alpha, beta)
+}
 
-    // A page write.
+/// Every file of [`PAGE`] on `fx`'s disk (page, baseline, threads), as
+/// bytes, `None` for none.
+#[cfg(feature = "postgres")]
+fn page_files(fx: &Fx, page: &str) -> Vec<(String, Option<Vec<u8>>)> {
+    let folder = fx.root.join("reflections");
+    let stem = page.strip_suffix(".md").unwrap();
+    [
+        page.to_string(),
+        format!(".reflected/{page}"),
+        format!("{stem}.threads.md"),
+    ]
+    .into_iter()
+    .map(|rel| {
+        let bytes = std::fs::read(folder.join(&rel)).ok();
+        (rel, bytes)
+    })
+    .collect()
+}
+
+/// A host that loses the lock between its gate and its rows (it paused
+/// there) writes no row: a page write is refused with the hosted_elsewhere
+/// sentence naming the new host and saying the text was kept here, the
+/// text sent goes to the kept folder with its sender, the page is back on
+/// the old host's disk, and the new host's row stays as it was.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_page_write_after_the_lock_moved_writes_no_row_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let (alpha, beta) = fenced_pair(&db).await;
+    let before = page_files(&alpha, PAGE);
     let err = written_while_beta_takes_over(
         &alpha,
         &beta,
@@ -1487,56 +1626,205 @@ async fn a_host_that_lost_the_lock_mid_write_writes_no_row_on_postgres() {
     )
     .await
     .unwrap_err();
-    assert_eq!(err.to_string(), refusal("beta"));
-    assert_eq!(
-        std::fs::read(&page_abs).unwrap(),
-        before,
-        "alpha's disk is back"
-    );
-    let row = beta_row(PAGE).await.expect("the row alpha wrote before");
+    assert_eq!(err.to_string(), kept_refusal("beta"));
+    assert_eq!(page_files(&alpha, PAGE), before, "alpha's disk is back");
+    let row = row_of(&beta, PAGE)
+        .await
+        .expect("the row alpha wrote before");
     assert!(row.content.contains("Version one."), "{}", row.content);
     let kept = kept_on(&alpha).await;
     assert_eq!(kept.len(), 1, "{kept:?}");
-    assert_eq!(kept[0].0, PAGE);
-    assert!(kept[0].1.contains("Version two."), "{}", kept[0].1);
+    let (kind, path, text, sender) = &kept[0];
+    assert_eq!((kind.as_str(), path.as_str()), ("reflection", PAGE));
+    assert!(text.contains("Version two."), "{text}");
+    assert_eq!(*sender, owner_name());
+}
 
-    // A thread: alpha takes the domain back first, then loses it again.
-    alpha
-        .engine
-        .sync_take_over(Some("eng"), true)
-        .await
-        .unwrap();
-    let opened = DiscussParams {
-        domain: "eng".into(),
-        path: Some(PAGE.into()),
-        section: Some("Facts".into()),
-        text: Some("Is this still true?".into()),
-        ..Default::default()
-    };
+/// A file another host wrote on a shared volume while the write waited is
+/// newer than the write: the put-back leaves it as it is.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_put_back_leaves_a_file_written_meanwhile_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let (alpha, beta) = fenced_pair(&db).await;
+    let page_abs = alpha.root.join("reflections").join(PAGE);
+    const NEWER: &str = "# Paused\n\nWritten by another host.\n";
+    let err = in_the_window(
+        &alpha,
+        alpha.engine.write_reflection(
+            &crate::docs::write(PAGE, "# Paused\n\nVersion two.\n"),
+            &ReflectionCaller::owner(),
+        ),
+        async {
+            beta.engine.sync_take_over(Some("eng"), true).await.unwrap();
+            std::fs::write(&page_abs, NEWER).unwrap();
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.to_string(), kept_refusal("beta"));
+    assert_eq!(std::fs::read_to_string(&page_abs).unwrap(), NEWER);
+}
+
+/// When the text sent cannot be kept, the page that holds it stays as the
+/// write left it, and the answer does not claim it was kept.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_text_that_cannot_be_kept_stays_in_its_page_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let (alpha, beta) = fenced_pair(&db).await;
+    let kept_root = alpha.tmp.path().join("state/kept");
+    let _ = std::fs::remove_dir_all(&kept_root);
+    std::fs::create_dir_all(kept_root.parent().unwrap()).unwrap();
+    std::fs::write(&kept_root, "not a folder").unwrap();
     let err = written_while_beta_takes_over(
         &alpha,
         &beta,
-        alpha.engine.discuss(&opened, &ReflectionCaller::owner()),
+        alpha.engine.write_reflection(
+            &crate::docs::write(PAGE, "# Paused\n\n## Facts\n\nVersion two.\n"),
+            &ReflectionCaller::owner(),
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.to_string(), refusal("beta"), "nothing was kept");
+    let page = std::fs::read_to_string(alpha.root.join("reflections").join(PAGE)).unwrap();
+    assert!(page.contains("Version two."), "the only copy stays: {page}");
+}
+
+/// A file that cannot be put back stays as the write left it, and the
+/// refusal still stands.
+#[cfg(all(feature = "postgres", unix))]
+#[tokio::test]
+async fn a_file_that_cannot_be_put_back_stays_on_postgres() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(db) = Shared::new() else { return };
+    let (alpha, beta) = fenced_pair(&db).await;
+    let dir = alpha.root.join("reflections/guides");
+    let err = in_the_window(
+        &alpha,
+        alpha.engine.write_reflection(
+            &crate::docs::write(PAGE, "# Paused\n\n## Facts\n\nVersion two.\n"),
+            &ReflectionCaller::owner(),
+        ),
+        async {
+            beta.engine.sync_take_over(Some("eng"), true).await.unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        },
+    )
+    .await
+    .unwrap_err();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(err.to_string(), kept_refusal("beta"));
+    let page = std::fs::read_to_string(dir.join("paused.md")).unwrap();
+    assert!(page.contains("Version two."), "left as written: {page}");
+}
+
+/// A room's save is refused the same way and puts the files back; it
+/// keeps nothing itself, since the room holds the text.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_room_save_after_the_lock_moved_writes_no_row_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let (alpha, beta) = fenced_pair(&db).await;
+    let before = page_files(&alpha, PAGE);
+    let checksum = crate::support::sha256_hex(
+        &std::fs::read(alpha.root.join("reflections").join(PAGE)).unwrap(),
+    );
+    let err = written_while_beta_takes_over(
+        &alpha,
+        &beta,
+        alpha.engine.save_reflection_room(
+            "eng",
+            PAGE,
+            "# Paused\n\n## Facts\n\nTyped in a room.\n",
+            &checksum,
+            &crystalline_service::SectionAuthors::default(),
+            false,
+        ),
     )
     .await
     .unwrap_err();
     assert_eq!(err.to_string(), refusal("beta"));
-    let threads_abs = alpha.root.join("reflections/guides/paused.threads.md");
-    assert!(!threads_abs.exists(), "the thread file is gone again");
-    let kept = kept_on(&alpha).await;
+    assert_eq!(page_files(&alpha, PAGE), before);
+    assert!(kept_on(&alpha).await.is_empty());
     assert!(
-        kept.iter()
-            .any(|(path, text)| path.ends_with("paused.threads.md")
-                && text.contains("Is this still true?")),
-        "{kept:?}"
+        row_of(&beta, PAGE)
+            .await
+            .unwrap()
+            .content
+            .contains("Version one.")
     );
+}
 
-    // A page delete puts the page, its baseline and its threads back.
-    alpha
-        .engine
-        .sync_take_over(Some("eng"), true)
-        .await
-        .unwrap();
+/// A page move is refused with both rows as they were and all six files
+/// (page, baseline and threads at both paths) back.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_page_move_after_the_lock_moved_changes_nothing_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let (alpha, beta) = fenced_pair(&db).await;
+    const TO: &str = "guides/moved.md";
+    let (from_before, to_before) = (page_files(&alpha, PAGE), page_files(&alpha, TO));
+    assert!(
+        from_before.iter().all(|(_, b)| b.is_some()),
+        "{from_before:?}"
+    );
+    let err = written_while_beta_takes_over(
+        &alpha,
+        &beta,
+        alpha
+            .engine
+            .move_reflection("eng", PAGE, TO, &ReflectionCaller::owner()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.to_string(), refusal("beta"));
+    assert_eq!(page_files(&alpha, PAGE), from_before);
+    assert_eq!(page_files(&alpha, TO), to_before);
+    assert!(row_of(&beta, PAGE).await.is_some());
+    assert!(row_of(&beta, TO).await.is_none());
+}
+
+/// A letter-case page move on a case-insensitive disk is turned back too:
+/// the page has its old spelling and its old text again.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_case_only_page_move_is_turned_back_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let (alpha, beta) = fenced_pair(&db).await;
+    let probe = alpha.root.join("reflections/guides/paused.md");
+    if !alpha.root.join("reflections/guides/PAUSED.md").exists() {
+        eprintln!("note: a case-sensitive disk; the case-only move is a plain one here");
+        return;
+    }
+    let before = std::fs::read(&probe).unwrap();
+    let err = written_while_beta_takes_over(
+        &alpha,
+        &beta,
+        alpha
+            .engine
+            .move_reflection("eng", PAGE, "guides/Paused.md", &ReflectionCaller::owner()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.to_string(), refusal("beta"));
+    let names: Vec<String> = std::fs::read_dir(alpha.root.join("reflections/guides"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.contains(&"paused.md".to_string()), "{names:?}");
+    assert_eq!(std::fs::read(&probe).unwrap(), before);
+}
+
+/// A page delete is refused with the page, its baseline and its threads
+/// back, and the row stays.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_page_delete_after_the_lock_moved_changes_nothing_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let (alpha, beta) = fenced_pair(&db).await;
+    let before = page_files(&alpha, PAGE);
     let err = written_while_beta_takes_over(
         &alpha,
         &beta,
@@ -1547,14 +1835,52 @@ async fn a_host_that_lost_the_lock_mid_write_writes_no_row_on_postgres() {
     .await
     .unwrap_err();
     assert_eq!(err.to_string(), refusal("beta"));
-    assert_eq!(
-        std::fs::read(&page_abs).unwrap(),
-        before,
-        "the page is back"
-    );
-    assert!(beta_row(PAGE).await.is_some(), "the row stays");
+    assert_eq!(page_files(&alpha, PAGE), before);
+    assert!(row_of(&beta, PAGE).await.is_some(), "the row stays");
+}
 
-    // A file upload.
+/// A new thread and an entry on a thread are each refused; the comment is
+/// kept as a comment on the page, with its sender, and the threads file is
+/// back.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_comment_after_the_lock_moved_is_kept_on_postgres() {
+    use crystalline_service::params::DiscussParams;
+
+    let Some(db) = Shared::new() else { return };
+    let (alpha, beta) = fenced_pair(&db).await;
+    let threads_abs = alpha.root.join("reflections/guides/paused.threads.md");
+    let opened = DiscussParams {
+        domain: "eng".into(),
+        path: Some(PAGE.into()),
+        section: Some("Facts".into()),
+        text: Some("Is this still true?".into()),
+        ..Default::default()
+    };
+    let thread = alpha
+        .engine
+        .discuss(&opened, &ReflectionCaller::owner())
+        .await
+        .unwrap();
+    let id = thread["id"].as_str().expect("a thread id").to_string();
+    let before = std::fs::read(&threads_abs).unwrap();
+
+    let err = written_while_beta_takes_over(
+        &alpha,
+        &beta,
+        alpha.engine.discuss(
+            &DiscussParams {
+                text: Some("A second question.".into()),
+                ..opened.clone()
+            },
+            &ReflectionCaller::owner(),
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.to_string(), kept_refusal("beta"));
+    assert_eq!(std::fs::read(&threads_abs).unwrap(), before);
+
     alpha
         .engine
         .sync_take_over(Some("eng"), true)
@@ -1563,38 +1889,222 @@ async fn a_host_that_lost_the_lock_mid_write_writes_no_row_on_postgres() {
     let err = written_while_beta_takes_over(
         &alpha,
         &beta,
-        alpha.engine.reflection_asset_write(
+        alpha.engine.reflection_thread_entry(
             "eng",
-            "assets/flow.png",
-            crate::assets::PNG.to_vec(),
+            PAGE,
+            &id,
+            crystalline_core::threads::EntryKind::Comment,
+            "An answer.",
             &ReflectionCaller::owner(),
         ),
     )
     .await
     .unwrap_err();
+    assert_eq!(err.to_string(), kept_refusal("beta"));
+    assert_eq!(std::fs::read(&threads_abs).unwrap(), before);
+    let kept = kept_on(&alpha).await;
+    let mut comments: Vec<&str> = kept
+        .iter()
+        .filter(|(kind, path, _, sender)| {
+            kind == "comment" && path == PAGE && *sender == owner_name()
+        })
+        .map(|(_, _, text, _)| text.as_str())
+        .collect();
+    comments.sort();
+    assert_eq!(comments, ["A second question.", "An answer."], "{kept:?}");
+}
+
+/// A Reflection file upload, delete and move are each refused: the disk is
+/// back and the rows are as they were.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn file_writes_after_the_lock_moved_change_nothing_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let (alpha, beta) = fenced_pair(&db).await;
+    let owner = ReflectionCaller::owner();
+    let assets = alpha.root.join("reflections/assets");
+
+    let err = written_while_beta_takes_over(
+        &alpha,
+        &beta,
+        alpha.engine.reflection_asset_write(
+            "eng",
+            "assets/new.png",
+            crate::assets::PNG.to_vec(),
+            &owner,
+        ),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err.to_string(), refusal("beta"));
-    assert!(
-        !alpha.root.join("reflections/assets/flow.png").exists(),
-        "the uploaded file is gone again"
+    assert!(!assets.join("new.png").exists(), "the upload is gone again");
+    assert!(!file_row_of(&beta, "new.png").await && !file_row_of(&beta, "assets/new.png").await);
+
+    alpha
+        .engine
+        .sync_take_over(Some("eng"), true)
+        .await
+        .unwrap();
+    alpha
+        .engine
+        .reflection_asset_write(
+            "eng",
+            "assets/flow.png",
+            crate::assets::PNG.to_vec(),
+            &owner,
+        )
+        .await
+        .unwrap();
+    let rows_before = (
+        file_row_of(&alpha, "flow.png").await,
+        file_row_of(&alpha, "assets/flow.png").await,
     );
-    let store = beta.engine.store();
-    let store = store.lock().await;
-    let did = store.domain_id("eng").await.unwrap().unwrap();
+    assert!(rows_before.0 || rows_before.1, "the upload has a row");
+    let err = written_while_beta_takes_over(
+        &alpha,
+        &beta,
+        alpha
+            .engine
+            .reflection_asset_delete("eng", "assets/flow.png", &owner),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.to_string(), refusal("beta"));
+    assert_eq!(
+        std::fs::read(assets.join("flow.png")).unwrap(),
+        crate::assets::PNG
+    );
+    assert_eq!(
+        (
+            file_row_of(&beta, "flow.png").await,
+            file_row_of(&beta, "assets/flow.png").await
+        ),
+        rows_before,
+        "the row stays"
+    );
+
+    alpha
+        .engine
+        .sync_take_over(Some("eng"), true)
+        .await
+        .unwrap();
+    let err = written_while_beta_takes_over(
+        &alpha,
+        &beta,
+        alpha
+            .engine
+            .move_reflection_asset("eng", "assets/flow.png", "assets/moved.png", &owner),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.to_string(), refusal("beta"));
+    assert!(assets.join("flow.png").exists() && !assets.join("moved.png").exists());
     assert!(
-        store
-            .get_asset(crystalline_index::AssetTable::Reflection, did, "flow.png")
-            .await
-            .unwrap()
-            .is_none()
-            && store
-                .get_asset(
-                    crystalline_index::AssetTable::Reflection,
-                    did,
-                    "assets/flow.png"
-                )
+        !file_row_of(&beta, "moved.png").await && !file_row_of(&beta, "assets/moved.png").await
+    );
+}
+
+/// When no instance holds the lock any more (its holder released it), the
+/// write is refused as well, and says to try again.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_write_with_nobody_holding_the_lock_is_refused_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let (alpha, _beta) = fenced_pair(&db).await;
+    let before = page_files(&alpha, PAGE);
+    let err = in_the_window(
+        &alpha,
+        alpha.engine.write_reflection(
+            &crate::docs::write(PAGE, "# Paused\n\n## Facts\n\nVersion two.\n"),
+            &ReflectionCaller::owner(),
+        ),
+        async {
+            let store = db.open().await;
+            let store = store.lock().await;
+            let did = store.domain_id("eng").await.unwrap().unwrap();
+            let (now, stale) = crystalline_index::claim_window(90);
+            let token = match store
+                .claim_domain_host(did, "zeta", "zeta", &now, &stale, true)
                 .await
                 .unwrap()
-                .is_none(),
-        "no row for the refused upload"
+            {
+                crystalline_index::HostClaim::Acquired { token } => token,
+                other => panic!("{other:?}"),
+            };
+            assert!(
+                store
+                    .release_domain_host(did, "zeta", &token)
+                    .await
+                    .unwrap()
+            );
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "this domain's Reflection is served by no instance now; try again{}",
+            crystalline_service::engine::KEPT_HERE
+        )
     );
+    assert_eq!(page_files(&alpha, PAGE), before);
+}
+
+/// A daemon that takes a domain over with `sync --take-over` hands it to
+/// its watcher, which arms it and walks it.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_take_over_by_sync_hands_the_domain_to_the_watcher_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let files = files();
+    let files: Vec<(&str, &str)> = files.iter().map(|(p, b)| (*p, b.as_str())).collect();
+    let _alpha = instance(db.open().await, "alpha").await;
+    let (beta, mut beta_watch) = instance_watched(db.open().await, "beta", &files).await;
+    assert!(beta_watch.try_recv().is_err(), "beta gained nothing yet");
+    beta.engine.sync_take_over(Some("eng"), true).await.unwrap();
+    match beta_watch.try_recv() {
+        Ok(crystalline_service::engine::WatchEvent::Add(name, root)) => {
+            assert_eq!((name.as_str(), root), ("eng", beta.root.clone()));
+        }
+        other => panic!("the take-over hands eng to the watcher: {other:?}"),
+    }
+}
+
+/// A one-shot `domain rename` on a shared database with no daemon running
+/// respells the Reflection pages that name the old domain: it claims the
+/// domain it respells, as its syncs do, so the host-lock fence lets the
+/// rewrite through, and it gives the lock back after.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_one_shot_rename_respells_the_pages_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    alpha
+        .engine
+        .write_reflection(
+            &crate::docs::write(
+                "guides/links.md",
+                "# Links\n\nSee [[eng:runbooks/deploy]].\n",
+            ),
+            &ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+    alpha.engine.release_hosts().await;
+    assert_eq!(lock_and_move(&db).await.0, None, "no daemon holds eng");
+
+    let cmd = one_shot(&db, &alpha, "alpha").await;
+    let report = cmd
+        .rename_domain(
+            "eng",
+            "platform",
+            false,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(report["left_behind"], serde_json::json!([]), "{report}");
+    let page = std::fs::read_to_string(alpha.root.join("reflections/guides/links.md")).unwrap();
+    assert!(page.contains("[[platform:runbooks/deploy]]"), "{page}");
 }

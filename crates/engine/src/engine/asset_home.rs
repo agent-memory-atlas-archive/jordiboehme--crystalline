@@ -606,27 +606,20 @@ impl Engine {
             self.after_asset_change(home, domain);
             return Ok(None);
         };
-        // A Reflection move refused by the host-lock fence wrote no row, and
-        // a row at `to` may be the new host's own: it stays.
+        // The rows of a move commit in one transaction or not at all, so a
+        // failed one wrote no row at `to`, and a row there (the new host's,
+        // after a fence refusal) stays.
         let fenced = home == AssetHome::Reflection && is_fence_refusal(&e);
         match self.undo_asset_rename(&dst, &src, case_only) {
-            Ok(()) if fenced => Err(e),
-            Ok(()) => {
-                // The file is back; a row this move wrote for `to` goes, so
-                // the domain is as the move found it.
-                if let Err(failed) = self
-                    .store
-                    .lock()
-                    .await
-                    .delete_asset(home.table(), domain_id, to)
-                    .await
-                {
-                    tracing::warn!(
-                        "{} '{to}' in '{domain}': the row of an undone move could not be removed: {failed}",
-                        home.noun()
-                    );
-                }
-                Err(e)
+            Ok(()) => Err(e),
+            Err(undo) if fenced => {
+                tracing::error!(
+                    "{} '{from}' in '{domain}' moved to '{to}' on this instance's disk, the move was refused because this instance no longer holds the domain's host lock ({e}), and the file could not be moved back ({undo})",
+                    home.noun()
+                );
+                Ok(Some(format!(
+                    "the file moved to '{to}' on this instance's disk and could not be moved back ({undo}); no row changed, since {e}"
+                )))
             }
             Err(undo) => {
                 tracing::warn!(
@@ -674,9 +667,20 @@ impl Engine {
                 .await;
         }
         let store = self.store.lock().await;
-        store.upsert_asset(home.table(), domain_id, row).await?;
-        store.delete_asset(home.table(), domain_id, from).await?;
-        Ok(())
+        store.begin().await?;
+        let moved = async {
+            store.upsert_asset(home.table(), domain_id, row).await?;
+            store.delete_asset(home.table(), domain_id, from).await?;
+            Ok::<(), crystalline_index::IndexError>(())
+        }
+        .await;
+        match moved {
+            Ok(()) => Ok(store.commit().await?),
+            Err(e) => {
+                let _ = store.rollback().await;
+                Err(e.into())
+            }
+        }
     }
 
     /// Put a moved file back where it was, never over a file that appeared

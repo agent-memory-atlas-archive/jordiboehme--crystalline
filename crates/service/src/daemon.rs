@@ -1313,6 +1313,15 @@ async fn run_watcher(
             _ = wait_true(&mut shutdown) => break,
             event = new_roots.recv() => {
                 match event {
+                    Some(WatchEvent::Add(name, _)) if domains.iter().any(|(n, _)| *n == name) => {
+                        // A domain this daemon watches already and took back
+                        // from another instance: its watch never stopped, but
+                        // what changed on disk while another host held it was
+                        // not walked here, so one catch-up sync walks it now.
+                        if let Err(err) = engine.sync(Some(name.as_str())).await {
+                            tracing::warn!("catch-up sync of domain '{name}' taken back failed: {err}");
+                        }
+                    }
                     Some(WatchEvent::Add(name, root)) => {
                         if !domains.iter().any(|(n, _)| *n == name) {
                             // Claim the host lock before arming, as at startup: a
@@ -3686,6 +3695,75 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A domain the watcher already watches, handed to it again because
+    /// this daemon took its lock back from another instance, gets one
+    /// catch-up sync: what changed on disk while another host held it was
+    /// never walked here, and its watch saw nothing new.
+    #[tokio::test]
+    async fn a_domain_taken_back_gets_a_catch_up_walk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("a.md"),
+            "---\ntype: engram\ntitle: A\npermalink: a\nstatus: stable\n---\n\n# A\n",
+        )
+        .unwrap();
+        let mut cfg = crystalline_core::config::GlobalConfig::default();
+        cfg.domains.insert(
+            "eng".to_string(),
+            crystalline_core::config::DomainEntry::file(root.clone()),
+        );
+        let store = crystalline_index::TursoStore::open_in_memory()
+            .await
+            .unwrap();
+        let (watch_tx, watch_rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = Arc::new(
+            Engine::new(
+                Arc::new(tokio::sync::Mutex::new(store)),
+                cfg,
+                None,
+                Some(tmp.path().join("config.yaml")),
+            )
+            .with_instance_id("this-machine".to_string())
+            .with_watch_channel(watch_tx.clone()),
+        );
+        let (stop, stopped) = watch::channel(false);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let watcher = tokio::spawn(run_watcher(
+            engine.clone(),
+            vec![("eng".to_string(), root.clone())],
+            false,
+            stopped,
+            watch_rx,
+            ready_tx,
+        ));
+        ready_rx.await.unwrap();
+        let indexed = || async {
+            let store = engine.store();
+            let store = store.lock().await;
+            match store.domain_id("eng").await.unwrap() {
+                Some(id) => store.file_stamps(id).await.unwrap().contains_key("a.md"),
+                None => false,
+            }
+        };
+        assert!(!indexed().await, "arming a watch walks nothing");
+        watch_tx
+            .send(WatchEvent::Add("eng".to_string(), root.clone()))
+            .unwrap();
+        let mut walked = false;
+        for _ in 0..100 {
+            if indexed().await {
+                walked = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let _ = stop.send(true);
+        let _ = watcher.await;
+        assert!(walked, "the domain taken back is walked once");
+    }
 
     /// The default filter quiets the model download library's crates, which
     /// log every transfer step at info (dozens of lines a second during a

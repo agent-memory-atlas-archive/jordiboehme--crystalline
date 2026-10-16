@@ -11970,13 +11970,21 @@
           },
           "kind": {
             "type": "string",
-            "description": "`engram` or `reflection`: the kind of room it was kept from.",
+            "description": "`engram` or `reflection`: the kind of room (or page write) it was\nkept from; `comment` for a thread comment on the page at `path`.",
             "example": "reflection"
           },
           "path": {
             "type": "string",
             "description": "The engram's file path in its domain, or the page's path inside\n`reflections/`.",
             "example": "guides/deploying.md"
+          },
+          "sender": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who sent the text, for a text kept from a write that was refused\nafter its instance lost the domain's host lock; `null` for a room's\ntext.",
+            "example": "ada"
           }
         }
       },

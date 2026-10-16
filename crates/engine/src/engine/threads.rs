@@ -69,7 +69,9 @@ impl Engine {
     ) -> Result<TargetAccess> {
         match target {
             ThreadTarget::Reflection { path } => {
-                let access = self.require_reflection(domain, caller, need).await?;
+                let access = self
+                    .require_reflection_to_write(domain, caller, need)
+                    .await?;
                 r::validate_reflection_path(path).map_err(EngineError::Invalid)?;
                 Ok(TargetAccess::Reflection(access))
             }
@@ -299,14 +301,15 @@ impl Engine {
         // folder and puts both files back.
         match (target, &access) {
             (ThreadTarget::Reflection { path }, TargetAccess::Reflection(access)) => {
-                let threads_rel = r::threads_path(path);
                 let on_refusal = OnRefusal {
                     domain,
                     undo,
                     keep: Some(KeepText {
-                        path: &threads_rel,
+                        kind: crystalline_core::kept::KeptKind::Comment,
+                        path,
                         text,
                         actor: &caller.author.name,
+                        holds: &threads_abs,
                     }),
                 };
                 match &page_update {
@@ -388,7 +391,6 @@ impl Engine {
         // row, so only the lock is read.
         match (target, &access) {
             (ThreadTarget::Reflection { path }, TargetAccess::Reflection(access)) => {
-                let threads_rel = r::threads_path(path);
                 self.commit_reflection_rows(
                     access.domain_id,
                     &[],
@@ -396,9 +398,11 @@ impl Engine {
                         domain,
                         undo,
                         keep: Some(KeepText {
-                            path: &threads_rel,
+                            kind: crystalline_core::kept::KeptKind::Comment,
+                            path,
                             text,
                             actor: &caller.author.name,
+                            holds: &threads_abs,
                         }),
                     },
                 )

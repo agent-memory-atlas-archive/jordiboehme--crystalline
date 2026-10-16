@@ -72,6 +72,7 @@ pub fn to_json(k: &KeptText) -> Value {
         "path": k.path,
         "kept_at": k.kept_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "bytes": k.bytes,
+        "sender": k.sender,
         "file": k.file.display().to_string(),
     })
 }
@@ -83,6 +84,9 @@ pub fn what(k: &KeptText) -> String {
     let mut out = format!("{} {} {}", k.domain, k.kind.as_str(), k.path);
     if let Some(owner) = &k.owner {
         out.push_str(&format!(" ({owner}'s draft)"));
+    }
+    if let Some(sender) = &k.sender {
+        out.push_str(&format!(" (sent by {sender})"));
     }
     if k.removed {
         out.push_str(" (removed domain)");

@@ -3848,15 +3848,22 @@ pub trait Store: Send + Sync {
         take_over: bool,
     ) -> Result<HostClaim>;
 
-    /// Refresh this instance's heartbeat on a lock it holds. Returns `true` when
+    /// Refresh this instance's heartbeat on a lock it holds, and its label
+    /// unless `label` is empty, so every lock of one instance shows the one
+    /// label it uses now. Returns `true` when
     /// a row was updated (this instance still holds it), `false` when it does not
     /// (another instance took over), which tells the daemon to stop hosting.
     async fn renew_domain_host(
         &self,
         domain: DomainId,
         instance_id: &str,
+        label: &str,
         now: &str,
     ) -> Result<bool>;
+
+    /// A label `instance_id` is recorded under already (a lock it holds, or
+    /// a domain it last hosted), or `None`.
+    async fn own_label(&self, instance_id: &str) -> Result<Option<String>>;
 
     /// Release a lock this instance holds (graceful shutdown, or the end of a
     /// one-shot command's walk): a compare-and-delete on `token`, the one

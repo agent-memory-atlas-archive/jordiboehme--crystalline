@@ -192,17 +192,26 @@ async fn each_entry_needs_the_right_to_write_its_own_source() {
     assert_eq!(left, vec![KeptKind::Engram], "the engram's text stays");
 }
 
-/// A reader of the domain (`vera`) is refused on every route; a person who
+/// A reader of the domain (`vera`) may handle kept comments only: she gets
+/// an empty listing and none of the page or engram texts; a person who
 /// may not see the domain (`nora`) meets an unknown domain. Nothing is
 /// dropped.
 #[tokio::test]
-async fn a_reader_is_refused_and_a_stranger_meets_an_unknown_domain() {
+async fn a_reader_gets_no_page_text_and_a_stranger_meets_an_unknown_domain() {
     let s = serve().await;
     let (page_id, engram_id) = keep(&s);
-    for (name, expected) in [("vera", 403), ("nora", 404)] {
+    // Vera reads the Reflection, so she may handle a kept comment: the
+    // listing answers, with none of the texts kept here, and each of them
+    // answers as unknown.
+    let vera = Session::login(s.addr, "vera").await;
+    let (status, body) = vera.get("/api/v1/domains/eng/kept").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["kept"], serde_json::json!([]), "{body}");
+    for (name, expected) in [("vera", 404), ("nora", 404)] {
         let who = Session::login(s.addr, name).await;
-        for (method, path) in [
-            (Method::GET, "/api/v1/domains/eng/kept".to_string()),
+        let listing =
+            (name == "nora").then(|| (Method::GET, "/api/v1/domains/eng/kept".to_string()));
+        for (method, path) in listing.into_iter().chain([
             (Method::GET, format!("/api/v1/domains/eng/kept/{page_id}")),
             (Method::GET, format!("/api/v1/domains/eng/kept/{engram_id}")),
             (
@@ -213,7 +222,7 @@ async fn a_reader_is_refused_and_a_stranger_meets_an_unknown_domain() {
                 Method::DELETE,
                 format!("/api/v1/domains/eng/kept/{engram_id}"),
             ),
-        ] {
+        ]) {
             let (status, body) = who.send(method.clone(), &path, None).await;
             assert_eq!(status, expected, "{name} {method} {path}: {body}");
             assert!(

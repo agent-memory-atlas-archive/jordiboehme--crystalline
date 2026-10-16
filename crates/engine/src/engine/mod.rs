@@ -1044,6 +1044,10 @@ pub struct Engine {
     // `service.public_url`, else the machine's hostname, set by
     // `with_instance_label`; the instance id when nothing named it.
     label: String,
+    // The label this instance's first acquired claim recorded
+    // (`crystalline_index::instance_label`), which the heartbeat writes on
+    // every lock it renews, so one instance shows one label.
+    resolved_label: std::sync::Mutex<Option<String>>,
     // The file domains this instance currently hosts, name to id, populated by a
     // successful `claim_domain_host` and renewed by the heartbeat timer. Drives
     // embed scoping, heartbeat renewal and graceful release.
@@ -2339,6 +2343,7 @@ impl Engine {
             skills_serve,
             instance_id: String::new(),
             label: String::new(),
+            resolved_label: std::sync::Mutex::new(None),
             hosted: std::sync::RwLock::new(HashMap::new()),
             shared_database: std::sync::OnceLock::new(),
             one_shot: false,
@@ -4525,13 +4530,27 @@ impl Engine {
     /// Claim the host lock for one file domain against a locked store. Records
     /// the domain in `hosted` on success and drops it on a loss, so the heartbeat
     /// timer and embed scoping stay in step with what this instance actually
-    /// hosts.
+    /// hosts. A domain it gains is handed to the daemon's watcher.
     async fn claim_file_host(
         &self,
         store: &dyn Store,
         name: &str,
         root: &Path,
         take_over: bool,
+    ) -> Result<HostClaim> {
+        self.claim_file_host_as(store, name, root, take_over, true)
+            .await
+    }
+
+    /// [`Engine::claim_file_host`]; `to_watcher` false for the watcher's
+    /// own claim, which arms the domain itself.
+    async fn claim_file_host_as(
+        &self,
+        store: &dyn Store,
+        name: &str,
+        root: &Path,
+        take_over: bool,
+        to_watcher: bool,
     ) -> Result<HostClaim> {
         let id = store
             .upsert_domain(name, Some(&root.to_string_lossy()), DomainKind::File)
@@ -4592,6 +4611,12 @@ impl Engine {
                 );
             }
         }
+        if claimed.claim.is_acquired() {
+            self.resolved_label
+                .lock()
+                .unwrap()
+                .get_or_insert_with(|| claimed.label.clone());
+        }
         let claim = claimed.claim;
         if self.is_one_shot() && claim.is_acquired() {
             self.taken.lock().unwrap().insert(name.to_string());
@@ -4608,9 +4633,11 @@ impl Engine {
         if moved {
             self.announce_host_moved(name);
             // A daemon that gains a domain watches it from now on, whatever
-            // claimed it: a sync, a Reflection request or the watcher
-            // itself, which ignores a domain it already watches.
-            if claim.is_acquired()
+            // claimed it (a sync, a Reflection write), and walks it once:
+            // the watcher arms a new domain and runs a catch-up sync for one
+            // it already watches.
+            if to_watcher
+                && claim.is_acquired()
                 && !self.is_one_shot()
                 && let Some(tx) = &self.watch_tx
             {
@@ -4705,7 +4732,8 @@ impl Engine {
             });
         };
         let store = self.store.lock().await;
-        self.claim_file_host(&*store, name, &root, take_over).await
+        self.claim_file_host_as(&*store, name, &root, take_over, false)
+            .await
     }
 
     /// Renew this instance's heartbeat on every host lock it holds. A lock that
@@ -4727,9 +4755,18 @@ impl Engine {
             return;
         }
         let now = now_offset().to_rfc3339();
+        let label = self
+            .resolved_label
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_default();
         let store = self.store.lock().await;
         for (name, id) in hosted {
-            match store.renew_domain_host(id, &self.instance_id, &now).await {
+            match store
+                .renew_domain_host(id, &self.instance_id, &label, &now)
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) => {
                     tracing::warn!(
@@ -6705,11 +6742,13 @@ mod reflect;
 pub use reflect::REFLECT_GUIDANCE;
 mod reflection;
 mod reflection_assets;
+pub use fence::KEPT_HERE;
 pub use reflection::{
-    ANONYMOUS_COMMENT, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_HOSTED_START,
-    REFUSED_NOT_BY_A_COMMAND, REFUSED_OFF_START, REFUSED_PENDING, REFUSED_PENDING_NAMED,
-    REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED, REFUSED_PENDING_UNREADABLE,
-    ROOM_READ_NOTE, ROOM_WAITING_NOTE, ReflectionSearch, SectionAuthors,
+    ANONYMOUS_COMMENT, ANOTHER_INSTANCE, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS,
+    REFUSED_HOSTED_START, REFUSED_NOT_BY_A_COMMAND, REFUSED_OFF_START, REFUSED_PENDING,
+    REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED,
+    REFUSED_PENDING_UNREADABLE, ROOM_READ_NOTE, ROOM_WAITING_NOTE, ReflectionSearch,
+    SectionAuthors,
 };
 pub use reflection_assets::WrittenReflectionAsset;
 mod rename_domain;

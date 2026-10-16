@@ -9,7 +9,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use crystalline_core::kept::{KeptKind, KeptText};
+use crystalline_core::kept::KeptText;
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -29,7 +29,8 @@ pub struct KeptTextEntry {
     /// from the domain's own text. A draft's kept text is only ever listed
     /// for its owner.
     pub draft: bool,
-    /// `engram` or `reflection`: the kind of room it was kept from.
+    /// `engram` or `reflection`: the kind of room (or page write) it was
+    /// kept from; `comment` for a thread comment on the page at `path`.
     #[schema(example = "reflection")]
     pub kind: String,
     /// The engram's file path in its domain, or the page's path inside
@@ -42,6 +43,11 @@ pub struct KeptTextEntry {
     /// Its size in bytes.
     #[schema(example = 1204)]
     pub bytes: u64,
+    /// Who sent the text, for a text kept from a write that was refused
+    /// after its instance lost the domain's host lock; `null` for a room's
+    /// text.
+    #[schema(example = "ada")]
+    pub sender: Option<String>,
 }
 
 /// What `GET /domains/{domain}/kept` answers.
@@ -72,14 +78,11 @@ fn entry(kept: KeptText) -> KeptTextEntry {
     KeptTextEntry {
         id: kept.id,
         draft: kept.owner.is_some(),
-        kind: match kept.kind {
-            KeptKind::Engram => "engram",
-            KeptKind::Reflection => "reflection",
-        }
-        .to_string(),
+        kind: kept.kind.as_str().to_string(),
         path: kept.path,
         kept_at: kept.kept_at,
         bytes: kept.bytes,
+        sender: kept.sender,
     }
 }
 

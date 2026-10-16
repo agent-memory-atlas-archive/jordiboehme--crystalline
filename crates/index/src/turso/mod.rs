@@ -4299,20 +4299,37 @@ impl Store for TursoStore {
         &self,
         domain: DomainId,
         instance_id: &str,
+        label: &str,
         now: &str,
     ) -> Result<bool> {
         let n = self
             .conn
             .execute(
-                "UPDATE domain_lock SET heartbeat_at=?1 WHERE domain_id=?2 AND holder_instance_id=?3",
+                "UPDATE domain_lock SET heartbeat_at=?1, \
+                 holder_label=CASE WHEN ?4='' THEN holder_label ELSE ?4 END \
+                 WHERE domain_id=?2 AND holder_instance_id=?3",
                 vec![
                     Value::Text(now.to_string()),
                     Value::Integer(domain.0),
                     Value::Text(instance_id.to_string()),
+                    Value::Text(label.to_string()),
                 ],
             )
             .await?;
         Ok(n > 0)
+    }
+
+    async fn own_label(&self, instance_id: &str) -> Result<Option<String>> {
+        let row = query_first(
+            &self.conn,
+            "SELECT label FROM (\
+             SELECT holder_label AS label FROM domain_lock WHERE holder_instance_id=?1 AND holder_label<>'' \
+             UNION ALL SELECT last_host_label AS label FROM domain WHERE last_host_id=?1 AND last_host_label<>''\
+             ) AS own ORDER BY label LIMIT 1",
+            vec![Value::Text(instance_id.to_string())],
+        )
+        .await?;
+        Ok(row.and_then(|r| cell_text(&r, 0)))
     }
 
     async fn release_domain_host(
