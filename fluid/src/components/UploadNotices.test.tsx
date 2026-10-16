@@ -121,7 +121,7 @@ describe("the upload notices", () => {
     expect(screen.getByLabelText("before")).toHaveFocus();
   });
 
-  it("leaves the focus where it is when it never came to the notices", async () => {
+  it("leaves the focus where it is when it never came to the notices", () => {
     render(
       <>
         <input aria-label="typing" />

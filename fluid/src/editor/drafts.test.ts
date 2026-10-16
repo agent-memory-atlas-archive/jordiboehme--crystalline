@@ -104,19 +104,22 @@ describe("draft snapshots", () => {
     it("drops the oldest and keeps the newest when storage is full", () => {
       addOffer("ada", "eng", "offer", at(1));
       addOffer("ada", "eng", "offer", at(2));
-      const setItem = Storage.prototype.setItem;
+      const stored = new Map<string, string>();
       let refused = false;
       const spy = vi
         .spyOn(Storage.prototype, "setItem")
-        .mockImplementation(function (this: Storage, key, value) {
+        .mockImplementation((key: string, value: string) => {
           if (!refused) {
             refused = true;
             throw new DOMException("full", "QuotaExceededError");
           }
-          setItem.call(this, key, value);
+          stored.set(key, value);
         });
       addOffer("ada", "eng", "offer", at(3));
       spy.mockRestore();
+      for (const [key, value] of stored) {
+        localStorage.setItem(key, value);
+      }
       expect(readOffers("ada", "eng", "offer")).toEqual([at(3), at(2)]);
     });
 
