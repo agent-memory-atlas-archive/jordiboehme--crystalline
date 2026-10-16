@@ -551,7 +551,12 @@ export function ReflectionThreads({
         ? null
         : selectionAnchor(root, range, sections);
       if (next !== null && !hadCapture.current) {
-        say("Comment on the selection");
+        // Below `xl` the button is in the sheet, not beside the page.
+        say(
+          column
+            ? "Comment on the selection"
+            : "Comment on the selection from the threads",
+        );
       }
       hadCapture.current = next !== null;
       setCaptured(next);
@@ -560,7 +565,7 @@ export function ReflectionThreads({
     return () => {
       document.removeEventListener("selectionchange", read);
     };
-  }, [articleRef, sections, say]);
+  }, [articleRef, sections, say, column]);
 
   const resolved = useQuery({
     queryKey: reflectionThreadsKey(domain, path, "resolved"),
@@ -928,7 +933,9 @@ export function ReflectionThreads({
     </>
   );
 
-  // Outside the sheet, so it speaks whether the sheet is open or not.
+  // A polite line for what happened. While the sheet is open it sits inside
+  // the sheet, as the modal hides everything outside it from a screen
+  // reader; while it is shut, outside it.
   const status = (
     <p role="status" className="sr-only">
       {said ?? ""}
@@ -950,7 +957,7 @@ export function ReflectionThreads({
     open.length === 0 ? "Threads" : plural(open.length, "thread", "threads");
   return (
     <Kept.Provider value={kept}>
-      {status}
+      {!sheetOpen && status}
       <Dialog.Root open={sheetOpen} onOpenChange={setSheetOpen}>
         {/*
           A plain button rather than radix's trigger, whose code would land in
@@ -1003,6 +1010,7 @@ export function ReflectionThreads({
               aria-hidden
               className="mx-auto mt-2 mb-1 h-1 w-10 shrink-0 rounded-full bg-hair-strong"
             />
+            {status}
             <div className="flex min-h-0 flex-col gap-3 overflow-y-auto px-4 pt-1 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
               {body}
             </div>

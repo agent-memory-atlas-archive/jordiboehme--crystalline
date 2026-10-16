@@ -1295,6 +1295,9 @@ describe("comments on a reflection", () => {
     expect((posted as { quote?: string } | null)?.quote).toContain(
       "Night deploys",
     );
+    // The id line under the heading is no part of the section's text, here
+    // as in the engine, so a selection over it never quotes it.
+    expect((posted as { quote?: string } | null)?.quote).not.toContain("<!--");
     await waitFor(() => {
       expect(registry.get(QUOTE_HIGHLIGHT)?.ranges.length ?? 0).toBeGreaterThan(
         0,
@@ -1372,6 +1375,152 @@ describe("comments on a reflection", () => {
       ).toHaveFocus();
     });
     expect(status).toHaveTextContent("Comment posted.");
+  });
+
+  it("quotes over a stray id line in the body with the line, as the engine keeps it", async () => {
+    const STRAY =
+      "# Deploying\n\n## Night deploys\n<!-- r:7f3a9c2e -->\n\nFirst part.\n\n<!-- r:1a2b3c4d -->\n\nSecond part.\n";
+    let posted: { quote?: string } | null = null;
+    serve(
+      [],
+      {
+        "/domains/eng/reflection/threads": (_path, init) => {
+          posted = bodyOf(init) as { quote?: string };
+          return thread("t-00000001");
+        },
+      },
+      STRAY,
+    );
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await screen.findByText("Second part.");
+    expect(document.body.innerHTML).not.toContain("1a2b3c4d");
+    select(textNode("First part."), textNode("Second part."), 6);
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Your comment" }),
+      "Both?",
+    );
+    await userEvent.click(
+      within(screen.getByRole("form", { name: "New comment" })).getByRole(
+        "button",
+        { name: "Comment" },
+      ),
+    );
+    await waitFor(() => {
+      expect(posted).not.toBeNull();
+    });
+    // The engine's section text keeps a stray id line (it drops only the
+    // one under the heading), so this quote is found there as here.
+    expect((posted as { quote?: string } | null)?.quote).toBe(
+      "First part.\n\n<!-- r:1a2b3c4d -->\n\nSecond",
+    );
+  });
+
+  describe("quotes in a fenced code block", () => {
+    const CODE =
+      "# Deploying\n\n## Night deploys\n<!-- r:7f3a9c2e -->\n\nRun this first:\n\n```sh\ndeployctl rollback --now\n```\n";
+
+    it("paints a quote inside the fence on its own words", async () => {
+      serve(
+        [
+          thread("t-00000001", {
+            anchor: {
+              section: "7f3a9c2e",
+              quote: "deployctl rollback",
+              occurrence: 1,
+              state: "found",
+            },
+          }),
+        ],
+        {},
+        CODE,
+      );
+      renderApp("/d/eng/reflection/guides/deploying.md");
+      await screen.findByRole("article", { name: "Thread on Night deploys" });
+      await waitFor(() => {
+        expect(
+          (registry.get(QUOTE_HIGHLIGHT)?.ranges ?? []).map((r) =>
+            r.toString(),
+          ),
+        ).toEqual(["deployctl rollback"]);
+      });
+    });
+
+    it("paints a quote from a paragraph into the fence all the way", async () => {
+      serve(
+        [
+          thread("t-00000001", {
+            anchor: {
+              section: "7f3a9c2e",
+              quote: "first:\n\n```sh\ndeployctl",
+              occurrence: 1,
+              state: "found",
+            },
+          }),
+        ],
+        {},
+        CODE,
+      );
+      renderApp("/d/eng/reflection/guides/deploying.md");
+      await screen.findByRole("article", { name: "Thread on Night deploys" });
+      await waitFor(() => {
+        const painted = (registry.get(QUOTE_HIGHLIGHT)?.ranges ?? [])
+          .map((r) => r.toString())
+          .join("");
+        expect(painted).toMatch(/^first:/);
+        expect(painted).toMatch(/deployctl$/);
+      });
+    });
+
+    it("quotes a selection inside the fence as its source text", async () => {
+      const opened = vi.fn((_path: string, _init?: RequestInit) =>
+        thread("t-00000001"),
+      );
+      serve(
+        [],
+        {
+          "/domains/eng/reflection/threads": (path, init) => opened(path, init),
+        },
+        CODE,
+      );
+      renderApp("/d/eng/reflection/guides/deploying.md");
+      await screen.findByText("Run this first:");
+      const code = document.querySelector("pre code") as HTMLElement;
+      await waitFor(() => {
+        expect(code.querySelector("[data-src]")).not.toBeNull();
+      });
+      const first = code.querySelector("[data-src]")?.firstChild as Text;
+      const last = Array.from(code.querySelectorAll("[data-src]"))
+        .map((span) => span.firstChild as Text)
+        .find((text) => text.data.includes("--now")) as Text;
+      const range = document.createRange();
+      range.setStart(first, 0);
+      range.setEnd(last, last.data.indexOf("--now") + "--now".length);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      act(() => {
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+      await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+      await userEvent.type(
+        screen.getByRole("textbox", { name: "Your comment" }),
+        "Is --now safe?",
+      );
+      await userEvent.click(
+        within(screen.getByRole("form", { name: "New comment" })).getByRole(
+          "button",
+          { name: "Comment" },
+        ),
+      );
+      await waitFor(() => {
+        expect(opened).toHaveBeenCalledTimes(1);
+      });
+      expect(bodyOf(opened.mock.calls[0]?.[1])).toMatchObject({
+        quote: "deployctl rollback --now",
+        occurrence: 1,
+      });
+    });
   });
 });
 
@@ -1578,8 +1727,14 @@ describe("threads on a narrow screen", () => {
     renderApp("/d/eng/reflection/guides/deploying.md");
     await screen.findByText("at");
     select(textNode("Deploys run "), textNode(" night."), 6);
+    expect(
+      screen.getByText("Comment on the selection from the threads"),
+    ).toHaveAttribute("role", "status");
     await userEvent.click(screen.getByRole("button", { name: "Show threads" }));
     const sheet = await screen.findByRole("dialog", { name: "Threads" });
+    // The polite line lives in the sheet while it is open: the modal hides
+    // everything outside it.
+    const status = within(sheet).getByRole("status");
     expect(
       within(sheet).queryByText("Select text in the page to comment on it."),
     ).toBeNull();
@@ -1605,6 +1760,9 @@ describe("threads on a narrow screen", () => {
       quote: "Deploys run **at** night",
       occurrence: 1,
       text: "Still true?",
+    });
+    await waitFor(() => {
+      expect(status).toHaveTextContent("Comment posted.");
     });
   });
 

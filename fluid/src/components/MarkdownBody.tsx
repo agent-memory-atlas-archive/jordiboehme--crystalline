@@ -326,6 +326,84 @@ function stamp(node: HastNode, source: string): void {
 }
 
 /**
+ * Stamp the words of a fenced code block, after the highlighter.
+ *
+ * The highlighter rebuilds a fence's children from its text, so a stamp
+ * made before it would be lost, and the text node of a fence carries no
+ * position of its own anyway. The `code` element does: its fence spans the
+ * opening line, the code and the closing line. The code starts on the line
+ * after the opening one; where the source holds the block's text there as
+ * one piece (a fence at the margin), every text node the highlighter made
+ * is stamped at its running offset, in order. A fence whose lines carry an
+ * indent or a quote marker is left unstamped: a selection in it is a comment
+ * on the section, and a quote in it is not painted, never painted wrong. A
+ * diagram is no text on the page and is left alone.
+ */
+function codeSpanStamp(source: string) {
+  return function plugin() {
+    return function transform(tree: unknown) {
+      const walk = (node: HastNode, parent: HastNode | null): void => {
+        if (
+          node.type === "element" &&
+          node.tagName === "code" &&
+          parent?.tagName === "pre"
+        ) {
+          stampFence(node, source);
+          return;
+        }
+        for (const child of node.children ?? []) {
+          walk(child, node);
+        }
+      };
+      walk(tree as HastNode, null);
+    };
+  };
+}
+
+/** Stamp one fence's text nodes at their offsets, or leave it as it is. */
+function stampFence(code: HastNode, source: string): void {
+  if (languageOf(code) === "mermaid") {
+    return;
+  }
+  const start = code.position?.start?.offset;
+  const end = code.position?.end?.offset;
+  const text = textOf(code);
+  if (start === undefined || end === undefined || text === "") {
+    return;
+  }
+  const opening = source.indexOf("\n", start);
+  if (opening < 0 || opening >= end) {
+    return;
+  }
+  const base = opening + 1;
+  if (
+    base + text.length > end ||
+    source.slice(base, base + text.length) !== text
+  ) {
+    return;
+  }
+  let at = base;
+  const wrap = (node: HastNode): void => {
+    node.children = (node.children ?? []).map((child) => {
+      if (child.type !== "text") {
+        wrap(child);
+        return child;
+      }
+      const value = child.value ?? "";
+      const stamped: HastNode = {
+        type: "element",
+        tagName: "span",
+        properties: { [SOURCE_ATTR]: String(at) },
+        children: [{ type: "text", value }],
+      };
+      at += value.length;
+      return value === "" ? child : stamped;
+    });
+  };
+  wrap(code);
+}
+
+/**
  * The line under the first title, handed to the heading through context and
  * not through the component map or the plugin chain: those are memoised so a
  * changed line cannot remount what the document drew (images, diagrams, an
@@ -1306,6 +1384,8 @@ export default function MarkdownBody({
       // `plainText` keeps the highlighter's hands off a mermaid fence, whose
       // text this file reads back out to draw the diagram from.
       [rehypeHighlight, { plainText: ["mermaid"] }],
+      // After the highlighter, which rebuilds a fence's children.
+      ...(sourceSpans ? [codeSpanStamp(shown)] : []),
       // After the highlighter, so the headings it may have rewritten are
       // already in place, and before the wikilink rewrite, so a heading's id
       // is taken from the text as written rather than from whatever a

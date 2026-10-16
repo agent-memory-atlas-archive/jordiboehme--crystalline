@@ -205,13 +205,48 @@ describe("source spans", () => {
       ]),
     );
     // Unplaced on purpose: a run whose words differ from the source (an
-    // entity, an escape) is not one piece of it, and the parser gives a
-    // fenced block's text no position.
+    // entity, an escape) is not one piece of it.
     for (const words of ["Tom & Jerry.", "Use *stars* here."]) {
       expect(screen.getByText(words).hasAttribute("data-src")).toBe(false);
     }
-    expect(texts.some((t) => /Tom|stars|const/.test(t ?? ""))).toBe(false);
-    expect(container.querySelector("pre [data-src]")).toBeNull();
+    expect(texts.some((t) => /Tom|stars/.test(t ?? ""))).toBe(false);
+    // A fence at the margin is stamped after the highlighter, token by
+    // token, and every token reads the source at its offset.
+    const fence = Array.from(container.querySelectorAll("pre [data-src]"));
+    expect(fence.length).toBeGreaterThan(1);
+    expect(fence.map((span) => span.textContent).join("")).toBe(
+      "const x = 1;\n",
+    );
+  });
+
+  it("stamps a fence only where its text is one piece of the source", async () => {
+    const source = [
+      "## Code",
+      "",
+      "```",
+      "plain fence",
+      "```",
+      "",
+      "- in a list:",
+      "",
+      "  ```sh",
+      "  indented one",
+      "  two",
+      "  ```",
+      "",
+      "~~~py",
+      "print('tilde')",
+      "~~~",
+      "",
+    ].join("\n");
+    const { container } = await renderSpans(source);
+    await screen.findByText("Code");
+    const stamped = expectSpansMatch(container, source);
+    const words = stamped.map((span) => span.textContent).join("");
+    expect(words).toContain("plain fence");
+    expect(words).toContain("tilde");
+    // Its lines carry the list's indent, which the block's text has not.
+    expect(words).not.toContain("indented one");
   });
 });
 
