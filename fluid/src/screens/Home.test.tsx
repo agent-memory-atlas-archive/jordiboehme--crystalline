@@ -8,10 +8,10 @@
  * recorded, or, when nothing was, the last sync.
  */
 
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "../api/client";
+import { ApiProblem, api } from "../api/client";
 import {
   answersFor,
   domainsResponse,
@@ -184,6 +184,27 @@ describe("the home screen", () => {
 
     await screen.findByText(/Nothing was recorded in the last 7d/);
     expect(screen.queryByRole("link", { name: /^Start in/ })).toBeNull();
+  });
+
+  it("says a failed domain listing is an alert, with no loader and no empty list", async () => {
+    serve({
+      "/domains": () => {
+        throw new ApiProblem(500, "internal", "the listing broke");
+      },
+    });
+
+    renderApp("/");
+
+    const body = await main();
+    const alert = await body.findByRole("alert");
+    expect(alert).toHaveTextContent("the listing broke");
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("status", { name: "Loading domains" }),
+      ).toBeNull();
+    });
+    expect(body.queryByText(/No domains are registered/)).toBeNull();
+    expect(body.queryByRole("link", { name: /^Start in/ })).toBeNull();
   });
 
   it("lists the domains from connected servers with a link to each server", async () => {

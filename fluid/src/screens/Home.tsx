@@ -107,12 +107,12 @@ export default function Home() {
           <Loading label="Loading domains" subject="the domains" />
         )}
         {/*
-          A failed listing is announced once, by the sidebar, which reads the
-          same query. Saying it twice would have a screen reader hear the same
-          failure twice over.
+          The failure is said here too, and as an alert: the sidebar reads the
+          same query, but below the medium breakpoint it is a closed drawer, so
+          the screen cannot leave the news to it.
         */}
         {listing.error && (
-          <p className="text-sm text-red-800 dark:text-red-200">
+          <p role="alert" className="text-sm text-red-800 dark:text-red-200">
             {problemDetail(listing.error)}
           </p>
         )}

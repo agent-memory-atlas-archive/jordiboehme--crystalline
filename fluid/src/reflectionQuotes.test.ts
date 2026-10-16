@@ -111,6 +111,34 @@ describe("selectionAnchor", () => {
     });
   });
 
+  it("compares a selection over a list item wrapped on two lines with the source it came from", () => {
+    const wrapped = "## Steps\n\n- first part\n  second part\n";
+    const el = document.createElement("section");
+    el.setAttribute("data-section", "5b1d0aa1");
+    // The parser drops the two spaces of the continuation line, so the
+    // renderer stamps each line on its own and leaves the line break bare.
+    el.innerHTML =
+      '<h2><span data-src="3">Steps</span></h2>' +
+      '<ul><li><span data-src="12">first part</span>\n<span data-src="25">second part</span></li></ul>';
+    document.body.append(el);
+    const range = document.createRange();
+    range.setStart(textIn(el, "first part"), 6);
+    range.setEnd(textIn(el, "second part"), 6);
+    const anchor = selectionAnchor(document.body, range, [
+      { id: "_top", heading: "", text: "" },
+      { id: "5b1d0aa1", heading: "Steps", text: wrapped },
+    ]);
+    // The quote is the source slice, the indent of the second line included,
+    // so the engine finds it where the rendered words are not one string.
+    expect(anchor).toEqual({
+      section: "5b1d0aa1",
+      heading: "Steps",
+      quote: "part\n  second",
+      occurrence: 1,
+    });
+    expect(wrapped).toContain(anchor?.quote);
+  });
+
   it("gives a section anchor with no quote when an end cannot be placed", () => {
     const el = section();
     const code = document.createElement("pre");

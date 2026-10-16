@@ -406,6 +406,86 @@ test.describe.serial("the Reflection journeys", () => {
     await expect(added).toHaveCount(0);
   });
 
+  test("a keyboard-only reader selects with Shift and the arrow keys, comments, and sees the highlight", async ({
+    page,
+  }) => {
+    await signIn(page, USER, PASSWORD);
+    await page.goto(WELCOME);
+    const passage = page.getByText(
+      "Deploys run at night, after the batch window.",
+    );
+    await expect(passage).toBeVisible();
+    const phrase = "after the batch window";
+    const painted = () =>
+      page.evaluate(() => CSS.highlights.get("reflection-quote")?.size ?? 0);
+    await expect.poll(painted).toBeGreaterThan(0);
+    const before = await painted();
+
+    // Start on the first letter of "after" (a caret alone is not kept in text
+    // that cannot be edited) and grow the selection one key at a time.
+    await passage.evaluate((el, word) => {
+      const text = el.firstChild?.firstChild ?? el.firstChild;
+      if (text === null || text === undefined) {
+        throw new Error("no text node");
+      }
+      const at = (text.textContent ?? "").indexOf(word);
+      const range = document.createRange();
+      range.setStart(text, at);
+      range.setEnd(text, at + 1);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }, phrase);
+    for (let i = 1; i < phrase.length; i += 1) {
+      await page.keyboard.press("Shift+ArrowRight");
+    }
+    expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(
+      phrase,
+    );
+
+    // Tab on to the Comment button and open it with Enter; the selection stays.
+    const threads = page.getByRole("complementary", { name: "Threads" });
+    const open = threads.getByRole("button", { name: "Comment", exact: true });
+    await expect(open).toBeVisible();
+    for (let i = 0; i < 40; i += 1) {
+      if (await open.evaluate((el) => el === document.activeElement)) {
+        break;
+      }
+      await page.keyboard.press("Tab");
+    }
+    await expect(open).toBeFocused();
+    await page.keyboard.press("Enter");
+    const field = page.getByRole("textbox", { name: "Your comment" });
+    await expect(field).toBeFocused();
+    await page.keyboard.type("Which batch window?");
+    await page.keyboard.press("Tab");
+    const post = page
+      .getByRole("form", { name: "New comment" })
+      .getByRole("button", { name: "Comment", exact: true });
+    await expect(post).toBeFocused();
+    await page.keyboard.press("Enter");
+
+    const added = page
+      .getByRole("article", { name: "Thread on Night deploys" })
+      .filter({ hasText: "Which batch window?" });
+    await expect(added).toContainText(phrase);
+    await expect.poll(painted).toBeGreaterThan(before);
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const ranges = [...(CSS.highlights.get("reflection-quote") ?? [])];
+          return ranges.map((range) => (range as Range).toString());
+        }),
+      )
+      .toContain(phrase);
+
+    // Resolved again, so the journeys after this one see one open thread.
+    await added.getByRole("button", { name: "Resolve", exact: true }).click();
+    await added.getByRole("textbox", { name: "Outcome" }).fill("Answered.");
+    await added.getByRole("button", { name: "Resolve", exact: true }).click();
+    await expect(added).toHaveCount(0);
+  });
+
   test("at 1100 wide the threads are a sheet too, beside the sidebar", async ({
     page,
   }) => {

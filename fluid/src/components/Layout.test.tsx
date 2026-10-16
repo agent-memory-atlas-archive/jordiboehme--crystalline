@@ -411,9 +411,21 @@ describe("the layout", () => {
 
     renderApp("/");
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts.length).toBeGreaterThan(0);
+    for (const alert of alerts) {
+      expect(alert).toHaveTextContent("this account is a viewer");
+    }
+    // The sidebar's list ends in the error state: no loader left spinning and
+    // no claim that the instance is empty.
+    const list = await sidebar();
+    expect(within(list).getByRole("alert")).toHaveTextContent(
       "this account is a viewer",
     );
+    expect(
+      within(list).queryByRole("status", { name: "Loading domains" }),
+    ).toBeNull();
+    expect(screen.queryByText(/No domains are registered/)).toBeNull();
     // A refusal is rendered where it happened, never as a bounce to the login
     // screen the caller is already past.
     expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
@@ -975,6 +987,33 @@ describe("the sidebar inside a domain", () => {
     expect(
       within(nav).getByRole("link", { name: "Alpha" }),
     ).not.toHaveAttribute("aria-current");
+  });
+
+  it("keeps a folder opened by hand open when the reader moves to a page off its path", async () => {
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const nav = await sidebar();
+    const user = userEvent.setup();
+    // Neither page is in `notes`: the reader opens it on purpose.
+    await user.click(
+      await within(nav).findByRole("button", { name: "Expand notes" }),
+    );
+    expect(
+      await within(nav).findByRole("link", { name: "Beta" }),
+    ).toBeVisible();
+
+    await user.click(within(nav).getByRole("link", { name: "Old Way" }));
+    await waitFor(() => {
+      expect(
+        within(nav).getByRole("link", { name: "Old Way" }),
+      ).toHaveAttribute("aria-current", "page");
+    });
+
+    expect(
+      within(nav).getByRole("button", { name: "Collapse notes" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(within(nav).getByRole("link", { name: "Beta" })).toBeVisible();
   });
 
   it("opens the folder when the reader walks into it from the screen", async () => {
