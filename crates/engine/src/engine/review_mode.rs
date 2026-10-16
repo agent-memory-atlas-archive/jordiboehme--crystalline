@@ -1471,6 +1471,11 @@ impl Engine {
                     let store = self.store.lock().await;
                     let dropped = store.drop_empty_domain_row(&row.name).await?;
                     drop(store);
+                    if dropped {
+                        // The row id the Reflection gate may remember
+                        // went with the row.
+                        self.bump_reflection_generation(&row.name);
+                    }
                     entry["row_dropped"] = json!(dropped);
                 } else {
                     entry["row_droppable"] = json!(true);

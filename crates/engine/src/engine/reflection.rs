@@ -772,7 +772,13 @@ impl Engine {
                 "'{domain}' keeps no files for a Reflection"
             )));
         };
-        let (domain_id, _) = self.domain_source(domain).await?;
+        // The state above filled the gate's remembered entry, which holds
+        // the row id too: a poll of a domain nothing changed asks the store
+        // nothing here.
+        let domain_id = match self.remembered_domain_id(domain, &root) {
+            Some(id) => id,
+            None => self.domain_source(domain).await?.0,
+        };
         Ok(ReflectionAccess {
             folder: reflection_dir(&root),
             root,
@@ -862,7 +868,17 @@ impl Engine {
 
     /// Whether `scope` may read engrams in `domain` (`DomainRight::Read` or
     /// more), without an error for a hidden domain.
+    ///
+    /// The same answer as asking [`Engine::hidden_for`] whether it holds
+    /// `domain`, without its store read when this engine knows the name: the
+    /// unregistered half only ever names domains the engine does not know,
+    /// so for a known one it cannot change the answer. Every Reflection
+    /// poll and gate asks this, so a known domain's never waits on the
+    /// store lock here.
     pub(crate) async fn engrams_visible(&self, scope: &Scope, domain: &str) -> Result<bool> {
+        if self.knows_domain(domain) {
+            return Ok(!self.hidden_screens(scope).await?.contains(domain));
+        }
         Ok(!self.hidden_for(scope).await?.contains(domain))
     }
 }

@@ -806,6 +806,9 @@ struct PendingEntry {
     at: std::time::Instant,
     /// Whether the store is shared with other instances, read with the rows.
     shared: bool,
+    /// The domain's index row id, read under the same lock as the rows: the
+    /// gate's [`Engine::require_reflection`] answers it without the store.
+    domain_id: DomainId,
     recorded: RecordedPaths,
 }
 
@@ -3167,7 +3170,7 @@ impl Engine {
         if let Some(recorded) = self.remembered_paths(domain, generation, root, manifest) {
             return Ok(recorded);
         }
-        let (recorded, shared) = {
+        let (recorded, shared, domain_id) = {
             let store = self.store.lock().await;
             let shared = store.shares_database();
             let Some(id) = store.domain_id(domain).await? else {
@@ -3191,6 +3194,7 @@ impl Engine {
                     under_reflections,
                 },
                 shared,
+                id,
             )
         };
         self.pending_cache.lock().unwrap().insert(
@@ -3201,6 +3205,7 @@ impl Engine {
                 manifest,
                 at: std::time::Instant::now(),
                 shared,
+                domain_id,
                 recorded: recorded.clone(),
             },
         );
@@ -3217,6 +3222,36 @@ impl Engine {
         root: &Path,
         manifest: Option<(u64, i64)>,
     ) -> Option<RecordedPaths> {
+        self.remembered(domain, generation, root, manifest, |entry| {
+            entry.recorded.clone()
+        })
+    }
+
+    /// The index row id of `domain` that [`Engine::recorded_paths`]
+    /// remembered with its rows, under the same rule: the same generation,
+    /// root and MANIFEST stamp, and on a shared database younger than
+    /// [`crate::changes::VISIBILITY_TTL`]. A removal, a collection and a
+    /// rename move the generation on, so an id whose row went is never
+    /// answered. `None` while a rename pauses the domain, whose row is
+    /// looked up fresh ([`Engine::domain_source`]).
+    pub(crate) fn remembered_domain_id(&self, domain: &str, root: &Path) -> Option<DomainId> {
+        if self.is_renaming(domain) {
+            return None;
+        }
+        let generation = self.reflection_generation(domain);
+        let manifest = manifest_stamp(root);
+        self.remembered(domain, generation, root, manifest, |entry| entry.domain_id)
+    }
+
+    /// One field of `domain`'s remembered entry, when the entry still holds.
+    fn remembered<T>(
+        &self,
+        domain: &str,
+        generation: u64,
+        root: &Path,
+        manifest: Option<(u64, i64)>,
+        pick: impl FnOnce(&PendingEntry) -> T,
+    ) -> Option<T> {
         let cache = self.pending_cache.lock().unwrap();
         let entry = cache.get(domain)?;
         let fresh = entry.generation == generation
@@ -3224,7 +3259,7 @@ impl Engine {
             && manifest.is_some()
             && entry.manifest == manifest
             && (!entry.shared || entry.at.elapsed() < crate::changes::VISIBILITY_TTL);
-        fresh.then(|| entry.recorded.clone())
+        fresh.then(|| pick(entry))
     }
 
     /// The domain's generation: see [`Engine::bump_reflection_generation`].
@@ -3406,10 +3441,28 @@ impl Engine {
     /// read that cannot learn what it may answer from refuses, and never widens.
     #[doc(hidden)]
     pub async fn hidden_for(&self, scope: &crate::scope::Scope) -> Result<HashSet<String>> {
-        let mut hidden = self.hidden_domains(scope).await?.unwrap_or_default();
+        let mut hidden = self.hidden_screens(scope).await?;
         hidden.extend(self.unregistered_domains().await?);
+        Ok(hidden)
+    }
+
+    /// [`Engine::hidden_for`] without its unregistered half, which is the
+    /// only half that reads the index: the domains `scope` may not see and
+    /// the ones a connected server shadows.
+    pub(crate) async fn hidden_screens(
+        &self,
+        scope: &crate::scope::Scope,
+    ) -> Result<HashSet<String>> {
+        let mut hidden = self.hidden_domains(scope).await?.unwrap_or_default();
         hidden.extend(self.shadowed_domains());
         Ok(hidden)
+    }
+
+    /// Whether `name` is one of [`Engine::known_domain_names`], the names
+    /// [`Engine::unregistered_domains`] never answers. In memory only.
+    pub(crate) fn knows_domain(&self, name: &str) -> bool {
+        self.config.read().unwrap().domains.contains_key(name)
+            || self.discovered_domains.read().unwrap().contains_key(name)
     }
 
     /// The domains the index holds that this instance has no registration for.
@@ -11470,6 +11523,7 @@ mod pending_cache_tests {
             manifest: manifest_stamp(root),
             at: std::time::Instant::now().checked_sub(age).unwrap(),
             shared,
+            domain_id: DomainId(7),
             recorded: RecordedPaths {
                 any: true,
                 under_reflections: Vec::new(),
@@ -11534,5 +11588,104 @@ mod pending_cache_tests {
             ask(&root).is_none(),
             "an entry filled under the old generation never matches again"
         );
+    }
+
+    /// The row id the gate remembers with the rows answers under the same
+    /// key and age, and never while a rename pauses the domain, whose row
+    /// is looked up fresh (F2).
+    #[tokio::test]
+    async fn a_remembered_row_id_holds_only_with_its_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("MANIFEST.md"), "---\ntitle: eng\n---\n").unwrap();
+        let store = TursoStore::open_in_memory().await.unwrap();
+        let engine = Engine::new(
+            Arc::new(Mutex::new(store)),
+            GlobalConfig::default(),
+            None,
+            None,
+        );
+        let past_ttl = crate::changes::VISIBILITY_TTL + std::time::Duration::from_secs(1);
+        let put = |e: PendingEntry| {
+            engine
+                .pending_cache
+                .lock()
+                .unwrap()
+                .insert("eng".to_string(), e)
+        };
+
+        assert_eq!(
+            engine.remembered_domain_id("eng", &root),
+            None,
+            "nothing yet"
+        );
+        put(entry(&root, false, std::time::Duration::ZERO));
+        assert_eq!(engine.remembered_domain_id("eng", &root), Some(DomainId(7)));
+        assert_eq!(
+            engine.remembered_domain_id("eng", &tmp.path().join("other")),
+            None,
+            "another root"
+        );
+        put(entry(&root, true, past_ttl));
+        assert_eq!(
+            engine.remembered_domain_id("eng", &root),
+            None,
+            "a shared store, past the window"
+        );
+        put(entry(&root, false, std::time::Duration::ZERO));
+        engine.rename_pause.pause(&["eng", "platform"]);
+        assert_eq!(
+            engine.remembered_domain_id("eng", &root),
+            None,
+            "a paused domain's row is looked up fresh"
+        );
+        engine.rename_pause.resume(&["eng", "platform"]);
+        assert_eq!(engine.remembered_domain_id("eng", &root), Some(DomainId(7)));
+        engine.bump_reflection_generation("eng");
+        assert_eq!(
+            engine.remembered_domain_id("eng", &root),
+            None,
+            "a bump forgets the row id with the rows"
+        );
+    }
+
+    /// An empty row `doctor --fix` drops takes the row id the gate may
+    /// remember of its name along: a name registered again later gets a new
+    /// row, never the dropped one's id.
+    #[tokio::test]
+    async fn a_dropped_empty_row_forgets_its_remembered_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("gone");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("MANIFEST.md"), "---\ntitle: gone\n---\n").unwrap();
+        let store = TursoStore::open_in_memory().await.unwrap();
+        store
+            .upsert_domain("gone", Some(&root.to_string_lossy()), DomainKind::File)
+            .await
+            .unwrap();
+        let cfg = GlobalConfig::default();
+        let config_path = tmp.path().join("config.yaml");
+        crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
+        let engine = Engine::new(Arc::new(Mutex::new(store)), cfg, None, Some(config_path))
+            .with_state_dir(tmp.path().join("state"));
+        engine.pending_cache.lock().unwrap().insert(
+            "gone".to_string(),
+            entry(&root, false, std::time::Duration::ZERO),
+        );
+        assert_eq!(
+            engine.remembered_domain_id("gone", &root),
+            Some(DomainId(7))
+        );
+        let fixed = engine.collect_orphaned_domains(None, false).await.unwrap();
+        let row = fixed["considered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["domain"] == "gone")
+            .cloned()
+            .unwrap_or_else(|| panic!("{fixed}"));
+        assert_eq!(row["row_dropped"], true, "{row}");
+        assert_eq!(engine.remembered_domain_id("gone", &root), None);
     }
 }

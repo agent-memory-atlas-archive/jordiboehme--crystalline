@@ -1687,6 +1687,95 @@ async fn a_cached_state_follows_a_manifest_edit_outside_crystalline() {
     );
 }
 
+/// A Reflection poll and a verb's gate take no store lock once the gate
+/// remembers the domain (F2): the visibility screen of a registered domain
+/// needs no index read, and the domain's row id is remembered with its rows.
+#[tokio::test]
+async fn a_poll_and_a_gate_answer_without_the_store_lock() {
+    use crate::docs::person;
+
+    let fx = fixture(&[
+        ("MANIFEST.md", &manifest("reflection: on\n")),
+        (
+            "runbooks/deploy.md",
+            &engram("Deploy", "runbooks/deploy", "- [fact] deploys run at night"),
+        ),
+    ])
+    .await;
+    let caller = person();
+    let status = fx.engine.reflection_status("eng", &caller).await.unwrap();
+    assert_eq!(status["state"], "on");
+    fx.engine
+        .require_reflection_edit("eng", "a.md", &caller)
+        .await
+        .unwrap();
+    let store = fx.engine.store();
+    let held = store.lock().await;
+    let budget = std::time::Duration::from_millis(200);
+    let polled = tokio::time::timeout(budget, fx.engine.reflection_status("eng", &caller))
+        .await
+        .expect("the status answers while the store lock is held")
+        .unwrap();
+    assert_eq!(polled, status);
+    tokio::time::timeout(
+        budget,
+        fx.engine.require_reflection_edit("eng", "a.md", &caller),
+    )
+    .await
+    .expect("the gate answers while the store lock is held")
+    .unwrap();
+    drop(held);
+}
+
+/// A domain removed and added again gets a new index row, and the gate's
+/// remembered row id goes with the removal: a page written after the re-add
+/// is indexed under the new row, not the one the removal dropped (F2).
+#[tokio::test]
+async fn a_re_added_domain_indexes_its_pages_under_its_new_row() {
+    use crate::docs::{person, write};
+
+    let fx = fixture(&[
+        ("MANIFEST.md", &manifest("reflection: on\n")),
+        (
+            "runbooks/deploy.md",
+            &engram("Deploy", "runbooks/deploy", "- [fact] deploys run at night"),
+        ),
+    ])
+    .await;
+    let caller = person();
+    fx.engine
+        .require_reflection_edit("eng", "a.md", &caller)
+        .await
+        .unwrap();
+    let store = fx.engine.store();
+    let old = store.lock().await.domain_id("eng").await.unwrap().unwrap();
+    fx.engine.domain_remove("eng").await.unwrap();
+    fx.engine
+        .domain_add_local(Some("eng"), Some(&fx.root.to_string_lossy()))
+        .await
+        .unwrap();
+    fx.engine.sync(Some("eng")).await.unwrap();
+    let new = store.lock().await.domain_id("eng").await.unwrap().unwrap();
+    assert_ne!(old, new, "the re-add made a new row");
+    fx.engine
+        .write_reflection(
+            &write("a.md", "# A\n\nFor people.\n\n## Part\n\nText.\n"),
+            &caller,
+        )
+        .await
+        .unwrap();
+    let pages: Vec<String> = store
+        .lock()
+        .await
+        .list_reflection_stamps(new)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|p| p.path)
+        .collect();
+    assert!(pages.iter().any(|p| p == "a.md"), "{pages:?}");
+}
+
 /// Once the gate remembers a domain's rows, the state and the mode answer
 /// without the store lock: a long sync or embedding pass holding it does
 /// not stall every Reflection poll behind it.
