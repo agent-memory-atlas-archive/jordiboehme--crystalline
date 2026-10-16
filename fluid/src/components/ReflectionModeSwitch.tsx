@@ -109,15 +109,19 @@ export function ReflectionModeSwitch({
   domain,
   current,
   fill = false,
+  listed,
 }: {
   domain: string;
   current: "engrams" | "reflection";
   /** Fill the row it stands in, for the phone row under the bar. */
   fill?: boolean;
+  /** The listing's facts, drawn from while the status has no answer. */
+  listed?: SwitchFacts | undefined;
 }): ReactElement | null {
   const status = useReflectionStatus(domain);
   const { pathname } = useLocation();
-  const away = status.data === undefined ? false : switchHome(status.data);
+  const facts = status.data ?? listed;
+  const away = facts === undefined ? false : switchHome(facts);
   if (away === false) {
     return null;
   }

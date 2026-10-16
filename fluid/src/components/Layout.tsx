@@ -1152,8 +1152,13 @@ function PhoneModeRow() {
     return null;
   }
   return (
-    <div className="h-12 border-b border-hair px-3 py-2 print:hidden">
-      <ReflectionModeSwitch domain={domain} current={mode} fill />
+    <div className="flex h-12 items-center border-b border-hair px-3 print:hidden">
+      <ReflectionModeSwitch
+        domain={domain}
+        current={mode}
+        fill
+        listed={listed}
+      />
     </div>
   );
 }

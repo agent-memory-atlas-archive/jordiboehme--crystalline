@@ -9,7 +9,8 @@
  * settled. It is kept here once it has arrived, so every
  * open after that draws the list at once instead of a loading line first. A
  * part that failed to arrive says so as a menu item a keyboard can reach,
- * and the next open tries again.
+ * and that item's reload is the way back: browsers keep a failed dynamic
+ * import failed, so asking again on the next open does not help.
  */
 
 import { ChevronsUpDown } from "lucide-react";
@@ -24,7 +25,7 @@ import { FOCUS_RING } from "./primitives";
 let Menu: typeof DomainSwitcherMenuType | undefined;
 let pending: Promise<void> | undefined;
 
-/** Fetch the menu's body once; a failure is forgotten so it can be retried. */
+/** Fetch the menu's body once; a failure is not kept, though a browser may. */
 function load(): Promise<void> {
   pending ??= import("./DomainSwitcherMenu").then(
     (module) => {
