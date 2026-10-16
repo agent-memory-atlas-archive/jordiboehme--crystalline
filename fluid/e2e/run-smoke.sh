@@ -241,6 +241,15 @@ echo "smoke: registering the fixture domains"
 "${isolated[@]}" "$bin" domain add "$FLUID_E2E_LOCKED_DOMAIN" "$locked_root"
 "${isolated[@]}" "$bin" domain add "$FLUID_E2E_REFLECTION_DOMAIN" "$reflection_root"
 
+# One kept text, as a co-editing room leaves it when its last save could not
+# land: a plain file in the state folder, which the server lists on every
+# request. kept.spec.ts shows it on the domain settings and in the editor of
+# its engram, and drops it there. The engram is one no other journey edits.
+kept_dir="$run_dir/state/crystalline/kept/$FLUID_E2E_DOMAIN/engram"
+mkdir -p "$kept_dir"
+printf '%s\n' '---' 'title: Harbor Signal Log' '---' '' 'Typed in a room that could not save.' \
+    > "$kept_dir/harbor-signal-log.md.20261015T080000Z.md"
+
 # The daemon comes up before any account exists, which is the state a real
 # first run is in: the admin below is created through the daemon's own setup
 # endpoint rather than seeded past it.
