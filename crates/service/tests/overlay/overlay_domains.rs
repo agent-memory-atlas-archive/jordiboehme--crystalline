@@ -8852,3 +8852,181 @@ async fn two_create_only_overlay_uploads_of_one_path_land_once() {
         assert_eq!(bytes, winner, "{path}");
     }
 }
+
+fn alice() -> Scope {
+    Scope::User {
+        account: "alice".to_string(),
+        admin: false,
+    }
+}
+
+/// An engram whose file is gone from this disk (deleted by hand, not synced
+/// yet) in a domain that reviews changes: a signed-in reader still gets its
+/// body, as before, and an evolve sweep over the domain still answers. Only
+/// a write that would start a draft from that body is refused (see below).
+#[tokio::test]
+async fn a_review_read_of_an_engram_whose_file_is_missing_answers_the_body() {
+    let f = review_fixture().await;
+    std::fs::remove_file(f.domain_root("team").join("plan.md")).unwrap();
+    let read = f
+        .engine
+        .read_engram(
+            &ReadParams {
+                identifier: "plan".to_string(),
+                domain: Some("team".to_string()),
+                share_link: None,
+            },
+            &alice(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        read["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("as the team has it"),
+        "{read}"
+    );
+    let swept = f
+        .engine
+        .evolve_engrams(
+            &crystalline_service::params::EvolveParams {
+                domains: vec!["team".to_string()],
+                ..Default::default()
+            },
+            &alice(),
+        )
+        .await;
+    assert!(swept.is_ok(), "{swept:?}");
+}
+
+/// The same read over the JSON API and over MCP, as a signed-in account in a
+/// domain that reviews changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_review_read_of_a_missing_file_answers_the_body_over_rest_and_mcp() {
+    let (f, addr, auth) = served_review_instance().await;
+    auth.add_user("alice", "alice", None, Role::Editor, "pw12345678")
+        .await
+        .unwrap();
+    std::fs::remove_file(f.domain_root("team").join("plan.md")).unwrap();
+
+    let session = crate::support::McpTestSession::open(
+        &addr,
+        Some(&auth.issue_mcp_token("alice", "t").await.unwrap().token),
+    )
+    .await;
+    let read = session
+        .call_tool(
+            "read_engram",
+            serde_json::json!({ "identifier": "plan", "domain": "team" }),
+        )
+        .await;
+    assert!(read.contains("as the team has it"), "{read}");
+
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let login = client
+        .post(format!("http://{addr}/api/v1/auth/login"))
+        .json(&serde_json::json!({ "name": "alice", "password": "pw12345678" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 200);
+    let cookie = login
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find_map(|v| v.split(';').next()?.strip_prefix("fluid_session="))
+        .unwrap()
+        .to_string();
+    let resp = client
+        .get(format!("http://{addr}/api/v1/domains/team/engrams/plan"))
+        .header("cookie", format!("fluid_session={cookie}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("as the team has it"), "{body}");
+}
+
+/// Every write that would start a draft from the base reads the base
+/// first, and with the file gone from this disk the base it would read is
+/// the body alone. An edit, a save of what was read and a move are each
+/// refused with the way out, and no draft of either path is written.
+#[tokio::test]
+async fn no_draft_write_starts_from_the_body_of_a_missing_file() {
+    let f = review_fixture().await;
+    std::fs::remove_file(f.domain_root("team").join("plan.md")).unwrap();
+    let read = f
+        .engine
+        .read_engram(
+            &ReadParams {
+                identifier: "plan".to_string(),
+                domain: Some("team".to_string()),
+                share_link: None,
+            },
+            &alice(),
+        )
+        .await
+        .unwrap();
+    let body = read["content"].as_str().unwrap().to_string();
+    let refusals = [
+        f.engine
+            .edit_engram_as(
+                &EditParams {
+                    identifier: "plan".into(),
+                    domain: "team".into(),
+                    operation: "append".into(),
+                    content: Some("alice adds a line".into()),
+                    ..Default::default()
+                },
+                None,
+                &alice(),
+            )
+            .await
+            .map(|_| ()),
+        f.engine
+            .save_engram(
+                &crystalline_service::params::SaveParams {
+                    domain: "team".into(),
+                    identifier: "plan".into(),
+                    // A whole document, as an editor would send it; the
+                    // token is the one the read handed out.
+                    content: format!("{PLAN}\nalice saves a line\n"),
+                    expected_checksum: crate::support::sha256_hex(body.as_bytes()),
+                },
+                &alice(),
+            )
+            .await
+            .map(|_| ()),
+        f.engine
+            .move_engram(
+                &serde_json::from_value(serde_json::json!({
+                    "identifier": "plan",
+                    "domain": "team",
+                    "destination": "plans/plan",
+                }))
+                .unwrap(),
+                &alice(),
+            )
+            .await
+            .map(|_| ()),
+    ];
+    for refused in refusals {
+        let err = refused.expect_err("no draft starts from the body alone");
+        assert!(err.to_string().contains("is not on this disk"), "{err}");
+    }
+    let store = f.store.lock().await;
+    let did = store.domain_id("team").await.unwrap().unwrap();
+    for path in ["plan.md", "plans/plan.md"] {
+        assert!(
+            store
+                .overlay_entry(did, "alice", path)
+                .await
+                .unwrap()
+                .is_none(),
+            "{path}"
+        );
+    }
+}

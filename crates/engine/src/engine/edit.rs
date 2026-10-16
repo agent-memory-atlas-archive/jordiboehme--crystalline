@@ -727,7 +727,7 @@ impl Engine {
                 .map_err(SourceEditFailure::before)?;
             let _guard = lock.lock().await;
             let current = view
-                .text_at(source, desc)
+                .text_for_draft(source, desc)
                 .await
                 .map_err(SourceEditFailure::before)?
                 .ok_or_else(|| {

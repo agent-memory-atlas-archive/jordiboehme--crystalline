@@ -458,31 +458,51 @@ impl<'a> DomainView<'a> {
         match held {
             Some(entry) if entry.tombstone => Ok(None),
             Some(entry) => Ok(Some(entry.content)),
-            None => {
-                // A draft starts from the whole engram. A file domain's index
-                // row holds the body only, so with the file gone from this
-                // disk there is nothing whole to start from: say why rather
-                // than draft a document without its frontmatter.
-                if let ContentSource::File { root } = base
-                    && !join_rel(root, &desc.path).exists()
-                {
-                    self.engine
-                        .refuse_only_elsewhere(
-                            &desc.domain,
-                            desc.domain_id,
-                            crate::engine::ElsewhereRow::Engram(&desc.path),
-                        )
-                        .await?;
-                    return Err(EngineError::NotFound(format!(
-                        "the file of '{}' is not on this disk, so no draft can start from it \
-                         (the index holds its body only); sync domain '{}' or restore the file, \
-                         then try again",
-                        desc.permalink, desc.domain
-                    )));
-                }
-                self.engine.load_content(base, desc).await.map(Some)
+            None => self.engine.load_content(base, desc).await.map(Some),
+        }
+    }
+
+    /// [`DomainView::text_at`] for a write that starts this view's draft from
+    /// what it reads. A draft starts from the whole engram, and a file
+    /// domain's index row holds the body only, so with the file gone from
+    /// this disk there is nothing whole to start from: refused with the way
+    /// out (the host-move remedy during an open host move) rather than a
+    /// draft without its frontmatter. A draft already held, the base view
+    /// and a file on disk answer as `text_at` does. Reads use `text_at`,
+    /// which answers the body.
+    pub(crate) async fn text_for_draft(
+        &self,
+        base: &ContentSource,
+        desc: &EngramDescriptor,
+    ) -> Result<Option<String>> {
+        if let Some(actor) = self.actor.as_deref()
+            && let ContentSource::File { root } = base
+            && !join_rel(root, &desc.path).exists()
+        {
+            let held = {
+                let store = self.engine.store();
+                let store = store.lock().await;
+                store
+                    .overlay_entry(desc.domain_id, actor, &desc.path)
+                    .await?
+            };
+            if held.is_none() {
+                self.engine
+                    .refuse_only_elsewhere(
+                        &desc.domain,
+                        desc.domain_id,
+                        crate::engine::ElsewhereRow::Engram(&desc.path),
+                    )
+                    .await?;
+                return Err(EngineError::NotFound(format!(
+                    "the file of '{}' is not on this disk, so no draft can start from it \
+                     (the index holds its body only); sync domain '{}' or restore the file, \
+                     then try again",
+                    desc.permalink, desc.domain
+                )));
             }
         }
+        self.text_at(base, desc).await
     }
 
     /// Write one actor's draft of a path: the row, its chunks and its mirror.
@@ -1309,7 +1329,7 @@ impl<'a> DomainView<'a> {
                 )));
             }
         }
-        let text = self.text_at(src_source, src).await?.ok_or_else(|| {
+        let text = self.text_for_draft(src_source, src).await?.ok_or_else(|| {
             EngineError::NotFound(format!(
                 "no engram '{}' in domain '{}'",
                 p.identifier, p.domain

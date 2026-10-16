@@ -1369,7 +1369,7 @@ impl Engine {
         // mirror path. See `Engine::draft_lock`.
         let lock = self.draft_lock(&desc.domain, who, &desc.path)?;
         let _guard = lock.lock().await;
-        let current = view.text_at(source, desc).await?.ok_or_else(|| {
+        let current = view.text_for_draft(source, desc).await?.ok_or_else(|| {
             EngineError::NotFound(format!(
                 "no engram '{}' in domain '{}'",
                 p.identifier, desc.domain
