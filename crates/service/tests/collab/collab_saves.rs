@@ -852,10 +852,14 @@ async fn a_move_into_a_private_domain_names_it_only_to_its_members() {
         account: account.into(),
         admin: false,
     };
-    let mut bob = sessions.join("eng", "alpha", None).await.unwrap();
-    bob.session.set_viewer(bob.conn, user("bob")).await;
-    let mut ann = sessions.join("eng", "alpha", None).await.unwrap();
-    ann.session.set_viewer(ann.conn, user("ann")).await;
+    let mut bob = sessions
+        .join_as("eng", "alpha", None, user("bob"))
+        .await
+        .unwrap();
+    let mut ann = sessions
+        .join_as("eng", "alpha", None, user("ann"))
+        .await
+        .unwrap();
     engine
         .move_engram(
             &crystalline_service::params::MoveParams {
@@ -898,6 +902,56 @@ async fn a_move_into_a_private_domain_names_it_only_to_its_members() {
     };
     assert!(!sessions.may_see_move(&to, &user("bob")).await);
     assert!(sessions.may_see_move(&to, &user("ann")).await);
+}
+
+/// A connection the registry knows nobody for (joined with no viewer) is
+/// told no address when the engram moves into another domain: the close
+/// fails closed. The machine owner's connection, joined through `join`, is
+/// told the whole address.
+#[tokio::test]
+async fn a_moved_close_names_no_address_to_a_connection_of_nobody_known() {
+    let (_tmp, engine, _scratch) = engine_fixture_with_state().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut unknown = sessions
+        .join_doc(
+            "eng",
+            crystalline_service::collab::session::RoomDoc::Engram("alpha".into()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let mut owner = sessions.join("eng", "alpha", None).await.unwrap();
+    engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".into(),
+                domain: "eng".into(),
+                destination: "alpha.md".into(),
+                destination_domain: Some("oak".into()),
+                permalink: None,
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        closed_for(&mut unknown.rx, unknown.conn).await,
+        Control::Closed {
+            reason: "moved".into(),
+            domain: None,
+            path: None,
+            permalink: None,
+        }
+    );
+    let Control::Closed { domain, path, .. } = closed_for(&mut owner.rx, owner.conn).await else {
+        unreachable!()
+    };
+    assert_eq!(domain.as_deref(), Some("oak"));
+    assert_eq!(path.as_deref(), Some("alpha.md"));
 }
 
 /// R81 for an engram: a room cannot open over the old address between the

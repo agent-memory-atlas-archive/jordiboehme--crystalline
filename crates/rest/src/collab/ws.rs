@@ -152,7 +152,12 @@ pub async fn join(
         let _pass = state.join_pass().await;
         state
             .collab
-            .join(&domain, &permalink, room.overlay.as_deref())
+            .join_as(
+                &domain,
+                &permalink,
+                room.overlay.as_deref(),
+                identity.scope(),
+            )
             .await
     };
     let joined = match joined {
@@ -163,12 +168,6 @@ pub async fn join(
         }
         Err(err) => return Err(join_error(err)),
     };
-    // Who this connection is, so a `moved` close names to it only a domain
-    // it may see.
-    joined
-        .session
-        .set_viewer(joined.conn, identity.scope())
-        .await;
     // **The address the room opened is the path the link was for.** The two
     // are resolved by different ladders - a grant matches only the drafts the
     // link was for, by permalink or title, while a room resolves its address
@@ -318,7 +317,7 @@ pub async fn join_reflection(
         // the client put into awareness.
         state
             .collab
-            .join_reflection(&domain, &path, &caller.author.name)
+            .join_reflection_as(&domain, &path, &caller.author.name, identity.scope())
             .await
     };
     let joined = match joined {
@@ -329,10 +328,6 @@ pub async fn join_reflection(
         }
         Err(err) => return Err(join_error(err)),
     };
-    joined
-        .session
-        .set_viewer(joined.conn, identity.scope())
-        .await;
     let sessions = state.collab.clone();
     // The failure twin of on_upgrade, as in `join`.
     let failed = {
@@ -742,8 +737,6 @@ mod tests {
         assert!(!ok(&[("origin", "http://notes.example")]));
     }
 
-    /// Capacity is a 503 and an engram that cannot be read keeps its own
-    /// status, so a client can tell "try again later" from "this file cannot".
     /// A join refused because a move holds the document is a 409, the busy
     /// answer; any other conflict keeps the shared mapping.
     #[test]
@@ -762,6 +755,8 @@ mod tests {
         );
     }
 
+    /// Capacity is a 503 and an engram that cannot be read keeps its own
+    /// status, so a client can tell "try again later" from "this file cannot".
     #[test]
     fn every_join_refusal_maps_to_the_status_its_client_branches_on() {
         use axum::http::StatusCode;

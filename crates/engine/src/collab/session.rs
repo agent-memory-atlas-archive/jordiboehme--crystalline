@@ -491,12 +491,6 @@ pub struct MoveClose {
     _fence: MoveFence,
 }
 
-/// The saves and closes of a sweep, as a task of its own (see
-/// [`CollabSessions::sweep_domain_rooms`]). Boxed as a `Send` future so the
-/// task's type is named here and nowhere else: a room's last save can reach
-/// a sweep again (a MANIFEST that switches the Reflection off closes the
-/// reflection rooms), and an unnamed type would make that cycle one the
-/// compiler cannot prove `Send` through.
 /// Whether `scope` may see where `to` points: a move inside one domain names
 /// nothing new; a move into another domain names that domain, which `scope`
 /// must be able to see. A failed lookup answers no (fail closed).
@@ -510,6 +504,12 @@ async fn sees_destination(engine: &Engine, to: &MovedTo, scope: &crate::scope::S
     }
 }
 
+/// The saves and closes of a sweep, as a task of its own (see
+/// [`CollabSessions::sweep_domain_rooms`]). Boxed as a `Send` future so the
+/// task's type is named here and nowhere else: a room's last save can reach
+/// a sweep again (a MANIFEST that switches the Reflection off closes the
+/// reflection rooms), and an unnamed type would make that cycle one the
+/// compiler cannot prove `Send` through.
 fn sweep_task(
     victims: Vec<Arc<CollabSession>>,
     discarded: HashSet<String>,
@@ -588,17 +588,41 @@ impl CollabSessions {
     /// keeps, `Some(actor)` for that actor's draft of the page. It is the
     /// caller's job to have decided that the caller may be in that document -
     /// see `super::ws::join`, which is the one surface that opens rooms.
+    ///
+    /// The connection is the machine owner's (an in-process caller); the
+    /// upgrade route names the signed-in caller with
+    /// [`CollabSessions::join_as`].
     pub async fn join(
         self: &Arc<Self>,
         domain: &str,
         permalink: &str,
         overlay: Option<&str>,
     ) -> Result<Joined, JoinError> {
+        self.join_as(
+            domain,
+            permalink,
+            overlay,
+            crate::scope::Scope::Unrestricted,
+        )
+        .await
+    }
+
+    /// [`CollabSessions::join`] for the connection of `viewer`, as the
+    /// surface that opened it authenticated it: a `moved` close names to it
+    /// only what `viewer` may see.
+    pub async fn join_as(
+        self: &Arc<Self>,
+        domain: &str,
+        permalink: &str,
+        overlay: Option<&str>,
+        viewer: crate::scope::Scope,
+    ) -> Result<Joined, JoinError> {
         self.join_doc(
             domain,
             RoomDoc::Engram(permalink.to_string()),
             overlay,
             None,
+            Some(viewer),
         )
         .await
     }
@@ -611,11 +635,27 @@ impl CollabSessions {
     /// surface that opened it authenticated it. A save records it in the
     /// page's bookkeeping when this connection sent an edit since the save
     /// before; what a client puts into awareness is for display only.
+    ///
+    /// The connection is the machine owner's, as on [`CollabSessions::join`];
+    /// the upgrade route uses [`CollabSessions::join_reflection_as`].
     pub async fn join_reflection(
         self: &Arc<Self>,
         domain: &str,
         path: &str,
         author: &str,
+    ) -> Result<Joined, JoinError> {
+        self.join_reflection_as(domain, path, author, crate::scope::Scope::Unrestricted)
+            .await
+    }
+
+    /// [`CollabSessions::join_reflection`] for the connection of `viewer`,
+    /// as on [`CollabSessions::join_as`].
+    pub async fn join_reflection_as(
+        self: &Arc<Self>,
+        domain: &str,
+        path: &str,
+        author: &str,
+        viewer: crate::scope::Scope,
     ) -> Result<Joined, JoinError> {
         crystalline_core::reflection::validate_reflection_path(path)
             .map_err(|e| JoinError::Engine(EngineError::Invalid(e)))?;
@@ -628,6 +668,7 @@ impl CollabSessions {
             RoomDoc::Reflection(path.to_string()),
             None,
             Some(author),
+            Some(viewer),
         )
         .await
     }
@@ -635,12 +676,15 @@ impl CollabSessions {
     /// [`CollabSessions::join`] for a room over any kind of document.
     /// `author` is the account the connection belongs to, where the room
     /// records who changed what (a reflection room); `None` elsewhere.
+    /// `viewer` is who the connection is, recorded with the connection;
+    /// `None` is somebody unknown, who a `moved` close names no address.
     pub async fn join_doc(
         self: &Arc<Self>,
         domain: &str,
         doc: RoomDoc,
         overlay: Option<&str>,
         author: Option<&str>,
+        viewer: Option<crate::scope::Scope>,
     ) -> Result<Joined, JoinError> {
         let key = (domain.to_string(), doc, overlay.map(str::to_string));
         // The registry lock is held across open AND the membership check, so a
@@ -698,7 +742,7 @@ impl CollabSessions {
             }
         };
         let conn = self.next_conn.fetch_add(1, Ordering::Relaxed);
-        match session.add_conn(conn, author).await {
+        match session.add_conn(conn, author, viewer).await {
             Ok((rx, greeting)) => Ok(Joined {
                 session,
                 conn,
@@ -1296,7 +1340,6 @@ impl CollabSessions {
             .await
     }
 
-    /// [`CollabSessions::has_live_room`] for a room over any kind of document.
     /// Whether any room over an engram of `domain`'s own text (not a draft)
     /// is registered. A cheap look at the registry alone, for a caller about
     /// to ask the index which engram a path holds only when a room might be
@@ -1307,6 +1350,7 @@ impl CollabSessions {
         })
     }
 
+    /// [`CollabSessions::has_live_room`] for a room over any kind of document.
     pub async fn has_live_doc(&self, domain: &str, doc: &RoomDoc, overlay: Option<&str>) -> bool {
         self.live_room(domain, doc, overlay).await.is_some()
     }
@@ -1464,10 +1508,11 @@ struct SessionState {
     /// awareness, which is whatever a client sends.
     authors: HashMap<ConnId, String>,
     /// Who each connection is, as the surface that opened it authenticated
-    /// it: what a `moved` close may name to that connection is screened
-    /// against it, so a move into a domain somebody may not see does not tell
-    /// them its name ([`CollabSession::close_moved`]). A connection with no
-    /// entry is an in-process caller (the machine owner) and sees all.
+    /// it, recorded in the same step that adds the connection: what a
+    /// `moved` close may name to that connection is screened against it, so
+    /// a move into a domain somebody may not see does not tell them its name
+    /// ([`CollabSession::close_moved`]). A connection with no entry is told
+    /// no address at all (fail closed).
     viewers: HashMap<ConnId, crate::scope::Scope>,
     /// The accounts whose connections sent an edit since the last save
     /// landed: the names that save records. Kept past a disconnect, so the
@@ -1684,6 +1729,7 @@ impl CollabSession {
         &self,
         conn: ConnId,
         author: Option<&str>,
+        viewer: Option<crate::scope::Scope>,
     ) -> Result<(broadcast::Receiver<Frame>, Vec<u8>), JoinError> {
         let mut state = self.state.lock().await;
         if state.conns.len() >= MAX_PARTICIPANTS {
@@ -1695,6 +1741,9 @@ impl CollabSession {
         state.final_saved = false;
         if let Some(author) = author {
             state.authors.insert(conn, author.to_string());
+        }
+        if let Some(viewer) = viewer {
+            state.viewers.insert(conn, viewer);
         }
         // The greeting: hello, then the server's SyncStep1, then the full
         // awareness picture - the DefaultProtocol::start choreography with our
@@ -1836,12 +1885,6 @@ impl CollabSession {
     ///
     /// Called by the upgrade route once it has decided the connection may be
     /// here at all; a room over nobody's draft never has one.
-    /// Record who connection `conn` is, so a `moved` close names to it only
-    /// what it may see. Called by the upgrade route right after the join.
-    pub async fn set_viewer(&self, conn: ConnId, scope: crate::scope::Scope) {
-        self.state.lock().await.viewers.insert(conn, scope);
-    }
-
     pub async fn watch_guest(&self, conn: ConnId, account: &str, holder: &crate::join::Holder) {
         let mut state = self.state.lock().await;
         state
@@ -2451,17 +2494,23 @@ impl CollabSession {
             self.close_with(full);
             return;
         }
-        let viewers: Vec<(ConnId, crate::scope::Scope)> = {
+        // Every connection, with who it is where that is known: one with no
+        // entry is somebody unknown and is told no address (fail closed).
+        let viewers: Vec<(ConnId, Option<crate::scope::Scope>)> = {
             let state = self.state.lock().await;
             state
-                .viewers
-                .iter()
-                .map(|(conn, scope)| (*conn, scope.clone()))
+                .conns
+                .keys()
+                .map(|conn| (*conn, state.viewers.get(conn).cloned()))
                 .collect()
         };
         let mut blind = HashSet::new();
         for (conn, scope) in viewers {
-            if !sees_destination(&self.engine, to, &scope).await {
+            let sees = match &scope {
+                Some(scope) => sees_destination(&self.engine, to, scope).await,
+                None => false,
+            };
+            if !sees {
                 blind.insert(conn);
             }
         }

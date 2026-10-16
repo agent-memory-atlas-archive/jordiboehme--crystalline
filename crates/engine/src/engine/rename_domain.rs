@@ -1923,8 +1923,6 @@ impl Engine {
 /// The provision receipt's file name under the state directory.
 const RECEIPT_FILE: &str = "provisions.json";
 
-/// The conflict a request answers when a rename kept a domain paused past the
-/// wait.
 /// What [`Engine::close_editors`] ended: the swept rooms, not told yet, and
 /// how many joins it ended. Dropped without [`ClosedEditors::renamed`], the
 /// rooms are told `internal` (see `SweptRooms`).
@@ -1948,6 +1946,8 @@ impl ClosedEditors {
     }
 }
 
+/// The conflict a request answers when a rename kept a domain paused past the
+/// wait.
 fn renaming_conflict(name: String) -> EngineError {
     EngineError::Conflict(format!(
         "domain '{name}' is being renamed; try again in a moment"
