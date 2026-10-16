@@ -228,15 +228,30 @@ describe("the printed page's words", () => {
     expect(lastWrite("no frontmatter")).toBeNull();
   });
 
-  it("lists an engram's facts in print order, leaving out what it lacks", () => {
+  it("lists an engram's facts dates first, leaving out what it lacks", () => {
+    const labels = (facts: { label: string }[]) =>
+      facts.map((fact) => fact.label);
     expect(
-      engramFacts({
-        status: "current",
-        type: null,
-        tags: ["deploy", "release"],
-        recordedAt: "2026-09-12",
-        content: "---\ntimestamp: 2026-10-14T21:10:00+00:00\n---\n",
-      }).map((fact) => fact.label),
-    ).toEqual(["Status", "Tags", "Updated", "Recorded"]);
+      labels(
+        engramFacts({
+          status: "current",
+          type: "decision",
+          tags: ["deploy", "release"],
+          recordedAt: "2026-09-12",
+          content: "---\ntimestamp: 2026-10-14T21:10:00+00:00\n---\n",
+        }),
+      ),
+    ).toEqual(["Recorded", "Updated", "Status", "Type", "Tags"]);
+    expect(
+      labels(
+        engramFacts({
+          status: "current",
+          type: null,
+          tags: ["deploy"],
+          recordedAt: null,
+          content: "---\ntimestamp: 2026-10-14T21:10:00+00:00\n---\n",
+        }),
+      ),
+    ).toEqual(["Updated", "Status", "Tags"]);
   });
 });

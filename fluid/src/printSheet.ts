@@ -42,7 +42,12 @@ export interface PrintFact {
   value: string;
 }
 
-/** The facts of an engram's title block, in the order they print. */
+/**
+ * The facts of an engram's title block, in the order they print: the dates
+ * first, so they always share the start of the line, then Status, Type and
+ * Tags, which may wrap onto a second line. A fact the engram lacks is left
+ * out.
+ */
 export function engramFacts(fields: {
   status: string | null;
   type: string | null;
@@ -51,6 +56,13 @@ export function engramFacts(fields: {
   content: string;
 }): PrintFact[] {
   const facts: PrintFact[] = [];
+  if (fields.recordedAt !== null) {
+    facts.push({ label: "Recorded", value: formatDayLong(fields.recordedAt) });
+  }
+  const written = lastWrite(fields.content);
+  if (written !== null) {
+    facts.push({ label: "Updated", value: formatDayLong(written) });
+  }
   if (fields.status !== null) {
     facts.push({ label: "Status", value: fields.status });
   }
@@ -59,13 +71,6 @@ export function engramFacts(fields: {
   }
   if (fields.tags.length > 0) {
     facts.push({ label: "Tags", value: fields.tags.join(", ") });
-  }
-  const written = lastWrite(fields.content);
-  if (written !== null) {
-    facts.push({ label: "Updated", value: formatDayLong(written) });
-  }
-  if (fields.recordedAt !== null) {
-    facts.push({ label: "Recorded", value: formatDayLong(fields.recordedAt) });
   }
   return facts;
 }
