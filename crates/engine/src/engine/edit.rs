@@ -986,7 +986,8 @@ impl Engine {
 
         // An edit may have rewritten this domain's MANIFEST, its routing and
         // its declared name. The store locks above are all released.
-        self.after_source_write(source, &desc.path).await;
+        self.after_source_write(&desc.domain, source, &desc.path)
+            .await;
         // An edit can change the title or the description the folder's
         // generated index lists this engram under.
         self.refresh_index_files(&desc.domain).await;

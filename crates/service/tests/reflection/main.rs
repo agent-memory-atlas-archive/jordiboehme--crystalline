@@ -13,6 +13,7 @@ mod fixture;
 mod guards;
 mod hosts;
 mod kept;
+mod mode_change;
 mod nudges;
 mod queue;
 mod rest;

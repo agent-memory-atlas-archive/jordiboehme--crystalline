@@ -823,7 +823,7 @@ impl Engine {
         // engram, the source of its routing bullets, so refresh the cache the
         // sync `routing_text` reads; a MANIFEST of either kind may declare a
         // new name.
-        self.after_source_write(&source, &path).await;
+        self.after_source_write(&p.domain, &source, &path).await;
         // The new engram belongs in its folder's generated index.
         self.refresh_index_files(&p.domain).await;
         self.nudge_embed();
@@ -1222,7 +1222,8 @@ impl Engine {
 
         // A save can rewrite a MANIFEST or the titles a folder index lists,
         // same as an edit.
-        self.after_source_write(&source, &desc.path).await;
+        self.after_source_write(&desc.domain, &source, &desc.path)
+            .await;
         if let Some(before) = switch_before {
             self.announce_switch_if_moved(&desc.domain, before, change_label(scope));
         }
@@ -1587,7 +1588,7 @@ impl Engine {
                     .await?;
             }
         }
-        self.after_source_write(&source, path).await;
+        self.after_source_write(domain, &source, path).await;
         if let Some(before) = switch_before {
             self.announce_switch_if_moved(domain, before, actor.clone());
         }

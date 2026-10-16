@@ -747,6 +747,13 @@ impl Engine {
                 audience: None,
             }));
         }
+        // Moving the last engram out of `reflections/`, or a file onto the
+        // MANIFEST, can move a Reflection's mode in either domain.
+        self.heal_reflection_rows_after(&p.domain, &src.path).await;
+        if cross || src.path != dest_rel {
+            self.heal_reflection_rows_after(&dest_domain, &dest_rel)
+                .await;
+        }
         if let Some(before) = switch_before {
             self.announce_switch_if_moved(&dest_domain, before, change_label(scope));
         }

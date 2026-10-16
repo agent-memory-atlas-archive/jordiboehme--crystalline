@@ -251,7 +251,8 @@ impl Engine {
         // Deleting a MANIFEST empties a virtual domain's routing bullets and
         // takes back the name either kind declared, so refresh once the store
         // lock is released.
-        self.after_source_write(&source, &desc.path).await;
+        self.after_source_write(&desc.domain, &source, &desc.path)
+            .await;
         // The deleted engram must leave its folder's generated index, and an
         // emptied folder loses the index file altogether.
         self.refresh_index_files(&desc.domain).await;

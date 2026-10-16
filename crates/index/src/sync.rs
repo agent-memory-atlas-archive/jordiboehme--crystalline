@@ -504,6 +504,49 @@ fn pending_engrams_on_disk(root: &Path, limit: Option<usize>) -> Vec<String> {
     found
 }
 
+/// Whether the Reflection's folder of the domain at `root` holds a file that
+/// a walk with the Reflection in effect gives a row: a page, the pact or a
+/// file under `reflections/assets/`. Stops at the first one. A folder the
+/// walk cannot read counts as holding one, since it may (the walk that
+/// follows decides).
+pub fn reflection_files_on_disk(root: &Path) -> bool {
+    let layout = DomainLayout::at(root, ReflectionMode::Effective);
+    for folder in crystalline_core::reflection::reflection_folders(root) {
+        let walk = WalkDir::new(root.join(&folder))
+            .into_iter()
+            .filter_entry(|e| e.depth() == 0 || layout.enters_dir(&slash_rel(root, e.path())));
+        for item in walk {
+            let Ok(item) = item else {
+                return true;
+            };
+            if item.file_type().is_file()
+                && matches!(
+                    layout.classify(&slash_rel(root, item.path())),
+                    PathClass::Reflection(
+                        ReflectionFile::Page(_) | ReflectionFile::Pact | ReflectionFile::Asset(_)
+                    )
+                )
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether the index holds a row of the domain's Reflection: a page, the
+/// pact or a file under `reflections/assets/`.
+pub async fn reflection_rows_present<S: Store + ?Sized>(
+    store: &S,
+    domain: DomainId,
+) -> Result<bool> {
+    Ok(!store.list_reflection_stamps(domain).await?.is_empty()
+        || !store
+            .list_assets(AssetTable::Reflection, domain)
+            .await?
+            .is_empty())
+}
+
 /// Whether the domain at `root` has a Reflection in effect.
 pub fn reflection_effective(root: &Path, recorded: impl Iterator<Item = impl AsRef<str>>) -> bool {
     reflection_mode(root, recorded) == ReflectionMode::Effective

@@ -382,15 +382,29 @@ impl Engine {
         self.names_stale.store(true, AtomicOrdering::SeqCst);
     }
 
-    /// What a content write owes the caches: a virtual source may have
-    /// rewritten its MANIFEST engram, the source of its routing bullets and
-    /// its declared name, and a file domain's root `MANIFEST.md` is where the
-    /// file domain declares its name.
-    pub(super) async fn after_source_write(&self, source: &ContentSource, path: &str) {
+    /// What a content write to `domain` owes the caches and the index: a
+    /// virtual source may have rewritten its MANIFEST engram, the source of
+    /// its routing bullets and its declared name, and a file domain's root
+    /// `MANIFEST.md` is where the file domain declares its name and switches
+    /// its Reflection. A write that reindexed one file can change the
+    /// Reflection's mode (the switch in the MANIFEST, the last engram under
+    /// `reflections/` moved, deleted or given a page marker), which the other
+    /// files of the folder follow only through a walk of the whole domain:
+    /// [`Engine::heal_reflection_rows`] runs it when the rows disagree.
+    pub(super) async fn after_source_write(
+        &self,
+        domain: &str,
+        source: &ContentSource,
+        path: &str,
+    ) {
         match source {
             ContentSource::Virtual => self.refresh_routing_cache().await,
-            ContentSource::File { .. } if path == MANIFEST_PATH => self.refresh_names().await,
-            ContentSource::File { .. } => {}
+            ContentSource::File { .. } => {
+                if path == MANIFEST_PATH {
+                    self.refresh_names().await;
+                }
+                self.heal_reflection_rows_after(domain, path).await;
+            }
         }
     }
 

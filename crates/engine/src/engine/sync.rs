@@ -350,25 +350,124 @@ impl Engine {
         paths: Vec<String>,
         actor: Option<&str>,
     ) -> Result<SyncReport> {
+        // Only the MANIFEST (the switch) and a file under `reflections/` (an
+        // engram there holds the switch pending) can move the Reflection's
+        // mode.
+        let may_move_mode = paths.iter().any(|p| may_move_reflection_mode(p));
         let walked = self.sync_paths_walk(name, paths, actor).await;
+        // A pass that changed the Reflection's mode (a MANIFEST edited by
+        // hand, the last engram under `reflections/` given a page marker, a
+        // pull) reclassified only the paths it was handed: the domain is
+        // walked whole once, after the pass gave its sync slot back.
+        if may_move_mode && let Ok((_, true)) = &walked {
+            self.heal_reflection_rows(name).await;
+        }
         // A one-shot command gives back the lock it took, success or not.
         self.release_taken_hosts().await;
-        walked
+        walked.map(|(report, _)| report)
     }
 
-    /// The body of [`Engine::sync_paths_as`].
+    /// Walk file domain `name` whole when its index rows disagree with the
+    /// Reflection mode in effect (see [`Engine::reflection_rows_out_of_step`]),
+    /// so the Reflection and the engram index are complete without anyone
+    /// touching a file. Runs once and never asks again: a walk that keeps
+    /// rows on purpose (an unreadable folder) must not turn every later call
+    /// into another walk. A failure is logged, never returned: the write or
+    /// the pass that called this has landed, and the next sync tries again.
+    ///
+    /// The caller holds no store lock and no sync slot of the domain.
+    pub(super) async fn heal_reflection_rows(&self, name: &str) {
+        match self.reflection_rows_out_of_step(name).await {
+            Ok(false) => {}
+            Ok(true) => {
+                tracing::info!(
+                    "the Reflection of '{name}' changed its mode; walking the domain whole"
+                );
+                if let Err(e) = self.sync(Some(name)).await {
+                    tracing::warn!("walking '{name}' after its Reflection changed failed: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("could not check the Reflection rows of '{name}': {e}");
+            }
+        }
+    }
+
+    /// [`Engine::heal_reflection_rows`] after a write that reindexed only
+    /// `path` of `domain`, when that path can move the Reflection's mode:
+    /// the MANIFEST (the switch) or a file under `reflections/` (an engram
+    /// there holds a switch pending).
+    pub(super) async fn heal_reflection_rows_after(&self, domain: &str, path: &str) {
+        if may_move_reflection_mode(path) {
+            self.heal_reflection_rows(domain).await;
+        }
+    }
+
+    /// Whether the index of file domain `name` disagrees with the Reflection
+    /// mode in effect, which only a walk of the whole domain mends:
+    ///
+    /// - in effect, and an engram row sits under `reflections/` (a page
+    ///   indexed while the switch was off or pending, or by an older
+    ///   version), or no page and no file has a row while the folder holds
+    ///   one (a page that never was an engram);
+    /// - not in effect (off or pending), and a page or a Reflection file
+    ///   still has a row.
+    ///
+    /// A domain with an unresolved host move answers `false`: its walk keeps
+    /// the rows it does not see on purpose, and the walk that resolves the
+    /// move mends them.
+    async fn reflection_rows_out_of_step(&self, name: &str) -> Result<bool> {
+        let ContentSource::File { root } = self.read_source(name) else {
+            return Ok(false);
+        };
+        let mode = self.reflection_mode(name).await?;
+        {
+            let store = self.store.lock().await;
+            let Some(id) = store.domain_id(name).await? else {
+                return Ok(false);
+            };
+            if store.shares_database() && store.host_move_text(id).await?.is_some() {
+                return Ok(false);
+            }
+            if mode == crystalline_core::ReflectionMode::Effective
+                && !store.engram_rows_under_reflections(id, 1).await?.is_empty()
+            {
+                return Ok(true);
+            }
+            let rows = crystalline_index::reflection_rows_present(&*store, id).await?;
+            match mode {
+                crystalline_core::ReflectionMode::Off => return Ok(rows),
+                crystalline_core::ReflectionMode::Effective if rows => return Ok(false),
+                crystalline_core::ReflectionMode::Effective => {}
+            }
+        }
+        tokio::task::spawn_blocking(move || crystalline_index::reflection_files_on_disk(&root))
+            .await
+            .map_err(|e| {
+                EngineError::Internal(format!(
+                    "the Reflection folder of '{name}' could not be read: {e}"
+                ))
+            })
+    }
+
+    /// The body of [`Engine::sync_paths_as`], with whether its scan was
+    /// applied (`false` for a pass that walked nothing: a virtual domain, a
+    /// rename in progress, a domain another instance hosts).
     async fn sync_paths_walk(
         &self,
         name: &str,
         paths: Vec<String>,
         actor: Option<&str>,
-    ) -> Result<SyncReport> {
+    ) -> Result<(SyncReport, bool)> {
         let ContentSource::File { root } = self.content_source(name)? else {
             // A virtual domain has no files on disk; there is nothing to scan.
-            return Ok(SyncReport {
-                domain: name.to_string(),
-                ..SyncReport::default()
-            });
+            return Ok((
+                SyncReport {
+                    domain: name.to_string(),
+                    ..SyncReport::default()
+                },
+                false,
+            ));
         };
         // An engine with no instance id on a shared database walks no file
         // domain, a targeted pass as little as a complete one.
@@ -377,10 +476,13 @@ impl Engine {
         }
         // Skipped while a rename has the domain paused; see `sync_take_over`.
         let Some(_pass) = self.try_enter_sync(name) else {
-            return Ok(SyncReport {
-                domain: name.to_string(),
-                ..SyncReport::default()
-            });
+            return Ok((
+                SyncReport {
+                    domain: name.to_string(),
+                    ..SyncReport::default()
+                },
+                false,
+            ));
         };
         let collab = !self.instance_id.is_empty();
         let (domain, snapshot) = {
@@ -401,10 +503,13 @@ impl Engine {
                             "targeted sync skipped: domain '{name}' is hosted by {}",
                             host.label
                         );
-                        return Ok(SyncReport {
-                            domain: name.to_string(),
-                            ..SyncReport::default()
-                        });
+                        return Ok((
+                            SyncReport {
+                                domain: name.to_string(),
+                                ..SyncReport::default()
+                            },
+                            false,
+                        ));
                     }
                 }
             }
@@ -453,7 +558,7 @@ impl Engine {
             self.mark_reflection_dirty(name, crate::reflection_backup::BackupCause::Edit);
         }
         self.announce_report(name, &report, actor);
-        Ok(report)
+        Ok((report, true))
     }
 
     /// Why this engine walks no file domain, or `None` when it may. The one
@@ -1361,6 +1466,13 @@ fn settle_action(choice: &SnapshotChoice, read_only: bool, user_dir: bool) -> Se
         } => SettleAction::FetchPinned,
         _ => SettleAction::Nothing,
     }
+}
+
+/// Whether a write to, or a change found at, the domain-relative `path` can
+/// move the domain's Reflection mode: the MANIFEST holds the switch, and an
+/// engram under `reflections/` (in any letter case) holds a switch pending.
+fn may_move_reflection_mode(path: &str) -> bool {
+    names_the_manifest(path) || crystalline_core::reflection::is_under_reflections(path)
 }
 
 #[cfg(test)]
