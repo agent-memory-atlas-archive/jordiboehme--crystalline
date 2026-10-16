@@ -400,27 +400,42 @@ function EditedField({
   onCommit: (next: string) => void;
   render: (props: EditedProps) => ReactElement;
 }): ReactElement {
-  const [editing, setEditing] = useState<string | null>(null);
+  // What the field held when focus arrived, and what has been typed since
+  // (null while nothing has). Only typing commits: a person who merely
+  // tabbed through must not write the value they saw back over one that
+  // changed in the room meanwhile, and an untouched field keeps showing the
+  // document's current value.
+  const [seen, setSeen] = useState<string | null>(null);
+  const [typed, setTyped] = useState<string | null>(null);
+  const commit = () => {
+    if (typed !== null && typed !== seen) {
+      onCommit(typed);
+      setSeen(typed);
+    }
+  };
   return render({
-    value: editing ?? value,
+    value: typed ?? value,
     onFocus: () => {
-      setEditing(value);
+      setSeen(value);
+      setTyped(null);
     },
     onChange: (event) => {
-      setEditing(event.target.value);
+      setTyped(event.target.value);
     },
     onBlur: () => {
-      if (editing !== null) {
-        onCommit(editing);
-      }
-      setEditing(null);
+      commit();
+      setSeen(null);
+      setTyped(null);
     },
     onKeyDown: (event) => {
+      // An IME composition owns Enter. Safari sends the composition's final
+      // Enter with `isComposing` false and keyCode 229.
+      if (event.nativeEvent.isComposing || event.keyCode === 229) {
+        return;
+      }
       if (event.key === "Enter") {
         event.preventDefault();
-        if (editing !== null) {
-          onCommit(editing);
-        }
+        commit();
       }
     },
   });

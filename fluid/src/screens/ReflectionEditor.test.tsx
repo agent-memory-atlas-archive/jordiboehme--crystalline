@@ -219,6 +219,37 @@ describe("the reflection editor", () => {
     ).toBeInTheDocument();
   });
 
+  it("Done keeps the text at once when a conflict holds every save", async () => {
+    serve("edit");
+    const flush = vi.fn();
+    live({
+      ...room(PAGE),
+      saveState: "conflict",
+      conflict: { kind: "edit", theirs: "other", detail: "changed" },
+      flush,
+    });
+    await openEditor();
+    await userEvent.click(screen.getByRole("link", { name: "Done" }));
+    // No wait for a flush that cannot land: the alert is there at once.
+    expect(
+      screen.getByText(
+        "Not saved yet. Your text is kept as a draft on this device.",
+      ),
+    ).toHaveAttribute("role", "alert");
+    expect(flush).not.toHaveBeenCalled();
+    expect(readDraft("ann", "eng", "reflection:guides/a.md")?.content).toBe(
+      PAGE,
+    );
+    await waitFor(
+      () => {
+        expect(
+          screen.queryByRole("textbox", { name: "Page source" }),
+        ).not.toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
+  });
+
   it("kept text from an earlier session is offered back", async () => {
     serve("edit");
     const session = room(PAGE);

@@ -1263,6 +1263,13 @@ describe("the engram editor", () => {
     expect(text).not.toContain("old-alias");
     expect(screen.queryByText("Unsaved changes")).toBeNull();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    // The adoption is not a step of the author's: undo does not bring the
+    // old spelling back.
+    const view = mountedView(editor);
+    act(() => {
+      undo(view);
+    });
+    expect(view.state.sliceDoc()).not.toContain("old-alias");
   });
 
   it("goes back to Unsaved changes on the next keystroke after a save", async () => {

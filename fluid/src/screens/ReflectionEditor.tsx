@@ -717,7 +717,7 @@ function Surface({
             participants={collab.participants}
             offline={collab.status !== "connected"}
           />
-          <SaveState state={saveState} />
+          <SaveState state={saveState} room />
           <Link
             to={reflectionPageRoute(domain, path)}
             onClick={(event) => {

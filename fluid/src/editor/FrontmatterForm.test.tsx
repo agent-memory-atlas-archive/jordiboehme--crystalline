@@ -527,4 +527,45 @@ describe("the frontmatter form", () => {
     expect(group).toHaveTextContent("First half, second half.");
     expect(group).not.toHaveTextContent('"');
   });
+
+  it.each([
+    ["Description", "description: Old one", "description: Agent text"],
+    ["Salience", "salience: 0.4", "salience: 0.9"],
+  ])(
+    "%s: focusing alone never writes back over a change from the room",
+    async (label, before, after) => {
+      const content = DOC.replace(
+        "status: stable",
+        `status: stable\n${before}`,
+      );
+      render(<Live content={content} />, { wrapper: Tooltips });
+      const field = await screen.findByLabelText(label);
+      field.focus();
+      // The room rewrites the line while the field only has focus.
+      const view = liveView();
+      const at = view.state.sliceDoc().indexOf(before);
+      act(() => {
+        view.dispatch({
+          changes: { from: at, to: at + before.length, insert: after },
+        });
+      });
+      await userEvent.tab();
+      expect(liveView().state.sliceDoc()).toContain(after);
+      expect(liveView().state.sliceDoc()).not.toContain(before);
+    },
+  );
+
+  it("leaves Enter to an IME composition in the description", async () => {
+    render(<Live content={DOC} />, { wrapper: Tooltips });
+    const field = await screen.findByLabelText("Description");
+    field.focus();
+    fireEvent.change(field, { target: { value: "かな" } });
+    fireEvent.keyDown(field, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(field, { key: "Enter", keyCode: 229 });
+    expect(liveView().state.sliceDoc()).not.toContain("description:");
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() => {
+      expect(liveView().state.sliceDoc()).toContain('description: "かな"');
+    });
+  });
 });

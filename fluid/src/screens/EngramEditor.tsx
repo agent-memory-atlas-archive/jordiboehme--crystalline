@@ -1065,7 +1065,7 @@ function Surface({
                   offline={collab.status !== "connected"}
                 />
               )}
-              <SaveState state={saveState} />
+              <SaveState state={saveState} room={inRoom} />
               {/*
                 Sharing the draft, and only ever a draft: a link hands over
                 work the team has not seen, and there is nothing to hand over

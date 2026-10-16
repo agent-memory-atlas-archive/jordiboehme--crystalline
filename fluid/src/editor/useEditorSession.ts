@@ -7,6 +7,7 @@
  */
 
 import type { Extension } from "@codemirror/state";
+import { Transaction } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { keymap } from "@codemirror/view";
 import { useMutation } from "@tanstack/react-query";
@@ -152,7 +153,8 @@ export interface EditorSession {
 /**
  * Put the text the server stored into a buffer that still holds what was
  * sent, changing only the span that differs so the caret and the scroll stay
- * where they were. A plain transaction, not a rebuild: undo can take it back.
+ * where they were. A plain transaction, not a rebuild, and kept out of the
+ * undo history.
  */
 function adoptStored(view: EditorView, stored: string): void {
   const separator = view.state.lineBreak;
@@ -187,6 +189,9 @@ function adoptStored(view: EditorView, stored: string): void {
       to: toPosition(current.length - end),
       insert: next.slice(start, next.length - end),
     },
+    // Not a step of the author's: an undo right after a save must not bring
+    // back the spelling the server replaced.
+    annotations: Transaction.addToHistory.of(false),
   });
 }
 

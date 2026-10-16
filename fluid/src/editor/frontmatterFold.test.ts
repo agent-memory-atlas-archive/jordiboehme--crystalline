@@ -23,6 +23,7 @@ import {
 import { EditorView } from "@codemirror/view";
 import { describe, expect, test } from "vitest";
 import { yCollab } from "y-codemirror.next";
+import { pickedCompletion } from "@codemirror/autocomplete";
 import * as Y from "yjs";
 
 import { frontmatterFold, frontmatterHidden } from "./frontmatterFold";
@@ -328,6 +329,43 @@ describe("frontmatterFold", () => {
     type(view, "x");
     expect(ytext.toJSON()).toBe(view.state.sliceDoc());
     expect(ytext.toJSON()).toContain("---\nx\n# Body");
+    view.destroy();
+  });
+
+  test("a block added after a frontmatter-only file keeps its own caret and blank line", () => {
+    // The shape `appendBlock` dispatches: two breaks, the lines, a closing
+    // break, and the caret at the end of the first line.
+    const doc = "---\ntype: guide\n---";
+    const view = mount(doc);
+    const from = doc.length;
+    view.dispatch({
+      changes: { from, insert: "\n\n![a](assets/a.png)\nnext\n" },
+      selection: { anchor: from + 2 + "![a](assets/a.png)".length },
+      userEvent: "input",
+    });
+    expect(view.state.sliceDoc()).toBe(`${doc}\n\n![a](assets/a.png)\nnext\n`);
+    expect(view.state.selection.main.head).toBe(
+      from + 2 + "![a](assets/a.png)".length,
+    );
+    view.destroy();
+  });
+
+  test("a rewritten transaction keeps its annotations, a picked completion among them", () => {
+    let picked: unknown = null;
+    const watch = EditorView.updateListener.of((update) => {
+      for (const tr of update.transactions) {
+        picked = tr.annotation(pickedCompletion) ?? picked;
+      }
+    });
+    const view = mount(DOC, [watch]);
+    const completion = { label: "[[Beta]]" };
+    view.dispatch({
+      changes: { from: FENCE_END, insert: "[[Beta]]" },
+      annotations: pickedCompletion.of(completion),
+      userEvent: "input.complete",
+    });
+    expect(view.state.sliceDoc()).toContain("---\n[[Beta]]\n# Body");
+    expect(picked).toBe(completion);
     view.destroy();
   });
 });

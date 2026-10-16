@@ -35,8 +35,6 @@ import {
 import type { DecorationSet } from "@codemirror/view";
 import { Decoration, EditorView } from "@codemirror/view";
 
-import { isolateHistory } from "@codemirror/commands";
-
 import { frontmatterRegion } from "./frontmatterRegion";
 
 /** The hidden block: whole lines, so nothing of it takes a row on screen. */
@@ -101,19 +99,18 @@ const guard = EditorState.transactionFilter.of((tr) => {
   const length = start.doc.length;
   const protectTo = Math.min(region.to + 1, length);
   const landing = protectTo;
-  // A file that is only its frontmatter: text typed beside the block starts
-  // the body after one blank line, as a new engram's body does.
-  const prefix =
-    region.to === length ? `${start.lineBreak}${start.lineBreak}` : "";
   let touched = false;
   // Every part that reached the block lands, in order, at the start of the
   // body as one insertion; whatever those parts deleted past the block still
   // goes. Changes come sorted and never overlap, so a later change always
-  // starts at or after `deleteTo`.
+  // starts at or after `deleteTo`. Each moved part remembers where it stood
+  // in the document the transaction would have made, so a selection set
+  // inside it can follow it.
   let landed = "";
   let deleteTo = protectTo;
+  const moved: { fromB: number; toB: number; offset: number }[] = [];
   const outside: { from: number; to: number; insert: string }[] = [];
-  tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+  tr.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
     const text = inserted.toString();
     const reaches =
       toA > fromA ? fromA < protectTo : text !== "" && fromA <= region.to;
@@ -122,12 +119,24 @@ const guard = EditorState.transactionFilter.of((tr) => {
       return;
     }
     touched = true;
+    if (text !== "") {
+      moved.push({ fromB, toB, offset: landed.length });
+    }
     landed += text;
     deleteTo = Math.max(deleteTo, toA);
   });
   if (!touched) {
     return tr;
   }
+  // A file that is only its frontmatter: text added beside the block starts
+  // the body after one blank line, as a new engram's body does, counting the
+  // line breaks the text already brings.
+  const leadingBreaks =
+    /^(?:\r?\n)*/.exec(landed)?.[0].split(/\r?\n/).length ?? 1;
+  const prefix =
+    region.to === length && landed !== ""
+      ? start.lineBreak.repeat(Math.max(0, 2 - (leadingBreaks - 1)))
+      : "";
   const specs = [...outside];
   if (landed !== "" || deleteTo > protectTo) {
     specs.push({
@@ -141,30 +150,62 @@ const guard = EditorState.transactionFilter.of((tr) => {
     return [];
   }
   const changes = ChangeSet.of(specs, length, start.lineBreak);
-  // A caret that stood beside the block goes where its text went (after it),
-  // or to the start of the body; every other caret follows its own change.
-  const beside = changes.mapPos(landing, landed === "" ? -1 : 1);
-  const selection = EditorSelection.create(
-    start.selection.ranges.map((range) =>
-      range.from < protectTo
-        ? EditorSelection.cursor(beside)
-        : range.map(changes, 1),
-    ),
-    start.selection.mainIndex,
-  );
-  // The transaction's own effects, carried from the document it would have
-  // made into the one this makes.
+  // From the document the transaction would have made into the one this
+  // makes: back through its own changes, then forward through these.
   const mapping = tr.changes.invert(start.doc).compose(changes);
-  const annotations: Annotation<unknown>[] = [
-    Transaction.userEvent.of(tr.annotation(Transaction.userEvent) ?? "input"),
-  ];
-  const history = tr.annotation(Transaction.addToHistory);
-  if (history !== undefined) {
-    annotations.push(Transaction.addToHistory.of(history));
+  // Where the moved text starts now (its line breaks count one each, as
+  // document positions do).
+  const textStart =
+    changes.mapPos(landing, -1) + prefix.split(start.lineBreak).length - 1;
+  const place = (positionB: number): number => {
+    const part = moved.find(
+      (one) => positionB >= one.fromB && positionB <= one.toB,
+    );
+    if (part !== undefined) {
+      const before = landed.slice(0, part.offset).split(/\r?\n/).join("\n");
+      return textStart + before.length + (positionB - part.fromB);
+    }
+    return mapping.mapPos(positionB, 1);
+  };
+  let selection: EditorSelection;
+  if (tr.selection !== undefined) {
+    // A selection the transaction set on purpose follows its text.
+    const set = tr.selection;
+    selection = EditorSelection.create(
+      set.ranges.map((range) =>
+        EditorSelection.range(place(range.anchor), place(range.head)),
+      ),
+      set.mainIndex,
+    );
+  } else {
+    // A caret that stood beside the block goes where its text went (after
+    // it), or to the start of the body; every other caret follows its own
+    // change.
+    const beside = changes.mapPos(landing, landed === "" ? -1 : 1);
+    selection = EditorSelection.create(
+      start.selection.ranges.map((range) =>
+        range.from < protectTo
+          ? EditorSelection.cursor(beside)
+          : range.map(changes, 1),
+      ),
+      start.selection.mainIndex,
+    );
   }
-  const isolate = tr.annotation(isolateHistory);
-  if (isolate !== undefined) {
-    annotations.push(isolateHistory.of(isolate));
+  // Every annotation the transaction carried (input type, history, a picked
+  // completion and the rest). The list is not in the typed interface, so it
+  // is read with a fallback to the ones this guard knows by name.
+  const carried = (tr as unknown as { annotations?: Annotation<unknown>[] })
+    .annotations;
+  const annotations: Annotation<unknown>[] =
+    carried !== undefined
+      ? carried.filter((one) => one.type !== Transaction.time)
+      : [
+          Transaction.userEvent.of(
+            tr.annotation(Transaction.userEvent) ?? "input",
+          ),
+        ];
+  if (tr.annotation(Transaction.userEvent) === undefined) {
+    annotations.push(Transaction.userEvent.of("input"));
   }
   const spec: TransactionSpec = {
     changes,

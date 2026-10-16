@@ -1,6 +1,7 @@
 /**
  * Done in a room: the server saves the room on its own, so leaving is usually
- * just leaving. Not while that save is owed - a save in flight, a refused one,
+ * just leaving. A standing conflict holds every save, so Done keeps the text
+ * as a draft at once and says so. Not while that save is owed - a save in flight, a refused one,
  * a conflict, or the socket away. Then Done asks the room to save now and
  * waits a moment for it to land; once it has, the editor leaves. If it does
  * not land in time, the text is kept as a draft on this device, the editor
@@ -21,7 +22,7 @@ export const ROOM_EXIT_NOTICE_MS = 1500;
 export type RoomExitPhase = "idle" | "waiting" | "kept";
 
 export function useRoomExit(
-  collab: Pick<CollabSession, "saveState" | "status" | "flush">,
+  collab: Pick<CollabSession, "saveState" | "status" | "flush" | "conflict">,
   /** Keep this tab's text as a draft (each editor's own keeper). */
   keep: () => void,
   /** Go to the reading page. */
@@ -85,6 +86,13 @@ export function useRoomExit(
       event.preventDefault();
       if (phase !== "idle") {
         // A second press while waiting does not start a second wait.
+        return;
+      }
+      if (collab.conflict !== null || collab.saveState === "conflict") {
+        // A standing conflict holds every save until somebody resolves it,
+        // so there is nothing to wait for: the text is kept at once.
+        keep();
+        setPhase("kept");
         return;
       }
       collab.flush();
