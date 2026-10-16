@@ -805,6 +805,7 @@ export default function EngramPage() {
           {fullWidth && (
             <div className="print:hidden">
               <AttachmentsSection
+                key={`${engram.domain}/${engram.permalink}`}
                 domain={engram.domain}
                 body={engram.content}
                 canDelete={canWrite}
@@ -839,6 +840,7 @@ export default function EngramPage() {
         {!fullWidth && (
           <aside className="flex flex-col divide-y divide-hair print:hidden [&>*]:py-4 [&>*:first-child]:pt-0">
             <DetailsPanel
+              key={`${engram.domain}/${engram.permalink}`}
               frontmatter={engram.frontmatter}
               address={engram.url}
               domain={engram.domain}
@@ -848,6 +850,7 @@ export default function EngramPage() {
               canDelete={canWrite}
             />
             <LinkedFrom
+              key={`${engram.domain}/${engram.permalink}`}
               domain={engram.domain}
               permalink={engram.permalink}
               inboundCount={engram.inboundCount}

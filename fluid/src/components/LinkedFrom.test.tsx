@@ -280,6 +280,77 @@ describe("LinkedFrom", () => {
     expect(field).toBeVisible();
   });
 
+  it("sends no filter once the engram is not filterable", async () => {
+    apiMock.mockResolvedValue(referencePage(1, 40, [["A", "relates_to"]]));
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const tree = (permalink: string, count: number) => (
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <LinkedFrom
+            key={`eng/${permalink}`}
+            domain="eng"
+            permalink={permalink}
+            inboundCount={count}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree("alpha", 40));
+    await userEvent.type(
+      await screen.findByRole("searchbox", { name: "Filter linked engrams" }),
+      "zz",
+    );
+    await waitFor(() => {
+      expect(requested()).toContain(
+        "/domains/eng/inbound/alpha?page=1&limit=20&q=zz",
+      );
+    });
+
+    // The route component stays mounted across engrams: the next one gets a
+    // fresh block, with no typed text and no filter field to carry it.
+    apiMock.mockClear();
+    apiMock.mockResolvedValue(referencePage(1, 2, [["B", "relates_to"]]));
+    rerender(tree("beta", 2));
+
+    await screen.findByRole("link", { name: "B" });
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    expect(requested()).toEqual(["/domains/eng/inbound/beta?page=1&limit=20"]);
+  });
+
+  it("starts a keyed block closed again on the next engram", async () => {
+    const rows = ["A", "B", "C", "D", "E", "F", "G"].map(
+      (t) => [`Note ${t}`, "relates_to"] as [string, string],
+    );
+    apiMock.mockResolvedValue(referencePage(1, 7, rows));
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const tree = (permalink: string) => (
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <LinkedFrom
+            key={`eng/${permalink}`}
+            domain="eng"
+            permalink={permalink}
+            inboundCount={7}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree("alpha"));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Show all 7" }),
+    );
+    expect(screen.getAllByRole("listitem")).toHaveLength(7);
+
+    rerender(tree("beta"));
+
+    await screen.findByRole("button", { name: "Show all 7" });
+    expect(screen.getAllByRole("listitem")).toHaveLength(5);
+  });
+
   it("offers no filter for a short list", async () => {
     apiMock.mockResolvedValue(referencePage(1, 3, [["A", "relates_to"]]));
 

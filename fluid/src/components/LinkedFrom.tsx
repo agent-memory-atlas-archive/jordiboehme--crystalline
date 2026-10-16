@@ -94,16 +94,17 @@ export function LinkedFrom({
       clearTimeout(timer);
     };
   }, [typed]);
-  const filtering = filter !== "";
   const filterable = inboundCount > FILTER_FROM;
+  // A filter typed while the list was long is no filter once it is not.
+  const filtering = filterable && filter !== "";
 
   const inbound = useInfiniteQuery({
-    queryKey: ["inbound", domain, permalink, "titles", filter],
+    queryKey: ["inbound", domain, permalink, "titles", filtering ? filter : ""],
     queryFn: ({ pageParam }) =>
       fetchInbound(domain, permalink, {
         page: pageParam,
         limit: INBOUND_PAGE_SIZE,
-        q: filter,
+        q: filtering ? filter : "",
       }),
     initialPageParam: 1,
     getNextPageParam: (last) =>
