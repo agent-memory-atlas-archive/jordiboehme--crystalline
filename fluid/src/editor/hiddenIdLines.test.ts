@@ -312,6 +312,47 @@ describe("hiddenIdLines keeps an id with its heading", () => {
       },
     );
 
+    it.each([["input.paste"], ["input.drop"]])(
+      "strips an id a %s brings, however it was made",
+      (userEvent) => {
+        const v = mount(PAGE);
+        v.dispatch({
+          selection: EditorSelection.range(4, PAGE.indexOf("First.") + 2),
+        });
+        v.dispatch(v.state.replaceSelection("A\n<!-- r:cccc3333 -->\nB"), {
+          userEvent,
+        });
+        expect(v.state.doc.toString()).toBe(
+          "## OA\n<!-- r:aaaa1111 -->\nBrst.\n",
+        );
+      },
+    );
+
+    it("never gives a pasted heading the id of the heading it lands in", () => {
+      const v = mount(PAGE);
+      v.dispatch({
+        selection: EditorSelection.range(4, PAGE.indexOf("First.") + 2),
+      });
+      v.dispatch(v.state.replaceSelection("A\n## Z\n<!-- r:aaaa1111 -->\nB"), {
+        userEvent: "input.paste",
+      });
+      expect(v.state.doc.toString()).toBe(
+        "## OA\n<!-- r:aaaa1111 -->\n## Z\nBrst.\n",
+      );
+      expect(v.state.selection.main.head).toBe(
+        "## OA\n<!-- r:aaaa1111 -->\n## Z\nB".length,
+      );
+    });
+
+    it("strips an id from a paste with CRLF endings", () => {
+      const v = mount(PAGE, [normalizePastedEndings]);
+      v.dispatch({ selection: EditorSelection.cursor(PAGE.length) });
+      v.dispatch(v.state.replaceSelection("x\r\n<!-- r:cccc3333 -->\r\ny"), {
+        userEvent: "input.paste",
+      });
+      expect(v.state.doc.toString()).toBe(`${PAGE}x\ny`);
+    });
+
     it("strips ids out of pasted text", () => {
       const v = mount(PAGE);
       v.dispatch({

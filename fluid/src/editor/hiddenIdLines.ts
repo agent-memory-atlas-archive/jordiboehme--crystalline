@@ -320,6 +320,48 @@ const keepHeadingIds = Prec.high(
 );
 
 /**
+ * Ids inside pasted or dropped text go, whatever path the text came by: the
+ * clipboard filter below covers a real paste, and this covers a paste or a
+ * drop built some other way. An id taken along into another place would give
+ * a second section the id, and the threads, of the first. Only whole id lines
+ * that the paste itself brought are taken out, with one line break of the
+ * paste beside them; the page's own ids are never touched here.
+ */
+const stripPastedIds = Prec.high(
+  EditorState.transactionFilter.of((tr) => {
+    if (
+      !tr.docChanged ||
+      !(tr.isUserEvent("input.paste") || tr.isUserEvent("input.drop"))
+    ) {
+      return tr;
+    }
+    const doc = tr.newDoc;
+    const cuts: { from: number; to: number }[] = [];
+    tr.changes.iterChanges((_fromA, _toA, fromB, toB) => {
+      if (fromB === toB) {
+        return;
+      }
+      const first = doc.lineAt(fromB).number;
+      const last = doc.lineAt(toB).number;
+      for (let n = first; n <= last; n += 1) {
+        const line = doc.line(n);
+        if (line.from < fromB || line.to > toB || !isIdLine(line.text)) {
+          continue;
+        }
+        if (line.to + 1 <= toB) {
+          cuts.push({ from: line.from, to: line.to + 1 });
+        } else if (line.from - 1 >= fromB) {
+          cuts.push({ from: line.from - 1, to: line.to });
+        } else {
+          cuts.push({ from: line.from, to: line.to });
+        }
+      }
+    });
+    return cuts.length === 0 ? tr : [tr, { changes: cuts, sequential: true }];
+  }),
+);
+
+/**
  * The lines a move takes along: a heading with the id line below it, or the
  * one line. An id line on its own is taken with the heading above it.
  */
@@ -438,7 +480,10 @@ export function hiddenIdLines(): Extension {
     field,
     newLineBelowId,
     keepIdLines,
+    // Later in this list runs first: the paste loses its ids before the
+    // heading ids are put right.
     keepHeadingIds,
+    stripPastedIds,
     moveWithIds,
     copyWithoutIds,
     pasteWithoutIds,
