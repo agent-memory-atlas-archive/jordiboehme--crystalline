@@ -62,6 +62,7 @@ import { atLeast } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { plural, relativeTime } from "../format";
 import { useSaid } from "./useSaid";
+import { placeMarkers, printNotes } from "../printNotes";
 import type { SelectionAnchor } from "../reflectionQuotes";
 import {
   SECTION_ATTR,
@@ -485,6 +486,8 @@ export function ReflectionThreads({
   const backToComment = useRef(false);
   // The painted quotes by thread, for a tap on one in the text.
   const painted = useRef(new Map<string, Range>());
+  // Whether the page is printing, while the numbers are in its text.
+  const printing = useRef(false);
   // The thread the sheet opens at, once, when a tap or a link asked for it.
   const [openAt, setOpenAt] = useState<string | null>(null);
   // A link to a thread (`#t-<hex>`) picks it; on a narrow screen it also
@@ -656,13 +659,72 @@ export function ReflectionThreads({
       stop = paintQuotes(all, current);
     };
     paint();
-    const observer = new MutationObserver(paint);
+    // While the page prints, the numbers put in the text are no change to
+    // it: the quotes stay painted as they were.
+    const observer = new MutationObserver(() => {
+      if (!printing.current) {
+        paint();
+      }
+    });
     observer.observe(root, { childList: true, subtree: true });
     return () => {
       observer.disconnect();
       stop();
     };
   }, [articleRef, open, sections, shown]);
+
+  // On paper each open thread is a numbered note at the end of the page
+  // (`PrintNotes`), and its number stands at the end of its quote in the
+  // text. The numbers go in as printing starts, at the ends of the painted
+  // ranges, and come out as it ends: on screen the text never holds them.
+  useEffect(() => {
+    let undo: (() => void) | null = null;
+    const start = () => {
+      if (undo !== null) {
+        return;
+      }
+      printing.current = true;
+      const numbers = new Map(
+        printNotes(doc.threads, sections).map((note) => [
+          note.thread.id,
+          note.n,
+        ]),
+      );
+      const marks: { range: Range; n: number }[] = [];
+      for (const [id, range] of painted.current) {
+        const n = numbers.get(id);
+        if (n !== undefined) {
+          marks.push({ range, n });
+        }
+      }
+      undo = placeMarkers(marks);
+    };
+    const end = () => {
+      undo?.();
+      undo = null;
+      printing.current = false;
+    };
+    const media =
+      typeof window.matchMedia === "function"
+        ? window.matchMedia("print")
+        : null;
+    const onChange = (event: MediaQueryListEvent) => {
+      if (event.matches) {
+        start();
+      } else {
+        end();
+      }
+    };
+    window.addEventListener("beforeprint", start);
+    window.addEventListener("afterprint", end);
+    media?.addEventListener("change", onChange);
+    return () => {
+      window.removeEventListener("beforeprint", start);
+      window.removeEventListener("afterprint", end);
+      media?.removeEventListener("change", onChange);
+      end();
+    };
+  }, [doc.threads, sections]);
 
   // A tap on a painted quote picks its thread; below `xl` it opens the
   // sheet at it. A tap anywhere else in the text lets the pick go. A drag
@@ -937,7 +999,10 @@ export function ReflectionThreads({
   if (column) {
     return (
       <Kept.Provider value={kept}>
-        <aside aria-label="Threads" className="flex flex-col gap-3">
+        <aside
+          aria-label="Threads"
+          className="flex flex-col gap-3 print:hidden"
+        >
           {status}
           {body}
         </aside>

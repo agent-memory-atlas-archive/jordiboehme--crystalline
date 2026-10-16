@@ -756,6 +756,20 @@ const LINK_CLASSES =
   "text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline";
 
 /**
+ * The address a link out of the app prints after its words (the print sheet
+ * in `index.css` draws it), without its scheme. None when the words already
+ * are the address.
+ */
+function printUrl(href: string, words: string): { "data-print-url"?: string } {
+  const shown = href.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+  const said = words
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/$/, "");
+  return said === shown ? {} : { "data-print-url": shown };
+}
+
+/**
  * One link, drawn by where it points.
  *
  * Three destinations, in the order they are decided. A resolved wikilink is a
@@ -823,6 +837,7 @@ function MarkdownAnchor({
       href={documentHref(href)}
       className={LINK_CLASSES}
       {...(outward ? { target: "_blank", rel: "noreferrer" } : {})}
+      {...(outward ? printUrl(href, textOf(node as HastNode | undefined)) : {})}
     >
       {children}
     </a>
@@ -1159,6 +1174,9 @@ function heading(
           {titleNote}
         </p>
       ) : null;
+    // Marked in the page too, so the print sheet can fold a title the
+    // printed title block already carries.
+    const firstTitle = rest[FIRST_TITLE_PROP] === "true" ? "" : undefined;
     const aside = useContext(HeadingAsideContext);
     // The control is no part of the heading's words either: unstamped,
     // unselectable, passed over by the anchoring, and left out of the
@@ -1179,6 +1197,7 @@ function heading(
             id={id}
             className={`${className} flex items-baseline gap-3`}
             aria-labelledby={textId}
+            data-first-title={firstTitle}
           >
             <span id={textId} className="min-w-0">
               {children}
@@ -1201,7 +1220,7 @@ function heading(
     if (!anchored || id === undefined) {
       return (
         <>
-          <Tag id={id} className={className}>
+          <Tag id={id} className={className} data-first-title={firstTitle}>
             {children}
           </Tag>
           {note}
@@ -1215,7 +1234,12 @@ function heading(
     // button its own name and the tab order untouched.
     return (
       <>
-        <Tag id={id} className={className} aria-labelledby={textId}>
+        <Tag
+          id={id}
+          className={className}
+          aria-labelledby={textId}
+          data-first-title={firstTitle}
+        >
           <span id={textId}>{children}</span>
           <SectionLink id={id} />
         </Tag>

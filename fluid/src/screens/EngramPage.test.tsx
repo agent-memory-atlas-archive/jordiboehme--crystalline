@@ -406,8 +406,13 @@ describe("the engram page", () => {
 
     renderApp("/d/eng/e/alpha");
 
-    // Status and type are on the meta line under the title, once.
-    expect(await screen.findByText("decision")).toBeVisible();
+    // Status and type are on the meta line under the title, once (and in
+    // the printed title block, which the screen never shows).
+    const shown = (await screen.findAllByText("decision")).filter(
+      (element) => element.closest("[data-print]") === null,
+    );
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toBeVisible();
     expect(screen.getByRole("link", { name: "#one" })).toHaveAttribute(
       "href",
       "/search?tags=one",
@@ -2403,5 +2408,104 @@ describe("the reading page follows the stream", () => {
     observer.disconnect();
     expect(said).toEqual([]);
     expect(line().textContent).toBe("");
+  });
+});
+
+describe("the printed engram", () => {
+  it("prints a title block with the facts the rail holds on screen", async () => {
+    serve();
+    renderApp("/d/eng/e/alpha");
+    await screen.findByRole("heading", { name: "Alpha", level: 1 });
+    const block = document.querySelector<HTMLElement>("header.print-title");
+    expect(block).not.toBeNull();
+    // On paper only: hidden on screen and from assistive technology there.
+    expect(block).toHaveAttribute("hidden");
+    expect(block).toHaveAttribute("data-print");
+    expect(block).toHaveTextContent("eng");
+    expect(block).toHaveTextContent("Alpha");
+    expect(block).toHaveTextContent("Statussuperseded");
+    expect(block).toHaveTextContent("Typedecision");
+    expect(block).toHaveTextContent("Tagsone, two");
+    expect(block).toHaveTextContent("crystalline://eng/alpha");
+    expect(block).toHaveTextContent(/Printed \w/);
+    // The page margins carry the domain, the title and the address.
+    const margins = document.querySelector("style[data-print-page]");
+    expect(margins?.textContent).toContain('@top-left { content: "eng"; }');
+    expect(margins?.textContent).toContain('@top-right { content: "Alpha"; }');
+    expect(margins?.textContent).toContain(
+      '@bottom-left { content: "crystalline://eng/alpha"; }',
+    );
+    expect(margins?.textContent).toMatch(
+      /@bottom-right \{ content: "Printed [^"]+ \u00b7 " counter\(page\) " of " counter\(pages\); \}/,
+    );
+    // The first page keeps its page number alone: the title block says the rest.
+    expect(margins?.textContent).toContain(
+      '@page :first {\n  @top-left { content: ""; }',
+    );
+  });
+
+  it("ends with a Related section: what links here and the files, by name and size", async () => {
+    serve({
+      "/domains/eng/engrams/alpha": () =>
+        detailResponse({
+          content: `${BODY}\nSee [the deck](assets/deck.pdf) and ![chart](assets/chart.png).\n`,
+        }),
+      "/domains/eng/attachments": () => ({
+        attachments: [
+          {
+            path: "assets/deck.pdf",
+            mime: "application/pdf",
+            size: 2048,
+            modified: "2026-01-01T00:00:00Z",
+          },
+        ],
+      }),
+    });
+    renderApp("/d/eng/e/alpha");
+    await screen.findByRole("heading", { name: "Alpha", level: 1 });
+    const related = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>(
+        'section[aria-label="Related"]',
+      );
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    expect(related).toHaveAttribute("hidden");
+    expect(related).toHaveAttribute("data-print");
+    const lists = () => [...related.querySelectorAll("h3")];
+    await waitFor(() => {
+      expect(lists().map((h) => h.textContent)).toEqual([
+        "Linked from",
+        "Attachments",
+      ]);
+    });
+    const [linked, files] = lists().map(
+      (h) => h.parentElement as HTMLElement,
+    ) as [HTMLElement, HTMLElement];
+    await waitFor(() => {
+      expect(linked).toHaveTextContent("Betalinks_to");
+    });
+    // A plain line, not a link: links are text on paper.
+    expect(linked.querySelector("a")).toBeNull();
+    await waitFor(() => {
+      expect(files).toHaveTextContent("deck.pdf2.0 KiB");
+    });
+    expect(files).toHaveTextContent("chart.pngmissing");
+  });
+
+  it("keeps the chrome, the header and the rail off the paper", async () => {
+    serve();
+    renderApp("/d/eng/e/alpha");
+    await screen.findByRole("heading", { name: "Alpha", level: 1 });
+    for (const bar of screen.getAllByRole("banner")) {
+      expect(bar.className).toContain("print:hidden");
+    }
+    expect(
+      screen.getByRole("link", { name: "Edit" }).closest("header")?.className,
+    ).toContain("print:hidden");
+    expect(
+      screen.getByRole("heading", { name: "Linked from" }).closest("aside")
+        ?.className,
+    ).toContain("print:hidden");
   });
 });

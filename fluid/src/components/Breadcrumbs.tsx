@@ -77,9 +77,9 @@ export function Breadcrumbs({ crumbs }: { crumbs: Crumb[] }): ReactElement {
   // separator before whatever follows it on screen.
   const shown = crumbs.filter((crumb) => crumb.printOnly !== true);
   return (
-    // Deliberately NOT print:hidden: on paper the details panel is hidden,
-    // so the trail is the one line that still says where this document
-    // lives (domain, folders, title) - the printed address.
+    // Not print:hidden itself: a page whose header prints keeps its trail,
+    // the one line that says where the document lives. The reading pages
+    // print a title block with the same trail instead.
     <nav aria-label="Breadcrumb" className="min-w-0">
       <ol className="flex min-w-0 flex-nowrap items-center gap-1 text-caption text-slate-500 dark:text-slate-400">
         {crumbs.map((crumb, at) => {

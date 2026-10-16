@@ -17,7 +17,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { KeyboardEvent, ReactElement } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { FolderInput, Layers, Trash2 } from "lucide-react";
+import { FolderInput, Layers, Printer, Trash2 } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 
 import { ApiProblem, problemDetail } from "../api/client";
@@ -48,7 +48,17 @@ import type { HeadingAside } from "../components/MarkdownBody";
 import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { ReflectionThreads, sourceChip } from "../components/ReflectionThreads";
-import { ActionItem, EditLink, MoreActions } from "../components/PageActions";
+import {
+  ActionItem,
+  ActionSeparator,
+  EditLink,
+  MoreActions,
+} from "../components/PageActions";
+import {
+  PrintNotes,
+  PrintPageStyle,
+  PrintTitleBlock,
+} from "../components/PrintSheet";
 import { FOCUS_RING } from "../components/primitives";
 import { Breadcrumbs, reflectionCrumbsOf } from "../components/Breadcrumbs";
 import { plural } from "../format";
@@ -58,6 +68,8 @@ import { assetRefsIn } from "../editor/imageFormat";
 import { FOCUS_HEADING, useHeadingFocusRequest } from "../focusHeading";
 import { lazyChunk } from "../lazyChunk";
 import { discardPageDrafts } from "../reflectionPageDrafts";
+import { printNotes } from "../printNotes";
+import { reflectionFacts } from "../printSheet";
 import { SECTION_ATTR } from "../reflectionQuotes";
 import type { SectionText } from "../reflectionText";
 import { TOP_SECTION, sectionTexts } from "../reflectionText";
@@ -360,12 +372,32 @@ function PageBody({
   // curator's own included.
   const curate = atLeast(right, "curate");
   const metaLine = reflectionMetaLine(page, engramsVisible);
+  const movable = atLeast(right, "edit") && path !== PACT_PATH;
+  const address = `crystalline://${domain}/reflections/${path}`;
   return (
     // Below the width where the threads column fits, its pill floats over
     // the foot of the page: the padding keeps the last line clear of it.
     <div className="grid gap-6 pb-16 xl:grid-cols-[minmax(0,1fr)_340px] xl:gap-14 xl:pb-0">
       <div className="flex min-w-0 flex-col gap-6">
-        <header className={`flex flex-col gap-2 ${ownTitle ? "-mb-2" : ""}`}>
+        {/*
+          On paper the header gives way to a title block, which carries the
+          title even when the text opens with its own (that one folds away in
+          print), and the page margins carry the rest.
+        */}
+        <PrintPageStyle
+          source={`${domain} / Reflection`}
+          title={page.title}
+          address={address}
+        />
+        <PrintTitleBlock
+          trail={[domain, "Reflection", ...path.split("/").slice(0, -1)]}
+          title={page.title}
+          facts={reflectionFacts(page, engramsVisible)}
+          address={address}
+        />
+        <header
+          className={`flex flex-col gap-2 print:hidden ${ownTitle ? "-mb-2" : ""}`}
+        >
           <div className="flex items-center justify-between gap-2">
             <Breadcrumbs
               crumbs={reflectionCrumbsOf(domain, path, page.title)}
@@ -375,43 +407,52 @@ function PageBody({
                 <EditLink to={reflectionEditRoute(domain, path)} />
               )}
               {/*
-              Move and Delete are curate verbs and rare ones, so they live
-              behind the menu, Delete in red. No menu at all for a reader who
-              has neither, and none on the pact, which can be neither moved
-              nor deleted.
+              Print view for every reader. Move and Delete are curate verbs
+              and rare ones, so they sit under a rule, Delete in red; the
+              pact can be neither moved nor deleted.
             */}
-              {atLeast(right, "edit") && path !== PACT_PATH && (
-                <MoreActions
-                  triggerRef={moreRef}
-                  onCloseAutoFocus={(event) => {
-                    // Delete hands focus to its confirmation, not back here.
-                    if (skipRefocus.current) {
-                      skipRefocus.current = false;
-                      event.preventDefault();
-                      confirmRef.current
-                        ?.querySelector<HTMLElement>("button[aria-label]")
-                        ?.focus();
-                    }
+              <MoreActions
+                triggerRef={moreRef}
+                onCloseAutoFocus={(event) => {
+                  // Delete hands focus to its confirmation, not back here.
+                  if (skipRefocus.current) {
+                    skipRefocus.current = false;
+                    event.preventDefault();
+                    confirmRef.current
+                      ?.querySelector<HTMLElement>("button[aria-label]")
+                      ?.focus();
+                  }
+                }}
+              >
+                <ActionItem
+                  label="Print view"
+                  icon={Printer}
+                  onSelect={() => {
+                    window.print();
                   }}
-                >
-                  <ActionItem
-                    label="Move"
-                    icon={FolderInput}
-                    onSelect={() => {
-                      onMove(page.title);
-                    }}
-                  />
-                  <ActionItem
-                    label="Delete"
-                    icon={Trash2}
-                    destructive
-                    onSelect={() => {
-                      skipRefocus.current = true;
-                      setConfirmingDelete(true);
-                    }}
-                  />
-                </MoreActions>
-              )}
+                />
+                {movable && (
+                  <>
+                    <ActionSeparator />
+                    <ActionItem
+                      label="Move"
+                      icon={FolderInput}
+                      onSelect={() => {
+                        onMove(page.title);
+                      }}
+                    />
+                    <ActionItem
+                      label="Delete"
+                      icon={Trash2}
+                      destructive
+                      onSelect={() => {
+                        skipRefocus.current = true;
+                        setConfirmingDelete(true);
+                      }}
+                    />
+                  </>
+                )}
+              </MoreActions>
             </div>
           </div>
           {confirmingDelete && atLeast(right, "edit") && path !== PACT_PATH && (
@@ -455,7 +496,11 @@ function PageBody({
             </p>
           )}
         </header>
-        <article ref={articleRef} className="flex flex-col gap-4">
+        <article
+          ref={articleRef}
+          className="flex flex-col gap-4"
+          data-print-fold={ownTitle ? "" : undefined}
+        >
           {sections.map((section, index) => (
             <PageSection
               key={section.id ?? `h${index}:${section.heading}`}
@@ -486,21 +531,24 @@ function PageBody({
           Outside the article: selections for threads are read against it,
           and this list is not part of the page's text.
         */}
-        <AttachmentsSection
-          domain={domain}
-          body={page.markdown}
-          home={assets}
-          canDelete={curate}
-          canReplace={curate}
-          onMove={curate ? onMoveFile : undefined}
-          onRemoved={() => {
-            invalidateReflection(queryClient, domain);
-            void queryClient.invalidateQueries({
-              queryKey: reflectionAssetsKey(domain),
-            });
-          }}
-          confirmText={removeFileText}
-        />
+        <div className="empty:hidden print:hidden">
+          <AttachmentsSection
+            domain={domain}
+            body={page.markdown}
+            home={assets}
+            canDelete={curate}
+            canReplace={curate}
+            onMove={curate ? onMoveFile : undefined}
+            onRemoved={() => {
+              invalidateReflection(queryClient, domain);
+              void queryClient.invalidateQueries({
+                queryKey: reflectionAssetsKey(domain),
+              });
+            }}
+            confirmText={removeFileText}
+          />
+        </div>
+        <PrintNotes notes={printNotes(page.threads, sections)} />
       </div>
       {/*
           The column beside the page from `xl` up, a pill and a sheet below

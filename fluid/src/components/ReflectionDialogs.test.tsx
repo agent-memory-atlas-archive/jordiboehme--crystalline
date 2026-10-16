@@ -336,8 +336,11 @@ describe("creating, moving and deleting pages", () => {
     serve("curate");
     renderApp("/d/eng/reflection/PACT.md");
     await screen.findByRole("link", { name: "Edit" });
-    // No menu at all: there is nothing in it for this reader or this page.
-    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
+    // Print view alone: the pact can be neither moved nor deleted.
+    await userEvent.click(screen.getByRole("button", { name: "More actions" }));
+    expect(
+      (await screen.findAllByRole("menuitem")).map((row) => row.textContent),
+    ).toEqual(["Print view"]);
   });
 
   it("offers a commenter no New page, Move or Delete", async () => {
@@ -345,8 +348,11 @@ describe("creating, moving and deleting pages", () => {
     renderApp("/d/eng/reflection/guides/a.md");
     await screen.findByRole("heading", { name: "A" });
     expect(screen.queryByRole("button", { name: "New page" })).toBeNull();
-    // No menu at all: there is nothing in it for this reader or this page.
-    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
+    // Print view alone: nothing to move or delete for this reader.
+    await userEvent.click(screen.getByRole("button", { name: "More actions" }));
+    expect(
+      (await screen.findAllByRole("menuitem")).map((row) => row.textContent),
+    ).toEqual(["Print view"]);
   });
 });
 

@@ -96,6 +96,11 @@ import {
 } from "../components/PageActions";
 import { RetireDialog } from "../components/RetireDialog";
 import { ShareDialog } from "../components/ShareDialog";
+import {
+  PrintPageStyle,
+  PrintRelated,
+  PrintTitleBlock,
+} from "../components/PrintSheet";
 import { Skeleton } from "../components/Skeleton";
 import { useRememberedDisclosure } from "../disclosure";
 import { domainSpellings } from "../domainNames";
@@ -112,6 +117,7 @@ import {
   isDomainManifestPath,
 } from "../paths";
 import { prefetchEngramEditor } from "../prefetch";
+import { engramFacts } from "../printSheet";
 import type { WikilinkResolver } from "../wikilinks";
 import { buildWikilinkResolver, innerOf, referenceState } from "../wikilinks";
 
@@ -475,15 +481,37 @@ export default function EngramPage() {
   );
   return (
     <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-2">
+      {/*
+        On paper the header gives way to a title block of its own, with the
+        facts the rail holds on screen, and the page margins carry the
+        domain, the title and the address.
+      */}
+      <PrintPageStyle
+        source={engram.domain}
+        title={engram.title}
+        address={engram.url}
+      />
+      <PrintTitleBlock
+        trail={[engram.domain, ...engram.permalink.split("/").slice(0, -1)]}
+        title={engram.title}
+        lead={description}
+        facts={engramFacts({
+          status: engram.frontmatter.status,
+          type: engram.frontmatter.type,
+          tags: engram.frontmatter.tags,
+          recordedAt: engram.frontmatter.recordedAt,
+          content: engram.content,
+        })}
+        address={engram.url}
+      />
+      <header className="flex flex-col gap-2 print:hidden">
         {/*
           Where this engram lives, and what can be done with it: the address on
           the left, the controls on the right, the title alone on the line
           below with nothing competing for it.
 
-          The trail prints: the details panel and the controls beside it are
-          chrome and stay off the page, so this line is what says on paper
-          which domain and which folders this document came out of.
+          None of it prints: the title block above says on paper which
+          domain and which folders this document came out of.
         */}
         <div className="flex items-center justify-between gap-2">
           <Breadcrumbs
@@ -700,7 +728,7 @@ export default function EngramPage() {
         <p
           role="status"
           aria-label="Moved"
-          className="text-sm text-slate-600 dark:text-slate-300"
+          className="text-sm text-slate-600 print:hidden dark:text-slate-300"
         >
           {`Moved. Rewrote ${plural(moved.references, "reference", "references")} in ${plural(moved.engrams, "engram", "engrams")} to point here.`}
         </p>
@@ -796,6 +824,17 @@ export default function EngramPage() {
               }}
             />
           </article>
+          {/*
+            What links here and the files it carries, at the end of the
+            printed page: the rail that lists them on screen does not print.
+          */}
+          <PrintRelated
+            key={`related:${engram.domain}/${engram.permalink}`}
+            domain={engram.domain}
+            permalink={engram.permalink}
+            inboundCount={engram.inboundCount}
+            body={engram.content}
+          />
           {/*
             The files this engram carries, which the details panel lists at
             the reading measure. They are not metadata - they are things a
@@ -1097,7 +1136,7 @@ function RecentChangeLine({ change }: { change: RecentChange | null }) {
       role="status"
       aria-label="Recent change"
       aria-live="polite"
-      className="rounded bg-slate-100 px-3 py-2 text-sm text-slate-700 empty:sr-only dark:bg-slate-800 dark:text-slate-200"
+      className="rounded bg-slate-100 px-3 py-2 text-sm text-slate-700 empty:sr-only print:hidden dark:bg-slate-800 dark:text-slate-200"
     >
       {text}
     </p>

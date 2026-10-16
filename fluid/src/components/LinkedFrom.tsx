@@ -32,7 +32,7 @@ import { Link } from "react-router";
 
 import { problemDetail } from "../api/client";
 import type { InboundRefHit } from "../api/inbound";
-import { INBOUND_PAGE_SIZE, fetchInbound } from "../api/inbound";
+import { inboundTitlesQuery } from "../api/inboundTitles";
 import { RETIRED_CLASS, isRetired } from "../lifecycle";
 import { engramRoute } from "../paths";
 import { BUTTON, FOCUS_RING, RAIL_LABEL } from "./primitives";
@@ -99,21 +99,16 @@ export function LinkedFrom({
   const filtering = filterable && filter !== "";
 
   const inbound = useInfiniteQuery({
-    queryKey: ["inbound", domain, permalink, "titles", filtering ? filter : ""],
-    queryFn: ({ pageParam }) =>
-      fetchInbound(domain, permalink, {
-        page: pageParam,
-        limit: INBOUND_PAGE_SIZE,
-        q: filtering ? filter : "",
-      }),
-    initialPageParam: 1,
-    getNextPageParam: (last) =>
-      last.page * last.limit < last.total ? last.page + 1 : undefined,
+    ...inboundTitlesQuery(
+      domain,
+      permalink,
+      filtering ? filter : "",
+      // Nothing points here, and the detail payload already said so exactly.
+      inboundCount > 0,
+    ),
     // The rows stay while a new filter is on its way, so the field does not
     // lose its list under the reader's fingers.
     placeholderData: keepPreviousData,
-    // Nothing points here, and the detail payload already said so exactly.
-    enabled: inboundCount > 0,
   });
 
   const pages = inbound.data?.pages ?? [];

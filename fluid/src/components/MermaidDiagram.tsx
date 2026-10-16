@@ -113,6 +113,49 @@ export default function MermaidDiagram({
   // same picture and pressing it did nothing anybody could see. What the
   // fitted drawing costs - small labels on a huge diagram - is one click
   // away from undone, and the full-window overlay is the reading path.
+  // Paper is always light. On a dark screen the drawing's colours are baked
+  // into its markup, so a light copy is drawn beside it for the printer. Its
+  // theme rides in the source as a directive: the one config a render reads
+  // whatever another diagram initialised the library with meanwhile.
+  const [paperDrawn, setPaperDrawn] = useState<{
+    source: string;
+    svg: string;
+  } | null>(null);
+  const dark = resolved === "dark" && drawn !== null;
+  useEffect(() => {
+    if (!dark) {
+      return;
+    }
+    let live = true;
+    const light = mermaidConfig(false);
+    // `darkMode` spelled out: the directive merges over the dark set the
+    // library was initialised with, and would keep its `true`.
+    const themeVariables: unknown = {
+      ...(light.themeVariables as Record<string, unknown>),
+      darkMode: false,
+    };
+    const directive = `%%{init: ${JSON.stringify({
+      theme: light.theme,
+      themeVariables,
+    })}}%%`;
+    mermaid
+      .render(`${id}-paper`, `${source}\n${directive}\n`)
+      .then((result) => {
+        if (live) {
+          setPaperDrawn({ source, svg: result.svg });
+        }
+      })
+      .catch(() => {
+        if (live) {
+          setPaperDrawn(null);
+        }
+      });
+    return () => {
+      live = false;
+    };
+  }, [id, source, dark]);
+  const paper = dark && paperDrawn?.source === source ? paperDrawn.svg : null;
+
   const wide = drawn !== null && fullWidth;
   const markup =
     drawn === null ? "" : fullWidth ? unclampDiagram(drawn.svg) : drawn.svg;
@@ -160,30 +203,42 @@ export default function MermaidDiagram({
     // `group` and `relative` are the toolbar's: it floats in this corner and
     // shows itself when the pointer or the keyboard is anywhere in here.
     <div className="group relative">
-      {wide ? (
-        // Asked for full width, the diagram keeps its own width and this
-        // container scrolls, because scaling it to fit leaves labels too small
-        // to read. Why this and not a click-to-expand lightbox: a focusable
-        // scroll region is the WAI pattern for exactly this, it needs no focus
-        // trap, no Escape contract and no new dependency, and the reader never
-        // leaves the document. Seeing a huge diagram whole is the thing it
-        // does not give, and that is what the full-window overlay is for -
-        // opened deliberately, never in the reader's way.
+      <div className={paper !== null ? "print:hidden" : undefined}>
+        {wide ? (
+          // Asked for full width, the diagram keeps its own width and this
+          // container scrolls, because scaling it to fit leaves labels too small
+          // to read. Why this and not a click-to-expand lightbox: a focusable
+          // scroll region is the WAI pattern for exactly this, it needs no focus
+          // trap, no Escape contract and no new dependency, and the reader never
+          // leaves the document. Seeing a huge diagram whole is the thing it
+          // does not give, and that is what the full-window overlay is for -
+          // opened deliberately, never in the reader's way.
+          <div
+            ref={scrollerRef}
+            role={overflowing ? "region" : undefined}
+            aria-label={
+              overflowing ? "Diagram, scrollable sideways" : undefined
+            }
+            tabIndex={overflowing ? 0 : undefined}
+            className={`${SCROLLER}${overflowing ? ` ${SCROLLABLE}` : ""}`}
+            dangerouslySetInnerHTML={{ __html: markup }}
+          />
+        ) : (
+          // A diagram is usually narrower than the column it sits in, so it is
+          // centered, and mermaid's own width attribute is left to hug its
+          // height.
+          <div
+            className="flex justify-center [&_svg]:h-auto [&_svg]:max-w-full"
+            dangerouslySetInnerHTML={{ __html: markup }}
+          />
+        )}
+      </div>
+      {paper !== null && (
         <div
-          ref={scrollerRef}
-          role={overflowing ? "region" : undefined}
-          aria-label={overflowing ? "Diagram, scrollable sideways" : undefined}
-          tabIndex={overflowing ? 0 : undefined}
-          className={`${SCROLLER}${overflowing ? ` ${SCROLLABLE}` : ""}`}
-          dangerouslySetInnerHTML={{ __html: markup }}
-        />
-      ) : (
-        // A diagram is usually narrower than the column it sits in, so it is
-        // centered, and mermaid's own width attribute is left to hug its
-        // height.
-        <div
-          className="flex justify-center [&_svg]:h-auto [&_svg]:max-w-full"
-          dangerouslySetInnerHTML={{ __html: markup }}
+          hidden
+          data-print=""
+          className="[&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-w-full"
+          dangerouslySetInnerHTML={{ __html: paper }}
         />
       )}
       {/*

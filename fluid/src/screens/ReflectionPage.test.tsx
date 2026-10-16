@@ -465,7 +465,7 @@ describe("the reflection page header", () => {
     expect(trail.textContent).not.toContain("deploying.md");
   });
 
-  it("draws Edit as a secondary button and Move and Delete behind More actions", async () => {
+  it("draws Edit as a secondary button and Print view, Move and Delete behind More actions", async () => {
     serve("curate", true);
     renderApp("/d/eng/reflection/guides/deploying.md");
     const edit = await screen.findByRole("link", { name: "Edit" });
@@ -477,7 +477,9 @@ describe("the reflection page header", () => {
     await user.click(screen.getByRole("button", { name: "More actions" }));
     expect(
       (await screen.findAllByRole("menuitem")).map((row) => row.textContent),
-    ).toEqual(["Move", "Delete"]);
+    ).toEqual(["Print view", "Move", "Delete"]);
+    // Move and Delete sit under a rule, after the safe row.
+    expect(screen.getByRole("separator")).toBeInTheDocument();
     expect(
       screen.getByRole("menuitem", { name: "Delete" }).className,
     ).toContain("text-red-700");
@@ -486,21 +488,40 @@ describe("the reflection page header", () => {
     ).not.toContain("text-red");
   });
 
-  it("gives a commenter no menu and an editor the same two rows as a curator", async () => {
+  it("gives a commenter Print view alone and an editor the same rows as a curator", async () => {
     serve("comment", false);
     const first = renderApp("/d/eng/reflection/guides/deploying.md");
     await screen.findByRole("heading", { name: "Deploying", level: 1 });
-    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "More actions" }));
+    expect(
+      (await screen.findAllByRole("menuitem")).map((row) => row.textContent),
+    ).toEqual(["Print view"]);
+    expect(screen.queryByRole("separator")).toBeNull();
     first.unmount();
     serve("edit", true);
     renderApp("/d/eng/reflection/guides/deploying.md");
-    const user = userEvent.setup();
     await user.click(
       await screen.findByRole("button", { name: "More actions" }),
     );
     expect(
       (await screen.findAllByRole("menuitem")).map((row) => row.textContent),
-    ).toEqual(["Move", "Delete"]);
+    ).toEqual(["Print view", "Move", "Delete"]);
+  });
+
+  it("prints the page from Print view", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => undefined);
+    serve("comment", false);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Print view" }),
+    );
+    expect(print).toHaveBeenCalledTimes(1);
+    print.mockRestore();
   });
 
   it("opens with Enter, walks with the arrows and returns focus on Escape", async () => {
@@ -510,10 +531,12 @@ describe("the reflection page header", () => {
     const more = await screen.findByRole("button", { name: "More actions" });
     more.focus();
     await user.keyboard("{Enter}");
-    const move = await screen.findByRole("menuitem", { name: "Move" });
+    const print = await screen.findByRole("menuitem", { name: "Print view" });
     await waitFor(() => {
-      expect(move).toHaveFocus();
+      expect(print).toHaveFocus();
     });
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("menuitem", { name: "Move" })).toHaveFocus();
     await user.keyboard("{ArrowDown}");
     expect(screen.getByRole("menuitem", { name: "Delete" })).toHaveFocus();
     await user.keyboard("{Escape}");

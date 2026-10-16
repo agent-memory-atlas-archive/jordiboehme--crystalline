@@ -209,11 +209,28 @@ function pageText(words: string): { node: Text; at: number } {
 function textNode(prefix: string): Text {
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    if ((node.textContent ?? "").startsWith(prefix)) {
+    if (
+      (node.textContent ?? "").startsWith(prefix) &&
+      !onPaper(node.parentElement)
+    ) {
       return node as Text;
     }
   }
   throw new Error(`no text starting with "${prefix}"`);
+}
+
+/** Whether an element is in a print-only block, which the screen never shows. */
+function onPaper(element: Element | null): boolean {
+  return element?.closest("[data-print]") != null;
+}
+
+/** The one element showing `text` on screen, the printed Notes left out. */
+async function findOnScreen(text: string): Promise<HTMLElement> {
+  const found = (await screen.findAllByText(text)).filter(
+    (element) => !onPaper(element),
+  );
+  expect(found).toHaveLength(1);
+  return found[0] as HTMLElement;
 }
 
 describe("comments on a reflection", () => {
@@ -261,7 +278,7 @@ describe("comments on a reflection", () => {
   it("lets go of the page passage when text in a thread is selected", async () => {
     serve([thread("t-00000001")]);
     renderApp("/d/eng/reflection/guides/deploying.md");
-    await screen.findByText("Still true?");
+    await findOnScreen("Still true?");
     select(textNode("Deploys run "), textNode(" night."), 6);
     expect(screen.getByRole("button", { name: "Comment" })).toBeVisible();
     const words = textNode("Still true?");
@@ -459,8 +476,8 @@ describe("comments on a reflection", () => {
         name: "Thread on Night deploys",
       }),
     ).toHaveLength(2);
-    expect(screen.getByText("Still true?")).toBeVisible();
-    expect(screen.getByText("Same question.")).toBeVisible();
+    expect(await findOnScreen("Still true?")).toBeVisible();
+    expect(await findOnScreen("Same question.")).toBeVisible();
     await waitFor(() => {
       const ranges = registry.get(QUOTE_HIGHLIGHT)?.ranges ?? [];
       expect(ranges).toHaveLength(2);
@@ -508,7 +525,7 @@ describe("comments on a reflection", () => {
     expect(
       screen.getByRole("heading", { name: "Not on the page any more" }),
     ).toBeVisible();
-    expect(screen.getByText("Old text")).toBeVisible();
+    expect(await findOnScreen("Old text")).toBeVisible();
   });
 
   it("resolves with a short outcome and reopens visibly", async () => {
@@ -1776,5 +1793,97 @@ describe("threads on a narrow screen", () => {
     await waitFor(() => {
       expect(card).toHaveFocus();
     });
+  });
+});
+
+describe("threads on paper", () => {
+  const later = thread("t-00000002", {
+    anchor: {
+      section: "7f3a9c2e",
+      quote: "after the batch",
+      occurrence: 1,
+      state: "found",
+    },
+    opened_at: "2026-09-29T10:00:00Z",
+    entries: [
+      {
+        at: "2026-09-29T10:00:00Z",
+        kind: "comment",
+        author: { name: "ann", agent: true },
+        text: "Which batch?",
+      },
+    ],
+  });
+  const done = thread("t-00000003", {
+    status: "resolved",
+    anchor: {
+      section: "7f3a9c2e",
+      quote: "Deploys run",
+      occurrence: 1,
+      state: "found",
+    },
+    entries: [
+      {
+        at: "2026-09-28T10:00:00Z",
+        kind: "comment",
+        author: { name: "ann", agent: false },
+        text: "Settled long ago.",
+      },
+    ],
+  });
+
+  it("numbers the open threads at the ends of their quotes while printing, and only then", async () => {
+    // Listed out of reading order, with a resolved one among them.
+    serve([later, thread("t-00000001"), done]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await waitFor(() => {
+      expect(registry.get(QUOTE_HIGHLIGHT)?.ranges).toHaveLength(2);
+    });
+    // On screen the text holds no number.
+    expect(document.querySelector(".print-marker")).toBeNull();
+    const before = pageText("Deploys run at night, after").node;
+    const words = before.data;
+
+    act(() => {
+      window.dispatchEvent(new Event("beforeprint"));
+    });
+    const marks = [...document.querySelectorAll<HTMLElement>(".print-marker")];
+    expect(marks.map((mark) => mark.textContent)).toEqual(["1", "2"]);
+    // Each number stands right after the last word of its painted quote,
+    // passed over by the anchoring and by assistive technology.
+    expect(marks[0]?.previousSibling?.textContent).toMatch(
+      /Deploys run at night$/,
+    );
+    expect(marks[1]?.previousSibling?.textContent).toBe(", after the batch");
+    for (const mark of marks) {
+      expect(mark).toHaveAttribute("data-anchor-skip");
+      expect(mark).toHaveAttribute("aria-hidden", "true");
+      expect(mark.closest("article")).not.toBeNull();
+    }
+
+    // The Notes at the end: open threads only, in the same order.
+    const notes = document.querySelector<HTMLElement>(
+      'section[aria-label="Notes"]',
+    );
+    expect(notes).toHaveAttribute("hidden");
+    expect(notes).toHaveAttribute("data-print");
+    const items = [...(notes?.querySelectorAll("li") ?? [])];
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent(/^1Deploys run at night/);
+    expect(items[0]).toHaveTextContent("vera");
+    expect(items[0]).toHaveTextContent("Still true?");
+    expect(items[1]).toHaveTextContent(/^2after the batch/);
+    expect(items[1]).toHaveTextContent("ann (agent)");
+    expect(items[1]).toHaveTextContent("Which batch?");
+    expect(notes).not.toHaveTextContent("Settled long ago.");
+
+    act(() => {
+      window.dispatchEvent(new Event("afterprint"));
+    });
+    expect(document.querySelector(".print-marker")).toBeNull();
+    // The text node the page drew is whole again, the same node.
+    const after = pageText("Deploys run at night, after").node;
+    expect(after).toBe(before);
+    expect(after.data).toBe(words);
   });
 });
