@@ -232,7 +232,7 @@ fn hit(row: &ReflectionRow, section: &Section, snippet: String, score: f64) -> R
 /// never has a row without the chunks of that same text.
 ///
 /// Writes the row and its chunks in two statements and opens no transaction
-/// of its own (turso's `Conn` takes no savepoint). Every caller holds one:
+/// of its own (turso's `Conn` takes no savepoint). Every production caller holds one:
 /// `Engine::index_reflection` begins and commits around it, and the sync's
 /// `reconcile_rows` runs inside the apply's transaction. A row written
 /// without its chunks would never be re-chunked, because the prefilter trusts

@@ -941,6 +941,17 @@ mod tests {
         assert!(fence.in_fence("    ```"), "indent over three is content");
         assert!(fence.in_fence("~~~"));
         assert!(!fence.in_fence("done"));
+
+        // A fence that is never closed runs to the end of the input: every
+        // line after the opener stays inside it.
+        let mut unclosed = FenceTracker::new();
+        assert!(unclosed.in_fence("```rust"), "the opener is a fence line");
+        assert!(unclosed.in_fence("let x = 1;"));
+        assert!(
+            unclosed.in_fence("``` trailing"),
+            "text after the run does not close"
+        );
+        assert!(unclosed.in_fence(""), "an empty last line is still inside");
     }
 
     #[test]

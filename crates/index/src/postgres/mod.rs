@@ -337,6 +337,13 @@ impl ScratchSchema {
     }
 }
 
+/// Drops the schema on a thread of its own, waiting at most
+/// [`SCRATCH_DROP_TIMEOUT`].
+///
+/// A connection still held by a background task of the test (an engine's tick,
+/// a spawned writer) can keep a lock on the schema, so `DROP SCHEMA` waits for
+/// it. After the 30 s the drop logs to stderr and gives up, and the schema is
+/// left behind.
 impl Drop for ScratchSchema {
     fn drop(&mut self) {
         let (url, schema) = (self.url.clone(), self.schema.clone());
