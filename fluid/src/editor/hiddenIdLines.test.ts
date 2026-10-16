@@ -245,6 +245,44 @@ describe("hiddenIdLines keeps an id with its heading", () => {
       expect(v.state.doc.toString()).toBe("XFirst.\n");
     });
 
+    it("keeps the id of a heading retyped as a new heading line", () => {
+      const v = mount(PAGE);
+      v.dispatch({ selection: EditorSelection.cursor(3) });
+      selectLine(v);
+      v.dispatch(v.state.replaceSelection("## New name"), {
+        userEvent: "input.type",
+      });
+      expect(v.state.doc.toString()).toBe(
+        "## New name\n<!-- r:aaaa1111 -->\nFirst.\n",
+      );
+      expect(v.state.selection.main.head).toBe("## New name".length);
+    });
+
+    it("keeps the id while a new heading is typed key by key", () => {
+      const v = mount(PAGE);
+      v.dispatch({ selection: EditorSelection.cursor(3) });
+      selectLine(v);
+      for (const key of "## Renamed") {
+        v.dispatch(v.state.replaceSelection(key), { userEvent: "input.type" });
+      }
+      expect(v.state.doc.toString()).toBe(
+        "## Renamed\n<!-- r:aaaa1111 -->\nFirst.\n",
+      );
+    });
+
+    it("keeps the id below a pasted heading that replaces the heading and part of the body", () => {
+      const v = mount(PAGE);
+      v.dispatch({
+        selection: EditorSelection.range(0, PAGE.indexOf("First.") + 2),
+      });
+      v.dispatch(v.state.replaceSelection("## New\nIntro "), {
+        userEvent: "input.paste",
+      });
+      expect(v.state.doc.toString()).toBe(
+        "## New\n<!-- r:aaaa1111 -->\nIntro rst.\n",
+      );
+    });
+
     it("takes the id with a deleted heading line", () => {
       const v = mount(PAGE);
       v.dispatch({ selection: EditorSelection.cursor(3) });
@@ -423,6 +461,37 @@ describe("hiddenIdLines keeps an id with its heading", () => {
       expect(v.state.doc.toString()).toBe(
         "## Two\n<!-- r:bbbb2222 -->\n## One\n<!-- r:aaaa1111 -->\nFirst.\nSecond.\n",
       );
+    });
+
+    it("leaves a heading at the end of the page where it is on Alt-Down", () => {
+      const end = "Intro.\n## One\n<!-- r:aaaa1111 -->";
+      const v = mount(end, [keymap.of(defaultKeymap)]);
+      v.dispatch({ selection: EditorSelection.cursor(end.indexOf("One")) });
+      press(v, "ArrowDown");
+      expect(v.state.doc.toString()).toBe(end);
+    });
+
+    it("leaves a heading on the first line where it is on Alt-Up", () => {
+      const v = mount(PAGE, [keymap.of(defaultKeymap)]);
+      v.dispatch({ selection: EditorSelection.cursor(2) });
+      press(v, "ArrowUp");
+      expect(v.state.doc.toString()).toBe(PAGE);
+    });
+
+    it("does nothing when the moves of several carets would overlap", () => {
+      const three = "a\n## One\n<!-- r:aaaa1111 -->\nb\n";
+      const v = mount(three, [
+        keymap.of(defaultKeymap),
+        EditorState.allowMultipleSelections.of(true),
+      ]);
+      v.dispatch({
+        selection: EditorSelection.create([
+          EditorSelection.cursor(0),
+          EditorSelection.cursor(three.indexOf("One")),
+        ]),
+      });
+      press(v, "ArrowDown");
+      expect(v.state.doc.toString()).toBe(three);
     });
 
     it("leaves a move with no id in reach to the default command", () => {

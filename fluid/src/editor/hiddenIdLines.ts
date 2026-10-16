@@ -187,7 +187,12 @@ const keepIdLines = EditorState.transactionFilter.of((tr) => {
  *
  * - The heading's first character goes (a selection from the heading's start,
  *   a triple-click, a deleted line): the whole heading goes, and its id with
- *   it, wherever the change ended inside that stretch.
+ *   it, wherever the change ended inside that stretch. Unless the text put in
+ *   its place starts a new heading line ("## New name", or the "#" a person
+ *   types first when they retype a heading): then the section is renamed,
+ *   and its id goes on the line right below that new heading line, so its
+ *   threads stay with it. Any other text ("X") takes the heading's place
+ *   and the id goes.
  * - The heading's start stays: the id goes back on the line right below what
  *   is left of the heading (below the first line of a pasted text), wherever
  *   the change left it. When the line below already holds an id, the
@@ -215,12 +220,17 @@ const keepHeadingIds = Prec.high(
       return tr;
     }
     const doc = tr.startState.doc;
-    const changes: { fromA: number; toA: number }[] = [];
-    tr.changes.iterChanges((fromA, toA) => {
-      changes.push({ fromA, toA });
+    const changes: { fromA: number; toA: number; inserted: string }[] = [];
+    tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+      changes.push({ fromA, toA, inserted: inserted.toString() });
     });
     // The headings whose line break the transaction reached into.
-    const touched: { heading: Line; id: Line; survives: boolean }[] = [];
+    const touched: {
+      heading: Line;
+      id: Line;
+      survives: boolean;
+      renamed: boolean;
+    }[] = [];
     const seen = new Set<number>();
     for (const { fromA, toA } of changes) {
       if (fromA === toA) {
@@ -242,14 +252,24 @@ const keepHeadingIds = Prec.high(
           continue;
         }
         seen.add(n);
-        const survives = !changes.some(
+        // A heading replaced whole by a new heading line: the section is
+        // renamed, not gone, and keeps its id.
+        const renamed = changes.some(
           (c) =>
-            (c.fromA <= heading.from && c.toA > heading.from) ||
-            (heading.from > 0 &&
-              c.fromA < heading.from &&
-              c.toA >= heading.from),
+            c.fromA === heading.from &&
+            c.toA > heading.to &&
+            c.inserted.startsWith("#"),
         );
-        touched.push({ heading, id, survives });
+        const survives =
+          renamed ||
+          !changes.some(
+            (c) =>
+              (c.fromA <= heading.from && c.toA > heading.from) ||
+              (heading.from > 0 &&
+                c.fromA < heading.from &&
+                c.toA >= heading.from),
+          );
+        touched.push({ heading, id, survives, renamed });
       }
     }
     if (touched.length === 0) {
@@ -260,7 +280,7 @@ const keepHeadingIds = Prec.high(
     // break beside it, unless it already sits alone below its heading.
     const removals: { from: number; to: number }[] = [];
     const placing: { headingAt: number; id: string }[] = [];
-    for (const { heading, id, survives } of touched) {
+    for (const { heading, id, survives, renamed } of touched) {
       const intact = !changes.some((c) => c.fromA < id.to && c.toA > id.from);
       const headingAt = tr.changes.mapPos(heading.from, -1);
       if (intact) {
@@ -276,7 +296,14 @@ const keepHeadingIds = Prec.high(
             continue; // still alone right below its heading
           }
         }
-        if (end < after.length && after.sliceString(end, end + 1) === "\n") {
+        if (renamed) {
+          // The line break after the old heading stays: the new heading
+          // line took the old one's place, not the body's.
+          removals.push({ from: at, to: end });
+        } else if (
+          end < after.length &&
+          after.sliceString(end, end + 1) === "\n"
+        ) {
           removals.push({ from: at, to: end + 1 });
         } else if (at > 0 && after.sliceString(at - 1, at) === "\n") {
           removals.push({ from: at - 1, to: end });
@@ -413,6 +440,12 @@ function moveLinesWithIds(view: EditorView, forward: boolean): boolean {
   const ranges: SelectionRange[] = [];
   for (const block of blocks) {
     if (forward ? block.last === doc.lines : block.first === 1) {
+      // Nowhere to go. A block that holds an id stays as it is: the default
+      // command would move its lines inside it and part a heading from its
+      // id.
+      for (let n = block.first; n <= block.last && !ids; n += 1) {
+        ids = isIdLine(doc.line(n).text);
+      }
       ranges.push(...block.ranges);
       continue;
     }
@@ -438,12 +471,18 @@ function moveLinesWithIds(view: EditorView, forward: boolean): boolean {
       ranges.push(EditorSelection.range(r.anchor + shift, r.head + shift));
     }
   }
-  if (!ids || changes.length === 0) {
+  if (!ids) {
     return false;
+  }
+  // With an id in reach the default command never runs: it would part a
+  // heading from its id. So a move that cannot be made (a block at the edge
+  // of the page, or several carets whose moves overlap) does nothing.
+  if (changes.length === 0) {
+    return true;
   }
   const sorted = [...changes].sort((x, y) => x.from - y.from);
   if (sorted.some((c, i) => i > 0 && c.from < (sorted[i - 1]?.to ?? 0))) {
-    return false;
+    return true;
   }
   view.dispatch({
     changes,
