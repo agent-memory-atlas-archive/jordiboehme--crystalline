@@ -58,8 +58,11 @@ export function KeptComments({
     (entry) =>
       entry.kind === "comment" &&
       entry.path === path &&
-      entry.sender != null &&
-      (entry.sender === user.name || entry.sender === user.display),
+      // The account the server matched the rights on, never the display
+      // name: two people may share one. An entry with no recorded account
+      // (an older kept file) is nobody's here; the settings still list it.
+      entry.sender_account != null &&
+      entry.sender_account === user.name,
   );
   if (mine.length === 0) {
     return null;

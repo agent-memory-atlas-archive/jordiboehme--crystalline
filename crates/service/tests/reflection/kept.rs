@@ -711,6 +711,12 @@ async fn a_kept_comment_goes_to_its_sender_and_to_editors() {
     );
     assert_eq!(body["kept"][0]["id"], hers.as_str());
     assert_eq!(body["kept"][0]["sender"], "rita");
+    // The account the rights matched, beside the display name that proves
+    // nothing: a client tells its own comments apart by this.
+    assert_eq!(body["kept"][0]["sender_account"], "vera");
+    let (status, one) = vera.get(&format!("/api/v1/domains/eng/kept/{hers}")).await;
+    assert_eq!(status, 200, "{one}");
+    assert_eq!(one["sender_account"], "vera");
     let (status, _) = vera
         .get(&format!("/api/v1/domains/eng/kept/{nobodys}"))
         .await;
@@ -734,6 +740,17 @@ async fn a_kept_comment_goes_to_its_sender_and_to_editors() {
         body["kept"].as_array().unwrap().len(),
         2,
         "an editor sees both: {body}"
+    );
+    let accounts: Vec<&Value> = body["kept"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| &k["sender_account"])
+        .collect();
+    assert_eq!(
+        accounts,
+        vec![&Value::from("vera"), &Value::Null],
+        "the sender's account on hers, none on the one with no sender: {body}"
     );
 
     let (status, _) = vera

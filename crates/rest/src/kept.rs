@@ -48,6 +48,12 @@ pub struct KeptTextEntry {
     /// text.
     #[schema(example = "ada")]
     pub sender: Option<String>,
+    /// The account that sent it, the login name the rights match a kept
+    /// comment's sender on; `null` when no sender is recorded. A client
+    /// compares it with the signed-in account to tell its own comments
+    /// apart: two people may share a display name, never an account.
+    #[schema(example = "ada")]
+    pub sender_account: Option<String>,
 }
 
 /// What `GET /domains/{domain}/kept` answers.
@@ -82,6 +88,7 @@ fn entry(kept: KeptText) -> KeptTextEntry {
         path: kept.path,
         kept_at: kept.kept_at,
         bytes: kept.bytes,
+        sender_account: kept.sender.as_ref().map(|s| s.account.clone()),
         sender: kept.sender.map(|s| s.name),
     }
 }
@@ -262,4 +269,46 @@ pub async fn remove(
         .drop_kept_text(&domain, &id, &identity.scope())
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+    use crystalline_core::kept::{KeptKind, Sender};
+
+    fn comment(sender: Option<Sender>) -> KeptText {
+        KeptText {
+            id: "3f9a1c2b7d4e".to_string(),
+            domain: "eng".to_string(),
+            removed: false,
+            unfinished: false,
+            owner: None,
+            kind: KeptKind::Comment,
+            path: "guides/a.md".to_string(),
+            kept_at: Utc.with_ymd_and_hms(2026, 10, 15, 8, 0, 0).unwrap(),
+            bytes: 12,
+            file: std::path::PathBuf::from("kept/eng/comment/guides/a.md.20261015T080000Z.md"),
+            sender,
+        }
+    }
+
+    /// The entry names the sender's account beside the display name, and
+    /// neither when no sender is recorded.
+    #[test]
+    fn an_entry_carries_the_senders_account() {
+        let named = entry(comment(Some(Sender {
+            account: "vera".to_string(),
+            name: "Rita".to_string(),
+        })));
+        assert_eq!(named.sender.as_deref(), Some("Rita"));
+        assert_eq!(named.sender_account.as_deref(), Some("vera"));
+        let json = serde_json::to_value(&named).unwrap();
+        assert_eq!(json["sender_account"], "vera");
+
+        let nobody = entry(comment(None));
+        assert_eq!(nobody.sender, None);
+        assert_eq!(nobody.sender_account, None);
+        assert!(serde_json::to_value(&nobody).unwrap()["sender_account"].is_null());
+    }
 }

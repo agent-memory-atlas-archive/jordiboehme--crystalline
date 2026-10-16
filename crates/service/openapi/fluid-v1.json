@@ -12079,6 +12079,14 @@
             ],
             "description": "Who sent the text, for a text kept from a write that was refused\nafter its instance lost the domain's host lock; `null` for a room's\ntext.",
             "example": "ada"
+          },
+          "sender_account": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The account that sent it, the login name the rights match a kept\ncomment's sender on; `null` when no sender is recorded. A client\ncompares it with the signed-in account to tell its own comments\napart: two people may share a display name, never an account.",
+            "example": "ada"
           }
         }
       },

@@ -705,6 +705,13 @@ export type KeptTextEntry = {
      * text.
      */
     sender?: string | null;
+    /**
+     * The account that sent it, the login name the rights match a kept
+     * comment's sender on; `null` when no sender is recorded. A client
+     * compares it with the signed-in account to tell its own comments
+     * apart: two people may share a display name, never an account.
+     */
+    sender_account?: string | null;
 };
 
 /**

@@ -30,6 +30,7 @@ function comment(over: Partial<KeptTextEntry> = {}): KeptTextEntry {
     kept_at: "2026-10-15T08:00:00Z",
     bytes: 20,
     sender: "Ada Lovelace",
+    sender_account: "ada",
     ...over,
   };
 }
@@ -135,7 +136,11 @@ describe("the reader's kept comments", () => {
 
   it("shows nothing of somebody else's, of another page, or of a text", async () => {
     serve([
-      comment({ sender: "ben" }),
+      comment({ sender: "ben", sender_account: "ben" }),
+      // The same display name, another account: not the reader's.
+      comment({ id: "c4", sender_account: "ada2" }),
+      // An older kept file with no recorded account: nobody's here.
+      comment({ id: "c5", sender_account: null }),
       comment({ id: "c2", path: "guides/b.md" }),
       comment({ id: "c3", kind: "reflection" }),
     ]);
