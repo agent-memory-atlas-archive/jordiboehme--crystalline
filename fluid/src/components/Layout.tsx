@@ -1528,43 +1528,47 @@ function DomainSidebar({
   }
 
   // From the breakpoint up it is a column under the top bar that sticks
-  // while the page scrolls, in the chrome colour with a hairline on its
-  // right; the shadow carries that colour on to the window's left edge when
+  // while the page scrolls, inside a column that carries the chrome colour
+  // and the hairline on its right down the whole page; the shadow carries that colour on to the window's left edge when
   // the frame is capped narrower than the window.
   return (
-    <nav
-      id="domain-sidebar"
-      aria-label={label}
-      className={`sticky top-14 flex h-[calc(100dvh-3.5rem)] shrink-0 flex-col self-start border-r border-hair bg-chrome print:hidden ${
+    <div
+      className={`shrink-0 border-r border-hair bg-chrome print:hidden ${
         rail
           ? "w-12 shadow-[-48px_0_0_var(--chrome),-96px_0_0_var(--chrome),-144px_0_0_var(--chrome),-192px_0_0_var(--chrome)]"
           : "w-64 shadow-[-256px_0_0_var(--chrome)]"
       }`}
     >
-      {/*
+      <nav
+        id="domain-sidebar"
+        aria-label={label}
+        className="sticky top-14 flex h-[calc(100dvh-3.5rem)] flex-col"
+      >
+        {/*
         The rows scroll on their own, under a foot that stays put. The side
         padding is wide enough for the focus ring: a box that scrolls on one
         axis clips the other one too.
       */}
-      <div
-        className={`min-h-0 flex-1 overflow-y-auto py-4 ${rail ? "px-2" : "px-3"}`}
-      >
-        {content}
-      </div>
-      {/* The fold, in the foot at the bottom right (spec 4.4). */}
-      <div
-        className={`flex shrink-0 py-2 ${rail ? "justify-center" : "justify-end px-3"}`}
-      >
-        <IconButton
-          ref={toggleRef}
-          label={rail ? "Expand the sidebar" : "Collapse the sidebar"}
-          icon={rail ? PanelLeftOpen : PanelLeftClose}
-          aria-expanded={!rail}
-          aria-controls="domain-sidebar"
-          onClick={fold}
-        />
-      </div>
-    </nav>
+        <div
+          className={`min-h-0 flex-1 overflow-y-auto py-4 ${rail ? "px-2" : "px-3"}`}
+        >
+          {content}
+        </div>
+        {/* The fold, in the foot at the bottom right (spec 4.4). */}
+        <div
+          className={`flex shrink-0 py-2 ${rail ? "justify-center" : "justify-end px-3"}`}
+        >
+          <IconButton
+            ref={toggleRef}
+            label={rail ? "Expand the sidebar" : "Collapse the sidebar"}
+            icon={rail ? PanelLeftOpen : PanelLeftClose}
+            aria-expanded={!rail}
+            aria-controls="domain-sidebar"
+            onClick={fold}
+          />
+        </div>
+      </nav>
+    </div>
   );
 }
 
