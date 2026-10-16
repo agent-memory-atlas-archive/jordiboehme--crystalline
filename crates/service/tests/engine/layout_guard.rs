@@ -282,6 +282,8 @@ fn reflection_allow_list() -> &'static [(&'static str, &'static [&'static str])]
                 "index/src/postgres/mod.rs",
                 "index/src/sync.rs",
                 "engine/src/engine/asset_home.rs",
+                // The host-lock fence of a Reflection file's row.
+                "engine/src/engine/fence.rs",
             ],
         ),
         (

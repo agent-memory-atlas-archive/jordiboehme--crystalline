@@ -1025,6 +1025,11 @@ pub struct Engine {
     // `Engine::hold_next_live_compose_until`.
     #[cfg(any(test, feature = "testing"))]
     hold_next_live_compose: std::sync::Mutex<Option<RoomScreenGate>>,
+    // A gate: when armed, the next fenced Reflection row commit signals
+    // `entered` after its files are written and before it reads the host
+    // lock, then waits for `release`. See `Engine::hold_next_row_fence_until`.
+    #[cfg(any(test, feature = "testing"))]
+    hold_next_row_fence: std::sync::Mutex<Option<RoomScreenGate>>,
     // The effective `skills.serve` value, snapshotted while this engine is
     // built and never re-read. See `Engine::skills_serve` for why it is frozen
     // and `Engine::with_env_overlay` for why the snapshot is taken twice.
@@ -2329,6 +2334,8 @@ impl Engine {
             hold_next_apply: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             hold_next_live_compose: std::sync::Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            hold_next_row_fence: std::sync::Mutex::new(None),
             skills_serve,
             instance_id: String::new(),
             label: String::new(),
@@ -2550,6 +2557,41 @@ impl Engine {
         let handles = (gate.entered.clone(), gate.release.clone());
         *self.hold_next_live_compose.lock().unwrap() = Some(gate);
         handles
+    }
+
+    /// Hold the next fenced Reflection row commit after its files are
+    /// written and before it reads the host lock: it signals `entered` there
+    /// and waits for `release`. Lets a test move the domain's host lock to
+    /// another instance in the window a paused host would leave. Armed for
+    /// one commit and consumed by it, and compiled out of a released binary
+    /// like the seams above.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn hold_next_row_fence_until(
+        &self,
+    ) -> (
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        let gate = RoomScreenGate {
+            entered: std::sync::Arc::new(tokio::sync::Notify::new()),
+            release: std::sync::Arc::new(tokio::sync::Notify::new()),
+        };
+        let handles = (gate.entered.clone(), gate.release.clone());
+        *self.hold_next_row_fence.lock().unwrap() = Some(gate);
+        handles
+    }
+
+    /// The gate above, consuming the arming; returns at once when none is
+    /// armed. Does nothing at all outside a test build.
+    pub(super) async fn take_row_fence_hold(&self) {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            let gate = self.hold_next_row_fence.lock().unwrap().take();
+            if let Some(gate) = gate {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            }
+        }
     }
 
     /// The gate above, consuming the arming; returns at once when none is
@@ -6651,6 +6693,7 @@ mod domain_settings;
 mod domains;
 mod edit;
 mod evolve;
+mod fence;
 mod github;
 mod kept;
 mod move_;

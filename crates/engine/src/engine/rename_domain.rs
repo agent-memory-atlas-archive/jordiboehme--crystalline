@@ -1256,7 +1256,7 @@ impl Engine {
                     continue;
                 }
                 match self
-                    .relink_page(domain_id, &folder, &row.path, &respell)
+                    .relink_page(&domain, domain_id, &folder, &row.path, &respell)
                     .await
                 {
                     Ok(0) => {}

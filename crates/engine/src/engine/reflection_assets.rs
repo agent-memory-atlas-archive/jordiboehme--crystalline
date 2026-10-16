@@ -196,7 +196,7 @@ impl Engine {
         for page in &pages {
             let inner = page.path.as_str();
             match self
-                .relink_reflection(&access, inner, &|s| {
+                .relink_reflection(domain, &access, inner, &|s| {
                     r::rewrite_asset_links(s, inner, from, to)
                 })
                 .await

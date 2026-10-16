@@ -5,6 +5,7 @@
 //! is the same for every home. The overlay projection of the engram
 //! attachments sits above this and is engram only.
 
+use super::fence::{DiskUndo, OnRefusal, RowOp, is_fence_refusal};
 use super::*;
 use crystalline_core::ContentKind;
 use crystalline_index::AssetTable;
@@ -319,14 +320,31 @@ impl Engine {
                     )
                     .await?;
                 }
+                let mut undo = DiskUndo::default();
+                undo.record(&abs)?;
                 write_bytes(&abs, &bytes)?;
                 // The modification instant is read back off the file rather
                 // than taken from the clock, so it is the same value the sync
                 // walker's stat prefilter compares against and an upload costs
                 // no re-hash on the next scan.
                 let row = attachment_row(path, &bytes, asset_modified(&abs))?;
-                let store = self.store.lock().await;
-                store.upsert_asset(home.table(), domain_id, &row).await?;
+                match home {
+                    // A Reflection file's row commits behind the host-lock
+                    // fence; a refusal puts the file back. The bytes are not
+                    // kept: the uploader still has them.
+                    AssetHome::Reflection => {
+                        self.commit_reflection_rows(
+                            domain_id,
+                            &[RowOp::PutAsset(&row)],
+                            OnRefusal::put_back(domain, undo),
+                        )
+                        .await?;
+                    }
+                    AssetHome::Engram => {
+                        let store = self.store.lock().await;
+                        store.upsert_asset(home.table(), domain_id, &row).await?;
+                    }
+                }
                 WrittenAsset {
                     row,
                     created: !existed,
@@ -408,11 +426,17 @@ impl Engine {
         validate_attachment_path(path)?;
         let (domain_id, source) = self.domain_source(domain).await?;
         let mut file_removed = false;
+        let mut undo = DiskUndo::default();
+        // Held until the row follows, so the fence's refusal puts the file
+        // back under the lock.
+        let mut _held = None;
         match (home, &source) {
             (AssetHome::Engram | AssetHome::Reflection, ContentSource::File { root }) => {
                 let abs = contained_asset_path(root, &home.on_disk_rel(root, path))?;
-                let lock = self.write_lock(&abs);
-                let _guard = lock.lock().await;
+                _held = Some(self.write_lock(&abs).lock_owned().await);
+                if home == AssetHome::Reflection {
+                    undo.record(&abs)?;
+                }
                 match std::fs::remove_file(&abs) {
                     Ok(()) => file_removed = true,
                     // The row of a file only the previous host of a host
@@ -437,10 +461,30 @@ impl Engine {
             (AssetHome::Engram, ContentSource::Virtual) => {}
             (AssetHome::Reflection, ContentSource::Virtual) => return Err(home.no_virtual()),
         }
-        let row_removed = {
-            let store = self.store.lock().await;
-            store.delete_asset(home.table(), domain_id, path).await?
+        let row_removed = match home {
+            // Behind the host-lock fence; a refusal puts the file back.
+            AssetHome::Reflection => {
+                let had_row = self
+                    .store
+                    .lock()
+                    .await
+                    .get_asset(home.table(), domain_id, path)
+                    .await?
+                    .is_some();
+                self.commit_reflection_rows(
+                    domain_id,
+                    &[RowOp::DeleteAsset(path)],
+                    OnRefusal::put_back(domain, undo),
+                )
+                .await?;
+                had_row
+            }
+            AssetHome::Engram => {
+                let store = self.store.lock().await;
+                store.delete_asset(home.table(), domain_id, path).await?
+            }
         };
+        drop(_held);
         if !file_removed && !row_removed {
             return Err(EngineError::NotFound(home.missing(domain, path)));
         }
@@ -555,12 +599,18 @@ impl Engine {
             path: dst.display().to_string(),
             source,
         })?;
-        let rows_followed = self.move_asset_rows(home, domain_id, from, &row).await;
+        let rows_followed = self
+            .move_asset_rows(home, domain, domain_id, from, &row)
+            .await;
         let Err(e) = rows_followed else {
             self.after_asset_change(home, domain);
             return Ok(None);
         };
+        // A Reflection move refused by the host-lock fence wrote no row, and
+        // a row at `to` may be the new host's own: it stays.
+        let fenced = home == AssetHome::Reflection && is_fence_refusal(&e);
         match self.undo_asset_rename(&dst, &src, case_only) {
+            Ok(()) if fenced => Err(e),
             Ok(()) => {
                 // The file is back; a row this move wrote for `to` goes, so
                 // the domain is as the move found it.
@@ -600,6 +650,7 @@ impl Engine {
     async fn move_asset_rows(
         &self,
         home: AssetHome,
+        domain: &str,
         domain_id: DomainId,
         from: &str,
         row: &AttachmentRow,
@@ -609,6 +660,18 @@ impl Engine {
             return Err(EngineError::Internal(
                 "the rows of the move were not written (test failpoint)".into(),
             ));
+        }
+        // A Reflection file's rows commit behind the host-lock fence. The
+        // caller undoes the rename on a refusal, so nothing is put back
+        // here.
+        if home == AssetHome::Reflection {
+            return self
+                .commit_reflection_rows(
+                    domain_id,
+                    &[RowOp::PutAsset(row), RowOp::DeleteAsset(from)],
+                    OnRefusal::put_back(domain, DiskUndo::default()),
+                )
+                .await;
         }
         let store = self.store.lock().await;
         store.upsert_asset(home.table(), domain_id, row).await?;

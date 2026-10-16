@@ -8,6 +8,7 @@ use crystalline_core::threads::{
     self as th, Entry, EntryKind, SectionRef, Thread, ThreadError, ThreadStatus, ThreadTarget,
 };
 
+use super::fence::{DiskUndo, KeepText, OnRefusal};
 use super::reflection::{ReflectionAccess, thread_view};
 use super::*;
 use crate::reflection_backup::BackupCause;
@@ -287,17 +288,41 @@ impl Engine {
         // The thread first, then the page that names it: a failed page write
         // leaves a plain thread, never a section that waits on a thread that
         // is not there.
+        let mut undo = DiskUndo::default();
+        undo.record(&threads_abs)?;
+        undo.record(&doc_abs)?;
         let existing = read_opt(&threads_abs)?.unwrap_or_default();
         write_file(&threads_abs, &th::open_thread(&existing, &thread))?;
         let mut document = document;
-        if let Some(page) = page_update {
-            match (target, &access) {
-                (ThreadTarget::Reflection { path }, TargetAccess::Reflection(access)) => {
-                    write_file(&doc_abs, &page)?;
-                    self.index_reflection(access.domain_id, path, &page, &doc_abs)
-                        .await?;
+        // The thread and the page commit behind the host-lock fence: a host
+        // that lost the lock since its gate keeps the comment in the kept
+        // folder and puts both files back.
+        match (target, &access) {
+            (ThreadTarget::Reflection { path }, TargetAccess::Reflection(access)) => {
+                let threads_rel = r::threads_path(path);
+                let on_refusal = OnRefusal {
+                    domain,
+                    undo,
+                    keep: Some(KeepText {
+                        path: &threads_rel,
+                        text,
+                        actor: &caller.author.name,
+                    }),
+                };
+                match &page_update {
+                    Some(page) => {
+                        write_file(&doc_abs, page)?;
+                        self.index_reflection(access.domain_id, path, page, &doc_abs, on_refusal)
+                            .await?;
+                    }
+                    None => {
+                        self.commit_reflection_rows(access.domain_id, &[], on_refusal)
+                            .await?;
+                    }
                 }
             }
+        }
+        if let Some(page) = page_update {
             document = page;
         }
         match target {
@@ -356,7 +381,30 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("no thread {id} here")))?;
         let updated =
             th::append_entry(&file, id, &entry(kind, caller, text)).map_err(thread_error)?;
+        let mut undo = DiskUndo::default();
+        undo.record(&threads_abs)?;
         write_file(&threads_abs, &updated)?;
+        // Behind the host-lock fence, as `open_thread`; the entry has no
+        // row, so only the lock is read.
+        match (target, &access) {
+            (ThreadTarget::Reflection { path }, TargetAccess::Reflection(access)) => {
+                let threads_rel = r::threads_path(path);
+                self.commit_reflection_rows(
+                    access.domain_id,
+                    &[],
+                    OnRefusal {
+                        domain,
+                        undo,
+                        keep: Some(KeepText {
+                            path: &threads_rel,
+                            text,
+                            actor: &caller.author.name,
+                        }),
+                    },
+                )
+                .await?;
+            }
+        }
         let thread = th::parse_threads(&updated)
             .into_iter()
             .find(|t| t.id == id)

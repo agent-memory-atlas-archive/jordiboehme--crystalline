@@ -7,6 +7,7 @@ use crystalline_core::reflection as r;
 use crystalline_core::reflection::{ReflectionHome, ReflectionState};
 use crystalline_core::relink::BodyGate;
 
+use super::fence::{DiskUndo, KeepText, OnRefusal, RowOp};
 use super::*;
 use crate::changes::ReflectionChanged;
 use crate::collab::session::RoomDoc;
@@ -58,7 +59,7 @@ pub const REFUSED_NOT_BY_A_COMMAND: &str =
     "this domain's Reflection is not served by a command; start the daemon (crystalline serve)";
 
 /// The gate's refusal for a Reflection the instance labelled `label` serves.
-fn hosted_refusal(label: &str) -> EngineError {
+pub(super) fn hosted_refusal(label: &str) -> EngineError {
     EngineError::Refused(format!(
         "{REFUSED_HOSTED_START}{label}; move it with crystalline serve --take-over"
     ))
@@ -1285,57 +1286,21 @@ impl Engine {
         inner: &str,
         text: &str,
         abs: &Path,
+        on_refusal: super::fence::OnRefusal<'_>,
     ) -> Result<()> {
-        let row = crystalline_index::ReflectionRow {
-            path: inner.to_string(),
-            title: r::title_of(text, inner),
-            content: text.to_string(),
-            sha256: sha256_hex(text.as_bytes()),
-            size: text.len() as u64,
-            modified: asset_modified(abs),
-        };
         // The row and its chunks commit together, as an engram row and its
-        // chunks do (`commit_overlay_row`): a row left stamped over missing
-        // chunks would be skipped by the sync's prefilter until a full
-        // reindex. The funnel opens no transaction of its own, because the
-        // sync calls it inside its apply's. No caller holds one here: it
-        // would hold the store lock this takes.
-        let store = self.store.lock().await;
-        store.begin().await?;
-        let written = async {
-            crystalline_index::reflection::index_reflection_row(
-                &*store,
-                domain_id,
-                &row,
-                &self.chunk_params,
-            )
-            .await?;
-            #[cfg(any(test, feature = "testing"))]
-            if self
-                .reflection_index_fault
-                .swap(false, std::sync::atomic::Ordering::SeqCst)
-            {
-                return Err(EngineError::Invalid(
-                    "injected failure after the reflection row and its chunks".into(),
-                ));
-            }
-            Ok::<(), EngineError>(())
-        }
-        .await;
-        let committed = match written {
-            Ok(()) => store.commit().await.map_err(EngineError::from),
-            Err(e) => {
-                let _ = store.rollback().await;
-                Err(e)
-            }
-        };
-        drop(store);
-        // R56: the new chunks are embedded soon after the write, as an
-        // engram's are, rather than at the next tick.
-        if committed.is_ok() {
-            self.nudge_embed();
-        }
-        committed
+        // chunks do (`commit_overlay_row`), behind the host-lock fence: a
+        // row left stamped over missing chunks would be skipped by the
+        // sync's prefilter until a full reindex, and a row this instance
+        // writes after losing the lock would land behind the new host's
+        // back. No caller holds a transaction here: it would hold the store
+        // lock this takes.
+        self.commit_reflection_rows(
+            domain_id,
+            &[super::fence::RowOp::Page { inner, text, abs }],
+            on_refusal,
+        )
+        .await
     }
 
     /// Arm a failure of the next reflection index write, after its row and
@@ -1571,6 +1536,11 @@ impl Engine {
             advanced.push(id);
         }
         let final_text = stamp_reflected(&text, &mut prov, &advanced)?;
+        let threads_abs = access.abs(&r::threads_path(&p.path));
+        let mut undo = DiskUndo::default();
+        for file in [&abs, &baseline_abs, &threads_abs] {
+            undo.record(file)?;
+        }
         write_file(&abs, &final_text)?;
         if !advanced.is_empty() || baseline != stored_baseline {
             write_file(
@@ -1578,9 +1548,23 @@ impl Engine {
                 &r::advance_baseline(&baseline, &final_text, &advanced),
             )?;
         }
-        anchor_threads_on_ids(&access.abs(&r::threads_path(&p.path)), &final_text);
-        self.index_reflection(access.domain_id, &p.path, &final_text, &abs)
-            .await?;
+        anchor_threads_on_ids(&threads_abs, &final_text);
+        self.index_reflection(
+            access.domain_id,
+            &p.path,
+            &final_text,
+            &abs,
+            OnRefusal {
+                domain: &p.domain,
+                undo,
+                keep: Some(KeepText {
+                    path: &p.path,
+                    text: &final_text,
+                    actor: &caller.author.name,
+                }),
+            },
+        )
+        .await?;
         self.mark_reflection_dirty(&p.domain, BackupCause::Settled);
         self.announce_reflection(
             &p.domain,
@@ -1826,6 +1810,14 @@ impl Engine {
             &r::write_provenance(&composed, &prov).map_err(EngineError::Invalid)?,
         )
         .into_owned();
+        // A refused save puts the files back and keeps nothing itself: the
+        // room holds the text, shows the refusal, and keeps the text when
+        // it closes unsaved.
+        let threads_abs = reflection_abs(&root, &r::threads_path(inner));
+        let mut undo = DiskUndo::default();
+        for file in [&baseline_abs, &abs, &threads_abs] {
+            undo.record(file)?;
+        }
         if baseline != stored_baseline {
             write_file(&baseline_abs, &baseline)?;
         }
@@ -1833,10 +1825,16 @@ impl Engine {
         let wrote = current.as_deref() != Some(final_text.as_str());
         if wrote {
             write_file(&abs, &final_text)?;
-            anchor_threads_on_ids(&reflection_abs(&root, &r::threads_path(inner)), &final_text);
+            anchor_threads_on_ids(&threads_abs, &final_text);
             let (domain_id, _) = self.domain_source(domain).await?;
-            self.index_reflection(domain_id, inner, &final_text, &abs)
-                .await?;
+            self.index_reflection(
+                domain_id,
+                inner,
+                &final_text,
+                &abs,
+                OnRefusal::put_back(domain, undo),
+            )
+            .await?;
             // The typist when the save holds one person's words alone; a
             // save of several, or of somebody the room cannot name, is by
             // nobody in particular.
@@ -2293,6 +2291,17 @@ impl Engine {
         .map_err(EngineError::Invalid)?;
         // The row is built from the text as written, so it matches the file.
         let page = crystalline_core::to_lf(&moved.page).into_owned();
+        let mut undo = DiskUndo::default();
+        for rel in [
+            from.to_string(),
+            to.to_string(),
+            r::baseline_path(from),
+            r::baseline_path(to),
+            r::threads_path(from),
+            r::threads_path(to),
+        ] {
+            undo.record(&access.abs(&rel))?;
+        }
         let replace = |old_rel: &str, new_rel: &str, text: &str| {
             let (old, new) = (access.abs(old_rel), access.abs(new_rel));
             let case_only = is_case_only_rename(&old, &new, old_rel, new_rel);
@@ -2311,13 +2320,20 @@ impl Engine {
             replace(&r::threads_path(from), &r::threads_path(to), &body)?;
             threads_moved = true;
         }
-        self.store
-            .lock()
-            .await
-            .delete_reflection(access.domain_id, from)
-            .await?;
-        self.index_reflection(access.domain_id, to, &page, &dst)
-            .await?;
+        // The old row goes and the new one comes in one fenced commit.
+        self.commit_reflection_rows(
+            access.domain_id,
+            &[
+                RowOp::DeletePage(from),
+                RowOp::Page {
+                    inner: to,
+                    text: &page,
+                    abs: &dst,
+                },
+            ],
+            OnRefusal::put_back(domain, undo),
+        )
+        .await?;
         drop(_locks);
         self.announce_reflection(
             domain,
@@ -2346,7 +2362,9 @@ impl Engine {
         for row in rows.iter().filter(|row| row.path != from && row.path != to) {
             let inner = row.path.as_str();
             match self
-                .relink_reflection(&access, inner, &|s| r::rewrite_links_to(s, inner, from, to))
+                .relink_reflection(domain, &access, inner, &|s| {
+                    r::rewrite_links_to(s, inner, from, to)
+                })
                 .await
             {
                 Ok(n) => {
@@ -2382,11 +2400,12 @@ impl Engine {
     /// or holds no such link is left alone.
     pub(super) async fn relink_reflection(
         &self,
+        domain: &str,
         access: &ReflectionAccess,
         inner: &str,
         rewrite: &(dyn Fn(&str) -> (String, usize) + Sync),
     ) -> Result<usize> {
-        self.relink_page(access.domain_id, &access.folder, inner, rewrite)
+        self.relink_page(domain, access.domain_id, &access.folder, inner, rewrite)
             .await
     }
 
@@ -2395,6 +2414,7 @@ impl Engine {
     /// [`ReflectionAccess`] (the domain rename's respell).
     pub(super) async fn relink_page(
         &self,
+        domain: &str,
         domain_id: DomainId,
         folder: &Path,
         inner: &str,
@@ -2413,11 +2433,22 @@ impl Engine {
             return Ok(0);
         }
         let page = crystalline_core::to_lf(&out.page).into_owned();
+        let mut undo = DiskUndo::default();
+        undo.record(&abs)?;
+        undo.record(&baseline_abs)?;
         write_file(&abs, &page)?;
         if baseline.is_some() {
             write_file(&baseline_abs, &out.baseline)?;
         }
-        self.index_reflection(domain_id, inner, &page, &abs).await?;
+        // A rewrite of links is nobody's text, so a refusal keeps nothing.
+        self.index_reflection(
+            domain_id,
+            inner,
+            &page,
+            &abs,
+            OnRefusal::put_back(domain, undo),
+        )
+        .await?;
         Ok(out.links)
     }
 
@@ -2449,18 +2480,25 @@ impl Engine {
         // window is the one R81 pins: a room may open in it.
         self.take_room_screen_hold().await;
         let _lock = self.lock_file(&abs).await;
+        let threads_abs = access.abs(&r::threads_path(inner));
+        let baseline_abs = access.abs(&r::baseline_path(inner));
+        let mut undo = DiskUndo::default();
+        for file in [&abs, &threads_abs, &baseline_abs] {
+            undo.record(file)?;
+        }
         if !remove_if_there(&abs)? {
             return Err(EngineError::NotFound(format!(
                 "no reflection '{inner}' in domain '{domain}'"
             )));
         }
-        remove_if_there(&access.abs(&r::threads_path(inner)))?;
-        remove_if_there(&access.abs(&r::baseline_path(inner)))?;
-        self.store
-            .lock()
-            .await
-            .delete_reflection(access.domain_id, inner)
-            .await?;
+        remove_if_there(&threads_abs)?;
+        remove_if_there(&baseline_abs)?;
+        self.commit_reflection_rows(
+            access.domain_id,
+            &[RowOp::DeletePage(inner)],
+            OnRefusal::put_back(domain, undo),
+        )
+        .await?;
         self.mark_reflection_dirty(domain, BackupCause::Settled);
         self.announce_reflection(
             domain,
@@ -2554,13 +2592,23 @@ impl Engine {
             }
         }
         let final_text = stamp_reflected(&text, &mut prov, ids)?;
+        let mut undo = DiskUndo::default();
+        undo.record(&abs)?;
+        undo.record(&baseline_abs)?;
         write_file(&abs, &final_text)?;
         write_file(
             &baseline_abs,
             &r::advance_baseline(&baseline, &final_text, ids),
         )?;
-        self.index_reflection(access.domain_id, inner, &final_text, &abs)
-            .await?;
+        // A settle sends no text, so a refusal keeps nothing.
+        self.index_reflection(
+            access.domain_id,
+            inner,
+            &final_text,
+            &abs,
+            OnRefusal::put_back(domain, undo),
+        )
+        .await?;
         self.mark_reflection_dirty(domain, BackupCause::Settled);
         self.announce_reflection(
             domain,

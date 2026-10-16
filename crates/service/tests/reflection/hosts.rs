@@ -1411,3 +1411,190 @@ async fn a_turso_instance_always_serves_its_reflection() {
             .unwrap();
     }
 }
+
+/// Beta takes `eng` over while alpha's next fenced Reflection write sits
+/// between its files and its rows (a host that paused there), then the
+/// write goes on. Answers the write's result.
+#[cfg(feature = "postgres")]
+async fn written_while_beta_takes_over<T>(
+    alpha: &Fx,
+    beta: &Fx,
+    write: impl std::future::Future<Output = Result<T, crystalline_service::EngineError>>,
+) -> Result<T, crystalline_service::EngineError> {
+    let (entered, release) = alpha.engine.hold_next_row_fence_until();
+    tokio::pin!(write);
+    tokio::select! {
+        written = &mut write => panic!("the write never reached its rows: {:?}", written.err()),
+        () = entered.notified() => {}
+    }
+    beta.engine.sync_take_over(Some("eng"), true).await.unwrap();
+    release.notify_one();
+    write.await
+}
+
+/// What alpha keeps in its kept folder for `eng`, as (path, text).
+#[cfg(feature = "postgres")]
+async fn kept_on(fx: &Fx) -> Vec<(String, String)> {
+    fx.engine
+        .kept_texts("eng", &crystalline_service::Scope::Unrestricted)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|k| (k.path.clone(), std::fs::read_to_string(&k.file).unwrap()))
+        .collect()
+}
+
+/// A host that loses the lock between its gate and its rows (it paused
+/// there) writes no row: the page write, the thread, the page delete and
+/// the file upload are each refused with the hosted_elsewhere sentence naming the new host,
+/// the text sent goes to the kept folder, the files the write changed on
+/// the old host's disk are put back, and the new host's rows stay as they
+/// were.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_host_that_lost_the_lock_mid_write_writes_no_row_on_postgres() {
+    use crystalline_service::params::DiscussParams;
+
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    let beta = instance(db.open().await, "beta").await;
+    const PAGE: &str = "guides/paused.md";
+    const V1: &str = "# Paused\n\n## Facts\n\nVersion one.\n";
+    alpha
+        .engine
+        .write_reflection(&crate::docs::write(PAGE, V1), &ReflectionCaller::owner())
+        .await
+        .unwrap();
+    let page_abs = alpha.root.join("reflections").join(PAGE);
+    let before = std::fs::read(&page_abs).unwrap();
+    let beta_row = |path: &'static str| {
+        let store = beta.engine.store();
+        async move {
+            let store = store.lock().await;
+            let did = store.domain_id("eng").await.unwrap().unwrap();
+            store.get_reflection(did, path).await.unwrap()
+        }
+    };
+
+    // A page write.
+    let err = written_while_beta_takes_over(
+        &alpha,
+        &beta,
+        alpha.engine.write_reflection(
+            &crate::docs::write(PAGE, "# Paused\n\n## Facts\n\nVersion two.\n"),
+            &ReflectionCaller::owner(),
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.to_string(), refusal("beta"));
+    assert_eq!(
+        std::fs::read(&page_abs).unwrap(),
+        before,
+        "alpha's disk is back"
+    );
+    let row = beta_row(PAGE).await.expect("the row alpha wrote before");
+    assert!(row.content.contains("Version one."), "{}", row.content);
+    let kept = kept_on(&alpha).await;
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].0, PAGE);
+    assert!(kept[0].1.contains("Version two."), "{}", kept[0].1);
+
+    // A thread: alpha takes the domain back first, then loses it again.
+    alpha
+        .engine
+        .sync_take_over(Some("eng"), true)
+        .await
+        .unwrap();
+    let opened = DiscussParams {
+        domain: "eng".into(),
+        path: Some(PAGE.into()),
+        section: Some("Facts".into()),
+        text: Some("Is this still true?".into()),
+        ..Default::default()
+    };
+    let err = written_while_beta_takes_over(
+        &alpha,
+        &beta,
+        alpha.engine.discuss(&opened, &ReflectionCaller::owner()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.to_string(), refusal("beta"));
+    let threads_abs = alpha.root.join("reflections/guides/paused.threads.md");
+    assert!(!threads_abs.exists(), "the thread file is gone again");
+    let kept = kept_on(&alpha).await;
+    assert!(
+        kept.iter()
+            .any(|(path, text)| path.ends_with("paused.threads.md")
+                && text.contains("Is this still true?")),
+        "{kept:?}"
+    );
+
+    // A page delete puts the page, its baseline and its threads back.
+    alpha
+        .engine
+        .sync_take_over(Some("eng"), true)
+        .await
+        .unwrap();
+    let err = written_while_beta_takes_over(
+        &alpha,
+        &beta,
+        alpha
+            .engine
+            .delete_reflection("eng", PAGE, &ReflectionCaller::owner()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.to_string(), refusal("beta"));
+    assert_eq!(
+        std::fs::read(&page_abs).unwrap(),
+        before,
+        "the page is back"
+    );
+    assert!(beta_row(PAGE).await.is_some(), "the row stays");
+
+    // A file upload.
+    alpha
+        .engine
+        .sync_take_over(Some("eng"), true)
+        .await
+        .unwrap();
+    let err = written_while_beta_takes_over(
+        &alpha,
+        &beta,
+        alpha.engine.reflection_asset_write(
+            "eng",
+            "assets/flow.png",
+            crate::assets::PNG.to_vec(),
+            &ReflectionCaller::owner(),
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.to_string(), refusal("beta"));
+    assert!(
+        !alpha.root.join("reflections/assets/flow.png").exists(),
+        "the uploaded file is gone again"
+    );
+    let store = beta.engine.store();
+    let store = store.lock().await;
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    assert!(
+        store
+            .get_asset(crystalline_index::AssetTable::Reflection, did, "flow.png")
+            .await
+            .unwrap()
+            .is_none()
+            && store
+                .get_asset(
+                    crystalline_index::AssetTable::Reflection,
+                    did,
+                    "assets/flow.png"
+                )
+                .await
+                .unwrap()
+                .is_none(),
+        "no row for the refused upload"
+    );
+}
