@@ -421,8 +421,12 @@ test.describe.serial("the Reflection journeys", () => {
     await expect.poll(painted).toBeGreaterThan(0);
     const before = await painted();
 
-    // The page has to be quiet first: a refetch that redraws the passage
-    // replaces its text nodes and drops the selection under the keys.
+    // The page has to be quiet first. A refetch is NOT what drops the
+    // selection: ReflectionPage.test.tsx shows that a window-focus refetch,
+    // with the same page or with only the threads changed, replaces no text
+    // node and keeps the selection. What was seen is a Shift+Arrow run that
+    // came up short in a full run, so the keys are checked by polling and the
+    // whole selection is retried from its first letter.
     await page.waitForLoadState("networkidle");
     const selected = () =>
       page.evaluate(() => window.getSelection()?.toString() ?? "");

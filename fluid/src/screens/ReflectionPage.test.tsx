@@ -1102,3 +1102,80 @@ describe("a reflection's attachments", () => {
     );
   });
 });
+
+describe("the reflection page while somebody is selecting", () => {
+  const thread = {
+    id: "t-1",
+    path: "guides/deploying.md",
+    anchor: {
+      section: "7f3a9c2e",
+      quote: null,
+      occurrence: 1,
+      state: "found",
+    },
+    status: "open",
+    waiting_on: "people",
+    opened_at: "2026-10-01T10:00:00Z",
+    age_secs: 10,
+    entries: [],
+  };
+
+  /** Select "Deploys", let the page refetch on a window focus, and report. */
+  async function refetchUnderSelection(
+    next: () => unknown,
+  ): Promise<{ removed: number; selected: string }> {
+    let current: unknown = doc();
+    serve("curate", true, {
+      "/domains/eng/reflections/guides/deploying.md": () => current,
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const article = await screen.findByRole("article");
+    const passage = await within(article).findByText("Deploys run at night.");
+    const text = passage.firstChild?.firstChild ?? passage.firstChild;
+    if (text === null || text === undefined) {
+      throw new Error("no text node");
+    }
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, "Deploys".length);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+
+    let removed = 0;
+    const watch = new MutationObserver((records) => {
+      for (const record of records) {
+        removed += [...record.removedNodes].filter(
+          (node) => node.nodeType === Node.TEXT_NODE || node.contains(text),
+        ).length;
+      }
+    });
+    watch.observe(article, { childList: true, subtree: true });
+    const before = apiMock.mock.calls.length;
+    current = next();
+    act(() => {
+      window.dispatchEvent(new Event("visibilitychange"));
+    });
+    await waitFor(() => {
+      expect(
+        apiMock.mock.calls
+          .slice(before)
+          .some((call) => call[0].includes("reflections/guides/deploying.md")),
+      ).toBe(true);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    watch.disconnect();
+    return { removed, selected: window.getSelection()?.toString() ?? "" };
+  }
+
+  it("keeps the passage and the selection when a refetch brings the same page", async () => {
+    const seen = await refetchUnderSelection(() => doc());
+    expect(seen).toEqual({ removed: 0, selected: "Deploys" });
+  });
+
+  it("keeps the passage and the selection when only the threads changed", async () => {
+    const seen = await refetchUnderSelection(() => doc({ threads: [thread] }));
+    expect(seen).toEqual({ removed: 0, selected: "Deploys" });
+  });
+});
