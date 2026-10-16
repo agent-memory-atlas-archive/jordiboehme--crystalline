@@ -30,7 +30,7 @@ import {
 } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import type { KeyboardEvent, ReactElement, ReactNode } from "react";
-import { Link, NavLink } from "react-router";
+import { Link, useMatch } from "react-router";
 
 import { useAuth } from "../auth/AuthContext";
 import { HANDBOOK_URL } from "../handbook";
@@ -167,6 +167,7 @@ export default function AvatarMenuBody({
   const { largeText, toggleLargeText } = useLargeText();
   const { fullWidth, toggleFullWidth } = useFullWidth();
   const wide = useWide();
+  const onMaintenance = useMatch(maintenanceRoute()) !== null;
   const glyph = { "aria-hidden": true, size: 16, strokeWidth: 1.75 } as const;
 
   return (
@@ -221,20 +222,23 @@ export default function AvatarMenuBody({
         </DropdownMenu.Item>
       )}
       {/*
-        No className on the item: the slot would join it with the link's
-        class function as text, so the link carries the row's classes itself
-        and draws the active state.
+        A plain link with the active state worked out here: the item's slot
+        joins class names as text, which a NavLink's class function does not
+        survive.
       */}
-      <DropdownMenu.Item asChild>
-        <NavLink
+      <DropdownMenu.Item
+        className={
+          onMaintenance ? `${ROW} bg-accent-tint font-medium text-ink` : ROW
+        }
+        asChild
+      >
+        <Link
           to={maintenanceRoute()}
-          className={({ isActive }) =>
-            isActive ? `${ROW} bg-accent-tint font-medium text-ink` : ROW
-          }
+          aria-current={onMaintenance ? "page" : undefined}
         >
           <Stethoscope {...glyph} className={ICON} />
           Maintenance
-        </NavLink>
+        </Link>
       </DropdownMenu.Item>
 
       <DropdownMenu.Separator className={SEP} />
