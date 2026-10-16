@@ -20,24 +20,27 @@ import type { ReactElement } from "react";
 import { Link, useParams } from "react-router";
 
 import { problemDetail } from "../api/client";
-import type { QueueItem, ReviewGroup } from "../api/reflection";
+import type { QueueItem, ReviewGroup, TreeNode } from "../api/reflection";
 import {
+  fetchReflectionTree,
   fetchReview,
   reflectionAssetUrl,
   reflectionReviewKey,
+  reflectionTreeKey,
 } from "../api/reflection";
 import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { ThreadCard, sourceChip } from "../components/ReflectionThreads";
+import { ReviewDiff } from "../components/ReviewDiff";
 import { Skeleton } from "../components/Skeleton";
-import { Chip } from "../components/primitives";
+import { Chip, RAIL_LABEL } from "../components/primitives";
 import { plural } from "../format";
 import { engramRoute, reflectionPageRoute } from "../paths";
-import { ageText, stripIdLines } from "../reflectionText";
+import { ageText } from "../reflectionText";
 
 const LINK =
   "text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline";
-const MUTED = "text-sm text-slate-500 dark:text-slate-400";
+const MUTED = "text-sm text-muted";
 
 export default function ReflectionReview(): ReactElement {
   const { domain = "" } = useParams();
@@ -45,6 +48,13 @@ export default function ReflectionReview(): ReactElement {
   const review = useQuery({
     queryKey: reflectionReviewKey(domain),
     queryFn: () => fetchReview(domain),
+    enabled: status.data?.state === "on",
+  });
+  // Page titles for the queue's groups: the sidebar reads the same tree, so
+  // this is usually already cached. A page the tree does not know shows its path.
+  const tree = useQuery({
+    queryKey: reflectionTreeKey(domain),
+    queryFn: () => fetchReflectionTree(domain),
     enabled: status.data?.state === "on",
   });
   return (
@@ -74,7 +84,7 @@ export default function ReflectionReview(): ReactElement {
         <>
           <section
             aria-labelledby="review-threads"
-            className="flex flex-col gap-4"
+            className="flex flex-col gap-6"
           >
             <h2 id="review-threads" className="text-section">
               Open threads
@@ -102,6 +112,10 @@ export default function ReflectionReview(): ReactElement {
             <Queue
               domain={domain}
               items={review.data.queue.items}
+              titles={titlesOf(tree.data?.nodes ?? [], [
+                ...review.data.waitingForPeople,
+                ...review.data.waitingForTheAgent,
+              ])}
               engramsVisible={status.data?.engramsVisible === true}
               total={review.data.queue.total}
             />
@@ -124,42 +138,64 @@ function Waiting({
   groups: ReviewGroup[];
 }): ReactElement {
   return (
-    <section aria-labelledby={id} className="flex flex-col gap-3">
-      <h3 id={id} className="font-semibold">
+    <section aria-labelledby={id} className="flex flex-col">
+      <h3 id={id} className={`mb-1 ${RAIL_LABEL}`}>
         {title}
       </h3>
       {groups.length === 0 && <p className={MUTED}>Nobody is waiting.</p>}
       {groups.map((group) => (
-        <div key={group.path} className="flex flex-col gap-2">
+        <div key={group.path} className="flex flex-col">
           <Link
             to={reflectionPageRoute(domain, group.path)}
-            className={`text-sm ${LINK}`}
+            className={`mt-3 text-[15px] font-semibold ${LINK}`}
           >
             {group.title}
           </Link>
           {group.threads.map((thread) => (
-            <ThreadCard
-              key={thread.id}
-              thread={thread}
-              heading={null}
-              state={thread.anchor.state}
-              boxed
-              actions={
-                <p className="text-caption text-slate-500 dark:text-slate-400">
-                  <Link
-                    to={`${reflectionPageRoute(domain, group.path)}#${thread.id}`}
-                    className={LINK}
-                  >
-                    {`waiting ${ageText(thread.ageSecs)}`}
-                  </Link>
-                </p>
-              }
-            />
+            <div key={thread.id} className="mt-3 border-t border-hair py-4">
+              <ThreadCard
+                thread={thread}
+                heading={null}
+                state={thread.anchor.state}
+                actions={
+                  <p className="text-caption text-muted">
+                    <Link
+                      to={`${reflectionPageRoute(domain, group.path)}#${thread.id}`}
+                      className={LINK}
+                    >
+                      {`waiting ${ageText(thread.ageSecs)}`}
+                    </Link>
+                  </p>
+                }
+              />
+            </div>
           ))}
         </div>
       ))}
     </section>
   );
+}
+
+/** Page title by path: the tree's titles first, then the review's own groups. */
+function titlesOf(
+  nodes: TreeNode[],
+  groups: ReviewGroup[],
+): Map<string, string> {
+  const titles = new Map<string, string>();
+  for (const group of groups) {
+    titles.set(group.path, group.title);
+  }
+  const walk = (list: TreeNode[]): void => {
+    for (const node of list) {
+      if (node.kind === "folder") {
+        walk(node.children);
+      } else {
+        titles.set(node.path, node.title);
+      }
+    }
+  };
+  walk(nodes);
+  return titles;
 }
 
 /**
@@ -170,11 +206,14 @@ function Waiting({
 function Queue({
   domain,
   items,
+  titles,
   total,
   engramsVisible,
 }: {
   domain: string;
   items: QueueItem[];
+  /** Page titles by path; a page missing here shows its path. */
+  titles: Map<string, string>;
   /** Source engrams are named only to a reader who may see engrams. */
   engramsVisible: boolean;
   total: number;
@@ -183,84 +222,122 @@ function Queue({
   // What the page left out, whatever its kind: the review rows it carried
   // count as carried.
   const more = total - items.length;
+  // One group per page, in the server's order of first appearance; the items
+  // that belong to no page come last.
+  const pages = new Map<string, QueueItem[]>();
+  for (const item of shown) {
+    pages.set(item.path, [...(pages.get(item.path) ?? []), item]);
+  }
+  const grouped = [...pages.entries()].sort(
+    ([a], [b]) => Number(a === "") - Number(b === ""),
+  );
   return (
     <>
       {shown.length === 0 && <p className={MUTED}>The queue is empty.</p>}
-      <ul aria-label="Queue items" className="flex flex-col gap-2">
-        {shown.map((item) => (
-          <li
-            key={item.n}
-            className="rounded border border-slate-200 px-3 py-2 text-sm dark:border-slate-800"
-          >
-            <div className="flex flex-wrap items-baseline gap-2">
-              <Chip variant={item.kind === "feedback" ? "accent" : "neutral"}>
-                {item.kind}
-              </Chip>
-              <Chip mono>{item.what}</Chip>
-              {item.path !== "" && (
-                <Link
-                  to={`${reflectionPageRoute(domain, item.path)}${item.section !== null ? `#s-${item.section}` : ""}`}
-                  className={LINK}
-                >
-                  {item.heading !== null && item.heading !== ""
-                    ? `${item.path}: ${item.heading}`
-                    : item.path}
-                </Link>
+      <ul aria-label="Pages in the queue" className="flex flex-col gap-6">
+        {grouped.map(([path, list]) => {
+          const title = titles.get(path) ?? path;
+          return (
+            <li key={path} className="flex flex-col">
+              {path === "" ? (
+                <h3 className={RAIL_LABEL}>Not on a page</h3>
+              ) : (
+                <h3 className="text-[15px] font-semibold">
+                  <Link to={reflectionPageRoute(domain, path)} className={LINK}>
+                    {title}
+                  </Link>
+                </h3>
               )}
-              <span className="text-caption text-slate-500 dark:text-slate-400">
-                {ageText(item.ageSecs)}
-              </span>
-            </div>
-            {item.changedBy.length > 0 && (
-              <p className="text-caption mt-1 text-slate-500 dark:text-slate-400">
-                {`changed by ${item.changedBy.join(", ")}`}
-              </p>
-            )}
-            {item.structure.length > 0 && (
-              <p className="text-caption mt-1 text-slate-500 dark:text-slate-400">
-                {`outside ${item.structure.join(", ")}`}
-              </p>
-            )}
-            {item.count !== null && item.what === "unreflected" && (
-              <p className="mt-1">{`${String(item.count)} engrams${item.folder !== null ? ` under ${item.folder}` : ""} have no page yet.`}</p>
-            )}
-            <QueueDetail
-              domain={domain}
-              item={item}
-              engramsVisible={engramsVisible}
-            />
-            {item.diff !== null && (
-              <pre className="mt-1 overflow-x-auto font-mono text-xs whitespace-pre-wrap text-slate-600 dark:text-slate-300">
-                {stripIdLines(item.diff, true)}
-              </pre>
-            )}
-            {engramsVisible &&
-              item.sources !== null &&
-              item.sources.length > 0 && (
-                <ul className="mt-1 flex flex-col gap-1">
-                  {item.sources.map((source) => (
-                    <li
-                      key={source.permalink}
-                      className="flex items-center gap-2"
-                    >
-                      <Link
-                        to={engramRoute(domain, source.permalink)}
-                        className={LINK}
-                      >
-                        {source.title}
-                      </Link>
-                      {sourceChip(source.state)}
-                    </li>
-                  ))}
-                </ul>
-              )}
-          </li>
-        ))}
+              <ul
+                aria-label={
+                  path === "" ? "Queue items" : `Queue items for ${title}`
+                }
+                className="mt-2 flex flex-col"
+              >
+                {list.map((item) => (
+                  <QueueRow
+                    key={item.n}
+                    domain={domain}
+                    item={item}
+                    engramsVisible={engramsVisible}
+                  />
+                ))}
+              </ul>
+            </li>
+          );
+        })}
       </ul>
       {more > 0 && (
         <p className={MUTED}>{`${String(more)} more in the queue`}</p>
       )}
     </>
+  );
+}
+
+function QueueRow({
+  domain,
+  item,
+  engramsVisible,
+}: {
+  domain: string;
+  item: QueueItem;
+  engramsVisible: boolean;
+}): ReactElement {
+  const heading = item.heading !== null && item.heading !== "";
+  return (
+    <li className="border-t border-hair py-3 text-sm">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <Chip variant={item.kind === "feedback" ? "accent" : "neutral"}>
+          {item.kind}
+        </Chip>
+        <Chip mono>{item.what}</Chip>
+        {heading && item.path !== "" && (
+          <Link
+            to={`${reflectionPageRoute(domain, item.path)}${item.section !== null ? `#s-${item.section}` : ""}`}
+            className={LINK}
+          >
+            {item.heading}
+          </Link>
+        )}
+        <span className="text-caption text-muted">{ageText(item.ageSecs)}</span>
+      </div>
+      {item.changedBy.length > 0 && (
+        <p className="text-caption mt-1 text-muted">
+          {`changed by ${item.changedBy.join(", ")}`}
+        </p>
+      )}
+      {item.structure.length > 0 && (
+        <p className="text-caption mt-1 text-muted">
+          {`outside ${item.structure.join(", ")}`}
+        </p>
+      )}
+      {item.count !== null && item.what === "unreflected" && (
+        <p className="mt-1">{`${String(item.count)} engrams${item.folder !== null ? ` under ${item.folder}` : ""} have no page yet.`}</p>
+      )}
+      <QueueDetail
+        domain={domain}
+        item={item}
+        engramsVisible={engramsVisible}
+      />
+      {item.diff !== null && (
+        <ReviewDiff
+          diff={item.diff}
+          label={`Changes${heading ? ` in ${item.heading ?? ""}` : ""}`}
+        />
+      )}
+      {engramsVisible && item.sources !== null && item.sources.length > 0 && (
+        <ul className="mt-1 flex flex-col gap-1">
+          {item.sources.map((source) => (
+            <li key={source.permalink} className="flex items-center gap-2">
+              <Link to={engramRoute(domain, source.permalink)} className={LINK}>
+                {source.title}
+              </Link>
+              {sourceChip(source.state)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
   );
 }
 

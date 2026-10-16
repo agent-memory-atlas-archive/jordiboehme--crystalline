@@ -327,7 +327,6 @@ export function ThreadCard({
   actions,
   source = null,
   picked = false,
-  boxed = false,
 }: {
   thread: ThreadView;
   heading: string | null;
@@ -337,16 +336,11 @@ export function ThreadCard({
   source?: string | null;
   /** The thread the reader picked: its quote rule turns accent. */
   picked?: boolean;
-  /**
-   * A card of its own in a list that has no hairlines (the review screen),
-   * which already groups by who is waiting, so no waiting line either.
-   */
-  boxed?: boolean;
 }): ReactElement {
   const now = new Date();
   const quote = quoteOf(thread.anchor.quote);
   const waiting =
-    !boxed && thread.status === "open" ? (
+    thread.status === "open" ? (
       <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-muted">
         <Clock aria-hidden size={14} />
         {thread.waitingOn === "agent"
@@ -361,9 +355,7 @@ export function ThreadCard({
       // sheet opening at it, puts the keyboard here.
       tabIndex={-1}
       aria-label={`Thread on ${heading ?? "the page"}`}
-      className={`flex flex-col gap-3 text-sm outline-none ${
-        boxed ? "rounded border border-slate-200 p-3 dark:border-slate-800" : ""
-      }`}
+      className="flex flex-col gap-3 text-sm outline-none"
     >
       {quote !== null && (
         <blockquote

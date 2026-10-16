@@ -1,4 +1,5 @@
 import { screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiProblem, api } from "../api/client";
@@ -119,7 +120,11 @@ const REVIEW = {
   },
 };
 
-function serve(review: unknown = REVIEW, status: Record<string, unknown> = {}) {
+function serve(
+  review: unknown = REVIEW,
+  status: Record<string, unknown> = {},
+  nodes: unknown[] = [],
+) {
   apiMock.mockImplementation(
     answersFor({
       "/auth/me": () => meResponse({ user: userFixture() }),
@@ -139,7 +144,7 @@ function serve(review: unknown = REVIEW, status: Record<string, unknown> = {}) {
       "/domains/eng/reflection/tree": () => ({
         domain: "eng",
         pact: { path: "PACT.md", title: "PACT", exists: true, open_threads: 0 },
-        nodes: [],
+        nodes,
       }),
       "/domains/eng/reflection/review": () => {
         if (review instanceof Error) {
@@ -186,7 +191,9 @@ describe("the review screen", () => {
     serve();
     renderApp("/d/eng/reflection/review");
     const queue = await screen.findByRole("region", { name: "Reflect queue" });
-    const list = within(queue).getByRole("list", { name: "Queue items" });
+    const list = within(queue).getByRole("list", {
+      name: "Queue items for Deploying",
+    });
     const rows = Array.from(list.children) as HTMLElement[];
     expect(rows).toHaveLength(2);
     expect(within(rows[0] as HTMLElement).getByText("feedback")).toBeVisible();
@@ -260,7 +267,7 @@ describe("the review screen", () => {
       );
     }
     async function queueList() {
-      return screen.findByRole("list", { name: "Queue items" });
+      return screen.findByRole("list", { name: /^Queue items/ });
     }
 
     it("a missing file is named under its section", async () => {
@@ -296,7 +303,14 @@ describe("the review screen", () => {
       renderApp("/d/eng/reflection/review");
       const list = await queueList();
       expect(within(list).getByText("../../notes/runbook.md")).toBeVisible();
-      expect(within(list).getAllByRole("link")).toHaveLength(1);
+      // No section heading, so the page link is the group's own.
+      expect(within(list).queryByRole("link")).toBeNull();
+      expect(
+        within(screen.getByRole("region", { name: "Reflect queue" })).getByRole(
+          "link",
+          { name: "Deploying" },
+        ),
+      ).toHaveAttribute("href", "/d/eng/reflection/guides/deploying.md");
     });
 
     it("an engram attachment row hides its targets from a reader who cannot see engrams", async () => {
@@ -401,13 +415,218 @@ describe("the review screen", () => {
     renderApp("/d/eng/reflection/review");
     const queue = await screen.findByRole("region", { name: "Reflect queue" });
     const list = await within(queue).findByRole("list", {
-      name: "Queue items",
+      name: /^Queue items/,
     });
     expect(within(list).getByText("source_changed")).toBeVisible();
     expect(
       within(list).queryByRole("link", { name: "Deploy runbook" }),
     ).toBeNull();
     expect(queue.textContent).not.toContain("Deploy runbook");
+  });
+
+  describe("the queue, grouped by page", () => {
+    const DIFF = [
+      "--- original",
+      "+++ modified",
+      "@@ -1,12 +1,12 @@",
+      " line one",
+      " line two",
+      " line three",
+      " line four",
+      " line five",
+      "-old sentence",
+      "+new sentence",
+      " line six",
+      " line seven",
+      " line eight",
+      " line nine",
+      " line ten",
+      "\\ No newline at end of file",
+      "",
+    ].join("\n");
+    function queueOf(items: Record<string, unknown>[]) {
+      return {
+        ...REVIEW,
+        waiting_for_people: [],
+        waiting_for_the_agent: [],
+        queue: {
+          ...REVIEW.queue,
+          total: items.length,
+          count: items.length,
+          queue: items,
+        },
+      };
+    }
+    const row = (n: number, path: string, extra = {}) => ({
+      n,
+      kind: "feedback",
+      what: "changed",
+      path,
+      section: "7f3a9c2e",
+      heading: "Night deploys",
+      age_secs: 60,
+      ...extra,
+    });
+
+    it("groups the items under one link per page, titled from the tree", async () => {
+      serve(
+        queueOf([
+          row(1, "guides/deploying.md"),
+          row(2, "ops/failover.md"),
+          row(3, "guides/deploying.md", { what: "asset_missing" }),
+          {
+            n: 4,
+            kind: "update",
+            what: "asset_unreferenced",
+            path: "",
+            section: null,
+            heading: "",
+            age_secs: 60,
+            asset: "assets/old.png",
+          },
+        ]),
+        {},
+        [
+          {
+            kind: "reflection",
+            name: "deploying.md",
+            path: "guides/deploying.md",
+            title: "Deploying",
+            open_threads: 0,
+            sections: 2,
+          },
+        ],
+      );
+      renderApp("/d/eng/reflection/review");
+      const queue = await screen.findByRole("region", {
+        name: "Reflect queue",
+      });
+      const groups = await within(queue).findByRole("list", {
+        name: "Pages in the queue",
+      });
+      const heads = within(groups)
+        .getAllByRole("heading", { level: 3 })
+        .map((h) => h.textContent);
+      // The path with no page comes last; a page the tree lacks shows its path.
+      expect(heads).toEqual(["Deploying", "ops/failover.md", "Not on a page"]);
+      const first = within(groups).getByRole("list", {
+        name: "Queue items for Deploying",
+      });
+      expect(first.children).toHaveLength(2);
+      expect(
+        within(groups).getByRole("link", { name: "ops/failover.md" }),
+      ).toHaveAttribute("href", "/d/eng/reflection/ops/failover.md");
+    });
+
+    it("shows the changed lines with a little context and no file header lines", async () => {
+      serve(queueOf([row(1, "guides/deploying.md", { diff: DIFF })]));
+      renderApp("/d/eng/reflection/review");
+      const diff = await screen.findByRole("group", {
+        name: "Changes in Night deploys",
+      });
+      expect(diff).toHaveTextContent("new sentence");
+      expect(diff).toHaveTextContent("old sentence");
+      // Two lines of context each side; the stretch before is left out.
+      expect(diff).toHaveTextContent("line four");
+      expect(diff).toHaveTextContent("line seven");
+      expect(diff).not.toHaveTextContent("line three");
+      expect(diff).not.toHaveTextContent("line eight");
+      expect(diff).not.toHaveTextContent("line ten");
+      expect(diff).toHaveTextContent("Removed: ");
+      expect(diff).toHaveTextContent("Added: ");
+      for (const hidden of [
+        "--- original",
+        "+++ modified",
+        "No newline at end of file",
+        "@@",
+      ]) {
+        expect(diff.textContent).not.toContain(hidden);
+      }
+    });
+
+    it("opens the full diff behind a disclosure and closes it again", async () => {
+      const user = userEvent.setup();
+      serve(queueOf([row(1, "guides/deploying.md", { diff: DIFF })]));
+      renderApp("/d/eng/reflection/review");
+      const diff = await screen.findByRole("group", {
+        name: "Changes in Night deploys",
+      });
+      const open = screen.getByRole("button", { name: "Show the full diff" });
+      expect(open).toHaveAttribute("aria-expanded", "false");
+      await user.click(open);
+      expect(diff).toHaveTextContent("line one");
+      expect(diff).toHaveTextContent("line ten");
+      expect(diff.textContent).not.toContain("No newline");
+      const close = screen.getByRole("button", {
+        name: "Show only the changed lines",
+      });
+      expect(close).toHaveAttribute("aria-expanded", "true");
+      await user.click(close);
+      expect(diff).not.toHaveTextContent("line one");
+    });
+
+    it("offers no disclosure for a diff that is all change", async () => {
+      serve(
+        queueOf([
+          row(1, "guides/deploying.md", {
+            diff: "@@ -1 +1 @@\n-old\n+new\n",
+          }),
+        ]),
+      );
+      renderApp("/d/eng/reflection/review");
+      await screen.findByRole("group", { name: "Changes in Night deploys" });
+      expect(
+        screen.queryByRole("button", { name: "Show the full diff" }),
+      ).toBeNull();
+    });
+
+    it("leaks no engram names to a reader without engram rights", async () => {
+      serve(
+        queueOf([
+          row(1, "guides/deploying.md", {
+            sources: [
+              {
+                permalink: "runbooks/deploy",
+                title: "Deploy runbook",
+                state: "changed",
+              },
+            ],
+            targets: ["../../notes/runbook.md"],
+            engrams: ["runbooks/deploy"],
+          }),
+        ]),
+        { engrams_visible: false },
+      );
+      renderApp("/d/eng/reflection/review");
+      const queue = await screen.findByRole("region", {
+        name: "Reflect queue",
+      });
+      await within(queue).findByRole("list", { name: /^Queue items/ });
+      for (const leak of ["Deploy runbook", "runbooks/deploy", "runbook.md"]) {
+        expect(queue.textContent).not.toContain(leak);
+      }
+    });
+  });
+
+  it("draws the open threads in the thread look: avatars, hairlines, a waiting line, no boxes", async () => {
+    serve();
+    renderApp("/d/eng/reflection/review");
+    const agent = await screen.findByRole("region", {
+      name: "Waiting for the agent",
+    });
+    const cards = within(agent).getAllByRole("article");
+    expect(cards).toHaveLength(2);
+    for (const card of cards) {
+      expect(card.className).not.toContain("border");
+      expect(card.querySelector("[data-avatar]")).not.toBeNull();
+      expect(card).toHaveTextContent("Waiting for the agent");
+      expect(card.parentElement?.className).toContain("border-t border-hair");
+    }
+    expect(
+      within(
+        screen.getByRole("region", { name: "Waiting for people" }),
+      ).getByRole("article"),
+    ).toHaveTextContent("Waiting for people");
   });
 
   it("shows the state notice instead of the review while the Reflection is off", async () => {
