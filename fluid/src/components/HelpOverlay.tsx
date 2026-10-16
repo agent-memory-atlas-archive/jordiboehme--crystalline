@@ -8,9 +8,9 @@
  */
 
 import type { ReactElement } from "react";
-import { Suspense, lazy } from "react";
+import { lazyPart } from "./lazyPart";
 
-const HelpOverlayBody = lazy(() => import("./HelpOverlayBody"));
+const HelpOverlayBody = lazyPart(() => import("./HelpOverlayBody"));
 
 export interface HelpOverlayProps {
   open: boolean;
@@ -30,10 +30,15 @@ export function HelpOverlay({
   returnFocusTo,
 }: HelpOverlayProps): ReactElement {
   return (
-    <Suspense fallback={null}>
+    <>
       {open && (
-        <HelpOverlayBody onClose={onClose} returnFocusTo={returnFocusTo} />
+        <HelpOverlayBody
+          overlay
+          fallback={null}
+          onClose={onClose}
+          returnFocusTo={returnFocusTo}
+        />
       )}
-    </Suspense>
+    </>
   );
 }

@@ -11,9 +11,9 @@
  */
 
 import type { ReactElement } from "react";
-import { Suspense, lazy } from "react";
+import { lazyPart } from "./lazyPart";
 
-const ChangeDialogBody = lazy(() => import("./ChangeDialogBody"));
+const ChangeDialogBody = lazyPart(() => import("./ChangeDialogBody"));
 
 export interface ChangeDialogProps {
   /** The domain the file belongs to. */
@@ -26,7 +26,8 @@ export interface ChangeDialogProps {
 
 export function ChangeDialog(props: ChangeDialogProps): ReactElement {
   return (
-    <Suspense
+    <ChangeDialogBody
+      overlay
       fallback={
         // Plain markup rather than another Radix dialog: reaching for the
         // primitive here would defeat the point of keeping it out of this
@@ -37,8 +38,7 @@ export function ChangeDialog(props: ChangeDialogProps): ReactElement {
           </p>
         </div>
       }
-    >
-      <ChangeDialogBody {...props} />
-    </Suspense>
+      {...props}
+    />
   );
 }

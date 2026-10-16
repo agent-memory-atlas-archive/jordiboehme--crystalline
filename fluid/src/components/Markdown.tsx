@@ -13,14 +13,13 @@
  * in `MarkdownBody.tsx`.
  */
 
-import { Suspense, lazy } from "react";
-
 import type { AssetResolver } from "../api/files";
 import type { WikilinkResolver } from "../wikilinks";
 import { Loading } from "./Loading";
+import { lazyPart } from "./lazyPart";
 import type { HeadingAside, MarkdownAnchors } from "./MarkdownBody";
 
-const MarkdownBody = lazy(() => import("./MarkdownBody"));
+const MarkdownBody = lazyPart(() => import("./MarkdownBody"));
 
 export interface MarkdownProps {
   /** The markdown as written, frontmatter and all. */
@@ -79,18 +78,15 @@ export interface MarkdownProps {
 
 export function Markdown(props: MarkdownProps) {
   return (
-    <Suspense
+    <MarkdownBody
       fallback={
         // Deliberately quiet rather than the raw source: the chunk is one
         // request and showing unrendered markdown first would flash.
         <Loading label="Loading the text" subject="the text" />
       }
-    >
-      {/*
-        Handed on whole: every prop means the same to the body, and one
-        spread costs the eager bundle less than a line per prop.
-      */}
-      <MarkdownBody {...props} />
-    </Suspense>
+      // Handed on whole: every prop means the same to the body, and one
+      // spread costs the eager bundle less than a line per prop.
+      {...props}
+    />
   );
 }

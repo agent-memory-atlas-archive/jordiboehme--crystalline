@@ -10,9 +10,11 @@
  */
 
 import type { ReactElement } from "react";
-import { Suspense, lazy } from "react";
+import { lazyPart } from "./lazyPart";
 
-const CreateDomainDialogBody = lazy(() => import("./CreateDomainDialogBody"));
+const CreateDomainDialogBody = lazyPart(
+  () => import("./CreateDomainDialogBody"),
+);
 
 export interface CreateDomainDialogProps {
   onClose: () => void;
@@ -22,7 +24,8 @@ export function CreateDomainDialog(
   props: CreateDomainDialogProps,
 ): ReactElement {
   return (
-    <Suspense
+    <CreateDomainDialogBody
+      overlay
       fallback={
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40">
           <p className="rounded border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600 shadow-xl dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
@@ -30,8 +33,7 @@ export function CreateDomainDialog(
           </p>
         </div>
       }
-    >
-      <CreateDomainDialogBody {...props} />
-    </Suspense>
+      {...props}
+    />
   );
 }

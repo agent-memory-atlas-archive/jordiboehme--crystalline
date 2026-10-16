@@ -10,9 +10,11 @@
  */
 
 import type { ReactElement } from "react";
-import { Suspense, lazy } from "react";
+import { lazyPart } from "./lazyPart";
 
-const CreateEngramDialogBody = lazy(() => import("./CreateEngramDialogBody"));
+const CreateEngramDialogBody = lazyPart(
+  () => import("./CreateEngramDialogBody"),
+);
 
 export interface CreateEngramDialogProps {
   domain: string;
@@ -31,7 +33,8 @@ export function CreateEngramDialog(
   props: CreateEngramDialogProps,
 ): ReactElement {
   return (
-    <Suspense
+    <CreateEngramDialogBody
+      overlay
       fallback={
         // Plain markup rather than another Radix dialog: reaching for the
         // primitive here would defeat the point of keeping it out of this
@@ -43,8 +46,7 @@ export function CreateEngramDialog(
           </p>
         </div>
       }
-    >
-      <CreateEngramDialogBody {...props} />
-    </Suspense>
+      {...props}
+    />
   );
 }

@@ -10,9 +10,9 @@
  */
 
 import type { ReactElement } from "react";
-import { Suspense, lazy } from "react";
+import { lazyPart } from "./lazyPart";
 
-const SharePickerDialogBody = lazy(() => import("./SharePickerDialogBody"));
+const SharePickerDialogBody = lazyPart(() => import("./SharePickerDialogBody"));
 
 export interface SharePickerDialogProps {
   /** The domain that was chosen; the frame opens the share dialog on it. */
@@ -23,7 +23,8 @@ export interface SharePickerDialogProps {
 
 export function SharePickerDialog(props: SharePickerDialogProps): ReactElement {
   return (
-    <Suspense
+    <SharePickerDialogBody
+      overlay
       fallback={
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40">
           <p className="rounded border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600 shadow-xl dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
@@ -31,8 +32,7 @@ export function SharePickerDialog(props: SharePickerDialogProps): ReactElement {
           </p>
         </div>
       }
-    >
-      <SharePickerDialogBody {...props} />
-    </Suspense>
+      {...props}
+    />
   );
 }

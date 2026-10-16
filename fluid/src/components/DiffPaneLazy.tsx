@@ -7,9 +7,9 @@
  */
 
 import type { ReactElement } from "react";
-import { Suspense, lazy } from "react";
+import { lazyPart } from "./lazyPart";
 
-const Pane = lazy(() => import("./DiffPane"));
+const Pane = lazyPart(() => import("./DiffPane"));
 
 /** The diff pane behind a lazy import: the merge package never rides the entry bundle. */
 export function DiffPane(props: {
@@ -18,14 +18,13 @@ export function DiffPane(props: {
   headingId: string;
 }): ReactElement {
   return (
-    <Suspense
+    <Pane
+      {...props}
       fallback={
         <p className="text-sm text-slate-500 dark:text-slate-400">
           Reading both sides
         </p>
       }
-    >
-      <Pane {...props} />
-    </Suspense>
+    />
   );
 }

@@ -24,7 +24,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
-import { Suspense, lazy, useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { ApiProblem, problemDetail } from "../api/client";
@@ -37,9 +37,10 @@ import { graphConnections, graphElements } from "../graphElements";
 import { RETIRED_CLASS, isRetired } from "../lifecycle";
 import { engramRoute } from "../paths";
 import { ENGRAM_PREFETCH } from "../prefetch";
+import { lazyPart } from "./lazyPart";
 import { BUTTON } from "./primitives";
 
-const GraphCanvas = lazy(() => import("./GraphCanvas"));
+const GraphCanvas = lazyPart(() => import("./GraphCanvas"));
 
 export interface NeighborhoodGraphProps {
   /** The engram the neighborhood is drawn around. */
@@ -139,15 +140,15 @@ export function NeighborhoodGraph({
       <div
         className={`${height} w-full overflow-hidden rounded border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900`}
       >
-        <Suspense
+        <GraphCanvas
+          elements={elements}
+          onSelect={open}
           fallback={
             <p className="p-3 text-sm text-slate-500 dark:text-slate-400">
               Drawing the neighborhood
             </p>
           }
-        >
-          <GraphCanvas elements={elements} onSelect={open} />
-        </Suspense>
+        />
       </div>
 
       {neighborhood.truncated && (

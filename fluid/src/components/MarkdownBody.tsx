@@ -31,10 +31,8 @@
 import { Link as LinkIcon } from "lucide-react";
 import {
   Children,
-  Suspense,
   createContext,
   isValidElement,
-  lazy,
   useCallback,
   useContext,
   useEffect,
@@ -72,10 +70,11 @@ import type { WikilinkResolution, WikilinkResolver } from "../wikilinks";
 import DiagramOverlay from "./DiagramOverlay";
 import DiagramToolbar from "./DiagramToolbar";
 import { imageFileName } from "./downloads";
+import { lazyPart } from "./lazyPart";
 import { Chip, FOCUS_RING } from "./primitives";
 import { useSaid } from "./useSaid";
 
-const MermaidDiagram = lazy(() => import("./MermaidDiagram"));
+const MermaidDiagram = lazyPart(() => import("./MermaidDiagram"));
 
 /**
  * The renderer's own plugin-list type, taken from its props rather than from
@@ -707,12 +706,11 @@ function preFor(
           aria-label="Diagram"
           className="breakout my-4 rounded border border-slate-200 p-3 dark:border-slate-800"
         >
-          <Suspense fallback={<DiagramSource source={source} />}>
-            <MermaidDiagram
-              source={source}
-              {...(documentName === undefined ? {} : { name: documentName })}
-            />
-          </Suspense>
+          <MermaidDiagram
+            fallback={<DiagramSource source={source} />}
+            source={source}
+            {...(documentName === undefined ? {} : { name: documentName })}
+          />
         </figure>
       );
     }
