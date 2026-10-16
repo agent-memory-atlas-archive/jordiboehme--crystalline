@@ -325,6 +325,14 @@ function stamp(node: HastNode, source: string): void {
     });
 }
 
+/**
+ * The line under the first title, handed to the heading through context and
+ * not through the component map or the plugin chain: those are memoised so a
+ * changed line cannot remount what the document drew (images, diagrams, an
+ * open full window, a selection in progress).
+ */
+const TitleNoteContext = createContext<string | undefined>(undefined);
+
 /** The marker the first level-one heading carries for `titleNote`. */
 const FIRST_TITLE = "dataFirstTitle";
 /** The same marker as the component receives it: hast `dataFirstTitle` is `data-first-title`. */
@@ -978,7 +986,6 @@ function heading(
   level: 1 | 2 | 3 | 4 | 5 | 6,
   sizes: string,
   anchored: boolean,
-  titleNote?: string,
 ) {
   const Tag = `h${level}` as const;
   const className = `group scroll-mt-16 ${sizes}`.trimEnd();
@@ -995,6 +1002,7 @@ function heading(
     // "Auth text" would collide with a `${slug}-text` spelling, and two
     // elements sharing an id is a reference pointing at whichever came first.
     const textId = useId();
+    const titleNote = useContext(TitleNoteContext);
     // The note belongs to the one heading marked first, and is not text of the
     // document: no stamp, nothing to select (`data-anchor-skip` is what the
     // quote code passes over).
@@ -1060,11 +1068,10 @@ function componentsFor(
   assets: AssetResolver | undefined,
   documentName: string | undefined,
   anchored: boolean,
-  titleNote: string | undefined,
 ): Components {
   return {
     ...components,
-    h1: heading(1, HEADING_SIZES[0], anchored, titleNote),
+    h1: heading(1, HEADING_SIZES[0], anchored),
     h2: heading(2, HEADING_SIZES[1], anchored),
     h3: heading(3, HEADING_SIZES[2], anchored),
     h4: heading(4, HEADING_SIZES[3], anchored),
@@ -1175,13 +1182,15 @@ export default function MarkdownBody({
     [resolver],
   );
   const componentMap = useMemo(
-    () => componentsFor(resolver, documentName, anchored, titleNote),
-    [resolver, documentName, anchored, titleNote],
+    () => componentsFor(resolver, documentName, anchored),
+    [resolver, documentName, anchored],
   );
   const rehypePlugins = useMemo<RehypePlugins>(
     () => [
       // First, so the positions it reads are the parser's own.
-      ...(titleNote === undefined ? [] : [markFirstTitle]),
+      // Always, so the plugin chain never depends on the note's text: a
+      // changing note re-renders its own line and remounts nothing.
+      markFirstTitle,
       ...(sourceSpans ? [sourceSpanStamp(shown)] : []),
       // `plainText` keeps the highlighter's hands off a mermaid fence, whose
       // text this file reads back out to draw the diagram from.
@@ -1199,7 +1208,7 @@ export default function MarkdownBody({
       // a span rather than map through it (`reflectionQuotes.ts`).
       ...(wikilinks ? [wikilinkRewrite(wikilinks)] : []),
     ],
-    [anchored, wikilinks, sourceSpans, shown, titleNote],
+    [anchored, wikilinks, sourceSpans, shown],
   );
   // Arriving at a section: scroll it into view and point it out for a moment.
   // It runs on the hash rather than on a navigation, which is what makes a
@@ -1264,14 +1273,16 @@ export default function MarkdownBody({
     // and diagrams inside it along with the prose. Hardcoded rather than a
     // prop, because every markdown surface is a reading surface.
     <div ref={rootRef} className="measured text-body">
-      {anchors ? (
-        <SectionAnchorProvider pageUrl={anchors.pageUrl}>
-          {rendered}
-          <SectionLinkStatus />
-        </SectionAnchorProvider>
-      ) : (
-        rendered
-      )}
+      <TitleNoteContext.Provider value={titleNote}>
+        {anchors ? (
+          <SectionAnchorProvider pageUrl={anchors.pageUrl}>
+            {rendered}
+            <SectionLinkStatus />
+          </SectionAnchorProvider>
+        ) : (
+          rendered
+        )}
+      </TitleNoteContext.Provider>
     </div>
   );
 }

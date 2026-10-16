@@ -355,7 +355,7 @@ function PageBody({
   const metaLine = reflectionMetaLine(page, engramsVisible);
   return (
     <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-2">
+      <header className={`flex flex-col gap-2 ${ownTitle ? "-mb-2" : ""}`}>
         <div className="flex items-center justify-between gap-2">
           <Breadcrumbs crumbs={reflectionCrumbsOf(domain, path, page.title)} />
           <div className="flex shrink-0 items-center gap-2 print:hidden">
@@ -402,7 +402,7 @@ function PageBody({
             )}
           </div>
         </div>
-        {atLeast(right, "edit") && path !== PACT_PATH && (
+        {confirmingDelete && atLeast(right, "edit") && path !== PACT_PATH && (
           <div ref={confirmRef}>
             <DestructiveAction
               label="Delete"

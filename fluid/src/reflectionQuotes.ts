@@ -331,6 +331,15 @@ export function selectionAnchor(
   const spills = (at: Point, other: Point) =>
     sectionOf(root, at.node) !== sectionOf(root, other.node) ||
     stampOf(at.node) === null;
+  // A selection that only reached into the note, from the end of the title or
+  // up to the start of the text after it, has no words of its own left.
+  if (
+    (skipped(range.startContainer) || skipped(range.endContainer)) &&
+    from.node === to.node &&
+    from.offset === to.offset
+  ) {
+    return null;
+  }
   if (atEdge(from, "start") && spills(from, to)) {
     from = nearestPlaced(root, from, "start") ?? from;
   }

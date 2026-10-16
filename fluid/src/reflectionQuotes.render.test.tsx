@@ -314,4 +314,91 @@ describe("a note under the title", () => {
     const anchor = selectionAnchor(root, range, sections);
     expect(anchor?.quote).toBe("loying\n\nShort");
   });
+
+  it("is not a selection from the end of the title into the note, nor from the note to the text", async () => {
+    const { root, sections } = await renderSections([TEXT], undefined, NOTE);
+    const title = textIn(root.querySelector("h1")!, "Deploying");
+    const words = textIn(root.querySelector("[data-anchor-skip]")!, NOTE);
+    const into = document.createRange();
+    into.setStart(title, 9);
+    into.setEnd(words, 5);
+    expect(selectionAnchor(root, into, sections)).toBeNull();
+    const intro = textIn(
+      root.querySelector("p:not([data-anchor-skip])")!,
+      "Short intro. Book a slot in the calendar.",
+    );
+    const out = document.createRange();
+    out.setStart(words, 3);
+    out.setEnd(intro, 0);
+    expect(selectionAnchor(root, out, sections)).toBeNull();
+  });
+
+  it("goes under a setext title", async () => {
+    const { root } = await renderSections(
+      ["Deploying\n=========\n\nIntro.\n"],
+      undefined,
+      NOTE,
+    );
+    expect(root.querySelector("h1")!.nextElementSibling).toHaveTextContent(
+      NOTE,
+    );
+  });
+
+  it("goes under the first of two titles only", async () => {
+    const { root } = await renderSections(
+      ["# One\n\nText.\n\n# Two\n\nMore.\n"],
+      undefined,
+      NOTE,
+    );
+    const [first, second] = Array.from(root.querySelectorAll("h1"));
+    expect(first!.nextElementSibling).toHaveTextContent(NOTE);
+    expect(second!.nextElementSibling).not.toHaveAttribute("data-anchor-skip");
+    expect(root.querySelectorAll("[data-anchor-skip]")).toHaveLength(1);
+  });
+
+  it("is not drawn when the section holding the note has no title, whatever a later section has", async () => {
+    const { root } = await renderSections(
+      ["Intro only.\n", "# Later\n\nText.\n"],
+      undefined,
+      NOTE,
+    );
+    expect(root.querySelectorAll("[data-anchor-skip]")).toHaveLength(0);
+  });
+
+  it("changes its text without remounting anything or dropping a selection", async () => {
+    const text =
+      "# Deploying\n\nSee [the runbook](#runbook) for the steps.\n\n```\ncode\n```\n";
+    const view = (note: string) => (
+      <MemoryRouter>
+        <ThemeProvider>
+          <section data-section="s0">
+            <Markdown source={text} sourceSpans titleNote={note} />
+          </section>
+        </ThemeProvider>
+      </MemoryRouter>
+    );
+    const result = render(view("1 section"));
+    await waitFor(() => {
+      expect(screen.queryByText("crystallizing")).toBeNull();
+    });
+    const h1 = result.container.querySelector("h1");
+    const link = result.container.querySelector("a");
+    const pre = result.container.querySelector("pre");
+    const words = textIn(
+      result.container.querySelector("p:not([data-anchor-skip])")!,
+      " for the steps.",
+    );
+    const range = document.createRange();
+    range.setStart(words, 1);
+    range.setEnd(words, 4);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    result.rerender(view("1 section \u00b7 2 open threads"));
+    expect(screen.getByText("1 section \u00b7 2 open threads")).toBeVisible();
+    expect(result.container.querySelector("h1")).toBe(h1);
+    expect(result.container.querySelector("a")).toBe(link);
+    expect(result.container.querySelector("pre")).toBe(pre);
+    expect(window.getSelection()!.toString()).toBe("for");
+  });
 });
