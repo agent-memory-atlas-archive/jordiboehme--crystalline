@@ -130,6 +130,11 @@ pub struct LiveText {
     /// is clean. A token for the room's text says nothing about a file that
     /// has moved past this base since.
     pub base_checksum: String,
+    /// Whether the room is open with a conflict or a failed save of its own:
+    /// it holds text a person typed that cannot be saved until they settle
+    /// it. False for a saving room, and for one that has closed or whose
+    /// final save ran, which nobody is in any more.
+    pub waiting: bool,
 }
 
 /// Why a join did not produce a session.
@@ -1695,11 +1700,14 @@ impl CollabSession {
         };
         let saving =
             !state.closed && !state.final_saved && matches!(state.save_state, SaveStateTag::Ok);
+        let waiting =
+            !state.closed && !state.final_saved && !matches!(state.save_state, SaveStateTag::Ok);
         LiveText {
             text,
             checksum,
             saving,
             base_checksum: state.checksum.clone(),
+            waiting,
         }
     }
 

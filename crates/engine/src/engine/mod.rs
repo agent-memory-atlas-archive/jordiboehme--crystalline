@@ -4815,7 +4815,26 @@ impl Engine {
     /// `no_engine_function_composes_into_a_room_under_a_file_write_lock` scans
     /// for exactly that and names `.live_text(` among its needles, so a caller
     /// that gets this wrong fails the suite rather than the field.
+    ///
+    /// **Only a room that saves answers.** A read shows what an edit would
+    /// write to, and an edit composes only into a room that will save it
+    /// (`Engine::apply_source_edit_staged`); one in conflict, with a failed
+    /// save, or past its final save sends the edit to the file or the row
+    /// behind it. So this probe answers `None` for such a room, and every
+    /// verb that guards on a checksum reads and compares the stored text it
+    /// will write. [`Engine::room_at`] is the look that sees it anyway.
     async fn live_text_at(
+        &self,
+        desc: &EngramDescriptor,
+        view: &DomainView<'_>,
+    ) -> Option<crate::collab::session::LiveText> {
+        self.room_at(desc, view).await.filter(|live| live.saving)
+    }
+
+    /// The room open over this engram in this view, whether or not it will
+    /// save: for a caller that tells somebody about a room that cannot save.
+    /// Called above every file lock, as [`Engine::live_text_at`] is.
+    async fn room_at(
         &self,
         desc: &EngramDescriptor,
         view: &DomainView<'_>,
@@ -6430,7 +6449,7 @@ pub use reflection::{
     ANONYMOUS_COMMENT, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_HOSTED_START,
     REFUSED_NOT_BY_A_COMMAND, REFUSED_OFF_START, REFUSED_PENDING, REFUSED_PENDING_NAMED,
     REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED, REFUSED_PENDING_UNREADABLE,
-    ROOM_WAITING_NOTE, ReflectionSearch, SectionAuthors,
+    ROOM_READ_NOTE, ROOM_WAITING_NOTE, ReflectionSearch, SectionAuthors,
 };
 pub use reflection_assets::WrittenReflectionAsset;
 mod rename_domain;

@@ -410,12 +410,19 @@ impl Engine {
         // guarded with it is guarded against the document rather than against
         // the file - which is what makes read-then-edit work at all while
         // somebody is in there.
-        let live = match live_wins {
-            true => self.live_text_at(&desc, &view).await,
+        //
+        // Only a room that saves, though: a read shows what an edit would
+        // write to, and an edit goes past a room in conflict or with a failed
+        // save to the stored text. Such a room is still named, so the reader
+        // can tell the person in it (`waiting`).
+        let room = match live_wins {
+            true => self.room_at(&desc, &view).await,
             false => None,
         };
-        let present = match &live {
-            Some(_) => {
+        let waiting = room.as_ref().is_some_and(|room| room.waiting);
+        let live = room.filter(|room| room.saving);
+        let present = match (&live, waiting) {
+            (Some(_), _) | (None, true) => {
                 // The agent stands in the room first and is then told who is
                 // in it: `present` is who this read is reading over, and the
                 // reader is not one of them - not on the call that mints its
@@ -431,7 +438,7 @@ impl Engine {
                 };
                 self.live_participants(&desc, &view, mine).await
             }
-            None => Vec::new(),
+            (None, false) => Vec::new(),
         };
         let is_live = live.is_some();
         // The checksum is of the bytes the file or the row holds, taken before
@@ -601,6 +608,15 @@ impl Engine {
         // other read on this instance answers exactly what it always did.
         if is_live {
             obj.insert("live".to_string(), json!(true));
+            obj.insert("present".to_string(), json!(present));
+        } else if waiting {
+            // The bytes above are the saved version, and somebody holds
+            // unsaved text over it they cannot save yet.
+            obj.insert("room".to_string(), json!("waiting"));
+            obj.insert(
+                "room_note".to_string(),
+                json!(super::reflection::ROOM_READ_NOTE),
+            );
             obj.insert("present".to_string(), json!(present));
         }
 

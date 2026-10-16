@@ -72,6 +72,10 @@ pub const ANONYMOUS_COMMENT: &str =
 /// "Saved" rather than "on disk": an engram edit that went past a room may
 /// have landed in a draft or a virtual domain's row.
 pub const ROOM_CONFLICT_NOTE: &str = "your write is saved, and it collides with text somebody in the open room has not saved yet: the people in the room are choosing between their text and yours";
+/// A read's receipt when somebody has the engram open in a room that cannot
+/// save right now: the read answered the saved version, which is where an
+/// edit goes too.
+pub const ROOM_READ_NOTE: &str = "a person has unsaved text in an editor that cannot save right now; you read the saved version, and your edits go to it";
 /// A write's receipt when the open room could not take it in yet.
 pub const ROOM_WAITING_NOTE: &str = "your write is saved; the open room has an unresolved change of its own, and the people in it meet yours when they resolve it";
 

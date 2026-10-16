@@ -1566,6 +1566,107 @@ async fn a_room_that_stops_saving_before_the_compose_gets_the_file_write() {
     );
 }
 
+/// **Task 41b, round 2.** A read shows what an edit would write to. A room in
+/// conflict does not save, so an edit goes to the file behind it; the read
+/// therefore answers the file and its checksum, says the room is waiting
+/// with a note to pass on, and names who is in there. A guarded edit with
+/// that checksum then lands in the file.
+#[tokio::test]
+async fn a_read_of_a_page_whose_room_is_in_conflict_answers_what_an_edit_writes_to() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = beta_room_colliding_with_the_file(&tmp, &engine, &sessions).await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+    let path = tmp.path().join("eng/beta.md");
+
+    let read = engine
+        .read_engram(
+            &ReadParams {
+                identifier: "beta".to_string(),
+                domain: Some("eng".to_string()),
+                ..ReadParams::default()
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert!(read.get("live").is_none(), "{read}");
+    assert_eq!(read["room"], "waiting", "{read}");
+    assert_eq!(
+        read["room_note"],
+        crystalline_service::engine::ROOM_READ_NOTE,
+        "{read}"
+    );
+    assert!(read["present"].is_array(), "{read}");
+    assert_eq!(
+        read["checksum"].as_str().unwrap(),
+        sha256_hex_of(&std::fs::read_to_string(&path).unwrap()),
+        "the file's checksum: {read}"
+    );
+    let content = read["content"].as_str().unwrap_or_default();
+    assert!(
+        content.contains("written on disk") && !content.contains("typed in the room"),
+        "the file's text: {read}"
+    );
+
+    let receipt = engine
+        .edit_engram_as(
+            &append_to(
+                "beta",
+                "guarded by the read",
+                Some(read["checksum"].as_str().unwrap()),
+            ),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("the read's checksum guards the file write");
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    assert_eq!(receipt["room"], "waiting", "{receipt}");
+    assert_eq!(
+        receipt["room_note"],
+        crystalline_service::engine::ROOM_WAITING_NOTE,
+        "{receipt}"
+    );
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("guarded by the read")
+    );
+}
+
+/// **Task 41b, round 2.** The guarded verbs besides the edit read what the
+/// read read. A delete guarded with the checksum a read of a page whose room
+/// is in conflict handed out (the file's) is compared against the file, not
+/// against the room's text, and lands.
+#[tokio::test]
+async fn a_guarded_delete_past_a_room_in_conflict_compares_the_saved_version() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = beta_room_colliding_with_the_file(&tmp, &engine, &sessions).await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+    let path = tmp.path().join("eng/beta.md");
+    let checksum = sha256_hex_of(&std::fs::read_to_string(&path).unwrap());
+
+    engine
+        .delete_engram(&crystalline_service::params::DeleteParams {
+            identifier: "beta".to_string(),
+            domain: "eng".to_string(),
+            expected_checksum: Some(checksum),
+        })
+        .await
+        .expect("the saved version's checksum guards the delete");
+    assert!(!path.exists());
+}
+
 /// **Task 41b.** A room whose save was refused saves nothing either, so an
 /// agent's edit goes to the file, not into the room.
 #[tokio::test]
@@ -1899,7 +2000,10 @@ async fn a_checksum_read_from_a_virtual_room_that_cannot_save_guards_the_row_wri
         )
         .await
         .unwrap();
-    assert_eq!(stored["live"], true, "the read still answers the room");
+    assert!(
+        stored.get("live").is_none() && stored["room"] == "waiting",
+        "the read answers the row and names the waiting room: {stored}"
+    );
     let row = engine
         .engram_text("eng", "alpha")
         .await
@@ -1909,21 +2013,14 @@ async fn a_checksum_read_from_a_virtual_room_that_cannot_save_guards_the_row_wri
     drop(scratch);
 }
 
-/// The checksum `read_engram` hands out for `alpha` right now.
-async fn read_checksum(engine: &Engine) -> String {
-    let read = engine
-        .read_engram(
-            &ReadParams {
-                identifier: "alpha".to_string(),
-                domain: Some("eng".to_string()),
-                ..ReadParams::default()
-            },
-            &crystalline_service::Scope::Unrestricted,
-        )
+/// The checksum the room over `alpha` stands for: the token a caller holds
+/// who read the page while that room still saved.
+async fn room_checksum(sessions: &CollabSessions) -> String {
+    sessions
+        .live_text("eng", "alpha", None)
         .await
-        .unwrap();
-    assert_eq!(read["live"], true, "{read}");
-    read["checksum"].as_str().unwrap().to_string()
+        .expect("the room stands")
+        .checksum
 }
 
 /// **Task 41b.** A caller that read a page while its room could not save
@@ -1937,7 +2034,7 @@ async fn a_checksum_read_from_a_room_that_cannot_save_guards_the_file_write() {
     let sessions = CollabSessions::new(engine.clone());
     engine.set_collab_sessions(&sessions);
     let (_joined, _doc) = alpha_room_whose_save_failed(&sessions, None).await;
-    let live_sum = read_checksum(&engine).await;
+    let live_sum = room_checksum(&sessions).await;
     let path = tmp.path().join("eng/alpha.md");
     assert_ne!(
         live_sum,
@@ -1992,7 +2089,7 @@ async fn a_room_checksum_is_stale_once_another_writer_changed_the_file() {
     let sessions = CollabSessions::new(engine.clone());
     engine.set_collab_sessions(&sessions);
     let (_joined, _doc) = alpha_room_whose_save_failed(&sessions, None).await;
-    let live_sum = read_checksum(&engine).await;
+    let live_sum = room_checksum(&sessions).await;
     let path = tmp.path().join("eng/alpha.md");
     std::fs::write(&path, format!("{ALPHA}written by a third writer\n")).unwrap();
 
