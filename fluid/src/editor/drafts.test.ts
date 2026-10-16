@@ -58,12 +58,24 @@ describe("draft snapshots", () => {
       expect(readOffers("ada", "eng", "offer")).toEqual([at(4), at(3), at(2)]);
       expect(OFFER_LIMIT).toBe(3);
       // The same text again takes its old place rather than standing twice.
-      addOffer("ada", "eng", "offer", { ...at(2), savedAt: "later" });
+      addOffer("ada", "eng", "offer", { ...at(2), savedAt: at(9).savedAt });
       expect(
         readOffers("ada", "eng", "offer").map((offer) => offer.savedAt),
-      ).toEqual(["later", at(4).savedAt, at(3).savedAt]);
+      ).toEqual([at(9).savedAt, at(4).savedAt, at(3).savedAt]);
       // A reader of one draft still finds the newest text.
       expect(readDraft("ada", "eng", "offer")?.content).toBe("text 2");
+    });
+
+    it("reads newest first by when each was saved, whatever order two tabs added them in", () => {
+      addOffer("ada", "eng", "offer", at(3));
+      // Another tab, slower to write, adds an older text after it.
+      addOffer("ada", "eng", "offer", at(1));
+      addOffer("ada", "eng", "offer", { ...at(2), savedAt: "" });
+      expect(readOffers("ada", "eng", "offer")).toEqual([
+        at(3),
+        at(1),
+        { ...at(2), savedAt: "" },
+      ]);
     });
 
     it("reads a slot written as one draft as a history of one", () => {

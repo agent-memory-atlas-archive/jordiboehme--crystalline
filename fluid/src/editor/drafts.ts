@@ -144,6 +144,12 @@ export const OFFER_LIMIT = 3;
  * written before the history existed reads as a history of one. A newer
  * text no longer replaces an offer nobody answered; the oldest of four goes.
  */
+/** When a draft was saved, for ordering; one with no readable time sorts last. */
+function savedTime(draft: Draft): number {
+  const at = Date.parse(draft.savedAt);
+  return Number.isNaN(at) ? Number.NEGATIVE_INFINITY : at;
+}
+
 export function readOffers(
   user: string,
   domain: string,
@@ -170,7 +176,14 @@ export function readOffers(
           return draft === null ? [] : [draft];
         })
       : [];
-    return [newest, ...earlier].slice(0, OFFER_LIMIT);
+    // Newest first by when each was saved, not by when it was added here:
+    // two tabs can add offers out of order. A sort is stable, so offers
+    // with the same time (or none) keep the order they were stored in.
+    return [newest, ...earlier]
+      .map((draft, index) => ({ draft, index, at: savedTime(draft) }))
+      .sort((a, b) => b.at - a.at || a.index - b.index)
+      .map(({ draft }) => draft)
+      .slice(0, OFFER_LIMIT);
   } catch {
     return [];
   }
