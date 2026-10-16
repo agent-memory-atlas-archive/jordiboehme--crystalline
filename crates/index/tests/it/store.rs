@@ -12404,9 +12404,9 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
         census.failures.join("\n")
     );
     assert_eq!(
-        census.sites, 186,
+        census.sites, 188,
         "the engram statement census moved; every new one needs a predicate or a waiver. \
-         77 per backend in mod.rs (`CITED_ENGRAM_SQL`, one cited engram by permalink, is the newest, on the base rows; before it `ENGRAM_COVERAGE_SQL`, the coverage of one domain's engram chunks, waived below; before it the Reflection gate's two probes, \
+         78 per backend in mod.rs (`BASE_PATH_SQL`, the folder counts' existence probe of one path, is the newest, on the base rows; before it `CITED_ENGRAM_SQL`, one cited engram by permalink, on the base rows; before it `ENGRAM_COVERAGE_SQL`, the coverage of one domain's engram chunks, waived below; before it the Reflection gate's two probes, \
          `ENGRAM_ROWS_UNDER_REFLECTIONS_SQL` and `HAS_ENGRAM_ROWS_SQL`, are the newest, \
          both on the base rows; before them the `LIMIT 1` probe of `folder_holds_other`, \
          on the base rows; before it the path listing of `overlay_paths`, on \
