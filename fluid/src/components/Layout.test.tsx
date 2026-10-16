@@ -219,6 +219,46 @@ function stubNarrowWindow() {
   });
 }
 
+/**
+ * A window whose width can change under the frame: starts narrow, and
+ * `resize(true)` takes it past the medium breakpoint (or back).
+ */
+function stubResizableWindow(): (wide: boolean) => void {
+  let wide = false;
+  const listeners = new Set<(event: { matches: boolean }) => void>();
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: (query: string) => ({
+      get matches() {
+        return query.includes("min-width") ? wide : false;
+      },
+      media: query,
+      addEventListener: (
+        _: string,
+        fn: (event: { matches: boolean }) => void,
+      ) => {
+        if (query.includes("min-width")) {
+          listeners.add(fn);
+        }
+      },
+      removeEventListener: (
+        _: string,
+        fn: (event: { matches: boolean }) => void,
+      ) => {
+        listeners.delete(fn);
+      },
+    }),
+  });
+  return (next) => {
+    act(() => {
+      wide = next;
+      listeners.forEach((fn) => {
+        fn({ matches: wide });
+      });
+    });
+  };
+}
+
 beforeEach(() => {
   apiMock.mockReset();
   setCsrfTokenMock.mockReset();
@@ -1127,10 +1167,13 @@ describe("the sidebar's own width", () => {
     renderApp("/");
 
     // The one control a narrow window offers says what the drawer is doing,
-    // with nothing beside it to contradict it.
+    // with nothing beside it to contradict it, and points at the drawer only
+    // while there is one.
     const toggle = await screen.findByRole("button", { name: "Domains" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).not.toHaveAttribute("aria-controls");
     await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-controls", "domain-sidebar");
     const nav = await screen.findByRole("navigation", { name: "Domains" });
     expect(
       await within(nav).findByRole("link", { name: /^eng/ }),
@@ -1294,6 +1337,75 @@ describe("the sidebar's own width", () => {
     // Narrow again, and the drawer stays shut until it is asked for.
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps folders opened by hand across the drawer and the column", async () => {
+    const resize = stubResizableWindow();
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    const toggle = await screen.findByRole("button", { name: "Domains" });
+    await user.click(toggle);
+    let drawer = await screen.findByRole("dialog", { name: "eng" });
+    await user.click(
+      await within(drawer).findByRole("button", { name: "Expand notes" }),
+    );
+    // Shut and opened again: the folder is still open.
+    await user.click(
+      within(drawer).getByRole("button", { name: "Close the sidebar" }),
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    await user.click(toggle);
+    drawer = await screen.findByRole("dialog", { name: "eng" });
+    expect(
+      await within(drawer).findByRole("button", { name: "Collapse notes" }),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    // And the column past the breakpoint draws it open as well.
+    resize(true);
+    const nav = await sidebar();
+    expect(
+      await within(nav).findByRole("button", { name: "Collapse notes" }),
+    ).toBeVisible();
+    // Shut there, it is shut in the drawer too.
+    await user.click(
+      within(nav).getByRole("button", { name: "Collapse notes" }),
+    );
+    resize(false);
+    await user.click(toggle);
+    drawer = await screen.findByRole("dialog", { name: "eng" });
+    expect(
+      await within(drawer).findByRole("button", { name: "Expand notes" }),
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps a dialog opened from the drawer, and its text, when the window grows", async () => {
+    const resize = stubResizableWindow();
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Domains" }));
+    const drawer = await screen.findByRole("dialog", { name: "eng" });
+    await user.click(
+      await within(drawer).findByRole("button", { name: "New engram" }),
+    );
+    const create = await screen.findByRole("dialog", {
+      name: /^New engram in/,
+    });
+    const title = within(create).getByRole("textbox", { name: /title/i });
+    await user.type(title, "Half typed");
+
+    resize(true);
+    // The drawer is gone, the dialog and what was typed in it are not.
+    expect(screen.queryByRole("dialog", { name: "eng" })).toBeNull();
+    const still = screen.getByRole("dialog", { name: /^New engram in/ });
+    expect(within(still).getByRole("textbox", { name: /title/i })).toHaveValue(
+      "Half typed",
+    );
   });
 
   it("names the drawer All domains outside a domain", async () => {

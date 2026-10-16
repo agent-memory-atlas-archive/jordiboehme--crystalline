@@ -28,7 +28,6 @@ import {
   Plus,
 } from "lucide-react";
 import type { ReactElement } from "react";
-import { useState } from "react";
 import { Link, useLocation } from "react-router";
 
 import { problemDetail } from "../api/client";
@@ -39,23 +38,16 @@ import {
   reflectionTreeKey,
 } from "../api/reflection";
 import { atLeast } from "../api/reflectionDomains";
-import { lazyChunk } from "../lazyChunk";
 import { plural } from "../format";
 import {
   reflectionPageRoute,
   reflectionReviewRoute,
   reflectionRoute,
 } from "../paths";
-import { LazyBoundary } from "./LazyBoundary";
 import { useReflectionStatus } from "./ReflectionModeSwitch";
 import { SIDE } from "./primitives";
+import { useFolderOpen, useSidebarState } from "./sidebarState";
 import { WritePact } from "./WritePact";
-
-const NewReflectionDialog = lazyChunk(() =>
-  import("./NewReflectionDialog").then((m) => ({
-    default: m.NewReflectionDialog,
-  })),
-);
 
 const INDENT_LEVELS = 6;
 
@@ -86,8 +78,7 @@ export function ReflectionNav({
     status.data !== undefined && atLeast(status.data.right, "edit");
   const mayCurate =
     status.data !== undefined && atLeast(status.data.right, "curate");
-  const [creating, setCreating] = useState(false);
-  const [launcher, setLauncher] = useState<HTMLElement | null>(null);
+  const sidebar = useSidebarState();
   const pact = tree.data?.pact;
   const threads = tree.data === undefined ? 0 : openThreadCount(tree.data);
   return (
@@ -184,8 +175,14 @@ export function ReflectionNav({
         <button
           type="button"
           onClick={(event) => {
-            setLauncher(event.currentTarget);
-            setCreating(true);
+            sidebar?.create({
+              kind: "page",
+              domain,
+              folder: path.includes("/")
+                ? path.slice(0, path.lastIndexOf("/"))
+                : "",
+              launcher: event.currentTarget,
+            });
           }}
           className={`${ROW} ${SIDE.add} mt-1.5 w-full`}
         >
@@ -197,20 +194,6 @@ export function ReflectionNav({
           />
           New page
         </button>
-      )}
-      {creating && (
-        <LazyBoundary fallback={null}>
-          <NewReflectionDialog
-            domain={domain}
-            returnFocusTo={launcher}
-            folder={
-              path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ""
-            }
-            onClose={() => {
-              setCreating(false);
-            }}
-          />
-        </LazyBoundary>
       )}
     </nav>
   );
@@ -227,21 +210,14 @@ function Node({
   path: string;
   depth: number;
 }): ReactElement {
-  const [open, setOpen] = useState(
-    () => node.kind === "folder" && holds(node.path, path),
-  );
   // Walking to a page under a shut folder opens the folders on its way; a
-  // folder the reader opened stays open.
+  // folder the reader opened stays open, kept by the frame so the drawer
+  // and the column agree.
   const onTheWay = node.kind === "folder" && holds(node.path, path);
-  // Adjusted while rendering, the way React documents it for state that
-  // follows a prop, rather than in an effect.
-  const [wasOnTheWay, setWasOnTheWay] = useState(onTheWay);
-  if (onTheWay !== wasOnTheWay) {
-    setWasOnTheWay(onTheWay);
-    if (onTheWay) {
-      setOpen(true);
-    }
-  }
+  const [open, setOpen] = useFolderOpen(
+    `reflection\u0000${domain}\u0000${node.path}`,
+    onTheWay,
+  );
   if (node.kind === "reflection") {
     const current = node.path === path;
     return (

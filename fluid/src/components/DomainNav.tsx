@@ -45,7 +45,6 @@ import {
   House,
   Plus,
 } from "lucide-react";
-import { useState } from "react";
 import { Link, useMatch, useSearchParams } from "react-router";
 
 import { problemDetail } from "../api/client";
@@ -57,8 +56,8 @@ import { frontmatterFilters } from "../filters";
 import { isRetired } from "../lifecycle";
 import { domainRoute, engramRoute, folderRoute } from "../paths";
 import { ENGRAM_PREFETCH } from "../prefetch";
-import { CreateEngramDialog } from "./CreateEngramDialog";
 import { FOCUS_RING, SIDE } from "./primitives";
+import { useFolderOpen, useSidebarState } from "./sidebarState";
 
 export interface DomainNavProps {
   /** The domain the route is inside. */
@@ -72,8 +71,7 @@ export interface DomainNavProps {
 
 export function DomainNav({ domain, permalink }: DomainNavProps) {
   const { canWrite } = useDomainWritable(domain);
-  const [creating, setCreating] = useState(false);
-  const [launcher, setLauncher] = useState<HTMLElement | null>(null);
+  const sidebar = useSidebarState();
   const [params] = useSearchParams();
   // Whether the domain's own page is what stands beside the tree: the exact
   // route, no engram, no editor. Only that page writes `path`, so the folder
@@ -133,8 +131,11 @@ export function DomainNav({ domain, permalink }: DomainNavProps) {
         <button
           type="button"
           onClick={(event) => {
-            setLauncher(event.currentTarget);
-            setCreating(true);
+            sidebar?.create({
+              kind: "engram",
+              domain,
+              launcher: event.currentTarget,
+            });
           }}
           className={`${SIDE.row} ${SIDE.add} mt-1.5 w-full`}
         >
@@ -146,16 +147,6 @@ export function DomainNav({ domain, permalink }: DomainNavProps) {
           />
           New engram
         </button>
-      )}
-      {creating && (
-        <CreateEngramDialog
-          domain={domain}
-          initialFolder=""
-          returnFocusTo={launcher}
-          onClose={() => {
-            setCreating(false);
-          }}
-        />
       )}
     </div>
   );
@@ -350,18 +341,13 @@ function Folder({
     permalink.startsWith(`${path}/`) ||
     browsing === path ||
     browsing.startsWith(`${path}/`);
-  const [open, setOpen] = useState(holdsCurrent);
-  // Adjusted while rendering rather than in an effect, which is what React
-  // asks for when state has to follow a prop: the branch opens in the same
-  // pass that noticed the reader moved into it, with no flash of a shut
-  // folder in between.
-  const [held, setHeld] = useState(holdsCurrent);
-  if (held !== holdsCurrent) {
-    setHeld(holdsCurrent);
-    if (holdsCurrent) {
-      setOpen(true);
-    }
-  }
+  // Kept by the frame rather than by this row, so a folder opened by hand
+  // stays open when the drawer shuts or the window crosses the breakpoint.
+  // It opens in the same pass that noticed the reader moved into it.
+  const [open, setOpen] = useFolderOpen(
+    `engrams\u0000${domain}\u0000${path}`,
+    holdsCurrent,
+  );
 
   return (
     <>
@@ -396,7 +382,7 @@ function Folder({
           aria-expanded={open}
           aria-label={`${open ? "Collapse" : "Expand"} ${name}`}
           onClick={() => {
-            setOpen((wasOpen) => !wasOpen);
+            setOpen(!open);
           }}
           className={`self-stretch rounded-[7px] pr-1 pl-2.5 text-muted ${FOCUS_RING}`}
         >

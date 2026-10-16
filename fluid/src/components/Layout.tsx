@@ -112,8 +112,15 @@ import { SharePickerDialog } from "./SharePickerDialog";
 import { ShatterGem } from "./ShatterGem";
 import { ownedPhrase, shareBadgeCount } from "./changes";
 import { Chip, FOCUS_RING, IconButton, SIDE, Tooltip } from "./primitives";
+import { SidebarStateContext, useSidebarState } from "./sidebarState";
+import type { SidebarCreate, SidebarState } from "./sidebarState";
 
 const ReflectionNav = lazyChunk(() => import("./ReflectionNav"));
+const NewReflectionDialog = lazyChunk(() =>
+  import("./NewReflectionDialog").then((m) => ({
+    default: m.NewReflectionDialog,
+  })),
+);
 
 /**
  * What the command palette's shortcut is called on this keyboard.
@@ -566,6 +573,26 @@ export function Layout() {
   // The Help button, when it is what opened the shortcut map: a menu item has
   // unmounted by the time the dialog closes, so focus would be lost to <body>.
   const [helpReturn, setHelpReturn] = useState<HTMLElement | null>(null);
+  // What the sidebar keeps outside its own rows (see `sidebarState.ts`): the
+  // folders opened by hand and the create dialog it asked for, which the
+  // frame draws so neither is lost when the drawer shuts or the window
+  // crosses the breakpoint.
+  const [folders, setFolders] = useState<Record<string, boolean>>({});
+  const [sidebarCreate, setSidebarCreate] = useState<SidebarCreate | null>(
+    null,
+  );
+  const sidebarState = useMemo<SidebarState>(
+    () => ({
+      folders,
+      setFolder: (key, open) => {
+        setFolders((was) =>
+          was[key] === open ? was : { ...was, [key]: open },
+        );
+      },
+      create: setSidebarCreate,
+    }),
+    [folders],
+  );
   // Registering a domain is the frame's own act rather than any screen's: it
   // is what the sidebar lists, and the sidebar is on every screen.
   const [creatingDomain, setCreatingDomain] = useState(false);
@@ -794,136 +821,165 @@ export function Layout() {
     // this is the authenticated shell: it mounts once, after login, and
     // never on the login or setup screens.
     <ChangeStreamProvider>
-      {/*
+      <SidebarStateContext value={sidebarState}>
+        {/*
         The width context goes around the whole frame rather than around the
         outlet: the top bar's own width button is a reader of this value too.
       */}
-      <LayoutWidthContext value={width}>
-        <LayoutTextContext value={text}>
-          <EngramsOrderContext value={engramsOrderChoice}>
-            <div className="min-h-screen bg-canvas text-ink">
-              <TopBar
-                navToggleRef={navToggleRef}
-                navOpen={navOpen}
-                onToggleNav={() => {
-                  setNavOpen((open) => !open);
-                }}
-                onShare={openShare}
-                onHelp={(opener) => {
-                  setHelpReturn(opener);
-                  setHelpOpen(true);
-                }}
-                onCreateDomain={
-                  capabilities.canAdminister
-                    ? () => {
-                        setCreatingDomain(true);
-                      }
-                    : null
-                }
-              />
-              <PhoneModeRow />
-              {/*
+        <LayoutWidthContext value={width}>
+          <LayoutTextContext value={text}>
+            <EngramsOrderContext value={engramsOrderChoice}>
+              <div className="min-h-screen bg-canvas text-ink">
+                <TopBar
+                  navToggleRef={navToggleRef}
+                  navOpen={navOpen}
+                  onToggleNav={() => {
+                    setNavOpen((open) => !open);
+                  }}
+                  onShare={openShare}
+                  onHelp={(opener) => {
+                    setHelpReturn(opener);
+                    setHelpOpen(true);
+                  }}
+                  onCreateDomain={
+                    capabilities.canAdminister
+                      ? () => {
+                          setCreatingDomain(true);
+                        }
+                      : null
+                  }
+                />
+                <PhoneModeRow />
+                {/*
           Above everything, on every screen, for as long as this window is
           inside somebody else's draft. Working in another person's unfolded
           work is a state the WINDOW is in rather than something one page
           does, so it is drawn here and not by the screen that started it.
         */}
-              <JoinedDraftBar />
-              <div
-                className={`mx-auto flex w-full gap-6 px-4 md:gap-10 md:pl-0 ${
-                  fullWidth ? "" : "max-w-350"
-                }`}
-              >
-                {/*
+                <JoinedDraftBar />
+                <div
+                  className={`mx-auto flex w-full gap-6 px-4 md:gap-10 md:pl-0 ${
+                    fullWidth ? "" : "max-w-350"
+                  }`}
+                >
+                  {/*
             The stored rail only reaches the sidebar where there is a sidebar
             to apply it to: below `md` this is a drawer, and it is always
             expanded.
           */}
-                <DomainSidebar
-                  open={navOpen}
-                  rail={rail && wide}
-                  onToggleRail={toggleRail}
-                  onDismiss={() => {
-                    setNavOpen(false);
-                  }}
-                  drawerToggle={navToggleRef}
-                  onCreateDomain={() => {
-                    setCreatingDomain(true);
-                  }}
-                />
-                {/*
+                  <DomainSidebar
+                    open={navOpen}
+                    rail={rail && wide}
+                    onToggleRail={toggleRail}
+                    onDismiss={() => {
+                      setNavOpen(false);
+                    }}
+                    drawerToggle={navToggleRef}
+                    onCreateDomain={() => {
+                      setCreatingDomain(true);
+                    }}
+                  />
+                  {/*
             One attribute for the whole app's measure: the stylesheet lifts the
             cap under it, so no screen has to know anything about the choice to
             be drawn at the width it asks for. The frame's own cap goes with
             it: full width means the window, not a wider column inside the
             same box.
           */}
-                <main
-                  ref={mainRef}
-                  tabIndex={-1}
-                  data-width={fullWidth ? "full" : undefined}
-                  data-text={largeText ? "large" : undefined}
-                  className="min-w-0 flex-1 py-6 focus:outline-none"
-                >
-                  <Outlet />
-                </main>
-              </div>
-              <RouteFocus target={mainRef} />
-              {/*
+                  <main
+                    ref={mainRef}
+                    tabIndex={-1}
+                    data-width={fullWidth ? "full" : undefined}
+                    data-text={largeText ? "large" : undefined}
+                    className="min-w-0 flex-1 py-6 focus:outline-none"
+                  >
+                    <Outlet />
+                  </main>
+                </div>
+                <RouteFocus target={mainRef} />
+                {/*
           Once for the whole app, so the shortcut works on every screen and the
           palette outlives the screen a jump leaves behind.
         */}
-              <CommandPalette />
-              {/*
+                <CommandPalette />
+                {/*
           And the map of the keys that drive it, one press away from anywhere.
         */}
-              <HelpOverlay
-                open={helpOpen}
-                returnFocusTo={helpReturn}
-                onClose={() => {
-                  setHelpOpen(false);
-                }}
-              />
-              {/*
+                <HelpOverlay
+                  open={helpOpen}
+                  returnFocusTo={helpReturn}
+                  onClose={() => {
+                    setHelpOpen(false);
+                  }}
+                />
+                {/*
           Mounted by the frame rather than by the sidebar, because both ways in
           - the launcher under the listing and the palette row - are the
           frame's.
         */}
-              {creatingDomain && (
-                <CreateDomainDialog
-                  onClose={() => {
-                    setCreatingDomain(false);
-                  }}
-                />
-              )}
-              {/*
+                {/*
+          The sidebar's create dialogs, drawn here rather than inside the
+          sidebar so a window crossing the breakpoint keeps them open, with
+          what was typed in them.
+        */}
+                {sidebarCreate?.kind === "engram" && (
+                  <CreateEngramDialog
+                    domain={sidebarCreate.domain}
+                    initialFolder=""
+                    returnFocusTo={sidebarCreate.launcher}
+                    onClose={() => {
+                      setSidebarCreate(null);
+                    }}
+                  />
+                )}
+                {sidebarCreate?.kind === "page" && (
+                  <LazyBoundary fallback={null}>
+                    <NewReflectionDialog
+                      domain={sidebarCreate.domain}
+                      folder={sidebarCreate.folder}
+                      returnFocusTo={sidebarCreate.launcher}
+                      onClose={() => {
+                        setSidebarCreate(null);
+                      }}
+                    />
+                  </LazyBoundary>
+                )}
+                {creatingDomain && (
+                  <CreateDomainDialog
+                    onClose={() => {
+                      setCreatingDomain(false);
+                    }}
+                  />
+                )}
+                {/*
           The same pair, for the same reason: the button and the palette row
           both belong to the frame, and the picker hands straight over to the
           dialog beside it rather than opening a second one over itself.
         */}
-              {pickingShare && (
-                <SharePickerDialog
-                  onPick={(domain) => {
-                    setPickingShare(false);
-                    setShareDomain(domain);
-                  }}
-                  onClose={() => {
-                    setPickingShare(false);
-                  }}
-                />
-              )}
-              {shareDomain !== null && (
-                <ShareDialog
-                  domain={shareDomain}
-                  onClose={() => {
-                    setShareDomain(null);
-                  }}
-                />
-              )}
-            </div>
-          </EngramsOrderContext>
-        </LayoutTextContext>
-      </LayoutWidthContext>
+                {pickingShare && (
+                  <SharePickerDialog
+                    onPick={(domain) => {
+                      setPickingShare(false);
+                      setShareDomain(domain);
+                    }}
+                    onClose={() => {
+                      setPickingShare(false);
+                    }}
+                  />
+                )}
+                {shareDomain !== null && (
+                  <ShareDialog
+                    domain={shareDomain}
+                    onClose={() => {
+                      setShareDomain(null);
+                    }}
+                  />
+                )}
+              </div>
+            </EngramsOrderContext>
+          </LayoutTextContext>
+        </LayoutWidthContext>
+      </SidebarStateContext>
     </ChangeStreamProvider>
   );
 }
@@ -1002,7 +1058,9 @@ function TopBar({
           icon={PanelLeft}
           onClick={onToggleNav}
           aria-expanded={navOpen}
-          aria-controls="domain-sidebar"
+          // The drawer exists only while open below the breakpoint, so the
+          // reference is made only when there is something to point at.
+          aria-controls={navOpen || wide ? "domain-sidebar" : undefined}
           className="md:hidden"
         />
 
@@ -1279,10 +1337,7 @@ function DomainSidebar({
   const navigate = useNavigate();
   const { capabilities } = useAuth();
   const wide = useWide();
-  const [creating, setCreating] = useState(false);
-  // The rail's launcher, where the keyboard goes back to when its dialog is
-  // dismissed (the dialog's lazy body loses radix's own return).
-  const [launcher, setLauncher] = useState<HTMLElement | null>(null);
+  const sidebar = useSidebarState();
   const listing = useQuery({
     queryKey: DOMAINS_QUERY_KEY,
     queryFn: fetchDomains,
@@ -1354,8 +1409,11 @@ function DomainSidebar({
           label="New engram"
           icon={Plus}
           onClick={(event) => {
-            setLauncher(event.currentTarget);
-            setCreating(true);
+            sidebar?.create({
+              kind: "engram",
+              domain,
+              launcher: event.currentTarget,
+            });
           }}
         />
       )}
@@ -1416,9 +1474,10 @@ function DomainSidebar({
               event.preventDefault();
               (event.currentTarget as HTMLElement).focus();
             }}
-            // Escape belongs to the dialog on top. Radix's own layer check
-            // misses a dialog whose lazy body was already loaded, so a
-            // second open dialog is asked about here directly.
+            // Escape belongs to the dialog on top. Radix's layer stack already
+            // sees to that; this is belt-and-braces for a dialog opened from
+            // the drawer in the same tick as the key, before its layer has
+            // registered, so the drawer never shuts under an open dialog.
             onEscapeKeyDown={(event) => {
               const dialogs = document.querySelectorAll(
                 "[role=dialog], [role=alertdialog]",
@@ -1505,16 +1564,6 @@ function DomainSidebar({
           onClick={fold}
         />
       </div>
-      {creating && (
-        <CreateEngramDialog
-          domain={domain}
-          initialFolder=""
-          returnFocusTo={launcher}
-          onClose={() => {
-            setCreating(false);
-          }}
-        />
-      )}
     </nav>
   );
 }
