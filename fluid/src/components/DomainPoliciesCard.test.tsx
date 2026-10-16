@@ -154,9 +154,9 @@ describe("the domain policies card", () => {
     const card = await policiesCard();
 
     expect(
-      within(card).getByText("Every switch this MANIFEST can set"),
+      within(card).getByText(/^Every switch this MANIFEST can set/),
     ).toBeVisible();
-    const sharing = within(card).getByRole("row", { name: /^sharing/ });
+    const sharing = within(card).getByRole("group", { name: /^sharing/ });
     // Nothing in the frontmatter says anything about this key, which is a
     // different sentence from the value it is read as.
     expect(within(sharing).getByText("not declared")).toBeVisible();
@@ -189,13 +189,39 @@ describe("the domain policies card", () => {
     ).toBeVisible();
   });
 
+  it("draws each key as a group with its meaning, its current value and one control", async () => {
+    serve();
+
+    renderApp("/d/eng/settings");
+    const card = await policiesCard();
+
+    const groups = within(card).getAllByRole("group");
+    expect(groups.length).toBeGreaterThan(0);
+    for (const group of groups) {
+      // The key names the group, and the sentence beside it says what the
+      // key does, so a reader never has to know the key to read the page.
+      expect(group.textContent ?? "").toMatch(/In the MANIFEST: /);
+    }
+    const sharing = within(card).getByRole("group", { name: /^sharing/ });
+    expect(
+      within(sharing).getByRole("combobox", { name: "sharing" }),
+    ).toHaveValue("proposal");
+    expect(within(sharing).getAllByRole("option").length).toBeGreaterThan(1);
+    // A free-text key has a value and no select.
+    const home = within(card).getByRole("group", { name: /^reflection_home/ });
+    expect(within(home).queryByRole("combobox")).toBeNull();
+    expect(card.querySelector("table")).toBeNull();
+  });
+
   it("renders a text-kind row as read-only text, never a select", async () => {
     serve();
 
     renderApp("/d/eng/settings");
     const card = await policiesCard();
 
-    const domainName = within(card).getByRole("row", { name: /^domain_name/ });
+    const domainName = within(card).getByRole("group", {
+      name: /^domain_name/,
+    });
     expect(within(domainName).getByText("eng")).toBeVisible();
     expect(within(domainName).queryByRole("combobox")).toBeNull();
     expect(
@@ -222,7 +248,7 @@ describe("the domain policies card", () => {
 
     // The server fills the home in when Reflection is switched on; nobody
     // types it, and it is not a name to change through a rename.
-    const home = within(card).getByRole("row", { name: /^reflection_home/ });
+    const home = within(card).getByRole("group", { name: /^reflection_home/ });
     expect(within(home).queryByRole("combobox")).toBeNull();
     expect(
       within(home).queryByRole("button", { name: "Change name" }),
@@ -235,7 +261,9 @@ describe("the domain policies card", () => {
 
     renderApp("/d/eng/settings");
     const card = await policiesCard();
-    const domainName = within(card).getByRole("row", { name: /^domain_name/ });
+    const domainName = within(card).getByRole("group", {
+      name: /^domain_name/,
+    });
 
     await userEvent.click(
       within(domainName).getByRole("button", { name: "Change name" }),
@@ -283,7 +311,9 @@ describe("the domain policies card", () => {
 
     renderApp("/d/eng/settings");
     const card = await policiesCard();
-    const domainName = within(card).getByRole("row", { name: /^domain_name/ });
+    const domainName = within(card).getByRole("group", {
+      name: /^domain_name/,
+    });
     await userEvent.click(
       within(domainName).getByRole("button", { name: "Change name" }),
     );
@@ -317,7 +347,9 @@ describe("the domain policies card", () => {
 
     renderApp("/d/eng/settings");
     const card = await policiesCard();
-    const domainName = within(card).getByRole("row", { name: /^domain_name/ });
+    const domainName = within(card).getByRole("group", {
+      name: /^domain_name/,
+    });
 
     expect(
       within(domainName).queryByRole("button", { name: "Change name" }),
@@ -332,7 +364,9 @@ describe("the domain policies card", () => {
 
     renderApp("/d/eng/settings");
     const card = await policiesCard();
-    const domainName = within(card).getByRole("row", { name: /^domain_name/ });
+    const domainName = within(card).getByRole("group", {
+      name: /^domain_name/,
+    });
     const button = within(domainName).getByRole("button", {
       name: "Change name",
     });
@@ -356,7 +390,9 @@ describe("the domain policies card", () => {
 
     renderApp("/d/eng/settings");
     const card = await policiesCard();
-    const domainName = within(card).getByRole("row", { name: /^domain_name/ });
+    const domainName = within(card).getByRole("group", {
+      name: /^domain_name/,
+    });
     const button = await within(domainName).findByRole("button", {
       name: "Change name",
     });
@@ -414,7 +450,7 @@ describe("the domain policies card", () => {
     // The answer carries the manifest as it now reads, so the declared cell
     // moves without a second read of the route.
     expect(
-      await within(card).findByText("shared", { selector: "td" }),
+      await within(card).findByText("shared", { selector: "span" }),
     ).toBeVisible();
   });
 
@@ -552,7 +588,7 @@ describe("the domain policies card", () => {
     // that neither owns the domain nor administers the instance reads the
     // policies and is offered nothing.
     expect(within(card).queryByRole("combobox")).toBeNull();
-    expect(within(card).getByRole("row", { name: /^sharing/ })).toBeVisible();
+    expect(within(card).getByRole("group", { name: /^sharing/ })).toBeVisible();
   });
 
   it("on a locked domain only the read_only row can change, and the others say why", async () => {
@@ -612,7 +648,9 @@ describe("the domain policies card", () => {
     const card = await policiesCard();
     // Switching it on is the owner's, like switching it off (decision D10):
     // the row is read, never offered.
-    expect(within(card).getByRole("row", { name: /^read_only/ })).toBeVisible();
+    expect(
+      within(card).getByRole("group", { name: /^read_only/ }),
+    ).toBeVisible();
     expect(
       within(card).queryByRole("combobox", { name: "read_only" }),
     ).toBeNull();

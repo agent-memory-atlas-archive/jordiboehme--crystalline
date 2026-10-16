@@ -185,7 +185,7 @@ describe("the danger zone", () => {
     renderApp("/d/eng/settings");
     await screen.findByRole("heading", {
       level: 1,
-      name: "Domain settings",
+      name: "eng",
     });
 
     expect(screen.queryByRole("region", { name: "Danger zone" })).toBeNull();

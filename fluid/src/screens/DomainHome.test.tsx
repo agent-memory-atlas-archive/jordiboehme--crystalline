@@ -1914,25 +1914,19 @@ describe("the team sync card", () => {
     return /(^| )hidden( |$)/.test(panel.className);
   }
 
-  for (const [label, overrides, words] of [
-    [
-      "a failed origin check",
-      { probe_error: "GitHub did not answer" },
-      "the last check failed",
-    ],
+  for (const [label, overrides] of [
+    ["a failed origin check", { probe_error: "GitHub did not answer" }],
     [
       "no connection",
       { connection: { connected: false, user: null, token_store: null } },
-      "not connected",
     ],
-    ["conflicts", { conflicts: ["notes/a.md"] }, "1 conflict"],
+    ["conflicts", { conflicts: ["notes/a.md"] }],
     [
       "declined proposals",
       { declined_proposals: [{ number: 3 }, { number: 4 }] },
-      "2 declined proposals",
     ],
   ] as const) {
-    it(`keeps the team banners open on a phone for ${label}, and says so in the line`, async () => {
+    it(`keeps the team banners open on a phone for ${label}, without a summary line above the card`, async () => {
       serve(
         { "/domains/eng/sync": () => syncResponse({ ...overrides }) },
         "admin",
@@ -1940,11 +1934,14 @@ describe("the team sync card", () => {
 
       renderApp("/d/eng");
 
-      const { line, panel } = await phoneBanners();
-      expect(line).toHaveAttribute("role", "status");
-      expect(line.textContent).toContain(words);
-      expect(line.tagName).not.toBe("BUTTON");
-      expect(folded(panel)).toBe(false);
+      const body = await screenBody();
+      const card = await within(body).findByRole("region", {
+        name: "Team sync",
+      });
+      expect(folded(card.parentElement as HTMLElement)).toBe(false);
+      expect(
+        within(body).queryByText("Team sync", { selector: "span" }),
+      ).toBeNull();
     });
   }
 
@@ -1992,9 +1989,9 @@ describe("the team sync card", () => {
       within(panel).getByRole("button", { name: "Sync now" }),
     );
     await waitFor(() => {
-      expect(screen.getByText(/Sync now failed/)).toHaveAttribute(
+      expect(within(panel).getByText(/the pull was refused/)).toHaveAttribute(
         "role",
-        "status",
+        "alert",
       );
     });
     // Folding is no longer offered while the failure stands.

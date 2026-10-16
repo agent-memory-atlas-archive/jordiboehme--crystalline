@@ -249,10 +249,7 @@ export function MembersCard({ domain }: { domain: string }) {
   const disabledReason = capabilities.readOnly ? READ_ONLY_REASON : undefined;
 
   return (
-    <section
-      aria-labelledby="domain-members"
-      className="flex flex-col gap-4 rounded border border-slate-200 p-4 dark:border-slate-800"
-    >
+    <section aria-labelledby="domain-members" className="flex flex-col gap-4">
       <div className="flex flex-wrap items-baseline gap-2">
         <h2 id="domain-members" className="text-section">
           Members
@@ -261,6 +258,10 @@ export function MembersCard({ domain }: { domain: string }) {
           {isPrivate ? "Private" : "Shared with everyone"}
         </span>
       </div>
+
+      <p className="text-sm text-ink-3">
+        Who may read this domain, and who may change it.
+      </p>
 
       {problem !== null && (
         <p

@@ -745,15 +745,11 @@ function TeamBanners({ domain }: { domain: string }) {
   // origin-less domain (both cards draw nothing) leaves no gap behind.
   return (
     <>
-      {sync !== null && warnings.length > 0 && (
-        <p
-          role="status"
-          className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 md:hidden dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"
-        >
-          <span className="font-semibold">Team sync</span>{" "}
-          {`· ${warnings.join(", ")}`}
-        </p>
-      )}
+      {/*
+        With a warning standing the panel is open and its own card says it,
+        so no amber summary line repeats it above; the line is only for a
+        folded panel, and a folded panel has no warning to repeat.
+      */}
       {sync !== null && warnings.length === 0 && (
         <button
           type="button"

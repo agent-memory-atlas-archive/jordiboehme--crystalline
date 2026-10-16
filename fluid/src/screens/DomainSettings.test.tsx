@@ -7,7 +7,7 @@
  * configuration section, and the palette row the front page hands over.
  */
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -92,12 +92,11 @@ describe("the domain settings screen", () => {
     renderApp("/d/eng/settings");
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: "Domain settings" }),
+      await screen.findByRole("heading", { level: 1, name: "eng" }),
     ).toBeVisible();
-    expect(screen.getByRole("link", { name: "eng" })).toHaveAttribute(
-      "href",
-      "/d/eng",
-    );
+    expect(
+      screen.getByRole("link", { name: "Back to the domain" }),
+    ).toHaveAttribute("href", "/d/eng");
     const members = await screen.findByRole("region", { name: "Members" });
     const review = await screen.findByRole("region", { name: "Review mode" });
     const policies = await screen.findByRole("region", {
@@ -122,6 +121,131 @@ describe("the domain settings screen", () => {
     expect(
       within(backup).getByRole("link", { name: "Download archive" }),
     ).toBeVisible();
+  });
+
+  it("lists the sections in an index whose links match the hashes", async () => {
+    serve();
+
+    renderApp("/d/eng/settings");
+
+    const nav = await screen.findByRole("navigation", {
+      name: "Settings sections",
+    });
+    const links = within(nav).getAllByRole("link");
+    expect(links.map((link) => link.textContent)).toEqual([
+      "Members",
+      "Review mode",
+      "Policies",
+      "Provisioning",
+      "Tag aliases",
+      "Backup",
+      "Danger zone",
+    ]);
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([
+      "/d/eng/settings#members",
+      "/d/eng/settings#review-mode",
+      "/d/eng/settings#policies",
+      "/d/eng/settings#provisioning",
+      "/d/eng/settings#tag-aliases",
+      "/d/eng/settings#backup",
+      "/d/eng/settings#danger-zone",
+    ]);
+    for (const link of links) {
+      const id = (link.getAttribute("href") ?? "").split("#")[1] ?? "";
+      expect(document.getElementById(id)).not.toBeNull();
+    }
+    // Nothing is current until the reader scrolls or presses one, except
+    // the first section.
+    expect(links[0]).toHaveAttribute("aria-current", "location");
+  });
+
+  it("marks a pressed section as current", async () => {
+    serve();
+
+    renderApp("/d/eng/settings");
+
+    const nav = await screen.findByRole("navigation", {
+      name: "Settings sections",
+    });
+    await userEvent.click(within(nav).getByRole("link", { name: "Backup" }));
+    expect(within(nav).getByRole("link", { name: "Backup" })).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
+    expect(
+      within(nav).getByRole("link", { name: "Members" }),
+    ).not.toHaveAttribute("aria-current");
+  });
+
+  it("follows the scroll: the first section in view is the current one", async () => {
+    let callback: IntersectionObserverCallback = () => {};
+    class FakeObserver {
+      constructor(cb: IntersectionObserverCallback) {
+        callback = cb;
+      }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+      takeRecords() {
+        return [];
+      }
+    }
+    vi.stubGlobal("IntersectionObserver", FakeObserver);
+    try {
+      serve();
+      renderApp("/d/eng/settings");
+      const nav = await screen.findByRole("navigation", {
+        name: "Settings sections",
+      });
+      const target = document.getElementById("policies") as HTMLElement;
+      act(() => {
+        callback(
+          [
+            {
+              isIntersecting: true,
+              target,
+            } as unknown as IntersectionObserverEntry,
+          ],
+          {} as IntersectionObserver,
+        );
+      });
+      expect(
+        within(nav).getByRole("link", { name: "Policies" }),
+      ).toHaveAttribute("aria-current", "location");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("offers the same sections as a select for a phone, which jumps to one", async () => {
+    serve();
+
+    renderApp("/d/eng/settings");
+
+    const jump = await screen.findByRole("combobox", {
+      name: "Jump to a section",
+    });
+    expect(
+      within(jump)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual([
+      "Members",
+      "Review mode",
+      "Policies",
+      "Provisioning",
+      "Tag aliases",
+      "Backup",
+      "Danger zone",
+    ]);
+    // Drawn for narrow widths only, and the rail for wide ones: the classes
+    // are the layout, so they are what is pinned here.
+    expect(jump.parentElement).toHaveClass("lg:hidden");
+    expect(
+      screen.getByRole("navigation", { name: "Settings sections" }),
+    ).toHaveClass("hidden", "lg:block");
+    await userEvent.selectOptions(jump, "backup");
+    expect(jump).toHaveValue("backup");
   });
 
   it("draws no members card for a caller the members read refuses", async () => {

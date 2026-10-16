@@ -177,11 +177,14 @@ export function DangerZoneCard({
     <section
       ref={card}
       aria-labelledby={headingId}
-      className="flex flex-col gap-4 rounded border border-red-300 p-4 dark:border-red-800"
+      className="flex flex-col gap-4"
     >
       <h2 id={headingId} className="text-section">
         Danger zone
       </h2>
+      <p className="text-sm text-ink-3">
+        These change the domain for everybody. Each one asks you to confirm.
+      </p>
 
       {problem !== null && (
         <p

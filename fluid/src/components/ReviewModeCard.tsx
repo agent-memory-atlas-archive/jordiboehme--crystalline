@@ -111,10 +111,7 @@ export function ReviewModeCard({
   });
 
   return (
-    <section
-      aria-labelledby={headingId}
-      className="flex flex-col gap-4 rounded border border-slate-200 p-4 dark:border-slate-800"
-    >
+    <section aria-labelledby={headingId} className="flex flex-col gap-4">
       <h2 id={headingId} className="text-section">
         Review mode
       </h2>

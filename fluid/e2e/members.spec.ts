@@ -176,7 +176,7 @@ test("an invitation is what makes a private domain visible", async ({
   // from, on the domain's settings screen.
   await owner.goto(`d/${DOMAIN}/settings`);
   await expect(
-    owner.getByRole("heading", { name: "Domain settings", level: 1 }),
+    owner.getByRole("heading", { name: DOMAIN, level: 1 }),
   ).toBeVisible();
   const members = owner.getByRole("region", { name: "Members" });
   await expect(members).toBeVisible();

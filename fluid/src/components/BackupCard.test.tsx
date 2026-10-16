@@ -113,7 +113,7 @@ describe("the backup card", () => {
     renderApp("/d/eng/settings");
     await screen.findByRole("heading", {
       level: 1,
-      name: "Domain settings",
+      name: "eng",
     });
 
     // Both endpoints are admin-only, so neither control is drawn for anybody

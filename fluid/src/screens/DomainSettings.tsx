@@ -5,9 +5,9 @@
  * zone. The front page keeps the MANIFEST as the page; these are settled once
  * and read rarely.
  *
- * This is the stub task 9 adds so nothing is lost when the cards leave the
- * front page: every card is the one the front page drew, under the same
- * gates. Task 10 designs the screen.
+ * One reading column of sections divided by hairlines, with an in-page index
+ * beside it at wide widths and a select above it on a phone. Every card is
+ * the one the front page drew, under the same gates.
  */
 
 import { useQuery } from "@tanstack/react-query";
@@ -40,7 +40,7 @@ import { MembersCard } from "../components/MembersCard";
 import { RenameDomainDialog } from "../components/RenameDomainDialog";
 import { ReviewModeCard } from "../components/ReviewModeCard";
 import { Skeleton } from "../components/Skeleton";
-import { CHROME_LINK } from "../components/primitives";
+import { CHROME_LINK, FIELD, RAIL_LABEL, SIDE } from "../components/primitives";
 import { useDomainWritable } from "../domainWritable";
 import { isMissing, useDomainRights } from "../domainRights";
 import { domainRoute, manifestEditRoute } from "../paths";
@@ -180,10 +180,16 @@ function Settings({
 
   const header = (
     <header>
-      <Link to={domainRoute(domain)} className={`text-sm ${CHROME_LINK}`}>
-        {domain}
+      <p className="mb-1 text-sm font-semibold text-accent-700 dark:text-accent-300">
+        Settings
+      </p>
+      <h1 className="text-display">{domain}</h1>
+      <Link
+        to={domainRoute(domain)}
+        className={`mt-2 inline-block text-sm ${CHROME_LINK}`}
+      >
+        Back to the domain
       </Link>
-      <h1 className="text-display">Domain settings</h1>
     </header>
   );
   if (!settled) {
@@ -195,73 +201,117 @@ function Settings({
     );
   }
 
+  const index: SectionLink[] = [
+    { id: "members", label: "Members", shown: members.data !== undefined },
+    {
+      id: "review-mode",
+      label: "Review mode",
+      shown: capabilities.canShare && summary !== undefined,
+    },
+    {
+      id: "policies",
+      label: "Policies",
+      shown: sections !== null && sections.policies.length > 0,
+    },
+    { id: "provisioning", label: "Provisioning", shown: sections !== null },
+    { id: "tag-aliases", label: "Tag aliases", shown: sections !== null },
+    { id: "backup", label: "Backup", shown: capabilities.canAdminister },
+    {
+      id: "danger-zone",
+      label: "Danger zone",
+      shown: capabilities.canAdminister || own,
+    },
+  ].filter((link) => link.shown);
+
   return (
-    <div className="flex max-w-[720px] flex-col gap-8">
+    <div className="flex flex-col gap-8">
       {header}
+      <div className="flex flex-col gap-6 lg:grid lg:grid-cols-[11rem_minmax(0,720px)] lg:gap-14">
+        <SectionIndex links={index} hash={hash} />
+        <div className="flex min-w-0 flex-col divide-y divide-hair">
+          {members.data !== undefined && (
+            <div
+              id="members"
+              className="scroll-mt-20 py-8 first:pt-0 last:pb-0"
+            >
+              <MembersCard domain={domain} />
+            </div>
+          )}
 
-      {members.data !== undefined && (
-        <div id="members" className="scroll-mt-20">
-          <MembersCard domain={domain} />
+          {capabilities.canShare && summary !== undefined && (
+            <div
+              id="review-mode"
+              className="scroll-mt-20 py-8 first:pt-0 last:pb-0"
+            >
+              <ReviewModeCard
+                domain={domain}
+                reviewing={summary.review !== null}
+              />
+            </div>
+          )}
+
+          {sections !== null && sections.policies.length > 0 && (
+            <div
+              id="policies"
+              className="scroll-mt-20 py-8 first:pt-0 last:pb-0"
+            >
+              <DomainPoliciesCard
+                domain={domain}
+                policies={sections.policies}
+                branch={syncStatus.data?.branch ?? null}
+                onRename={() => {
+                  setRenamingOpen(true);
+                }}
+                renaming={isRenaming}
+              />
+            </div>
+          )}
+
+          {/*
+            A refused MANIFEST read, said the way the front page says it, so
+            the missing policies and sections below are not read as "none
+            declared".
+          */}
+          {manifest.error !== null && !isMissing(manifest.error) && (
+            <p
+              role="alert"
+              className="rounded bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
+            >
+              {problemDetail(manifest.error)}
+            </p>
+          )}
+          {sections !== null && (
+            <ConfigSections sections={sections} onStart={onStart} />
+          )}
+
+          {capabilities.canAdminister && (
+            <div id="backup" className="scroll-mt-20 py-8 first:pt-0 last:pb-0">
+              <BackupCard
+                domain={domain}
+                onImport={() => {
+                  setImporting(true);
+                }}
+                canImport={canWrite}
+                renaming={isRenaming}
+              />
+            </div>
+          )}
+
+          {(capabilities.canAdminister || own) && (
+            <div
+              id="danger-zone"
+              className="scroll-mt-20 py-8 first:pt-0 last:pb-0"
+            >
+              <DangerZoneCard
+                domain={domain}
+                kind={summary?.kind ?? null}
+                confirming={confirmingUnregister}
+                onConfirmingChange={setConfirmingUnregister}
+                renaming={isRenaming}
+              />
+            </div>
+          )}
         </div>
-      )}
-
-      {capabilities.canShare && summary !== undefined && (
-        <div id="review-mode" className="scroll-mt-20">
-          <ReviewModeCard domain={domain} reviewing={summary.review !== null} />
-        </div>
-      )}
-
-      {sections !== null && sections.policies.length > 0 && (
-        <div id="policies" className="scroll-mt-20">
-          <DomainPoliciesCard
-            domain={domain}
-            policies={sections.policies}
-            branch={syncStatus.data?.branch ?? null}
-            onRename={() => {
-              setRenamingOpen(true);
-            }}
-            renaming={isRenaming}
-          />
-        </div>
-      )}
-
-      {/*
-        A refused MANIFEST read, said the way the front page says it, so the
-        missing policies and sections below are not read as "none declared".
-      */}
-      {manifest.error !== null && !isMissing(manifest.error) && (
-        <p
-          role="alert"
-          className="rounded bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
-        >
-          {problemDetail(manifest.error)}
-        </p>
-      )}
-      {sections !== null && (
-        <ConfigSections sections={sections} onStart={onStart} />
-      )}
-
-      {capabilities.canAdminister && (
-        <div id="backup" className="scroll-mt-20">
-          <BackupCard
-            domain={domain}
-            onImport={() => {
-              setImporting(true);
-            }}
-            canImport={canWrite}
-            renaming={isRenaming}
-          />
-        </div>
-      )}
-
-      <div id="danger-zone" className="scroll-mt-20">
-        <DangerZoneCard
-          domain={domain}
-          kind={summary?.kind ?? null}
-          confirming={confirmingUnregister}
-          onConfirmingChange={setConfirmingUnregister}
-          renaming={isRenaming}
-        />
       </div>
 
       {importing && (
@@ -297,11 +347,8 @@ function ConfigSections({
   onStart: ((section: string) => void) | null;
 }) {
   return (
-    <div
-      id="manifest-sections"
-      className="grid scroll-mt-20 gap-4 sm:grid-cols-2"
-    >
-      <Facet title="Provisioning">
+    <>
+      <Facet id="provisioning" title="Provisioning">
         {sections.provisioning === null ||
         sections.provisioning.decls.length === 0 ? (
           <EmptySection
@@ -310,19 +357,21 @@ function ConfigSections({
             onStart={onStart}
           />
         ) : (
-          <ul className="flex flex-col gap-1">
-            {sections.provisioning.decls.map((decl) => (
-              <li key={decl.kind} className="font-mono">
-                {`${decl.kind}: ${decl.path}`}
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="flex flex-col gap-1 text-sm">
+              {sections.provisioning.decls.map((decl) => (
+                <li key={decl.kind} className="font-mono">
+                  {`${decl.kind}: ${decl.path}`}
+                </li>
+              ))}
+            </ul>
+          </>
         )}
         {sections.provisioning !== null && (
           <Problems items={sections.provisioning.problems} />
         )}
       </Facet>
-      <Facet title="Tag aliases">
+      <Facet id="tag-aliases" title="Tag aliases">
         {sections.tagAliases === null ||
         sections.tagAliases.decls.length === 0 ? (
           <EmptySection
@@ -331,34 +380,152 @@ function ConfigSections({
             onStart={onStart}
           />
         ) : (
-          <ul className="flex flex-col gap-1">
-            {sections.tagAliases.decls.map((decl) => (
-              <li key={decl.alias} className="font-mono">
-                {`${decl.alias} -> ${decl.canonical}`}
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="flex flex-col gap-1 text-sm">
+              {sections.tagAliases.decls.map((decl) => (
+                <li key={decl.alias} className="font-mono">
+                  {`${decl.alias} -> ${decl.canonical}`}
+                </li>
+              ))}
+            </ul>
+          </>
         )}
         {sections.tagAliases !== null && (
           <Problems items={sections.tagAliases.problems} />
         )}
       </Facet>
+    </>
+  );
+}
+
+/** One section: a labelled region, so each is reachable by its name. */
+function Facet({
+  id,
+  title,
+  children,
+}: {
+  id: string;
+  title: string;
+  children: ReactNode;
+}) {
+  const headingId = `manifest-facet-${id}`;
+  return (
+    <div id={id} className="scroll-mt-20 py-8 first:pt-0 last:pb-0">
+      <section aria-labelledby={headingId} className="flex flex-col gap-4">
+        <h2 id={headingId} className="text-section">
+          {title}
+        </h2>
+        {children}
+      </section>
     </div>
   );
 }
 
-/** One panel: a labelled region, so each is reachable by its name. */
-function Facet({ title, children }: { title: string; children: ReactNode }) {
-  const id = `manifest-facet-${title.toLowerCase().replace(/\s+/g, "-")}`;
+interface SectionLink {
+  id: string;
+  label: string;
+  shown: boolean;
+}
+
+/**
+ * The in-page index: a rail of links at wide widths, a select on a phone.
+ * The current section follows the scroll, and a press names it at once.
+ */
+function SectionIndex({ links, hash }: { links: SectionLink[]; hash: string }) {
+  const navigate = useNavigate();
+  const ids = links.map((link) => link.id).join(" ");
+  const [seen, setSeen] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string | null>(null);
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") {
+      return;
+    }
+    const order = ids.split(" ");
+    const inView = new Set<string>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            inView.add(entry.target.id);
+          } else {
+            inView.delete(entry.target.id);
+          }
+        }
+        const first = order.find((id) => inView.has(id));
+        if (first !== undefined) {
+          setSeen(first);
+          setPicked(null);
+        }
+      },
+      { rootMargin: "-80px 0px -60% 0px" },
+    );
+    for (const id of order) {
+      const el = document.getElementById(id);
+      if (el !== null) {
+        observer.observe(el);
+      }
+    }
+    return () => {
+      observer.disconnect();
+    };
+  }, [ids]);
+  const current =
+    picked ??
+    seen ??
+    links.find((link) => `#${link.id}` === hash)?.id ??
+    links[0]?.id ??
+    null;
+  function go(id: string) {
+    setPicked(id);
+    void navigate({ hash: `#${id}` }, { replace: true });
+  }
+  if (links.length === 0) {
+    return null;
+  }
   return (
-    <section
-      aria-labelledby={id}
-      className="rounded border border-slate-200 p-3 text-sm dark:border-slate-800"
-    >
-      <h2 id={id} className="mb-2 font-medium">
-        {title}
-      </h2>
-      {children}
-    </section>
+    <>
+      <div className="lg:hidden">
+        <label htmlFor="settings-jump" className="sr-only">
+          Jump to a section
+        </label>
+        <select
+          id="settings-jump"
+          value={current ?? ""}
+          onChange={(event) => {
+            go(event.target.value);
+          }}
+          className={`w-full ${FIELD}`}
+        >
+          {links.map((link) => (
+            <option key={link.id} value={link.id}>
+              {link.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <nav
+        aria-label="Settings sections"
+        className="sticky top-20 hidden self-start lg:block"
+      >
+        <p className={`mb-2 px-2.5 ${RAIL_LABEL}`}>On this page</p>
+        <ul className="flex flex-col gap-0.5">
+          {links.map((link) => (
+            <li key={link.id}>
+              <Link
+                to={{ hash: `#${link.id}` }}
+                replace
+                aria-current={link.id === current ? "location" : undefined}
+                onClick={() => {
+                  setPicked(link.id);
+                }}
+                className={`${SIDE.row} ${link.id === current ? SIDE.current : ""}`}
+              >
+                {link.label}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    </>
   );
 }
