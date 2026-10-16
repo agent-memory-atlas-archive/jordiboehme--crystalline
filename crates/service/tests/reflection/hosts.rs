@@ -607,8 +607,8 @@ async fn no_write_recreates_a_page_or_file_only_the_previous_host_has_on_postgre
 }
 
 /// The same for an engram only alpha's disk has: an overwriting capture
-/// onto its path, an engram move onto it and a delete of it are refused with
-/// the remedy, and so is a delete of a Reflection file only alpha has, which
+/// onto its path, an engram move onto it, an edit of it and a delete of it
+/// are refused with the remedy, and so is a delete of a Reflection file only alpha has, which
 /// would otherwise drop its only shared copy unseen. The rows stay alpha's;
 /// a new engram beside them is written as usual.
 #[cfg(feature = "postgres")]
@@ -664,6 +664,16 @@ async fn no_write_recreates_an_engram_only_the_previous_host_has_on_postgres() {
         beta.engine
             .reflection_asset_delete("eng", ALPHA_FILE, &ReflectionCaller::owner())
             .await,
+        beta.engine
+            .edit_engram(&crystalline_service::params::EditParams {
+                identifier: "runbooks/only-on-alpha".into(),
+                domain: "eng".into(),
+                operation: "append".into(),
+                content: Some("- [fact] added on beta".into()),
+                ..Default::default()
+            })
+            .await
+            .map(|_| ()),
         beta.engine
             .delete_engram(&crystalline_service::params::DeleteParams {
                 identifier: "runbooks/only-on-alpha".into(),

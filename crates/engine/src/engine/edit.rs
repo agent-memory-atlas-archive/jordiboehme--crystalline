@@ -788,6 +788,18 @@ impl Engine {
                 let abs = join_rel(root, &desc.path);
                 let lock = self.write_lock(&abs);
                 let _guard = lock.lock().await;
+                // The row of an engram only the previous host of a host move
+                // has is the only shared copy of it: say so and name the
+                // remedy, rather than fail on the missing file.
+                if !abs.exists() {
+                    self.refuse_only_elsewhere(
+                        &desc.domain,
+                        desc.domain_id,
+                        ElsewhereRow::Engram(&desc.path),
+                    )
+                    .await
+                    .map_err(SourceEditFailure::before)?;
+                }
                 let current = std::fs::read_to_string(&abs)
                     .map_err(|source| SourceEditFailure::before(text_read_error(&abs, source)))?;
                 // The CAS token, when the caller presents one: compared inside
