@@ -1776,6 +1776,66 @@ async fn a_re_added_domain_indexes_its_pages_under_its_new_row() {
     assert!(pages.iter().any(|p| p == "a.md"), "{pages:?}");
 }
 
+/// A domain removed here and registered again by another process (the
+/// configuration file edited, as `domain add` does with a daemon running)
+/// is gated before any sync or announce of it: the removal alone has to
+/// forget the row id the gate remembered, or a page written now would land
+/// under the row the removal dropped (F2).
+#[tokio::test]
+async fn a_domain_registered_again_by_file_gets_a_new_row_at_its_first_gate() {
+    use crate::docs::{person, write};
+
+    let fx = fixture(&[
+        ("MANIFEST.md", &manifest("reflection: on\n")),
+        (
+            "runbooks/deploy.md",
+            &engram("Deploy", "runbooks/deploy", "- [fact] deploys run at night"),
+        ),
+    ])
+    .await;
+    let caller = person();
+    fx.engine
+        .require_reflection_edit("eng", "a.md", &caller)
+        .await
+        .unwrap();
+    let config_path = fx.tmp.path().join("config.yaml");
+    let before: crystalline_core::config::GlobalConfig =
+        crystalline_core::config::load_yaml(&config_path).unwrap();
+    let entry = before.domains["eng"].clone();
+    fx.engine.domain_remove("eng").await.unwrap();
+    let store = fx.engine.store();
+    assert_eq!(store.lock().await.domain_id("eng").await.unwrap(), None);
+
+    let mut after: crystalline_core::config::GlobalConfig =
+        crystalline_core::config::load_yaml(&config_path).unwrap();
+    after.domains.insert("eng".to_string(), entry);
+    crystalline_core::config::save_yaml(&config_path, &after).unwrap();
+    fx.engine
+        .write_reflection(
+            &write("a.md", "# A\n\nFor people.\n\n## Part\n\nText.\n"),
+            &caller,
+        )
+        .await
+        .unwrap();
+    let id = store
+        .lock()
+        .await
+        .domain_id("eng")
+        .await
+        .unwrap()
+        .expect("the gate made the domain a row again");
+    let pages: Vec<String> = store
+        .lock()
+        .await
+        .list_reflection_stamps(id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|p| p.path)
+        .collect();
+    assert!(pages.iter().any(|p| p == "a.md"), "{pages:?}");
+}
+
 /// Once the gate remembers a domain's rows, the state and the mode answer
 /// without the store lock: a long sync or embedding pass holding it does
 /// not stall every Reflection poll behind it.
