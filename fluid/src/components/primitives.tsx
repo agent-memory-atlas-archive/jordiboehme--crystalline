@@ -29,6 +29,23 @@ export const CHROME_LINK =
 export const FOCUS_RING =
   "focus-visible:ring-2 focus-visible:ring-accent-600 focus-visible:outline-none dark:focus-visible:ring-accent-400";
 
+/**
+ * The sidebar's rows (spec 4.4): 14px UI body in quiet ink, a sunken wash
+ * under the pointer, and the current row in the accent tint. Shared by the
+ * engram tree and the Reflection tree, so both modes read the same.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export const SIDE = {
+  row: `flex min-h-8 min-w-0 items-center gap-2 rounded-[7px] px-2.5 text-sm text-ink-3 hover:bg-sunken ${FOCUS_RING}`,
+  current:
+    "bg-accent-tint font-medium text-accent-800 dark:text-accent-200 [&_svg]:text-accent-500 dark:[&_svg]:text-accent-300",
+  icon: "shrink-0 text-faint",
+  label:
+    "px-2.5 pt-[18px] pb-1.5 text-[11.5px] font-semibold tracking-[0.04em] text-faint uppercase",
+  add: "text-muted",
+  count: "ml-auto pl-2 text-xs text-muted tabular-nums",
+};
+
 // eslint-disable-next-line react-refresh/only-export-components
 export const BUTTON = {
   primary: `rounded bg-accent-700 px-3 py-1 text-sm font-medium text-white hover:bg-accent-800 disabled:bg-slate-200 disabled:text-slate-500 dark:bg-accent-400 dark:text-accent-950 dark:hover:bg-accent-300 dark:disabled:bg-slate-800 dark:disabled:text-slate-500 ${FOCUS_RING}`,

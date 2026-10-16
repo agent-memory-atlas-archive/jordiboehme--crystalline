@@ -155,6 +155,10 @@ test("the sidebar collapse control is desktop only", async ({ page }) => {
   await expect(
     page.getByRole("button", { name: "Collapse the sidebar" }),
   ).toBeHidden();
+  // The drawer has its own way shut, in its head.
+  await expect(
+    page.getByRole("button", { name: "Close the sidebar" }),
+  ).toBeVisible();
 
   await page.setViewportSize({ width: 1280, height: 900 });
   await expect(

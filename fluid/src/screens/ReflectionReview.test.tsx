@@ -163,7 +163,7 @@ describe("the review screen", () => {
       await screen.findByRole("heading", { name: "Review", level: 1 }),
     ).toBeVisible();
     await screen.findByRole("region", { name: "Waiting for people" });
-    const headings = screen
+    const headings = within(screen.getByRole("main"))
       .getAllByRole("heading", { level: 2 })
       .map((h) => h.textContent);
     expect(headings).toEqual(["Open threads", "Reflect queue"]);

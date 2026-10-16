@@ -1,6 +1,9 @@
 /**
- * The sidebar while a domain's Reflection is on screen: the pact, the tree of
- * pages, and the way to the review screen.
+ * The sidebar while a domain's Reflection is on screen (spec 4.4): Overview
+ * (the Reflection home), How we write (the pact, or "Write the pact" while
+ * there is none), Review with the open thread count, then the pages by title
+ * under a PAGES label, then New page. Review is a destination rather than a
+ * page, so it sits with Overview at the top instead of in the tree.
  *
  * The whole tree is one read. A Reflection is written for people at the
  * level its pact agrees on, so it holds tens or hundreds of pages rather than
@@ -16,14 +19,25 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import {
+  BookOpen,
+  ChevronDown,
+  ChevronRight,
+  House,
+  Inbox,
+  Plus,
+} from "lucide-react";
 import type { ReactElement } from "react";
 import { useState } from "react";
 import { Link, useLocation } from "react-router";
 
 import { problemDetail } from "../api/client";
 import type { TreeNode } from "../api/reflection";
-import { fetchReflectionTree, reflectionTreeKey } from "../api/reflection";
+import {
+  fetchReflectionTree,
+  openThreadCount,
+  reflectionTreeKey,
+} from "../api/reflection";
 import { atLeast } from "../api/reflectionDomains";
 import { lazyChunk } from "../lazyChunk";
 import { plural } from "../format";
@@ -34,7 +48,8 @@ import {
 } from "../paths";
 import { LazyBoundary } from "./LazyBoundary";
 import { useReflectionStatus } from "./ReflectionModeSwitch";
-import { BUTTON, FOCUS_RING } from "./primitives";
+import { SIDE } from "./primitives";
+import { WritePact } from "./WritePact";
 
 const NewReflectionDialog = lazyChunk(() =>
   import("./NewReflectionDialog").then((m) => ({
@@ -44,8 +59,8 @@ const NewReflectionDialog = lazyChunk(() =>
 
 const INDENT_LEVELS = 6;
 
-const ROW = `flex min-w-0 items-center gap-1 rounded px-2 py-1 text-sm hover:bg-slate-100 dark:hover:bg-slate-800 ${FOCUS_RING}`;
-const CURRENT = "bg-slate-100 font-medium dark:bg-slate-800";
+const ROW = SIDE.row;
+const CURRENT = SIDE.current;
 
 /** Whether `folder` is `path` or one of its ancestors. */
 function holds(folder: string, path: string): boolean {
@@ -63,37 +78,95 @@ export function ReflectionNav({
     queryKey: reflectionTreeKey(domain),
     queryFn: () => fetchReflectionTree(domain),
   });
-  const home = useLocation().pathname === reflectionRoute(domain);
+  const at = useLocation().pathname;
+  const home = at === reflectionRoute(domain);
+  const reviewing = at === reflectionReviewRoute(domain);
   const status = useReflectionStatus(domain);
   const mayEdit =
     status.data !== undefined && atLeast(status.data.right, "edit");
+  const mayCurate =
+    status.data !== undefined && atLeast(status.data.right, "curate");
   const [creating, setCreating] = useState(false);
+  const pact = tree.data?.pact;
+  const threads = tree.data === undefined ? 0 : openThreadCount(tree.data);
   return (
-    <nav aria-label={`Reflection of ${domain}`} className="flex flex-col gap-2">
+    <nav
+      aria-label={`Reflection of ${domain}`}
+      className="flex flex-col gap-0.5"
+    >
       <Link
         to={reflectionRoute(domain)}
         aria-current={home ? "page" : undefined}
-        className={`text-caption px-2 font-semibold text-slate-500 dark:text-slate-400 ${FOCUS_RING}`}
+        className={`${ROW} ${home ? CURRENT : ""}`}
       >
-        {domain}
+        <House
+          aria-hidden="true"
+          size={16}
+          strokeWidth={1.75}
+          className={SIDE.icon}
+        />
+        <span className="truncate">Overview</span>
       </Link>
+      {pact?.exists === true ? (
+        <Link
+          to={reflectionPageRoute(domain, pact.path)}
+          aria-current={path === pact.path ? "page" : undefined}
+          title={pact.title}
+          className={`${ROW} ${path === pact.path ? CURRENT : ""}`}
+        >
+          <BookOpen
+            aria-hidden="true"
+            size={16}
+            strokeWidth={1.75}
+            className={SIDE.icon}
+          />
+          <span className="truncate">How we write</span>
+        </Link>
+      ) : (
+        // Offered to a curator only, and not on the home itself: the home
+        // carries the same act beside its pact heading, the way the domain
+        // front page carries its own New engram.
+        pact !== undefined &&
+        mayCurate &&
+        !home && <WritePact domain={domain} look="row" />
+      )}
+      {/* The count beside the link, so the link's name stays "Review". */}
+      <div className="flex min-w-0 items-center">
+        <Link
+          to={reflectionReviewRoute(domain)}
+          aria-current={reviewing ? "page" : undefined}
+          className={`${ROW} flex-1 ${reviewing ? CURRENT : ""}`}
+        >
+          <Inbox
+            aria-hidden="true"
+            size={16}
+            strokeWidth={1.75}
+            className={SIDE.icon}
+          />
+          <span className="truncate">Review</span>
+          {threads > 0 && (
+            <span
+              aria-hidden="true"
+              className="ml-auto rounded-full bg-accent-tint px-[7px] py-px text-[11.5px] font-semibold text-accent-800 tabular-nums dark:text-accent-200"
+            >
+              {threads}
+            </span>
+          )}
+        </Link>
+        {threads > 0 && (
+          <span className="sr-only">
+            {`${plural(threads, "open thread", "open threads")} in all`}
+          </span>
+        )}
+      </div>
+      <h2 className={SIDE.label}>Pages</h2>
       {tree.error && (
-        <p className="rounded bg-red-50 px-2 py-1.5 text-sm text-red-800 dark:bg-red-950 dark:text-red-200">
+        <p className="rounded bg-red-50 px-2.5 py-1.5 text-sm text-red-800 dark:bg-red-950 dark:text-red-200">
           {problemDetail(tree.error)}
         </p>
       )}
       {tree.data && (
         <ul className="flex flex-col gap-0.5">
-          <li>
-            <Link
-              to={reflectionPageRoute(domain, tree.data.pact.path)}
-              aria-current={path === tree.data.pact.path ? "page" : undefined}
-              title={tree.data.pact.title}
-              className={`${ROW} ${path === tree.data.pact.path ? CURRENT : ""}`}
-            >
-              <span className="truncate">{tree.data.pact.title}</span>
-            </Link>
-          </li>
           {tree.data.nodes.map((node) => (
             <Node
               key={node.path}
@@ -105,17 +178,20 @@ export function ReflectionNav({
           ))}
         </ul>
       )}
-      <Link to={reflectionReviewRoute(domain)} className={ROW}>
-        Review
-      </Link>
       {mayEdit && (
         <button
           type="button"
           onClick={() => {
             setCreating(true);
           }}
-          className={`${BUTTON.secondary} w-full`}
+          className={`${ROW} ${SIDE.add} mt-1.5 w-full`}
         >
+          <Plus
+            aria-hidden="true"
+            size={16}
+            strokeWidth={1.75}
+            className={SIDE.icon}
+          />
           New page
         </button>
       )}
@@ -173,17 +249,21 @@ function Node({
           className={`${ROW} flex-1 ${current ? CURRENT : ""}`}
         >
           <span className="truncate">{node.title}</span>
-        </Link>
-        {/* Beside the link, so the link's name stays the page's title. */}
-        {node.openThreads > 0 && (
-          <span
-            title={plural(node.openThreads, "open thread", "open threads")}
-            className="px-2 text-xs text-slate-500 tabular-nums dark:text-slate-400"
-          >
-            <span aria-hidden="true">{node.openThreads}</span>
-            <span className="sr-only">
-              {plural(node.openThreads, "open thread", "open threads")}
+          {/* Drawn inside the row and not spoken there, so the link's name
+              stays the page's title; the words follow beside it. */}
+          {node.openThreads > 0 && (
+            <span
+              aria-hidden="true"
+              title={plural(node.openThreads, "open thread", "open threads")}
+              className={SIDE.count}
+            >
+              {node.openThreads}
             </span>
+          )}
+        </Link>
+        {node.openThreads > 0 && (
+          <span className="sr-only">
+            {plural(node.openThreads, "open thread", "open threads")}
           </span>
         )}
       </li>
@@ -203,16 +283,16 @@ function Node({
       >
         <Chevron
           aria-hidden="true"
-          size={14}
+          size={16}
           strokeWidth={1.75}
-          className="shrink-0"
+          className={SIDE.icon}
         />
         <span className="truncate">{node.name}</span>
       </button>
       {open && (
         <ul
           data-depth={depth + 1}
-          className={`flex flex-col gap-0.5 ${depth < INDENT_LEVELS ? "ml-3 border-l border-slate-200 pl-1 dark:border-slate-800" : ""}`}
+          className={`flex flex-col gap-0.5 ${depth < INDENT_LEVELS ? "ml-[17px] border-l border-hair pl-1" : ""}`}
         >
           {node.children.map((child) => (
             <Node

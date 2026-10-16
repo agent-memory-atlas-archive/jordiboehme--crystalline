@@ -132,34 +132,165 @@ describe("the reflection tree", () => {
     }
     // Indentation stops growing after six levels, so the name keeps its room.
     const indents = Array.from(nav.querySelectorAll("[data-depth]")).map((el) =>
-      el.className.includes("ml-3"),
+      el.className.includes("border-l"),
     );
     expect(indents.filter(Boolean)).toHaveLength(6);
   });
 
-  it("lists the pact first, pages with their open threads, and the review screen", async () => {
+  it("leads with Overview, How we write and Review, then the pages by title", async () => {
     serve();
     renderApp("/d/eng/reflection");
     const nav = await screen.findByRole("navigation", {
       name: "Reflection of eng",
     });
     // The tree arrives after the frame, so wait for the pact first.
-    await within(nav).findByRole("link", { name: "How we write" });
+    const pact = await within(nav).findByRole("link", { name: "How we write" });
+    expect(pact).toHaveAttribute("href", "/d/eng/reflection/PACT.md");
     const links = within(nav).getAllByRole("link");
-    expect(links[0]).toHaveAccessibleName("eng");
+    // No repeated domain name: the top bar's switcher names the domain.
+    expect(links.map((link) => link.textContent)).not.toContain("eng");
+    expect(links[0]).toHaveAccessibleName("Overview");
     expect(links[0]).toHaveAttribute("href", "/d/eng/reflection");
     expect(links[0]).toHaveAttribute("aria-current", "page");
-    expect(links[1]).toHaveAccessibleName("How we write");
+    expect(links[1]).toBe(pact);
+    expect(links[2]).toHaveAccessibleName("Review");
+    expect(links[2]).toHaveAttribute("href", "/d/eng/reflection/review");
+    expect(
+      within(nav).getByRole("heading", { level: 2, name: "Pages" }),
+    ).toBeVisible();
+    // Pages are named by their titles, never by their file names.
     expect(within(nav).getByRole("link", { name: "Top page" })).toHaveAttribute(
       "href",
       "/d/eng/reflection/top.md",
     );
+    expect(within(nav).queryByText("top.md")).toBeNull();
     expect(within(nav).getByText("2 open threads")).toBeInTheDocument();
     expect(within(nav).getByTitle("2 open threads")).toBeInTheDocument();
-    expect(within(nav).getByRole("link", { name: "Review" })).toHaveAttribute(
-      "href",
-      "/d/eng/reflection/review",
-    );
+  });
+
+  it("badges Review with the open threads of the whole tree", async () => {
+    serve({
+      "/domains/eng/reflection/tree": () => {
+        const tree = deepTree(1);
+        return { ...tree, pact: { ...tree.pact, open_threads: 1 } };
+      },
+    });
+    renderApp("/d/eng/reflection/top.md");
+    const nav = await screen.findByRole("navigation", {
+      name: "Reflection of eng",
+    });
+    const review = await within(nav).findByRole("link", { name: "Review" });
+    // Two on the top page and one on the pact: three, drawn in the row and
+    // said in words beside it, so the link's name stays "Review".
+    expect(review).toHaveTextContent("3");
+    expect(within(nav).getByText("3 open threads in all")).toBeInTheDocument();
+    expect(review).not.toHaveAttribute("aria-current");
+    // Away from the home, Overview is not the current row.
+    expect(
+      within(nav).getByRole("link", { name: "Overview" }),
+    ).not.toHaveAttribute("aria-current");
+  });
+
+  it("marks Review current on the review screen and draws no badge for none", async () => {
+    serve({
+      "/domains/eng/reflection/tree": () => ({
+        ...deepTree(1),
+        nodes: [],
+      }),
+      "/domains/eng/reflection/review": () => ({
+        waiting_for_people: [],
+        waiting_for_the_agent: [],
+        queue: { total: 0, kinds: {}, queue: [] },
+      }),
+    });
+    renderApp("/d/eng/reflection/review");
+    const nav = await screen.findByRole("navigation", {
+      name: "Reflection of eng",
+    });
+    const review = await within(nav).findByRole("link", { name: "Review" });
+    expect(review).toHaveAttribute("aria-current", "page");
+    await within(nav).findByRole("link", { name: "How we write" });
+    expect(review).toHaveTextContent(/^Review$/);
+  });
+
+  it("offers a curator Write the pact while there is none, but not on the home", async () => {
+    const noPact = () => {
+      const tree = deepTree(1);
+      return { ...tree, pact: { ...tree.pact, exists: false } };
+    };
+    const curator = {
+      domain: "eng",
+      enabled: true,
+      state: "on",
+      home: "here",
+      home_url: null,
+      right: "curate",
+      engrams_visible: false,
+      pending_engrams: [],
+    };
+    serve({
+      "/domains/eng/reflection/tree": noPact,
+      "/domains/eng/reflection": () => curator,
+    });
+    renderApp("/d/eng/reflection/top.md");
+    const nav = await screen.findByRole("navigation", {
+      name: "Reflection of eng",
+    });
+    expect(
+      await within(nav).findByRole("button", { name: "Write the pact" }),
+    ).toBeVisible();
+    expect(
+      within(nav).queryByRole("link", { name: "How we write" }),
+    ).toBeNull();
+  });
+
+  it("leaves the pact row out on the home, where the home offers it", async () => {
+    serve({
+      "/domains/eng/reflection/tree": () => {
+        const tree = deepTree(1);
+        return { ...tree, pact: { ...tree.pact, exists: false } };
+      },
+      "/domains/eng/reflection": () => ({
+        domain: "eng",
+        enabled: true,
+        state: "on",
+        home: "here",
+        home_url: null,
+        right: "curate",
+        engrams_visible: false,
+        pending_engrams: [],
+      }),
+    });
+    renderApp("/d/eng/reflection");
+    const nav = await screen.findByRole("navigation", {
+      name: "Reflection of eng",
+    });
+    await within(nav).findByRole("link", { name: "Top page" });
+    expect(
+      within(nav).queryByRole("button", { name: "Write the pact" }),
+    ).toBeNull();
+  });
+
+  it("offers an editor no pact row at all while there is none", async () => {
+    serve({
+      "/domains/eng/reflection/tree": () => {
+        const tree = deepTree(1);
+        return { ...tree, pact: { ...tree.pact, exists: false } };
+      },
+    });
+    renderApp("/d/eng/reflection/top.md");
+    const nav = await screen.findByRole("navigation", {
+      name: "Reflection of eng",
+    });
+    await within(nav).findByRole("link", { name: "Top page" });
+    expect(
+      within(nav).queryByRole("button", { name: "Write the pact" }),
+    ).toBeNull();
+    expect(
+      within(nav).queryByRole("link", { name: "How we write" }),
+    ).toBeNull();
+    // New page is still offered to the editor.
+    expect(within(nav).getByRole("button", { name: "New page" })).toBeVisible();
   });
 
   it("folds a folder from its own button without leaving the page", async () => {

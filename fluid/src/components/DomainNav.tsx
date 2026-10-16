@@ -4,11 +4,11 @@
  *
  * A domain is a place somebody works in rather than an entry they picked once,
  * so while they are inside one the sidebar stops being a list of everything and
- * becomes the way around this one thing. Two controls make that true: a
- * domain row that names the current domain and goes to its page, and the
- * folder tree below it, which is the domain's own shape rather than a flat
- * listing of it. The way across to another domain and back out to every
- * domain is the top bar's switcher, on every screen.
+ * becomes the way around this one thing: an Overview row that goes to the
+ * domain's front page, and the folder tree below it, which is the domain's
+ * own shape rather than a flat listing of it. The domain's name is not
+ * repeated here (spec 4.4): the top bar's switcher names it, and it is also
+ * the way across to another domain and back out to every domain.
  *
  * The tree is walked rather than downloaded. `GET /domains/{d}/tree` answers
  * one folder at a time - its subfolder names and the engrams directly in it -
@@ -38,7 +38,13 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { FolderOpen, Folder as FolderShut } from "lucide-react";
+import {
+  FileText,
+  FolderOpen,
+  Folder as FolderShut,
+  House,
+  Plus,
+} from "lucide-react";
 import { useState } from "react";
 import { Link, useMatch, useSearchParams } from "react-router";
 
@@ -52,7 +58,7 @@ import { RETIRED_CLASS, isRetired } from "../lifecycle";
 import { domainRoute, engramRoute, folderRoute } from "../paths";
 import { ENGRAM_PREFETCH } from "../prefetch";
 import { CreateEngramDialog } from "./CreateEngramDialog";
-import { FOCUS_RING } from "./primitives";
+import { FOCUS_RING, SIDE } from "./primitives";
 
 export interface DomainNavProps {
   /** The domain the route is inside. */
@@ -84,49 +90,61 @@ export function DomainNav({ domain, permalink }: DomainNavProps) {
   // filter is a lens over the domain rather than a reason to fold away where
   // the reader just was.
   const marked = hasFilters(frontmatterFilters(params)) ? "" : browsing;
+  const overview = onDomainPage && browsing === "";
 
   return (
-    <div className="flex flex-col gap-3">
-      <DomainRow
-        domain={domain}
-        // Current while the domain page is open: no folder, whatever
-        // filter. A folder is its own page and its own row in the tree
-        // says so; an engram or the editor is somewhere else again.
-        current={onDomainPage && browsing === ""}
-      />
-
-      <div>
-        <h2 className="text-caption px-2 pb-2 font-semibold text-slate-500 dark:text-slate-400">
-          Engrams
-        </h2>
-        <TreeBranch
-          domain={domain}
-          path=""
-          permalink={permalink}
-          browsing={browsing}
-          marked={marked}
+    <div className="flex flex-col gap-0.5">
+      <Link
+        to={domainRoute(domain)}
+        // Current while the domain's front page is open: no folder, whatever
+        // filter. A folder is its own page and its own row in the tree says
+        // so; an engram or the editor is somewhere else again.
+        aria-current={overview ? "page" : undefined}
+        className={`${SIDE.row} ${overview ? SIDE.current : ""}`}
+      >
+        <House
+          aria-hidden="true"
+          size={16}
+          strokeWidth={1.75}
+          className={SIDE.icon}
         />
-        {/*
-          Left out on the domain's own home screen only: that screen carries
-          the same launcher beside its heading, prefilled with the folder
-          being browsed, so the sidebar would otherwise offer a second one
-          right next to the first. `permalink` is empty there and there
-          alone - both the engram page and the editor resolve one (see
-          `Layout.tsx`'s `DomainSidebar`) - so this is the only launcher on
-          either of those screens.
-        */}
-        {canWrite && permalink !== "" && (
-          <button
-            type="button"
-            onClick={() => {
-              setCreating(true);
-            }}
-            className="mt-2 w-full rounded border border-slate-300 px-2 py-1 text-sm hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-accent-600 dark:focus-visible:ring-accent-400 focus-visible:outline-none dark:border-slate-700 dark:hover:bg-slate-800"
-          >
-            New engram
-          </button>
-        )}
-      </div>
+        <span className="truncate">Overview</span>
+      </Link>
+
+      <h2 className={SIDE.label}>Engrams</h2>
+      <TreeBranch
+        domain={domain}
+        path=""
+        permalink={permalink}
+        browsing={browsing}
+        marked={marked}
+      />
+      {/*
+        Left out on the domain's own home screen only: that screen carries
+        the same launcher beside its heading, prefilled with the folder
+        being browsed, so the sidebar would otherwise offer a second one
+        right next to the first. `permalink` is empty there and there
+        alone - both the engram page and the editor resolve one (see
+        `Layout.tsx`'s `DomainSidebar`) - so this is the only launcher on
+        either of those screens.
+      */}
+      {canWrite && permalink !== "" && (
+        <button
+          type="button"
+          onClick={() => {
+            setCreating(true);
+          }}
+          className={`${SIDE.row} ${SIDE.add} mt-1.5 w-full`}
+        >
+          <Plus
+            aria-hidden="true"
+            size={16}
+            strokeWidth={1.75}
+            className={SIDE.icon}
+          />
+          New engram
+        </button>
+      )}
       {creating && (
         <CreateEngramDialog
           domain={domain}
@@ -137,25 +155,6 @@ export function DomainNav({ domain, permalink }: DomainNavProps) {
         />
       )}
     </div>
-  );
-}
-
-/**
- * The domain the reader is in, as a link to its page, marked current while
- * that page is open. The way across to another domain and back out to all of
- * them is the top bar's switcher.
- */
-function DomainRow({ domain, current }: { domain: string; current: boolean }) {
-  return (
-    <Link
-      to={domainRoute(domain)}
-      aria-current={current ? "page" : undefined}
-      className={`block truncate rounded px-2 py-1 text-sm hover:bg-slate-100 dark:hover:bg-slate-800 ${
-        current ? "bg-slate-100 font-medium dark:bg-slate-800" : ""
-      } ${FOCUS_RING}`}
-    >
-      {domain}
-    </Link>
   );
 }
 
@@ -184,17 +183,13 @@ function TreeBranch({
   const tree = useQuery(treeQuery(domain, path));
 
   if (tree.isPending) {
-    return (
-      <p className="px-2 py-1 text-sm text-slate-500 dark:text-slate-400">
-        Loading engrams
-      </p>
-    );
+    return <p className="px-2.5 py-1.5 text-sm text-muted">Loading engrams</p>;
   }
   if (tree.error) {
     return (
       <p
         role="alert"
-        className="rounded bg-red-50 px-2 py-1.5 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
+        className="rounded bg-red-50 px-2.5 py-1.5 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
       >
         {problemDetail(tree.error)}
       </p>
@@ -207,7 +202,7 @@ function TreeBranch({
   );
   if (folders.length === 0 && engrams.length === 0) {
     return (
-      <p className="px-2 py-1 text-sm text-slate-500 dark:text-slate-400">
+      <p className="px-2.5 py-1.5 text-sm text-muted">
         {/*
           One sentence, and no instruction attached to it: the launcher the
           second half used to name is drawn only while an engram is open (see
@@ -275,7 +270,7 @@ function BrowseAll({ domain, path }: { domain: string; path: string }) {
   return (
     <Link
       to={folderRoute(domain, path)}
-      className={`block truncate rounded px-2 py-1 text-caption text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 ${FOCUS_RING}`}
+      className={`${SIDE.row} text-caption text-slate-600 dark:text-slate-400`}
     >
       {path === ""
         ? "Browse all engrams in this domain"
@@ -309,9 +304,9 @@ function isPinnedManifest(row: EngramRow): boolean {
  *
  * One glyph does both jobs - it says this row is a folder, and its open or
  * shut face says whether the branch is - because the two pictures this row
- * used to carry read as one smudge at sixteen pixels. The engram rows stay
- * icon-free on purpose: the icon IS the distinction, and one on every row
- * would say nothing.
+ * used to carry read as one smudge at sixteen pixels. An engram row carries
+ * a document glyph in the same column (spec 4.4), so folders and files line
+ * up and the two shapes tell them apart.
  *
  * The button is named after what it will do - "Expand notes", "Collapse
  * notes" - rather than after the folder, for two reasons: two controls in one
@@ -375,8 +370,8 @@ function Folder({
         lights up under the pointer is the row.
       */}
       <div
-        className={`flex items-center rounded text-sm hover:bg-slate-100 dark:hover:bg-slate-800 ${
-          here ? "bg-slate-100 font-medium dark:bg-slate-800" : ""
+        className={`flex min-h-8 items-center rounded-[7px] text-sm text-ink-3 hover:bg-sunken ${
+          here ? SIDE.current : ""
         }`}
       >
         {/*
@@ -400,7 +395,7 @@ function Folder({
           onClick={() => {
             setOpen((wasOpen) => !wasOpen);
           }}
-          className={`rounded py-1 pr-1 pl-2 text-slate-500 dark:text-slate-400 ${FOCUS_RING}`}
+          className={`self-stretch rounded-[7px] pr-1 pl-2.5 text-faint ${FOCUS_RING}`}
         >
           {open ? (
             <FolderOpen
@@ -424,13 +419,13 @@ function Folder({
           // The gap the icon used to sit in, kept as padding: the name still
           // stands off the glyph rather than against it, and the engram rows
           // under it still start where they always did.
-          className={`flex min-w-0 grow items-center rounded py-1 pr-2 pl-1.5 ${FOCUS_RING}`}
+          className={`flex min-w-0 grow items-center self-stretch rounded-[7px] pr-2.5 pl-1 ${FOCUS_RING}`}
         >
           <span className="truncate">{name}</span>
         </Link>
       </div>
       {open && (
-        <div className="ml-3 border-l border-slate-200 pl-1 dark:border-slate-800">
+        <div className="ml-[17px] border-l border-hair pl-1">
           <TreeBranch
             domain={domain}
             path={path}
@@ -447,8 +442,9 @@ function Folder({
 /**
  * One engram in the tree.
  *
- * Named by its title alone: this is navigation, and the row that says what an
- * engram is made of is the list on the screen beside it. A retired one is
+ * Named by its title alone, behind a document glyph that is drawn and not
+ * spoken: this is navigation, and the row that says what an engram is made
+ * of is the list on the screen beside it. A retired one is
  * faded and still there, which is the rule everywhere else in this app.
  */
 function EngramLink({ row, current }: { row: EngramRow; current: boolean }) {
@@ -458,11 +454,17 @@ function EngramLink({ row, current }: { row: EngramRow; current: boolean }) {
       to={engramRoute(row.domain, row.permalink)}
       {...ENGRAM_PREFETCH}
       aria-current={current ? "page" : undefined}
-      className={`block truncate rounded px-2 py-1 text-sm hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-accent-600 dark:focus-visible:ring-accent-400 focus-visible:outline-none dark:hover:bg-slate-800 ${
-        current ? "bg-slate-100 font-medium dark:bg-slate-800" : ""
-      } ${retired ? RETIRED_CLASS : ""}`}
+      className={`${SIDE.row} ${current ? SIDE.current : ""} ${
+        retired ? RETIRED_CLASS : ""
+      }`}
     >
-      {row.title}
+      <FileText
+        aria-hidden="true"
+        size={16}
+        strokeWidth={1.75}
+        className={SIDE.icon}
+      />
+      <span className="truncate">{row.title}</span>
     </Link>
   );
 }

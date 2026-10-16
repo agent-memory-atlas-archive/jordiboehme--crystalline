@@ -886,3 +886,17 @@ export function reflectionAssetHome(
     linkTo: (path) => relativeTo(pagePath, path),
   };
 }
+
+/**
+ * Every open thread in the tree, pact included: the count the Reflection
+ * home links to the review screen with, and the sidebar's Review badge.
+ */
+export function openThreadCount(tree: ReflectionTree): number {
+  const walk = (nodes: TreeNode[]): number =>
+    nodes.reduce(
+      (sum, node) =>
+        sum + (node.kind === "folder" ? walk(node.children) : node.openThreads),
+      0,
+    );
+  return tree.pact.openThreads + walk(tree.nodes);
+}

@@ -562,9 +562,11 @@ describe("a reflection's attachments", () => {
         screen.getByRole("img", { name: "Flow" }).getAttribute("src"),
       ).toMatch(/\?v=222222222222$/);
     });
-    const pact = (await screen.findAllByRole("link", { name: "PACT" })).find(
-      (link) => link.getAttribute("href") === "/d/eng/reflection/PACT.md",
-    ) as HTMLElement;
+    // The sidebar names the pact "How we write" whatever its title is.
+    const pact = await within(
+      screen.getByRole("navigation", { name: "Reflection of eng" }),
+    ).findByRole("link", { name: "How we write" });
+    expect(pact).toHaveAttribute("href", "/d/eng/reflection/PACT.md");
     await userEvent.click(pact);
     await screen.findByRole("heading", { name: "PACT", level: 1 });
     await waitFor(() => {

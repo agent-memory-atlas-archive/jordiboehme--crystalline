@@ -462,7 +462,7 @@ test.describe.serial("the Reflection journeys", () => {
     // else: the pact, the two guides, no assets folder and no left-over
     // folder from the move.
     await expect(
-      tree(page).getByRole("link", { name: PACT_TITLE }),
+      tree(page).getByRole("link", { name: "How we write", exact: true }),
     ).toBeVisible();
     await tree(page).getByRole("button", { name: "Expand guides" }).click();
     await expect(
@@ -535,10 +535,7 @@ test.describe.serial("the Reflection journeys", () => {
     await expect(
       page
         .getByRole("navigation", { name: `Reflection of ${OFF_DOMAIN}` })
-        .getByRole("link", {
-          name: `How we write about ${OFF_DOMAIN}`,
-          exact: true,
-        }),
+        .getByRole("link", { name: "How we write", exact: true }),
     ).toBeVisible();
   });
 

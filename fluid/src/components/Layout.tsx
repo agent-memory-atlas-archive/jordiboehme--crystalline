@@ -29,6 +29,7 @@ import {
   Plus,
   Search,
   Share2,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
@@ -536,6 +537,20 @@ export function Layout() {
   // segment in its own route.
   useDomainNameRedirect();
   const [navOpen, setNavOpen] = useState(false);
+  // The phone drawer lies over the page, so following a link out of it shuts
+  // it: the reader came for the page the link opens, not for the drawer.
+  // Adjusted while rendering, the way React documents state that follows a
+  // value, rather than in an effect.
+  const location = useLocation();
+  const at = `${location.pathname}${location.search}`;
+  const [navAt, setNavAt] = useState(at);
+  if (navAt !== at) {
+    setNavAt(at);
+    setNavOpen(false);
+  }
+  // The bar's drawer toggle, where the keyboard goes back to when the drawer
+  // is shut from inside (its close button, Escape).
+  const navToggleRef = useRef<HTMLButtonElement | null>(null);
   const [rail, setRail] = useState(storedRail);
   const [fullWidth, setFullWidth] = useState(storedFullWidth);
   const [largeText, setLargeText] = useState(storedLargeText);
@@ -782,6 +797,7 @@ export function Layout() {
           <EngramsOrderContext value={engramsOrderChoice}>
             <div className="min-h-screen bg-canvas text-ink">
               <TopBar
+                navToggleRef={navToggleRef}
                 navOpen={navOpen}
                 onToggleNav={() => {
                   setNavOpen((open) => !open);
@@ -808,7 +824,7 @@ export function Layout() {
         */}
               <JoinedDraftBar />
               <div
-                className={`mx-auto flex w-full gap-6 px-4 py-6 ${
+                className={`mx-auto flex w-full gap-6 px-4 md:gap-10 md:pl-0 ${
                   fullWidth ? "" : "max-w-350"
                 }`}
               >
@@ -821,6 +837,10 @@ export function Layout() {
                   open={navOpen}
                   rail={rail && wide}
                   onToggleRail={toggleRail}
+                  onClose={() => {
+                    setNavOpen(false);
+                    navToggleRef.current?.focus();
+                  }}
                   onCreateDomain={() => {
                     setCreatingDomain(true);
                   }}
@@ -837,7 +857,7 @@ export function Layout() {
                   tabIndex={-1}
                   data-width={fullWidth ? "full" : undefined}
                   data-text={largeText ? "large" : undefined}
-                  className="min-w-0 flex-1 focus:outline-none"
+                  className="min-w-0 flex-1 py-6 focus:outline-none"
                 >
                   <Outlet />
                 </main>
@@ -933,12 +953,14 @@ function RouteFocus({ target }: { target: RefObject<HTMLElement | null> }) {
 }
 
 function TopBar({
+  navToggleRef,
   navOpen,
   onToggleNav,
   onShare,
   onHelp,
   onCreateDomain,
 }: {
+  navToggleRef: RefObject<HTMLButtonElement | null>;
   navOpen: boolean;
   onToggleNav: () => void;
   /** Share the named domain, or open the picker when there is none. */
@@ -969,6 +991,7 @@ function TopBar({
         }`}
       >
         <IconButton
+          ref={navToggleRef}
           label="Domains"
           icon={PanelLeft}
           onClick={onToggleNav}
@@ -1224,28 +1247,29 @@ function SearchBox() {
  *
  * It sticks under the top bar rather than scrolling away with the screen: the
  * page is the scrolling box, the header is fourteen units of it, and the
- * sidebar's own overflow starts where that ends. A long tree therefore scrolls
+ * sidebar takes the rest of the window's height. A long tree therefore scrolls
  * inside the sidebar while the reading surface scrolls the page, which is what
- * keeps the way around a domain reachable from the bottom of a long engram.
- * The half-unit of side padding that comes with it is the focus ring's: a box
- * that scrolls on one axis clips the other one too, and the rows inside fill
- * this column edge to edge, so without it a focused row's ring would be shaved
- * off down both sides.
+ * keeps the way around a domain reachable from the bottom of a long engram,
+ * and the fold control in its foot stays in one place.
  */
 function DomainSidebar({
   open,
   rail,
   onToggleRail,
+  onClose,
   onCreateDomain,
 }: {
   open: boolean;
   rail: boolean;
   onToggleRail: () => void;
+  /** Shut the phone drawer and give the keyboard back to its toggle. */
+  onClose: () => void;
   /** Open the frame's own register-a-domain dialog. */
   onCreateDomain: () => void;
 }) {
   const navigate = useNavigate();
   const { capabilities } = useAuth();
+  const wide = useWide();
   const [creating, setCreating] = useState(false);
   const listing = useQuery({
     queryKey: DOMAINS_QUERY_KEY,
@@ -1253,10 +1277,11 @@ function DomainSidebar({
   });
 
   // Folding the sidebar unmounts the control that folded it, so the keyboard
-  // is handed to the one that took its place - the same spot on screen, the
-  // opposite verb. Without this, focus lands on the document and a reader is
-  // back at the top of the page. Only after a press: a mount that read the
-  // stored preference must not steal focus from wherever the reader is.
+  // is handed to the one that took its place - the same spot on screen (the
+  // foot), the opposite verb. Without this, focus lands on the document and a
+  // reader is back at the top of the page. Only after a press: a mount that
+  // read the stored preference must not steal focus from wherever the reader
+  // is.
   const toggleRef = useRef<HTMLButtonElement | null>(null);
   const pressed = useRef(false);
   useEffect(() => {
@@ -1289,89 +1314,110 @@ function DomainSidebar({
     : rest.startsWith("edit/")
       ? rest.slice(5)
       : "";
+  // Below the medium breakpoint the sidebar is a drawer over the page: a
+  // fixed sheet from the left edge with a scrim behind it. From the
+  // breakpoint up it is a column under the top bar that sticks while the
+  // page scrolls, in the chrome colour with a hairline on its right; the
+  // shadow carries that colour on to the window's left edge when the frame
+  // is capped narrower than the window.
+  const drawer = !wide;
+  // An opened drawer takes the keyboard, so Escape and the next Tab act on
+  // it rather than on the page under the scrim. The drawer itself rather
+  // than its close button, so no tooltip pops up on the way in.
+  const navRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (drawer && open) {
+      navRef.current?.focus();
+    }
+  }, [drawer, open]);
   return (
-    <nav
-      id="domain-sidebar"
-      aria-label={domain === "" ? "Domains" : `Domain ${domain}`}
-      className={`${open ? "block" : "hidden"} ${
-        rail ? "w-12" : "w-56"
-      } shrink-0 print:hidden md:sticky md:top-14 md:block md:max-h-[calc(100vh-3.5rem)] md:self-start md:overflow-y-auto md:px-0.5`}
-    >
-      {rail ? (
-        /*
-          Folded: the two things somebody in the middle of reading still needs
-          from the frame, and the way back out of the fold. Names rather than
-          bare glyphs, because an icon column is exactly where a keyboard or a
-          screen reader has the least to go on.
-        */
-        <div className="flex flex-col items-center gap-1 py-1">
-          <IconButton
-            ref={toggleRef}
-            label="Expand the sidebar"
-            icon={PanelLeftOpen}
-            aria-expanded={false}
-            aria-controls="domain-sidebar"
-            onClick={fold}
-          />
-          <IconButton
-            label="All domains"
-            icon={House}
-            onClick={() => {
-              void navigate("/");
-            }}
-          />
-          {/*
-            The same condition `DomainNav` puts on its own launcher, for the
-            same reason: the domain's home screen carries one beside its
-            heading, prefilled with the folder being browsed, and the frame
-            offering a second one would be two controls for one act.
-          */}
-          {permalink !== "" && canWrite && (
-            <IconButton
-              label="New engram"
-              icon={Plus}
-              onClick={() => {
-                setCreating(true);
-              }}
-            />
-          )}
-        </div>
-      ) : (
-        <>
-          {/*
-            The breakpoint gate sits on this wrapper rather than on the button
-            inside it. `IconButton` bakes `inline-flex` into its own class
-            string, and a `hidden` passed through `className` loses to it: both
-            are base display utilities, so the emitted stylesheet's order
-            decides and `.inline-flex` is written after `.hidden`. On a plain
-            div there is no baked display to lose to, `.hidden` is emitted after
-            `.flex`, and `md:flex` wins from the breakpoint up because a
-            responsive variant is emitted after every base utility.
-
-            Only where there is a rail to fold into: below the medium
-            breakpoint the sidebar is a drawer the top bar's own disclosure
-            opens and shuts, and a second control for the same column would
-            be one too many.
-          */}
-          <div className="hidden justify-end pb-1 md:flex">
-            <IconButton
-              ref={toggleRef}
-              label="Collapse the sidebar"
-              icon={PanelLeftClose}
-              aria-expanded={true}
-              aria-controls="domain-sidebar"
-              onClick={fold}
-            />
+    <>
+      {drawer && open && (
+        <div
+          aria-hidden="true"
+          onClick={onClose}
+          className="fixed inset-0 z-40 bg-slate-900/40 print:hidden"
+        />
+      )}
+      <nav
+        ref={navRef}
+        tabIndex={drawer ? -1 : undefined}
+        id="domain-sidebar"
+        aria-label={domain === "" ? "Domains" : `Domain ${domain}`}
+        onKeyDown={
+          drawer
+            ? (event) => {
+                if (event.key === "Escape") {
+                  onClose();
+                }
+              }
+            : undefined
+        }
+        className={`${open ? "flex" : "hidden"} fixed inset-y-0 left-0 z-50 w-[300px] max-w-[85vw] shrink-0 flex-col bg-chrome shadow-pop outline-none print:hidden md:sticky md:top-14 md:bottom-auto md:z-auto md:flex md:h-[calc(100dvh-3.5rem)] md:max-w-none md:self-start md:border-r md:border-hair md:shadow-[-256px_0_0_var(--chrome)] ${
+          rail ? "md:w-12" : "md:w-64"
+        }`}
+      >
+        {drawer && (
+          /*
+            The drawer's own head: which domain this is the way around, and
+            the way to shut it without reaching back up to the bar.
+          */
+          <div className="flex items-center gap-2 px-3 pt-3 pb-1">
+            <span className="min-w-0 grow truncate px-2.5 font-semibold text-ink">
+              {domain === "" ? "All domains" : domain}
+            </span>
+            <IconButton label="Close the sidebar" icon={X} onClick={onClose} />
           </div>
-          {domain === "" ? (
+        )}
+        {/*
+          The rows scroll on their own, under a foot that stays put. The side
+          padding is wide enough for the focus ring: a box that scrolls on
+          one axis clips the other one too.
+        */}
+        <div
+          className={`min-h-0 flex-1 overflow-y-auto py-4 ${rail ? "px-2" : "px-3"}`}
+        >
+          {rail ? (
+            /*
+              Folded: the two things somebody in the middle of reading still
+              needs from the frame. Names rather than bare glyphs, because an
+              icon column is exactly where a keyboard or a screen reader has
+              the least to go on. The way back out of the fold is in the foot,
+              where the fold itself was.
+            */
+            <div className="flex flex-col items-center gap-1">
+              <IconButton
+                label="All domains"
+                icon={House}
+                onClick={() => {
+                  void navigate("/");
+                }}
+              />
+              {/*
+                The same condition `DomainNav` puts on its own launcher, for
+                the same reason: the domain's home screen carries one beside
+                its heading, prefilled with the folder being browsed, and the
+                frame offering a second one would be two controls for one act.
+              */}
+              {permalink !== "" && canWrite && (
+                <IconButton
+                  label="New engram"
+                  icon={Plus}
+                  onClick={() => {
+                    setCreating(true);
+                  }}
+                />
+              )}
+            </div>
+          ) : domain === "" ? (
             <DomainList
               domains={listing.data?.domains}
               pending={listing.isPending}
               error={listing.error}
-              // Only for the session that may register one. The server refuses
-              // everyone else anyway, so this is the difference between a
-              // sidebar that offers what you can do and one that offers a door
-              // that will not open.
+              // Only for the session that may register one. The server
+              // refuses everyone else anyway, so this is the difference
+              // between a sidebar that offers what you can do and one that
+              // offers a door that will not open.
               onCreateDomain={
                 capabilities.canAdminister ? onCreateDomain : null
               }
@@ -1384,26 +1430,44 @@ function DomainSidebar({
             <>
               {/*
                 A listing that failed is said here as it is in the flat mode.
-                The switcher is drawn either way: it names the domain the
-                reader is in from the address, so it works even when nothing
-                could be listed to switch to.
+                The tree is drawn either way: it comes from the domain's own
+                address, so it works even when nothing could be listed.
               */}
               {listing.error && <SidebarProblem error={listing.error} />}
               <DomainNav domain={domain} permalink={permalink} />
             </>
           )}
-        </>
-      )}
-      {creating && (
-        <CreateEngramDialog
-          domain={domain}
-          initialFolder=""
-          onClose={() => {
-            setCreating(false);
-          }}
-        />
-      )}
-    </nav>
+        </div>
+        {/*
+          The fold, in the foot at the bottom right (spec 4.4), only where
+          there is a rail to fold into: below the medium breakpoint the
+          sidebar is a drawer with its own close button in its head.
+        */}
+        {wide && (
+          <div
+            className={`flex shrink-0 py-2 ${rail ? "justify-center" : "justify-end px-3"}`}
+          >
+            <IconButton
+              ref={toggleRef}
+              label={rail ? "Expand the sidebar" : "Collapse the sidebar"}
+              icon={rail ? PanelLeftOpen : PanelLeftClose}
+              aria-expanded={!rail}
+              aria-controls="domain-sidebar"
+              onClick={fold}
+            />
+          </div>
+        )}
+        {creating && (
+          <CreateEngramDialog
+            domain={domain}
+            initialFolder=""
+            onClose={() => {
+              setCreating(false);
+            }}
+          />
+        )}
+      </nav>
+    </>
   );
 }
 

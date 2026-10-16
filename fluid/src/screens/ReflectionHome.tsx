@@ -16,26 +16,17 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { ApiProblem, problemDetail } from "../api/client";
 import { DOMAINS_QUERY_KEY } from "../api/domains";
 import { removeMember } from "../api/members";
-import type {
-  ReflectionSearchMode,
-  ReflectionTree,
-  TreeNode,
-} from "../api/reflection";
+import type { ReflectionSearchMode } from "../api/reflection";
 import {
   REFLECTION_SEARCH_MODES,
   fetchReflectionTree,
+  openThreadCount,
   readReflectionSearchMode,
   reflectionSearchKey,
   reflectionTreeKey,
-  saveReflection,
   searchReflections,
 } from "../api/reflection";
-import {
-  PACT_PATH,
-  REFLECTION_DOMAINS_KEY,
-  atLeast,
-  invalidateReflection,
-} from "../api/reflectionDomains";
+import { REFLECTION_DOMAINS_KEY, atLeast } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import {
   DestructiveAction,
@@ -44,10 +35,10 @@ import {
 import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { BUTTON, FIELD } from "../components/primitives";
+import { WritePact } from "../components/WritePact";
 import { Skeleton } from "../components/Skeleton";
 import { plural } from "../format";
 import {
-  reflectionEditRoute,
   reflectionPageRoute,
   reflectionReviewRoute,
   reflectionSearchRoute,
@@ -61,17 +52,6 @@ const ALERT =
 
 const LINK =
   "text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline";
-
-/** Every open thread in the tree, pact included. */
-function openThreads(tree: ReflectionTree): number {
-  const walk = (nodes: TreeNode[]): number =>
-    nodes.reduce(
-      (sum, node) =>
-        sum + (node.kind === "folder" ? walk(node.children) : node.openThreads),
-      0,
-    );
-  return tree.pact.openThreads + walk(tree.nodes);
-}
 
 export default function ReflectionHome(): ReactElement {
   const { domain = "" } = useParams();
@@ -164,51 +144,16 @@ function OnHome({
           </p>
           <p className="text-sm">
             <Link to={reflectionReviewRoute(domain)} className={LINK}>
-              {plural(openThreads(tree.data), "open thread", "open threads")}
+              {plural(
+                openThreadCount(tree.data),
+                "open thread",
+                "open threads",
+              )}
             </Link>
           </p>
         </section>
       )}
       <SearchSection domain={domain} />
-    </>
-  );
-}
-
-/**
- * PACT.md does not exist yet: create it with a heading and open it in the
- * editor. A create never overwrites, so a pact written meanwhile by somebody
- * else is refused in the server's words.
- */
-function WritePact({ domain }: { domain: string }): ReactElement {
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const write = useMutation({
-    mutationFn: () =>
-      saveReflection(domain, PACT_PATH, `# How we write about ${domain}\n`, {
-        create: true,
-      }),
-    onSuccess: () => {
-      invalidateReflection(queryClient, domain);
-      void navigate(reflectionEditRoute(domain, PACT_PATH));
-    },
-  });
-  return (
-    <>
-      <button
-        type="button"
-        disabled={write.isPending}
-        onClick={() => {
-          write.mutate();
-        }}
-        className={BUTTON.secondary}
-      >
-        Write the pact
-      </button>
-      {write.error && (
-        <span role="alert" className="ml-2 text-red-800 dark:text-red-200">
-          {problemDetail(write.error)}
-        </span>
-      )}
     </>
   );
 }
