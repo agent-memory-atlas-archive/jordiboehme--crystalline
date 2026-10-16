@@ -190,8 +190,23 @@ const AMBER_BANNER =
  * fields are one press away without pushing the text down a screen. One
  * element either way, so the two placements cannot drift apart.
  */
-function EditorDetails({ children }: { children: ReactNode }) {
+function EditorDetails({
+  children,
+  hasHardErrors,
+}: {
+  children: ReactNode;
+  /** Opens the disclosure when hard errors appear: the alert above says
+   *  "see Findings", and the findings are in here. */
+  hasHardErrors: boolean;
+}) {
   const [open, setOpen] = useState(false);
+  const [hadErrors, setHadErrors] = useState(hasHardErrors);
+  if (hasHardErrors !== hadErrors) {
+    setHadErrors(hasHardErrors);
+    if (hasHardErrors) {
+      setOpen(true);
+    }
+  }
   const body = useId();
   return (
     <aside
@@ -965,10 +980,12 @@ function Surface({
           : null
     : session.saving
       ? "saving"
-      : session.notice?.kind === "done"
-        ? "saved"
-        : session.dirty
-          ? "unsaved"
+      : session.dirty
+        ? // Unsaved text outranks the last receipt: a "Saved" beside a
+          // buffer that has moved on would claim what is not on disk.
+          "unsaved"
+        : session.notice?.kind === "done"
+          ? "saved"
           : null;
   /*
    * Save goes away once the buffer is clean, which is the moment a press of
@@ -1315,7 +1332,7 @@ function Surface({
             onDocChanged={session.setBuffer}
           />
         </div>
-        <EditorDetails>
+        <EditorDetails hasHardErrors={session.hardErrors > 0}>
           <FrontmatterForm
             doc={session.buffer}
             view={view}

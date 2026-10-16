@@ -304,6 +304,21 @@ async function insertTable(bar?: HTMLElement): Promise<void> {
 }
 
 /**
+ * A PUT answered as the server answers one: with the text it stored, which is
+ * the text that was sent. A mock that answered with the old content would
+ * leave the buffer unsaved after every save.
+ */
+function stored(
+  init: RequestInit | undefined,
+  overrides: Record<string, unknown> = {},
+) {
+  return detailResponse({
+    ...overrides,
+    content: (JSON.parse(init?.body as string) as { content: string }).content,
+  });
+}
+
+/**
  * A PUT that stays in flight until the test lets it land, which is what makes
  * "the buffer moved while the save was out" a thing a test can arrange rather
  * than a race it has to hope for.
@@ -882,7 +897,7 @@ describe("the engram editor", () => {
     serveEditor({
       "/domains/eng/engrams/alpha": (_path, init) =>
         init?.method === "PUT"
-          ? detailResponse({ checksum: "next111" })
+          ? stored(init, { checksum: "next111" })
           : detailResponse(),
     });
     renderApp("/d/eng/edit/alpha");
@@ -1217,6 +1232,28 @@ describe("the engram editor", () => {
     // buffer rather than on the page.
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     expect(screen.getByLabelText("Engram source")).toHaveFocus();
+  });
+
+  it("goes back to Unsaved changes on the next keystroke after a save", async () => {
+    serveEditor({
+      "/domains/eng/engrams/alpha": (_path, init) =>
+        init?.method === "PUT"
+          ? detailResponse({
+              checksum: "next111",
+              content: (JSON.parse(init.body as string) as { content: string })
+                .content,
+            })
+          : detailResponse(),
+    });
+    renderApp("/d/eng/edit/alpha");
+    const editor = await openBuffer();
+    typeAtEnd(editor, "More.");
+    await saveNow();
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+    typeAtEnd(editor, "!");
+    expect(await screen.findByText("Unsaved changes")).toBeInTheDocument();
+    expect(screen.queryByText("Saved")).toBeNull();
+    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
   });
 
   it("Done with unsaved text asks before it leaves, and Keep editing stays", async () => {
@@ -1620,7 +1657,9 @@ describe("the engram editor", () => {
           : { errors: 0, findings: [] };
       },
       "/domains/eng/engrams/alpha": (_path, init) =>
-        init?.method === "PUT" ? put() : detailResponse(),
+        init?.method === "PUT"
+          ? { ...put(), ...stored(init, { checksum: "next111" }) }
+          : detailResponse(),
     });
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
@@ -1725,10 +1764,14 @@ describe("the engram editor", () => {
     land();
 
     // Closing on it would be a lie about text the server has never seen, so
-    // the save lands, says so, and leaves the author on their own newer
-    // buffer.
-    expect(await screen.findByText("Saved")).toBeInTheDocument();
+    // the save lands and leaves the author on their own newer buffer, which
+    // the header still calls unsaved: the receipt was for older text.
+    await waitFor(() => {
+      expect(put).toHaveBeenCalledTimes(1);
+    });
     await settled();
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    expect(screen.queryByText("Saved")).toBeNull();
     expect(screen.getByLabelText("Engram source")).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "Alpha", level: 1 }),
@@ -1827,7 +1870,7 @@ describe("the engram editor", () => {
     serveEditor({
       "/domains/eng/engrams/alpha": (_path, init) =>
         init?.method === "PUT"
-          ? detailResponse({ checksum: "after99" })
+          ? stored(init, { checksum: "after99" })
           : detailResponse({ content: crlfContent }),
     });
     renderApp("/d/eng/edit/alpha");
@@ -1875,7 +1918,7 @@ describe("the engram editor", () => {
     serveEditor({
       "/domains/eng/engrams/alpha": (_path, init) =>
         init?.method === "PUT"
-          ? detailResponse({ checksum: "after99" })
+          ? stored(init, { checksum: "after99" })
           : detailResponse({ content: crlfContent }),
     });
     renderApp("/d/eng/edit/alpha");
@@ -2175,6 +2218,12 @@ describe("the engram editor", () => {
     renderApp("/d/eng/edit/alpha");
     const editor = await openBuffer();
     expect(await screen.findByText(/block saving/i)).toBeInTheDocument();
+    // The findings the alert points at are in reach on a phone too: the
+    // Details disclosure opens when hard errors appear.
+    expect(screen.getByRole("button", { name: "Details" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
     // Save stands once there is unsaved text, and the findings hold it back.
     typeAtEnd(editor, "x");
     await waitFor(() => {
