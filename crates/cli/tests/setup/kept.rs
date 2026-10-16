@@ -28,6 +28,7 @@ fn plant(home: &Path) -> (PathBuf, PathBuf) {
     let page = kept::write(
         &root,
         "eng",
+        None,
         KeptKind::Reflection,
         "guides/a.md",
         Utc::now() - Duration::hours(1),
@@ -37,6 +38,7 @@ fn plant(home: &Path) -> (PathBuf, PathBuf) {
     let engram = kept::write(
         &root,
         "ops",
+        None,
         KeptKind::Engram,
         "runbooks/deploy.md",
         Utc::now() - Duration::days(45),
@@ -221,7 +223,16 @@ fn status_through_the_daemon_counts_the_kept_texts() {
     )
     .unwrap();
     let root = env.state_dir().join(kept::KEPT_DIR);
-    kept::write(&root, "eng", KeptKind::Reflection, "a.md", Utc::now(), "x").unwrap();
+    kept::write(
+        &root,
+        "eng",
+        None,
+        KeptKind::Reflection,
+        "a.md",
+        Utc::now(),
+        "x",
+    )
+    .unwrap();
     env.serve();
     let (ok, text) = env.run(&["status"]);
     assert!(ok, "{text}");

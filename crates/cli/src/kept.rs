@@ -41,6 +41,7 @@ pub fn to_json(k: &KeptText) -> Value {
     json!({
         "id": k.id,
         "domain": k.domain,
+        "owner": k.owner,
         "kind": k.kind,
         "path": k.path,
         "kept_at": k.kept_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -49,9 +50,14 @@ pub fn to_json(k: &KeptText) -> Value {
     })
 }
 
-/// "eng reflection guides/a.md": what a kept text was.
+/// "eng reflection guides/a.md", plus "(ada's draft)" for a text kept from
+/// a review draft: what a kept text was.
 pub fn what(k: &KeptText) -> String {
-    format!("{} {} {}", k.domain, k.kind.as_str(), k.path)
+    let base = format!("{} {} {}", k.domain, k.kind.as_str(), k.path);
+    match &k.owner {
+        Some(owner) => format!("{base} ({owner}'s draft)"),
+        None => base,
+    }
 }
 
 /// "2026-10-15 08:00 UTC".
@@ -158,7 +164,16 @@ mod tests {
         assert_eq!(status_line(&[]), None);
         let dir = tempfile::tempdir().unwrap();
         let at = chrono::Utc::now();
-        kept::write(dir.path(), "eng", kept::KeptKind::Engram, "a.md", at, "x").unwrap();
+        kept::write(
+            dir.path(),
+            "eng",
+            None,
+            kept::KeptKind::Engram,
+            "a.md",
+            at,
+            "x",
+        )
+        .unwrap();
         let found = kept::scan(dir.path());
         assert_eq!(
             status_line(&found).as_deref(),

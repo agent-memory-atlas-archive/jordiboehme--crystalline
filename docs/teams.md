@@ -135,7 +135,7 @@ A draft stays private to its author, with one deliberate door out: hand somebody
 
 ### Kept texts
 
-When the last person leaves a page in the editor and its last save cannot land (the save was refused, or it is still in conflict), nothing would ever save that text again. The server keeps it as a file instead: `kept/<domain>/<engram|reflection>/<path>.<time>.md` in its state folder. This covers engrams and Reflection pages. The server never deletes a kept text on its own, because it may be the last copy of somebody's work.
+When the last person leaves a page in the editor and its last save cannot land (the save was refused, or it is still in conflict), nothing would ever save that text again. The server keeps it as a file instead: `kept/<domain>/<engram|reflection>/<path>.<time>.md` in its state folder. This covers engrams and Reflection pages. A text from somebody's review draft goes to `kept/<domain>/draft/<owner>/...`, because a draft is private to its owner. The server never deletes a kept text on its own, because it may be the last copy of somebody's work.
 
 To get a text back:
 
@@ -143,7 +143,7 @@ To get a text back:
 - `crystalline kept show <id>` prints the text as it was kept, so `crystalline kept show <id> > text.md` saves it. Copy what you need back into the page or the engram.
 - `crystalline kept drop <id>` deletes it after you confirm. Without a terminal, or with `--json`, it needs `--yes`.
 
-`crystalline status` shows `Kept texts: N (crystalline kept list)` while any are there, and `crystalline doctor` lists them and warns about one older than 30 days. `doctor --fix` never deletes them. These commands read the state folder of the machine they run on, so on a team server run them there (for a container, with `docker exec`). Over the JSON API, `GET /api/v1/domains/<name>/kept` lists a domain's kept texts, `GET .../kept/<id>` returns one with its text and `DELETE .../kept/<id>` drops it. A text goes only to a person who may write its source: a Reflection page's text needs curate on the Reflection, an engram's text needs write access to the engrams. A reader gets 403. Agents have no tool for kept texts: a kept text is a person's unsaved typing, and the person decides what happens to it.
+`crystalline status` shows `Kept texts: N (crystalline kept list)` while any are there, and `crystalline doctor` lists them and warns about one older than 30 days. `doctor --fix` never deletes them. These commands read the state folder of the machine they run on, so on a team server run them there (for a container, with `docker exec`). Over the JSON API, `GET /api/v1/domains/<name>/kept` lists a domain's kept texts, `GET .../kept/<id>` returns one with its text and `DELETE .../kept/<id>` drops it. A text goes only to a person who may write its source: a Reflection page's text needs curate on the Reflection, an engram's text needs write access to the engrams. A text from a review draft goes to the draft's owner only and is marked `draft`. A reader gets 403. Agents have no tool for kept texts: a kept text is a person's unsaved typing, and the person decides what happens to it.
 
 A kept folder is named after the domain's local name when the text was kept. After a domain rename or removal, `crystalline kept list` still shows the text under the old name, and the JSON API no longer does.
 

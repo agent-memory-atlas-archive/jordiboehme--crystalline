@@ -25,6 +25,10 @@ pub struct KeptTextEntry {
     /// A short, stable id for the routes below.
     #[schema(example = "3f9a1c2b7d4e")]
     pub id: String,
+    /// Whether it was kept from the caller's own review draft rather than
+    /// from the domain's own text. A draft's kept text is only ever listed
+    /// for its owner.
+    pub draft: bool,
     /// `engram` or `reflection`: the kind of room it was kept from.
     #[schema(example = "reflection")]
     pub kind: String,
@@ -67,6 +71,7 @@ pub struct KeptTextResponse {
 fn entry(kept: KeptText) -> KeptTextEntry {
     KeptTextEntry {
         id: kept.id,
+        draft: kept.owner.is_some(),
         kind: match kept.kind {
             KeptKind::Engram => "engram",
             KeptKind::Reflection => "reflection",
@@ -107,7 +112,9 @@ async fn refuse_anonymous(
                    room's text in its state folder. This lists them. A \
                    Reflection page's text needs `curate` on the Reflection, an \
                    engram's text needs write access to the engrams; each entry \
-                   is listed only for a caller who holds its own right. The \
+                   is listed only for a caller who holds its own right. A text \
+                   kept from a review draft is listed for the draft's owner \
+                   only (`draft: true`). The \
                    Reflection's state plays no part: a text kept because the \
                    Reflection was switched off is listed too.",
     params(("domain" = String, Path, description = "The domain.")),

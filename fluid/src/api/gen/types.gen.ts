@@ -676,6 +676,12 @@ export type KeptTextEntry = {
      */
     bytes: number;
     /**
+     * Whether it was kept from the caller's own review draft rather than
+     * from the domain's own text. A draft's kept text is only ever listed
+     * for its owner.
+     */
+    draft: boolean;
+    /**
      * A short, stable id for the routes below.
      */
     id: string;

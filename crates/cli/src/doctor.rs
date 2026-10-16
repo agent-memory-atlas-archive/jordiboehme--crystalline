@@ -1414,6 +1414,8 @@ pub struct KeptDoctor {
     pub id: String,
     /// The domain the room belonged to.
     pub domain: String,
+    /// Whose review draft it was kept from, `None` for the domain's own text.
+    pub owner: Option<String>,
     /// `engram` or `reflection`.
     pub kind: crystalline_core::kept::KeptKind,
     /// The engram's file path in its domain, or the page's path inside
@@ -1455,6 +1457,7 @@ fn check_kept(
                 ),
                 id: k.id.clone(),
                 domain: k.domain.clone(),
+                owner: k.owner.clone(),
                 kind: k.kind,
                 path: k.path.clone(),
                 kept_at: k.kept_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -6099,10 +6102,20 @@ mod tests {
         use crystalline_core::kept::{self, KeptKind};
         let dir = tempfile::tempdir().unwrap();
         let now = chrono::Utc::now();
-        kept::write(dir.path(), "eng", KeptKind::Reflection, "a.md", now, "x").unwrap();
+        kept::write(
+            dir.path(),
+            "eng",
+            None,
+            KeptKind::Reflection,
+            "a.md",
+            now,
+            "x",
+        )
+        .unwrap();
         kept::write(
             dir.path(),
             "ops",
+            None,
             KeptKind::Engram,
             "b.md",
             now - chrono::Duration::days(31),

@@ -10,7 +10,9 @@
 //!
 //! `<path>` is the engram's file path in its domain, or the page's path
 //! inside `reflections/`. A second text kept under the same name in the same
-//! second gets `-2`, `-3` and so on after the time.
+//! second gets `-2`, `-3` and so on after the time. A room over somebody's
+//! review draft keeps its text under `<domain>/draft/<owner>/` instead of
+//! `<domain>/`, because a draft is private to its owner.
 //!
 //! A kept text is the last copy of somebody's work, so nothing here deletes
 //! one on its own: [`remove`] runs only when a person asks for it. This
@@ -33,6 +35,10 @@ const STAMP: &str = "%Y%m%dT%H%M%SZ";
 
 /// How many hex characters of the path's hash make an id.
 const ID_LEN: usize = 12;
+
+/// The folder under a domain's folder that holds drafts' kept texts, one
+/// folder per owner.
+const DRAFT_DIR: &str = "draft";
 
 /// Which kind of room a text was kept from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -70,6 +76,9 @@ pub struct KeptText {
     pub id: String,
     /// The domain the room belonged to.
     pub domain: String,
+    /// Whose review draft the room was over, or `None` for the domain's own
+    /// text. A draft's kept text is its owner's alone.
+    pub owner: Option<String>,
     /// The kind of room.
     pub kind: KeptKind,
     /// The engram's file path in its domain, or the page's path inside
@@ -85,17 +94,28 @@ pub struct KeptText {
 }
 
 /// Keep `text` for `domain`'s `path` under `root` (the kept folder), named
-/// for `at`. Never overwrites: a name that is taken gets the next free
-/// `-N`. Returns the file written.
+/// for `at`; with `owner`, in that owner's draft folder. Never overwrites: a
+/// name that is taken gets the next free `-N`. Returns the file written.
 pub fn write(
     root: &Path,
     domain: &str,
+    owner: Option<&str>,
     kind: KeptKind,
     path: &str,
     at: DateTime<Utc>,
     text: &str,
 ) -> std::io::Result<PathBuf> {
-    let base = root.join(domain).join(kind.as_str()).join(path);
+    let mut base = root.join(domain);
+    if let Some(owner) = owner {
+        if owner.is_empty() || matches!(owner, "." | "..") || owner.contains(['/', '\\', ':']) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("'{owner}' is not one folder name"),
+            ));
+        }
+        base = base.join(DRAFT_DIR).join(owner);
+    }
+    let base = base.join(kind.as_str()).join(path);
     if let Some(parent) = base.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -132,19 +152,20 @@ pub fn scan(root: &Path) -> Vec<KeptText> {
         if !domain.is_dir {
             continue;
         }
-        for kind_dir in dir_entries(&domain.path) {
-            let Some(kind) = KeptKind::from_folder(&kind_dir.name) else {
-                continue;
-            };
-            if !kind_dir.is_dir {
-                continue;
+        for entry in dir_entries(&domain.path) {
+            if entry.is_dir && entry.name == DRAFT_DIR {
+                for owner in dir_entries(&entry.path) {
+                    if owner.is_dir {
+                        scan_kinds(&domain.name, Some(&owner.name), &owner.path, &mut found);
+                    }
+                }
             }
-            walk(&domain.name, kind, &kind_dir.path, "", &mut found);
         }
+        scan_kinds(&domain.name, None, &domain.path, &mut found);
     }
     found.sort_by(|a, b| {
-        (a.kept_at, &a.domain, a.kind, &a.path, &a.file)
-            .cmp(&(b.kept_at, &b.domain, b.kind, &b.path, &b.file))
+        (a.kept_at, &a.domain, &a.owner, a.kind, &a.path, &a.file)
+            .cmp(&(b.kept_at, &b.domain, &b.owner, b.kind, &b.path, &b.file))
     });
     found
 }
@@ -178,9 +199,49 @@ pub fn remove(root: &Path, kept: &KeptText) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Every kept file under `dir`, the folder `rel` inside `domain`'s `kind`
-/// folder, into `found`.
-fn walk(domain: &str, kind: KeptKind, dir: &Path, rel: &str, found: &mut Vec<KeptText>) {
+/// The two kind folders under `dir` (a domain's folder, or one owner's
+/// draft folder), walked into `found`.
+fn scan_kinds(domain: &str, owner: Option<&str>, dir: &Path, found: &mut Vec<KeptText>) {
+    for kind_dir in dir_entries(dir) {
+        let Some(kind) = KeptKind::from_folder(&kind_dir.name) else {
+            continue;
+        };
+        if kind_dir.is_dir {
+            let place = Place {
+                domain,
+                owner,
+                kind,
+            };
+            walk(&place, &kind_dir.path, "", found);
+        }
+    }
+}
+
+/// Which kind folder a walk is in.
+struct Place<'a> {
+    domain: &'a str,
+    owner: Option<&'a str>,
+    kind: KeptKind,
+}
+
+impl Place<'_> {
+    /// The file at `rel` inside this kind folder, as a path inside the kept
+    /// folder, `/`-separated.
+    fn rel(&self, rel: &str) -> String {
+        match self.owner {
+            Some(owner) => format!(
+                "{}/{DRAFT_DIR}/{owner}/{}/{rel}",
+                self.domain,
+                self.kind.as_str()
+            ),
+            None => format!("{}/{}/{rel}", self.domain, self.kind.as_str()),
+        }
+    }
+}
+
+/// Every kept file under `dir`, the folder `rel` inside `place`, into
+/// `found`.
+fn walk(place: &Place<'_>, dir: &Path, rel: &str, found: &mut Vec<KeptText>) {
     for entry in dir_entries(dir) {
         let child = if rel.is_empty() {
             entry.name.clone()
@@ -188,7 +249,7 @@ fn walk(domain: &str, kind: KeptKind, dir: &Path, rel: &str, found: &mut Vec<Kep
             format!("{rel}/{}", entry.name)
         };
         if entry.is_dir {
-            walk(domain, kind, &entry.path, &child, found);
+            walk(place, &entry.path, &child, found);
             continue;
         }
         if !entry.is_file {
@@ -203,9 +264,10 @@ fn walk(domain: &str, kind: KeptKind, dir: &Path, rel: &str, found: &mut Vec<Kep
             format!("{rel}/{name}")
         };
         found.push(KeptText {
-            id: id_of(domain, kind, &child),
-            domain: domain.to_string(),
-            kind,
+            id: id_of(&place.rel(&child)),
+            domain: place.domain.to_string(),
+            owner: place.owner.map(str::to_string),
+            kind: place.kind,
             path,
             kept_at,
             bytes: entry.len,
@@ -235,10 +297,9 @@ fn parse_name(file: &str) -> Option<(&str, DateTime<Utc>)> {
     Some((name, at.and_utc()))
 }
 
-/// The id of the file at `rel` (inside the kind's folder): the start of the
-/// SHA-256 of its whole path inside the kept folder, `/`-separated.
-fn id_of(domain: &str, kind: KeptKind, rel: &str) -> String {
-    let full = format!("{domain}/{}/{rel}", kind.as_str());
+/// The id of the file at `full`, its path inside the kept folder: the
+/// start of its SHA-256.
+fn id_of(full: &str) -> String {
     let digest = Sha256::digest(full.as_bytes());
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     hex[..ID_LEN].to_string()
@@ -292,8 +353,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let kind = KeptKind::Reflection;
-        let first = write(root, "eng", kind, "guides/a.md", at(8), "first").unwrap();
-        let second = write(root, "eng", kind, "guides/a.md", at(8), "second").unwrap();
+        let first = write(root, "eng", None, kind, "guides/a.md", at(8), "first").unwrap();
+        let second = write(root, "eng", None, kind, "guides/a.md", at(8), "second").unwrap();
         assert_ne!(first, second);
         assert_eq!(
             first,
@@ -313,15 +374,34 @@ mod tests {
         write(
             root,
             "eng",
+            None,
             KeptKind::Engram,
             "runbooks/deploy.md",
             at(9),
             "abc",
         )
         .unwrap();
-        write(root, "eng", KeptKind::Reflection, "a.md", at(8), "hello").unwrap();
-        write(root, "ops", KeptKind::Reflection, "a.md", at(8), "x").unwrap();
-        write(root, "eng", KeptKind::Reflection, "a.md", at(8), "again").unwrap();
+        write(
+            root,
+            "eng",
+            None,
+            KeptKind::Reflection,
+            "a.md",
+            at(8),
+            "hello",
+        )
+        .unwrap();
+        write(root, "ops", None, KeptKind::Reflection, "a.md", at(8), "x").unwrap();
+        write(
+            root,
+            "eng",
+            None,
+            KeptKind::Reflection,
+            "a.md",
+            at(8),
+            "again",
+        )
+        .unwrap();
         let found = scan(root);
         let rows: Vec<(&str, KeptKind, &str, DateTime<Utc>, u64)> = found
             .iter()
@@ -352,10 +432,46 @@ mod tests {
     fn ids_are_short_distinct_and_stable() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        write(root, "eng", KeptKind::Reflection, "guides/a.md", at(8), "1").unwrap();
-        write(root, "eng", KeptKind::Reflection, "ops/a.md", at(8), "2").unwrap();
-        write(root, "ops", KeptKind::Reflection, "guides/a.md", at(8), "3").unwrap();
-        write(root, "eng", KeptKind::Engram, "guides/a.md", at(8), "4").unwrap();
+        write(
+            root,
+            "eng",
+            None,
+            KeptKind::Reflection,
+            "guides/a.md",
+            at(8),
+            "1",
+        )
+        .unwrap();
+        write(
+            root,
+            "eng",
+            None,
+            KeptKind::Reflection,
+            "ops/a.md",
+            at(8),
+            "2",
+        )
+        .unwrap();
+        write(
+            root,
+            "ops",
+            None,
+            KeptKind::Reflection,
+            "guides/a.md",
+            at(8),
+            "3",
+        )
+        .unwrap();
+        write(
+            root,
+            "eng",
+            None,
+            KeptKind::Engram,
+            "guides/a.md",
+            at(8),
+            "4",
+        )
+        .unwrap();
         let first: Vec<String> = scan(root).into_iter().map(|k| k.id).collect();
         let again: Vec<String> = scan(root).into_iter().map(|k| k.id).collect();
         assert_eq!(first, again);
@@ -369,6 +485,35 @@ mod tests {
         let one = &first[1];
         assert_eq!(find(root, one).unwrap().id, *one);
         assert!(find(root, "000000000000").is_none());
+    }
+
+    /// A draft room's text is kept in its owner's folder and listed with the
+    /// owner; the same path in the domain's own text is another entry with
+    /// another id. An owner that is not one folder name is refused.
+    #[test]
+    fn a_drafts_text_is_kept_under_its_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let kind = KeptKind::Engram;
+        let file = write(root, "eng", Some("ada"), kind, "a.md", at(8), "draft").unwrap();
+        assert_eq!(
+            file,
+            root.join("eng/draft/ada/engram/a.md.20261015T080000Z.md")
+        );
+        write(root, "eng", None, kind, "a.md", at(8), "folder").unwrap();
+        let found = scan(root);
+        let rows: Vec<(Option<&str>, &str, u64)> = found
+            .iter()
+            .map(|k| (k.owner.as_deref(), k.path.as_str(), k.bytes))
+            .collect();
+        assert_eq!(rows, vec![(None, "a.md", 6), (Some("ada"), "a.md", 5)]);
+        assert_ne!(found[0].id, found[1].id);
+        for owner in ["", ".", "..", "a/b", "a\\b", "c:"] {
+            assert!(
+                write(root, "eng", Some(owner), kind, "a.md", at(8), "x").is_err(),
+                "{owner}"
+            );
+        }
     }
 
     /// Names outside the layout, unknown kind folders and loose files are
@@ -405,13 +550,14 @@ mod tests {
         write(
             root,
             "eng",
+            None,
             KeptKind::Reflection,
             "guides/deep/a.md",
             at(8),
             "1",
         )
         .unwrap();
-        write(root, "eng", KeptKind::Reflection, "b.md", at(9), "2").unwrap();
+        write(root, "eng", None, KeptKind::Reflection, "b.md", at(9), "2").unwrap();
         let found = scan(root);
         remove(root, &found[0]).unwrap();
         assert!(!root.join("eng/reflection/guides").exists());

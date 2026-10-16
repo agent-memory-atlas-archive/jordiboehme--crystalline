@@ -1974,6 +1974,7 @@ impl CollabSession {
         match crystalline_core::kept::write(
             &kept,
             &self.domain,
+            self.overlay.as_deref(),
             kind,
             &path,
             chrono::Utc::now(),

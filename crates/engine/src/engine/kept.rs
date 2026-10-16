@@ -4,7 +4,8 @@
 //! A kept text holds what a person typed into a page or an engram, so it
 //! goes only to somebody who may write that source: a Reflection text needs
 //! `curate` on the domain's Reflection, an engram text needs the right to
-//! write engrams there. Each entry is decided by its own kind. Neither right
+//! write engrams there. Each entry is decided by its own kind, and a text
+//! kept from a review draft goes to the draft's owner only. Neither right
 //! asks the Reflection's state: it is often off exactly because a switch-off
 //! is why the text was kept.
 
@@ -39,7 +40,7 @@ impl Engine {
     /// usual unknown-domain answer for a domain it may not see.
     pub async fn kept_texts(&self, domain: &str, scope: &Scope) -> Result<Vec<KeptText>> {
         let rights = self.kept_rights(domain, scope).await?;
-        Ok(self.kept_of(domain, rights))
+        Ok(self.kept_of(domain, scope, rights))
     }
 
     /// One kept text of `domain` with its text. [`EngineError::NotFound`]
@@ -72,7 +73,7 @@ impl Engine {
 
     async fn kept_entry(&self, domain: &str, id: &str, scope: &Scope) -> Result<KeptText> {
         let rights = self.kept_rights(domain, scope).await?;
-        self.kept_of(domain, rights)
+        self.kept_of(domain, scope, rights)
             .into_iter()
             .find(|k| k.id == id)
             .ok_or_else(|| {
@@ -96,15 +97,22 @@ impl Engine {
         Ok(rights)
     }
 
-    /// `domain`'s kept texts of the kinds `rights` allows. None when this
+    /// `domain`'s kept texts of the kinds `rights` allows: the domain's
+    /// own, and the ones kept from `scope`'s own review drafts. Another
+    /// person's draft is theirs alone, whatever the rights. None when this
     /// process knows no state folder.
-    fn kept_of(&self, domain: &str, rights: KeptRights) -> Vec<KeptText> {
+    fn kept_of(&self, domain: &str, scope: &Scope, rights: KeptRights) -> Vec<KeptText> {
         let Some(root) = self.kept_dir() else {
             return Vec::new();
         };
+        let mine = crate::scope::overlay_actor(scope);
         kept::scan(&root)
             .into_iter()
-            .filter(|k| k.domain == domain && rights.allows(k.kind))
+            .filter(|k| {
+                k.domain == domain
+                    && rights.allows(k.kind)
+                    && (k.owner.is_none() || k.owner == mine)
+            })
             .collect()
     }
 

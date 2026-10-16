@@ -22,6 +22,7 @@ fn keep(s: &Served) -> (String, String) {
     kept::write(
         &root,
         "eng",
+        None,
         KeptKind::Reflection,
         PAGE,
         at,
@@ -32,6 +33,7 @@ fn keep(s: &Served) -> (String, String) {
     kept::write(
         &root,
         "eng",
+        None,
         KeptKind::Engram,
         ENGRAM,
         later,
@@ -41,6 +43,7 @@ fn keep(s: &Served) -> (String, String) {
     kept::write(
         &root,
         "ops",
+        None,
         KeptKind::Reflection,
         PAGE,
         at,
@@ -110,6 +113,7 @@ async fn an_editor_lists_reads_and_drops_the_kept_texts() {
     assert_eq!(first["kept_at"], "2026-10-15T08:00:00Z");
     assert_eq!(first["bytes"], 19);
     assert!(first.get("file").is_none(), "no server path: {first}");
+    assert_eq!(first["draft"], false);
 
     let (status, one) = ed.get(&format!("/api/v1/domains/eng/kept/{page_id}")).await;
     assert_eq!(status, 200, "{one}");
@@ -262,4 +266,57 @@ async fn a_switched_off_reflection_still_lists_its_kept_texts() {
         .await;
     assert_eq!(status, 200, "{one}");
     assert_eq!(one["text"], "Typed on the page.\n");
+}
+
+/// A text kept from a review draft is its owner's alone: `ed` lists, reads
+/// and drops the one from ed's draft, marked `draft`; `keeper`, who may
+/// write every engram of the domain, never sees it, and its id answers 404.
+#[tokio::test]
+async fn a_drafts_kept_text_goes_to_its_owner_only() {
+    let s = serve().await;
+    let root = s.fx.tmp.path().join("state").join(kept::KEPT_DIR);
+    let at = chrono::Utc.with_ymd_and_hms(2026, 10, 15, 9, 0, 0).unwrap();
+    kept::write(
+        &root,
+        "eng",
+        Some("ed"),
+        KeptKind::Engram,
+        ENGRAM,
+        at,
+        "Typed in ed's draft.\n",
+    )
+    .unwrap();
+    let id = kept::scan(&root)[0].id.clone();
+
+    let keeper = Session::login(s.addr, "keeper").await;
+    let (status, body) = keeper.get("/api/v1/domains/eng/kept").await;
+    assert_eq!(status, 200, "{body}");
+    assert!(listed(&body).is_empty(), "{body}");
+    for method in [Method::GET, Method::DELETE] {
+        let (status, body) = keeper
+            .send(
+                method.clone(),
+                &format!("/api/v1/domains/eng/kept/{id}"),
+                None,
+            )
+            .await;
+        assert_eq!(status, 404, "{method}: {body}");
+    }
+    assert_eq!(kept::scan(&root).len(), 1, "keeper drops nothing");
+
+    let ed = Session::login(s.addr, "ed").await;
+    let (_, body) = ed.get("/api/v1/domains/eng/kept").await;
+    assert_eq!(body["kept"][0]["draft"], true, "{body}");
+    let (status, one) = ed.get(&format!("/api/v1/domains/eng/kept/{id}")).await;
+    assert_eq!(status, 200, "{one}");
+    assert_eq!(one["text"], "Typed in ed's draft.\n");
+    let (status, _) = ed
+        .send(
+            Method::DELETE,
+            &format!("/api/v1/domains/eng/kept/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 204);
+    assert!(kept::scan(&root).is_empty());
 }

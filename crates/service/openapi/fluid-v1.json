@@ -3611,7 +3611,7 @@
           "domains"
         ],
         "summary": "The texts the server kept for this domain when a room could not save.",
-        "description": "When the last person leaves a co-editing room and its final save is refused or ends in a conflict, the server keeps the room's text in its state folder. This lists them. A Reflection page's text needs `curate` on the Reflection, an engram's text needs write access to the engrams; each entry is listed only for a caller who holds its own right. The Reflection's state plays no part: a text kept because the Reflection was switched off is listed too.",
+        "description": "When the last person leaves a co-editing room and its final save is refused or ends in a conflict, the server keeps the room's text in its state folder. This lists them. A Reflection page's text needs `curate` on the Reflection, an engram's text needs write access to the engrams; each entry is listed only for a caller who holds its own right. A text kept from a review draft is listed for the draft's owner only (`draft: true`). The Reflection's state plays no part: a text kept because the Reflection was switched off is listed too.",
         "operationId": "list_kept_texts",
         "parameters": [
           {
@@ -11909,6 +11909,7 @@
         "description": "One kept text, without its text.",
         "required": [
           "id",
+          "draft",
           "kind",
           "path",
           "kept_at",
@@ -11921,6 +11922,10 @@
             "description": "Its size in bytes.",
             "example": 1204,
             "minimum": 0
+          },
+          "draft": {
+            "type": "boolean",
+            "description": "Whether it was kept from the caller's own review draft rather than\nfrom the domain's own text. A draft's kept text is only ever listed\nfor its owner."
           },
           "id": {
             "type": "string",

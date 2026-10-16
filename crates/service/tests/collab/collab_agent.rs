@@ -1340,6 +1340,51 @@ async fn a_room_still_in_conflict_at_its_close_keeps_its_text() {
     assert!(kept[0].contains("typed in the room"), "{kept:?}");
 }
 
+/// A room over a review draft keeps its unsaved text in its owner's draft
+/// folder, never beside the domain's own texts, so the kept-text listing
+/// gives it to that owner only.
+#[tokio::test]
+async fn a_draft_room_keeps_its_text_under_its_owner() {
+    let (tmp, engine, _scratch) = engine_fixture(true).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", Some("ada")).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "ada typed this in her draft").await;
+    // The owner locks the domain by hand: no save lands any more.
+    let manifest = tmp.path().join("eng/MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+
+    let root = tmp.path().join("state/kept");
+    assert!(
+        !root.join("eng/engram").exists(),
+        "not beside the domain's own"
+    );
+    let found = crystalline_core::kept::scan(&root);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].owner.as_deref(), Some("ada"));
+    assert_eq!(found[0].path, "alpha.md");
+    let held = crystalline_core::kept::read(&found[0]).unwrap();
+    assert!(held.contains("ada typed this in her draft"), "{held}");
+    let ada = crystalline_service::Scope::User {
+        account: "ada".into(),
+        admin: false,
+    };
+    let bob = crystalline_service::Scope::User {
+        account: "bob".into(),
+        admin: false,
+    };
+    assert_eq!(engine.kept_texts("eng", &ada).await.unwrap().len(), 1);
+    assert!(engine.kept_texts("eng", &bob).await.unwrap().is_empty());
+}
+
 /// A room whose final pass itself runs into a conflict keeps its text too.
 #[tokio::test]
 async fn a_final_pass_that_ends_in_conflict_keeps_the_rooms_text() {
