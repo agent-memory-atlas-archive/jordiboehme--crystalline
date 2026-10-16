@@ -179,6 +179,9 @@ pub(crate) struct OnRefusal<'a> {
     pub undo: DiskUndo,
     /// The text to keep, if the write carried one a person or agent sent.
     pub keep: Option<KeepText<'a>>,
+    /// Whether this is a read healing a row, not a write: its refusal is
+    /// no failure, and is logged as such.
+    pub read: bool,
 }
 
 impl<'a> OnRefusal<'a> {
@@ -188,6 +191,17 @@ impl<'a> OnRefusal<'a> {
             domain,
             undo,
             keep: None,
+            read: false,
+        }
+    }
+
+    /// A read that heals a row: nothing to put back or keep.
+    pub(crate) fn read_heal(domain: &'a str) -> OnRefusal<'a> {
+        OnRefusal {
+            domain,
+            undo: DiskUndo::default(),
+            keep: None,
+            read: true,
         }
     }
 }
@@ -206,6 +220,13 @@ pub(crate) enum RowOp<'a> {
     PutAsset(&'a crystalline_index::AttachmentRow),
     /// A Reflection file's row goes.
     DeleteAsset(&'a str),
+    /// A read heals a Reflection file's row: written only while the stored
+    /// row is still `seen`, the one the read compared, so a row another
+    /// writer stored meanwhile stays.
+    HealAsset {
+        row: &'a crystalline_index::AttachmentRow,
+        seen: Option<&'a crystalline_index::AttachmentRow>,
+    },
 }
 
 /// Whether `e` is a refusal of the host-lock fence (or of the gate, whose
@@ -297,6 +318,16 @@ impl Engine {
                             .delete_asset(AssetTable::Reflection, domain_id, path)
                             .await?;
                     }
+                    RowOp::HealAsset { row, seen } => {
+                        let now = store
+                            .get_asset(AssetTable::Reflection, domain_id, &row.path)
+                            .await?;
+                        if now.as_ref() == *seen {
+                            store
+                                .upsert_asset(AssetTable::Reflection, domain_id, row)
+                                .await?;
+                        }
+                    }
                 }
             }
             #[cfg(any(test, feature = "testing"))]
@@ -341,7 +372,22 @@ impl Engine {
         foreign: bool,
         on_refusal: OnRefusal<'_>,
     ) -> EngineError {
-        let OnRefusal { domain, undo, keep } = on_refusal;
+        let OnRefusal {
+            domain,
+            undo,
+            keep,
+            read,
+        } = on_refusal;
+        if read {
+            tracing::info!(
+                domain,
+                "a Reflection file was read here, and its index row is left to the host: this instance no longer holds the domain's host lock ({refusal})"
+            );
+            if foreign && self.hosted.write().unwrap().remove(domain).is_some() {
+                self.announce_host_moved(domain);
+            }
+            return refusal;
+        }
         let mut answer = refusal;
         let mut not_kept = None;
         match keep.filter(|k| !k.text.trim().is_empty()) {

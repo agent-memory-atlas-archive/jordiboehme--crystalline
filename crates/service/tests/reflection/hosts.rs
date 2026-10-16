@@ -2150,3 +2150,53 @@ async fn a_room_join_takes_over_a_stale_lock_and_not_a_live_one_on_postgres() {
         "the room join took the lock over"
     );
 }
+
+/// A read heals a Reflection file's missing row only while the row is still
+/// as the read found it: a row another writer stored meanwhile stays.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_read_heal_leaves_a_row_written_meanwhile_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let (alpha, _beta) = fenced_pair(&db).await;
+    let folder = alpha.root.join("reflections/assets");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("heal.png"), crate::assets::PNG).unwrap();
+    let meanwhile = crystalline_index::AttachmentRow {
+        path: "assets/heal.png".to_string(),
+        sha256: "0".repeat(64),
+        mime: "image/png".to_string(),
+        size: 1,
+        modified: "2030-01-01T00:00:00+00:00".to_string(),
+    };
+    let store = db.open().await;
+    let read = in_the_window(
+        &alpha,
+        alpha
+            .engine
+            .reflection_asset_read("eng", "assets/heal.png", &ReflectionCaller::owner()),
+        async {
+            let store = store.lock().await;
+            let did = store.domain_id("eng").await.unwrap().unwrap();
+            store
+                .upsert_asset(crystalline_index::AssetTable::Reflection, did, &meanwhile)
+                .await
+                .unwrap();
+        },
+    )
+    .await;
+    assert!(read.is_ok(), "the read serves the bytes: {:?}", read.err());
+    let store = store.lock().await;
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    assert_eq!(
+        store
+            .get_asset(
+                crystalline_index::AssetTable::Reflection,
+                did,
+                "assets/heal.png"
+            )
+            .await
+            .unwrap(),
+        Some(meanwhile),
+        "the row written meanwhile stays"
+    );
+}

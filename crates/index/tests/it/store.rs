@@ -13101,6 +13101,45 @@ async fn raced_twins_read_apart(store: &dyn Store) {
             .unwrap(),
         "build-box"
     );
+    // The renewal writes the short id onto the twin's lock. When the other
+    // goes down and comes back, the twin keeps its label: it never flips
+    // back to the bare name.
+    assert!(
+        store
+            .renew_domain_host(ids[1], "9c1b0000-bbbb", "build-box (9c1b)", &now)
+            .await
+            .unwrap()
+    );
+    let gone = crystalline_index::claim_window(91).1;
+    store
+        .claim_domain_host(ids[0], "3f2a0000-aaaa", "build-box", &gone, &gone, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        crystalline_index::instance_label(store, "build-box", "9c1b0000-bbbb")
+            .await
+            .unwrap(),
+        "build-box (9c1b)",
+        "the other is down"
+    );
+    store
+        .claim_domain_host(
+            ids[0],
+            "3f2a0000-aaaa",
+            "build-box",
+            &now,
+            &stale_before,
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        crystalline_index::instance_label(store, "build-box", "9c1b0000-bbbb")
+            .await
+            .unwrap(),
+        "build-box (9c1b)",
+        "and back up"
+    );
 }
 parity!(
     raced_twins_read_apart_on_both_backends,

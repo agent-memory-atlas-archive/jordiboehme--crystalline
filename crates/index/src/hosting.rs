@@ -97,22 +97,23 @@ pub async fn instance_label(store: &dyn Store, name: &str, instance_id: &str) ->
     // this machine, a restart.
     let short: String = instance_id.chars().take(4).collect();
     let suffixed = format!("{name} ({short})");
-    if let Some(own) = store.own_label(instance_id).await? {
-        if own == suffixed {
-            return Ok(own);
-        }
-        if own == name {
-            // Two instances whose first claims raced can both hold the bare
-            // name. The one with the greater id gives it up, at its next
-            // claim or renewal, so the two read apart from then on.
-            let (_, stale_before) = claim_window(stale_secs());
-            let twin = store
-                .live_label_holders(name, &stale_before)
-                .await?
-                .iter()
-                .any(|other| other.as_str() < instance_id);
-            return Ok(if twin { suffixed } else { own });
-        }
+    let own = store.own_labels(instance_id).await?;
+    // Once an instance used its short id under this name, it keeps it, even
+    // when the twin that made it take one is gone: a label never flips back.
+    if own.contains(&suffixed) {
+        return Ok(suffixed);
+    }
+    if own.iter().any(|label| label == name) {
+        // Two instances whose first claims raced can both hold the bare
+        // name. The one with the greater id gives it up, at its next claim
+        // or renewal, so the two read apart from then on.
+        let (_, stale_before) = claim_window(stale_secs());
+        let twin = store
+            .live_label_holders(name, &stale_before)
+            .await?
+            .iter()
+            .any(|other| other.as_str() < instance_id);
+        return Ok(if twin { suffixed } else { name.to_string() });
     }
     if store.label_taken(name, instance_id).await? {
         return Ok(suffixed);

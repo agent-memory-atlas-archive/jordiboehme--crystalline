@@ -4332,17 +4332,15 @@ impl Store for TursoStore {
         Ok(rows.iter().filter_map(|r| cell_text(r, 0)).collect())
     }
 
-    async fn own_label(&self, instance_id: &str) -> Result<Option<String>> {
-        let row = query_first(
+    async fn own_labels(&self, instance_id: &str) -> Result<Vec<String>> {
+        let rows = query_all(
             &self.conn,
-            "SELECT label FROM (\
-             SELECT holder_label AS label FROM domain_lock WHERE holder_instance_id=?1 AND holder_label<>'' \
-             UNION ALL SELECT last_host_label AS label FROM domain WHERE last_host_id=?1 AND last_host_label<>''\
-             ) AS own ORDER BY label LIMIT 1",
+            "SELECT holder_label FROM domain_lock WHERE holder_instance_id=?1 AND holder_label<>'' \
+             UNION SELECT last_host_label FROM domain WHERE last_host_id=?1 AND last_host_label<>''",
             vec![Value::Text(instance_id.to_string())],
         )
         .await?;
-        Ok(row.and_then(|r| cell_text(&r, 0)))
+        Ok(rows.iter().filter_map(|r| cell_text(r, 0)).collect())
     }
 
     async fn release_domain_host(

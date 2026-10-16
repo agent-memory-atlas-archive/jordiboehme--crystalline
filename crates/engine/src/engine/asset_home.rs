@@ -225,11 +225,12 @@ impl Engine {
                 }
                 let modified = asset_modified(&abs);
                 let store = self.store.lock().await;
-                if let Some(row) = store.get_asset(home.table(), domain_id, path).await?
+                let seen = store.get_asset(home.table(), domain_id, path).await?;
+                if let Some(row) = &seen
                     && row.size == bytes.len() as u64
                     && row.modified == modified
                 {
-                    return Ok((bytes, row));
+                    return Ok((bytes, row.clone()));
                 }
                 let row = attachment_row(path, &bytes, modified)?;
                 match home {
@@ -242,8 +243,11 @@ impl Engine {
                         match self
                             .commit_reflection_rows(
                                 domain_id,
-                                &[RowOp::PutAsset(&row)],
-                                OnRefusal::put_back(domain, DiskUndo::default()),
+                                &[RowOp::HealAsset {
+                                    row: &row,
+                                    seen: seen.as_ref(),
+                                }],
+                                OnRefusal::read_heal(domain),
                             )
                             .await
                         {

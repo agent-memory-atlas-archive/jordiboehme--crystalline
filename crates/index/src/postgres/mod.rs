@@ -4542,19 +4542,17 @@ impl Store for PostgresStore {
         Ok(rows.iter().filter_map(|r| cell_text(r, 0)).collect())
     }
 
-    async fn own_label(&self, instance_id: &str) -> Result<Option<String>> {
+    async fn own_labels(&self, instance_id: &str) -> Result<Vec<String>> {
         let mut conn = self.acquire().await?;
-        let row = sqlx::query(
-            "SELECT label FROM (\
-             SELECT holder_label AS label FROM domain_lock WHERE holder_instance_id=$1 AND holder_label<>'' \
-             UNION ALL SELECT last_host_label AS label FROM domain WHERE last_host_id=$1 AND last_host_label<>''\
-             ) AS own ORDER BY label COLLATE \"C\" LIMIT 1",
+        let rows = sqlx::query(
+            "SELECT holder_label FROM domain_lock WHERE holder_instance_id=$1 AND holder_label<>'' \
+             UNION SELECT last_host_label FROM domain WHERE last_host_id=$1 AND last_host_label<>''",
         )
         .bind(instance_id)
-        .fetch_optional(conn.as_mut())
+        .fetch_all(conn.as_mut())
         .await
         .map_err(IndexError::from)?;
-        Ok(row.and_then(|r| cell_text(&r, 0)))
+        Ok(rows.iter().filter_map(|r| cell_text(r, 0)).collect())
     }
 
     async fn release_domain_host(

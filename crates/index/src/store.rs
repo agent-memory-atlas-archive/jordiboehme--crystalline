@@ -3861,9 +3861,9 @@ pub trait Store: Send + Sync {
         now: &str,
     ) -> Result<bool>;
 
-    /// A label `instance_id` is recorded under already (a lock it holds, or
-    /// a domain it last hosted), or `None`.
-    async fn own_label(&self, instance_id: &str) -> Result<Option<String>>;
+    /// The labels `instance_id` is recorded under already (on a lock it
+    /// holds, or on a domain it last hosted), each once.
+    async fn own_labels(&self, instance_id: &str) -> Result<Vec<String>>;
 
     /// The instance ids holding a lock under `label` whose heartbeat is not
     /// older than `stale_before`.

@@ -311,6 +311,7 @@ impl Engine {
                         caller,
                         holds: &threads_abs,
                     }),
+                    read: false,
                 };
                 match &page_update {
                     Some(page) => {
@@ -404,6 +405,7 @@ impl Engine {
                             caller,
                             holds: &threads_abs,
                         }),
+                        read: false,
                     },
                 )
                 .await?;
