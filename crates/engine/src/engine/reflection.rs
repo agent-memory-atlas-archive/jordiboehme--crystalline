@@ -68,11 +68,12 @@ fn hosted_refusal(label: &str) -> EngineError {
 pub const ANONYMOUS_COMMENT: &str =
     "anonymous visitors read this Reflection and cannot comment; sign in to comment";
 
-/// A reflection write's receipt when the open room raised its edit conflict
-/// over it.
-pub const ROOM_CONFLICT_NOTE: &str = "your write is on disk, and it collides with text somebody in the open room has not saved yet: the people in the room are choosing between their text and yours";
-/// A reflection write's receipt when the open room could not take it in yet.
-pub const ROOM_WAITING_NOTE: &str = "your write is on disk; the open room has an unresolved change of its own, and the people in it meet yours when they resolve it";
+/// A write's receipt when the open room raised its edit conflict over it.
+/// "Saved" rather than "on disk": an engram edit that went past a room may
+/// have landed in a draft or a virtual domain's row.
+pub const ROOM_CONFLICT_NOTE: &str = "your write is saved, and it collides with text somebody in the open room has not saved yet: the people in the room are choosing between their text and yours";
+/// A write's receipt when the open room could not take it in yet.
+pub const ROOM_WAITING_NOTE: &str = "your write is saved; the open room has an unresolved change of its own, and the people in it meet yours when they resolve it";
 
 /// Say on a write's receipt what an open room did with the write behind it
 /// ([`crate::collab::session::CollabSessions::absorb_doc_change`]): `live`

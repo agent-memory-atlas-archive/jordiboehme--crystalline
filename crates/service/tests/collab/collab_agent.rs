@@ -1549,6 +1549,13 @@ async fn an_edit_of_a_draft_whose_room_cannot_save_lands_in_the_draft() {
     assert_eq!(receipt["landed"], "file", "{receipt}");
     assert_eq!(receipt["draft"], true, "{receipt}");
     assert_eq!(receipt["room"], "waiting", "{receipt}");
+    // The draft is in the database, so the note says saved, not on disk.
+    assert!(
+        receipt["room_note"]
+            .as_str()
+            .is_some_and(|note| note.starts_with("your write is saved")),
+        "{receipt}"
+    );
     let draft = engine
         .overlay_draft_at("eng", "owner", "alpha.md")
         .await
