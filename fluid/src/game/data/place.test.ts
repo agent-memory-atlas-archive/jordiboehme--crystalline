@@ -30,6 +30,7 @@ const DETAIL: EngramDetail = {
   frontmatter: {
     type: "decision",
     status: "stable",
+    description: null,
     tags: ["reactor", "navigation"],
     salience: 6,
     validFrom: "2026-01-01",

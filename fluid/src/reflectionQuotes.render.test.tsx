@@ -16,7 +16,11 @@ import type { SectionText } from "./reflectionText";
 import { ThemeProvider } from "./theme/ThemeProvider";
 
 /** Render each text as its own section, the way the reflection page does. */
-async function renderSections(texts: string[], assets?: AssetResolver) {
+async function renderSections(
+  texts: string[],
+  assets?: AssetResolver,
+  titleNote?: string,
+) {
   const sections: SectionText[] = texts.map((text, i) => ({
     id: `s${i}`,
     heading: "",
@@ -25,11 +29,12 @@ async function renderSections(texts: string[], assets?: AssetResolver) {
   const result = render(
     <MemoryRouter>
       <ThemeProvider>
-        {sections.map((section) => (
+        {sections.map((section, at) => (
           <section key={section.id} data-section={section.id}>
             <Markdown
               source={section.text}
               sourceSpans
+              {...(at === 0 && titleNote !== undefined ? { titleNote } : {})}
               {...(assets === undefined ? {} : { assets })}
             />
           </section>
@@ -230,5 +235,83 @@ describe("a selection through the real renderer", () => {
       section: "s0",
       quote: null,
     });
+  });
+});
+
+describe("a note under the title", () => {
+  const TEXT = "# Deploying\n\nShort intro. Book a slot in the calendar.\n";
+  const NOTE = "1 section \u00b7 1 open thread";
+
+  it("is drawn right under the first heading and nowhere else", async () => {
+    const { root } = await renderSections(
+      [TEXT, "## Later\n\n# Another\n"],
+      undefined,
+      NOTE,
+    );
+    const h1 = root.querySelector("h1")!;
+    const note = h1.nextElementSibling!;
+    expect(note).toHaveTextContent(NOTE);
+    expect(note.hasAttribute("data-src")).toBe(false);
+    expect(note.hasAttribute("data-anchor-skip")).toBe(true);
+    expect(root.querySelectorAll("[data-anchor-skip]")).toHaveLength(1);
+  });
+
+  it("leaves a thread's quote painted and read back unchanged", async () => {
+    const { root, sections, elements } = await renderSections(
+      [TEXT],
+      undefined,
+      NOTE,
+    );
+    const at = locateQuote(TEXT, "Book a slot", 1)!;
+    const range = domRange(elements[0]!, at.start, at.end, TEXT);
+    expect(range).not.toBeNull();
+    expect(range!.toString()).toBe("Book a slot");
+    expect(selectionAnchor(root, range, sections)).toEqual({
+      section: "s0",
+      heading: "",
+      quote: "Book a slot",
+      occurrence: 1,
+    });
+  });
+
+  it("is not a selection when it lies wholly in the note", async () => {
+    const { root, sections } = await renderSections([TEXT], undefined, NOTE);
+    const words = textIn(root.querySelector("[data-anchor-skip]")!, NOTE);
+    const range = document.createRange();
+    range.setStart(words, 2);
+    range.setEnd(words, 9);
+    expect(selectionAnchor(root, range, sections)).toBeNull();
+  });
+
+  it("starts a selection that begins in the note at the next words of the page", async () => {
+    const { root, sections } = await renderSections([TEXT], undefined, NOTE);
+    const words = textIn(root.querySelector("[data-anchor-skip]")!, NOTE);
+    const intro = textIn(
+      root.querySelector("p:not([data-anchor-skip])")!,
+      "Short intro. Book a slot in the calendar.",
+    );
+    const range = document.createRange();
+    range.setStart(words, 2);
+    range.setEnd(intro, 5);
+    expect(selectionAnchor(root, range, sections)).toEqual({
+      section: "s0",
+      heading: "",
+      quote: "Short",
+      occurrence: 1,
+    });
+  });
+
+  it("reads a selection that crosses it as the words of the page only", async () => {
+    const { root, sections } = await renderSections([TEXT], undefined, NOTE);
+    const title = textIn(root.querySelector("h1")!, "Deploying");
+    const intro = textIn(
+      root.querySelector("p:not([data-anchor-skip])")!,
+      "Short intro. Book a slot in the calendar.",
+    );
+    const range = document.createRange();
+    range.setStart(title, 3);
+    range.setEnd(intro, 5);
+    const anchor = selectionAnchor(root, range, sections);
+    expect(anchor?.quote).toBe("loying\n\nShort");
   });
 });

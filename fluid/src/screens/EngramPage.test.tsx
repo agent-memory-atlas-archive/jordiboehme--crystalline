@@ -849,19 +849,30 @@ describe("the engram page", () => {
     expect(within(trail).queryByRole("link", { name: "eng" })).toBeNull();
   });
 
-  it("puts status, type and the description on one line under the title", async () => {
+  it("puts status, type and the parsed description on one line under the title", async () => {
+    // The file writes it as a folded block scalar; the page shows the engine's
+    // parsed text and never the source's `>-`.
     serve({
-      "/domains/eng/engrams/alpha": () =>
-        detailResponse({
+      "/domains/eng/engrams/alpha": () => {
+        const base = detailResponse();
+        return detailResponse({
           content:
-            "---\ndescription: Why we deploy at night\n---\n# Alpha\n\nBody.\n",
-        }),
+            "---\ndescription: >-\n  Why we deploy\n  at night\n---\n# Alpha\n\nBody.\n",
+          frontmatter: {
+            ...(base.frontmatter as Record<string, unknown>),
+            description: "Why we deploy at night",
+          },
+        });
+      },
     });
     renderApp("/d/eng/e/alpha");
     const meta = await screen.findByLabelText("About this engram");
     expect(meta).toHaveTextContent("superseded");
     expect(meta).toHaveTextContent("decision");
-    expect(meta).toHaveTextContent("Why we deploy at night");
+    const text = within(meta).getByText("Why we deploy at night");
+    expect(text).toHaveAttribute("title", "Why we deploy at night");
+    expect(text.className).toContain("line-clamp-2");
+    expect(meta.textContent).not.toContain(">-");
   });
 
   it("names the ellipsis on hover without renaming it", async () => {

@@ -52,7 +52,6 @@ import { DropdownMenu } from "radix-ui";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 
-import { readScalar } from "../editor/frontmatterFields";
 import { discardChanges, refusalSentence } from "../api/admin";
 import { ApiProblem, problemDetail } from "../api/client";
 import { domainTreeKey } from "../api/domain";
@@ -454,9 +453,7 @@ export default function EngramPage() {
 
   const engram = detail.data;
   const backlinks = backlinksTo(graph.data, engram.domain, engram.permalink);
-  // The payload carries no description field of its own; the frontmatter in
-  // the file text does.
-  const description = readScalar(engram.content, "description");
+  const description = engram.frontmatter.description;
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-2">
@@ -645,7 +642,11 @@ export default function EngramPage() {
             {engram.frontmatter.type !== null && (
               <Chip>{engram.frontmatter.type}</Chip>
             )}
-            {description !== null && <span>{description}</span>}
+            {description !== null && (
+              <span title={description} className="line-clamp-2 min-w-0">
+                {description}
+              </span>
+            )}
           </p>
         )}
         {discarding && (

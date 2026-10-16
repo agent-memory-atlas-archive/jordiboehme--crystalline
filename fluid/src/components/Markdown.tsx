@@ -70,6 +70,8 @@ export interface MarkdownProps {
    * text. Only the reflection page sets it.
    */
   sourceSpans?: boolean;
+  /** A line drawn under the first `# Title`, outside the text (see `MarkdownBody`). */
+  titleNote?: string;
 }
 
 export function Markdown({
@@ -81,6 +83,7 @@ export function Markdown({
   documentName,
   anchors,
   sourceSpans,
+  titleNote,
 }: MarkdownProps) {
   return (
     <Suspense
@@ -121,6 +124,7 @@ export function Markdown({
         {...(documentName === undefined ? {} : { documentName })}
         {...(anchors === undefined ? {} : { anchors })}
         {...(sourceSpans ? { sourceSpans } : {})}
+        {...(titleNote === undefined ? {} : { titleNote })}
       />
     </Suspense>
   );

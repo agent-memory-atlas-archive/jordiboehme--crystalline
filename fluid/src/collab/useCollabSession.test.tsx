@@ -64,6 +64,7 @@ function detailOf(content: string): EngramDetail {
     frontmatter: {
       type: null,
       status: null,
+      description: null,
       tags: [],
       salience: null,
       validFrom: null,

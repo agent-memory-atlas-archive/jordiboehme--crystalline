@@ -458,6 +458,23 @@ describe("the reflection page header", () => {
     ).toBeVisible();
   });
 
+  it("draws the line straight under the body's own title, outside the text threads anchor on", async () => {
+    serve("curate", true);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const h1 = await screen.findByRole("heading", {
+      name: "Deploying",
+      level: 1,
+    });
+    const line = await screen.findByText(
+      "1 section \u00b7 Built from 1 engram",
+    );
+    expect(h1.nextElementSibling).toBe(line);
+    expect(line.closest("article")).not.toBeNull();
+    expect(line).toHaveAttribute("data-anchor-skip");
+    // Said once: the header does not draw it a second time.
+    expect(screen.getAllByText(/1 section/)).toHaveLength(1);
+  });
+
   it("leaves the engram part out for a reader without engram rights, and zero threads", async () => {
     serve("comment", false);
     renderApp("/d/eng/reflection/guides/deploying.md");

@@ -325,6 +325,30 @@ function stamp(node: HastNode, source: string): void {
     });
 }
 
+/** The marker the first level-one heading carries for `titleNote`. */
+const FIRST_TITLE = "dataFirstTitle";
+/** The same marker as the component receives it: hast `dataFirstTitle` is `data-first-title`. */
+const FIRST_TITLE_PROP = "data-first-title";
+
+/**
+ * Mark the document's first `<h1>`, in document order, so the heading
+ * component can draw a note straight under it. Walks the tree once and
+ * changes nothing but that one property; first in the chain, before the
+ * source-span stamp, so no position moves.
+ */
+function markFirstTitle() {
+  return function transform(tree: unknown) {
+    const walk = (node: HastNode): boolean => {
+      if (node.type === "element" && node.tagName === "h1") {
+        node.properties = { ...node.properties, [FIRST_TITLE]: "true" };
+        return true;
+      }
+      return (node.children ?? []).some(walk);
+    };
+    walk(tree as HastNode);
+  };
+}
+
 /** The source offset a stamped span carries, or undefined for any other span. */
 function sourceStamp(node: unknown): string | undefined {
   const value = (node as HastNode | undefined)?.properties?.[SOURCE_ATTR];
@@ -954,37 +978,58 @@ function heading(
   level: 1 | 2 | 3 | 4 | 5 | 6,
   sizes: string,
   anchored: boolean,
+  titleNote?: string,
 ) {
   const Tag = `h${level}` as const;
   const className = `group scroll-mt-16 ${sizes}`.trimEnd();
   return function Heading({
     children,
     id,
+    ...rest
   }: {
     children?: ReactNode | undefined;
     id?: string | undefined;
+    [FIRST_TITLE_PROP]?: string | undefined;
   }) {
     // Generated rather than derived from the slug: a heading literally called
     // "Auth text" would collide with a `${slug}-text` spelling, and two
     // elements sharing an id is a reference pointing at whichever came first.
     const textId = useId();
+    // The note belongs to the one heading marked first, and is not text of the
+    // document: no stamp, nothing to select (`data-anchor-skip` is what the
+    // quote code passes over).
+    const note =
+      titleNote !== undefined && rest[FIRST_TITLE_PROP] === "true" ? (
+        <p
+          data-anchor-skip=""
+          className="-mt-1 mb-4 text-sm text-ink-3 select-none"
+        >
+          {titleNote}
+        </p>
+      ) : null;
     if (!anchored || id === undefined) {
       return (
-        <Tag id={id} className={className}>
-          {children}
-        </Tag>
+        <>
+          <Tag id={id} className={className}>
+            {children}
+          </Tag>
+          {note}
+        </>
       );
     }
+    // The link symbol is a real button inside the heading, so without this
+    // the heading's own name would end in "Link to this section" - in the
+    // document outline and in every entry of a screen reader's heading
+    // list. Naming the heading by the span around its text leaves the
+    // button its own name and the tab order untouched.
     return (
-      // The link symbol is a real button inside the heading, so without this
-      // the heading's own name would end in "Link to this section" - in the
-      // document outline and in every entry of a screen reader's heading
-      // list. Naming the heading by the span around its text leaves the
-      // button its own name and the tab order untouched.
-      <Tag id={id} className={className} aria-labelledby={textId}>
-        <span id={textId}>{children}</span>
-        <SectionLink id={id} />
-      </Tag>
+      <>
+        <Tag id={id} className={className} aria-labelledby={textId}>
+          <span id={textId}>{children}</span>
+          <SectionLink id={id} />
+        </Tag>
+        {note}
+      </>
     );
   };
 }
@@ -1015,10 +1060,11 @@ function componentsFor(
   assets: AssetResolver | undefined,
   documentName: string | undefined,
   anchored: boolean,
+  titleNote: string | undefined,
 ): Components {
   return {
     ...components,
-    h1: heading(1, HEADING_SIZES[0], anchored),
+    h1: heading(1, HEADING_SIZES[0], anchored, titleNote),
     h2: heading(2, HEADING_SIZES[1], anchored),
     h3: heading(3, HEADING_SIZES[2], anchored),
     h4: heading(4, HEADING_SIZES[3], anchored),
@@ -1062,8 +1108,15 @@ export default function MarkdownBody({
   documentName,
   anchors,
   sourceSpans,
+  titleNote,
 }: {
   source: string;
+  /**
+   * One line of text drawn straight under the document's first level-one
+   * heading and counted as no part of it: unstamped, unselectable, passed
+   * over by the comment anchoring. Absent, nothing is drawn.
+   */
+  titleNote?: string;
   wikilinks?: WikilinkResolver;
   foldTitle?: string;
   /**
@@ -1122,12 +1175,13 @@ export default function MarkdownBody({
     [resolver],
   );
   const componentMap = useMemo(
-    () => componentsFor(resolver, documentName, anchored),
-    [resolver, documentName, anchored],
+    () => componentsFor(resolver, documentName, anchored, titleNote),
+    [resolver, documentName, anchored, titleNote],
   );
   const rehypePlugins = useMemo<RehypePlugins>(
     () => [
       // First, so the positions it reads are the parser's own.
+      ...(titleNote === undefined ? [] : [markFirstTitle]),
       ...(sourceSpans ? [sourceSpanStamp(shown)] : []),
       // `plainText` keeps the highlighter's hands off a mermaid fence, whose
       // text this file reads back out to draw the diagram from.
@@ -1145,7 +1199,7 @@ export default function MarkdownBody({
       // a span rather than map through it (`reflectionQuotes.ts`).
       ...(wikilinks ? [wikilinkRewrite(wikilinks)] : []),
     ],
-    [anchored, wikilinks, sourceSpans, shown],
+    [anchored, wikilinks, sourceSpans, shown, titleNote],
   );
   // Arriving at a section: scroll it into view and point it out for a moment.
   // It runs on the hash rather than on a navigation, which is what makes a

@@ -124,6 +124,14 @@ function elementOf(node: Node): Element | null {
     : (node as Element);
 }
 
+/** The marker on text that is on the page but is not the document's own words. */
+export const SKIP_ATTR = "data-anchor-skip";
+
+/** Whether `node` is inside a note the page drew that is no part of the text. */
+function skipped(node: Node): boolean {
+  return elementOf(node)?.closest(`[${SKIP_ATTR}]`) != null;
+}
+
 /** The stamped span holding `node`, or null. */
 function stampOf(node: Node): Element | null {
   return elementOf(node)?.closest(`[${SOURCE_ATTR}]`) ?? null;
@@ -180,7 +188,7 @@ function textsIn(root: Element): Text[] {
   const out: Text[] = [];
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    if ((node as Text).length > 0) {
+    if ((node as Text).length > 0 && !skipped(node)) {
       out.push(node as Text);
     }
   }
@@ -232,7 +240,7 @@ function isBlankUnplaced(node: Node): boolean {
   return (
     node.nodeType === Node.TEXT_NODE &&
     stampOf(node) === null &&
-    (node.textContent ?? "").trim() === ""
+    ((node.textContent ?? "").trim() === "" || skipped(node))
   );
 }
 
@@ -295,6 +303,11 @@ export function selectionAnchor(
   sections: readonly SectionText[],
 ): SelectionAnchor | null {
   if (range === null || range.collapsed) {
+    return null;
+  }
+  // A selection inside a note the page drew (the line under a title) is no
+  // selection of the document's words.
+  if (skipped(range.startContainer) && skipped(range.endContainer)) {
     return null;
   }
   let from = textPoint(

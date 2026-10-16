@@ -431,7 +431,9 @@ function PageBody({
           </p>
         )}
         {!ownTitle && <h1 className="text-display">{page.title}</h1>}
-        {metaLine !== "" && <p className="text-sm text-ink-3">{metaLine}</p>}
+        {!ownTitle && metaLine !== "" && (
+          <p className="text-sm text-ink-3">{metaLine}</p>
+        )}
         {page.livePresent.length > 0 && (
           <p
             role="status"
@@ -450,6 +452,13 @@ function PageBody({
                 domain={domain}
                 assets={assets}
                 index={index}
+                // The meta line goes under the body's own title when it has
+                // one; without one the header draws title and line itself.
+                titleNote={
+                  index === 0 && ownTitle && metaLine !== ""
+                    ? metaLine
+                    : undefined
+                }
                 section={section}
                 engramsVisible={engramsVisible}
                 view={
@@ -502,7 +511,10 @@ function PageSection({
   section,
   engramsVisible,
   view,
+  titleNote,
 }: {
+  /** A line under the section's first `# Title`, outside its text. */
+  titleNote?: string | undefined;
   /** For the source links only; the rendered body takes no domain (see above). */
   domain: string;
   /** The Reflection's own files: images, file links and refused engram files. */
@@ -527,7 +539,12 @@ function PageSection({
         No `domain`: it would resolve `assets/` links through the engram
         files route. `assets` resolves them through the Reflection's own.
       */}
-      <Markdown source={section.text} assets={assets} sourceSpans />
+      <Markdown
+        source={section.text}
+        assets={assets}
+        sourceSpans
+        {...(titleNote === undefined ? {} : { titleNote })}
+      />
       {engramsVisible &&
         view?.sources !== null &&
         view?.sources !== undefined &&

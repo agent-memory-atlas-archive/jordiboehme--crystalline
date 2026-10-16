@@ -18,6 +18,7 @@ import { Tooltips } from "./primitives";
 const FRONTMATTER: EngramFrontmatter = {
   type: "guide",
   status: "current",
+  description: null,
   tags: ["protocol", "smoke"],
   salience: 0.7,
   validFrom: null,
