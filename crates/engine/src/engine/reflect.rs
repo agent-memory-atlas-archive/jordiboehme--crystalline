@@ -767,7 +767,7 @@ impl Engine {
     /// answers, cut to what the home draws. The open threads by who they
     /// wait on, the queue's update count (the review's `kinds.update`,
     /// counted with no page compared for feedback, no diff rendered and no
-    /// source looked up: [`Detail::Updates`]) and the open
+    /// source looked up) and the open
     /// threads by page, each thread with its first quote and the people in
     /// it, never its entries. Pages and their threads come oldest first, by
     /// when a thread was opened. The threads files are read once.
@@ -782,7 +782,8 @@ impl Engine {
         let threads = self.all_threads(&access).await?;
         let (mut for_people, mut for_agent) = (0usize, 0usize);
         // Per page: its title and its open threads with their opening time.
-        let mut pages: BTreeMap<&str, (String, Vec<(&str, Value)>)> = BTreeMap::new();
+        type Opened<'a> = Vec<(&'a str, Value)>;
+        let mut pages: BTreeMap<&str, (String, Opened)> = BTreeMap::new();
         for (path, thread, text) in &threads {
             if thread.status != ThreadStatus::Open {
                 continue;
