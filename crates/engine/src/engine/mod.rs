@@ -738,6 +738,16 @@ pub enum WatchEvent {
     Remove(String),
 }
 
+/// A row [`Engine::refuse_only_elsewhere`] looks for: a Reflection page by
+/// its path inside `reflections/`, or a file by its table and path.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ElsewhereRow<'a> {
+    /// A Reflection page.
+    Page(&'a str),
+    /// An engram attachment or a Reflection file.
+    Asset(crystalline_index::AssetTable, &'a str),
+}
+
 /// Where a domain's engram content comes from and goes to: files on disk for a
 /// file domain, or the database for a virtual domain. This is the one seam every
 /// content mutation branches on; everything after `parse_engram` is shared (see
@@ -4046,6 +4056,47 @@ impl Engine {
             Ok(None) => false,
             Err(_) => true,
         }
+    }
+
+    /// Refuse a write that would create `row`'s file on this disk while the
+    /// row is kept for the previous host of an unresolved host move (Task
+    /// 50): the file exists only on that host's disk, and the write would
+    /// replace the only shared copy of it. The caller holds the path's file
+    /// lock and has seen the file missing here. Turso, and a domain with no
+    /// mark, answer at once.
+    pub(crate) async fn refuse_only_elsewhere(
+        &self,
+        domain: &str,
+        domain_id: DomainId,
+        row: ElsewhereRow<'_>,
+    ) -> Result<()> {
+        let store = self.store.lock().await;
+        if !store.shares_database() {
+            return Ok(());
+        }
+        let Some(mark) = store.host_move(domain_id).await? else {
+            return Ok(());
+        };
+        let (path, kept) = match row {
+            ElsewhereRow::Page(path) => {
+                (path, store.get_reflection(domain_id, path).await?.is_some())
+            }
+            ElsewhereRow::Asset(table, path) => (
+                path,
+                store.get_asset(table, domain_id, path).await?.is_some(),
+            ),
+        };
+        if !kept {
+            return Ok(());
+        }
+        let host = mark
+            .only_elsewhere
+            .previous_host
+            .as_deref()
+            .unwrap_or("another instance");
+        Err(EngineError::Conflict(format!(
+            "'{path}' exists only on {host}, which hosted this domain before; copy the domain folder over or restore it, then sync, or drop it with: crystalline sync --domain {domain} --accept-disk"
+        )))
     }
 
     /// The GitHub login the injected provider acts as, for tests that need a

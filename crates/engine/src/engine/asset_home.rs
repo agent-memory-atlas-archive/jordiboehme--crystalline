@@ -311,6 +311,14 @@ impl Engine {
                 if existed && let Some(refusal) = replace.refusal(path) {
                     return Err(refusal);
                 }
+                if !existed {
+                    self.refuse_only_elsewhere(
+                        domain,
+                        domain_id,
+                        ElsewhereRow::Asset(home.table(), path),
+                    )
+                    .await?;
+                }
                 write_bytes(&abs, &bytes)?;
                 // The modification instant is read back off the file rather
                 // than taken from the clock, so it is the same value the sync
@@ -496,6 +504,10 @@ impl Engine {
         let case_only = is_case_only_rename(&src, &dst, from, to);
         if dst.exists() && !case_only {
             return Err(EngineError::Conflict(format!("'{to}' {MOVE_ONTO_A_FILE}")));
+        }
+        if !case_only {
+            self.refuse_only_elsewhere(domain, domain_id, ElsewhereRow::Asset(home.table(), to))
+                .await?;
         }
         // A rename keeps the modification instant, so a stored row that
         // matches the file's stat still describes the bytes at `to`.

@@ -1443,6 +1443,10 @@ impl Engine {
                 )));
             }
         }
+        if current.is_none() {
+            self.refuse_only_elsewhere(&p.domain, access.domain_id, ElsewhereRow::Page(&p.path))
+                .await?;
+        }
         let (incoming, heading_stripped) = match op {
             None => (p.markdown.clone().unwrap_or_default(), None),
             Some(op) => {
@@ -2257,6 +2261,10 @@ impl Engine {
                     "'{leftover}' already holds {what}; remove it or pick another path"
                 )));
             }
+        }
+        if !dst.exists() {
+            self.refuse_only_elsewhere(domain, access.domain_id, ElsewhereRow::Page(to))
+                .await?;
         }
         // The page's own relative links follow the move, and its
         // baseline gets the same rewrite with the `reflected` hashes carried,

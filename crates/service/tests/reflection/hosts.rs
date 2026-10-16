@@ -511,6 +511,101 @@ async fn a_new_host_keeps_the_rows_it_cannot_see_and_reports_them_on_postgres() 
     assert_eq!(alpha_rows(&beta).await, (true, true, true));
 }
 
+/// A page or file only the previous host's disk has keeps its row, and no
+/// write here recreates it over that row: a whole-page write, a page move
+/// onto its path, an upload to its path and a file move onto it are refused
+/// with the remedy, the rows stay alpha's and beta's disk stays without
+/// them. A new page and a new file beside them are written as usual.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn no_write_recreates_a_page_or_file_only_the_previous_host_has_on_postgres() {
+    let Some(db) = Shared::new() else { return };
+    let alpha = instance(db.open().await, "alpha").await;
+    let beta = instance(db.open().await, "beta").await;
+    alpha_writes(&alpha).await;
+    alpha.engine.release_hosts().await;
+    assert_eq!(beta.engine.reflection_state("eng").await.unwrap(), LOCAL);
+    beta.engine.sync(Some("eng")).await.unwrap();
+    let rows_before = {
+        let store = beta.engine.store();
+        let store = store.lock().await;
+        let did = store.domain_id("eng").await.unwrap().unwrap();
+        (
+            store.get_reflection(did, ALPHA_PAGE).await.unwrap(),
+            store
+                .get_asset(crystalline_index::AssetTable::Reflection, did, ALPHA_FILE)
+                .await
+                .unwrap(),
+        )
+    };
+    let owner = ReflectionCaller::owner();
+
+    beta.engine
+        .write_reflection(
+            &crate::docs::write("guides/other.md", &crate::fixture::page("Other")),
+            &owner,
+        )
+        .await
+        .expect("a page nobody else has is written");
+    beta.engine
+        .reflection_asset_write("eng", "assets/b.png", crate::assets::PNG.to_vec(), &owner)
+        .await
+        .expect("a file nobody else has is written");
+
+    let refusals = [
+        beta.engine
+            .write_reflection(
+                &crate::docs::write(ALPHA_PAGE, &crate::fixture::page("Rewritten")),
+                &owner,
+            )
+            .await
+            .map(|_| ()),
+        beta.engine
+            .move_reflection("eng", "guides/other.md", ALPHA_PAGE, &owner)
+            .await
+            .map(|_| ()),
+        beta.engine
+            .reflection_asset_write("eng", ALPHA_FILE, crate::assets::PNG.to_vec(), &owner)
+            .await
+            .map(|_| ()),
+        beta.engine
+            .move_reflection_asset("eng", "assets/b.png", ALPHA_FILE, &owner)
+            .await
+            .map(|_| ()),
+    ];
+    for refused in refusals {
+        let err = refused.expect_err("a path only alpha has is not written here");
+        let text = err.to_string();
+        assert!(
+            matches!(err, crystalline_service::EngineError::Conflict(_))
+                && text.contains("exists only on alpha")
+                && text.contains("crystalline sync --domain eng --accept-disk"),
+            "{text}"
+        );
+    }
+    for rel in [
+        format!("reflections/{ALPHA_PAGE}"),
+        format!("reflections/{ALPHA_FILE}"),
+    ] {
+        assert!(!beta.root.join(&rel).exists(), "nothing is written: {rel}");
+    }
+    assert!(beta.root.join("reflections/guides/other.md").is_file());
+    let store = beta.engine.store();
+    let store = store.lock().await;
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    assert_eq!(
+        (
+            store.get_reflection(did, ALPHA_PAGE).await.unwrap(),
+            store
+                .get_asset(crystalline_index::AssetTable::Reflection, did, ALPHA_FILE)
+                .await
+                .unwrap(),
+        ),
+        rows_before,
+        "alpha's rows are untouched"
+    );
+}
+
 /// Two complete walks that race right after a take-over both keep the rows
 /// they did not see: the mark is read where each walk applies and cleared
 /// only by a walk that found nothing missing.
