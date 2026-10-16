@@ -1695,7 +1695,7 @@ function DomainNotFound({ domain }: { domain: string }) {
       </p>
       <Link
         to="/"
-        className="text-sm text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400"
+        className="text-sm text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline"
       >
         See the domains that are
       </Link>

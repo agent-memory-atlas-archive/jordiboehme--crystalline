@@ -673,7 +673,7 @@ function FindingRow({
         {anchored ? (
           <Link
             to={engramRoute(finding.domain, finding.permalink)}
-            className="text-sm text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400"
+            className="text-sm text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline"
           >
             {finding.title}
           </Link>
@@ -707,7 +707,7 @@ function FindingRow({
             <li>
               <Link
                 to={engramRoute(finding.domain, finding.counterpart.permalink)}
-                className="text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400"
+                className="text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline"
               >
                 {finding.counterpart.title}
               </Link>

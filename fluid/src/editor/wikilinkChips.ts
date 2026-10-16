@@ -205,8 +205,8 @@ const chipTheme = EditorView.baseTheme({
   },
   "&light .cm-wikilink": { backgroundColor: "var(--color-slate-100)" },
   "&dark .cm-wikilink": { backgroundColor: "var(--color-slate-800)" },
-  "&light .cm-wikilink-resolved": { color: "var(--color-sky-700)" },
-  "&dark .cm-wikilink-resolved": { color: "var(--color-sky-300)" },
+  "&light .cm-wikilink-resolved": { color: "var(--link)" },
+  "&dark .cm-wikilink-resolved": { color: "var(--link)" },
   // Neither a link nor a broken one yet: drawn as the prose it is until the
   // graph says where it lands.
   ".cm-wikilink-pending": { color: "inherit" },

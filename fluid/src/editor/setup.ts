@@ -160,12 +160,12 @@ export const editorHighlight = HighlightStyle.define([
   },
   {
     tag: tags.link,
-    color: "var(--color-sky-700)",
+    color: "var(--link)",
     textDecoration: "underline",
   },
-  { tag: tags.url, color: "var(--color-sky-700)" },
+  { tag: tags.url, color: "var(--link)" },
   { tag: tags.comment, color: "var(--color-slate-500)" },
-  { tag: tags.keyword, color: "var(--color-sky-700)" },
+  { tag: tags.keyword, color: "var(--link)" },
   // The accent, not a stock swatch - and scheme-aware despite this style
   // having no `dark` argument to switch on (unlike `editorTheme` below):
   // `--color-code-string` (index.css) resolves to the same value

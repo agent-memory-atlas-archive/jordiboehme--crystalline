@@ -78,7 +78,7 @@ function removeFileText(name: string): string {
 }
 
 const LINK =
-  "text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400";
+  "text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline";
 
 /**
  * Whether the text before the first `##` holds the page's own title: a

@@ -159,7 +159,7 @@ export default function Home() {
                   <>
                     <Link
                       to={reflectionRoute(row.domain)}
-                      className="font-medium text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400"
+                      className="font-medium text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline"
                     >
                       {row.domain}
                     </Link>

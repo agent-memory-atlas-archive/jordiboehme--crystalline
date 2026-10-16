@@ -63,7 +63,7 @@ const ALERT =
   "rounded bg-red-50 px-2 py-1 text-sm text-red-800 dark:bg-red-950 dark:text-red-200";
 
 const LINK =
-  "text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400";
+  "text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline";
 
 /** Every open thread in the tree, pact included. */
 function openThreads(tree: ReflectionTree): number {

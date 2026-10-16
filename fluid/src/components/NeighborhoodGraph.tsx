@@ -249,7 +249,7 @@ function EngramName({ node }: { node: GraphNode }) {
       to={engramRoute(node.domain, node.permalink)}
       {...ENGRAM_PREFETCH}
       aria-label={`${node.title}, ${node.permalink}`}
-      className={`text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400 ${
+      className={`text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline ${
         isRetired(node.status) ? RETIRED_CLASS : ""
       }`}
     >

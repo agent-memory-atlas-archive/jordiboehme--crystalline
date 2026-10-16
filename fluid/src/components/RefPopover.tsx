@@ -289,7 +289,7 @@ export function RefPopover({
                       aria-label={`${row.title}, ${row.detail}`}
                       className={`block rounded px-1 py-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 ${FOCUS_RING}`}
                     >
-                      <span className="block truncate text-sky-700 underline underline-offset-2 dark:text-sky-400">
+                      <span className="block truncate text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px]">
                         {row.title}
                       </span>
                       <span className="block truncate text-caption text-slate-600 dark:text-slate-400">

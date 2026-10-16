@@ -578,7 +578,7 @@ function refusalOf(
 
 /** The classes every link in a document wears, wherever it points. */
 const LINK_CLASSES =
-  "text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400";
+  "text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline";
 
 /**
  * One link, drawn by where it points.
@@ -997,9 +997,9 @@ function heading(
  * body's own size, weight and spacing. Nothing about them moves here.
  */
 const HEADING_SIZES = [
-  "mt-6 mb-3 text-2xl font-semibold first:mt-0",
-  "mt-6 mb-3 text-xl font-semibold first:mt-0",
-  "mt-5 mb-2 text-lg font-semibold first:mt-0",
+  "mt-6 mb-3 text-display first:mt-0",
+  "mt-[38px] mb-3 text-prose-h2 first:mt-0",
+  "mt-6 mb-2 text-prose-h3 first:mt-0",
   "mt-4 mb-2 font-semibold first:mt-0",
   "",
   "",
@@ -1209,7 +1209,7 @@ export default function MarkdownBody({
     // this renderer would see a single child - this div - and cap the tables
     // and diagrams inside it along with the prose. Hardcoded rather than a
     // prop, because every markdown surface is a reading surface.
-    <div ref={rootRef} className="measured text-[0.95rem]">
+    <div ref={rootRef} className="measured text-body">
       {anchors ? (
         <SectionAnchorProvider pageUrl={anchors.pageUrl}>
           {rendered}

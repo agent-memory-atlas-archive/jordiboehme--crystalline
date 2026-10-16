@@ -28,19 +28,50 @@
   --color-accent-900: #2a1f5f;
   --color-accent-950: #1d1739;
 
-  --text-display: 1.5rem;
-  --text-display--line-height: 2rem;
-  --text-display--font-weight: 600;
+  --text-display: 1.875rem;
+  --text-display--line-height: 2.375rem;
+  --text-display--font-weight: 650;
+  --text-display--letter-spacing: -0.02em;
   --text-title: 1.25rem;
   --text-title--line-height: 1.75rem;
   --text-title--font-weight: 600;
+  --text-prose-h2: 1.3125rem;
+  --text-prose-h2--line-height: 1.75rem;
+  --text-prose-h2--font-weight: 620;
+  --text-prose-h3: 1.0625rem;
+  --text-prose-h3--line-height: 1.625rem;
+  --text-prose-h3--font-weight: 600;
   --text-section: 1.0625rem;
   --text-section--line-height: 1.5rem;
   --text-section--font-weight: 600;
-  --text-body: 0.9375rem;
-  --text-body--line-height: 1.65;
+  --text-body: 1rem;
+  --text-body--line-height: 1.72;
   --text-caption: 0.75rem;
   --text-caption--line-height: 1rem;
+}
+
+/*
+ * The surface and text tokens (spec 3.5) as utilities: `bg-canvas`,
+ * `border-hair`, `text-muted`, `text-link` and so on. `inline` keeps the
+ * utilities reading the custom properties below at use time, so the dark
+ * theme only has to redefine the properties.
+ */
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-chrome: var(--chrome);
+  --color-raised: var(--raised);
+  --color-sunken: var(--sunken);
+  --color-hair: var(--hair);
+  --color-hair-strong: var(--hair-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-link: var(--link);
+  --color-accent-tint: var(--accent-tint);
+  --color-mark: var(--mark);
+  --color-mark-active: var(--mark-active);
 }
 
 @layer base {
@@ -52,6 +83,25 @@
   :root,
   [data-theme="light"] {
     color-scheme: light;
+
+    /* Surfaces, lines and text levels; one set per theme (spec 3.5). */
+    --canvas: #ffffff;
+    --chrome: #fbfbfd;
+    --raised: #ffffff;
+    --sunken: #f1f5f9;
+    --hair: #e2e8f0;
+    --hair-strong: #cbd5e1;
+    --ink: #0f172a;
+    --ink-2: #1e293b;
+    --ink-3: #334155;
+    --muted: #64748b;
+    --faint: #94a3b8;
+    --link: var(--color-accent-700);
+    --link-line: var(--color-accent-300);
+    --accent-tint: var(--color-accent-100);
+    --mark: var(--color-amber-100);
+    --mark-rule: var(--color-amber-500);
+    --mark-active: var(--color-accent-200);
     /*
      * CodeMirror's highlight style is one static rule set for both schemes
      * (see `editor/setup.ts`), not a `dark:` utility, so a token color that
@@ -77,6 +127,42 @@
 
   [data-theme="dark"] {
     color-scheme: dark;
+
+    --canvas: #0d0f16;
+    --chrome: #0b0d13;
+    --raised: #151924;
+    --sunken: #1a1f2b;
+    --hair: #232937;
+    --hair-strong: #323a4c;
+    --ink: #eef0f5;
+    --ink-2: #dde1ea;
+    --ink-3: #c3c8d4;
+    --muted: #8b93a7;
+    --faint: #636b80;
+    --link: var(--color-accent-300);
+    --link-line: #5a4f99;
+    --accent-tint: color-mix(in srgb, var(--color-accent-400) 16%, transparent);
+    --mark: color-mix(in srgb, var(--color-amber-400) 16%, transparent);
+    --mark-rule: #d6a23a;
+    --mark-active: color-mix(in srgb, var(--color-accent-400) 32%, transparent);
+
+    /*
+     * Dark leaves the blue-leaning slate for a neutral ink: the slate steps
+     * the screens already use for dark surfaces, lines and text are
+     * redefined here, so every `dark:bg-slate-900` and
+     * `dark:text-slate-300` in the app lands on the new tones. 500 stays,
+     * its text uses were tuned against the old canvas.
+     */
+    --color-slate-50: #f6f7fa;
+    --color-slate-100: #eef0f5;
+    --color-slate-200: #dde1ea;
+    --color-slate-300: #c3c8d4;
+    --color-slate-400: #8b93a7;
+    --color-slate-600: #4a5266;
+    --color-slate-700: #323a4c;
+    --color-slate-800: #232937;
+    --color-slate-900: #151924;
+    --color-slate-950: #0d0f16;
     --color-code-string: #b9afe6;
     --color-diff-added: var(--color-emerald-950);
     --color-diff-removed: var(--color-red-950);
@@ -84,7 +170,7 @@
   }
 
   body {
-    @apply bg-white text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
+    @apply bg-canvas text-ink antialiased;
   }
 }
 
@@ -215,23 +301,24 @@
    * reader picked, painted on top of the rest.
    */
   ::highlight(reflection-quote) {
-    background-color: var(--color-amber-100);
-    color: var(--color-slate-900);
+    background-color: var(--mark);
+    color: var(--ink);
+    text-decoration: underline;
+    text-decoration-color: var(--mark-rule);
+    text-decoration-thickness: 2px;
   }
 
   ::highlight(reflection-quote-active) {
-    background-color: var(--color-accent-200);
-    color: var(--color-slate-900);
+    background-color: var(--mark-active);
+    color: var(--ink);
+    text-decoration: underline;
+    text-decoration-color: var(--mark-rule);
+    text-decoration-thickness: 2px;
   }
 
-  [data-theme="dark"] ::highlight(reflection-quote) {
-    background-color: var(--color-amber-900);
-    color: var(--color-slate-100);
-  }
-
-  [data-theme="dark"] ::highlight(reflection-quote-active) {
-    background-color: var(--color-accent-800);
-    color: var(--color-slate-100);
+  /* A white diagram should not glare on the dark canvas. */
+  [data-theme="dark"] img {
+    filter: brightness(0.86);
   }
 
   /*
@@ -240,7 +327,7 @@
    * column. Applied to the container of a rendered document.
    */
   .measured > :not(.breakout) {
-    max-width: 70ch;
+    max-width: var(--measure, 720px);
   }
 
   /*
@@ -276,6 +363,13 @@
    */
   main[data-text="large"] .measured {
     font-size: 1.5rem;
+    --measure: 1080px;
+    --text-display: 2.8125rem;
+    --text-display--line-height: 3.5625rem;
+    --text-prose-h2: 1.96875rem;
+    --text-prose-h2--line-height: 2.625rem;
+    --text-prose-h3: 1.59375rem;
+    --text-prose-h3--line-height: 2.4375rem;
     --text-2xl: 2.25rem;
     --text-2xl--line-height: 3rem;
     --text-xl: 1.875rem;

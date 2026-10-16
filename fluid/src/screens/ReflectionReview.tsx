@@ -39,7 +39,7 @@ import { engramRoute, reflectionPageRoute } from "../paths";
 import { ageText, stripIdLines } from "../reflectionText";
 
 const LINK =
-  "text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400";
+  "text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline";
 const MUTED = "text-sm text-slate-500 dark:text-slate-400";
 
 export default function ReflectionReview(): ReactElement {

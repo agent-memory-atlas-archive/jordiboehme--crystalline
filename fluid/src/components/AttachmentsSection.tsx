@@ -266,7 +266,7 @@ export function AttachmentsSection({
                     target="_blank"
                     rel="noreferrer"
                     title={path}
-                    className={`min-w-0 truncate rounded text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400 ${FOCUS_RING}`}
+                    className={`min-w-0 truncate rounded text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline ${FOCUS_RING}`}
                   >
                     {name}
                   </a>

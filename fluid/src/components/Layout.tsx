@@ -843,7 +843,7 @@ export function Layout() {
       <LayoutWidthContext value={width}>
         <LayoutTextContext value={text}>
           <EngramsOrderContext value={engramsOrderChoice}>
-            <div className="min-h-screen bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+            <div className="min-h-screen bg-canvas text-ink">
               <TopBar
                 navOpen={navOpen}
                 onToggleNav={() => {
@@ -1004,7 +1004,7 @@ function TopBar({
   const { fullWidth } = useFullWidth();
 
   return (
-    <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/90 backdrop-blur print:hidden dark:border-slate-800 dark:bg-slate-950/90">
+    <header className="sticky top-0 z-40 border-b border-slate-200 bg-canvas/90 backdrop-blur print:hidden dark:border-slate-800">
       {/*
         A fixed row rather than one sized by its contents: the sticky offsets
         below it - the reading surface's own sticky pieces, the editor's

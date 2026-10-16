@@ -103,7 +103,7 @@ export function FindingsPanel({
               {finding.line != null && (
                 <button
                   type="button"
-                  className="self-start text-xs text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400"
+                  className="self-start text-xs text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline"
                   onClick={() => {
                     onJump(finding.line ?? 1);
                   }}

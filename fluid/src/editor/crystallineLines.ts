@@ -144,7 +144,7 @@ const linesTheme = EditorView.baseTheme({
   ".cm-rel-type": {
     fontFamily: "var(--font-mono, ui-monospace, monospace)",
     fontSize: "0.85em",
-    color: "var(--color-sky-700)",
+    color: "var(--link)",
   },
   ".cm-line-tag": { color: "var(--color-slate-500)" },
 });
