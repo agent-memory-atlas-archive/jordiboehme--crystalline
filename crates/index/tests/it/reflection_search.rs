@@ -546,6 +546,10 @@ async fn reflection_coverage_is_counted_per_domain(store: &dyn Store) {
             && !waiting.has_active_embeddings("fake"),
         "the ops pages wait, whatever eng holds: {waiting:?}"
     );
+    assert!(
+        waiting.models.is_empty(),
+        "chunks without a vector are no model entry: {waiting:?}"
+    );
 
     for query in [embed_one("pager rings loudly"), vec![0.5; 4]] {
         let hits = store.reflection_vector_hits(ops, &query, "fake").await;

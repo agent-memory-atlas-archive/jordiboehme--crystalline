@@ -1923,7 +1923,59 @@ pub struct EmbeddingCoverage {
     pub models: Vec<ChunkModelCount>,
 }
 
+/// One group of the coverage aggregate: the chunk rows that share a model and
+/// a width, with how many of them carry a vector. A chunk not embedded yet has
+/// no model and no width, so it lands in the one group whose `embedded` is 0.
+/// Each backend maps its rows into these and [`EmbeddingCoverage::from_groups`]
+/// is the one fold, for every table and for any set of domains.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverageGroup {
+    /// The embedding model, empty for chunks without a vector.
+    pub model: String,
+    /// The vector width, 0 for chunks without a vector.
+    pub dims: usize,
+    /// Chunk rows in the group.
+    pub chunks: usize,
+    /// Chunk rows in the group that carry an embedding.
+    pub embedded: usize,
+}
+
 impl EmbeddingCoverage {
+    /// Fold coverage groups into one snapshot. Every group counts toward the
+    /// totals; only a group with vectors and a model becomes a `models` entry,
+    /// and groups that share a model and width (the same model in two domains)
+    /// merge into one. Entries run most chunks first, then by model and width,
+    /// so the order never depends on how the database returned the rows.
+    pub fn from_groups(groups: impl IntoIterator<Item = CoverageGroup>) -> Self {
+        let mut total_chunks = 0usize;
+        let mut embedded_chunks = 0usize;
+        let mut by_model: std::collections::BTreeMap<(String, usize), usize> =
+            std::collections::BTreeMap::new();
+        for g in groups {
+            total_chunks += g.chunks;
+            embedded_chunks += g.embedded;
+            if g.embedded == 0 || g.model.is_empty() {
+                continue;
+            }
+            *by_model.entry((g.model, g.dims)).or_default() += g.embedded;
+        }
+        let mut models: Vec<ChunkModelCount> = by_model
+            .into_iter()
+            .map(|((model, dims), count)| ChunkModelCount { model, dims, count })
+            .collect();
+        models.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.model.cmp(&b.model))
+                .then(a.dims.cmp(&b.dims))
+        });
+        Self {
+            total_chunks,
+            embedded_chunks,
+            models,
+        }
+    }
+
     /// Embedded chunks produced by the given model.
     pub fn embedded_for(&self, model: &str) -> usize {
         self.models
@@ -3203,8 +3255,23 @@ pub trait Store: Send + Sync {
     async fn prune_embeddings_except_in(&self, table: ChunkTable, model: &str) -> Result<usize>;
 
     /// Embedding coverage of `table`: total chunks, embedded chunks and a
-    /// per-model breakdown.
-    async fn embedding_coverage_of(&self, table: ChunkTable) -> Result<EmbeddingCoverage>;
+    /// per-model breakdown. With `domains` named, only those domains' chunks
+    /// count, read fresh; a domain that does not exist counts nothing. With
+    /// `None` it is the table-wide snapshot, served from a cache every
+    /// mutator that can change an embedding drops. This is the one place the
+    /// count is made: [`Store::embedding_coverage_of`],
+    /// [`Store::embedding_coverage`] and [`Store::reflection_coverage`] are
+    /// this call with fixed arguments.
+    async fn embedding_coverage_in(
+        &self,
+        table: ChunkTable,
+        domains: Option<&[DomainId]>,
+    ) -> Result<EmbeddingCoverage>;
+
+    /// [`Store::embedding_coverage_in`] over the whole table.
+    async fn embedding_coverage_of(&self, table: ChunkTable) -> Result<EmbeddingCoverage> {
+        self.embedding_coverage_in(table, None).await
+    }
 
     /// [`Store::chunks_needing_embedding_in`] on the engram chunks.
     async fn chunks_needing_embedding(
@@ -3230,8 +3297,10 @@ pub trait Store: Send + Sync {
             .await
     }
 
-    /// [`Store::embedding_coverage_of`] the engram chunks: what engram search's
-    /// mode decision and staleness gate, `status` and the backlog read (R55).
+    /// [`Store::embedding_coverage_of`] the engram chunks: what `status` and
+    /// the backlog read, and what a search that names no domain decides its
+    /// mode and staleness on (R55). A search that names domains reads
+    /// [`Store::embedding_coverage_in`] of those domains instead (R88).
     async fn embedding_coverage(&self) -> Result<EmbeddingCoverage> {
         self.embedding_coverage_of(ChunkTable::Engram).await
     }
@@ -3684,8 +3753,12 @@ pub trait Store: Send + Sync {
     /// A reflection search reads it for its mode decision and its staleness
     /// gate, so a domain whose pages are not embedded yet answers as text
     /// while another domain's are. [`Store::embedding_coverage_of`] stays the
-    /// table-wide count that status, the backlog and engram search read.
-    async fn reflection_coverage(&self, domain: DomainId) -> Result<EmbeddingCoverage>;
+    /// table-wide count that status and the backlog read. This is
+    /// [`Store::embedding_coverage_in`] on the reflection chunks of `domain`.
+    async fn reflection_coverage(&self, domain: DomainId) -> Result<EmbeddingCoverage> {
+        self.embedding_coverage_in(ChunkTable::Reflection, Some(&[domain]))
+            .await
+    }
 
     /// The vector half of a reflection search (R60): the closest chunk of
     /// each section of one domain's pages embedded by `model` at
@@ -3999,7 +4072,53 @@ mod meta_value_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::ChunkTable;
+    use super::{ChunkModelCount, ChunkTable, CoverageGroup, EmbeddingCoverage};
+
+    fn group(model: &str, dims: usize, chunks: usize, embedded: usize) -> CoverageGroup {
+        CoverageGroup {
+            model: model.to_string(),
+            dims,
+            chunks,
+            embedded,
+        }
+    }
+
+    #[test]
+    fn from_groups_orders_most_chunks_first_and_skips_groups_with_no_vectors() {
+        let cov = EmbeddingCoverage::from_groups([
+            group("", 0, 5, 0),
+            group("small", 8, 2, 2),
+            group("big", 8, 4, 3),
+            group("ghost", 8, 6, 0),
+            group("alpha", 4, 2, 2),
+        ]);
+        assert_eq!(cov.total_chunks, 19);
+        assert_eq!(cov.embedded_chunks, 7);
+        let models: Vec<(&str, usize, usize)> = cov
+            .models
+            .iter()
+            .map(|m| (m.model.as_str(), m.dims, m.count))
+            .collect();
+        // Most embedded first, then model, then width; no group without vectors.
+        assert_eq!(
+            models,
+            vec![("big", 8, 3), ("alpha", 4, 2), ("small", 8, 2)]
+        );
+    }
+
+    #[test]
+    fn from_groups_merges_the_same_model_and_width_across_groups() {
+        let cov = EmbeddingCoverage::from_groups([group("m", 8, 3, 2), group("m", 8, 2, 1)]);
+        assert_eq!(cov.total_chunks, 5);
+        assert_eq!(
+            cov.models,
+            vec![ChunkModelCount {
+                model: "m".into(),
+                dims: 8,
+                count: 3
+            }]
+        );
+    }
 
     #[test]
     fn the_embed_passes_walk_the_engram_table_first() {

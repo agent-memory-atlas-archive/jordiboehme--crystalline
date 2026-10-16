@@ -111,8 +111,8 @@ use crate::alias::{AliasMap, query_uses_tags};
 use crate::error::{IndexError, Result};
 use crate::store::WorkClaim;
 use crate::store::{
-    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ChunkTable, ContentMention,
-    ContradictionRow, DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage,
+    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkTable, ContentMention, ContradictionRow,
+    CoverageGroup, DomainHost, DomainId, DomainKind, DomainStats, EdgeKind, EmbeddingCoverage,
     EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FtsMode,
     GraphSlice, HostClaim, HostMove, InboundHit, InboundPage, InboundQuery, InboundRef, LINKS_TO,
     LeadVector, NamedCount, NewChunk, NewReflectionChunk, OBSERVATION_VECTOR_CHUNK,
@@ -357,34 +357,57 @@ impl PostgresStore {
     }
 
     /// Recompute the embedding coverage snapshot of one chunk table. This is the
-    /// one aggregate scan the cached `embedding_coverage_of()` fills from on a
-    /// miss.
+    /// one aggregate scan the cached `embedding_coverage_in(table, None)` fills
+    /// from on a miss.
     async fn compute_coverage(&self, table: ChunkTable) -> Result<EmbeddingCoverage> {
-        let sql = chunk_sql(table);
         let mut conn = self.acquire().await?;
-        let c = conn.as_mut();
-        let total = scalar_i64(&mut *c, sql.count_all, vec![]).await?.max(0) as usize;
-        let rows = query_all(&mut *c, sql.count_embedded, vec![]).await?;
-        let mut models = Vec::new();
-        let mut embedded = 0usize;
-        for r in &rows {
-            let count = cell_i64(r, 2).unwrap_or(0).max(0) as usize;
-            embedded += count;
-            let model = cell_text(r, 0).unwrap_or_default();
-            if model.is_empty() {
-                continue;
+        let rows = query_all(conn.as_mut(), chunk_sql(table).coverage_all, vec![]).await?;
+        Ok(EmbeddingCoverage::from_groups(
+            rows.iter().map(coverage_group),
+        ))
+    }
+
+    /// The coverage a semantic or hybrid search gates on: the named domains'
+    /// when the query names any, else the table-wide snapshot. The engine
+    /// decides the mode on the same scope, so the two never disagree about
+    /// which vectors are in range. A name that is not a registered domain
+    /// counts nothing.
+    async fn search_coverage(&self, query: &SearchQuery) -> Result<EmbeddingCoverage> {
+        let Some(names) = query.domains.as_deref() else {
+            return self.embedding_coverage().await;
+        };
+        let mut ids = Vec::with_capacity(names.len());
+        for name in names {
+            if let Some(id) = Store::domain_id(self, name).await? {
+                ids.push(id);
             }
-            models.push(ChunkModelCount {
-                model,
-                dims: cell_i64(r, 1).unwrap_or(0).max(0) as usize,
-                count,
-            });
         }
-        Ok(EmbeddingCoverage {
-            total_chunks: total,
-            embedded_chunks: embedded,
-            models,
-        })
+        self.embedding_coverage_in(ChunkTable::Engram, Some(&ids))
+            .await
+    }
+
+    /// The same fold over the named domains, one grouped read each. A name
+    /// listed twice counts once.
+    async fn compute_coverage_in(
+        &self,
+        table: ChunkTable,
+        domains: &[DomainId],
+    ) -> Result<EmbeddingCoverage> {
+        let mut ids: Vec<i64> = domains.iter().map(|d| d.0).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut conn = self.acquire().await?;
+        let mut groups = Vec::new();
+        for id in ids {
+            let rows = query_all(
+                conn.as_mut(),
+                chunk_sql(table).coverage_domain,
+                vec![Param::Int(id)],
+            )
+            .await?;
+            groups.extend(rows.iter().map(coverage_group));
+        }
+        Ok(EmbeddingCoverage::from_groups(groups))
     }
 
     /// Drop the schema this store was opened in (test teardown). A no-op for a
@@ -887,8 +910,21 @@ struct ChunkSql {
     owner_col: &'static str,
     store: &'static str,
     prune: &'static str,
-    count_all: &'static str,
-    count_embedded: &'static str,
+    /// The table-wide coverage groups: `model, dims, count(*), count(embedding)`.
+    coverage_all: &'static str,
+    /// The same four columns for the one domain bound as the only parameter.
+    coverage_domain: &'static str,
+}
+
+/// One row of a coverage aggregate (`model, dims, count(*), count(embedding)`)
+/// as the group the fold takes.
+fn coverage_group(r: &PgRow) -> CoverageGroup {
+    CoverageGroup {
+        model: cell_text(r, 0).unwrap_or_default(),
+        dims: cell_i64(r, 1).unwrap_or(0).max(0) as usize,
+        chunks: cell_i64(r, 2).unwrap_or(0).max(0) as usize,
+        embedded: cell_i64(r, 3).unwrap_or(0).max(0) as usize,
+    }
 }
 
 const CHUNK_SQL: ChunkSql = ChunkSql {
@@ -903,9 +939,8 @@ const CHUNK_SQL: ChunkSql = ChunkSql {
     store: "UPDATE chunk SET embedding=$1, dims=$2, model=$3 WHERE id=$4",
     prune: "UPDATE chunk SET embedding=NULL, dims=NULL, model=NULL \
             WHERE embedding IS NOT NULL AND (model IS NULL OR model <> $1)",
-    count_all: "SELECT count(*) FROM chunk",
-    count_embedded: "SELECT model, dims, count(*) FROM chunk WHERE embedding IS NOT NULL \
-                     GROUP BY model, dims ORDER BY count(*) DESC",
+    coverage_all: "SELECT model, dims, count(*), count(embedding) FROM chunk GROUP BY model, dims",
+    coverage_domain: ENGRAM_COVERAGE_SQL,
 };
 
 fn chunk_sql(table: ChunkTable) -> &'static ChunkSql {
@@ -928,9 +963,9 @@ const REFLECTION_CHUNK_SQL: ChunkSql = ChunkSql {
     store: "UPDATE reflection_chunk SET embedding=$1, dims=$2, model=$3 WHERE id=$4",
     prune: "UPDATE reflection_chunk SET embedding=NULL, dims=NULL, model=NULL \
             WHERE embedding IS NOT NULL AND (model IS NULL OR model <> $1)",
-    count_all: "SELECT count(*) FROM reflection_chunk",
-    count_embedded: "SELECT model, dims, count(*) FROM reflection_chunk WHERE embedding IS NOT NULL \
-                     GROUP BY model, dims ORDER BY count(*) DESC",
+    coverage_all: "SELECT model, dims, count(*), count(embedding) FROM reflection_chunk \
+                   GROUP BY model, dims",
+    coverage_domain: REFLECTION_COVERAGE_SQL,
 };
 
 /// The DDL `ensure_embedding_width` runs against one chunk table's `embedding`
@@ -1478,7 +1513,19 @@ pub const REFLECTION_VECTOR_SQL: &str = "SELECT rc.path, rc.section_ord, min(rc.
      WHERE rc.domain_id=$2 AND rc.embedding IS NOT NULL AND rc.model=$3 AND rc.dims=$4 \
      GROUP BY rc.path, rc.section_ord ORDER BY dist ASC, rc.path COLLATE \"C\" ASC, rc.section_ord ASC LIMIT 100";
 
-/// The aggregate behind [`Store::reflection_coverage`]: one domain's reflection
+/// The aggregate behind [`Store::embedding_coverage_in`] on the engram chunks:
+/// one domain's chunks grouped by model and width, each group with its row
+/// count and its embedded count. A chunk has no domain of its own, so the
+/// engram row carries it; every actor's rows count, as the embedding backlog
+/// does.
+// -- actor: all - a draft's chunks reach the same embedding backlog a base
+// row's do, so the coverage counts every actor's rows, as the table-wide count does.
+#[doc(hidden)]
+pub const ENGRAM_COVERAGE_SQL: &str = "SELECT c.model, c.dims, count(*), count(c.embedding) \
+     FROM chunk c JOIN engram e ON e.id=c.engram_id WHERE e.domain_id=$1 \
+     GROUP BY c.model, c.dims";
+
+/// The aggregate behind [`Store::embedding_coverage_in`] on the reflection chunks: one domain's reflection
 /// chunks grouped by model and width, each group with its row count and its
 /// embedded count. A chunk not embedded yet has no model and no width, so it
 /// lands in the one group whose embedded count is 0. The domain index serves
@@ -2967,7 +3014,7 @@ impl Store for PostgresStore {
         // folds the old second aggregate scan into the same shared snapshot. The
         // lexical modes never touch embeddings, so they skip the snapshot.
         let coverage = match query.mode {
-            SearchMode::Semantic | SearchMode::Hybrid => Some(self.embedding_coverage().await?),
+            SearchMode::Semantic | SearchMode::Hybrid => Some(self.search_coverage(query).await?),
             _ => None,
         };
         // Load the alias map only when the query filters on tags, so every other
@@ -3305,7 +3352,14 @@ impl Store for PostgresStore {
         Ok(done.rows_affected() as usize)
     }
 
-    async fn embedding_coverage_of(&self, table: ChunkTable) -> Result<EmbeddingCoverage> {
+    async fn embedding_coverage_in(
+        &self,
+        table: ChunkTable,
+        domains: Option<&[DomainId]>,
+    ) -> Result<EmbeddingCoverage> {
+        if let Some(domains) = domains {
+            return self.compute_coverage_in(table, domains).await;
+        }
         // Fast path in a tight scope so the std::sync guard is dropped before the
         // recompute await below (clippy::await_holding_lock), tag_cache style.
         {
@@ -4750,40 +4804,6 @@ impl Store for PostgresStore {
         // Rust compares strings byte by byte.
         stamps.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(stamps)
-    }
-
-    async fn reflection_coverage(&self, domain: DomainId) -> Result<EmbeddingCoverage> {
-        let mut conn = self.acquire().await?;
-        let rows = query_all(
-            conn.as_mut(),
-            REFLECTION_COVERAGE_SQL,
-            vec![Param::Int(domain.0)],
-        )
-        .await?;
-        let mut coverage = EmbeddingCoverage::default();
-        for r in &rows {
-            let total = cell_i64(r, 2).unwrap_or(0).max(0) as usize;
-            let embedded = cell_i64(r, 3).unwrap_or(0).max(0) as usize;
-            coverage.total_chunks += total;
-            coverage.embedded_chunks += embedded;
-            let model = cell_text(r, 0).unwrap_or_default();
-            if embedded == 0 || model.is_empty() {
-                continue;
-            }
-            coverage.models.push(ChunkModelCount {
-                model,
-                dims: cell_i64(r, 1).unwrap_or(0).max(0) as usize,
-                count: embedded,
-            });
-        }
-        // Most chunks first, as the table-wide count orders them.
-        coverage.models.sort_by(|a, b| {
-            b.count
-                .cmp(&a.count)
-                .then_with(|| a.model.cmp(&b.model))
-                .then(a.dims.cmp(&b.dims))
-        });
-        Ok(coverage)
     }
 
     async fn reflection_vector_hits(

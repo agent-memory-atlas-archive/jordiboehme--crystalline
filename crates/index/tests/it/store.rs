@@ -7210,6 +7210,108 @@ parity!(
     coverage_cache_invalidated_by_rollback
 );
 
+/// Coverage scoped to named domains counts only their chunks: one domain's
+/// vectors never make another domain's waiting chunks look searchable, the
+/// named list sums its members, and `None` is still the cached table-wide count.
+async fn coverage_in_counts_only_the_named_domains_body(store: &dyn Store) {
+    let embedded = tempfile::tempdir().unwrap();
+    write(
+        embedded.path(),
+        "a.md",
+        &engram("A", "a", "engram", "", "alpha alpha alpha body one"),
+    );
+    sync_domain(store, "emb", embedded.path()).await.unwrap();
+    let also = tempfile::tempdir().unwrap();
+    write(
+        also.path(),
+        "c.md",
+        &engram("C", "c", "engram", "", "gamma gamma gamma body three"),
+    );
+    sync_domain(store, "also", also.path()).await.unwrap();
+    let pending = tempfile::tempdir().unwrap();
+    write(
+        pending.path(),
+        "b.md",
+        &engram("B", "b", "engram", "", "beta beta beta body two"),
+    );
+    sync_domain(store, "wait", pending.path()).await.unwrap();
+    let emb = store.domain_id("emb").await.unwrap().unwrap();
+    let also = store.domain_id("also").await.unwrap().unwrap();
+    let wait = store.domain_id("wait").await.unwrap().unwrap();
+
+    let jobs = store
+        .chunks_needing_embedding("m8", Some(&[emb, also]), EMBED_PAGE_SIZE, None)
+        .await
+        .unwrap();
+    assert!(jobs.len() >= 2, "precondition: two domains hold chunks");
+    let rows: Vec<EmbeddingRow> = jobs
+        .iter()
+        .map(|j| EmbeddingRow {
+            chunk_id: j.chunk_id,
+            embedding: embed_one(&j.text, 8),
+            dims: 8,
+        })
+        .collect();
+    store.store_embeddings(&rows, "m8").await.unwrap();
+
+    let table = store.embedding_coverage().await.unwrap();
+    assert!(table.embedded_chunks > 0 && table.embedded_chunks < table.total_chunks);
+    let in_emb = store
+        .embedding_coverage_in(ChunkTable::Engram, Some(&[emb]))
+        .await
+        .unwrap();
+    assert!(
+        in_emb.total_chunks > 0
+            && in_emb.embedded_chunks == in_emb.total_chunks
+            && in_emb.has_active_embeddings("m8"),
+        "{in_emb:?}"
+    );
+    let in_wait = store
+        .embedding_coverage_in(ChunkTable::Engram, Some(&[wait]))
+        .await
+        .unwrap();
+    assert!(
+        in_wait.total_chunks > 0
+            && in_wait.embedded_chunks == 0
+            && !in_wait.has_active_embeddings("m8"),
+        "the waiting domain has no vectors, whatever the others hold: {in_wait:?}"
+    );
+    let in_both = store
+        .embedding_coverage_in(ChunkTable::Engram, Some(&[emb, also]))
+        .await
+        .unwrap();
+    assert_eq!(in_both.embedded_chunks, in_both.total_chunks);
+    assert_eq!(in_both.models.len(), 1, "one model, one entry: {in_both:?}");
+    assert_eq!(in_both.models[0].count, in_both.embedded_chunks);
+    let in_all = store
+        .embedding_coverage_in(ChunkTable::Engram, Some(&[emb, also, wait]))
+        .await
+        .unwrap();
+    assert_eq!(in_all, table, "naming every domain is the table-wide count");
+    let none = store
+        .embedding_coverage_in(ChunkTable::Engram, None)
+        .await
+        .unwrap();
+    assert_eq!(none, table);
+    let nobody = store
+        .embedding_coverage_in(ChunkTable::Engram, Some(&[]))
+        .await
+        .unwrap();
+    assert_eq!(nobody, EmbeddingCoverage::default());
+    // The reflection table answers the same question per domain.
+    assert_eq!(
+        store
+            .embedding_coverage_in(ChunkTable::Reflection, Some(&[emb]))
+            .await
+            .unwrap(),
+        store.reflection_coverage(emb).await.unwrap()
+    );
+}
+parity!(
+    coverage_in_counts_only_the_named_domains_on_both_backends,
+    coverage_in_counts_only_the_named_domains_body
+);
+
 /// The staleness label must stay byte-identical after the check consumes the
 /// cached coverage snapshot instead of its own aggregate scan: a same-width model
 /// swap names the stored model, reports zero embedded for the active model and
@@ -12105,9 +12207,9 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
         census.failures.join("\n")
     );
     assert_eq!(
-        census.sites, 182,
+        census.sites, 184,
         "the engram statement census moved; every new one needs a predicate or a waiver. \
-         75 per backend in mod.rs (the Reflection gate's two probes, \
+         76 per backend in mod.rs (`ENGRAM_COVERAGE_SQL`, the coverage of one domain's engram chunks, is the newest, waived below; before it the Reflection gate's two probes, \
          `ENGRAM_ROWS_UNDER_REFLECTIONS_SQL` and `HAS_ENGRAM_ROWS_SQL`, are the newest, \
          both on the base rows; before them the `LIMIT 1` probe of `folder_holds_other`, \
          on the base rows; before it the path listing of `overlay_paths`, on \
@@ -12139,9 +12241,9 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
          that the reference now points at nothing"
     );
     assert_eq!(
-        census.waived, 30,
+        census.waived, 32,
         "the waiver list is meant to be short and deliberate; a new one needs its reason read. \
-         Fifteen per backend: the two statements of `clear_domain` that unbind the references \
+         Sixteen per backend: `ENGRAM_COVERAGE_SQL`, `-- actor: all` because a draft's chunks count toward coverage as they do toward the backlog, the two statements of `clear_domain` that unbind the references \
          from other domains into the rows about to go, `-- actor: all` because the clear takes \
          every actor's rows, the two `EXISTS` probes of `replace_contradictions`' pair \
          write, `-- actor: by id` because both ids are base rows (drafts are never \

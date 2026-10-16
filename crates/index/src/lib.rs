@@ -53,8 +53,8 @@ pub use hosting::{
 };
 pub use store::{
     AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ChunkTable, ContentMention,
-    ContradictionRow, DEFAULT_RETIRED_WEIGHT, DEFAULT_SALIENCE_WEIGHT, DomainHost, DomainId,
-    DomainKind, DomainLookup, DomainStats, EdgeKind, EmbeddingCoverage, EmbeddingRow,
+    ContradictionRow, CoverageGroup, DEFAULT_RETIRED_WEIGHT, DEFAULT_SALIENCE_WEIGHT, DomainHost,
+    DomainId, DomainKind, DomainLookup, DomainStats, EdgeKind, EmbeddingCoverage, EmbeddingRow,
     EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FilterOp, FtsMode,
     GraphEdge, GraphNode, GraphSlice, HitKind, HostClaim, HostMove, InboundHit, InboundPage,
     InboundQuery, InboundRef, LEXICAL_CANDIDATE_CAP, LINKS_TO, LeadVector, MetadataFilter,

@@ -566,7 +566,7 @@ pub fn registry() -> Vec<HotStatement> {
             postgres_must_seek: &["idx_reflection_chunk_domain_model"],
         },
         HotStatement {
-            issued_by: "Store::reflection_coverage",
+            issued_by: "Store::embedding_coverage_in (reflection)",
             // The coverage a reflection search's mode decision and staleness
             // gate read, one domain's chunks grouped by model and width. Both
             // planners seek the domain in `idx_reflection_chunk_domain_model`,
@@ -580,6 +580,22 @@ pub fn registry() -> Vec<HotStatement> {
             scan_expected_pg: None,
             turso_must_seek: &["idx_reflection_chunk_domain_model"],
             postgres_must_seek: &["idx_reflection_chunk_domain_model"],
+        },
+        HotStatement {
+            issued_by: "Store::embedding_coverage_in (engram)",
+            // The coverage a search that names domains decides its mode and
+            // gates staleness on: the named domain's chunks, reached through
+            // the engram rows of that domain (`idx_engram_domain`) and then
+            // the chunks of each (`idx_chunk_engram`). A table-wide pass over
+            // `chunk` would cost every named search every domain's chunks.
+            turso: || crystalline_index::turso::ENGRAM_COVERAGE_SQL.to_string(),
+            postgres: || crystalline_index::postgres::ENGRAM_COVERAGE_SQL.to_string(),
+            literals: &["1"],
+            literals_pg: None,
+            scan_expected: &[],
+            scan_expected_pg: None,
+            turso_must_seek: &["idx_engram_domain", "idx_chunk_engram"],
+            postgres_must_seek: &[],
         },
         HotStatement {
             issued_by: "search::semantic_hydrate_sql",
