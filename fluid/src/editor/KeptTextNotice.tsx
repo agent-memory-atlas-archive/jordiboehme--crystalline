@@ -17,7 +17,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactElement } from "react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { problemDetail } from "../api/client";
 import {
@@ -31,15 +31,12 @@ import {
 } from "../api/kept";
 import type { KeptTextEntry } from "../api/kept";
 import { useAuth } from "../auth/AuthContext";
-import {
-  DestructiveAction,
-  READ_ONLY_REASON,
-} from "../components/DestructiveAction";
 import { KeptTextDialog } from "../components/KeptTextDialog";
 import { FOCUS_RING } from "../components/primitives";
 
 const NOTICE =
   "flex flex-wrap items-center gap-x-3 gap-y-2 rounded border border-hair bg-sunken px-3 py-2 text-sm text-ink-2";
+const DANGER = `rounded font-medium text-red-700 underline underline-offset-[3px] hover:no-underline dark:text-red-300 ${FOCUS_RING}`;
 const ACTION = `rounded text-link underline decoration-(--link-line) underline-offset-[3px] hover:no-underline aria-disabled:cursor-default aria-disabled:opacity-50 ${FOCUS_RING}`;
 
 export function KeptTextNotice({
@@ -69,12 +66,25 @@ export function KeptTextNotice({
   const [showing, setShowing] = useState<KeptTextEntry | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  // Drop asks once, in the note itself: a short confirm, and the focus goes
+  // back to Drop when the person keeps the text.
+  const [asking, setAsking] = useState(false);
+  const dropButton = useRef<HTMLButtonElement>(null);
+  const kept = useRef(false);
+  useEffect(() => {
+    if (!asking && kept.current) {
+      kept.current = false;
+      dropButton.current?.focus();
+    }
+  }, [asking]);
   const entry =
     path === null ? null : keptForPage(listing.data, kind, path, draft);
   if (entry === null) {
     return null;
   }
-  const readOnly = capabilities.readOnly ? READ_ONLY_REASON : undefined;
+  // A read-only instance refuses the delete, and Use it ends with one: the
+  // note then only shows the text.
+  const writable = !capabilities.readOnly;
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: keptKey(domain) });
@@ -137,7 +147,7 @@ export function KeptTextNotice({
       >
         Show
       </button>
-      {canUse && readOnly === undefined && (
+      {canUse && writable && !asking && (
         <button
           type="button"
           className={ACTION}
@@ -149,16 +159,57 @@ export function KeptTextNotice({
           Use it
         </button>
       )}
-      <DestructiveAction
-        label="Drop"
-        ariaLabel="Drop the kept text"
-        confirmLabel="Drop it"
-        pending={busy}
-        disabledReason={readOnly}
-        onConfirm={() => {
-          void drop(false);
-        }}
-      />
+      {writable &&
+        (asking ? (
+          <span
+            className="inline-flex flex-wrap items-center gap-3"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.stopPropagation();
+                kept.current = true;
+                setAsking(false);
+              }
+            }}
+          >
+            <span>Drop it for good?</span>
+            <button
+              type="button"
+              autoFocus
+              className={DANGER}
+              onClick={() => {
+                setAsking(false);
+                void drop(false);
+              }}
+            >
+              Drop it
+            </button>
+            <button
+              type="button"
+              className={ACTION}
+              onClick={() => {
+                kept.current = true;
+                setAsking(false);
+              }}
+            >
+              Keep
+            </button>
+          </span>
+        ) : (
+          <button
+            ref={dropButton}
+            type="button"
+            aria-label="Drop the kept text"
+            aria-disabled={busy}
+            className={ACTION}
+            onClick={() => {
+              if (!busy) {
+                setAsking(true);
+              }
+            }}
+          >
+            Drop
+          </button>
+        ))}
       {problem !== null && problem !== "" && (
         <p role="alert" className="basis-full text-red-800 dark:text-red-200">
           {problem}

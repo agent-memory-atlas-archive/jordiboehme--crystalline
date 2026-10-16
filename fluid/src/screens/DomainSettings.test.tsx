@@ -862,6 +862,30 @@ describe("the domain settings kept texts section", () => {
     expect(await within(section).findByText("No kept texts.")).toBeVisible();
   });
 
+  it("shows Drop shut on a read-only instance", async () => {
+    serveKept([keptEntry()]);
+    const routes = apiMock.getMockImplementation();
+    apiMock.mockImplementation((path, init) =>
+      path === "/auth/me"
+        ? Promise.resolve(
+            meResponse({ user: userFixture(), read_only: true }) as never,
+          )
+        : (routes as NonNullable<typeof routes>)(path, init),
+    );
+    renderApp("/d/eng/settings");
+    const section = await screen.findByRole("region", { name: "Kept texts" });
+    expect(
+      within(section).getByRole("button", {
+        name: "Drop the kept text for guides/a.md",
+      }),
+    ).toHaveAttribute("aria-disabled", "true");
+    expect(
+      within(section).getByRole("button", {
+        name: "Show the kept text for guides/a.md",
+      }),
+    ).toBeEnabled();
+  });
+
   it("says so when nothing is kept", async () => {
     serveKept([]);
     renderApp("/d/eng/settings");

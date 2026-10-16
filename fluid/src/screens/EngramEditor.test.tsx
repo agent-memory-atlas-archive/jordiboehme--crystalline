@@ -3360,6 +3360,27 @@ describe("the engram editor's kept text notice", () => {
     expect(docText(mountedView(editor).state)).toBe(CONTENT);
   });
 
+  it("Keep takes the question back and drops nothing", async () => {
+    const dropped = serveKept([keptEntry()]);
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    const notice = await screen.findByRole("note", { name: "Kept text" });
+    await userEvent.click(
+      within(notice).getByRole("button", { name: "Drop the kept text" }),
+    );
+    expect(notice).toHaveTextContent("Drop it for good?");
+    await userEvent.click(within(notice).getByRole("button", { name: "Keep" }));
+    expect(
+      within(notice).getByRole("button", { name: "Drop the kept text" }),
+    ).toHaveFocus();
+    await userEvent.click(
+      within(notice).getByRole("button", { name: "Drop the kept text" }),
+    );
+    await userEvent.keyboard("{Escape}");
+    expect(within(notice).queryByText("Drop it for good?")).toBeNull();
+    expect(dropped).toEqual([]);
+  });
+
   it("is not there when nothing is kept for this engram", async () => {
     serveKept([
       keptEntry({ path: "beta.md" }),
