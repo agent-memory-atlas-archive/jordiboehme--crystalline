@@ -33,6 +33,7 @@ const DETAIL: EngramDetail = {
     description: null,
     tags: ["reactor", "navigation"],
     salience: 6,
+    recordedAt: null,
     validFrom: "2026-01-01",
     validTo: "2027-01-01",
     staleAfter: null,

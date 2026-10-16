@@ -682,7 +682,9 @@ test("a read-only domain shows its lock and offers no edit until the owner switc
 test("the neighborhood graph draws a canvas", async ({ page }) => {
   await openEngram(page, "Lantern Protocol");
 
-  await page.getByRole("button", { name: "Show the neighborhood" }).click();
+  // The switches live in the details rail's Explore block.
+  const explore = page.getByRole("region", { name: "Explore" });
+  await explore.getByRole("button", { name: "Show the neighborhood" }).click();
   // The drawing arrives with a lazy chunk, so the canvas is what says the
   // renderer both loaded and attached.
   await expect(page.locator("canvas").first()).toBeVisible();

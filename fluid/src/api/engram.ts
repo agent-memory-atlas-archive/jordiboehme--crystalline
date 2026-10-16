@@ -86,6 +86,8 @@ export interface EngramFrontmatter {
   tags: string[];
   /** Its `salience`, when it carries one. */
   salience: number | null;
+  /** `recorded_at`, the day the engram was first written down, as written. */
+  recordedAt: string | null;
   /** `valid_from`. Absent means it has always been valid. */
   validFrom: string | null;
   /** `valid_to`. Absent means it is valid forever. */
@@ -311,6 +313,7 @@ function readFrontmatter(
     // An unmodelled key, so it arrives under `extra`. Read from the top level
     // too, in case a later engine promotes it to a field of its own.
     salience: asNumber(extra?.salience) ?? asNumber(record?.salience),
+    recordedAt: asString(record?.recorded_at),
     validFrom: asString(record?.valid_from),
     validTo: asString(record?.valid_to),
     staleAfter: asString(record?.stale_after) ?? asString(record?.review_after),

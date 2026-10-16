@@ -52,6 +52,13 @@ export const SIDE = {
   retired: "italic [&>span]:text-slate-600 dark:[&>span]:text-muted",
 };
 
+/**
+ * A block label in the engram details rail: the sidebar's small section
+ * label, without the sidebar's row padding.
+ */
+export const RAIL_LABEL =
+  "text-[11.5px] font-semibold tracking-[0.04em] text-muted uppercase";
+
 // eslint-disable-next-line react-refresh/only-export-components
 export const BUTTON = {
   primary: `rounded bg-accent-700 px-3 py-1 text-sm font-medium text-white hover:bg-accent-800 disabled:bg-slate-200 disabled:text-slate-500 dark:bg-accent-400 dark:text-accent-950 dark:hover:bg-accent-300 dark:disabled:bg-slate-800 dark:disabled:text-slate-500 ${FOCUS_RING}`,

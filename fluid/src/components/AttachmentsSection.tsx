@@ -35,7 +35,7 @@ import { problemDetail } from "../api/client";
 import type { AssetHome, AttachmentRow } from "../api/files";
 import { assetRefsIn, engramAssetHome } from "../editor/imageFormat";
 import { formatBytes } from "../format";
-import { BUTTON, Chip, FOCUS_RING, IconButton } from "./primitives";
+import { BUTTON, Chip, FOCUS_RING, IconButton, RAIL_LABEL } from "./primitives";
 
 export interface AttachmentsSectionProps {
   /** The domain the paths are relative to. */
@@ -226,7 +226,7 @@ export function AttachmentsSection({
       <h2
         ref={headingRef}
         tabIndex={-1}
-        className={`mb-3 rounded text-caption font-semibold text-slate-500 dark:text-slate-400 ${FOCUS_RING}`}
+        className={`mb-2 rounded ${RAIL_LABEL} ${FOCUS_RING}`}
       >
         Attachments
       </h2>
@@ -238,7 +238,7 @@ export function AttachmentsSection({
           {failure}
         </p>
       )}
-      <ul className="flex flex-col divide-y divide-slate-100 dark:divide-slate-800">
+      <ul className="flex flex-col">
         {referenced.map((path) => {
           const row = held.get(path);
           const name = nameOf(path);
@@ -248,7 +248,7 @@ export function AttachmentsSection({
           // gone.
           const missing = row === undefined && attachments.isSuccess;
           return (
-            <li key={path} className="flex flex-col gap-1 py-2">
+            <li key={path} className="flex flex-col gap-0.5 py-1.5">
               <span className="flex min-w-0 items-center gap-2">
                 {row === undefined ? (
                   <span

@@ -30,6 +30,7 @@ const ENGRAM = {
     description: null,
     tags: [],
     salience: null,
+    recordedAt: null,
     validFrom: null,
     validTo: null,
     staleAfter: null,

@@ -394,6 +394,34 @@ function isWikilink(part: ReactNode): boolean {
   );
 }
 
+/** An inline `#tag`, as the observation grammar reads one. */
+const INLINE_TAG = /(^|\s)#([A-Za-z][A-Za-z0-9_-]*)/g;
+
+/**
+ * A string with its inline `#tags` drawn as accent chips, the way the
+ * mockup shows an observation's tags. Text without a tag comes back as it was.
+ */
+function withTagChips(text: string, keyBase: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  let last = 0;
+  for (const match of text.matchAll(INLINE_TAG)) {
+    const lead = match[1] ?? "";
+    const start = match.index + lead.length;
+    out.push(text.slice(last, start));
+    out.push(
+      <Chip variant="accent" key={`${keyBase}:${String(start)}`}>
+        #{match[2]}
+      </Chip>,
+    );
+    last = match.index + match[0].length;
+  }
+  if (last === 0) {
+    return [text];
+  }
+  out.push(text.slice(last));
+  return out;
+}
+
 /** A marked line: the mark as a chip, then the rest of the line as written. */
 function chipped(mark: string, rest: string, parts: ReactNode[]): ReactNode {
   return [
@@ -401,8 +429,14 @@ function chipped(mark: string, rest: string, parts: ReactNode[]): ReactNode {
       {mark}
     </Chip>,
     " ",
-    rest,
-    ...parts.slice(1),
+    ...withTagChips(rest, "rest"),
+    ...parts
+      .slice(1)
+      .map((part, index) =>
+        typeof part === "string"
+          ? withTagChips(part, `p${String(index)}`)
+          : part,
+      ),
   ];
 }
 

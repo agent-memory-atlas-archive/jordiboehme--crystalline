@@ -40,14 +40,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  Archive,
-  ChevronRight,
-  Download,
-  FolderInput,
-  Link2,
-  Printer,
-} from "lucide-react";
+import { Archive, Download, FolderInput, Link2, Printer } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
@@ -72,9 +65,8 @@ import { useDomainWritable } from "../domainWritable";
 import { absoluteUrl } from "../base";
 import { NO_COMMANDS, useRegisterCommands } from "../commands";
 import type { PaletteCommand } from "../commands";
-import { AgentsEye } from "../components/AgentsEye";
+import { AGENTS_EYE_KEY, AgentsEye } from "../components/AgentsEye";
 import { AttachmentsSection } from "../components/AttachmentsSection";
-import { BacklinksPanel } from "../components/BacklinksPanel";
 import { Breadcrumbs, crumbsOf } from "../components/Breadcrumbs";
 import { ChangeDialog } from "../components/ChangeDialog";
 import { CopyAddress, DetailsPanel } from "../components/DetailsPanel";
@@ -87,9 +79,10 @@ import { Markdown } from "../components/Markdown";
 import { ITEM_CLASSES, MENU_CLASSES } from "../components/menu";
 import { MoveDialog } from "../components/MoveDialog";
 import type { MovedState } from "../components/MoveDialog";
+import { ExploreBlock, GRAPH_PANEL_ID } from "../components/ExploreBlock";
+import { LinkedFrom } from "../components/LinkedFrom";
 import { NeighborhoodGraph } from "../components/NeighborhoodGraph";
 import {
-  BUTTON,
   CHIP_VARIANTS,
   Chip,
   FOCUS_RING,
@@ -133,6 +126,9 @@ export default function EngramPage() {
   const { capabilities } = useAuth();
   const { canWrite, domainLocked } = useDomainWritable(domain);
   const { fullWidth } = useFullWidth();
+  // The two panels under the prose, switched from the Explore rows.
+  const [graphOpen, toggleGraph] = useRememberedDisclosure(GRAPH_SECTION_KEY);
+  const [eyeOpen, toggleEye] = useRememberedDisclosure(AGENTS_EYE_KEY);
   const navigate = useNavigate();
   /**
    * What the move that brought the reader here rewrote on the way: the move
@@ -454,6 +450,29 @@ export default function EngramPage() {
   const engram = detail.data;
   const backlinks = backlinksTo(graph.data, engram.domain, engram.permalink);
   const description = engram.frontmatter.description;
+  /**
+   * The Explore rows. Opening a panel brings it into view: it stands under
+   * the prose, which may be a long way from the rail the reader clicked in.
+   */
+  const reveal = (id: string) => {
+    requestAnimationFrame(() => {
+      document.getElementById(id)?.scrollIntoView({ block: "nearest" });
+    });
+  };
+  const explore = (
+    <ExploreBlock
+      graphOpen={graphOpen}
+      onGraph={() => {
+        toggleGraph();
+        if (!graphOpen) reveal("engram-graph");
+      }}
+      eyeOpen={eyeOpen}
+      onEye={() => {
+        toggleEye();
+        if (!eyeOpen) reveal("engram-agents-eye");
+      }}
+    />
+  );
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-2">
@@ -744,7 +763,7 @@ export default function EngramPage() {
       */}
       <div
         className={`grid gap-8 ${
-          fullWidth ? "" : "lg:grid-cols-[minmax(0,1fr)_18rem]"
+          fullWidth ? "" : "lg:grid-cols-[minmax(0,1fr)_18.75rem] lg:gap-14"
         }`}
       >
         <div className="flex min-w-0 flex-col gap-8">
@@ -792,19 +811,30 @@ export default function EngramPage() {
               />
             </div>
           )}
-          <div className="print:hidden">
-            <GraphSection domain={engram.domain} permalink={engram.permalink} />
-          </div>
+          {/*
+            At full width there is no rail, so the Explore rows stand here,
+            above the panels they open.
+          */}
+          {fullWidth && <div className="print:hidden">{explore}</div>}
+          {graphOpen && (
+            <div className="print:hidden">
+              <GraphSection
+                domain={engram.domain}
+                permalink={engram.permalink}
+              />
+            </div>
+          )}
           <div className="print:hidden">
             <AgentsEye
               domain={engram.domain}
               salience={engram.frontmatter.salience}
               content={engram.content}
+              open={eyeOpen}
             />
           </div>
         </div>
         {!fullWidth && (
-          <aside className="flex flex-col gap-6 print:hidden">
+          <aside className="flex flex-col divide-y divide-hair print:hidden [&>*]:py-4 [&>*:first-child]:pt-0">
             <DetailsPanel
               frontmatter={engram.frontmatter}
               address={engram.url}
@@ -814,11 +844,12 @@ export default function EngramPage() {
               body={engram.content}
               canDelete={canWrite}
             />
-            <BacklinksPanel
+            <LinkedFrom
               domain={engram.domain}
               permalink={engram.permalink}
               inboundCount={engram.inboundCount}
             />
+            {explore}
           </aside>
         )}
       </div>
@@ -939,18 +970,19 @@ function chain(
 }
 
 /**
- * The neighborhood, one hop out, folded away until it is asked for.
+ * The neighborhood, one hop out, drawn under the prose once the Explore row in
+ * the details rail has opened it.
  *
- * Folded by default for two reasons that point the same way. The drawing is the
- * heaviest thing this page can load and it arrives only when the section opens,
+ * Closed by default for two reasons that point the same way. The drawing is the
+ * heaviest thing this page can load and it arrives only when the row opens it,
  * so a reader who came for the prose never pays for it; and the picture is a
  * detour from the engram, which is what this page is for. Opened, it costs
  * nothing on the wire either: it reads the same neighborhood under the same
- * cache key the backlinks panel already read.
+ * cache key the page already read.
  *
- * A reader who does open it is a reader who reads this way, so the section
+ * A reader who does open it is a reader who reads this way, so the page
  * remembers: the default is closed, and the choice against it survives the
- * visit.
+ * visit (the page holds that state, since the row and the panel are apart).
  */
 function GraphSection({
   domain,
@@ -959,48 +991,25 @@ function GraphSection({
   domain: string;
   permalink: string;
 }) {
-  const [open, toggle] = useRememberedDisclosure(GRAPH_SECTION_KEY);
-
   return (
     <section aria-labelledby="engram-graph">
       <div className="mb-2 flex flex-wrap items-baseline justify-between gap-3">
         <h2 id="engram-graph" className="text-section">
           Graph
         </h2>
-        {open && (
-          <Link
-            to={graphRoute(domain, permalink)}
-            className="text-sm text-accent-700 underline underline-offset-2 hover:no-underline dark:text-accent-300"
-          >
-            Open the full view
-          </Link>
-        )}
+        <Link
+          to={graphRoute(domain, permalink)}
+          className="text-sm text-accent-700 underline underline-offset-2 hover:no-underline dark:text-accent-300"
+        >
+          Open the full view
+        </Link>
       </div>
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls="engram-graph-panel"
-        onClick={toggle}
-        className={`${BUTTON.ghost} inline-flex items-center gap-1.5`}
-      >
-        <ChevronRight
-          aria-hidden="true"
-          size={14}
-          strokeWidth={1.75}
-          className={
-            open ? "rotate-90 transition-transform" : "transition-transform"
-          }
+      <div id={GRAPH_PANEL_ID}>
+        <NeighborhoodGraph
+          anchor={{ domain, permalink }}
+          depth={NEIGHBORHOOD_DEPTH}
+          height="h-80"
         />
-        {open ? "Hide the neighborhood" : "Show the neighborhood"}
-      </button>
-      <div id="engram-graph-panel" className="mt-3">
-        {open && (
-          <NeighborhoodGraph
-            anchor={{ domain, permalink }}
-            depth={NEIGHBORHOOD_DEPTH}
-            height="h-80"
-          />
-        )}
       </div>
     </section>
   );

@@ -21,6 +21,7 @@ const FRONTMATTER: EngramFrontmatter = {
   description: null,
   tags: ["protocol", "smoke"],
   salience: 0.7,
+  recordedAt: null,
   validFrom: null,
   validTo: null,
   staleAfter: null,
@@ -53,6 +54,17 @@ describe("DetailsPanel", () => {
       "href",
       "/search?tags=protocol",
     );
+  });
+
+  test("states the recorded day, and has no row when the engram records none", () => {
+    draw({ recordedAt: "2026-09-12" });
+    expect(screen.getByText("Recorded")).toBeVisible();
+    expect(screen.getByText("2026-09-12")).toBeVisible();
+  });
+
+  test("has no Recorded row without a recorded day", () => {
+    draw();
+    expect(screen.queryByText("Recorded")).toBeNull();
   });
 
   test("absent validity renders no row at all - never a sentinel", () => {

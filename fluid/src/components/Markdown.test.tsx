@@ -477,10 +477,12 @@ describe("the markdown renderer", () => {
 
     const chip = screen.getByText("[gotcha]");
     expect(chip.className).toContain("font-mono");
-    // The line itself stays whole beside it, tag and all.
+    // The line itself stays beside it, and its tag is an accent chip.
     expect(
-      screen.getByText(/An unsigned handover is not a handover #protocol/),
+      screen.getByText(/An unsigned handover is not a handover/),
     ).toBeVisible();
+    const tag = screen.getByText("#protocol");
+    expect(tag.className).toContain("bg-accent-100");
   });
 
   it("draws a relation bullet's type as a chip", async () => {

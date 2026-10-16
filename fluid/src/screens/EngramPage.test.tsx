@@ -6,8 +6,8 @@
  * one the index looked for and did not find is marked and left unlinked; the
  * details panel shows the fields the engram carries and invents nothing for
  * the ones it does not, which for the temporal fields is the difference between
- * "valid forever" and a date nobody wrote. Backlinks are counted by relation
- * across the whole index rather than drawn from the capped neighborhood, they
+ * "valid forever" and a date nobody wrote. Inbound links are read from the inbound
+ * endpoint rather than drawn from the capped neighborhood, they
  * cost no request at all when the detail payload already counted none, and the
  * empty case says so plainly instead of pretending the panel is still loading.
  */
@@ -175,27 +175,23 @@ function graphResponse(overrides: Record<string, unknown> = {}) {
  * because the endpoint answers both, differing only in whether a relation was
  * named.
  */
-function inboundResponse(path: string) {
-  const rel = new URLSearchParams(path.split("?")[1] ?? "").get("rel");
+function inboundResponse(_path: string) {
   return {
     total: 1,
     page: 1,
-    limit: rel === null ? 1 : 20,
-    count: rel === null ? 0 : 1,
+    limit: 20,
+    count: 1,
     types: [{ rel: "links_to", count: 1 }],
-    hits:
-      rel === null
-        ? []
-        : [
-            {
-              domain: "eng",
-              permalink: "notes/beta",
-              title: "Beta",
-              path: "notes/beta.md",
-              rel: "links_to",
-              status: "stable",
-            },
-          ],
+    hits: [
+      {
+        domain: "eng",
+        permalink: "notes/beta",
+        title: "Beta",
+        path: "notes/beta.md",
+        rel: "links_to",
+        status: "stable",
+      },
+    ],
   };
 }
 
@@ -576,26 +572,15 @@ describe("the engram page", () => {
     );
   });
 
-  it("counts what points here by relation, and opens onto them on request", async () => {
+  it("names what links here in the rail, each with its relation", async () => {
     serve();
 
     renderApp("/d/eng/e/alpha");
 
-    const panel = await screen.findByRole("region", { name: "Backlinks" });
-    // The counts are of the whole index rather than of the capped
-    // neighborhood, so the panel is a chip per relation and no rows at all
-    // until one is opened.
-    const chip = await within(panel).findByRole("button", {
-      name: /links_to/,
-    });
-    expect(chip).toHaveTextContent("1");
-    expect(within(panel).queryByRole("link")).toBeNull();
-
-    await userEvent.click(chip);
-
-    expect(
-      await screen.findByRole("link", { name: "Beta, eng / notes/beta.md" }),
-    ).toHaveAttribute("href", "/d/eng/e/notes/beta");
+    const block = await screen.findByRole("region", { name: "Linked from" });
+    const link = await within(block).findByRole("link", { name: "Beta" });
+    expect(link).toHaveAttribute("href", "/d/eng/e/notes/beta");
+    expect(block).toHaveTextContent("links_to");
   });
 
   it("says what the server said when what points here could not be read", async () => {
@@ -610,7 +595,7 @@ describe("the engram page", () => {
 
     renderApp("/d/eng/e/alpha");
 
-    const panel = await screen.findByRole("region", { name: "Backlinks" });
+    const panel = await screen.findByRole("region", { name: "Linked from" });
     const alert = await within(panel).findByRole("alert");
     // The server's own words, the way every other error surface in this app
     // shows them: a house sentence would hide the one thing worth reading.
@@ -630,7 +615,7 @@ describe("the engram page", () => {
 
     expect(await screen.findByText(/nothing links here yet/i)).toBeVisible();
     expect(apiMock.mock.calls.map((call) => String(call[0]))).not.toContain(
-      "/domains/eng/inbound/alpha?page=1&limit=1",
+      "/domains/eng/inbound/alpha?page=1&limit=20",
     );
   });
 
@@ -975,6 +960,45 @@ describe("the engram page", () => {
     expect(screen.queryByTestId("canvas")).toBeNull();
   });
 
+  it("puts the two Explore rows in the rail, with the old names", async () => {
+    serve();
+
+    renderApp("/d/eng/e/alpha");
+
+    const explore = await screen.findByRole("region", { name: "Explore" });
+    // The rail holds the switches and the panels stay under the prose.
+    expect(
+      within(explore).getByRole("button", { name: "Show the neighborhood" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(explore).getByRole("button", {
+        name: "Show what an agent is taught",
+      }),
+    ).toHaveAttribute("aria-controls", "engram-agents-eye-panel");
+    expect(screen.queryByRole("region", { name: /agent/i })).toBeNull();
+  });
+
+  it("opens the Explore rows from the keyboard and hides them again", async () => {
+    serve();
+
+    renderApp("/d/eng/e/alpha");
+    const row = await screen.findByRole("button", {
+      name: "Show what an agent is taught",
+    });
+
+    row.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(
+      await screen.findByRole("region", { name: /agent/i }),
+    ).toHaveTextContent("Route here for eng questions.");
+    expect(
+      screen.getByRole("button", { name: "Hide what an agent is taught" }),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    await userEvent.keyboard(" ");
+    expect(screen.queryByRole("region", { name: /agent/i })).toBeNull();
+  });
+
   it("draws the neighborhood the page already read, on request", async () => {
     serve();
 
@@ -1204,7 +1228,7 @@ describe("the engram page at full width", () => {
     const main = await screen.findByRole("main");
 
     expect(
-      await screen.findByRole("region", { name: "Backlinks" }),
+      await screen.findByRole("region", { name: "Linked from" }),
     ).toBeVisible();
     expect(main.querySelector('[class*="lg:grid-cols-"]')).not.toBeNull();
     // Exactly one of it either way: the panel's copy is the only copy here.

@@ -17,22 +17,21 @@
  * frontmatter panel: the honest rendering of a fact nobody recorded is nothing
  * at all.
  *
- * Folded away by default, like the neighborhood below it. This is a second way
- * of reading a page whose first job is the prose.
+ * Folded away by default, and opened from the Explore row in the details rail,
+ * which owns the switch: this draws the panel only. This is a second way of
+ * reading a page whose first job is the prose.
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight } from "lucide-react";
 
 import { DOMAINS_QUERY_KEY, fetchDomains } from "../api/domains";
-import { useRememberedDisclosure } from "../disclosure";
-import { BUTTON } from "./primitives";
+import { AGENTS_EYE_PANEL_ID } from "./ExploreBlock";
 
 /** How many characters one token is worth, as a rule of thumb. */
 const CHARS_PER_TOKEN = 4;
 
 /** Where this section writes down whether it was left open. */
-const SECTION_KEY = "fluid.section.agents-eye";
+export const AGENTS_EYE_KEY = "fluid.section.agents-eye";
 
 export interface AgentsEyeProps {
   /** The domain this engram lives in, whose routing lines are read here. */
@@ -41,10 +40,11 @@ export interface AgentsEyeProps {
   salience: number | null;
   /** The markdown as written, which is what an agent is handed. */
   content: string;
+  /** Whether the Explore row has opened it. */
+  open: boolean;
 }
 
-export function AgentsEye({ domain, salience, content }: AgentsEyeProps) {
-  const [open, toggle] = useRememberedDisclosure(SECTION_KEY);
+export function AgentsEye({ domain, salience, content, open }: AgentsEyeProps) {
   // The listing the sidebar already read, under the same key: the routing
   // lines cost nothing on the wire.
   const listing = useQuery({
@@ -56,73 +56,58 @@ export function AgentsEye({ domain, salience, content }: AgentsEyeProps) {
     [];
   const tokens = Math.ceil(content.length / CHARS_PER_TOKEN);
 
+  if (!open) {
+    return null;
+  }
+
   return (
     <section aria-labelledby="engram-agents-eye">
       <h2 id="engram-agents-eye" className="mb-2 text-section">
         Agent&apos;s eye
       </h2>
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls="engram-agents-eye-panel"
-        onClick={toggle}
-        className={`${BUTTON.ghost} inline-flex items-center gap-1.5`}
-      >
-        <ChevronRight
-          aria-hidden="true"
-          size={14}
-          strokeWidth={1.75}
-          className={
-            open ? "rotate-90 transition-transform" : "transition-transform"
-          }
-        />
-        {open ? "Hide what an agent is taught" : "Show what an agent is taught"}
-      </button>
-      <div id="engram-agents-eye-panel" className="mt-3">
-        {open && (
-          <div className="flex flex-col gap-3 rounded border border-slate-200 px-4 py-3 text-sm dark:border-slate-800">
-            <p className="text-slate-500 dark:text-slate-400">
-              This is what an agent is taught about this knowledge.
-            </p>
-            <dl className="flex flex-col gap-3">
-              {routing.length > 0 && (
-                <div className="flex flex-col gap-1">
-                  <dt className="text-xs text-slate-500 dark:text-slate-400">
-                    Routing, from the {domain} MANIFEST
-                  </dt>
-                  <dd>
-                    <ul className="list-disc pl-5">
-                      {routing.map((line) => (
-                        <li key={line}>{line}</li>
-                      ))}
-                    </ul>
-                  </dd>
-                </div>
-              )}
-              {salience !== null && (
-                <div className="flex flex-col gap-1">
-                  <dt className="text-xs text-slate-500 dark:text-slate-400">
-                    Salience
-                  </dt>
-                  <dd className="tabular-nums">{salience}</dd>
-                </div>
-              )}
+      <div id={AGENTS_EYE_PANEL_ID}>
+        <div className="flex flex-col gap-3 border-l-2 border-hair pl-4 text-sm">
+          <p className="text-slate-500 dark:text-slate-400">
+            This is what an agent is taught about this knowledge.
+          </p>
+          <dl className="flex flex-col gap-3">
+            {routing.length > 0 && (
               <div className="flex flex-col gap-1">
                 <dt className="text-xs text-slate-500 dark:text-slate-400">
-                  Context cost
+                  Routing, from the {domain} MANIFEST
                 </dt>
                 <dd>
-                  <span className="tabular-nums">About {tokens} tokens</span>
-                  <span className="text-slate-500 dark:text-slate-400">
-                    {" "}
-                    (approximate: the characters of this engram over four, not a
-                    count from a tokenizer)
-                  </span>
+                  <ul className="list-disc pl-5">
+                    {routing.map((line) => (
+                      <li key={line}>{line}</li>
+                    ))}
+                  </ul>
                 </dd>
               </div>
-            </dl>
-          </div>
-        )}
+            )}
+            {salience !== null && (
+              <div className="flex flex-col gap-1">
+                <dt className="text-xs text-slate-500 dark:text-slate-400">
+                  Salience
+                </dt>
+                <dd className="tabular-nums">{salience}</dd>
+              </div>
+            )}
+            <div className="flex flex-col gap-1">
+              <dt className="text-xs text-slate-500 dark:text-slate-400">
+                Context cost
+              </dt>
+              <dd>
+                <span className="tabular-nums">About {tokens} tokens</span>
+                <span className="text-slate-500 dark:text-slate-400">
+                  {" "}
+                  (approximate: the characters of this engram over four, not a
+                  count from a tokenizer)
+                </span>
+              </dd>
+            </div>
+          </dl>
+        </div>
       </div>
     </section>
   );
