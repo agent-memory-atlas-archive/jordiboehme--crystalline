@@ -691,7 +691,9 @@ impl Engine {
         // written: an edit that composed into a room over the MANIFEST
         // returned above, and that room's own save closes them. The text is
         // worked out unlocked, as the write below will work it out; a later
-        // refusal costs the rooms their sockets, never their text.
+        // refusal costs the rooms their sockets, never their text. `apply`
+        // works on the LF form of what it is handed (its first wrapper
+        // above), so a CRLF file is edited here exactly as the write edits it.
         if close_rooms_on_switch_off {
             let raw = view
                 .text_at(source, desc)

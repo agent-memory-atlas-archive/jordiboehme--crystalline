@@ -3089,6 +3089,35 @@ async fn an_edit_with_a_token_of_a_crlf_manifest_saves_and_closes_the_rooms_firs
     assert_saved_then_closed(&tmp, &sessions, &mut joined).await;
 }
 
+/// **Task 41b review.** The close ahead of a switch-off works the edit out
+/// on the LF form of a CRLF MANIFEST, as the write does: a find text that
+/// spans a line break matches, so the rooms are saved and closed first.
+#[tokio::test]
+async fn a_multi_line_edit_of_a_crlf_manifest_closes_the_rooms_first() {
+    let (tmp, engine, _scratch, sessions, mut joined) = a_typed_room_before_a_switch().await;
+    let manifest = tmp.path().join("eng/MANIFEST.md");
+    let lf = std::fs::read_to_string(&manifest).unwrap();
+    assert!(lf.contains("reflection: on\n---\n"), "{lf}");
+    std::fs::write(&manifest, lf.replace('\n', "\r\n")).unwrap();
+    engine.sync(None).await.unwrap();
+    engine
+        .edit_engram(&crystalline_service::params::EditParams {
+            identifier: "manifest".into(),
+            domain: "eng".into(),
+            operation: "find_replace".into(),
+            find_text: Some("reflection: on\n---".into()),
+            content: Some("reflection: off\n---".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.reflection_switch("eng"),
+        crystalline_core::ReflectionSwitch::Off
+    );
+    assert_saved_then_closed(&tmp, &sessions, &mut joined).await;
+}
+
 /// The MANIFEST editor's save closes the reflection rooms first.
 #[tokio::test]
 async fn a_manifest_editor_save_that_switches_off_saves_and_closes_the_rooms_first() {
