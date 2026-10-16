@@ -1349,11 +1349,12 @@ async fn a_cached_state_follows_an_engram_moved_into_the_folder() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn a_cached_state_follows_an_engram_moved_into_the_folder_on_postgres() {
-    use crate::fixture::{fixture_on, pg_url, unique_schema};
+    use crate::fixture::{fixture_on, scratch_schema};
 
-    let Some(url) = pg_url() else { return };
-    let schema = unique_schema();
-    let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+    let Some(scratch) = scratch_schema() else {
+        return;
+    };
+    let store = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
         .await
         .expect("open the postgres test schema");
     let notes = engram("N", "notes/n", "- [fact] n");
@@ -1367,12 +1368,6 @@ async fn a_cached_state_follows_an_engram_moved_into_the_folder_on_postgres() {
     )
     .await;
     follows_an_engram_moved_in(fx).await;
-    crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-        .await
-        .unwrap()
-        .drop_schema()
-        .await
-        .unwrap();
 }
 
 async fn follows_an_engram_moved_in(fx: crate::fixture::Fx) {

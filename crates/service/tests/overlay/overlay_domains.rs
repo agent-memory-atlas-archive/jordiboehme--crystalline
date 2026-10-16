@@ -1918,6 +1918,42 @@ async fn a_pact_that_cannot_be_seeded_refuses_the_fold_for_a_retry() {
     );
 }
 
+/// The seed comes before the rooms close: a fold whose pact cannot be seeded
+/// refuses with nothing changed, so a room that was open stays open. A fold
+/// that closed the rooms first would cut a co-editing session for a fold that
+/// then did not happen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_seed_refusal_closes_no_room() {
+    let f = review_fixture().await;
+    let sessions = CollabSessions::new(f.engine.clone());
+    f.engine.set_collab_sessions(&sessions);
+    let on = MANIFEST.replace("status: stable\n", "status: stable\nreflection: on\n");
+    f.draft("team", "alice", "MANIFEST.md", &on).await;
+    let _joined = sessions.join("team", "plan", None).await.unwrap();
+    assert_eq!(sessions.session_count().await, 1, "the room is open");
+    // A file where the folder would go: the seed cannot create it.
+    std::fs::write(f.root.join("team").join("reflections"), "in the way").unwrap();
+
+    let err = f
+        .engine
+        .set_review_mode(
+            "team",
+            None,
+            folds(&[("alice", FoldChoice::Fold)]),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("PACT.md could not be written"), "{err}");
+    assert_eq!(
+        sessions.session_count().await,
+        1,
+        "the refused fold left the room open"
+    );
+}
+
 /// One draft, two writers, one lock.
 ///
 /// A draft has no file in the domain's folder, so the base file's lock - which

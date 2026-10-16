@@ -299,20 +299,12 @@ pub fn pg_url() -> Option<String> {
     }
 }
 
-/// A distinct schema name per call, salted so a recycled pid never adopts
-/// a schema a panicking run left behind.
+/// A scratch schema in the postgres the parity legs run against, dropped when
+/// it goes out of scope even if the test fails, or `None` without a URL.
+/// Declare it before any store opened in it so it drops last.
 #[cfg(feature = "postgres")]
-pub fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "refl_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
+pub fn scratch_schema() -> Option<crystalline_index::ScratchSchema> {
+    pg_url().map(|url| crystalline_index::ScratchSchema::new(&url, "refl"))
 }
 
 /// A deterministic provider over eight hashed word buckets: texts sharing

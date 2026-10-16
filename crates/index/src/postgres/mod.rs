@@ -288,6 +288,90 @@ impl Conn<'_> {
     }
 }
 
+/// How long [`ScratchSchema`]'s drop waits for the cleanup before it gives up.
+/// A schema another connection still holds a lock on would otherwise hang the
+/// test that dropped it.
+const SCRATCH_DROP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A test-only Postgres schema that is dropped when the guard goes out of
+/// scope, even when the test panics or fails an assertion halfway.
+///
+/// Declare it before every store opened in it, so it drops last. The drop runs
+/// on a thread of its own with its own runtime (a test's runtime may be the
+/// one that is unwinding or blocked), bounded by a timeout: a cleanup that
+/// fails or times out is printed to stderr and given up on, never retried and never
+/// allowed to hang the test.
+#[doc(hidden)]
+pub struct ScratchSchema {
+    url: String,
+    schema: String,
+}
+
+impl ScratchSchema {
+    /// A distinct schema name for `url`, `prefix` first, salted so a recycled
+    /// pid never adopts a schema a crashed run left behind. The schema itself
+    /// is created by the first [`PostgresStore::open_in_schema`] on its name.
+    pub fn new(url: &str, prefix: &str) -> ScratchSchema {
+        use std::hash::{BuildHasher, RandomState};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        ScratchSchema {
+            url: url.to_string(),
+            schema: format!(
+                "{prefix}_{}_{n}_{:x}",
+                std::process::id(),
+                RandomState::new().hash_one(n)
+            ),
+        }
+    }
+
+    /// The schema's name, for [`PostgresStore::open_in_schema`].
+    pub fn name(&self) -> &str {
+        &self.schema
+    }
+
+    /// The database URL the schema lives in.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+}
+
+impl Drop for ScratchSchema {
+    fn drop(&mut self) {
+        let (url, schema) = (self.url.clone(), self.schema.clone());
+        let cleanup = std::thread::spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(e) => {
+                    eprintln!("could not drop the scratch schema {schema}: no runtime: {e}");
+                    return;
+                }
+            };
+            // The timeout is built inside the future: it needs the runtime's
+            // timer, which exists only once `block_on` runs.
+            let dropped = runtime.block_on(async {
+                tokio::time::timeout(SCRATCH_DROP_TIMEOUT, async {
+                    PostgresStore::open_in_schema(&url, &schema)
+                        .await?
+                        .drop_schema()
+                        .await
+                })
+                .await
+            });
+            match dropped {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => eprintln!("could not drop the scratch schema {schema}: {e}"),
+                Err(_) => eprintln!("gave up dropping the scratch schema {schema}: timed out"),
+            }
+        });
+        let _ = cleanup.join();
+    }
+}
+
 impl PostgresStore {
     /// Open a pool at `url` (validated by the caller) and migrate. Uses the
     /// connection's default search_path. `max_connections` is small: the engine

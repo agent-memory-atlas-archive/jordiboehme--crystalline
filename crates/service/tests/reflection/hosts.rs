@@ -50,13 +50,14 @@ fn refusal(label: &str) -> String {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn a_reflection_on_a_shared_database_is_served_by_its_host_only_on_postgres() {
-    use crate::fixture::{pg_url, unique_schema};
+    use crate::fixture::scratch_schema;
     use crate::rest::{Session, serve_fx};
 
-    let Some(url) = pg_url() else { return };
-    let schema = unique_schema();
+    let Some(scratch) = scratch_schema() else {
+        return;
+    };
     let open = || async {
-        let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+        let store = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
             .await
             .expect("open the postgres test schema");
         Arc::new(Mutex::new(store)) as Arc<Mutex<dyn Store>>
@@ -233,13 +234,6 @@ async fn a_reflection_on_a_shared_database_is_served_by_its_host_only_on_postgre
         s.fx.engine.reflection_state("eng").await.unwrap(),
         hosted_by("gamma")
     );
-
-    crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-        .await
-        .unwrap()
-        .drop_schema()
-        .await
-        .unwrap();
 }
 
 /// A host that shuts down gracefully releases its lock. The instances left
@@ -249,12 +243,13 @@ async fn a_reflection_on_a_shared_database_is_served_by_its_host_only_on_postgre
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn a_released_host_lock_goes_to_exactly_one_instance_on_postgres() {
-    use crate::fixture::{pg_url, unique_schema};
+    use crate::fixture::scratch_schema;
 
-    let Some(url) = pg_url() else { return };
-    let schema = unique_schema();
+    let Some(scratch) = scratch_schema() else {
+        return;
+    };
     let open = || async {
-        let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+        let store = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
             .await
             .expect("open the postgres test schema");
         Arc::new(Mutex::new(store)) as Arc<Mutex<dyn Store>>
@@ -322,47 +317,31 @@ async fn a_released_host_lock_goes_to_exactly_one_instance_on_postgres() {
         hosted_by(winner_name),
         "the released host does not take it back by asking"
     );
-
-    crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-        .await
-        .unwrap()
-        .drop_schema()
-        .await
-        .unwrap();
 }
 
-/// A Postgres schema of its own, and an opener for one store on it per
-/// instance.
+/// A Postgres schema of its own, dropped with the value even when the test
+/// fails, and an opener for one store on it per instance.
 #[cfg(feature = "postgres")]
 struct Shared {
-    url: String,
-    schema: String,
+    scratch: crystalline_index::ScratchSchema,
 }
 
 #[cfg(feature = "postgres")]
 impl Shared {
     fn new() -> Option<Shared> {
-        let url = crate::fixture::pg_url()?;
         Some(Shared {
-            url,
-            schema: crate::fixture::unique_schema(),
+            scratch: crate::fixture::scratch_schema()?,
         })
     }
 
     async fn open(&self) -> Arc<Mutex<dyn Store>> {
-        let store = crystalline_index::PostgresStore::open_in_schema(&self.url, &self.schema)
-            .await
-            .expect("open the postgres test schema");
+        let store = crystalline_index::PostgresStore::open_in_schema(
+            self.scratch.url(),
+            self.scratch.name(),
+        )
+        .await
+        .expect("open the postgres test schema");
         Arc::new(Mutex::new(store)) as Arc<Mutex<dyn Store>>
-    }
-
-    async fn drop_schema(self) {
-        crystalline_index::PostgresStore::open_in_schema(&self.url, &self.schema)
-            .await
-            .unwrap()
-            .drop_schema()
-            .await
-            .unwrap();
     }
 }
 
@@ -526,8 +505,6 @@ async fn a_new_host_keeps_the_rows_it_cannot_see_and_reports_them_on_postgres() 
     let again = beta.engine.sync(Some("eng")).await.unwrap();
     assert_eq!(again["reports"][0]["only_elsewhere"], only_on_alpha());
     assert_eq!(alpha_rows(&beta).await, (true, true, true));
-
-    db.drop_schema().await;
 }
 
 /// Two complete walks that race right after a take-over both keep the rows
@@ -559,8 +536,6 @@ async fn a_concurrent_walk_during_a_take_over_deletes_nothing_on_postgres() {
     other.unwrap();
     assert_eq!(alpha_rows(&beta).await, (true, true, true));
     assert_eq!(eng_stats(&beta).await["only_elsewhere"], only_on_alpha());
-
-    db.drop_schema().await;
 }
 
 /// The normal restart of the one host is not a take-over: a page and an
@@ -587,8 +562,6 @@ async fn a_restart_of_the_same_host_deletes_a_hand_deleted_file_on_postgres() {
     let alpha = crate::fixture::restart_on(db.open().await, "alpha", alpha).await;
     assert_eq!(alpha_rows(&alpha).await, (false, false, false));
     assert!(host_moved(&queue_of(&alpha).await).is_empty());
-
-    db.drop_schema().await;
 }
 
 /// What exists only on the previous host is reported until it is resolved:
@@ -644,8 +617,6 @@ async fn accept_disk_drops_the_rows_only_elsewhere_on_postgres() {
     std::fs::remove_file(to.join(ALPHA_PAGE)).unwrap();
     beta.engine.sync(Some("eng")).await.unwrap();
     assert_eq!(alpha_rows(&beta).await, (false, false, false));
-
-    db.drop_schema().await;
 }
 
 /// A host that lost the lock while it walked writes nothing. Alpha scans,
@@ -689,8 +660,6 @@ async fn a_deposed_host_walk_neither_applies_nor_ends_the_move_on_postgres() {
     let synced = beta.engine.sync(Some("eng")).await.unwrap();
     assert_eq!(synced["reports"][0]["only_elsewhere"], only_on_alpha());
     assert_eq!(alpha_rows(&beta).await, (true, true, true));
-
-    db.drop_schema().await;
 }
 
 /// The Reflection backup waits while a move is unresolved; the walk that
@@ -726,8 +695,6 @@ async fn the_walk_that_ends_a_move_marks_the_backup_on_postgres() {
         beta.engine.take_reflection_backup_marks(),
         vec!["eng".to_string()]
     );
-
-    db.drop_schema().await;
 }
 
 /// An engine built with no instance id cannot hold a host lock, so on a
@@ -776,8 +743,6 @@ async fn an_engine_without_an_instance_id_walks_no_file_domain_on_postgres() {
 
     assert_eq!(store.lock().await.host_move(did).await.unwrap(), marked);
     assert_eq!(alpha_rows(&beta).await, (true, true, true));
-
-    db.drop_schema().await;
 }
 
 /// A one-shot command of machine `id` on `fx`'s folder and configuration:
@@ -888,8 +853,6 @@ async fn a_one_shot_command_claims_no_domain_to_serve_its_reflection_on_postgres
         "the command did not claim over the daemon"
     );
     drop(store);
-
-    db.drop_schema().await;
 }
 
 /// A one-shot command's targeted sync of a domain another live instance
@@ -947,8 +910,6 @@ async fn a_one_shot_targeted_sync_names_the_host_on_postgres() {
         "gamma-id",
         "the host keeps its lock"
     );
-
-    db.drop_schema().await;
 }
 
 /// A one-shot command's release never deletes a later claim under the
@@ -991,8 +952,6 @@ async fn a_command_release_leaves_the_daemon_claim_after_it_on_postgres() {
         lock_and_move(&db).await.0.is_none(),
         "the daemon's own release matches"
     );
-
-    db.drop_schema().await;
 }
 
 /// Two one-shot commands of one machine walk the same domain at once. The
@@ -1029,8 +988,6 @@ async fn two_commands_of_one_machine_keep_each_other_claim_on_postgres() {
     second_go.notify_one();
     let applied = second_walk.await.unwrap();
     assert!(applied.is_ok(), "the second walk applies: {applied:?}");
-
-    db.drop_schema().await;
 }
 
 /// How many `switched` events for `eng` the bus holds.

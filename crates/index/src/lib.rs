@@ -102,7 +102,7 @@ pub use turso::TursoStore;
 pub use vocab::{TagCluster, tag_clusters, tag_clusters_with_aliases};
 
 #[cfg(feature = "postgres")]
-pub use postgres::PostgresStore;
+pub use postgres::{PostgresStore, ScratchSchema};
 
 /// Encode bytes as lowercase hexadecimal into a pre-sized string. The shared
 /// SHA-256 formatter for the whole crate: chunk fingerprints, file checksums and

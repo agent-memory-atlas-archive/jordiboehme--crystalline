@@ -1168,11 +1168,12 @@ async fn a_failed_reflection_index_leaves_the_page_for_the_next_walk() {
 async fn a_failed_reflection_index_leaves_the_page_for_the_next_walk_on_postgres() {
     use std::sync::Arc;
 
-    use crate::fixture::{fixture_on, pg_url, unique_schema};
+    use crate::fixture::{fixture_on, scratch_schema};
 
-    let Some(url) = pg_url() else { return };
-    let schema = unique_schema();
-    let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+    let Some(scratch) = scratch_schema() else {
+        return;
+    };
+    let store = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
         .await
         .expect("open the postgres test schema");
     let fx = fixture_on(
@@ -1191,12 +1192,6 @@ async fn a_failed_reflection_index_leaves_the_page_for_the_next_walk_on_postgres
     )
     .await;
     a_failed_index_leaves_the_page(fx).await;
-    crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-        .await
-        .unwrap()
-        .drop_schema()
-        .await
-        .unwrap();
 }
 
 async fn a_failed_index_leaves_the_page(fx: Fx) {
