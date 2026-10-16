@@ -56,59 +56,59 @@ export function AgentsEye({ domain, salience, content, open }: AgentsEyeProps) {
     [];
   const tokens = Math.ceil(content.length / CHARS_PER_TOKEN);
 
-  if (!open) {
-    return null;
-  }
-
+  // The wrapper is always there, empty while closed, so the Explore row's
+  // aria-controls resolves; an empty one takes no room and no gap.
   return (
-    <section aria-labelledby="engram-agents-eye">
-      <h2 id="engram-agents-eye" className="mb-2 text-section">
-        Agent&apos;s eye
-      </h2>
-      <div id={AGENTS_EYE_PANEL_ID}>
-        <div className="flex flex-col gap-3 border-l-2 border-hair pl-4 text-sm">
-          <p className="text-slate-500 dark:text-slate-400">
-            This is what an agent is taught about this knowledge.
-          </p>
-          <dl className="flex flex-col gap-3">
-            {routing.length > 0 && (
+    <div id={AGENTS_EYE_PANEL_ID} className="empty:hidden print:hidden">
+      {open && (
+        <section aria-labelledby="engram-agents-eye">
+          <h2 id="engram-agents-eye" className="mb-2 text-section">
+            Agent&apos;s eye
+          </h2>
+          <div className="flex flex-col gap-3 border-l-2 border-hair pl-4 text-sm">
+            <p className="text-slate-500 dark:text-slate-400">
+              This is what an agent is taught about this knowledge.
+            </p>
+            <dl className="flex flex-col gap-3">
+              {routing.length > 0 && (
+                <div className="flex flex-col gap-1">
+                  <dt className="text-xs text-slate-500 dark:text-slate-400">
+                    Routing, from the {domain} MANIFEST
+                  </dt>
+                  <dd>
+                    <ul className="list-disc pl-5">
+                      {routing.map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                  </dd>
+                </div>
+              )}
+              {salience !== null && (
+                <div className="flex flex-col gap-1">
+                  <dt className="text-xs text-slate-500 dark:text-slate-400">
+                    Salience
+                  </dt>
+                  <dd className="tabular-nums">{salience}</dd>
+                </div>
+              )}
               <div className="flex flex-col gap-1">
                 <dt className="text-xs text-slate-500 dark:text-slate-400">
-                  Routing, from the {domain} MANIFEST
+                  Context cost
                 </dt>
                 <dd>
-                  <ul className="list-disc pl-5">
-                    {routing.map((line) => (
-                      <li key={line}>{line}</li>
-                    ))}
-                  </ul>
+                  <span className="tabular-nums">About {tokens} tokens</span>
+                  <span className="text-slate-500 dark:text-slate-400">
+                    {" "}
+                    (approximate: the characters of this engram over four, not a
+                    count from a tokenizer)
+                  </span>
                 </dd>
               </div>
-            )}
-            {salience !== null && (
-              <div className="flex flex-col gap-1">
-                <dt className="text-xs text-slate-500 dark:text-slate-400">
-                  Salience
-                </dt>
-                <dd className="tabular-nums">{salience}</dd>
-              </div>
-            )}
-            <div className="flex flex-col gap-1">
-              <dt className="text-xs text-slate-500 dark:text-slate-400">
-                Context cost
-              </dt>
-              <dd>
-                <span className="tabular-nums">About {tokens} tokens</span>
-                <span className="text-slate-500 dark:text-slate-400">
-                  {" "}
-                  (approximate: the characters of this engram over four, not a
-                  count from a tokenizer)
-                </span>
-              </dd>
-            </div>
-          </dl>
-        </div>
-      </div>
-    </section>
+            </dl>
+          </div>
+        </section>
+      )}
+    </div>
   );
 }

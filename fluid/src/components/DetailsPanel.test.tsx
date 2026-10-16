@@ -59,7 +59,10 @@ describe("DetailsPanel", () => {
   test("states the recorded day, and has no row when the engram records none", () => {
     draw({ recordedAt: "2026-09-12" });
     expect(screen.getByText("Recorded")).toBeVisible();
-    expect(screen.getByText("2026-09-12")).toBeVisible();
+    // The long form, with the day as written kept in the title.
+    const day = screen.getByTitle("2026-09-12");
+    expect(day).toHaveTextContent(/12/);
+    expect(day).toHaveTextContent(/2026/);
   });
 
   test("has no Recorded row without a recorded day", () => {

@@ -1038,6 +1038,24 @@ describe("the engram page", () => {
     expect(
       screen.getByRole("button", { name: /what an agent is taught/i }),
     ).toHaveAttribute("aria-expanded", "true");
+    // And the panels themselves are drawn on that first paint.
+    expect(await screen.findByRole("region", { name: /agent/i })).toBeVisible();
+    expect(await screen.findByTestId("canvas")).toBeVisible();
+  });
+
+  it("keeps each Explore row's target in the page while its panel is closed", async () => {
+    serve();
+
+    renderApp("/d/eng/e/alpha");
+    const row = await screen.findByRole("button", {
+      name: "Show the neighborhood",
+    });
+
+    const target = document.getElementById(
+      row.getAttribute("aria-controls") ?? "",
+    );
+    expect(target).not.toBeNull();
+    expect(target).toBeEmptyDOMElement();
   });
 
   it("keeps the agent's-eye view folded away until somebody asks for it", async () => {
@@ -1166,7 +1184,7 @@ describe("the engram page at full width", () => {
     await screen.findByRole("heading", { name: "Alpha" });
 
     expect(screen.queryByRole("region", { name: "Details" })).toBeNull();
-    expect(screen.queryByRole("region", { name: "Backlinks" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Linked from" })).toBeNull();
     // One column at every width, so the body has the whole of it.
     expect(main.querySelector('[class*="lg:grid-cols-"]')).toBeNull();
 
@@ -1181,6 +1199,12 @@ describe("the engram page at full width", () => {
     // and the agent's eye already stand.
     expect(
       await screen.findByRole("region", { name: "Attachments" }),
+    ).toBeVisible();
+    // The Explore rows have no rail to stand in, so they stand in the column.
+    const explore = screen.getByRole("region", { name: "Explore" });
+    expect(explore.closest("aside")).toBeNull();
+    expect(
+      within(explore).getByRole("button", { name: "Show the neighborhood" }),
     ).toBeVisible();
   });
 

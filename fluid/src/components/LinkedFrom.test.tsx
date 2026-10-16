@@ -8,7 +8,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -78,10 +78,10 @@ describe("LinkedFrom", () => {
 
   it("names each engram that links here, with the relation on its row", async () => {
     apiMock.mockResolvedValue(
-      referencePage(1, 4, [
+      referencePage(1, 3, [
+        ["Beta", "relates_to"],
         ["Gamma", "links_to"],
         ["Rollback", "relates_to"],
-        ["Beta", "relates_to"],
       ]),
     );
 
@@ -89,17 +89,56 @@ describe("LinkedFrom", () => {
 
     const block = await screen.findByRole("region", { name: "Linked from" });
     const rows = await within(block).findAllByRole("listitem");
-    // Grouped by relation, most used first, then by title.
+    // The server's order, which is by title: no regrouping by relation.
     expect(rows.map((row) => row.textContent)).toEqual([
       "Betarelates_to",
-      "Rollbackrelates_to",
       "Gammalinks_to",
+      "Rollbackrelates_to",
     ]);
     expect(within(block).getByRole("link", { name: "Beta" })).toHaveAttribute(
       "href",
       "/d/eng/e/notes/beta",
     );
+    // The relation counts, compactly, when there is more than one relation.
+    expect(block).toHaveTextContent("relates_to 3 · links_to 1");
     expect(requested()).toEqual(["/domains/eng/inbound/alpha?page=1&limit=20"]);
+  });
+
+  it("fades a retired engram", async () => {
+    const page = referencePage(1, 2, [
+      ["Old", "relates_to"],
+      ["New", "relates_to"],
+    ]);
+    page.hits[0] = { ...page.hits[0], status: "archived" } as never;
+    apiMock.mockResolvedValue(page);
+
+    mount(2);
+
+    expect(await screen.findByRole("link", { name: "Old" })).toHaveClass(
+      "opacity-60",
+    );
+    expect(screen.getByRole("link", { name: "New" })).not.toHaveClass(
+      "opacity-60",
+    );
+  });
+
+  it("counts what exists after repeats are dropped", async () => {
+    const rows: [string, string][] = [
+      ["A", "relates_to"],
+      ["A", "relates_to"],
+      ["B", "relates_to"],
+      ["C", "relates_to"],
+      ["D", "relates_to"],
+      ["E", "relates_to"],
+      ["F", "relates_to"],
+    ];
+    apiMock.mockResolvedValue(referencePage(1, 7, rows));
+
+    mount(7);
+
+    expect(
+      await screen.findByRole("button", { name: "Show all 6" }),
+    ).toBeVisible();
   });
 
   it("asks for nothing at all when the detail payload counted no references", async () => {
@@ -177,6 +216,77 @@ describe("LinkedFrom", () => {
       await within(block).findByRole("link", { name: "Last" }),
     ).toBeVisible();
     expect(requested()).toContain("/domains/eng/inbound/alpha?page=2&limit=20");
+  });
+
+  it("filters on the server once many engrams point here, listing every match", async () => {
+    apiMock.mockImplementation((path: string) =>
+      Promise.resolve(
+        path.includes("q=roll")
+          ? referencePage(
+              1,
+              7,
+              ["A", "B", "C", "D", "E", "F", "G"].map(
+                (t) => [`Roll ${t}`, "relates_to"] as [string, string],
+              ),
+            )
+          : referencePage(
+              1,
+              40,
+              Array.from(
+                { length: 20 },
+                (_, i) =>
+                  [`Note ${String(i)}`, "relates_to"] as [string, string],
+              ),
+            ),
+      ),
+    );
+
+    mount(40);
+
+    const block = await screen.findByRole("region", { name: "Linked from" });
+    const field = within(block).getByRole("searchbox", {
+      name: "Filter linked engrams",
+    });
+    await within(block).findAllByRole("listitem");
+    await userEvent.type(field, "roll");
+
+    // Every match, past the five-row cap, and the text went to the server.
+    await waitFor(() => {
+      expect(within(block).getAllByRole("listitem")).toHaveLength(7);
+    });
+    expect(requested()).toContain(
+      "/domains/eng/inbound/alpha?page=1&limit=20&q=roll",
+    );
+  });
+
+  it("says No match. when the filter finds nothing", async () => {
+    apiMock.mockImplementation((path: string) =>
+      Promise.resolve(
+        path.includes("q=zzz")
+          ? referencePage(1, 0, [])
+          : referencePage(1, 40, [["A", "relates_to"]]),
+      ),
+    );
+
+    mount(40);
+
+    const field = await screen.findByRole("searchbox", {
+      name: "Filter linked engrams",
+    });
+    await userEvent.type(field, "zzz");
+
+    expect(await screen.findByText("No match.")).toBeVisible();
+    // The field stays, so the reader can change the text.
+    expect(field).toBeVisible();
+  });
+
+  it("offers no filter for a short list", async () => {
+    apiMock.mockResolvedValue(referencePage(1, 3, [["A", "relates_to"]]));
+
+    mount(3);
+
+    await screen.findByRole("link", { name: "A" });
+    expect(screen.queryByRole("searchbox")).toBeNull();
   });
 
   it("is reachable by keyboard", async () => {

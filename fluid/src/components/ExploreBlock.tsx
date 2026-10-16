@@ -82,7 +82,7 @@ function Row({
       aria-expanded={open}
       aria-controls={controls}
       onClick={onClick}
-      className={`flex min-h-8 w-full items-center gap-2 rounded-[7px] px-2 text-left text-ink-3 hover:bg-sunken hover:text-ink ${FOCUS_RING}`}
+      className={`flex min-h-11 w-full md:min-h-8 items-center gap-2 rounded-[7px] px-2 text-left text-ink-3 hover:bg-sunken hover:text-ink ${FOCUS_RING}`}
     >
       <Icon
         aria-hidden="true"

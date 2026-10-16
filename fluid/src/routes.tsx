@@ -61,8 +61,8 @@ const ManifestEditor = lazyChunk(() => import("./screens/ManifestEditor"));
  *
  * It is the screen this app exists to draw, so making it wait looks wrong
  * until the numbers are read: it pulls the markdown renderer's whole
- * neighborhood, the details and backlinks panels, the two dialogs and the
- * neighborhood section behind it, and every one of those bytes was being paid
+ * neighborhood, the details rail (Linked from and Explore), the two dialogs and the
+ * neighborhood panel behind it, and every one of those bytes was being paid
  * for by the home screen, the search screen and the login screen too. The
  * primary deployment is the daemon serving this bundle off localhost, where a
  * second request for an already-built chunk is a round trip measured in

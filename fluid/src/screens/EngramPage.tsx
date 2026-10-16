@@ -13,7 +13,7 @@
  *
  * What points back is no longer among them. The graph is capped at a hundred
  * and fifty nodes, which is a cap on the backlinks drawn from it; the panel
- * counts and pages the whole index instead, and asks for nothing when the
+ * Linked from block reads and pages the whole index instead, and asks for nothing when the
  * detail payload's `inboundCount` is already zero. The graph's inbound edges
  * are still read here for the two things they are exact about: the supersedes
  * chain, whose other half only the linker wrote down, and the retire dialog's
@@ -816,22 +816,25 @@ export default function EngramPage() {
             above the panels they open.
           */}
           {fullWidth && <div className="print:hidden">{explore}</div>}
-          {graphOpen && (
-            <div className="print:hidden">
+          {/*
+            The panels' wrappers are always here, empty while closed, so the
+            Explore rows' aria-controls always resolves. An empty one takes no
+            room and no gap.
+          */}
+          <div id={GRAPH_PANEL_ID} className="print:hidden empty:hidden">
+            {graphOpen && (
               <GraphSection
                 domain={engram.domain}
                 permalink={engram.permalink}
               />
-            </div>
-          )}
-          <div className="print:hidden">
-            <AgentsEye
-              domain={engram.domain}
-              salience={engram.frontmatter.salience}
-              content={engram.content}
-              open={eyeOpen}
-            />
+            )}
           </div>
+          <AgentsEye
+            domain={engram.domain}
+            salience={engram.frontmatter.salience}
+            content={engram.content}
+            open={eyeOpen}
+          />
         </div>
         {!fullWidth && (
           <aside className="flex flex-col divide-y divide-hair print:hidden [&>*]:py-4 [&>*:first-child]:pt-0">
@@ -1004,13 +1007,11 @@ function GraphSection({
           Open the full view
         </Link>
       </div>
-      <div id={GRAPH_PANEL_ID}>
-        <NeighborhoodGraph
-          anchor={{ domain, permalink }}
-          depth={NEIGHBORHOOD_DEPTH}
-          height="h-80"
-        />
-      </div>
+      <NeighborhoodGraph
+        anchor={{ domain, permalink }}
+        depth={NEIGHBORHOOD_DEPTH}
+        height="h-80"
+      />
     </section>
   );
 }

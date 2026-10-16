@@ -23,7 +23,7 @@ import { Copy } from "lucide-react";
 import { Link } from "react-router";
 
 import type { EngramFrontmatter, VerifiedEntry } from "../api/engram";
-import { formatActor, formatDay } from "../format";
+import { formatActor, formatDay, formatDayLong } from "../format";
 import { tagRoute } from "../paths";
 import { AttachmentsSection } from "./AttachmentsSection";
 import { Chip, FOCUS_RING, IconButton, RAIL_LABEL } from "./primitives";
@@ -80,7 +80,9 @@ export function DetailsPanel({
           )}
           {recordedAt !== null && (
             <Row label="Recorded">
-              <span className="tabular-nums">{formatDay(recordedAt)}</span>
+              <span className="tabular-nums" title={recordedAt}>
+                {formatDayLong(recordedAt)}
+              </span>
             </Row>
           )}
           {salience !== null && (

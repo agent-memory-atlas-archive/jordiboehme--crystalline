@@ -271,11 +271,19 @@ export function AttachmentsSection({
                     {name}
                   </a>
                 )}
+                <span className="ml-auto flex shrink-0 items-baseline gap-2 text-caption text-muted">
+                  {kind !== "" && <span className="font-mono">{kind}</span>}
+                  {row !== undefined && (
+                    <span className="tabular-nums">
+                      {formatBytes(row.size)}
+                    </span>
+                  )}
+                </span>
                 {row !== undefined && asking === null && (
                   // Last in the row and named after the file they act on: a
                   // rail may hold several rows, and "Remove" alone would be
                   // the same name three times over.
-                  <span className="ml-auto flex shrink-0 items-center">
+                  <span className="flex shrink-0 items-center">
                     {replace !== undefined && kind !== "" && (
                       <ReplacePicker
                         buttonRef={(element) => {
@@ -318,13 +326,11 @@ export function AttachmentsSection({
                   </span>
                 )}
               </span>
-              <span className="flex flex-wrap items-center gap-2 text-caption text-slate-500 dark:text-slate-400">
-                {kind !== "" && <Chip>{kind}</Chip>}
-                {row !== undefined && (
-                  <span className="tabular-nums">{formatBytes(row.size)}</span>
-                )}
-                {missing && <Chip variant="caution">missing</Chip>}
-              </span>
+              {missing && (
+                <span className="flex items-center gap-2">
+                  <Chip variant="caution">missing</Chip>
+                </span>
+              )}
               {asking?.path === path && (
                 <span className="flex flex-col gap-2">
                   <span className="text-caption text-slate-600 dark:text-slate-300">
