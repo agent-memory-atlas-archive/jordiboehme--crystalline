@@ -53,6 +53,7 @@ import type { EngramRow } from "../api/engrams";
 import { hasFilters } from "../api/engrams";
 import { useDomainWritable } from "../domainWritable";
 import { frontmatterFilters } from "../filters";
+import { plural } from "../format";
 import { isRetired } from "../lifecycle";
 import { domainRoute, engramRoute, folderRoute } from "../paths";
 import { ENGRAM_PREFETCH } from "../prefetch";
@@ -219,6 +220,7 @@ function TreeBranch({
             domain={domain}
             path={childPath(path, name)}
             name={name}
+            count={tree.data?.folderCounts[name] ?? null}
             permalink={permalink}
             browsing={browsing}
             marked={marked}
@@ -251,8 +253,9 @@ function TreeBranch({
  * at the root - where the row names the domain - a direct count reads as the
  * size of the whole domain, which it is not. The payload's `total` stays a
  * true fact about the level for anything that wants it; if a number is ever
- * wanted here it has to be the recursive one, which is a server field this
- * does not have.
+ * wanted here it has to be the recursive one. The server sends that number
+ * per child folder (`folderCounts`, drawn on the folder rows), but not for
+ * the level itself.
  *
  * Muted and one step down in size, because it is the only row here that is not
  * a thing in the domain. Muted at slate-600 rather than the slate-500 the
@@ -323,6 +326,7 @@ function Folder({
   domain,
   path,
   name,
+  count,
   permalink,
   browsing,
   marked,
@@ -330,6 +334,11 @@ function Folder({
   domain: string;
   path: string;
   name: string;
+  /**
+   * The engrams under this folder at any depth, the number its listing
+   * totals; null from a server that sends no count.
+   */
+  count: number | null;
   permalink: string;
   browsing: string;
   marked: string;
@@ -414,7 +423,21 @@ function Folder({
           className={`flex min-w-0 grow items-center self-stretch rounded-[7px] pr-2.5 pl-1 ${FOCUS_RING}`}
         >
           <span className="truncate">{name}</span>
+          {/* Drawn in the row and not spoken there, so the link's name stays
+              the folder's; the words follow beside it. */}
+          {count !== null && (
+            <span
+              aria-hidden="true"
+              title={plural(count, "engram", "engrams")}
+              className={SIDE.count}
+            >
+              {count}
+            </span>
+          )}
         </Link>
+        {count !== null && (
+          <span className="sr-only">{plural(count, "engram", "engrams")}</span>
+        )}
       </div>
       {open && (
         <div className="ml-[17px] border-l border-hair pl-1">

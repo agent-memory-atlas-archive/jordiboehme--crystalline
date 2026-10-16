@@ -1611,6 +1611,10 @@ impl<'a> DomainView<'a> {
     /// the domain's files never held joins the level and contributes its folder
     /// if it is in one.
     ///
+    /// `folder_counts` follows the same three edits at any depth: a tombstone
+    /// takes one from its folder, a draft at a path no base row holds adds
+    /// one, so a folder's count is what this reader's listing of it totals.
+    ///
     /// **The level's `total` is adjusted by what this pass can see, and on a
     /// level the cap already cut that is the base level's count plus this
     /// actor's drafts rather than an exact one.** `browse_level` pushes the
@@ -1650,6 +1654,23 @@ impl<'a> DomainView<'a> {
             }
         }
 
+        // A tombstone takes its base row out of the folder it sits in, at
+        // any depth below this level.
+        for path in &tombstones {
+            let Some(rel) = path
+                .to_lowercase()
+                .strip_prefix(folder.as_str())
+                .map(str::len)
+            else {
+                continue;
+            };
+            let rel = &path[path.len() - rel..];
+            if let Some((head, _)) = rel.split_once('/')
+                && let Some(n) = level.folder_counts.get_mut(head)
+            {
+                *n = n.saturating_sub(1);
+            }
+        }
         let before = level.engrams.len();
         level.engrams.retain(|d| !tombstones.contains(&d.path));
         let removed = before - level.engrams.len();
@@ -1677,6 +1698,16 @@ impl<'a> DomainView<'a> {
             let rel = &entry.path[entry.path.len() - rel.len()..];
             if let Some((head, _)) = rel.split_once('/') {
                 folders.insert(head.to_string());
+                // A draft at a path no base row holds is one more engram in
+                // its folder; a draft of a base row is the same engram.
+                let base = {
+                    let store = self.engine.store();
+                    let store = store.lock().await;
+                    store.engram_content(domain_id, &entry.path).await?
+                };
+                if base.is_none() {
+                    *level.folder_counts.entry(head.to_string()).or_default() += 1;
+                }
             }
             if rel.matches('/').count() >= depth {
                 continue;

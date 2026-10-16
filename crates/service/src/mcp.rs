@@ -2593,6 +2593,11 @@ impl McpServer {
             .browse_domain(&p, &caller.scope)
             .await
             .map_err(to_error)?;
+        // The per-folder counts are for a drawn tree; an agent descends by
+        // name, and the tool's answer keeps its shape.
+        if let Some(obj) = v.as_object_mut() {
+            obj.remove("folder_counts");
+        }
         crate::web_url::attach_template(&mut v, &caller.base);
         Ok(v)
     }

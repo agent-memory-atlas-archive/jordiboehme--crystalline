@@ -9107,3 +9107,109 @@ async fn no_draft_write_starts_from_the_body_of_a_missing_file() {
         );
     }
 }
+
+/// A browse level's per-folder counts follow this reader's drafts at any
+/// depth: a tombstone takes one away, a draft at a new path adds one, a draft
+/// over a base row adds none. The count is what the listing of that folder
+/// totals for the same reader.
+#[tokio::test]
+async fn a_folder_count_follows_the_readers_drafts_at_any_depth() {
+    let f = reviewed_origin_fixture().await;
+    let root = f.domain_root("team");
+    std::fs::create_dir_all(root.join("notes/deep")).unwrap();
+    for (path, permalink) in [
+        ("notes/a.md", "notes/a"),
+        ("notes/b.md", "notes/b"),
+        ("notes/deep/c.md", "notes/deep/c"),
+    ] {
+        std::fs::write(
+            root.join(path),
+            OLD.replace("permalink: old", &format!("permalink: {permalink}")),
+        )
+        .unwrap();
+    }
+    f.engine.sync(None).await.unwrap();
+    let owner = Scope::Unrestricted;
+    let who = Some("claude-code/2.0");
+    let counts = |browse: &serde_json::Value| browse["folder_counts"]["notes"].clone();
+    let params = crystalline_service::params::BrowseParams {
+        domain: "team".to_string(),
+        path: None,
+        depth: None,
+        glob: None,
+    };
+    let browse = || f.engine.browse_domain(&params, &owner);
+    assert_eq!(counts(&browse().await.unwrap()), serde_json::json!(3));
+
+    // Tombstones one and two levels down, a new draft two levels down, a
+    // draft over a base row.
+    for identifier in ["notes/a", "notes/deep/c"] {
+        f.engine
+            .delete_engram_as(
+                &DeleteParams {
+                    identifier: identifier.to_string(),
+                    domain: "team".to_string(),
+                    expected_checksum: None,
+                },
+                who,
+                &owner,
+            )
+            .await
+            .unwrap();
+    }
+    f.engine
+        .write_engram_as(
+            &WriteParams {
+                folder: Some("notes/deep".to_string()),
+                ..write_params("team", "Fresh", "- [idea] only the owner has it #team")
+            },
+            who,
+            &owner,
+        )
+        .await
+        .unwrap();
+    let checksum = f
+        .engine
+        .read_engram(&read("notes/b"), &owner)
+        .await
+        .unwrap()["checksum"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.engine
+        .save_engram(
+            &crystalline_service::params::SaveParams {
+                domain: "team".to_string(),
+                identifier: "notes/b".to_string(),
+                content: OLD
+                    .replace("permalink: old", "permalink: notes/b")
+                    .replace("title: Old", "title: B redrafted"),
+                expected_checksum: checksum,
+            },
+            &owner,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        root.join("notes/a.md").exists() && root.join("notes/deep/c.md").exists(),
+        "drafts, not writes to the folder"
+    );
+    let level = browse().await.unwrap();
+    assert_eq!(counts(&level), serde_json::json!(2), "{level}");
+    let listed = f
+        .engine
+        .search_engrams_under(
+            &crystalline_service::params::SearchParams {
+                domains: vec!["team".to_string()],
+                limit: Some(1),
+                ..Default::default()
+            },
+            Some("notes"),
+            crystalline_index::SearchOrder::default(),
+            &owner,
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed["total"], counts(&level), "{listed}");
+}

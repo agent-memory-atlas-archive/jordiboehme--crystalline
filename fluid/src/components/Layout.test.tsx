@@ -98,6 +98,7 @@ function treeResponse(path: string) {
     domain: "eng",
     path: "/",
     folders: ["notes"],
+    folder_counts: { notes: 12 },
     engrams: [
       // The engine lists the MANIFEST as an engram of the domain like any
       // other, which is what the sidebar's pinned row above the tree would
@@ -682,6 +683,39 @@ describe("the sidebar inside a domain", () => {
     // MANIFEST is read on the domain page the row already links to.
     expect(within(nav).queryByRole("button", { name: /^Domain:/ })).toBeNull();
     expect(within(nav).queryByRole("link", { name: "MANIFEST" })).toBeNull();
+  });
+
+  it("draws each folder's engram count beside its name, kept out of the link's name", async () => {
+    serveInDomain();
+
+    renderApp("/d/eng");
+
+    const nav = await screen.findByRole("navigation", { name: "Domain eng" });
+    const folder = await within(nav).findByRole("link", { name: "notes" });
+    expect(folder).toHaveTextContent("notes12");
+    expect(within(folder).getByText("12")).toHaveAttribute(
+      "title",
+      "12 engrams",
+    );
+    expect(within(nav).getByText("12 engrams")).toHaveClass("sr-only");
+  });
+
+  it("draws no count for a folder a server sends none for", async () => {
+    serveInDomain({
+      "/domains/eng/tree": () => ({
+        domain: "eng",
+        path: "/",
+        folders: ["notes"],
+        engrams: [],
+      }),
+    });
+
+    renderApp("/d/eng");
+
+    const nav = await screen.findByRole("navigation", { name: "Domain eng" });
+    const folder = await within(nav).findByRole("link", { name: "notes" });
+    expect(folder).toHaveTextContent(/^notes$/);
+    expect(within(nav).queryByText(/engrams?$/)).toBeNull();
   });
 
   it("moves to another domain when the switcher picks one", async () => {

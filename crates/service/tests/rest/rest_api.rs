@@ -1795,6 +1795,19 @@ async fn domain_tree_walks_folders_and_filters_by_glob() {
     assert_eq!(root["domain"], "eng");
     assert_eq!(root["path"], "/");
     assert_eq!(root["folders"].as_array().unwrap(), &["notes"]);
+    // Each folder counts its engrams at any depth, the number the listing
+    // scoped to it totals; the root's MANIFEST is in no folder.
+    let listed: serde_json::Value = get(fixture.addr, "/api/v1/domains/eng/engrams?path=notes")
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        root["folder_counts"],
+        serde_json::json!({ "notes": listed["total"] }),
+        "{root} {listed}"
+    );
+    assert!(listed["total"].as_u64().unwrap() >= 2, "{listed}");
     // A row says what state its engram is in, not only where it lives: a tree
     // is what a navigation sidebar is drawn from, and fading a retired engram
     // there would otherwise cost a second request per folder.

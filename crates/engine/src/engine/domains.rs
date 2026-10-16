@@ -1059,7 +1059,8 @@ impl Engine {
     /// reports the larger number. Neither is the other's approximation: a level
     /// states a fact about the rows it drew, a folder listing promises the
     /// folder, and a client that means to say "N engrams in this folder" takes
-    /// the number from the listing.
+    /// the number from the listing, or from `folder_counts`, which carries that
+    /// recursive number for each child folder of the level.
     ///
     /// A `glob` narrows the rows this level returned, so on a truncated level
     /// it selects within the cap rather than across the whole folder. The tree
@@ -1140,6 +1141,9 @@ impl Engine {
             "domain": p.domain,
             "path": raw,
             "folders": level.folders,
+            // Each folder's engrams at any depth, this reader's drafts
+            // included: the total the listing scoped to it reports.
+            "folder_counts": level.folder_counts,
             "engrams": entries,
             "truncated": truncated,
             "total": level.total,

@@ -1562,8 +1562,9 @@ pub fn list_engrams_sql(clauses: &str) -> String {
     )
 }
 
-/// The folder derivation inside [`Store::browse_level`]: the distinct first
-/// segment below the prefix, read out of the path column alone.
+/// The folder derivation inside [`Store::browse_level`]: each first segment
+/// below the prefix with how many rows sit under it at any depth, read out of
+/// the path column alone.
 ///
 /// `rel` is the relative-path expression and `under` the under-prefix filter,
 /// both built by the method. The claim on `browse_level` - that no body is read
@@ -1574,9 +1575,10 @@ pub fn list_engrams_sql(clauses: &str) -> String {
 #[doc(hidden)]
 pub fn folder_level_sql(rel: &str, under: &str) -> String {
     format!(
-        "SELECT DISTINCT substr({rel}, 1, instr({rel}, '/') - 1) \
+        "SELECT substr({rel}, 1, instr({rel}, '/') - 1) AS folder, count(*) \
          FROM engram e JOIN domain d ON d.id=e.domain_id \
-         WHERE e.actor = '' AND {under} AND instr({rel}, '/') > 0"
+         WHERE e.actor = '' AND {under} AND instr({rel}, '/') > 0 \
+         GROUP BY folder"
     )
 }
 
@@ -2615,7 +2617,14 @@ impl Store for TursoStore {
         // a future reader has to re-check, not where the number came from.
         let rel = format!("substr(e.path, {})", prefix.chars().count() + 1);
         let folder_rows = query_all(&self.conn, &folder_level_sql(&rel, &under), params).await?;
-        let mut folders: Vec<String> = folder_rows.iter().filter_map(|r| cell_text(r, 0)).collect();
+        let folder_counts: std::collections::BTreeMap<String, usize> = folder_rows
+            .iter()
+            .filter_map(|r| {
+                let name = cell_text(r, 0)?;
+                Some((name, cell_i64(r, 1).unwrap_or(0).max(0) as usize))
+            })
+            .collect();
+        let mut folders: Vec<String> = folder_counts.keys().cloned().collect();
         // Sorted here rather than in SQL, so both backends order folder names
         // by bytes without either dialect's collation having a say.
         folders.sort();
@@ -2623,6 +2632,7 @@ impl Store for TursoStore {
         Ok(BrowseLevel {
             engrams,
             folders,
+            folder_counts,
             total,
         })
     }

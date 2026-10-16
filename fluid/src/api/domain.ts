@@ -28,6 +28,12 @@ export interface DomainTree {
    * cap, so a level too big to draw still names every folder under it.
    */
   folders: string[];
+  /**
+   * How many engrams each of `folders` holds at any depth, the reader's
+   * drafts included: the total the listing scoped to that folder reports.
+   * Empty from a server that predates the field.
+   */
+  folderCounts: Record<string, number>;
   /** The engrams directly in this folder, up to the server's per-level cap. */
   engrams: EngramRow[];
   /**
@@ -76,11 +82,24 @@ export function readTree(
     domain: asString(record?.domain) ?? domain,
     path,
     folders: asStrings(record?.folders),
+    folderCounts: readFolderCounts(record?.folder_counts),
     engrams,
     truncated: record?.truncated === true,
     total: asNumber(record?.total) ?? engrams.length,
     manifestPermalink: asString(asObject(manifest)?.permalink),
   };
+}
+
+/** The per-folder counts, keeping only names that carry a number. */
+function readFolderCounts(value: unknown): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const [name, n] of Object.entries(asObject(value) ?? {})) {
+    const count = asNumber(n);
+    if (count !== null) {
+      counts[name] = count;
+    }
+  }
+  return counts;
 }
 
 /** The cache key of every folder of one domain, which is what a write moves. */

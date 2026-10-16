@@ -69,6 +69,20 @@ describe("a browse payload", () => {
     expect(alpha.type).toBe("engram");
   });
 
+  it("reads each folder's recursive count, and none from an older server", () => {
+    expect(
+      readTree(
+        {
+          ...browsePayload(),
+          folder_counts: { notes: 12, broken: "x" },
+        },
+        "eng",
+        "",
+      ).folderCounts,
+    ).toEqual({ notes: 12 });
+    expect(readTree(browsePayload(), "eng", "").folderCounts).toEqual({});
+  });
+
   it("carries the level's bound: whether it was cut, and what it holds", () => {
     const tree = readTree(
       { ...browsePayload(), truncated: true, total: 501 },

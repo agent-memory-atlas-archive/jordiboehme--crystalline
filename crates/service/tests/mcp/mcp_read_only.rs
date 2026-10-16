@@ -299,6 +299,8 @@ async fn the_read_tools_mark_the_locked_domain() {
     ))
     .unwrap();
     assert_eq!(browsed["read_only"], true, "{browsed}");
+    // The per-folder counts are the REST tree's; the tool keeps its shape.
+    assert!(browsed.get("folder_counts").is_none(), "{browsed}");
 }
 
 /// B-1 item 2: switching the lock on where it is already on is a no-op that

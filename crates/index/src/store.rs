@@ -14,7 +14,7 @@
 //! (see [`CURRENT_STATUS_CLASS`]), so a domain written before the vocabulary
 //! flip and a foreign OKF bundle both stay first-class.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -1471,6 +1471,11 @@ pub struct BrowseLevel {
     /// byte order. Derived from the distinct first path segment below the
     /// prefix rather than from `engrams`, so the cap never hides a folder.
     pub folders: Vec<String>,
+    /// How many engrams each of `folders` holds, recursively: every base row
+    /// under the folder at any depth, which is the number the paged listing
+    /// scoped to that folder reports. Counted in the same grouped statement
+    /// that names the folders, so it costs no query of its own.
+    pub folder_counts: BTreeMap<String, usize>,
     /// How many engrams the level holds, counted under exactly the filter that
     /// selected `engrams`. Larger than `engrams.len()` means the cap cut the
     /// listing.
@@ -2969,9 +2974,9 @@ pub trait Store: Send + Sync {
     /// Three bounded queries rather than one unbounded listing, which is what
     /// keeps a navigation tree affordable on a domain of tens of thousands of
     /// engrams: the row page is `LIMIT`ed, the count runs under exactly the
-    /// same filter so the two can never disagree, and the folder names come
-    /// from a `DISTINCT` over the path column alone - no bodies are read to
-    /// learn that a folder exists.
+    /// same filter so the two can never disagree, and the folder names and
+    /// their counts come from a `GROUP BY` over the path column alone - no
+    /// bodies are read to learn that a folder exists.
     ///
     /// `path_prefix` carries its trailing slash (`notes/`) and is matched as a
     /// literal, so a folder named `50%` or `a_b` is a folder rather than a
@@ -2991,11 +2996,9 @@ pub trait Store: Send + Sync {
     /// while a folder listing promises the folder. Whoever renders "N engrams in
     /// this folder" wants the second one.
     ///
-    /// If a tree ever needs the recursive number beside the level's, it is one
-    /// more bounded query on a filter this method already builds: the same
-    /// `count(*)` under the prefix clause alone, without the depth cut. It is
-    /// deliberately not returned today, because nothing drawing a tree has asked
-    /// for it and an unused count is a query per request.
+    /// The recursive number per child folder is in `folder_counts`: the folder
+    /// names already come from a scan of every row under the prefix, so the
+    /// same statement groups them by first segment and counts each group.
     async fn browse_level(
         &self,
         domain: &str,

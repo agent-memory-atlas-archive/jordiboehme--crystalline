@@ -8050,6 +8050,77 @@ async fn browse_level_bounds(store: &dyn Store) {
 }
 parity!(browse_level_caps_rows_but_not_folders, browse_level_bounds);
 
+/// Each child folder of a level carries how many engrams sit under it at any
+/// depth, counted in the statement that names the folders: what the listing
+/// scoped to that folder totals, never the level's own count. A root file
+/// (the MANIFEST) is in no folder and so in no count.
+async fn browse_level_folder_counts(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for path in [
+        "MANIFEST.md",
+        "a.md",
+        "notes/n1.md",
+        "notes/n2.md",
+        "notes/deep/n3.md",
+        "notes/deep/er/n4.md",
+        "notes-misc/m.md",
+        "50%/p.md",
+    ] {
+        let permalink = path.trim_end_matches(".md");
+        write(
+            root,
+            path,
+            &engram(permalink, permalink, "engram", "", "b\n"),
+        );
+    }
+    sync_domain(store, "eng", root).await.unwrap();
+
+    // Capped to one row: the counts are not cut with it.
+    let top = store.browse_level("eng", None, 1, 1).await.unwrap();
+    assert_eq!(
+        top.folder_counts,
+        std::collections::BTreeMap::from([
+            ("50%".to_string(), 1),
+            ("notes".to_string(), 4),
+            ("notes-misc".to_string(), 1),
+        ]),
+        "recursive per folder, and no folder for a root file"
+    );
+    assert_eq!(
+        top.folders,
+        top.folder_counts.keys().cloned().collect::<Vec<_>>(),
+        "every folder named has its count"
+    );
+    let notes = store
+        .browse_level("eng", Some("notes/"), 1, 50)
+        .await
+        .unwrap();
+    assert_eq!(
+        notes.folder_counts,
+        std::collections::BTreeMap::from([("deep".to_string(), 2)])
+    );
+    // The depth moves the level's own count, never a folder's.
+    let deeper = store.browse_level("eng", None, 3, 50).await.unwrap();
+    assert_eq!(deeper.folder_counts, top.folder_counts);
+    // The listing scoped to the folder totals the same number.
+    let listed = store
+        .search(&SearchQuery {
+            domains: Some(vec!["eng".to_string()]),
+            path_prefix: Some("notes/".to_string()),
+            limit: 1,
+            page: 1,
+            ..SearchQuery::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(listed.total, 4);
+}
+parity!(
+    browse_level_counts_each_folder_recursively,
+    browse_level_folder_counts
+);
+
 /// Every path filter folds case, and both backends fold it the same way.
 ///
 /// SQLite-family `LIKE` is ASCII-case-insensitive while Postgres `LIKE` is
