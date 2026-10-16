@@ -42,6 +42,7 @@ import {
   profileRoute,
   usersRoute,
 } from "../paths";
+import { PREFETCH } from "../prefetch";
 import { useTheme } from "../theme/context";
 import { useWide } from "../useWide";
 import type { ThemePreference } from "../theme/context";
@@ -184,7 +185,7 @@ export default function AvatarMenuBody({
             that will not open.
           */}
           <DropdownMenu.Item className={ROW} asChild>
-            <Link to={profileRoute()}>
+            <Link to={profileRoute()} {...PREFETCH.profile}>
               <User {...glyph} className={ICON} />
               Profile
             </Link>
@@ -192,7 +193,7 @@ export default function AvatarMenuBody({
           {capabilities.canAdminister && (
             <>
               <DropdownMenu.Item className={ROW} asChild>
-                <Link to={usersRoute()}>
+                <Link to={usersRoute()} {...PREFETCH.users}>
                   <Users {...glyph} className={ICON} />
                   Users
                 </Link>
@@ -204,7 +205,7 @@ export default function AvatarMenuBody({
                 domains are tracked with.
               */}
               <DropdownMenu.Item className={ROW} asChild>
-                <Link to={githubSettingsRoute()}>
+                <Link to={githubSettingsRoute()} {...PREFETCH.github}>
                   <Settings {...glyph} className={ICON} />
                   Settings
                 </Link>
@@ -234,6 +235,7 @@ export default function AvatarMenuBody({
       >
         <Link
           to={maintenanceRoute()}
+          {...PREFETCH.maintenance}
           aria-current={onMaintenance ? "page" : undefined}
         >
           <Stethoscope {...glyph} className={ICON} />

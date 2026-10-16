@@ -23,20 +23,73 @@
  * after the first one free.
  */
 
+/**
+ * What has been asked for already, by name. A name leaves the set when its
+ * import fails, so the next hover tries again; a name whose import worked
+ * stays, and asking twice never even calls `import()` twice.
+ */
+const warmed = new Set<string>();
+
+/**
+ * Start loading one chunk, once. Idempotent, and silent on failure: a warm
+ * that did not arrive is not an error, the route's own boundary handles the
+ * click that follows.
+ */
+export function warm(name: string, load: () => Promise<unknown>): void {
+  if (warmed.has(name)) {
+    return;
+  }
+  warmed.add(name);
+  load().catch(() => {
+    warmed.delete(name);
+  });
+}
+
 /** Warm the reading screen: the sidebar, the lists and the graph lead here. */
 export function prefetchEngramPage(): void {
-  void import("./screens/EngramPage");
+  warm("engram-page", () => import("./screens/EngramPage"));
 }
 
 /** Warm the engram editor, which is where the reading screen's Edit goes. */
 export function prefetchEngramEditor(): void {
-  void import("./screens/EngramEditor");
+  warm("engram-editor", () => import("./screens/EngramEditor"));
 }
 
 /** And the MANIFEST editor, from the domain page's Manifest section. */
 export function prefetchManifestEditor(): void {
-  void import("./screens/ManifestEditor");
+  warm("manifest-editor", () => import("./screens/ManifestEditor"));
 }
+
+/** The rest of the lazy screens, by what a link to them is called. */
+const SCREENS = {
+  search: () => import("./screens/Search"),
+  domain: () => import("./screens/DomainHome"),
+  domainSettings: () => import("./screens/DomainSettings"),
+  graph: () => import("./screens/GraphView"),
+  maintenance: () => import("./screens/Maintenance"),
+  users: () => import("./screens/UsersAdmin"),
+  github: () => import("./screens/GithubSettings"),
+  profile: () => import("./screens/Profile"),
+  reflection: () => import("./screens/ReflectionHome"),
+} as const;
+
+export type PrefetchScreen = keyof typeof SCREENS;
+
+/**
+ * The handlers a link to a lazy screen spreads onto itself, by screen: the
+ * pointer arriving or the keyboard landing starts the chunk.
+ */
+export const PREFETCH = Object.fromEntries(
+  (Object.keys(SCREENS) as PrefetchScreen[]).map((name) => {
+    const start = () => {
+      warm(name, SCREENS[name]);
+    };
+    return [name, { onPointerEnter: start, onFocus: start }];
+  }),
+) as Record<
+  PrefetchScreen,
+  { onPointerEnter: () => void; onFocus: () => void }
+>;
 
 /**
  * The two handlers a link that leads to an engram spreads onto itself.

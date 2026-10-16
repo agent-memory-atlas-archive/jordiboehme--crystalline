@@ -11,6 +11,7 @@ import type { ReactElement } from "react";
 import { Link } from "react-router";
 
 import { profileRoute } from "../paths";
+import { PREFETCH } from "../prefetch";
 import { BUTTON } from "./primitives";
 
 /**
@@ -24,7 +25,11 @@ import { BUTTON } from "./primitives";
  */
 export function ConnectToShare(): ReactElement {
   return (
-    <Link to={profileRoute()} className={`inline-block ${BUTTON.primary}`}>
+    <Link
+      to={profileRoute()}
+      {...PREFETCH.profile}
+      className={`inline-block ${BUTTON.primary}`}
+    >
       Connect GitHub to share
     </Link>
   );

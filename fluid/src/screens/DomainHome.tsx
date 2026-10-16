@@ -134,7 +134,7 @@ import {
   HomeElsewhere,
   useReflectionStatus,
 } from "../components/ReflectionModeSwitch";
-import { prefetchManifestEditor } from "../prefetch";
+import { PREFETCH, prefetchManifestEditor } from "../prefetch";
 
 export default function DomainHome() {
   const { domain = "" } = useParams();
@@ -873,7 +873,7 @@ function DomainActions({
       )}
       {(own || mayDownload || mayImport) && <ActionSeparator />}
       <DropdownMenu.Item asChild className={ITEM_CLASSES}>
-        <Link to={domainSettingsRoute(domain)}>
+        <Link to={domainSettingsRoute(domain)} {...PREFETCH.domainSettings}>
           <Settings aria-hidden="true" size={16} strokeWidth={1.75} />
           Domain settings
         </Link>

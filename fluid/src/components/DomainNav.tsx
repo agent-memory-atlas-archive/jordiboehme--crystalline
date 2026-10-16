@@ -56,7 +56,7 @@ import { frontmatterFilters } from "../filters";
 import { plural } from "../format";
 import { isRetired } from "../lifecycle";
 import { domainRoute, engramRoute, folderRoute } from "../paths";
-import { ENGRAM_PREFETCH } from "../prefetch";
+import { ENGRAM_PREFETCH, PREFETCH } from "../prefetch";
 import { Loading } from "./Loading";
 import { FOCUS_RING, SIDE } from "./primitives";
 import { useFolderOpen, useSidebarState } from "./sidebarState";
@@ -97,6 +97,7 @@ export function DomainNav({ domain, permalink }: DomainNavProps) {
     <div className="flex flex-col gap-0.5">
       <Link
         to={domainRoute(domain)}
+        {...PREFETCH.domain}
         // Current while the domain's front page is open: no folder, whatever
         // filter. A folder is its own page and its own row in the tree says
         // so; an engram or the editor is somewhere else again.

@@ -115,7 +115,7 @@ import {
   graphRoute,
   isDomainManifestPath,
 } from "../paths";
-import { prefetchEngramEditor } from "../prefetch";
+import { PREFETCH, prefetchEngramEditor } from "../prefetch";
 import { engramFacts } from "../printSheet";
 import type { WikilinkResolver } from "../wikilinks";
 import { buildWikilinkResolver, innerOf, referenceState } from "../wikilinks";
@@ -1045,6 +1045,7 @@ function GraphSection({
         </h2>
         <Link
           to={graphRoute(domain, permalink)}
+          {...PREFETCH.graph}
           className="text-sm text-accent-700 underline underline-offset-2 hover:no-underline dark:text-accent-300"
         >
           Open the full view
