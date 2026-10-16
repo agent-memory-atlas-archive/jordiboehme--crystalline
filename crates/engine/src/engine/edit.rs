@@ -575,11 +575,14 @@ impl Engine {
         // neither of which is this function, so a live landing can never
         // recurse into the room that produced it.
         //
-        // The checksums the live arm accepted, kept for the arms below: a
+        // The checksums the live arm accepted, kept for the arms below, each
+        // beside the checksum of the stored bytes its room stood over: a
         // caller who read the room's unsaved text holds a checksum the file
         // or the row never had, and an edit that goes on to them is accepted
-        // with any checksum the live arm would have accepted.
-        let mut live_sums: Vec<String> = Vec::new();
+        // with any checksum the live arm would have accepted - as long as the
+        // file or the row is still the one that room last saved. A file
+        // another writer changed since is news the caller has not seen.
+        let mut live_sums: Vec<(String, String)> = Vec::new();
         // Whether a room was open over the document and did not take the
         // edit, which the receipt reports.
         let mut room_passed = false;
@@ -605,8 +608,8 @@ impl Engine {
                 let text_sum = sha256_hex(live.text.as_bytes());
                 let accepted = expected_checksum
                     .is_none_or(|expected| expected == live.checksum || expected == text_sum);
-                live_sums.push(live.checksum.clone());
-                live_sums.push(text_sum);
+                live_sums.push((live.checksum.clone(), live.base_checksum.clone()));
+                live_sums.push((text_sum, live.base_checksum.clone()));
                 if !live.saving {
                     break;
                 }
@@ -675,7 +678,10 @@ impl Engine {
         // Whether the arms below accept `expected` against the bytes they
         // read, whose checksum is `found`.
         let accepts = |expected: &str, found: &str| {
-            expected == found || live_sums.iter().any(|sum| sum == expected)
+            expected == found
+                || live_sums
+                    .iter()
+                    .any(|(sum, base)| sum == expected && base == found)
         };
 
         // A folder MANIFEST edit that switches the Reflection off closes the
@@ -851,13 +857,13 @@ impl Engine {
                                 )))
                             })?
                     };
-                    // A token the live arm accepted and the row never had
-                    // guards nothing here: the edit then swaps against the
-                    // row it just read, as an unguarded one does.
+                    // A token the live arm accepted, over the row as it stands,
+                    // is satisfied by that row: the edit then swaps against
+                    // the row it just read, as an unguarded one does. Any
+                    // other token stays the guard, and a stale one is refused.
                     let found = sha256_hex(current.as_bytes());
-                    let guard = expected_checksum.filter(|expected| {
-                        *expected == found || !live_sums.iter().any(|sum| sum == expected)
-                    });
+                    let guard = expected_checksum
+                        .filter(|expected| *expected == found || !accepts(expected, &found));
                     let expected = guard.map(str::to_string).unwrap_or_else(|| found.clone());
                     let edited = apply(&current).map_err(SourceEditFailure::before)?;
                     if unchanged(&current, &edited) {

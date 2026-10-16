@@ -125,6 +125,11 @@ pub struct LiveText {
     /// at the moment of the look; [`CollabSessions::compose_while_saving`]
     /// decides it again under the compose's own lock.
     pub saving: bool,
+    /// The checksum of the stored bytes the room last loaded or saved: the
+    /// file or row its text stands over. `checksum` equals it while the room
+    /// is clean. A token for the room's text says nothing about a file that
+    /// has moved past this base since.
+    pub base_checksum: String,
 }
 
 /// Why a join did not produce a session.
@@ -1694,6 +1699,7 @@ impl CollabSession {
             text,
             checksum,
             saving,
+            base_checksum: state.checksum.clone(),
         }
     }
 

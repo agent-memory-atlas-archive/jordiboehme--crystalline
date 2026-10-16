@@ -1357,8 +1357,17 @@ async fn alpha_room_whose_save_failed(
     sessions: &Arc<CollabSessions>,
     overlay: Option<&str>,
 ) -> (Joined, Doc) {
+    room_whose_save_failed(sessions, "alpha", overlay).await
+}
+
+/// [`alpha_room_whose_save_failed`] over any engram of `eng`.
+async fn room_whose_save_failed(
+    sessions: &Arc<CollabSessions>,
+    permalink: &str,
+    overlay: Option<&str>,
+) -> (Joined, Doc) {
     use crystalline_service::collab::control::{self, Control};
-    let joined = sessions.join("eng", "alpha", overlay).await.unwrap();
+    let joined = sessions.join("eng", permalink, overlay).await.unwrap();
     let doc = sync_client(&joined).await;
     publish_name(&joined, &doc, "Grace Hopper").await;
     replace_all(&joined, &doc, "no frontmatter, typed by a person\n").await;
@@ -1368,7 +1377,7 @@ async fn alpha_room_whose_save_failed(
         .await;
     joined.session.tick_save(Instant::now()).await;
     let live = sessions
-        .live_text("eng", "alpha", overlay)
+        .live_text("eng", permalink, overlay)
         .await
         .expect("the room stands");
     assert!(!live.saving, "the room's save failed and it saves nothing");
@@ -1822,24 +1831,12 @@ async fn a_checksum_read_from_a_virtual_room_that_cannot_save_guards_the_row_wri
     drop(scratch);
 }
 
-/// **Task 41b.** A caller that read a page while its room was in conflict
-/// holds the checksum of the room's text, which the file never had. The
-/// edit then lands in the file, and that checksum is still accepted: the
-/// live arm would have accepted it. A checksum of neither is refused.
-#[tokio::test]
-async fn a_checksum_read_from_a_room_that_cannot_save_guards_the_file_write() {
-    let (tmp, engine, _scratch) = engine_fixture(false).await;
-    let sessions = CollabSessions::new(engine.clone());
-    engine.set_collab_sessions(&sessions);
-    let joined = beta_room_colliding_with_the_file(&tmp, &engine, &sessions).await;
-    joined
-        .session
-        .tick_save(Instant::now() + Duration::from_secs(60))
-        .await;
+/// The checksum `read_engram` hands out for `alpha` right now.
+async fn read_checksum(engine: &Engine) -> String {
     let read = engine
         .read_engram(
             &ReadParams {
-                identifier: "beta".to_string(),
+                identifier: "alpha".to_string(),
                 domain: Some("eng".to_string()),
                 ..ReadParams::default()
             },
@@ -1848,13 +1845,31 @@ async fn a_checksum_read_from_a_room_that_cannot_save_guards_the_file_write() {
         .await
         .unwrap();
     assert_eq!(read["live"], true, "{read}");
-    let live_sum = read["checksum"].as_str().unwrap().to_string();
-    let file_sum = sha256_hex_of(&std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap());
-    assert_ne!(live_sum, file_sum, "the room's text is not the file's");
+    read["checksum"].as_str().unwrap().to_string()
+}
+
+/// **Task 41b.** A caller that read a page while its room could not save
+/// holds the checksum of the room's unsaved text, which the file never had.
+/// The edit then lands in the file, and that checksum is still accepted:
+/// the live arm would have accepted it, and the file is still the one the
+/// room last saved. A checksum of neither text is refused.
+#[tokio::test]
+async fn a_checksum_read_from_a_room_that_cannot_save_guards_the_file_write() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let (_joined, _doc) = alpha_room_whose_save_failed(&sessions, None).await;
+    let live_sum = read_checksum(&engine).await;
+    let path = tmp.path().join("eng/alpha.md");
+    assert_ne!(
+        live_sum,
+        sha256_hex_of(&std::fs::read_to_string(&path).unwrap()),
+        "the room's text is not the file's"
+    );
 
     let stale = engine
         .edit_engram_as(
-            &append_to("beta", "never written", Some(&"0".repeat(64))),
+            &append_edit("never written", Some(&"0".repeat(64))),
             None,
             &crystalline_service::Scope::Unrestricted,
         )
@@ -1864,14 +1879,14 @@ async fn a_checksum_read_from_a_room_that_cannot_save_guards_the_file_write() {
 
     let receipt = engine
         .edit_engram_as(
-            &append_to("beta", "guarded by the room's text", Some(&live_sum)),
+            &append_edit("guarded by the room's text", Some(&live_sum)),
             None,
             &crystalline_service::Scope::Unrestricted,
         )
         .await
         .expect("the room's checksum is accepted");
     assert_eq!(receipt["landed"], "file", "{receipt}");
-    let on_disk = std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap();
+    let on_disk = std::fs::read_to_string(&path).unwrap();
     assert!(
         on_disk.contains("guarded by the room's text"),
         "{on_disk:?}"
@@ -1881,12 +1896,42 @@ async fn a_checksum_read_from_a_room_that_cannot_save_guards_the_file_write() {
     let file_sum = sha256_hex_of(&on_disk);
     engine
         .edit_engram_as(
-            &append_to("beta", "guarded by the file", Some(&file_sum)),
+            &append_edit("guarded by the file", Some(&file_sum)),
             None,
             &crystalline_service::Scope::Unrestricted,
         )
         .await
         .expect("the file's own checksum is accepted too");
+}
+
+/// **Task 41b review.** The room's checksum stands for its text over the
+/// file it last saved. Once another writer changed that file, a caller
+/// holding the room's checksum has not seen the change, so the edit is
+/// refused as stale rather than written over it.
+#[tokio::test]
+async fn a_room_checksum_is_stale_once_another_writer_changed_the_file() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let (_joined, _doc) = alpha_room_whose_save_failed(&sessions, None).await;
+    let live_sum = read_checksum(&engine).await;
+    let path = tmp.path().join("eng/alpha.md");
+    std::fs::write(&path, format!("{ALPHA}written by a third writer\n")).unwrap();
+
+    let err = engine
+        .edit_engram_as(
+            &append_edit("never written", Some(&live_sum)),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect_err("the file moved past the room's base");
+    assert!(err.to_string().contains("stale edit"), "{err}");
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        on_disk.contains("written by a third writer") && !on_disk.contains("never written"),
+        "{on_disk:?}"
+    );
 }
 
 /// **Task 41b.** A wholesale replace of a page whose room cannot save is
@@ -1929,11 +1974,10 @@ async fn an_overwrite_of_a_page_whose_room_cannot_save_is_refused_naming_who_is_
 /// it - a retirement's receipt is about what it retired - so what this pins is
 /// the behaviour rather than the words.
 ///
-/// Driven in a REVIEWING domain, which is where a retirement actually takes
-/// that route: in a domain that takes changes directly `retire_engram_as`
-/// keeps its own file and virtual arms and never reaches the shared body, so a
-/// retirement there writes past an open room and the room meets it as the
-/// external change it is. See the report's concerns.
+/// Driven in a REVIEWING domain, where the room is over the actor's own
+/// draft. A domain that takes changes directly goes through the same shared
+/// body, and `a_retirement_in_a_direct_domain_composes_into_the_open_room`
+/// pins that side.
 #[tokio::test]
 async fn a_retirement_of_an_open_draft_lands_in_the_document_too() {
     let (_tmp, engine, _scratch) = engine_fixture(true).await;
@@ -1981,6 +2025,37 @@ async fn a_retirement_of_an_open_draft_lands_in_the_document_too() {
     assert!(
         draft.content.contains("status: archived") && draft.content.contains("a person typed this"),
         "{draft:?}"
+    );
+}
+
+/// A supersession whose successor is open in a room that cannot save: the
+/// reciprocal line goes to the successor's file, and a file that already
+/// carries it does not get it twice, whatever the room's text says.
+#[tokio::test]
+async fn a_successor_open_in_a_room_that_cannot_save_gets_its_supersedes_line_once() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let beta = tmp.path().join("eng/beta.md");
+    std::fs::write(&beta, format!("{BETA}\n- supersedes [[alpha]]\n")).unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let (_joined, _doc) = room_whose_save_failed(&sessions, "beta", None).await;
+
+    engine
+        .retire_engram(&crystalline_service::params::RetireParams {
+            domain: "eng".to_string(),
+            identifier: "alpha".to_string(),
+            status: "superseded".to_string(),
+            successor: Some("beta".to_string()),
+            valid_to: None,
+        })
+        .await
+        .expect("the retirement lands");
+    let on_disk = std::fs::read_to_string(&beta).unwrap();
+    assert_eq!(
+        on_disk.matches("supersedes [[alpha]]").count(),
+        1,
+        "{on_disk:?}"
     );
 }
 

@@ -861,7 +861,16 @@ impl Engine {
                         &actor,
                         None,
                         scope,
-                        |c| Ok(append_body(c, &line)),
+                        // Asked again of the text the edit is applied to,
+                        // which is not the text looked at above when the room
+                        // would not take the edit and it went to the source.
+                        |c| {
+                            Ok(if already(c) {
+                                c.to_string()
+                            } else {
+                                append_body(c, &line)
+                            })
+                        },
                     )
                     .await?;
                 warning = warning.or(succ_warning);
