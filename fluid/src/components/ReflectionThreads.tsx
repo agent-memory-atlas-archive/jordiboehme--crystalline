@@ -62,7 +62,7 @@ import { atLeast } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { plural, relativeTime } from "../format";
 import { useSaid } from "./useSaid";
-import { placeMarkers, printNotes } from "../printNotes";
+import { onlyMarkers, placeMarkers, printNotes } from "../printNotes";
 import type { SelectionAnchor } from "../reflectionQuotes";
 import {
   SECTION_ATTR,
@@ -661,8 +661,8 @@ export function ReflectionThreads({
     paint();
     // While the page prints, the numbers put in the text are no change to
     // it: the quotes stay painted as they were.
-    const observer = new MutationObserver(() => {
-      if (!printing.current) {
+    const observer = new MutationObserver((records) => {
+      if (!printing.current && !onlyMarkers(records)) {
         paint();
       }
     });
@@ -674,9 +674,18 @@ export function ReflectionThreads({
   }, [articleRef, open, sections, shown]);
 
   // On paper each open thread is a numbered note at the end of the page
-  // (`PrintNotes`), and its number stands at the end of its quote in the
-  // text. The numbers go in as printing starts, at the ends of the painted
-  // ranges, and come out as it ends: on screen the text never holds them.
+  // (`PrintNotes`), and its number stands at the end of the block that holds
+  // the end of its quote. The numbers go in as printing starts and come out
+  // as it ends: on screen the text never holds them. A change to the threads
+  // while the print dialog is open leaves the numbers in until it closes.
+  const notes = useMemo(
+    () => printNotes(doc.threads, sections),
+    [doc.threads, sections],
+  );
+  const notesRef = useRef(notes);
+  useEffect(() => {
+    notesRef.current = notes;
+  });
   useEffect(() => {
     let undo: (() => void) | null = null;
     const start = () => {
@@ -685,10 +694,7 @@ export function ReflectionThreads({
       }
       printing.current = true;
       const numbers = new Map(
-        printNotes(doc.threads, sections).map((note) => [
-          note.thread.id,
-          note.n,
-        ]),
+        notesRef.current.map((note) => [note.thread.id, note.n]),
       );
       const marks: { range: Range; n: number }[] = [];
       for (const [id, range] of painted.current) {
@@ -724,7 +730,7 @@ export function ReflectionThreads({
       media?.removeEventListener("change", onChange);
       end();
     };
-  }, [doc.threads, sections]);
+  }, []);
 
   // A tap on a painted quote picks its thread; below `xl` it opens the
   // sheet at it. A tap anywhere else in the text lets the pick go. A drag

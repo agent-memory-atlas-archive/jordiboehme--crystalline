@@ -23,13 +23,75 @@ import { useEffect, useRef, useState } from "react";
 import type { PrintFact } from "../printSheet";
 import { cssString } from "../printSheet";
 
-/** Today in the reader's words, `16 Oct 2026`. */
+/** Today as a short date in the reader's own locale (`Oct 16, 2026` in en-US). */
 function today(): string {
   return new Date().toLocaleDateString(undefined, {
     day: "numeric",
     month: "short",
     year: "numeric",
   });
+}
+
+/**
+ * Run `start` as printing starts and `end` as it ends: on `beforeprint` and
+ * `afterprint`, and on the print media query, which a browser that prints
+ * without those events (a PDF made by a driver) still flips. Returns the
+ * unsubscribe.
+ */
+function whilePrinting(start: () => void, end?: () => void): () => void {
+  const media =
+    typeof window.matchMedia === "function" ? window.matchMedia("print") : null;
+  const after = () => end?.();
+  const onChange = (event: MediaQueryListEvent) => {
+    if (event.matches) {
+      start();
+    } else {
+      after();
+    }
+  };
+  window.addEventListener("beforeprint", start);
+  window.addEventListener("afterprint", after);
+  media?.addEventListener("change", onChange);
+  return () => {
+    window.removeEventListener("beforeprint", start);
+    window.removeEventListener("afterprint", after);
+    media?.removeEventListener("change", onChange);
+  };
+}
+
+/**
+ * The page's pictures load before it prints: one the reader never scrolled
+ * to is still `loading="lazy"`, and a printer must not get its empty box.
+ * They go back to lazy after printing.
+ */
+function useEagerImagesWhilePrinting(): void {
+  useEffect(() => {
+    let lazy: HTMLImageElement[] = [];
+    const start = () => {
+      if (lazy.length > 0) {
+        return;
+      }
+      lazy = [
+        ...document.querySelectorAll<HTMLImageElement>(
+          'main img[loading="lazy"]',
+        ),
+      ];
+      for (const image of lazy) {
+        image.setAttribute("loading", "eager");
+      }
+    };
+    const end = () => {
+      for (const image of lazy) {
+        image.setAttribute("loading", "lazy");
+      }
+      lazy = [];
+    };
+    const stop = whilePrinting(start, end);
+    return () => {
+      stop();
+      end();
+    };
+  }, []);
 }
 
 /**
@@ -47,28 +109,15 @@ function usePrintDate<T extends HTMLElement>(
   useEffect(() => {
     latest.current = words;
   });
-  useEffect(() => {
-    const refresh = () => {
-      if (ref.current !== null) {
-        ref.current.textContent = latest.current(today());
-      }
-    };
-    const media =
-      typeof window.matchMedia === "function"
-        ? window.matchMedia("print")
-        : null;
-    const onChange = (event: MediaQueryListEvent) => {
-      if (event.matches) {
-        refresh();
-      }
-    };
-    window.addEventListener("beforeprint", refresh);
-    media?.addEventListener("change", onChange);
-    return () => {
-      window.removeEventListener("beforeprint", refresh);
-      media?.removeEventListener("change", onChange);
-    };
-  }, []);
+  useEffect(
+    () =>
+      whilePrinting(() => {
+        if (ref.current !== null) {
+          ref.current.textContent = latest.current(today());
+        }
+      }),
+    [],
+  );
   return { ref, text: words(date) };
 }
 
@@ -91,6 +140,7 @@ export function PrintPageStyle({
   // The first page opens with the title block, which says all of this once:
   // only its page number stays. Here rather than in `index.css`, where a
   // first-page rule loses to these later ones.
+  useEagerImagesWhilePrinting();
   const { ref, text } = usePrintDate<HTMLStyleElement>(
     (date) => `@media print {
 @page {

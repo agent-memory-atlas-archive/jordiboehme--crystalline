@@ -169,6 +169,47 @@ describe("MermaidDiagram", () => {
     });
   });
 
+  it("draws a light copy for the printer on a dark screen, when idle", async () => {
+    localStorage.setItem("fluid-theme", "dark");
+    renderDiagram.mockImplementation((id: string) =>
+      Promise.resolve({
+        svg: id.endsWith("-paper")
+          ? "<svg data-paper></svg>"
+          : "<svg data-diagram></svg>",
+        diagramType: "flowchart-v2",
+      }),
+    );
+    const { container } = draw("graph TD; A-->B;");
+    await waitFor(() => {
+      expect(
+        container.querySelector("[data-print] svg[data-paper]"),
+      ).not.toBeNull();
+    });
+    const paper = renderDiagram.mock.calls.find(([id]) =>
+      id.endsWith("-paper"),
+    );
+    // Light by its own directive, whatever the library was initialised with.
+    expect(paper?.[1]).toContain('"darkMode":false');
+    expect(paper?.[1]).toContain('"primaryColor":"#ece8f9"');
+    // Hidden on screen; the screen's dark drawing stays off paper instead.
+    expect(container.querySelector("[data-print]")).toHaveAttribute("hidden");
+    expect(
+      container.querySelector("svg[data-diagram]")?.closest(".print\\:hidden"),
+    ).not.toBeNull();
+  });
+
+  it("draws no printer copy on a light screen", async () => {
+    const { container } = draw("graph TD; A-->B;");
+    await waitFor(() => {
+      expect(container.querySelector("svg[data-diagram]")).not.toBeNull();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(renderDiagram.mock.calls.some(([id]) => id.endsWith("-paper"))).toBe(
+      false,
+    );
+    expect(container.querySelector("[data-print]")).toBeNull();
+  });
+
   it("centers the diagram it rendered", async () => {
     const { container } = draw("graph TD; A-->B;");
     await waitFor(() => {

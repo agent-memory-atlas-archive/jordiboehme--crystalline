@@ -49,6 +49,20 @@ const SCROLLER =
 const SCROLLABLE =
   "[mask-image:linear-gradient(to_right,black_calc(100%_-_1.5rem),transparent)] focus-visible:ring-2 focus-visible:ring-accent-600 focus-visible:outline-none dark:focus-visible:ring-accent-400";
 
+/** Run `work` once the browser is idle (soon, where it cannot say); returns the cancel. */
+function whenIdle(work: () => void): () => void {
+  if (typeof window.requestIdleCallback === "function") {
+    const handle = window.requestIdleCallback(work, { timeout: 2000 });
+    return () => {
+      window.cancelIdleCallback(handle);
+    };
+  }
+  const timer = setTimeout(work, 200);
+  return () => {
+    clearTimeout(timer);
+  };
+}
+
 export default function MermaidDiagram({
   source,
   name,
@@ -103,20 +117,12 @@ export default function MermaidDiagram({
     };
   }, [id, source, resolved]);
 
-  // The markup is mermaid's own output, produced by its sanitizing mode from
-  // the source above; nothing from the document reaches here unparsed.
-  //
-  // A diagram fits its column until the reader says otherwise: mermaid's own
-  // scale-to-fit is the default for every size, and full width is the one
-  // way past it. Once, a measurement widened a big diagram on its own, so
-  // for exactly the diagrams this button exists for both states drew the
-  // same picture and pressing it did nothing anybody could see. What the
-  // fitted drawing costs - small labels on a huge diagram - is one click
-  // away from undone, and the full-window overlay is the reading path.
   // Paper is always light. On a dark screen the drawing's colours are baked
   // into its markup, so a light copy is drawn beside it for the printer. Its
   // theme rides in the source as a directive: the one config a render reads
-  // whatever another diagram initialised the library with meanwhile.
+  // whatever another diagram initialised the library with meanwhile. It is
+  // drawn when the browser is idle, so a dark page does not pay for it while
+  // it opens.
   const [paperDrawn, setPaperDrawn] = useState<{
     source: string;
     svg: string;
@@ -127,35 +133,49 @@ export default function MermaidDiagram({
       return;
     }
     let live = true;
-    const light = mermaidConfig(false);
-    // `darkMode` spelled out: the directive merges over the dark set the
-    // library was initialised with, and would keep its `true`.
-    const themeVariables: unknown = {
-      ...(light.themeVariables as Record<string, unknown>),
-      darkMode: false,
+    const drawPaper = () => {
+      const light = mermaidConfig(false);
+      // `darkMode` spelled out: the directive merges over the dark set the
+      // library was initialised with, and would keep its `true`.
+      const themeVariables: unknown = {
+        ...(light.themeVariables as Record<string, unknown>),
+        darkMode: false,
+      };
+      const directive = `%%{init: ${JSON.stringify({
+        theme: light.theme,
+        themeVariables,
+      })}}%%`;
+      mermaid
+        .render(`${id}-paper`, `${source}\n${directive}\n`)
+        .then((result) => {
+          if (live) {
+            setPaperDrawn({ source, svg: result.svg });
+          }
+        })
+        .catch(() => {
+          if (live) {
+            setPaperDrawn(null);
+          }
+        });
     };
-    const directive = `%%{init: ${JSON.stringify({
-      theme: light.theme,
-      themeVariables,
-    })}}%%`;
-    mermaid
-      .render(`${id}-paper`, `${source}\n${directive}\n`)
-      .then((result) => {
-        if (live) {
-          setPaperDrawn({ source, svg: result.svg });
-        }
-      })
-      .catch(() => {
-        if (live) {
-          setPaperDrawn(null);
-        }
-      });
+    const cancel = whenIdle(drawPaper);
     return () => {
       live = false;
+      cancel();
     };
   }, [id, source, dark]);
   const paper = dark && paperDrawn?.source === source ? paperDrawn.svg : null;
 
+  // The markup is mermaid's own output, produced by its sanitizing mode from
+  // the source above; nothing from the document reaches here unparsed.
+  //
+  // A diagram fits its column until the reader says otherwise: mermaid's own
+  // scale-to-fit is the default for every size, and full width is the one
+  // way past it. Once, a measurement widened a big diagram on its own, so
+  // for exactly the diagrams this button exists for both states drew the
+  // same picture and pressing it did nothing anybody could see. What the
+  // fitted drawing costs - small labels on a huge diagram - is one click
+  // away from undone, and the full-window overlay is the reading path.
   const wide = drawn !== null && fullWidth;
   const markup =
     drawn === null ? "" : fullWidth ? unclampDiagram(drawn.svg) : drawn.svg;

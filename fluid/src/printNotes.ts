@@ -9,9 +9,10 @@
  * not printed.
  *
  * The numbers in the text exist only while the page prints. They are put in
- * on `beforeprint` and taken out on `afterprint`, at the ends of the ranges
- * the quotes are painted with. On screen the page holds none of them, so
- * nothing they add can move a quote's anchor.
+ * on `beforeprint` and taken out on `afterprint`, at the end of the block
+ * that holds the end of each painted quote. On screen the page holds none
+ * of them, and they never cut the text, so nothing they add can move a
+ * quote's anchor or a reader's selection.
  */
 
 import type { AnchorState, ThreadView } from "./api/reflection";
@@ -95,26 +96,32 @@ export function printNotes(
   }));
 }
 
-/** What one placed number took apart, to put it back. */
-interface Placed {
-  marker: HTMLElement;
-  /** The text node cut in two, its first half, and the words it held. */
-  split: { text: Text; rest: Text; whole: string } | null;
-}
+/** The blocks a printed number is set at the end of. */
+export const MARKER_BLOCKS =
+  "p, li, h1, h2, h3, h4, h5, h6, td, th, blockquote, pre";
 
 /**
- * Put a small number at the end of each range, and return what takes them
- * out again. A text node the end falls inside is cut in two for it; the cut
- * is mended on the way out, so the node React holds keeps its words.
+ * Put a small number at the end of the block (paragraph, list item,
+ * heading, table cell, quote) that holds the end of each range, and return
+ * what takes them out again. Several numbers in one block follow each other
+ * in order.
+ *
+ * Nothing in the text is touched: no text node is cut, and each number is
+ * an element appended after everything the block holds. So every live range
+ * on the page (a reader's selection, a painted quote) keeps its boundaries
+ * while the numbers are in and after they are out, and React, which never
+ * reads past the children it put there, does not see them.
  */
 export function placeMarkers(
   marks: readonly { range: Range; n: number }[],
 ): () => void {
-  const placed: Placed[] = [];
-  for (const { range, n } of marks) {
-    const node = range.endContainer;
-    const offset = range.endOffset;
-    if (!node.isConnected) {
+  const placed: HTMLElement[] = [];
+  for (const { range, n } of [...marks].sort((a, b) => a.n - b.n)) {
+    const end = range.endContainer;
+    const host =
+      end.nodeType === Node.TEXT_NODE ? end.parentElement : (end as Element);
+    const block = host?.closest(MARKER_BLOCKS);
+    if (block == null || !block.isConnected) {
       continue;
     }
     const marker = document.createElement("sup");
@@ -122,38 +129,23 @@ export function placeMarkers(
     marker.setAttribute(SKIP_ATTR, "");
     marker.setAttribute("aria-hidden", "true");
     marker.textContent = String(n);
-    if (node.nodeType === Node.TEXT_NODE) {
-      const text = node as Text;
-      if (offset >= text.length) {
-        text.after(marker);
-        placed.push({ marker, split: null });
-      } else if (offset <= 0) {
-        text.before(marker);
-        placed.push({ marker, split: null });
-      } else {
-        const whole = text.data;
-        const rest = text.splitText(offset);
-        text.after(marker);
-        placed.push({ marker, split: { text, rest, whole } });
-      }
-    } else {
-      node.insertBefore(marker, node.childNodes[offset] ?? null);
-      placed.push({ marker, split: null });
-    }
+    block.append(marker);
+    placed.push(marker);
   }
   return () => {
-    for (const { marker, split } of placed.reverse()) {
+    for (const marker of placed) {
       marker.remove();
-      if (split === null) {
-        continue;
-      }
-      const { text, rest, whole } = split;
-      // Mended only when nothing rewrote the words meanwhile; a node React
-      // gave new words to keeps them, and the stale half goes.
-      if (text.data + rest.data === whole) {
-        text.appendData(rest.data);
-      }
-      rest.remove();
     }
   };
+}
+
+/** Whether a DOM change only put printed numbers in or took them out. */
+export function onlyMarkers(records: readonly MutationRecord[]): boolean {
+  const marker = (node: Node) =>
+    node instanceof Element && node.classList.contains(MARKER_CLASS);
+  return records.every(
+    (record) =>
+      record.type === "childList" &&
+      [...record.addedNodes, ...record.removedNodes].every(marker),
+  );
 }

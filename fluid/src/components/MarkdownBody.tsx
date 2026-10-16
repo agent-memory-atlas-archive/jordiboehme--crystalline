@@ -64,6 +64,7 @@ import {
   imageStyle,
   parseImageFragment,
 } from "../editor/imageFormat";
+import { printUrl } from "../printUrl";
 import { SOURCE_ATTR, spanPieces } from "../reflectionQuotes";
 import { isIdLine } from "../reflectionText";
 import { WIKILINK, referenceState } from "../wikilinks";
@@ -756,20 +757,6 @@ const LINK_CLASSES =
   "text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline";
 
 /**
- * The address a link out of the app prints after its words (the print sheet
- * in `index.css` draws it), without its scheme. None when the words already
- * are the address.
- */
-function printUrl(href: string, words: string): { "data-print-url"?: string } {
-  const shown = href.replace(/^https?:\/\//i, "").replace(/\/$/, "");
-  const said = words
-    .trim()
-    .replace(/^https?:\/\//i, "")
-    .replace(/\/$/, "");
-  return said === shown ? {} : { "data-print-url": shown };
-}
-
-/**
  * One link, drawn by where it points.
  *
  * Three destinations, in the order they are decided. A resolved wikilink is a
@@ -837,7 +824,11 @@ function MarkdownAnchor({
       href={documentHref(href)}
       className={LINK_CLASSES}
       {...(outward ? { target: "_blank", rel: "noreferrer" } : {})}
-      {...(outward ? printUrl(href, textOf(node as HastNode | undefined)) : {})}
+      data-print-url={
+        typeof href === "string"
+          ? (printUrl(href, textOf(node as HastNode | undefined)) ?? undefined)
+          : undefined
+      }
     >
       {children}
     </a>

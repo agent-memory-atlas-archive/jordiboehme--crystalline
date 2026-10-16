@@ -62,7 +62,13 @@ import { Breadcrumbs, reflectionCrumbsOf } from "../components/Breadcrumbs";
 import { plural } from "../format";
 import { PrintNotes } from "../components/PrintNotes";
 import { Skeleton } from "../components/Skeleton";
-import { engramRoute, reflectionEditRoute, reflectionRoute } from "../paths";
+import { absoluteUrl } from "../base";
+import {
+  engramRoute,
+  reflectionEditRoute,
+  reflectionPageRoute,
+  reflectionRoute,
+} from "../paths";
 import { assetRefsIn } from "../editor/imageFormat";
 import { FOCUS_HEADING, useHeadingFocusRequest } from "../focusHeading";
 import { lazyChunk } from "../lazyChunk";
@@ -301,6 +307,12 @@ function PageBody({
     () => (doc.data ? sectionTexts(doc.data.markdown, doc.data.sections) : []),
     [doc.data],
   );
+  // The open threads as printed notes, numbered the way the threads column
+  // numbers them in the text while the page prints.
+  const notes = useMemo(
+    () => printNotes(doc.data?.threads ?? [], sections),
+    [doc.data, sections],
+  );
   // The Reflection's file listing: the same cache entry the attachments
   // section reads, so this adds no request. A file whose sha256 changed
   // since this document first listed it gets a version in its address, so a
@@ -372,7 +384,9 @@ function PageBody({
   const curate = atLeast(right, "curate");
   const metaLine = reflectionMetaLine(page, engramsVisible);
   const movable = atLeast(right, "edit") && path !== PACT_PATH;
-  const address = `crystalline://${domain}/reflections/${path}`;
+  // A Reflection page has no `crystalline://` name: on paper it is known by
+  // its page in this app.
+  const address = absoluteUrl(reflectionPageRoute(domain, path));
   return (
     // Below the width where the threads column fits, its pill floats over
     // the foot of the page: the padding keeps the last line clear of it.
@@ -545,7 +559,7 @@ function PageBody({
             confirmText={removeFileText}
           />
         </div>
-        <PrintNotes notes={printNotes(page.threads, sections)} />
+        <PrintNotes notes={notes} />
       </div>
       {/*
           The column beside the page from `xl` up, a pill and a sheet below

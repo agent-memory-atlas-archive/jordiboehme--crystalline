@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import type { ThreadView } from "./api/reflection";
-import { MARKER_CLASS, placeMarkers, printNotes } from "./printNotes";
+import {
+  MARKER_CLASS,
+  onlyMarkers,
+  placeMarkers,
+  printNotes,
+} from "./printNotes";
+import { PRINT_URL_MAX, printUrl } from "./printUrl";
 import { cssString, engramFacts, lastWrite } from "./printSheet";
 import { SKIP_ATTR } from "./reflectionQuotes";
 import type { SectionText } from "./reflectionText";
@@ -102,65 +108,103 @@ describe("printNotes", () => {
 });
 
 describe("placeMarkers", () => {
-  function paragraph(text: string): { root: HTMLElement; node: Text } {
-    const root = document.createElement("p");
-    const node = document.createTextNode(text);
-    root.append(node);
+  it("sets each number at the end of the block that holds its range's end, in order", () => {
+    const root = document.createElement("div");
+    root.innerHTML =
+      "<p><span>Deploys run at night</span>, <em>after</em> the batch.</p><ul><li>Write one line.</li></ul>";
     document.body.append(root);
-    return { root, node };
-  }
-
-  it("sets a number at the end of each range and takes it out again", () => {
-    const { root, node } = paragraph("Deploys run at night, after the batch.");
-    const night = document.createRange();
-    night.setStart(node, 12);
-    night.setEnd(node, 20);
-    const batch = document.createRange();
-    batch.setStart(node, 22);
-    batch.setEnd(node, 37);
-    const undo = placeMarkers([
-      { range: night, n: 1 },
-      { range: batch, n: 2 },
+    const [first, second] = [...root.querySelectorAll("p, li")];
+    const night = root.querySelector("span")?.firstChild as Text;
+    const after = root.querySelector("em")?.firstChild as Text;
+    const line = root.querySelector("li")?.firstChild as Text;
+    const range = (node: Text, from: number, to: number) => {
+      const made = document.createRange();
+      made.setStart(node, from);
+      made.setEnd(node, to);
+      return made;
+    };
+    const ranges = [
+      range(after, 0, 5),
+      range(night, 12, 20),
+      range(line, 0, 5),
+    ];
+    const selection = range(night, 3, 14);
+    const before = [...ranges, selection].map((r) => [
+      r.startContainer,
+      r.startOffset,
+      r.endContainer,
+      r.endOffset,
+      r.toString(),
     ]);
-    const marks = [...root.querySelectorAll(`.${MARKER_CLASS}`)];
-    expect(marks.map((mark) => mark.textContent)).toEqual(["1", "2"]);
-    expect(marks[0]?.tagName).toBe("SUP");
-    expect(marks[0]?.hasAttribute(SKIP_ATTR)).toBe(true);
-    expect(root.textContent).toBe("Deploys run at night1, after the batch2.");
+    const childCount = first?.childNodes.length;
+
+    const undo = placeMarkers([
+      { range: ranges[0] as Range, n: 2 },
+      { range: ranges[1] as Range, n: 1 },
+      { range: ranges[2] as Range, n: 3 },
+    ]);
+    expect(first?.textContent).toBe("Deploys run at night, after the batch.12");
+    expect(second?.textContent).toBe("Write one line.3");
+    const mark = first?.lastElementChild;
+    expect(mark?.tagName).toBe("SUP");
+    expect(mark?.className).toBe(MARKER_CLASS);
+    expect(mark?.hasAttribute(SKIP_ATTR)).toBe(true);
+    // No text node was cut.
+    expect(night.data).toBe("Deploys run at night");
 
     undo();
     expect(root.querySelector(`.${MARKER_CLASS}`)).toBeNull();
-    // One text node again, the same one, with its words.
-    expect(root.childNodes).toHaveLength(1);
-    expect(root.firstChild).toBe(node);
-    expect(node.data).toBe("Deploys run at night, after the batch.");
+    expect(first?.childNodes.length).toBe(childCount);
+    // Every live range kept its boundaries and its words.
+    expect(
+      [...ranges, selection].map((r) => [
+        r.startContainer,
+        r.startOffset,
+        r.endContainer,
+        r.endOffset,
+        r.toString(),
+      ]),
+    ).toEqual(before);
     root.remove();
   });
 
-  it("splits nothing for a range that ends at the end of its text", () => {
-    const { root, node } = paragraph("Write one line.");
-    const range = document.createRange();
-    range.setStart(node, 6);
-    range.setEnd(node, node.length);
-    const undo = placeMarkers([{ range, n: 3 }]);
-    expect(root.childNodes).toHaveLength(2);
-    expect(root.textContent).toBe("Write one line.3");
-    undo();
-    expect(root.childNodes).toHaveLength(1);
-    root.remove();
+  it("tells a change of numbers alone from a change of the page", () => {
+    const mark = document.createElement("sup");
+    mark.className = MARKER_CLASS;
+    const other = document.createElement("span");
+    const record = (node: Node) =>
+      ({
+        type: "childList",
+        addedNodes: [node],
+        removedNodes: [],
+      }) as unknown as MutationRecord;
+    expect(onlyMarkers([record(mark)])).toBe(true);
+    expect(onlyMarkers([record(mark), record(other)])).toBe(false);
+  });
+});
+
+describe("printUrl", () => {
+  it("prints a web address without its scheme, a mail address without mailto:", () => {
+    expect(printUrl("https://example.com/a/", "the docs")).toBe(
+      "example.com/a",
+    );
+    expect(printUrl("mailto:ops@example.com", "write to us")).toBe(
+      "ops@example.com",
+    );
   });
 
-  it("leaves new words in place when the text changed while printing", () => {
-    const { root, node } = paragraph("Deploys run at night.");
-    const range = document.createRange();
-    range.setStart(node, 0);
-    range.setEnd(node, 7);
-    const undo = placeMarkers([{ range, n: 1 }]);
-    // As React would: the node it holds gets the whole new text.
-    node.data = "Deploys run in the day.";
-    undo();
-    expect(root.textContent).toBe("Deploys run in the day.");
-    root.remove();
+  it("prints nothing when the words are the address, or for other links", () => {
+    expect(printUrl("https://example.com", "https://example.com/")).toBeNull();
+    expect(printUrl("mailto:ops@example.com", "ops@example.com")).toBeNull();
+    expect(printUrl("#heading", "see below")).toBeNull();
+    expect(printUrl("../other", "the other page")).toBeNull();
+  });
+
+  it("cuts a long address with an ellipsis", () => {
+    const long = `https://example.com/${"a".repeat(200)}`;
+    const shown = printUrl(long, "a long one");
+    expect(shown).toHaveLength(PRINT_URL_MAX);
+    expect(shown?.endsWith("\u2026")).toBe(true);
   });
 });
 

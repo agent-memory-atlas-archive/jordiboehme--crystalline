@@ -1852,16 +1852,17 @@ describe("threads on paper", () => {
     });
     const marks = [...document.querySelectorAll<HTMLElement>(".print-marker")];
     expect(marks.map((mark) => mark.textContent)).toEqual(["1", "2"]);
-    // Each number stands right after the last word of its painted quote,
-    // passed over by the anchoring and by assistive technology.
-    expect(marks[0]?.previousSibling?.textContent).toMatch(
-      /Deploys run at night$/,
-    );
-    expect(marks[1]?.previousSibling?.textContent).toBe(", after the batch");
+    // Both quotes end in one paragraph: the numbers follow each other at its
+    // end, after everything the page drew in it, passed over by the
+    // anchoring and by assistive technology. The text is not cut.
+    const paragraph = before.parentElement?.closest("p");
+    expect(marks[0]?.parentElement).toBe(paragraph);
+    expect(marks[1]?.parentElement).toBe(paragraph);
+    expect(paragraph?.lastElementChild).toBe(marks[1]);
+    expect(before.data).toBe(words);
     for (const mark of marks) {
       expect(mark).toHaveAttribute("data-anchor-skip");
       expect(mark).toHaveAttribute("aria-hidden", "true");
-      expect(mark.closest("article")).not.toBeNull();
     }
 
     // The Notes at the end: open threads only, in the same order.
@@ -1884,9 +1885,105 @@ describe("threads on paper", () => {
       window.dispatchEvent(new Event("afterprint"));
     });
     expect(document.querySelector(".print-marker")).toBeNull();
-    // The text node the page drew is whole again, the same node.
+    // The text node the page drew is the same node, with its words.
     const after = pageText("Deploys run at night, after").node;
     expect(after).toBe(before);
     expect(after.data).toBe(words);
+  });
+
+  /** A range's boundaries and words, to compare one moment with another. */
+  function boundaries(range: Range | undefined) {
+    return range === undefined
+      ? null
+      : {
+          startContainer: range.startContainer,
+          startOffset: range.startOffset,
+          endContainer: range.endContainer,
+          endOffset: range.endOffset,
+          text: range.toString(),
+        };
+  }
+
+  it("leaves a reader's selection, the painted quotes and the comment anchor as they were", async () => {
+    const opened = vi.fn((_path: string, _init?: RequestInit) =>
+      thread("t-00000009"),
+    );
+    serve([later, thread("t-00000001")], {
+      "/domains/eng/reflection/threads": (path, init) => opened(path, init),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await waitFor(() => {
+      expect(registry.get(QUOTE_HIGHLIGHT)?.ranges).toHaveLength(2);
+    });
+    // A selection inside the paragraph the numbers go to, ending mid-word.
+    const at = pageText("Deploys run at night, after");
+    const range = document.createRange();
+    range.setStart(at.node, at.at + 12);
+    range.setEnd(at.node, at.at + 26);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    act(() => {
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    const selected = () => boundaries(window.getSelection()?.getRangeAt(0));
+    const painted = () =>
+      (registry.get(QUOTE_HIGHLIGHT)?.ranges ?? []).map(boundaries);
+    const selectionBefore = selected();
+    const paintedBefore = painted();
+    const paintedObjects = registry.get(QUOTE_HIGHLIGHT)?.ranges;
+    expect(selectionBefore?.text).toBe("at night, afte");
+
+    // A print that is started and cancelled.
+    act(() => {
+      window.dispatchEvent(new Event("beforeprint"));
+    });
+    expect(selected()).toEqual(selectionBefore);
+    expect(painted()).toEqual(paintedBefore);
+    act(() => {
+      window.dispatchEvent(new Event("afterprint"));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(selected()).toEqual(selectionBefore);
+    expect(painted()).toEqual(paintedBefore);
+    // Not even repainted: the numbers coming and going are no change.
+    expect(registry.get(QUOTE_HIGHLIGHT)?.ranges).toBe(paintedObjects);
+
+    act(() => {
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Your comment" }),
+      "Why?",
+    );
+    await userEvent.click(
+      within(screen.getByRole("form", { name: "New comment" })).getByRole(
+        "button",
+        { name: "Comment" },
+      ),
+    );
+    await waitFor(() => {
+      expect(opened).toHaveBeenCalledTimes(1);
+    });
+    expect(bodyOf(opened.mock.calls[0]?.[1])).toMatchObject({
+      section: "7f3a9c2e",
+      quote: "at night, afte",
+      occurrence: 1,
+    });
+  });
+
+  it("prints the page's web address, not a crystalline:// name", async () => {
+    serve([thread("t-00000001")]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await findOnScreen("Still true?");
+    const block = document.querySelector<HTMLElement>("header.print-title");
+    const address = `${window.location.origin}/d/eng/reflection/guides/deploying.md`;
+    expect(block).toHaveTextContent(address);
+    expect(block).not.toHaveTextContent("crystalline://");
+    expect(
+      document.querySelector("style[data-print-page]")?.textContent,
+    ).toContain(`@bottom-left { content: "${address}"; }`);
   });
 });
