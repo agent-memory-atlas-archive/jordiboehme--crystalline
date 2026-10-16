@@ -76,10 +76,7 @@ impl Engine {
     pub async fn drop_kept_text(&self, domain: &str, id: &str, scope: &Scope) -> Result<()> {
         let found = self.kept_entry(domain, id, scope).await?;
         let root = self.kept_root()?;
-        kept::remove(&root, &found).map_err(|source| EngineError::Io {
-            path: found.file.display().to_string(),
-            source,
-        })
+        remove_found(&root, &found)
     }
 
     async fn kept_entry(&self, domain: &str, id: &str, scope: &Scope) -> Result<KeptText> {
@@ -154,5 +151,48 @@ impl Engine {
     fn kept_root(&self) -> Result<std::path::PathBuf> {
         self.kept_dir()
             .ok_or_else(|| EngineError::Internal("this process knows no state folder".to_string()))
+    }
+}
+
+/// Delete `found`. A file that went between the lookup and the delete (a
+/// second drop of the same text at the same time) is the same miss as an
+/// id that names nothing.
+fn remove_found(root: &std::path::Path, found: &KeptText) -> Result<()> {
+    kept::remove(root, found).map_err(|source| match source.kind() {
+        std::io::ErrorKind::NotFound => EngineError::NotFound(format!(
+            "no kept text '{}' in domain '{}'",
+            found.id, found.domain
+        )),
+        _ => EngineError::Io {
+            path: found.file.display().to_string(),
+            source,
+        },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The second of two drops of one text answers not found, never an
+    /// internal error.
+    #[test]
+    fn a_second_drop_of_the_same_text_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        kept::write(
+            root,
+            "eng",
+            None,
+            KeptKind::Engram,
+            "a.md",
+            chrono::Utc::now(),
+            "x",
+        )
+        .unwrap();
+        let found = kept::scan(root).remove(0);
+        remove_found(root, &found).unwrap();
+        let err = remove_found(root, &found).unwrap_err();
+        assert!(matches!(err, EngineError::NotFound(_)), "{err:?}");
     }
 }
