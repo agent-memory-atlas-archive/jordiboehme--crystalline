@@ -69,6 +69,7 @@ pub struct JoinQuery {
         (status = 401, description = "No identity.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 403, description = "Viewer role, read-only instance, or a missing/foreign Origin.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 404, description = "No such engram.", body = ProblemDetail, content_type = "application/problem+json"),
+        (status = 409, description = "On a shared database, another instance hosts this file domain and writes it; the detail names it.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 422, description = "`overlay` names somebody whose draft a live share-link shows this caller, and this session has not joined it: seeing a draft and editing it are two steps. The detail is the sentence that says how to take the second.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 503, description = "Session or participant capacity reached.", body = ProblemDetail, content_type = "application/problem+json"),
     ),
@@ -90,15 +91,16 @@ pub async fn join(
             "this instance is read-only, so collaborative editing is disabled",
         ));
     }
-    // A read-only domain takes no save, so no room opens on it. Asked after
+    // A read-only domain takes no save, so no room opens on it, and on a
+    // shared database neither does a file domain another instance hosts: a
+    // room is opened to write, so this is the write check, which claims a
+    // lock nobody holds or whose holder went silent. Asked after
     // `require_domain_write`, which already answered a hidden domain as
     // unregistered.
-    if state.engine.domain_is_read_only(&domain).await {
-        return Err(
-            crate::engine::EngineError::DomainReadOnly(crate::engine::read_only_sentence(&domain))
-                .into(),
-        );
-    }
+    state
+        .engine
+        .refuse_read_only_domain(&domain, &identity.scope())
+        .await?;
     require_same_host_origin(&headers)?;
     // Whose document this room is a room over, decided before the upgrade for
     // the reason every other refusal here is decided there: a socket that

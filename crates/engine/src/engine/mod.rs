@@ -4964,11 +4964,116 @@ impl Engine {
         name: &str,
         scope: &crate::scope::Scope,
     ) -> Result<()> {
-        if !self.domain_is_read_only(name).await {
+        if self.domain_is_read_only(name).await {
+            self.require_domain(name, scope).await?;
+            return Err(EngineError::DomainReadOnly(read_only_sentence(name)));
+        }
+        self.require_file_host(name, scope).await
+    }
+
+    /// The host gate of a write into a file domain on a shared database:
+    /// only the instance that holds the domain's host lock writes it (its
+    /// files are its disk's, and its rows follow them). Part of
+    /// [`Engine::refuse_read_only_domain`], the one check every write meets,
+    /// so every write path meets this too.
+    ///
+    /// The lock row is read on every write (one query), so a host that lost
+    /// the lock while it slept refuses at once. A lock another live instance holds
+    /// refuses, naming that instance (to a caller who is not signed in, as
+    /// "another instance"). A lock nobody holds, or whose holder sent no
+    /// heartbeat for the stale threshold, is claimed here, as a sync claims
+    /// it: every caller of this gate is a write its surface already allowed.
+    /// A command without a daemon claims it too and gives it back when the
+    /// command ends ([`Engine::release_command_locks`]). Off a shared
+    /// database, without an instance id, for a virtual domain and while a
+    /// rename has the domain paused, nothing is checked.
+    pub(crate) async fn require_file_host(
+        &self,
+        name: &str,
+        scope: &crate::scope::Scope,
+    ) -> Result<()> {
+        if self.instance_id.is_empty() || self.is_renaming(name) || !self.store_is_shared().await {
             return Ok(());
         }
-        self.require_domain(name, scope).await?;
-        Err(EngineError::DomainReadOnly(read_only_sentence(name)))
+        let Ok(ContentSource::File { root }) = self.content_source(name) else {
+            return Ok(());
+        };
+        let store = self.store.lock().await;
+        let holder = match store.domain_id(name).await? {
+            Some(id) => store.domain_host(id).await?,
+            None => None,
+        };
+        // Read again even when this instance remembers hosting the domain,
+        // so a host that slept and lost the lock refuses at once rather than
+        // at its next heartbeat.
+        if let Some(host) = holder.as_ref()
+            && host.instance_id == self.instance_id
+            && (self.hosted.read().unwrap().contains_key(name)
+                || !self.lock_is_stale(&host.heartbeat_at))
+        {
+            // This machine holds it (its daemon, an embedded session or
+            // another command), the same disk under the same id.
+            return Ok(());
+        }
+        if let Some(host) = holder.as_ref()
+            && host.instance_id != self.instance_id
+            && !self.lock_is_stale(&host.heartbeat_at)
+        {
+            drop(store);
+            if self.hosted.write().unwrap().remove(name).is_some() {
+                tracing::warn!(
+                    "lost the host lock for domain '{name}'; another instance took over"
+                );
+                self.announce_host_moved(name);
+            }
+            return Err(file_host_refusal(
+                name,
+                &self.host_label_for(&host.label, scope),
+            ));
+        }
+        match self.claim_file_host(&*store, name, &root, false).await? {
+            HostClaim::Acquired { .. } => Ok(()),
+            HostClaim::HeldByOther(host) => Err(file_host_refusal(
+                name,
+                &self.host_label_for(&host.label, scope),
+            )),
+        }
+    }
+
+    /// Whether a write into `name` would pass the host gate without
+    /// claiming anything: off a shared database, without an instance id, or
+    /// while this instance hosts the domain.
+    pub(crate) async fn writes_here(&self, name: &str) -> bool {
+        self.instance_id.is_empty()
+            || self.hosted.read().unwrap().contains_key(name)
+            || !self.store_is_shared().await
+    }
+
+    /// Whether a heartbeat is older than the stale threshold; one that does
+    /// not parse counts as live, the direction that refuses.
+    fn lock_is_stale(&self, beat: &str) -> bool {
+        DateTime::parse_from_rfc3339(beat).is_ok_and(|beat| {
+            Utc::now().signed_duration_since(beat.with_timezone(&Utc))
+                > Duration::seconds(self.stale_secs)
+        })
+    }
+
+    /// The host's label as `scope` may read it: a caller who is not signed
+    /// in (and not the open tier) reads "another instance", since the label
+    /// is a machine's hostname or address.
+    pub(crate) fn host_label_for(&self, label: &str, scope: &crate::scope::Scope) -> String {
+        if matches!(scope, crate::scope::Scope::Anonymous) && self.auth_mcp() {
+            reflection::ANOTHER_INSTANCE.to_string()
+        } else {
+            label.to_string()
+        }
+    }
+
+    /// Give back the host locks a command without a daemon claimed for its
+    /// writes, when it is done. A no-op for a daemon and an embedded
+    /// session, which keep theirs.
+    pub async fn release_command_locks(&self) {
+        self.release_taken_hosts().await;
     }
 
     /// Every registered domain that is read-only right now.
@@ -7579,6 +7684,19 @@ fn yaml_number(value: Option<&YamlValue>) -> Option<f64> {
 /// Why an engine with no instance id walks no file domain of a shared
 /// database (see `Engine::walks_no_file_domain`).
 pub const REFUSED_ANONYMOUS_WALK: &str = "this process does not sync file domains on a shared database: it has no instance id, so it cannot hold a domain's host lock. Start the daemon (crystalline serve), or run crystalline sync";
+
+/// What every refusal of a write on an instance that does not host the file
+/// domain carries, so each surface can
+/// tell it apart (409 over REST).
+pub const FILE_HOSTED_MARK: &str = ", the instance that hosts it;";
+
+/// Why a write into a file domain is refused on an instance that does not
+/// host it: names the host and the two ways on.
+pub(crate) fn file_host_refusal(name: &str, label: &str) -> EngineError {
+    EngineError::Conflict(format!(
+        "domain '{name}' is written by {label}{FILE_HOSTED_MARK} write there, or move the domain here with crystalline sync --domain {name} --take-over"
+    ))
+}
 
 /// Why a walk of a file domain another live instance hosts is refused or
 /// left out: names the host by its label and its last heartbeat, and the two

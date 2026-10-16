@@ -1831,12 +1831,12 @@ impl Engine {
         authors: &SectionAuthors,
         final_save: bool,
     ) -> Result<Value> {
-        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
-            .await?;
         // A room can outlive the state it was opened in: switched off, a
         // pending switch, a home elsewhere or a host lock another instance
         // took make the folder engram content again, or another instance's. The save waits (a refusal the room
         // shows and retries) instead of writing ids and bookkeeping into it.
+        // Before the domain's own write check, whose host gate would answer
+        // a moved lock in the words of an engram write.
         if !matches!(
             self.reflection_state_as(domain, true).await?,
             ReflectionState::On { .. }
@@ -1846,6 +1846,8 @@ impl Engine {
                 "the Reflection of '{domain}' is not on here any more, so this room's text is not saved; this tab keeps a copy, and if the page closes the server keeps one too"
             )));
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         let not_found =
             || EngineError::NotFound(format!("no reflection '{inner}' in domain '{domain}'"));
         let ContentSource::File { root } = self.read_source(domain) else {

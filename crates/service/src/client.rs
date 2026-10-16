@@ -1121,6 +1121,9 @@ pub async fn run_tool(
         None,
     )
     .await;
+    // A write into a file domain of a shared database claimed its host lock
+    // as this machine; a command sends no heartbeat, so it gives it back.
+    engine.release_command_locks().await;
     // A refresh a source call started runs as a task of its own: this
     // process waits for it before it leaves, so a token pair the server
     // rotated is saved.

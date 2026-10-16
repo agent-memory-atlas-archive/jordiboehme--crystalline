@@ -29,7 +29,7 @@ use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use serde::de::DeserializeOwned;
 
-use crate::engine::{EngineError, ONLY_ELSEWHERE};
+use crate::engine::{EngineError, FILE_HOSTED_MARK, ONLY_ELSEWHERE};
 
 /// An error response in RFC 9457 shape. `title` is a short stable slug a
 /// client may match on; `detail` carries the engine's own message verbatim,
@@ -654,6 +654,12 @@ impl From<EngineError> for ApiError {
             // host move has. The request is fine and this instance's disk is
             // not, on every route that writes engrams, pages or files.
             EngineError::Conflict(ref text) if text.contains(ONLY_ELSEWHERE) => {
+                ApiError::conflict(detail)
+            }
+            // And a sixth: a write into a file domain another instance on
+            // this shared database hosts. The request is fine; this instance
+            // is not the one that writes the domain.
+            EngineError::Conflict(ref text) if text.contains(FILE_HOSTED_MARK) => {
                 ApiError::conflict(detail)
             }
             // And a fourth shares the 422 with the malformed requests: the
