@@ -13,12 +13,11 @@
  * in `MarkdownBody.tsx`.
  */
 
-import type { ReactNode } from "react";
 import { Suspense, lazy } from "react";
 
 import type { AssetResolver } from "../api/files";
 import type { WikilinkResolver } from "../wikilinks";
-import type { MarkdownAnchors } from "./MarkdownBody";
+import type { HeadingAside, MarkdownAnchors } from "./MarkdownBody";
 
 const MarkdownBody = lazy(() => import("./MarkdownBody"));
 
@@ -74,7 +73,7 @@ export interface MarkdownProps {
   /** A line drawn under the first `# Title`, outside the text (see `MarkdownBody`). */
   titleNote?: string;
   /** A control at the right end of the first heading, outside the text. */
-  headingAside?: ReactNode;
+  headingAside?: HeadingAside;
 }
 
 export function Markdown(props: MarkdownProps) {

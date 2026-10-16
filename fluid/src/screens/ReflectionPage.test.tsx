@@ -194,7 +194,7 @@ describe("the reflection page", () => {
     serve("curate", true);
     renderApp("/d/eng/reflection/guides/deploying.md");
     const toggle = await screen.findByRole("button", {
-      name: "Sources for Night deploys",
+      name: "1 source for Night deploys",
     });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(toggle);
@@ -221,7 +221,9 @@ describe("the reflection page", () => {
     });
     renderApp("/d/eng/reflection/guides/deploying.md");
     expect(await screen.findByText("Deploys run at night.")).toBeVisible();
-    expect(screen.queryByRole("button", { name: /^Sources for/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /^\d+ sources? for / }),
+    ).toBeNull();
     expect(document.body.innerHTML).not.toContain("runbooks/deploy");
     expect(screen.getByRole("link", { name: "Edit" })).toHaveAttribute(
       "href",
@@ -304,14 +306,16 @@ describe("the reflection page", () => {
     });
     renderApp("/d/eng/reflection/guides/deploying.md");
     expect(await screen.findByText("Deploys run at night.")).toBeVisible();
-    expect(screen.queryByRole("button", { name: /^Sources for/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /^\d+ sources? for / }),
+    ).toBeNull();
   });
 
   it("counts a section's sources at the right end of its heading, with a dot when one changed", async () => {
     serve("curate", true);
     renderApp("/d/eng/reflection/guides/deploying.md");
     const control = await screen.findByRole("button", {
-      name: "Sources for Night deploys",
+      name: "1 source for Night deploys",
     });
     expect(control).toHaveTextContent("1 source");
     const heading = screen.getByRole("heading", {
@@ -330,6 +334,9 @@ describe("the reflection page", () => {
       control.getAttribute("aria-controls") as string,
     ) as HTMLElement;
     expect(list).toHaveClass("absolute");
+    // Laid over the text after the heading, no part of it.
+    expect(heading).not.toContainElement(list);
+    expect(list.closest("[data-anchor-skip]")).not.toBeNull();
     expect(
       within(list).getByRole("link", { name: "Deploy runbook" }),
     ).toBeVisible();
@@ -338,6 +345,15 @@ describe("the reflection page", () => {
     expect(control).toHaveFocus();
     await userEvent.click(control);
     await userEvent.click(screen.getByText("Deploys run at night."));
+    expect(control).toHaveAttribute("aria-expanded", "false");
+    // Focus leaving the control and the list shuts it too.
+    await userEvent.click(control);
+    await userEvent.tab();
+    expect(
+      within(list).getByRole("link", { name: "Deploy runbook" }),
+    ).toHaveFocus();
+    expect(control).toHaveAttribute("aria-expanded", "true");
+    await userEvent.tab();
     expect(control).toHaveAttribute("aria-expanded", "false");
   });
 
@@ -377,14 +393,14 @@ describe("the reflection page", () => {
     });
     renderApp("/d/eng/reflection/guides/deploying.md");
     const control = await screen.findByRole("button", {
-      name: "Sources for Night deploys",
+      name: "2 sources for Night deploys",
     });
     expect(control).toHaveTextContent("2 sources");
     expect(within(control).queryByTestId("sources-changed")).toBeNull();
     expect(control).not.toHaveAccessibleDescription();
     expect(await screen.findByText("Rarely.")).toBeVisible();
     expect(
-      screen.queryByRole("button", { name: "Sources for Day deploys" }),
+      screen.queryByRole("button", { name: / for Day deploys$/ }),
     ).toBeNull();
   });
 
@@ -392,7 +408,7 @@ describe("the reflection page", () => {
     serve("curate", true);
     renderApp("/d/eng/reflection/guides/deploying.md");
     const toggle = await screen.findByRole("button", {
-      name: "Sources for Night deploys",
+      name: "1 source for Night deploys",
     });
     const id = toggle.getAttribute("aria-controls") as string;
     expect(document.getElementById(id)).toHaveAttribute("hidden");

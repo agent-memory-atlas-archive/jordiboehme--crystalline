@@ -118,7 +118,7 @@ test.describe.serial("the Reflection journeys", () => {
     ).toBeVisible();
     await expect(page.locator("main")).not.toContainText("r:c5a0e001");
     await page
-      .getByRole("button", { name: "Sources for Night deploys" })
+      .getByRole("button", { name: /^\d+ sources? for Night deploys$/ })
       .click();
     await expect(page.getByText("missing", { exact: true })).toBeVisible();
   });
@@ -231,7 +231,7 @@ test.describe.serial("the Reflection journeys", () => {
     await expect(passage).toBeVisible();
     // No source engram reaches a contributor: not as a control, not in the page.
     await expect(
-      page.getByRole("button", { name: /^Sources for/ }),
+      page.getByRole("button", { name: /^\d+ sources? for / }),
     ).toHaveCount(0);
     expect(await page.content()).not.toContain("notes/smoke-source");
     // Select "Deploys run at night" the way a drag would leave it. The
@@ -404,6 +404,29 @@ test.describe.serial("the Reflection journeys", () => {
     await added.getByRole("textbox", { name: "Outcome" }).fill("Answered.");
     await added.getByRole("button", { name: "Resolve", exact: true }).click();
     await expect(added).toHaveCount(0);
+  });
+
+  test("at 1100 wide the threads are a sheet too, beside the sidebar", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1100, height: 900 });
+    await signIn(page, USER, PASSWORD);
+    await page.goto(WELCOME);
+    await expect(
+      page.getByText("Deploys run at night, after the batch window."),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("complementary", { name: "Threads" }),
+    ).toHaveCount(0);
+    const pill = page.getByRole("button", { name: "Show 1 thread" });
+    await pill.click();
+    const sheet = page.getByRole("dialog", { name: "Threads" });
+    await expect(
+      sheet.getByRole("article", { name: "Thread on Night deploys" }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(sheet).toHaveCount(0);
+    await expect(pill).toBeFocused();
   });
 
   test("a contributor attaches a file in the live editor", async ({ page }) => {

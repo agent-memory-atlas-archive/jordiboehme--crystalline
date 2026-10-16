@@ -124,6 +124,29 @@ function docWith(threads: () => unknown[]): Answer {
   });
 }
 
+/** The page with one changed source on its section, and the threads given. */
+function docWithSources(threads: unknown[] = [thread("t-00000001")]): Answer {
+  return () => ({
+    domain: "eng",
+    path: "guides/deploying.md",
+    title: "Deploying",
+    markdown: MARKDOWN,
+    checksum: "c1",
+    sections: [
+      {
+        id: "7f3a9c2e",
+        heading: "Night deploys",
+        line: 3,
+        changed: false,
+        sources: [
+          { permalink: "runbooks/deploy", title: "Deploy", state: "changed" },
+        ],
+      },
+    ],
+    threads,
+  });
+}
+
 /** A request's JSON body. */
 function bodyOf(init: RequestInit | undefined): unknown {
   return JSON.parse(typeof init?.body === "string" ? init.body : "null");
@@ -995,6 +1018,8 @@ describe("comments on a reflection", () => {
     await userEvent.click(within(second).getByText("Still true?"));
     expect(second.parentElement).toHaveAttribute("data-picked");
     expect(second.parentElement).toHaveClass("bg-accent-50");
+    // Muted text reads as ink-3 on the wash, to keep 4.5:1.
+    expect(second.parentElement).toHaveClass("[&_.text-muted]:text-ink-3");
     expect(second.querySelector("blockquote")).toHaveClass("border-accent-400");
     expect(first.parentElement).not.toHaveAttribute("data-picked");
     await waitFor(() => {
@@ -1098,7 +1123,7 @@ describe("comments on a reflection", () => {
     );
     renderApp("/d/eng/reflection/guides/deploying.md");
     const control = await screen.findByRole("button", {
-      name: "Sources for Night deploys",
+      name: "1 source for Night deploys",
     });
     expect(control).toHaveTextContent("1 source");
     // The heading keeps its own name, and its quote paints its own words.
@@ -1138,22 +1163,317 @@ describe("comments on a reflection", () => {
     await userEvent.click(screen.getByRole("button", { name: "Comment" }));
     expect(screen.getByText("Deploys run **at** night")).toBeVisible();
   });
+
+  it("keeps a half-typed comment on its own page", async () => {
+    const opened = vi.fn((_path: string, _init?: RequestInit) =>
+      thread("t-00000001"),
+    );
+    serve([], {
+      "/domains/eng/reflection/threads": (path, init) => opened(path, init),
+      "/domains/eng/reflection/tree": () => ({
+        domain: "eng",
+        pact: { path: "PACT.md", title: "PACT", exists: true, open_threads: 0 },
+        nodes: [
+          {
+            kind: "reflection",
+            name: "deploying.md",
+            path: "guides/deploying.md",
+            title: "Deploying",
+          },
+          {
+            kind: "reflection",
+            name: "other.md",
+            path: "other.md",
+            title: "Other page",
+          },
+        ],
+      }),
+      "/domains/eng/reflections/other.md": () => ({
+        domain: "eng",
+        path: "other.md",
+        title: "Other page",
+        markdown:
+          "# Other page\n\n## Rollback\n<!-- r:1a2b3c4d -->\n\nOther words.\n",
+        checksum: "c2",
+        sections: [
+          {
+            id: "1a2b3c4d",
+            heading: "Rollback",
+            line: 3,
+            changed: false,
+            sources: [],
+          },
+        ],
+        threads: [],
+      }),
+    });
+    renderApp("/d/eng/reflection/other.md");
+    expect(await screen.findByText("Other words.")).toBeVisible();
+    await userEvent.click(
+      (
+        await screen.findAllByRole("link", { name: "Deploying" })
+      )[0] as HTMLElement,
+    );
+    await screen.findByText("at");
+    select(textNode("Deploys run "), textNode(" night."), 6);
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Your comment" }),
+      "Half a th",
+    );
+    await userEvent.click(
+      screen.getAllByRole("link", { name: "Other page" })[0] as HTMLElement,
+    );
+    expect(await screen.findByText("Other words.")).toBeVisible();
+    expect(screen.queryByRole("form", { name: "New comment" })).toBeNull();
+    expect(
+      screen.getByText("Select text in the page to comment on it."),
+    ).toBeVisible();
+    // And back on the first page the words are gone too.
+    await userEvent.click(
+      screen.getAllByRole("link", { name: "Deploying" })[0] as HTMLElement,
+    );
+    await screen.findByText("at");
+    expect(screen.queryByRole("form", { name: "New comment" })).toBeNull();
+    expect(opened).not.toHaveBeenCalled();
+  });
+
+  it("paints a quote over a heading on the words only, never the sources count", async () => {
+    let posted: unknown = null;
+    const doc = () => ({
+      domain: "eng",
+      path: "guides/deploying.md",
+      title: "Deploying",
+      markdown: MARKDOWN,
+      checksum: "c1",
+      sections: [
+        {
+          id: "7f3a9c2e",
+          heading: "Night deploys",
+          line: 3,
+          changed: false,
+          sources: [
+            { permalink: "runbooks/deploy", title: "Deploy", state: "changed" },
+          ],
+        },
+      ],
+      threads:
+        posted === null
+          ? []
+          : [
+              thread("t-00000005", {
+                anchor: {
+                  section: "7f3a9c2e",
+                  quote: (posted as { quote: string }).quote,
+                  occurrence: 1,
+                  state: "found",
+                },
+              }),
+            ],
+    });
+    serve([], {
+      "/domains/eng/reflection/threads": (_path, init) => {
+        posted = bodyOf(init);
+        return thread("t-00000005");
+      },
+      "/domains/eng/reflections/guides/deploying.md": doc,
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await screen.findByRole("button", { name: "1 source for Night deploys" });
+    select(textNode("Night deploys"), textNode(" night."), 6);
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Your comment" }),
+      "Both?",
+    );
+    await userEvent.click(
+      within(screen.getByRole("form", { name: "New comment" })).getByRole(
+        "button",
+        { name: "Comment" },
+      ),
+    );
+    expect((posted as { quote?: string } | null)?.quote).toContain(
+      "Night deploys",
+    );
+    await waitFor(() => {
+      expect(registry.get(QUOTE_HIGHLIGHT)?.ranges.length ?? 0).toBeGreaterThan(
+        0,
+      );
+    });
+    const painted = (registry.get(QUOTE_HIGHLIGHT)?.ranges ?? [])
+      .map((r) => r.toString())
+      .join("|");
+    expect(painted).toContain("Night deploys");
+    expect(painted).toContain("Deploys run");
+    expect(painted).not.toContain("source");
+  });
+
+  it("leaves the pick alone on a press of the sources count", async () => {
+    serve([thread("t-00000001")], {
+      "/domains/eng/reflections/guides/deploying.md": docWithSources(),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    await userEvent.click(within(card).getByText("Still true?"));
+    expect(card.parentElement).toHaveAttribute("data-picked");
+    await userEvent.click(
+      screen.getByRole("button", { name: "1 source for Night deploys" }),
+    );
+    expect(card.parentElement).toHaveAttribute("data-picked");
+  });
+
+  it("picks the thread a link names, beside the page too", async () => {
+    serve([thread("t-00000001")]);
+    renderApp("/d/eng/reflection/guides/deploying.md#t-00000001");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    expect(card.parentElement).toHaveAttribute("data-picked");
+    await waitFor(() => {
+      expect(
+        (registry.get(ACTIVE_HIGHLIGHT)?.ranges ?? []).map((r) => r.toString()),
+      ).toEqual(["Deploys run at night"]);
+    });
+  });
+
+  it("says the Comment button is there once per selection, and puts focus on the new thread", async () => {
+    let posted = false;
+    serve([], {
+      "/domains/eng/reflection/threads": () => {
+        posted = true;
+        return thread("t-00000007");
+      },
+      "/domains/eng/reflections/guides/deploying.md": docWith(() =>
+        posted ? [thread("t-00000007")] : [],
+      ),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await screen.findByText("at");
+    const status = screen.getByRole("status", { hidden: true });
+    expect(status).toHaveTextContent("");
+    select(textNode("Deploys run "), textNode(" night."), 6);
+    expect(status).toHaveTextContent("Comment on the selection");
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Your comment" }),
+      "Still true?",
+    );
+    await userEvent.click(
+      within(screen.getByRole("form", { name: "New comment" })).getByRole(
+        "button",
+        { name: "Comment" },
+      ),
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByRole("article", { name: "Thread on Night deploys" }),
+      ).toHaveFocus();
+    });
+    expect(status).toHaveTextContent("Comment posted.");
+  });
 });
 
 describe("threads on a narrow screen", () => {
-  // jsdom has no media queries at all; one is lent for these tests.
+  // jsdom has no media queries at all; one is lent for these tests, with a
+  // window that can grow past the threads breakpoint.
   const media = window as unknown as { matchMedia?: unknown };
+  let wide = false;
+  const listeners = new Set<(event: { matches: boolean }) => void>();
+  const grow = () => {
+    wide = true;
+    act(() => {
+      for (const listener of listeners) {
+        listener({ matches: true });
+      }
+    });
+  };
   beforeEach(() => {
+    wide = false;
+    listeners.clear();
     // Wide enough for the sidebar, too narrow for the threads column.
     media.matchMedia = (query: string) => ({
-      matches: !query.includes("80rem"),
+      get matches() {
+        return wide || !query.includes("80rem");
+      },
       media: query,
-      addEventListener: () => undefined,
-      removeEventListener: () => undefined,
+      addEventListener: (
+        _type: string,
+        listener: (event: { matches: boolean }) => void,
+      ) => {
+        listeners.add(listener);
+      },
+      removeEventListener: (
+        _type: string,
+        listener: (event: { matches: boolean }) => void,
+      ) => {
+        listeners.delete(listener);
+      },
     });
   });
   afterEach(() => {
     delete media.matchMedia;
+  });
+
+  it("shuts the sheet when the window grows past the breakpoint, focus on the column", async () => {
+    serve([thread("t-00000001")]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Show 1 thread" }),
+    );
+    await screen.findByRole("dialog", { name: "Threads" });
+    grow();
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Threads" })).toBeNull();
+    });
+    const column = screen.getByRole("complementary", { name: "Threads" });
+    await waitFor(() => {
+      expect(
+        within(column).getByRole("heading", { name: "Threads" }),
+      ).toHaveFocus();
+    });
+  });
+
+  it("drops an answer that landed while the sheet was shut", async () => {
+    let land: (value: unknown) => void = () => undefined;
+    serve([thread("t-00000001")], {
+      "/domains/eng/reflection/threads/t-00000001/answer": () =>
+        new Promise((resolve) => {
+          land = resolve;
+        }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Show 1 thread" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Threads" });
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: "Answer" }),
+    );
+    await userEvent.type(
+      within(sheet).getByRole("textbox", { name: "Your answer" }),
+      "Yes.",
+    );
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: "Answer" }),
+    );
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Threads" })).toBeNull();
+    });
+    await act(async () => {
+      land(thread("t-00000001"));
+      await Promise.resolve();
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show 1 thread" }),
+    );
+    const again = await screen.findByRole("dialog", { name: "Threads" });
+    expect(
+      within(again).queryByRole("textbox", { name: "Your answer" }),
+    ).toBeNull();
+    expect(within(again).getByRole("button", { name: "Answer" })).toBeVisible();
   });
 
   it("opens the threads from a pill as a sheet, and Escape gives focus back", async () => {

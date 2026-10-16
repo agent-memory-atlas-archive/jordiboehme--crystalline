@@ -343,7 +343,18 @@ const FIRST_TITLE_PROP = "data-first-title";
  * outside its text, handed down the same way as `titleNote` and for the same
  * reason: a changed control re-renders its heading and remounts nothing.
  */
-const HeadingAsideContext = createContext<ReactNode>(undefined);
+const HeadingAsideContext = createContext<HeadingAside | undefined>(undefined);
+
+/**
+ * What a page draws beside its first heading: `aside` inside the heading at
+ * its right end, `after` straight after it in a zero-height box, for
+ * something laid over the text (a list the control opens) that must not be
+ * part of the heading.
+ */
+export interface HeadingAside {
+  aside: ReactNode;
+  after?: ReactNode;
+}
 
 /** The marker the first heading of any level carries for `headingAside`. */
 const FIRST_HEADING = "dataFirstHeading";
@@ -1075,15 +1086,12 @@ function heading(
     // unselectable, passed over by the anchoring, and left out of the
     // heading's name by naming it from the span around its text.
     const side =
-      aside !== undefined &&
-      aside !== null &&
-      aside !== false &&
-      rest[FIRST_HEADING_PROP] === "true" ? (
+      aside !== undefined && rest[FIRST_HEADING_PROP] === "true" ? (
         <span
           data-anchor-skip=""
           className="ml-auto shrink-0 self-center text-sm font-normal tracking-normal select-none print:hidden"
         >
-          {aside}
+          {aside.aside}
         </span>
       ) : null;
     if (side !== null) {
@@ -1100,6 +1108,14 @@ function heading(
             {anchored && id !== undefined && <SectionLink id={id} />}
             {side}
           </Tag>
+          {aside?.after !== undefined && (
+            <div
+              data-anchor-skip=""
+              className="relative h-0 select-none print:hidden"
+            >
+              {aside.after}
+            </div>
+          )}
           {note}
         </>
       );
@@ -1212,7 +1228,7 @@ export default function MarkdownBody({
    * A small control drawn at the right end of the document's first heading
    * and counted as no part of it (see `HeadingAsideContext`).
    */
-  headingAside?: ReactNode;
+  headingAside?: HeadingAside;
   /**
    * One line of text drawn straight under the document's first level-one
    * heading and counted as no part of it: unstamped, unselectable, passed

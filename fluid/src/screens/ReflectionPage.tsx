@@ -15,14 +15,14 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ReactElement } from "react";
+import type { KeyboardEvent, ReactElement } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { FolderInput, Layers, Trash2 } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 
 import { ApiProblem, problemDetail } from "../api/client";
 import type { AssetResolver } from "../api/files";
-import type { ReflectionDoc, SectionView } from "../api/reflection";
+import type { ReflectionDoc, SectionView, SourceView } from "../api/reflection";
 import {
   changedVersions,
   deleteReflection,
@@ -44,6 +44,7 @@ import { AttachmentsSection } from "../components/AttachmentsSection";
 import { DestructiveAction } from "../components/DestructiveAction";
 import { LazyBoundary } from "../components/LazyBoundary";
 import { Markdown } from "../components/Markdown";
+import type { HeadingAside } from "../components/MarkdownBody";
 import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { ReflectionThreads, sourceChip } from "../components/ReflectionThreads";
@@ -183,7 +184,13 @@ export default function ReflectionPage(): ReactElement {
   }
   return (
     <>
+      {/*
+        Keyed by the page: a comment half typed, a picked thread or an open
+        sheet belongs to the page it was made on and must not follow the
+        reader to the next one.
+      */}
       <PageBody
+        key={`${domain}/${path}`}
         domain={domain}
         path={path}
         right={status.data.right}
@@ -540,12 +547,10 @@ function PageSection({
   // two same-named headings apart.
   const domId = section.id === null ? `s-h${index}` : `s-${section.id}`;
   const sources =
-    engramsVisible &&
-    view?.sources !== null &&
-    view?.sources !== undefined &&
-    view.sources.length > 0 ? (
-      <Sources domain={domain} heading={section.heading} view={view} />
-    ) : null;
+    engramsVisible && view?.sources !== null && view?.sources !== undefined
+      ? view.sources
+      : [];
+  const aside = useSources(domain, section.heading, sources);
   return (
     <section
       id={domId}
@@ -560,9 +565,13 @@ function PageSection({
         A section with no heading of its own carries its sources on a line
         of their own above the text, skipped by the anchoring like the rest.
       */}
-      {sources !== null && !headed && (
-        <div data-anchor-skip="" className="flex justify-end select-none">
-          {sources}
+      {aside !== null && !headed && (
+        <div
+          data-anchor-skip=""
+          className="relative flex justify-end select-none"
+        >
+          {aside.aside}
+          <div className="absolute top-full right-0">{aside.after}</div>
         </div>
       )}
       <Markdown
@@ -570,7 +579,7 @@ function PageSection({
         assets={assets}
         sourceSpans
         {...(titleNote === undefined ? {} : { titleNote })}
-        {...(sources !== null && headed ? { headingAside: sources } : {})}
+        {...(aside !== null && headed ? { headingAside: aside } : {})}
       />
     </section>
   );
@@ -579,83 +588,91 @@ function PageSection({
 /**
  * The engrams a section was built from, as a small count at the right end of
  * its heading: "1 source", with an amber dot when one of them changed since
- * (or was retired or is missing). It opens the list over the text rather
- * than pushing the text down; Escape or a press elsewhere shuts it.
+ * (or was retired or is missing). The count is a button named "1 source for
+ * <heading>"; the list it opens is laid over the text below the heading,
+ * outside it, and shuts on Escape, a press elsewhere or focus leaving it.
+ * Null for a section with no sources: nothing is drawn.
  */
-function Sources({
-  domain,
-  heading,
-  view,
-}: {
-  domain: string;
-  heading: string;
-  view: SectionView;
-}): ReactElement {
+function useSources(
+  domain: string,
+  heading: string,
+  sources: SourceView[],
+): HeadingAside | null {
   const [open, setOpen] = useState(false);
   const panel = useId();
   const note = useId();
-  const box = useRef<HTMLSpanElement | null>(null);
   const button = useRef<HTMLButtonElement | null>(null);
-  const sources = view.sources ?? [];
+  const list = useRef<HTMLUListElement | null>(null);
   const changed = sources.some((source) => source.state === "changed");
   const stale = sources.some((source) => source.state !== "current");
+  const count = plural(sources.length, "source", "sources");
   useEffect(() => {
     if (!open) {
       return;
     }
-    const away = (event: PointerEvent) => {
-      if (!box.current?.contains(event.target as Node)) {
+    const away = (event: Event) => {
+      const at = event.target as Node;
+      if (!button.current?.contains(at) && !list.current?.contains(at)) {
         setOpen(false);
       }
     };
     document.addEventListener("pointerdown", away);
+    document.addEventListener("focusin", away);
     return () => {
       document.removeEventListener("pointerdown", away);
+      document.removeEventListener("focusin", away);
     };
   }, [open]);
-  return (
-    <span
-      ref={box}
-      className="relative inline-flex"
-      onKeyDown={(event) => {
-        if (event.key === "Escape" && open) {
-          event.stopPropagation();
-          setOpen(false);
-          button.current?.focus();
-        }
-      }}
-    >
-      <button
-        ref={button}
-        type="button"
-        aria-expanded={open}
-        aria-controls={panel}
-        aria-label={`Sources for ${heading}`}
-        aria-describedby={stale ? note : undefined}
-        onClick={() => {
-          setOpen(!open);
-        }}
-        className={`inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[12.5px] leading-5 font-medium text-muted hover:bg-sunken hover:text-ink-3 ${FOCUS_RING}`}
-      >
-        <Layers aria-hidden size={14} />
-        {plural(sources.length, "source", "sources")}
+  const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape" && open) {
+      event.stopPropagation();
+      setOpen(false);
+      button.current?.focus();
+    }
+  };
+  if (sources.length === 0) {
+    return null;
+  }
+  return {
+    aside: (
+      <>
+        <button
+          ref={button}
+          type="button"
+          aria-expanded={open}
+          aria-controls={panel}
+          aria-label={`${count} for ${heading}`}
+          aria-describedby={stale ? note : undefined}
+          onKeyDown={onKeyDown}
+          onClick={() => {
+            setOpen(!open);
+          }}
+          className={`inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[12.5px] leading-5 font-medium text-muted hover:bg-sunken hover:text-ink-3 ${FOCUS_RING}`}
+        >
+          <Layers aria-hidden size={14} />
+          {count}
+          {stale && (
+            <span
+              aria-hidden
+              data-testid="sources-changed"
+              className="size-1.5 rounded-full bg-(--mark-rule)"
+            />
+          )}
+        </button>
         {stale && (
-          <span
-            aria-hidden
-            data-testid="sources-changed"
-            className="size-1.5 rounded-full bg-(--mark-rule)"
-          />
+          <span id={note} hidden>
+            {changed ? "A source changed." : "A source is retired or missing."}
+          </span>
         )}
-      </button>
-      {stale && (
-        <span id={note} hidden>
-          {changed ? "A source changed." : "A source is retired or missing."}
-        </span>
-      )}
+      </>
+    ),
+    after: (
       <ul
+        ref={list}
         id={panel}
         hidden={!open}
-        className="absolute top-full right-0 z-30 mt-1.5 flex w-max max-w-[min(22rem,calc(100vw-2rem))] flex-col gap-1 rounded-lg border border-hair bg-raised p-2 text-sm text-ink shadow-pop"
+        onKeyDown={onKeyDown}
+        className="absolute top-0 right-0 z-30 flex w-max max-w-[min(22rem,calc(100vw-2rem))] flex-col gap-1 rounded-lg border border-hair bg-raised p-2 text-sm text-ink shadow-pop"
       >
         {sources.map((source) => (
           <li
@@ -669,6 +686,6 @@ function Sources({
           </li>
         ))}
       </ul>
-    </span>
-  );
+    ),
+  };
 }

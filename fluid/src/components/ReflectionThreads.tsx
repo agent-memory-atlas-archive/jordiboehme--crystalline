@@ -61,9 +61,11 @@ import type { ReflectionRight } from "../api/reflectionDomains";
 import { atLeast } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { plural, relativeTime } from "../format";
+import { useSaid } from "./useSaid";
 import type { SelectionAnchor } from "../reflectionQuotes";
 import {
   SECTION_ATTR,
+  SKIP_ATTR,
   displayQuote,
   domRange,
   paintQuotes,
@@ -118,31 +120,71 @@ function useColumn(): boolean {
  * forms: the sheet unmounts what it shows when it closes, and closing it must
  * not throw away an answer in progress.
  */
-const Kept = createContext<Map<string, unknown> | null>(null);
+const Kept = createContext<{
+  store: Map<string, unknown>;
+  page: string;
+} | null>(null);
 
-/** A piece of state that outlives its component, under `key`. */
+/** A piece of state that outlives its component, under `key` on this page. */
 function useKept<T>(key: string, initial: T): [T, (next: T) => void] {
-  const store = useContext(Kept);
+  const kept = useContext(Kept);
+  const at = `${kept?.page ?? ""}\n${key}`;
   const [value, setValue] = useState<T>(() =>
-    store?.has(key) ? (store.get(key) as T) : initial,
+    kept?.store.has(at) ? (kept.store.get(at) as T) : initial,
   );
   const set = (next: T) => {
     if (next === initial) {
-      store?.delete(key);
+      kept?.store.delete(at);
     } else {
-      store?.set(key, next);
+      kept?.store.set(at, next);
     }
     setValue(next);
   };
   return [value, set];
 }
 
-/** Forget what `useKept` holds under `key`. */
+/** Forget what `useKept` holds under `key` on this page. */
 function useForget(): (key: string) => void {
-  const store = useContext(Kept);
+  const kept = useContext(Kept);
   return (key) => {
-    store?.delete(key);
+    kept?.store.delete(`${kept.page}\n${key}`);
   };
+}
+
+/**
+ * The text nodes of `range` outside notes the page drew (`data-anchor-skip`):
+ * a quote that runs over a heading paints the heading's words, not the
+ * sources control or the title note beside them.
+ */
+function paintable(range: Range): Range[] {
+  const root = range.commonAncestorContainer;
+  const host =
+    root.nodeType === Node.TEXT_NODE ? root.parentElement : (root as Element);
+  if (host === null || host.querySelector(`[${SKIP_ATTR}]`) === null) {
+    return [range];
+  }
+  const parts: Range[] = [];
+  const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (
+      !range.intersectsNode(node) ||
+      node.parentElement?.closest(`[${SKIP_ATTR}]`)
+    ) {
+      continue;
+    }
+    const part = document.createRange();
+    part.selectNodeContents(node);
+    if (node === range.startContainer) {
+      part.setStart(node, range.startOffset);
+    }
+    if (node === range.endContainer) {
+      part.setEnd(node, range.endOffset);
+    }
+    if (!part.collapsed) {
+      parts.push(part);
+    }
+  }
+  return parts;
 }
 
 /** A caret position under a point, in the browsers that answer it. */
@@ -431,7 +473,18 @@ export function ReflectionThreads({
   const [picked, setPicked] = useState<string | null>(null);
   const [showResolved, setShowResolved] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [kept] = useState(() => new Map<string, unknown>());
+  const [store] = useState(() => new Map<string, unknown>());
+  const kept = useMemo(
+    () => ({ store, page: `${domain}/${path}` }),
+    [store, domain, path],
+  );
+  const commentKey = `${kept.page}\n${COMMENT_KEY}`;
+  const [said, say] = useSaid(4000);
+  // Whether a selection was captured a moment ago, so the Comment button is
+  // announced once per selection, not at every change of it.
+  const hadCapture = useRef(false);
+  // The thread a comment just opened, focused once the page lists it.
+  const focusNew = useRef<string | null>(null);
   const commentButton = useRef<HTMLButtonElement | null>(null);
   const pillRef = useRef<HTMLButtonElement | null>(null);
   const threadsHeading = useRef<HTMLHeadingElement | null>(null);
@@ -442,17 +495,26 @@ export function ReflectionThreads({
   const painted = useRef(new Map<string, Range>());
   // The thread the sheet opens at, once, when a tap or a link asked for it.
   const [openAt, setOpenAt] = useState<string | null>(null);
-  // A link to a thread (`#t-<hex>`) on a narrow screen opens the sheet at
-  // it: the column that would hold it is not on the page.
+  // A link to a thread (`#t-<hex>`) picks it; on a narrow screen it also
+  // opens the sheet at it, as the column that would hold it is not there.
   const [seenHash, setSeenHash] = useState<string | null>(null);
   if (hash !== seenHash) {
     setSeenHash(hash);
     const id = decodeURIComponent(hash.slice(1));
-    if (!column && doc.threads.some((t) => t.id === id)) {
+    if (doc.threads.some((t) => t.id === id)) {
       setPicked(id);
-      setOpenAt(id);
-      setSheetOpen(true);
+      if (!column) {
+        setOpenAt(id);
+        setSheetOpen(true);
+      }
     }
+  }
+  // Crossing the breakpoint shuts the sheet, as the sidebar drawer does: the
+  // column that takes over shows the same threads.
+  const [seenColumn, setSeenColumn] = useState(column);
+  if (column !== seenColumn) {
+    setSeenColumn(column);
+    setSheetOpen(false);
   }
 
   useEffect(() => {
@@ -480,19 +542,25 @@ export function ReflectionThreads({
           document.activeElement instanceof HTMLInputElement ||
           document.activeElement instanceof HTMLTextAreaElement;
         if (!range.collapsed && !typing) {
+          hadCapture.current = false;
           setCaptured(null);
         }
         return;
       }
-      setCaptured(
-        range.collapsed ? null : selectionAnchor(root, range, sections),
-      );
+      const next = range.collapsed
+        ? null
+        : selectionAnchor(root, range, sections);
+      if (next !== null && !hadCapture.current) {
+        say("Comment on the selection");
+      }
+      hadCapture.current = next !== null;
+      setCaptured(next);
     };
     document.addEventListener("selectionchange", read);
     return () => {
       document.removeEventListener("selectionchange", read);
     };
-  }, [articleRef, sections]);
+  }, [articleRef, sections, say]);
 
   const resolved = useQuery({
     queryKey: reflectionThreadsKey(domain, path, "resolved"),
@@ -519,6 +587,33 @@ export function ReflectionThreads({
   );
 
   const shown = hovered ?? picked;
+
+  // Words kept for a thread that is no longer open (resolved, or gone) have
+  // nowhere to go back to.
+  useEffect(() => {
+    const live = new Set(open.map((o) => o.thread.id));
+    const prefix = `${kept.page}\n`;
+    for (const key of [...kept.store.keys()]) {
+      if (!key.startsWith(prefix)) {
+        continue;
+      }
+      const id = key.slice(prefix.length).split(":")[0] ?? "";
+      if (id.startsWith("t-") && !live.has(id)) {
+        kept.store.delete(key);
+      }
+    }
+  }, [open, kept]);
+
+  // A comment just sent: its thread takes the keyboard once it is listed,
+  // read out by its name.
+  useEffect(() => {
+    const id = focusNew.current;
+    if (id === null || !doc.threads.some((t) => t.id === id)) {
+      return;
+    }
+    focusNew.current = null;
+    document.getElementById(id)?.focus();
+  }, [doc.threads]);
 
   // Paint the quotes still on the page, again whenever the rendered page
   // changes: the sections render lazily, so the first paint may find nothing.
@@ -553,10 +648,11 @@ export function ReflectionThreads({
             ? domRange(scope, at.start, at.end, section.text)
             : null;
         if (range !== null) {
-          all.push(range);
+          const parts = paintable(range);
+          all.push(...parts);
           painted.current.set(thread.id, range);
           if (thread.id === shown) {
-            current.push(range);
+            current.push(...parts);
           }
         }
       }
@@ -580,6 +676,12 @@ export function ReflectionThreads({
       return;
     }
     const onClick = (event: MouseEvent) => {
+      // A control on the page (the sources count, a link symbol) or a note
+      // it drew is no tap on the text.
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest(`[${SKIP_ATTR}], button`)) {
+        return;
+      }
       const selection = window.getSelection();
       if (selection !== null && !selection.isCollapsed) {
         return;
@@ -621,8 +723,11 @@ export function ReflectionThreads({
           : {}),
         text,
       }),
-    onSuccess: () => {
-      kept.delete(COMMENT_KEY);
+    onSuccess: (thread) => {
+      kept.store.delete(commentKey);
+      focusNew.current = thread?.id ?? null;
+      say("Comment posted.");
+      hadCapture.current = false;
       backToComment.current = true;
       setDrafting(null);
       setCaptured(null);
@@ -746,7 +851,7 @@ export function ReflectionThreads({
           pending={comment.isPending}
           error={comment.error}
           onCancel={() => {
-            kept.delete(COMMENT_KEY);
+            kept.store.delete(commentKey);
             comment.reset();
             backToComment.current = true;
             setDrafting(null);
@@ -775,7 +880,8 @@ export function ReflectionThreads({
                   data-picked={picked === thread.id ? "" : undefined}
                   className={
                     picked === thread.id
-                      ? "-mx-3 rounded-[10px] bg-accent-50 px-3 py-4 dark:bg-accent-400/8"
+                      ? // Muted text turns ink-3 on the wash, to keep 4.5:1.
+                        "-mx-3 rounded-[10px] bg-accent-50 px-3 py-4 dark:bg-accent-400/16 [&_.text-muted]:text-ink-3"
                       : "border-t border-hair py-4"
                   }
                   onFocusCapture={() => {
@@ -822,10 +928,18 @@ export function ReflectionThreads({
     </>
   );
 
+  // Outside the sheet, so it speaks whether the sheet is open or not.
+  const status = (
+    <p role="status" className="sr-only">
+      {said ?? ""}
+    </p>
+  );
+
   if (column) {
     return (
       <Kept.Provider value={kept}>
         <aside aria-label="Threads" className="flex flex-col gap-3">
+          {status}
           {body}
         </aside>
       </Kept.Provider>
@@ -836,6 +950,7 @@ export function ReflectionThreads({
     open.length === 0 ? "Threads" : plural(open.length, "thread", "threads");
   return (
     <Kept.Provider value={kept}>
+      {status}
       <Dialog.Root open={sheetOpen} onOpenChange={setSheetOpen}>
         {/*
           A plain button rather than radix's trigger, whose code would land in
@@ -868,7 +983,9 @@ export function ReflectionThreads({
             aria-modal="true"
             onCloseAutoFocus={(event) => {
               event.preventDefault();
-              pillRef.current?.focus();
+              // Back to the pill; when the column took over (the window grew
+              // past the breakpoint) to the column's heading.
+              (pillRef.current ?? threadsHeading.current)?.focus();
             }}
             // At the thread a tap or a link asked for, else at the heading:
             // the first control (the switch) is not where a reader starts.
@@ -1078,13 +1195,26 @@ function OpenActions({
     backTo.current = step;
     setForm(null);
   };
+  // The kept words go when the step lands, at the mutation rather than in
+  // the call's own callback: a sheet shut in between unmounts this row, and
+  // only the mutation's callbacks still run then.
   const answer = useMutation({
     mutationFn: (text: string) =>
       stepThread(domain, thread.id, "answer", { path, text }),
+    onSuccess: () => {
+      forget(`${thread.id}:answer`);
+      forget(`${thread.id}:form`);
+      void onAnswered();
+    },
   });
   const resolve = useMutation({
     mutationFn: (outcome: string) =>
       stepThread(domain, thread.id, "resolve", { path, outcome }),
+    onSuccess: () => {
+      forget(`${thread.id}:resolve`);
+      forget(`${thread.id}:form`);
+      void onResolved();
+    },
   });
   const openForm = (step: Step) => {
     answer.reset();
@@ -1103,7 +1233,6 @@ function OpenActions({
           answer.mutate(text, {
             onSuccess: () => {
               close("answer");
-              void onAnswered();
             },
           });
         }}
@@ -1126,9 +1255,7 @@ function OpenActions({
             onSuccess: () => {
               // The thread moves out of this list, so focus goes to the
               // column's heading (set by `onResolved`), not back here.
-              forget(`${thread.id}:resolve`);
               setForm(null);
-              void onResolved();
             },
           });
         }}
