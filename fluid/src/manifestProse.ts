@@ -122,21 +122,27 @@ function fenceMarker(line: string): { char: string; count: number } | null {
 function fenceTracker(): (line: string) => boolean {
   let open: { char: string; count: number } | null = null;
   return (line) => {
-    const marker = fenceMarker(line);
     if (open === null) {
+      const marker = fenceMarker(line);
       open = marker;
       return marker !== null;
     }
-    if (
-      marker !== null &&
-      marker.char === open.char &&
-      marker.count >= open.count &&
-      line.trimStart().slice(marker.count).trim() === ""
-    ) {
+    if (closes(open, line)) {
       open = null;
     }
     return true;
   };
+}
+
+/** Whether `line` closes a fence opened by `open` (`FenceTracker`'s rule). */
+function closes(open: { char: string; count: number }, line: string): boolean {
+  const marker = fenceMarker(line);
+  return (
+    marker !== null &&
+    marker.char === open.char &&
+    marker.count >= open.count &&
+    line.trimStart().slice(marker.count).trim() === ""
+  );
 }
 
 /** Split `markdown` (frontmatter and all) for the front page. */
@@ -203,11 +209,43 @@ function finish(section: {
   lines: string[];
 }): ManifestSection {
   // What a configuration section says beside its declarations: every line
-  // that is not a top-level bullet, the bullets being what the parser reads.
-  const inFence = fenceTracker();
-  const notes = section.lines.filter(
-    (line) => inFence(line) || !line.startsWith("- "),
-  );
+  // that is not a top-level bullet or part of one. An indented line
+  // (a continuation, a nested bullet) stays with the bullet above it, across
+  // a blank line too; a fence at the margin is prose and runs to its close.
+  const notes: string[] = [];
+  let fence: { char: string; count: number } | null = null;
+  let inBullet = false;
+  for (const line of section.lines) {
+    if (fence !== null) {
+      notes.push(line);
+      if (closes(fence, line)) {
+        fence = null;
+      }
+      continue;
+    }
+    const marker = fenceMarker(line);
+    if (marker !== null && !(inBullet && /^[ \t]/.test(line))) {
+      fence = marker;
+      inBullet = false;
+      notes.push(line);
+      continue;
+    }
+    if (line.startsWith("- ")) {
+      inBullet = true;
+      continue;
+    }
+    if (line.trim() === "") {
+      if (!inBullet) {
+        notes.push(line);
+      }
+      continue;
+    }
+    if (inBullet && /^[ \t]/.test(line)) {
+      continue;
+    }
+    inBullet = false;
+    notes.push(line);
+  }
   return {
     heading: section.heading,
     key: section.key,

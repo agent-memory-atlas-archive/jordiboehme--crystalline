@@ -166,6 +166,30 @@ describe("splitManifest, the edges the core parser defines", () => {
     expect(split.sections).toEqual([]);
   });
 
+  it("keeps a bullet's continuation lines and nested bullets with it, not in the notes", () => {
+    const source = [
+      "# T",
+      "",
+      "## Provisioning",
+      "",
+      "- skills: skills",
+      "  installed for every harness",
+      "",
+      "  - nested detail",
+      "- agents: agents",
+      "",
+      "Run setup after a change.",
+      "",
+      "```sh",
+      "- not a bullet, a code line",
+      "```",
+    ].join("\n");
+    const split = splitManifest(source, keys);
+    expect(split.config[0]?.notes).toBe(
+      "Run setup after a change.\n\n```sh\n- not a bullet, a code line\n```",
+    );
+  });
+
   it("keeps what a configuration section says beside its bullets", () => {
     const source = [
       "# T",

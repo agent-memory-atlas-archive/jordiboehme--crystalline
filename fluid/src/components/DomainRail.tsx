@@ -37,6 +37,7 @@ export function DomainRail({
   members,
   showReviewMode,
   showBackup,
+  hasManifest,
 }: {
   domain: string;
   summary: DomainSummary | undefined;
@@ -50,6 +51,8 @@ export function DomainRail({
   showReviewMode: boolean;
   /** Whether the backup card is offered to this caller (admins). */
   showBackup: boolean;
+  /** Whether the domain has a MANIFEST, which no count here includes. */
+  hasManifest: boolean;
 }): ReactElement {
   const declared =
     sections?.policies.filter((row) => row.declared !== null).length ?? null;
@@ -58,7 +61,12 @@ export function DomainRail({
       aria-label="About this domain"
       className="flex flex-col divide-y divide-hair text-sm [&>*]:py-[18px] [&>*:first-child]:pt-0"
     >
-      <About summary={summary} pages={pages} members={members} />
+      <About
+        summary={summary}
+        pages={pages}
+        members={members}
+        hasManifest={hasManifest}
+      />
       {config.map((section) => (
         <ConfigBlock
           key={section.key}
@@ -67,8 +75,8 @@ export function DomainRail({
           domain={domain}
         />
       ))}
-      <section aria-labelledby="rail-settings">
-        <h2 id="rail-settings" className={`mb-2 ${RAIL_LABEL}`}>
+      <section aria-labelledby="page-rail-settings">
+        <h2 id="page-rail-settings" className={`mb-2 ${RAIL_LABEL}`}>
           Settings
         </h2>
         <ul className="flex flex-col">
@@ -118,10 +126,12 @@ function About({
   summary,
   pages,
   members,
+  hasManifest,
 }: {
   summary: DomainSummary | undefined;
   pages: number | null;
   members: MembersResponse | undefined;
+  hasManifest: boolean;
 }) {
   if (summary === undefined) {
     return null;
@@ -129,13 +139,19 @@ function About({
   const holds = [
     summary.engrams === null
       ? null
-      : plural(summary.engrams, "engram", "engrams"),
+      : plural(
+          // The MANIFEST is the page, not one of the engrams it introduces,
+          // the same count the list's heading gives.
+          Math.max(0, summary.engrams - (hasManifest ? 1 : 0)),
+          "engram",
+          "engrams",
+        ),
     pages === null ? null : plural(pages, "page", "pages"),
   ].filter((part) => part !== null);
   const isPrivate = summary.private || members?.visibility === "private";
   return (
-    <section aria-labelledby="rail-about">
-      <h2 id="rail-about" className={`mb-2 ${RAIL_LABEL}`}>
+    <section aria-labelledby="page-rail-about">
+      <h2 id="page-rail-about" className={`mb-2 ${RAIL_LABEL}`}>
         About
       </h2>
       <dl className="flex flex-col">
@@ -182,7 +198,7 @@ function ConfigBlock({
   sections: ManifestSections | null;
   domain: string;
 }) {
-  const id = `rail-${section.key.replace(/\s+/g, "-")}`;
+  const id = `page-rail-${section.key.replace(/\s+/g, "-")}`;
   let body: ReactNode;
   if (section.key === "provisioning" && sections?.provisioning != null) {
     body = (

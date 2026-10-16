@@ -20,6 +20,7 @@ import {
   fetchSyncStatus,
   syncStatusKey,
 } from "../api/admin";
+import { problemDetail } from "../api/client";
 import { fetchManifest, manifestKey, treeQuery } from "../api/domain";
 import type { ManifestSections } from "../api/domain";
 import { useAuth } from "../auth/AuthContext";
@@ -54,10 +55,20 @@ export default function DomainSettings() {
   if (isMissing(tree.error)) {
     return <MissingOrReflection domain={domain} />;
   }
-  return <Settings key={domain} domain={domain} />;
+  // The tree read is one of the answers the screen waits for, so an
+  // unknown domain never flashes its cards before the 404 lands.
+  return (
+    <Settings key={domain} domain={domain} treeAnswered={!tree.isPending} />
+  );
 }
 
-function Settings({ domain }: { domain: string }) {
+function Settings({
+  domain,
+  treeAnswered,
+}: {
+  domain: string;
+  treeAnswered: boolean;
+}) {
   const { capabilities } = useAuth();
   const { canWrite } = useDomainWritable(domain);
   const navigate = useNavigate();
@@ -112,6 +123,7 @@ function Settings({ domain }: { domain: string }) {
   // card mounting below asks a refused read again, and the screen must not
   // fold back into its loading state (and unmount that card) while it does.
   const answered =
+    treeAnswered &&
     !listing.isPending &&
     !members.isPending &&
     !manifest.isPending &&
@@ -120,20 +132,18 @@ function Settings({ domain }: { domain: string }) {
   if (answered && !settled) {
     setSettled(true);
   }
-  // A link from the front page's rail opens at its block, once the blocks
-  // above it are drawn and it has stopped moving.
+  // A link from the front page's rail opens at its block, once the screen
+  // has settled: every block is drawn in the same commit, so the target is
+  // there then, or the reader may not see it at all.
   const hash = location.hash;
-  const scrolled = useRef("");
   useEffect(() => {
-    if (hash === "" || !settled || scrolled.current === hash) {
+    if (hash === "" || !settled) {
       return;
     }
-    const target = document.getElementById(hash.slice(1));
-    if (target !== null) {
-      scrolled.current = hash;
-      target.scrollIntoView?.({ block: "start" });
-    }
-  });
+    document.getElementById(hash.slice(1))?.scrollIntoView?.({
+      block: "start",
+    });
+  }, [hash, settled]);
 
   const commands = useMemo<readonly PaletteCommand[]>(() => {
     const rows: PaletteCommand[] = [];
@@ -215,6 +225,18 @@ function Settings({ domain }: { domain: string }) {
         </div>
       )}
 
+      {/*
+        A refused MANIFEST read, said the way the front page says it, so the
+        missing policies and sections below are not read as "none declared".
+      */}
+      {manifest.error !== null && !isMissing(manifest.error) && (
+        <p
+          role="alert"
+          className="rounded bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
+        >
+          {problemDetail(manifest.error)}
+        </p>
+      )}
       {sections !== null && (
         <ConfigSections sections={sections} onStart={onStart} />
       )}

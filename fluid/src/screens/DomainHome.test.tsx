@@ -831,35 +831,64 @@ describe("the domain screen", () => {
     ).toHaveAttribute("id", "when-to-use");
   });
 
-  it("does not list the MANIFEST under itself", async () => {
-    serve({
+  /**
+   * The MANIFEST as the server lists it: a row in the root tree whose file is
+   * the root MANIFEST.md, under a permalink of its own choosing, and a hit
+   * in every listing that is not filtered away from it.
+   */
+  function withManifestRow(): Record<string, Answer> {
+    const manifestHit = {
+      domain: "eng",
+      permalink: "about-eng",
+      title: "MANIFEST",
+      engram_type: "manifest",
+      kind: "engram",
+      status: "current",
+      tags: [],
+    };
+    return {
+      "/domains/eng/tree": (path) => {
+        const tree = treeResponse(path) as {
+          engrams: Record<string, unknown>[];
+        };
+        return path.includes("path=")
+          ? tree
+          : {
+              ...tree,
+              engrams: [
+                {
+                  permalink: "about-eng",
+                  title: "MANIFEST",
+                  type: "manifest",
+                  path: "MANIFEST.md",
+                },
+                ...tree.engrams,
+              ],
+            };
+      },
       "/domains/eng/engrams": (path) => {
         const page = engramsResponse(path) as {
           total: number;
           count: number;
           hits: Record<string, unknown>[];
         };
+        if (path.includes("type=manifest")) {
+          return { ...page, total: 1, count: 1, hits: [manifestHit] };
+        }
         return path.includes("tags=")
           ? page
           : {
               ...page,
               total: page.total + 1,
               count: page.count + 1,
-              hits: [
-                {
-                  domain: "eng",
-                  permalink: "manifest",
-                  title: "MANIFEST",
-                  engram_type: "manifest",
-                  kind: "engram",
-                  status: "current",
-                  tags: [],
-                },
-                ...page.hits,
-              ],
+              hits: [manifestHit, ...page.hits],
             };
       },
-    });
+    };
+  }
+
+  it("does not list the MANIFEST under itself, and no count includes it", async () => {
+    serve(withManifestRow());
 
     renderApp("/d/eng");
 
@@ -868,8 +897,22 @@ describe("the domain screen", () => {
     expect(
       within(engrams).queryByRole("link", { name: /MANIFEST/ }),
     ).toBeNull();
-    // And the count beside the heading leaves it out too.
+    // The heading and About agree: 2 of the listing's 3 and 3 of the
+    // summary's 4, the MANIFEST left out of both.
     expect(await within(engrams).findByText("2")).toBeVisible();
+    const about = await screen.findByRole("region", { name: "About" });
+    expect(await within(about).findByText("3 engrams")).toBeVisible();
+  });
+
+  it("still finds the MANIFEST through an explicit type filter", async () => {
+    serve(withManifestRow());
+
+    renderApp("/d/eng?type=manifest");
+
+    const engrams = await screen.findByRole("region", { name: "Engrams" });
+    expect(
+      await within(engrams).findByRole("link", { name: /^MANIFEST, / }),
+    ).toHaveAttribute("href", "/d/eng/e/about-eng");
   });
 
   it("reads prose, then the engrams, then the rail, in document order", async () => {
@@ -1850,6 +1893,113 @@ describe("the team sync card", () => {
     await userEvent.click(line);
     expect(line).toHaveAttribute("aria-expanded", "true");
     expect(panel.className).not.toMatch(/(^| )hidden( |$)/);
+  });
+
+  /** The phone line and the panel behind it, once the status has landed. */
+  async function phoneBanners(): Promise<{
+    line: HTMLElement;
+    panel: HTMLElement;
+  }> {
+    const body = await screenBody();
+    const card = await within(body).findByRole("region", { name: "Team sync" });
+    const panel = card.parentElement as HTMLElement;
+    const line = await within(body).findByText("Team sync", {
+      selector: "span",
+    });
+    return { line: line.parentElement as HTMLElement, panel };
+  }
+
+  /** Whether the panel is folded away below md. */
+  function folded(panel: HTMLElement): boolean {
+    return /(^| )hidden( |$)/.test(panel.className);
+  }
+
+  for (const [label, overrides, words] of [
+    [
+      "a failed origin check",
+      { probe_error: "GitHub did not answer" },
+      "the last check failed",
+    ],
+    [
+      "no connection",
+      { connection: { connected: false, user: null, token_store: null } },
+      "not connected",
+    ],
+    ["conflicts", { conflicts: ["notes/a.md"] }, "1 conflict"],
+    [
+      "declined proposals",
+      { declined_proposals: [{ number: 3 }, { number: 4 }] },
+      "2 declined proposals",
+    ],
+  ] as const) {
+    it(`keeps the team banners open on a phone for ${label}, and says so in the line`, async () => {
+      serve(
+        { "/domains/eng/sync": () => syncResponse({ ...overrides }) },
+        "admin",
+      );
+
+      renderApp("/d/eng");
+
+      const { line, panel } = await phoneBanners();
+      expect(line).toHaveAttribute("role", "status");
+      expect(line.textContent).toContain(words);
+      expect(line.tagName).not.toBe("BUTTON");
+      expect(folded(panel)).toBe(false);
+    });
+  }
+
+  it("keeps the team banners open on a phone when the status read is refused", async () => {
+    serve(
+      {
+        "/domains/eng/sync": () => {
+          throw new ApiProblem(502, "bad gateway", "the origin did not answer");
+        },
+      },
+      "admin",
+    );
+
+    renderApp("/d/eng");
+
+    // Nothing to fold behind: the card stands open with the refusal in it.
+    const body = await screenBody();
+    const card = await within(body).findByRole("region", { name: "Team sync" });
+    expect(within(card).getByRole("alert")).toBeVisible();
+    expect(folded(card.parentElement as HTMLElement)).toBe(false);
+    expect(
+      within(body).queryByRole("button", { name: /^Team sync ·/ }),
+    ).toBeNull();
+  });
+
+  it("unfolds the team banners on a phone once Sync now fails", async () => {
+    serve(
+      {
+        "/domains/eng/sync": (_path, init) => {
+          if (init?.method === "POST") {
+            throw new ApiProblem(422, "refused", "the pull was refused");
+          }
+          return syncResponse();
+        },
+      },
+      "admin",
+    );
+
+    renderApp("/d/eng");
+
+    const { line, panel } = await phoneBanners();
+    expect(folded(panel)).toBe(true);
+    await userEvent.click(line);
+    await userEvent.click(
+      within(panel).getByRole("button", { name: "Sync now" }),
+    );
+    await waitFor(() => {
+      expect(screen.getByText(/Sync now failed/)).toHaveAttribute(
+        "role",
+        "status",
+      );
+    });
+    // Folding is no longer offered while the failure stands.
+    expect(screen.queryByRole("button", { name: /^Team sync ·/ })).toBeNull();
+    expect(folded(panel)).toBe(false);
   });
 
   it("shows the sync card for an admin on a team domain", async () => {

@@ -95,7 +95,7 @@ export interface EngramListProps {
    * A row this list leaves out: the domain's front page is its MANIFEST, so
    * the MANIFEST is not listed again under itself.
    */
-  skip?: (row: EngramRow) => boolean;
+  skip?: ((row: EngramRow) => boolean) | undefined;
 }
 
 export function EngramList({

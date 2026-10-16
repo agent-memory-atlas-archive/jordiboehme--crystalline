@@ -12,6 +12,7 @@
 
 import { api, encodeSegment } from "./client";
 import type { EngramRow } from "./engrams";
+import { isDomainManifestPath } from "../paths";
 import { readEngramRow } from "./engrams";
 import { asArray, asNumber, asObject, asString, asStrings } from "./json";
 
@@ -39,6 +40,12 @@ export interface DomainTree {
   truncated: boolean;
   /** How many engrams the level holds, cap or no cap. */
   total: number;
+  /**
+   * The permalink of the domain's MANIFEST, read off the row whose file is
+   * the root `MANIFEST.md` the way the server names it, or null when this
+   * level holds none (any level but the root, or a domain without one).
+   */
+  manifestPermalink: string | null;
 }
 
 /**
@@ -58,6 +65,13 @@ export function readTree(
   const engrams = asArray(record?.engrams)
     .map((entry) => readEngramRow(entry, domain))
     .filter((row): row is EngramRow => row !== null);
+  const manifest =
+    path === ""
+      ? asArray(record?.engrams).find((entry) => {
+          const file = asString(asObject(entry)?.path);
+          return file !== null && isDomainManifestPath(file);
+        })
+      : undefined;
   return {
     domain: asString(record?.domain) ?? domain,
     path,
@@ -65,6 +79,7 @@ export function readTree(
     engrams,
     truncated: record?.truncated === true,
     total: asNumber(record?.total) ?? engrams.length,
+    manifestPermalink: asString(asObject(manifest)?.permalink),
   };
 }
 

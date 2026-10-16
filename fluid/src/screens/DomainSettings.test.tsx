@@ -324,6 +324,63 @@ describe("the domain settings screen", () => {
     ).toBeVisible();
   });
 
+  it("never flashes a card before an unknown domain's 404 lands", async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    serve(
+      {
+        "/domains/eng/tree": async () => {
+          await held;
+          throw new ApiProblem(404, "not found", "no domain");
+        },
+        "/reflection/domains": () => ({ domains: [] }),
+      },
+      "admin",
+    );
+
+    renderApp("/d/eng/settings");
+
+    expect(
+      await screen.findByRole("status", { name: "Loading the settings" }),
+    ).toBeInTheDocument();
+    // Every other read has answered by now; the tree has not.
+    await waitFor(() => {
+      expect(
+        apiMock.mock.calls.some((call) => call[0] === "/domains/eng/members"),
+      ).toBe(true);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByRole("region", { name: "Backup" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Danger zone" })).toBeNull();
+    release();
+    expect(
+      await screen.findByRole("heading", { name: "Domain not found" }),
+    ).toBeVisible();
+  });
+
+  it("says a refused MANIFEST read in the server's words", async () => {
+    serve({
+      "/domains/eng/manifest": () => {
+        throw new ApiProblem(
+          403,
+          "forbidden",
+          "you may not read this MANIFEST",
+        );
+      },
+    });
+
+    renderApp("/d/eng/settings");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "you may not read this MANIFEST",
+    );
+    expect(
+      screen.queryByRole("region", { name: "Domain policies" }),
+    ).toBeNull();
+  });
+
   it("waits behind one loading state until its reads have answered", async () => {
     let release: () => void = () => undefined;
     const held = new Promise<void>((resolve) => {

@@ -28,7 +28,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
 
-import { fetchSyncStatus, syncDomain, syncStatusKey } from "../api/admin";
+import {
+  fetchSyncStatus,
+  syncDomain,
+  syncPullKey,
+  syncStatusKey,
+} from "../api/admin";
 import { ApiProblem, problemDetail } from "../api/client";
 import { DOMAINS_QUERY_KEY } from "../api/domains";
 import { formatInstant, plural, relativeTime } from "../format";
@@ -94,6 +99,7 @@ export function SyncCard({ domain }: { domain: string }): ReactElement | null {
   });
 
   const pull = useMutation({
+    mutationKey: syncPullKey(domain),
     mutationFn: () => syncDomain(domain),
     onSuccess: () => {
       setProblem(null);
@@ -125,12 +131,12 @@ export function SyncCard({ domain }: { domain: string }): ReactElement | null {
     // as "Team sync", which an `article` is not, and this is one of the two
     // named blocks of the domain screen rather than a card in a list.
     <section
-      aria-labelledby="domain-sync"
+      aria-labelledby="page-domain-sync"
       // A compact banner above the MANIFEST's lead (spec 5.3).
       className="flex flex-col gap-2 rounded-lg border border-hair bg-chrome px-4 py-3 text-sm"
     >
       <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <h2 id="domain-sync" className="text-sm font-semibold">
+        <h2 id="page-domain-sync" className="text-sm font-semibold">
           Team sync
         </h2>
         {/* Secondary: keeping up with the origin is maintenance, not the act

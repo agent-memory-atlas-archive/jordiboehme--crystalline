@@ -30,6 +30,7 @@
 
 import {
   useInfiniteQuery,
+  useMutationState,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -58,9 +59,10 @@ import {
   archiveDownloadUrl,
   fetchSyncStatus,
   renameReportKey,
+  syncPullKey,
   syncStatusKey,
 } from "../api/admin";
-import type { RenameReport } from "../api/admin";
+import type { RenameReport, SyncStatus } from "../api/admin";
 import { problemDetail } from "../api/client";
 import { fetchManifest, manifestKey, treeQuery } from "../api/domain";
 import type { ManifestView } from "../api/domain";
@@ -126,7 +128,6 @@ import {
   domainRoute,
   domainSettingsRoute,
   folderRoute,
-  isDomainManifestPath,
   manifestEditRoute,
 } from "../paths";
 import {
@@ -148,7 +149,11 @@ export default function DomainHome() {
   }
   const folders = tree.data?.folders ?? [];
   return path === "" ? (
-    <DomainPage domain={domain} folders={folders} />
+    <DomainPage
+      domain={domain}
+      folders={folders}
+      manifestPermalink={tree.data?.manifestPermalink ?? null}
+    />
   ) : (
     <FolderPage domain={domain} path={path} folders={folders} />
   );
@@ -230,9 +235,12 @@ function useListingState() {
 function DomainPage({
   domain,
   folders,
+  manifestPermalink,
 }: {
   domain: string;
   folders: string[];
+  /** The MANIFEST's permalink, off the root tree, or null for none. */
+  manifestPermalink: string | null;
 }) {
   const { capabilities } = useAuth();
   const { canWrite, domainLocked } = useDomainWritable(domain);
@@ -448,13 +456,13 @@ function DomainPage({
       ? null
       : prose.eyebrow;
   // The MANIFEST is the page itself, so it is not listed again below it.
-  const manifestListed =
-    rootListing.data?.pages.some((page) => page.hits.some(isManifestRow)) ===
-    true;
+  // The root tree says whether there is one, so every count on the page
+  // leaves it out the same way from the first render.
+  const hasManifest = manifestPermalink !== null;
   const listedTotal =
     engramTotal === null
       ? null
-      : Math.max(0, engramTotal - (manifestListed ? 1 : 0));
+      : Math.max(0, engramTotal - (hasManifest ? 1 : 0));
 
   return (
     <div className="grid gap-x-14 gap-y-10 lg:grid-cols-[minmax(0,1fr)_18.75rem]">
@@ -662,6 +670,7 @@ function DomainPage({
           onApply={apply}
           renaming={isRenaming}
           total={listedTotal}
+          manifestPermalink={manifestPermalink}
         />
       </div>
 
@@ -679,6 +688,7 @@ function DomainPage({
           members={members.data}
           showReviewMode={capabilities.canShare}
           showBackup={capabilities.canAdminister}
+          hasManifest={hasManifest}
         />
       </div>
 
@@ -706,8 +716,11 @@ function DomainPage({
  * The team's sync and proposals as compact banners above the lead. On a
  * phone they fold behind one line that says what is waiting, so the
  * MANIFEST is still the first thing on the screen; from `md` up they are
- * always open. The status read is the sync card's own, under its key, so the
- * line costs no request; a domain with no origin draws nothing at all.
+ * always open. Anything to warn about - a refused or failed check, no
+ * connection, conflicts, declined proposals, a failed Sync now - keeps them
+ * open on a phone too, with the warning in the line, because a fold must
+ * never hide a problem. The status read is the sync card's own, under its
+ * key, so the line costs no request; a domain with no origin draws nothing.
  */
 function TeamBanners({ domain }: { domain: string }) {
   const [open, setOpen] = useState(false);
@@ -717,12 +730,31 @@ function TeamBanners({ domain }: { domain: string }) {
     queryFn: () => fetchSyncStatus(domain),
     retry: false,
   });
+  const pulls = useMutationState({
+    filters: { mutationKey: syncPullKey(domain) },
+    select: (mutation) => mutation.state.status,
+  });
   const sync = status.data ?? null;
+  const warnings = teamWarnings(
+    sync,
+    status.error !== null && !isMissing(status.error),
+    pulls[pulls.length - 1] === "error",
+  );
+  const unfolded = open || sync === null || warnings.length > 0;
   // Siblings in the page's column rather than a box of their own, so an
   // origin-less domain (both cards draw nothing) leaves no gap behind.
   return (
     <>
-      {sync !== null && (
+      {sync !== null && warnings.length > 0 && (
+        <p
+          role="status"
+          className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 md:hidden dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"
+        >
+          <span className="font-semibold">Team sync</span>{" "}
+          {`· ${warnings.join(", ")}`}
+        </p>
+      )}
+      {sync !== null && warnings.length === 0 && (
         <button
           type="button"
           aria-expanded={open}
@@ -747,13 +779,40 @@ function TeamBanners({ domain }: { domain: string }) {
       )}
       <div
         id={panelId}
-        className={`flex-col gap-3 empty:hidden md:flex md:empty:hidden ${open || sync === null ? "flex" : "hidden"}`}
+        className={`flex-col gap-3 empty:hidden md:flex md:empty:hidden ${unfolded ? "flex" : "hidden"}`}
       >
         <SyncCard domain={domain} />
         <ProposalsCard domain={domain} />
       </div>
     </>
   );
+}
+
+/** What the team banners must not fold away, in a few words each. */
+function teamWarnings(
+  sync: SyncStatus | null,
+  refused: boolean,
+  pullFailed: boolean,
+): string[] {
+  const warnings: string[] = [];
+  if (refused || sync?.probeError != null) {
+    warnings.push("the last check failed");
+  }
+  if (sync?.connected === false) {
+    warnings.push("not connected");
+  }
+  if (sync !== null && sync.conflicts > 0) {
+    warnings.push(plural(sync.conflicts, "conflict", "conflicts"));
+  }
+  if (sync !== null && sync.declinedProposals > 0) {
+    warnings.push(
+      plural(sync.declinedProposals, "declined proposal", "declined proposals"),
+    );
+  }
+  if (pullFailed) {
+    warnings.push("Sync now failed");
+  }
+  return warnings;
 }
 
 /** How many pages a Reflection tree holds, folders walked. */
@@ -1242,6 +1301,7 @@ function EngramsSection({
   onApply,
   renaming = false,
   total = null,
+  manifestPermalink = null,
 }: {
   domain: string;
   /** The folder being browsed, empty at the domain's root. */
@@ -1268,12 +1328,25 @@ function EngramsSection({
   renaming?: boolean;
   /** The domain's engram count beside the heading, at the root only. */
   total?: number | null;
+  /**
+   * The MANIFEST's permalink at the domain's root, which the browse list
+   * leaves out: the page above it is that file. An explicit filter still
+   * finds it.
+   */
+  manifestPermalink?: string | null;
 }) {
   const { canWrite } = useDomainWritable(domain);
   const newEngramReasonId = useId();
   const filterId = useId();
   const newEngramDisabledReason = renaming ? RENAMING_REASON : undefined;
   const [filterOpen, setFilterOpen] = useState(filtering);
+  const skipManifest = useMemo(
+    () =>
+      manifestPermalink === null
+        ? undefined
+        : (row: EngramRow) => row.permalink === manifestPermalink,
+    [manifestPermalink],
+  );
   // A filter that arrives by the URL (a back button, a shared link) opens the
   // form, so what filters the list is in view; the reader may close it again.
   const [wasFiltering, setWasFiltering] = useState(filtering);
@@ -1285,10 +1358,13 @@ function EngramsSection({
   }
 
   return (
-    <section aria-labelledby="domain-engrams">
+    <section aria-labelledby="page-domain-engrams">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-baseline gap-2">
-          <h2 id="domain-engrams" className="text-[21px] leading-7 font-[620]">
+          <h2
+            id="page-domain-engrams"
+            className="text-[21px] leading-7 font-[620]"
+          >
             Engrams
           </h2>
           {total !== null && (
@@ -1401,7 +1477,6 @@ function EngramsSection({
           emptyMessage="No engram matches these filters."
           summary={() => null}
           plain
-          skip={isManifestRow}
         />
       ) : (
         <EngramList
@@ -1420,16 +1495,11 @@ function EngramsSection({
               : "This folder has no engrams."
           }
           plain
-          skip={isManifestRow}
+          skip={path === "" ? skipManifest : undefined}
         />
       )}
     </section>
   );
-}
-
-/** The domain's MANIFEST, as a listing row: the front page is that file. */
-function isManifestRow(row: EngramRow): boolean {
-  return isDomainManifestPath(`${row.permalink}.md`);
 }
 
 /** A secondary action (spec 3.1): 32px tall, a hairline border, an icon. */
