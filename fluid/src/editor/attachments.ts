@@ -193,11 +193,11 @@ async function uploadOnce(
  * Upload every file and insert one reference per stored file, at the cursor.
  *
  * The home's listing is read once up front, because a free path has to be
- * free against what is already there: an engram's upload replaces, and so
- * does a Reflection curator's, so a collision that went unnoticed would
- * silently overwrite somebody's file (a Reflection contributor's upload is
- * refused instead, which `uploadOnce` answers). A listing that cannot be read
- * is therefore fatal to the batch rather than treated as an empty domain. A
+ * free against what is already there: an engram's upload replaces, so a
+ * collision that went unnoticed would silently overwrite somebody's file. A
+ * Reflection upload is create-only, so the server refuses a collision, which
+ * `uploadOnce` answers. A listing that cannot be read is therefore fatal to
+ * the batch rather than treated as an empty domain. A
  * batch whose every file is refused here reads no listing at all, and a
  * buffer that is read-only (a room that has ended) starts nothing.
  *
