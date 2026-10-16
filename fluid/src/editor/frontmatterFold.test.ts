@@ -14,15 +14,19 @@ import {
   undo,
 } from "@codemirror/commands";
 import type { Extension } from "@codemirror/state";
-import { EditorState } from "@codemirror/state";
+import {
+  Compartment,
+  EditorSelection,
+  EditorState,
+  StateEffect,
+} from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { describe, expect, test } from "vitest";
+import { yCollab } from "y-codemirror.next";
+import * as Y from "yjs";
 
-import {
-  frontmatterFold,
-  frontmatterHidden,
-  unfoldEffect,
-} from "./frontmatterFold";
+import { frontmatterFold, frontmatterHidden } from "./frontmatterFold";
+import { docText } from "./setup";
 
 const DOC =
   "---\ntype: guide\nstatus: current\ntags:\n- protocol\n---\n\n# Body\n";
@@ -71,14 +75,6 @@ describe("frontmatterFold", () => {
     expect(view.state.selection.main.head).toBe(FENCE_END);
     cursorCharLeft(view);
     expect(view.state.selection.main.head).toBe(0);
-    view.destroy();
-  });
-
-  test("the unfold effect brings the yaml back", () => {
-    const view = mount(DOC);
-    view.dispatch({ effects: unfoldEffect.of(true) });
-    expect(view.contentDOM.textContent).toContain("status: current");
-    expect(frontmatterHidden(view.state)).toBe(false);
     view.destroy();
   });
 
@@ -157,12 +153,14 @@ describe("frontmatterFold", () => {
     view.destroy();
   });
 
-  test("a block with nothing after it gets a line for text typed beside it", () => {
+  test("a frontmatter-only file starts its body after one blank line", () => {
     const doc = "---\ntype: guide\n---";
     const view = mount(doc);
     view.dispatch({ selection: { anchor: doc.length } });
     type(view, "x");
-    expect(view.state.sliceDoc()).toBe(`${doc}\nx`);
+    type(view, "y");
+    expect(view.state.sliceDoc()).toBe(`${doc}\n\nxy`);
+    expect(view.state.selection.main.head).toBe(doc.length + 4);
     view.destroy();
   });
 
@@ -172,6 +170,164 @@ describe("frontmatterFold", () => {
     const view = mount(DOC);
     view.dispatch({ changes: { from: 0, to: BODY, insert: "" } });
     expect(view.state.sliceDoc()).toBe(DOC.slice(BODY));
+    view.destroy();
+  });
+
+  test("CRLF: the block and the break after it are kept, text lands in the body", () => {
+    const crlf = DOC.replace(/\n/g, "\r\n");
+    const view = mount(crlf, [EditorState.lineSeparator.of("\r\n")]);
+    view.dispatch({ selection: { anchor: FENCE_END } });
+    deleteCharBackward(view);
+    view.dispatch({ selection: { anchor: BODY } });
+    deleteCharBackward(view);
+    expect(docText(view.state)).toBe(crlf);
+    view.dispatch({ selection: { anchor: FENCE_END } });
+    type(view, "x");
+    expect(docText(view.state)).toBe(
+      crlf.replace("---\r\n\r\n# Body", "---\r\nx\r\n# Body"),
+    );
+    view.destroy();
+  });
+
+  test("a paste beside the block lands in the body as one change", () => {
+    const view = mount(DOC);
+    view.dispatch({ selection: { anchor: 0 } });
+    view.dispatch({
+      changes: { from: 0, insert: "one\ntwo" },
+      userEvent: "input.paste",
+    });
+    expect(view.state.sliceDoc()).toBe(
+      `${DOC.slice(0, BODY)}one\ntwo${DOC.slice(BODY)}`,
+    );
+    expect(view.state.selection.main.head).toBe(BODY + "one\ntwo".length);
+    view.destroy();
+  });
+
+  test("a drop into the block moves its text to the body and still takes it from where it was", () => {
+    const view = mount(DOC);
+    const from = DOC.indexOf("Body");
+    view.dispatch({
+      changes: [
+        { from: 4, insert: "Body" },
+        { from, to: from + 4, insert: "" },
+      ],
+      userEvent: "move.drop",
+    });
+    expect(view.state.sliceDoc()).toBe(
+      `${DOC.slice(0, BODY)}Body${DOC.slice(BODY, from)}${DOC.slice(from + 4)}`,
+    );
+    view.destroy();
+  });
+
+  test("a cut across the block takes only the body part, and undo puts it back", () => {
+    const view = mount(DOC, [history()]);
+    view.dispatch({
+      changes: { from: 10, to: DOC.indexOf("Body") },
+      userEvent: "delete.cut",
+    });
+    expect(view.state.sliceDoc()).toBe(
+      `${DOC.slice(0, BODY)}${DOC.slice(DOC.indexOf("Body"))}`,
+    );
+    undo(view);
+    expect(view.state.sliceDoc()).toBe(DOC);
+    view.destroy();
+  });
+
+  test("undo takes back a guarded keystroke", () => {
+    const view = mount(DOC, [history()]);
+    view.dispatch({ selection: { anchor: FENCE_END } });
+    type(view, "x");
+    undo(view);
+    expect(view.state.sliceDoc()).toBe(DOC);
+    view.destroy();
+  });
+
+  test("every caret keeps its place, and a caret beside the block goes to the body", () => {
+    const view = mount(DOC, [EditorState.allowMultipleSelections.of(true)]);
+    const end = DOC.length;
+    view.dispatch({
+      selection: EditorSelection.create([
+        EditorSelection.cursor(FENCE_END),
+        EditorSelection.cursor(end),
+      ]),
+    });
+    view.dispatch(view.state.replaceSelection("z"), {
+      userEvent: "input.type",
+    });
+    expect(view.state.sliceDoc()).toBe(
+      `${DOC.slice(0, BODY)}z${DOC.slice(BODY)}z`,
+    );
+    const heads = view.state.selection.ranges.map((range) => range.head);
+    expect(heads).toEqual([BODY + 1, end + 2]);
+    view.destroy();
+  });
+
+  test("the transaction's own effects ride along", () => {
+    const mark = StateEffect.define<number>({
+      map: (value, mapping) => mapping.mapPos(value),
+    });
+    let seen: number | null = null;
+    const watch = EditorView.updateListener.of((update) => {
+      for (const tr of update.transactions) {
+        for (const effect of tr.effects) {
+          if (effect.is(mark)) {
+            seen = effect.value;
+          }
+        }
+      }
+    });
+    const view = mount(DOC, [watch]);
+    view.dispatch({
+      changes: { from: FENCE_END, insert: "x" },
+      effects: mark.of(DOC.length + 1),
+      userEvent: "input.type",
+    });
+    expect(seen).toBe(DOC.length + 1);
+    view.destroy();
+  });
+
+  test("a Raw round trip shows the block, then hides and guards it again", () => {
+    const preview = new Compartment();
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: DOC,
+        extensions: [preview.of(frontmatterFold())],
+      }),
+      parent: document.body,
+    });
+    view.dispatch({ effects: preview.reconfigure([]) });
+    expect(frontmatterHidden(view.state)).toBe(false);
+    view.dispatch({ selection: { anchor: 4 } });
+    type(view, "x");
+    expect(view.state.sliceDoc()).toContain("---\nxtype");
+    view.dispatch({ effects: preview.reconfigure(frontmatterFold()) });
+    expect(frontmatterHidden(view.state)).toBe(true);
+    view.dispatch({ selection: { anchor: 4 } });
+    type(view, "y");
+    expect(view.state.sliceDoc()).toContain("---\nxtype");
+    expect(view.state.sliceDoc()).not.toContain("ytype");
+    view.destroy();
+  });
+
+  test("a room: remote edits into the block pass, guarded typing reaches the shared text", () => {
+    const doc = new Y.Doc();
+    const ytext = doc.getText("t");
+    ytext.insert(0, DOC);
+    const view = mount(DOC, [yCollab(ytext, null)]);
+    // A remote author rewrites the status inside the hidden block.
+    const at = DOC.indexOf("current");
+    doc.transact(() => {
+      ytext.delete(at, "current".length);
+      ytext.insert(at, "draft");
+    }, "remote");
+    expect(view.state.sliceDoc()).toContain("status: draft");
+    // And typing beside the block lands in the body, in both copies.
+    view.dispatch({
+      selection: { anchor: view.state.sliceDoc().lastIndexOf("---") + 3 },
+    });
+    type(view, "x");
+    expect(ytext.toJSON()).toBe(view.state.sliceDoc());
+    expect(ytext.toJSON()).toContain("---\nx\n# Body");
     view.destroy();
   });
 });

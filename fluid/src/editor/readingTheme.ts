@@ -9,15 +9,34 @@
  * added after the base set.
  */
 
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
 import { Prec } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { tags } from "@lezer/highlight";
 
-export const readingTheme: Extension = Prec.high(
+/**
+ * Headings at the reading page's sizes (spec 3.3): the title 30/38, a section
+ * 21/28, a subsection 17/26, against the 16px body.
+ */
+const readingHeadings = HighlightStyle.define([
+  {
+    tag: tags.heading1,
+    fontSize: "1.875em",
+    fontWeight: "650",
+    letterSpacing: "-0.02em",
+    lineHeight: "1.27",
+  },
+  { tag: tags.heading2, fontSize: "1.3125em", fontWeight: "620" },
+  { tag: tags.heading3, fontSize: "1.0625em", fontWeight: "600" },
+]);
+
+export const readingTheme: Extension = Prec.high([
+  syntaxHighlighting(readingHeadings),
   EditorView.theme({
     "&": { fontSize: "1rem" },
     ".cm-scroller": { lineHeight: "1.72" },
-    ".cm-content": { padding: "1rem 0 3rem" },
+    ".cm-content": { padding: "0.5rem 0 3rem" },
     ".cm-line": { padding: "0" },
     // Pictures stand on the text's own left edge, as on the reading page.
     ".cm-image-preview": { padding: "0.5rem 0" },
@@ -33,4 +52,4 @@ export const readingTheme: Extension = Prec.high(
       fontWeight: "inherit",
     },
   }),
-);
+]);

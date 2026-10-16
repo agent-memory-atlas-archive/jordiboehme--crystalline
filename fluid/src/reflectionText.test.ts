@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  firstTitle,
   TOP_SECTION,
   ageText,
   isIdLine,
@@ -188,5 +189,15 @@ describe("display helpers", () => {
     expect(ageText(60)).toBe("1 minute");
     expect(ageText(7200)).toBe("2 hours");
     expect(ageText(86400 * 3 + 5)).toBe("3 days");
+  });
+});
+
+describe("firstTitle", () => {
+  it("reads an ATX title, a setext title, and skips code fences", () => {
+    expect(firstTitle("![x](a.png)\n\n# Deploying  ##\n")).toBe("Deploying");
+    expect(firstTitle("Deploying\n===\n\nText.\n")).toBe("Deploying");
+    expect(firstTitle("```\n# not a title\n```\n\n# Real\n")).toBe("Real");
+    expect(firstTitle("~~~\n# never closed\n")).toBeNull();
+    expect(firstTitle("## Only a section\n")).toBeNull();
   });
 });

@@ -149,6 +149,47 @@ export interface EditorSession {
   noteSaved: () => void;
 }
 
+/**
+ * Put the text the server stored into a buffer that still holds what was
+ * sent, changing only the span that differs so the caret and the scroll stay
+ * where they were. A plain transaction, not a rebuild: undo can take it back.
+ */
+function adoptStored(view: EditorView, stored: string): void {
+  const separator = view.state.lineBreak;
+  const next = stored.split(/\r\n|\n/).join(separator);
+  const current = docText(view.state);
+  if (current === next) {
+    return;
+  }
+  let start = 0;
+  while (
+    start < current.length &&
+    start < next.length &&
+    current[start] === next[start]
+  ) {
+    start += 1;
+  }
+  let end = 0;
+  while (
+    end < current.length - start &&
+    end < next.length - start &&
+    current[current.length - 1 - end] === next[next.length - 1 - end]
+  ) {
+    end += 1;
+  }
+  // Offsets into the file's own string, as document positions: a CRLF break
+  // is two characters in the string and one position in the document.
+  const toPosition = (offset: number) =>
+    current.slice(0, offset).split(separator).join("\n").length;
+  view.dispatch({
+    changes: {
+      from: toPosition(start),
+      to: toPosition(current.length - end),
+      insert: next.slice(start, next.length - end),
+    },
+  });
+}
+
 export function useEditorSession(options: EditorSessionOptions): EditorSession {
   const {
     initialContent,
@@ -270,7 +311,30 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
         clearDraft(draftUser, draftDomain, draftSlot);
       }
       setChecksum(saved.checksum);
-      setSavedText(saved.content);
+      /*
+       * The server may store something other than what was sent: a write
+       * normalizes, for one, a link through a domain alias. When the buffer
+       * still holds exactly what was sent, the stored text is put into it, so
+       * the buffer and the file agree and the header says Saved. When the
+       * author has typed on since, their text stays, and "unsaved" is judged
+       * against what was sent: the newer typing is what is unsaved.
+       */
+      if (
+        view &&
+        transport !== "collab" &&
+        saved.content !== sent.content &&
+        docText(view.state) === sent.content
+      ) {
+        setSavedText(saved.content);
+        adoptStored(view, saved.content);
+      } else {
+        setSavedText(
+          saved.content === sent.content ||
+            (view !== null && docText(view.state) !== sent.content)
+            ? sent.content
+            : saved.content,
+        );
+      }
       setNotice({ kind: "done", text: "Saved" });
       onSaved?.(saved);
     },

@@ -73,9 +73,10 @@ import type { SaveStateKind } from "../editor/SaveState";
 import { SaveState } from "../editor/SaveState";
 import { baseExtensions } from "../editor/setup";
 import { useAttachmentUploads } from "../editor/useAttachmentUploads";
+import { useRoomExit } from "../editor/useRoomExit";
 import { reflectionEditRoute, reflectionPageRoute } from "../paths";
 import { movePageDrafts } from "../reflectionPageDrafts";
-import { stripIdLines, stripProvenance } from "../reflectionText";
+import { firstTitle, stripIdLines, stripProvenance } from "../reflectionText";
 import { useTheme } from "../theme/context";
 
 const LINK =
@@ -96,12 +97,15 @@ const BANNER_BUTTON = "underline underline-offset-2 hover:no-underline";
  */
 function titleOf(text: string, path: string): string {
   const fromFrontmatter = readScalar(text, "title");
-  if (fromFrontmatter !== null) {
-    return fromFrontmatter;
+  if (fromFrontmatter !== null && fromFrontmatter.trim() !== "") {
+    return fromFrontmatter.trim();
   }
-  const heading = /^# +(.+?)\s*#*\s*$/m.exec(text)?.[1];
-  if (heading !== undefined && heading !== "") {
-    return heading;
+  // The body after the frontmatter, so a `title:` line over the closing fence
+  // is never read as a setext heading.
+  const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, "");
+  const heading = firstTitle(body);
+  if (heading !== null && heading.trim() !== "") {
+    return heading.trim();
   }
   return (path.split("/").at(-1) ?? path).replace(/\.md$/, "");
 }
@@ -668,6 +672,21 @@ function Surface({
   }, [owedSave]);
 
   /*
+   * Done waits a moment for a save the room still owes, and keeps the text as
+   * a draft if it cannot land (see `useRoomExit`).
+   */
+  const roomExit = useRoomExit(
+    collab,
+    () => {
+      keep();
+    },
+    () => {
+      void navigate(reflectionPageRoute(domain, path));
+    },
+    ended,
+  );
+
+  /*
    * The one save state the header shows. A refusal is not a state but the
    * server's sentence, shown as an alert under the header; an ended room says
    * what happened in its own banner.
@@ -701,18 +720,29 @@ function Surface({
           <SaveState state={saveState} />
           <Link
             to={reflectionPageRoute(domain, path)}
-            onClick={() => {
-              collab.flush();
+            onClick={(event) => {
+              roomExit.onDone(event);
               void queryClient.invalidateQueries({
                 queryKey: reflectionKey(domain),
               });
             }}
+            aria-disabled={roomExit.phase !== "idle" || undefined}
             className={BUTTON.primary}
           >
             Done
           </Link>
         </div>
       </header>
+      {roomExit.phase === "waiting" && (
+        <p role="status" className="text-sm text-slate-500 dark:text-slate-400">
+          Saving before you leave.
+        </p>
+      )}
+      {roomExit.phase === "kept" && (
+        <p role="alert" className={AMBER_BANNER}>
+          Not saved yet. Your text is kept as a draft on this device.
+        </p>
+      )}
       {refusal !== null && (
         <p role="alert" className={ALERT}>
           {refusal}

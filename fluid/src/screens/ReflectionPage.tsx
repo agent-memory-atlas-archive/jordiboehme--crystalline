@@ -77,7 +77,7 @@ import { printNotes } from "../printNotes";
 import { reflectionFacts } from "../printSheet";
 import { SECTION_ATTR } from "../reflectionQuotes";
 import type { SectionText } from "../reflectionText";
-import { TOP_SECTION, sectionTexts } from "../reflectionText";
+import { TOP_SECTION, hasOwnTitle, sectionTexts } from "../reflectionText";
 
 const MoveReflectionDialog = lazyChunk(() =>
   import("../components/MoveReflectionDialog").then((m) => ({
@@ -98,43 +98,6 @@ function removeFileText(name: string): string {
 
 const LINK =
   "text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline";
-
-/**
- * Whether the text before the first `##` holds the page's own title: a
- * `# Title` line, or a line of text underlined with `=`. Not only the first
- * line: an image or a paragraph may stand above it. A line inside a code
- * fence is code, not a title, and so is everything after a fence that is
- * never closed.
- */
-function hasOwnTitle(intro: string): boolean {
-  let fence: string | null = null;
-  // Whether the line before is text an `=` line would turn into a title.
-  let text = false;
-  for (const line of intro.split("\n")) {
-    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
-    if (fence !== null) {
-      if (
-        marker !== undefined &&
-        marker[0] === fence[0] &&
-        marker.length >= fence.length
-      ) {
-        fence = null;
-      }
-      continue;
-    }
-    if (marker !== undefined) {
-      fence = marker;
-      text = false;
-    } else if (/^ {0,3}#[ \t]/.test(line)) {
-      return true;
-    } else if (text && /^ {0,3}=+[ \t]*$/.test(line)) {
-      return true;
-    } else {
-      text = line.trim() !== "" && !/^ {0,3}#{1,6}([ \t]|$)/.test(line);
-    }
-  }
-  return false;
-}
 
 /**
  * "3 sections · Built from 2 engrams · 3 open threads", from what the page

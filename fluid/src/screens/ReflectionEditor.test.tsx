@@ -142,7 +142,11 @@ describe("the reflection editor", () => {
 
   it("says Saving while the room writes and Offline while the socket is down, one at a time", async () => {
     serve("edit");
-    const session = live({ ...room(PAGE), saveState: "pending" });
+    const session = live({
+      ...room(PAGE),
+      saveState: "pending",
+      flush: vi.fn(),
+    });
     await openEditor();
     expect(screen.getByText("Saving")).toBeInTheDocument();
     expect(screen.queryByText("Saved")).toBeNull();
@@ -151,6 +155,68 @@ describe("the reflection editor", () => {
       await screen.findByText("Offline, kept on this device"),
     ).toHaveAttribute("role", "status");
     expect(screen.queryByText("Saving")).toBeNull();
+  });
+
+  it("Done waits for a save the room still owes, then leaves", async () => {
+    serve("edit");
+    const session = live({
+      ...room(PAGE),
+      saveState: "pending",
+      flush: vi.fn(),
+    });
+    await openEditor();
+    await userEvent.click(screen.getByRole("link", { name: "Done" }));
+    expect(
+      await screen.findByText("Saving before you leave."),
+    ).toBeInTheDocument();
+    expect(session.get().flush).toHaveBeenCalled();
+    expect(
+      screen.getByRole("textbox", { name: "Page source" }),
+    ).toBeInTheDocument();
+    session.set({ saveState: "ok" });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("textbox", { name: "Page source" }),
+      ).not.toBeInTheDocument();
+    });
+    expect(readDraft("ann", "eng", "reflection:guides/a.md")).toBeNull();
+  });
+
+  it("Done keeps the text as a draft and says so when the owed save does not land", async () => {
+    serve("edit");
+    live({ ...room(PAGE), status: "reconnecting" });
+    await openEditor();
+    await userEvent.click(screen.getByRole("link", { name: "Done" }));
+    expect(
+      await screen.findByText(
+        "Not saved yet. Your text is kept as a draft on this device.",
+        undefined,
+        { timeout: 4000 },
+      ),
+    ).toHaveAttribute("role", "alert");
+    expect(readDraft("ann", "eng", "reflection:guides/a.md")?.content).toBe(
+      PAGE,
+    );
+    await waitFor(
+      () => {
+        expect(
+          screen.queryByRole("textbox", { name: "Page source" }),
+        ).not.toBeInTheDocument();
+      },
+      { timeout: 4000 },
+    );
+  }, 12000);
+
+  it("names the page by a setext title, past a fence that only looks like one", async () => {
+    serve("edit");
+    sessionMock.mockReturnValue(
+      room("```\n# not this\n```\n\nDeploying\n===\n\nFirst.\n"),
+    );
+    renderApp("/d/eng/reflection-edit/guides/a.md");
+    await screen.findByRole("textbox", { name: "Page source" });
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Editing Deploying" }),
+    ).toBeInTheDocument();
   });
 
   it("kept text from an earlier session is offered back", async () => {

@@ -210,8 +210,62 @@ export function scalarIsOneLine(doc: string, key: string): boolean {
   if (/^[|>]/.test(value)) {
     return false;
   }
+  // A quoted scalar whose closing quote is not on this line goes on below,
+  // indented or not.
+  if (!quoteClosed(value)) {
+    return false;
+  }
   const next = lines.find((line) => line.lineStart === span.lineEnd);
   return next === undefined || !/^\s/.test(lineText(doc, next));
+}
+
+/**
+ * Whether a value that opens a quote closes it on the same line (a trailing
+ * comment allowed). A value that opens no quote is closed by definition.
+ */
+export function quoteClosed(value: string): boolean {
+  if (value.startsWith('"')) {
+    return /^"(?:[^"\\]|\\.)*"\s*(?:#.*)?$/.test(value);
+  }
+  if (value.startsWith("'")) {
+    return /^'(?:[^']|'')*'\s*(?:#.*)?$/.test(value);
+  }
+  return true;
+}
+
+/**
+ * A value written over several lines, as one line of text to read: a block
+ * scalar's lines, a plain scalar's continuation lines, or a quoted scalar up
+ * to its closing quote, joined by spaces and unquoted. Empty for an absent
+ * key.
+ */
+export function readMultiLine(doc: string, key: string): string {
+  const lines = doc.split(/\r?\n/);
+  const at = lines.findIndex((line) => new RegExp(`^${key}\\s*:`).test(line));
+  if (at === -1) {
+    return "";
+  }
+  const first = lines[at] ?? "";
+  const head = first.slice(first.indexOf(":") + 1).trim();
+  const parts: string[] = /^[|>]/.test(head) ? [] : [head];
+  const quoted = /^["']/.test(head) && !quoteClosed(head);
+  for (const line of lines.slice(at + 1)) {
+    if (line.trimEnd() === "---") {
+      break;
+    }
+    if (quoted) {
+      parts.push(line.trim());
+      if (quoteClosed(parts.join(" "))) {
+        break;
+      }
+      continue;
+    }
+    if (!/^\s/.test(line) || line.trim() === "") {
+      break;
+    }
+    parts.push(line.trim());
+  }
+  return unquote(parts.join(" "));
 }
 
 /** The words yaml reads as something other than a string when unquoted. */
@@ -222,13 +276,33 @@ const YAML_WORDS = /^(?:true|false|yes|no|on|off|null|~)$/i;
  * double-quoted with its backslashes and quotes escaped. Line breaks become
  * spaces first, so the value can never leave its own line.
  */
+/** Whether a character is a C0 control character or DEL. */
+function isControl(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return code < 0x20 || code === 0x7f;
+}
+
 function textScalar(value: string): string {
   const flat = value.replace(/\s*[\r\n]+\s*/g, " ").trim();
   const plain =
     /^[A-Za-z][^:#[\]{}&*!|>'"%@`\\]*$/.test(flat) &&
+    ![...flat].some(isControl) &&
     !/\s$/.test(flat) &&
     !YAML_WORDS.test(flat);
-  return plain ? flat : `"${flat.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  if (plain) {
+    return flat;
+  }
+  // Backslash first, so the escapes added after it are not escaped again.
+  // A C0 control character (and DEL) is written as its `\x` escape, which
+  // the reader above decodes; everything else, unicode included, as is.
+  const escaped = [...flat.replace(/\\/g, "\\\\").replace(/"/g, '\\"')]
+    .map((char) =>
+      isControl(char)
+        ? `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}`
+        : char,
+    )
+    .join("");
+  return `"${escaped}"`;
 }
 
 /**

@@ -33,7 +33,7 @@ export function PresenceChips({
 }: {
   participants: CollabParticipant[];
   /** True while the socket is down: who is where stopped being current the
-   *  moment the awareness channel went quiet, so the row is dimmed rather
+   *  moment the awareness channel went quiet, so the row turns grey rather
    *  than emptied - those people have not left, this tab just cannot hear
    *  them. */
   offline?: boolean;
@@ -47,7 +47,9 @@ export function PresenceChips({
   return (
     <ul
       aria-label={`In this session: ${names}`}
-      className={`flex items-center ${offline ? "opacity-50" : ""}`}
+      // Offline: grey rather than faded, so the initial keeps its
+      // contrast on the avatar (fading both lowers it below 3:1).
+      className={`flex items-center ${offline ? "grayscale" : ""}`}
     >
       {participants.map((one, index) => (
         <li

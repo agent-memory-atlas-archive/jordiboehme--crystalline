@@ -85,6 +85,7 @@ import { SaveState } from "../editor/SaveState";
 import { formattingKeymap } from "../editor/toolbar";
 import { useAttachmentUploads } from "../editor/useAttachmentUploads";
 import { useCloseFlow, useExitRequest } from "../editor/useCloseFlow";
+import { useRoomExit } from "../editor/useRoomExit";
 import { saveKeymap, useEditorSession } from "../editor/useEditorSession";
 import {
   wikilinkChips,
@@ -733,7 +734,7 @@ function Surface({
         queryKey: domainTreeKey(saved.domain),
       });
       /*
-       * Whether this save is the one Save and close asked for.
+       * Whether this save is the one Save and leave asked for.
        *
        * What is compared is the SENT content rather than the returned content,
        * read back through `docText` at the moment the answer lands: a server
@@ -995,6 +996,20 @@ function Surface({
   // Save stands only while a solo buffer holds work the file does not have:
   // in a room the server saves on its own, and Mod-S still flushes it.
   const showSave = !inRoom && session.dirty;
+  /*
+   * Done in a room waits a moment for a save the room still owes, and keeps
+   * the text as a draft if it cannot land (see `useRoomExit`).
+   */
+  const roomExit = useRoomExit(
+    collab,
+    () => {
+      session.snapshotDraft();
+    },
+    () => {
+      void navigate(engramRoute(engram.domain, engram.permalink));
+    },
+    closed,
+  );
   const saveFocused = useRef(false);
   useEffect(() => {
     if (!showSave && saveFocused.current) {
@@ -1050,7 +1065,7 @@ function Surface({
                   offline={collab.status !== "connected"}
                 />
               )}
-              <SaveState state={saveState} announce={!inRoom} />
+              <SaveState state={saveState} />
               {/*
                 Sharing the draft, and only ever a draft: a link hands over
                 work the team has not seen, and there is nothing to hand over
@@ -1106,6 +1121,8 @@ function Surface({
                   <Link
                     to={engramRoute(engram.domain, engram.permalink)}
                     {...ENGRAM_PREFETCH}
+                    onClick={roomExit.onDone}
+                    aria-disabled={roomExit.phase !== "idle" || undefined}
                     className={BUTTON.primary}
                   >
                     Done
@@ -1124,6 +1141,19 @@ function Surface({
               )}
             </div>
           </header>
+          {roomExit.phase === "waiting" && (
+            <p
+              role="status"
+              className="text-sm text-slate-500 dark:text-slate-400"
+            >
+              Saving before you leave.
+            </p>
+          )}
+          {roomExit.phase === "kept" && (
+            <p role="alert" className={AMBER_BANNER}>
+              Not saved yet. Your text is kept as a draft on this device.
+            </p>
+          )}
           {soloProblem !== null && (
             <p role="alert" className={ALERT}>
               {soloProblem}

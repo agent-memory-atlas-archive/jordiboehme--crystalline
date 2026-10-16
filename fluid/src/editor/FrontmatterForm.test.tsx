@@ -12,7 +12,13 @@
 
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it } from "vitest";
@@ -484,5 +490,41 @@ describe("the frontmatter form", () => {
     expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull();
     expect(screen.getByText(/First half, second half\./)).toBeInTheDocument();
     expect(screen.getByText(/Change it in Raw/)).toBeInTheDocument();
+  });
+
+  it("keeps half-typed text when the document changes underneath, and Enter commits in place", async () => {
+    render(<Live content={DOC} />, { wrapper: Tooltips });
+    const field = await screen.findByLabelText("Description");
+    field.focus();
+    await userEvent.type(field, "Half typed");
+    // A change from the room lands in the same block meanwhile.
+    const view = liveView();
+    const at = view.state.sliceDoc().indexOf("stable");
+    act(() => {
+      view.dispatch({
+        changes: { from: at, to: at + "stable".length, insert: "draft" },
+      });
+    });
+    expect(screen.getByLabelText("Status")).toHaveValue("draft");
+    expect(screen.getByLabelText("Description")).toHaveValue("Half typed");
+    expect(screen.getByLabelText("Description")).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(liveView().state.sliceDoc()).toContain(
+        "description: Half typed\n",
+      );
+    });
+    expect(screen.getByLabelText("Description")).toHaveFocus();
+    expect(screen.getByLabelText("Description")).toHaveValue("Half typed");
+  });
+
+  it("names the read-only description and strips its quotes", () => {
+    const doc =
+      '---\ntitle: Alpha\ndescription: "First half,\nsecond half."\nstatus: stable\n---\n\nBody.\n';
+    render(<FrontmatterForm doc={doc} view={null} vocabulary={null} />);
+    // A double-quoted value continued on an unindented line is several lines.
+    const group = screen.getByRole("group", { name: "Description" });
+    expect(group).toHaveTextContent("First half, second half.");
+    expect(group).not.toHaveTextContent('"');
   });
 });

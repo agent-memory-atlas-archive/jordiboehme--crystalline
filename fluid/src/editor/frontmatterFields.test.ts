@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  quoteClosed,
+  readMultiLine,
+  scalarIsOneLine,
+  writeText,
   readScalar,
   readTagList,
   writeScalar,
@@ -244,5 +248,45 @@ describe("a block list at zero indentation", () => {
     expect(applied(crlf, writeTagList(crlf, ["protocol", "editor"]))).toBe(
       "---\r\ntitle: Alpha\r\ntags:\r\n  - protocol\r\n  - editor\r\nstatus: current\r\n---\r\n\r\n# Alpha\r\n",
     );
+  });
+});
+
+describe("free text fields", () => {
+  const DOC = "---\ntitle: A\n---\n";
+  const apply = (doc: string, value: string) => {
+    const edit = writeText(doc, "description", value);
+    if (edit === null) {
+      throw new Error("no edit");
+    }
+    return doc.slice(0, edit.from) + edit.insert + doc.slice(edit.to);
+  };
+
+  it("escapes C0 control characters and keeps unicode as is", () => {
+    const out = apply(DOC, "Bell\u0007 and caf\u00e9");
+    expect(out).toContain('description: "Bell\\x07 and caf\u00e9"\n');
+    expect(readScalar(out, "description")).toBe("Bell\u0007 and caf\u00e9");
+  });
+
+  it("writes plain text plainly and yaml words quoted", () => {
+    expect(apply(DOC, "Runs at night")).toContain(
+      "description: Runs at night\n",
+    );
+    expect(apply(DOC, "yes")).toContain('description: "yes"\n');
+  });
+
+  it("knows a quote that closes on its line from one that goes on", () => {
+    expect(quoteClosed('"a \\" b"')).toBe(true);
+    expect(quoteClosed('"a b')).toBe(false);
+    expect(quoteClosed("'it''s'")).toBe(true);
+    expect(quoteClosed("plain")).toBe(true);
+    expect(
+      scalarIsOneLine('---\ndescription: "a\nb"\n---\n', "description"),
+    ).toBe(false);
+    expect(
+      readMultiLine('---\ndescription: "a,\nb."\n---\n', "description"),
+    ).toBe("a, b.");
+    expect(
+      readMultiLine("---\ndescription: >-\n  one\n  two\n---\n", "description"),
+    ).toBe("one two");
   });
 });

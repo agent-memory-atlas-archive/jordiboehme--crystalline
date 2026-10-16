@@ -24,7 +24,7 @@
 import type { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { X } from "lucide-react";
-import type { ReactElement, ReactNode } from "react";
+import type { KeyboardEvent, ReactElement, ReactNode } from "react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import type { Vocabulary } from "../api/vocabulary";
@@ -41,6 +41,7 @@ import {
   hasFrontmatterBlock,
   readScalar,
   readTagList,
+  readMultiLine,
   scalarIsOneLine,
   writeScalar,
   writeTagList,
@@ -290,41 +291,45 @@ export function FrontmatterForm({
         </datalist>
       </div>
       <div className="flex flex-col gap-1 text-sm">
-        <label htmlFor={descriptionField} className={LABEL_CLASSES}>
-          Description
-        </label>
         {descriptionEditable ? (
-          <textarea
-            id={descriptionField}
-            rows={3}
-            className="w-full resize-y rounded border border-slate-300 bg-white px-2 py-1.5 text-sm leading-snug text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-            key={`description:${description}`}
-            defaultValue={description}
-            placeholder="One or two sentences"
-            onKeyDown={(event) => {
-              // One line in the file, so Enter commits rather than breaking it.
-              if (event.key === "Enter") {
-                event.preventDefault();
-                event.currentTarget.blur();
-              }
-            }}
-            onBlur={(event) => {
-              const next = event.target.value;
-              if (next.replace(/\s+/g, " ").trim() !== description) {
-                apply((base) => writeText(base, "description", next));
-              }
-            }}
-          />
+          <>
+            <label htmlFor={descriptionField} className={LABEL_CLASSES}>
+              Description
+            </label>
+            <EditedField
+              value={description}
+              onCommit={(next) => {
+                if (next.replace(/\s+/g, " ").trim() !== description) {
+                  apply((base) => writeText(base, "description", next));
+                }
+              }}
+              render={(props) => (
+                <textarea
+                  {...props}
+                  id={descriptionField}
+                  rows={3}
+                  className="w-full resize-y rounded border border-slate-300 bg-white px-2 py-1.5 text-sm leading-snug text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                  placeholder="One or two sentences"
+                />
+              )}
+            />
+          </>
         ) : (
-          <p
-            id={descriptionField}
-            className="rounded-md border border-dashed border-hair-strong px-2 py-1.5 text-ink-2"
-          >
-            {multiLineText(doc, "description")}
-            <span className={`mt-1 block ${NOTE_CLASSES}`}>
-              Written over several lines. Change it in Raw.
+          <>
+            <span id={descriptionField} className={LABEL_CLASSES}>
+              Description
             </span>
-          </p>
+            <div
+              role="group"
+              aria-labelledby={descriptionField}
+              className="rounded-md border border-dashed border-hair-strong px-2 py-1.5 text-ink-2"
+            >
+              <p>{readMultiLine(doc, "description")}</p>
+              <p className={`mt-1 ${NOTE_CLASSES}`}>
+                Written over several lines. Change it in Raw.
+              </p>
+            </div>
+          </>
         )}
       </div>
       {/*
@@ -348,44 +353,77 @@ export function FrontmatterForm({
         />
       </div>
       <Row label="Salience">
-        <input
-          type="number"
-          step="0.1"
-          className={`w-full ${FIELD_CLASSES}`}
-          key={`salience:${salience}`}
-          defaultValue={salience}
-          placeholder="Not set"
-          onBlur={(event) => {
-            scalar("salience")(event.target.value);
+        <EditedField
+          value={salience}
+          onCommit={(next) => {
+            if (next.trim() !== salience) {
+              scalar("salience")(next);
+            }
           }}
+          render={(props) => (
+            <input
+              {...props}
+              type="number"
+              step="0.1"
+              className={`w-full ${FIELD_CLASSES}`}
+              placeholder="Not set"
+            />
+          )}
         />
       </Row>
     </section>
   );
 }
 
+/** What `EditedField` hands the control it draws. */
+interface EditedProps {
+  value: string;
+  onFocus: () => void;
+  onChange: (event: { target: { value: string } }) => void;
+  onBlur: () => void;
+  onKeyDown: (event: KeyboardEvent<HTMLElement>) => void;
+}
+
 /**
- * A value written over several lines, as one line of text to read: the key
- * line's own text (unless it is only a block indicator) and the indented
- * lines under it, joined by spaces.
+ * A free-text field over one frontmatter value. While it has focus it holds
+ * what the person is typing, so a change arriving from the room meanwhile
+ * does not wipe half-typed text; once focus leaves, it shows the document's
+ * value again. Blur and Enter commit; Enter keeps the focus in the field (the
+ * value is one line in the file, so Enter is never a line break).
  */
-function multiLineText(doc: string, key: string): string {
-  const lines = doc.split(/\r?\n/);
-  const at = lines.findIndex((line) => new RegExp(`^${key}\\s*:`).test(line));
-  if (at === -1) {
-    return "";
-  }
-  const head = (lines[at] ?? "")
-    .slice((lines[at] ?? "").indexOf(":") + 1)
-    .trim();
-  const parts = /^[|>]/.test(head) ? [] : [head];
-  for (const line of lines.slice(at + 1)) {
-    if (!/^\s/.test(line) || line.trim() === "") {
-      break;
-    }
-    parts.push(line.trim());
-  }
-  return parts.join(" ");
+function EditedField({
+  value,
+  onCommit,
+  render,
+}: {
+  value: string;
+  onCommit: (next: string) => void;
+  render: (props: EditedProps) => ReactElement;
+}): ReactElement {
+  const [editing, setEditing] = useState<string | null>(null);
+  return render({
+    value: editing ?? value,
+    onFocus: () => {
+      setEditing(value);
+    },
+    onChange: (event) => {
+      setEditing(event.target.value);
+    },
+    onBlur: () => {
+      if (editing !== null) {
+        onCommit(editing);
+      }
+      setEditing(null);
+    },
+    onKeyDown: (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (editing !== null) {
+          onCommit(editing);
+        }
+      }
+    },
+  });
 }
 
 /**

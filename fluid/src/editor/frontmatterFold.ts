@@ -23,7 +23,7 @@
  * context, so `inCompletableProse` is not applicable by construction.
  */
 
-import type { Extension, TransactionSpec } from "@codemirror/state";
+import type { Annotation, Extension, TransactionSpec } from "@codemirror/state";
 import {
   ChangeSet,
   EditorSelection,
@@ -35,11 +35,9 @@ import {
 import type { DecorationSet } from "@codemirror/view";
 import { Decoration, EditorView } from "@codemirror/view";
 
-import { frontmatterRegion } from "./frontmatterRegion";
+import { isolateHistory } from "@codemirror/commands";
 
-/** Shows the block again for the life of this field (tests, and any caller
- *  that wants the yaml in view without leaving preview). */
-export const unfoldEffect = StateEffect.define<boolean>();
+import { frontmatterRegion } from "./frontmatterRegion";
 
 /** The hidden block: whole lines, so nothing of it takes a row on screen. */
 const HIDE = Decoration.replace({ block: true });
@@ -55,11 +53,6 @@ function folded(state: EditorState): DecorationSet {
 const foldField = StateField.define<DecorationSet>({
   create: (state) => folded(state),
   update(deco, tr) {
-    for (const effect of tr.effects) {
-      if (effect.is(unfoldEffect)) {
-        return Decoration.none;
-      }
-    }
     // An empty set is the shown state, and nothing this field sees hides the
     // block again: once the yaml is on screen - because the document never
     // had a block, or because a hand edit removed the closing fence - no edit
@@ -108,49 +101,77 @@ const guard = EditorState.transactionFilter.of((tr) => {
   const length = start.doc.length;
   const protectTo = Math.min(region.to + 1, length);
   const landing = protectTo;
-  // A block with nothing after it: text typed beside it needs its own line.
-  const prefix = region.to === length ? start.lineBreak : "";
+  // A file that is only its frontmatter: text typed beside the block starts
+  // the body after one blank line, as a new engram's body does.
+  const prefix =
+    region.to === length ? `${start.lineBreak}${start.lineBreak}` : "";
   let touched = false;
-  let moved = false;
-  const specs: { from: number; to: number; insert: string }[] = [];
+  // Every part that reached the block lands, in order, at the start of the
+  // body as one insertion; whatever those parts deleted past the block still
+  // goes. Changes come sorted and never overlap, so a later change always
+  // starts at or after `deleteTo`.
+  let landed = "";
+  let deleteTo = protectTo;
+  const outside: { from: number; to: number; insert: string }[] = [];
   tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
     const text = inserted.toString();
     const reaches =
       toA > fromA ? fromA < protectTo : text !== "" && fromA <= region.to;
     if (!reaches) {
-      specs.push({ from: fromA, to: toA, insert: text });
+      outside.push({ from: fromA, to: toA, insert: text });
       return;
     }
     touched = true;
-    // The block (which starts the document) and the break after it stay;
-    // whatever the change reached past them still goes, and its text lands
-    // at the start of the body.
-    const to = Math.max(toA, protectTo);
-    if (to > protectTo || text !== "") {
-      moved = moved || text !== "";
-      specs.push({
-        from: landing,
-        to,
-        insert: text === "" ? "" : `${prefix}${text}`,
-      });
-    }
+    landed += text;
+    deleteTo = Math.max(deleteTo, toA);
   });
   if (!touched) {
     return tr;
+  }
+  const specs = [...outside];
+  if (landed !== "" || deleteTo > protectTo) {
+    specs.push({
+      from: landing,
+      to: deleteTo,
+      insert: landed === "" ? "" : `${prefix}${landed}`,
+    });
   }
   if (specs.length === 0) {
     // Nothing outside the block was asked for: the keystroke does nothing.
     return [];
   }
   const changes = ChangeSet.of(specs, length, start.lineBreak);
-  const head = changes.mapPos(landing, moved ? 1 : -1);
+  // A caret that stood beside the block goes where its text went (after it),
+  // or to the start of the body; every other caret follows its own change.
+  const beside = changes.mapPos(landing, landed === "" ? -1 : 1);
+  const selection = EditorSelection.create(
+    start.selection.ranges.map((range) =>
+      range.from < protectTo
+        ? EditorSelection.cursor(beside)
+        : range.map(changes, 1),
+    ),
+    start.selection.mainIndex,
+  );
+  // The transaction's own effects, carried from the document it would have
+  // made into the one this makes.
+  const mapping = tr.changes.invert(start.doc).compose(changes);
+  const annotations: Annotation<unknown>[] = [
+    Transaction.userEvent.of(tr.annotation(Transaction.userEvent) ?? "input"),
+  ];
+  const history = tr.annotation(Transaction.addToHistory);
+  if (history !== undefined) {
+    annotations.push(Transaction.addToHistory.of(history));
+  }
+  const isolate = tr.annotation(isolateHistory);
+  if (isolate !== undefined) {
+    annotations.push(isolateHistory.of(isolate));
+  }
   const spec: TransactionSpec = {
     changes,
-    selection: EditorSelection.cursor(head),
-    scrollIntoView: true,
-    annotations: Transaction.userEvent.of(
-      tr.annotation(Transaction.userEvent) ?? "input",
-    ),
+    selection,
+    effects: StateEffect.mapEffects(tr.effects, mapping),
+    scrollIntoView: tr.scrollIntoView,
+    annotations,
   };
   return spec;
 });

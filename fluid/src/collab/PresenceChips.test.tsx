@@ -53,5 +53,8 @@ describe("PresenceChips", () => {
     expect(inkOn("#8b5cf6")).toBe("#0b0d13");
     expect(inkOn("#1e293b")).toBe("#ffffff");
     expect(inkOn("not a color")).toBe("#0b0d13");
+    // The form a browser hands back from an inline style.
+    expect(inkOn("rgb(245, 158, 11)")).toBe("#0b0d13");
+    expect(inkOn("rgb(30, 41, 59)")).toBe("#ffffff");
   });
 });

@@ -237,3 +237,53 @@ export function ageText(seconds: number): string {
   const count = Math.floor(seconds / size);
   return `${String(count)} ${count === 1 ? one : many}`;
 }
+
+/**
+ * The text of a page's own title heading: the first `# Title` line, or the
+ * first line of text underlined with `=`, outside fenced code. A line inside a
+ * fence is code, not a title, and so is everything after a fence that is
+ * never closed. Null when there is none. The server reads a page's title the
+ * same way (`title_of`), after its frontmatter `title`.
+ */
+export function firstTitle(text: string): string | null {
+  let fence: string | null = null;
+  // The line before, when it is text an `=` line would turn into a title.
+  let previous: string | null = null;
+  for (const line of text.split(/\r?\n/)) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence !== null) {
+      if (
+        marker !== undefined &&
+        marker[0] === fence[0] &&
+        marker.length >= fence.length
+      ) {
+        fence = null;
+      }
+      continue;
+    }
+    if (marker !== undefined) {
+      fence = marker;
+      previous = null;
+      continue;
+    }
+    const atx = /^ {0,3}#[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
+    if (atx !== null) {
+      return atx[1] ?? "";
+    }
+    if (previous !== null && /^ {0,3}=+[ \t]*$/.test(line)) {
+      return previous.trim();
+    }
+    previous =
+      line.trim() !== "" && !/^ {0,3}#{1,6}([ \t]|$)/.test(line) ? line : null;
+  }
+  return null;
+}
+
+/**
+ * Whether the text before the first `##` holds the page's own title: a
+ * `# Title` line, or a line of text underlined with `=`. Not only the first
+ * line: an image or a paragraph may stand above it.
+ */
+export function hasOwnTitle(intro: string): boolean {
+  return firstTitle(intro) !== null;
+}
