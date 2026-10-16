@@ -436,6 +436,9 @@ function EditedField({
       if (event.key === "Enter") {
         event.preventDefault();
         commit();
+        // Back to following the document: a change from the room after this
+        // shows here, and the next keystroke builds on it.
+        setTyped(null);
       }
     },
   });

@@ -19,6 +19,7 @@ import {
   EditorSelection,
   EditorState,
   StateEffect,
+  Transaction,
 } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { describe, expect, test } from "vitest";
@@ -367,5 +368,23 @@ describe("frontmatterFold", () => {
     expect(view.state.sliceDoc()).toContain("---\n[[Beta]]\n# Body");
     expect(picked).toBe(completion);
     view.destroy();
+  });
+
+  test("a transaction still carries its annotations as an array", () => {
+    // The guard reads this internal field to keep every annotation when it
+    // rewrites a transaction. A @codemirror/state release that renames or
+    // removes it must fail here, not quietly drop annotations.
+    const state = EditorState.create({ doc: "x" });
+    const tr = state.update({
+      changes: { from: 0, insert: "y" },
+      userEvent: "input.type",
+    });
+    const carried = (tr as unknown as { annotations?: unknown }).annotations;
+    expect(Array.isArray(carried)).toBe(true);
+    expect(
+      (carried as { type: unknown }[]).some(
+        (one) => one.type === Transaction.userEvent,
+      ),
+    ).toBe(true);
   });
 });

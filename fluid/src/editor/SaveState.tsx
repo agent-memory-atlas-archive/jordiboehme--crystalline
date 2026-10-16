@@ -9,6 +9,7 @@
 
 import { Check, CloudOff } from "lucide-react";
 import type { ReactElement } from "react";
+import { useEffect, useState } from "react";
 
 export type SaveStateKind = "saved" | "saving" | "unsaved" | "offline";
 
@@ -18,6 +19,9 @@ const WORDS: Record<SaveStateKind, string> = {
   unsaved: "Unsaved changes",
   offline: "Offline, kept on this device",
 };
+
+/** How long "Connected again." stays in the status region, in milliseconds. */
+export const RECONNECTED_MS = 3000;
 
 export function SaveState({
   state,
@@ -55,13 +59,32 @@ export function SaveState({
       </>
     );
   const announced = !room || state === "offline";
+  // A room that comes back after Offline was announced says so once, then
+  // the region goes quiet again.
+  const [wasOffline, setWasOffline] = useState(state === "offline");
+  const [reconnected, setReconnected] = useState(false);
+  if ((state === "offline") !== wasOffline) {
+    setWasOffline(state === "offline");
+    setReconnected(room && wasOffline);
+  }
+  useEffect(() => {
+    if (!reconnected) {
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      setReconnected(false);
+    }, RECONNECTED_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [reconnected]);
   // One status region, mounted for the life of the editor and empty when
   // there is nothing to announce: a region that appears with its text already
   // in it is not announced, one whose text changes is.
   return (
     <span data-save-state={state ?? undefined} className="inline-flex">
-      <span role="status" className={face}>
-        {announced ? content : null}
+      <span role="status" className={reconnected ? "sr-only" : face}>
+        {announced ? content : reconnected ? "Connected again." : null}
       </span>
       {!announced && <span className={face}>{content}</span>}
     </span>

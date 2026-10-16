@@ -3,10 +3,10 @@
  * a room's own saving and saved are shown without being read out.
  */
 
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
-import { SaveState } from "./SaveState";
+import { RECONNECTED_MS, SaveState } from "./SaveState";
 
 describe("SaveState", () => {
   it("announces a solo state in its status region", () => {
@@ -36,5 +36,25 @@ describe("SaveState", () => {
     const region = screen.getByRole("status");
     rerender(<SaveState state="offline" room />);
     expect(region).toHaveTextContent("Offline, kept on this device");
+  });
+
+  it("says Connected again once when a room comes back, then goes quiet", () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(<SaveState state="offline" room />);
+      const region = screen.getByRole("status");
+      rerender(<SaveState state="saved" room />);
+      expect(region).toHaveTextContent("Connected again.");
+      // Still shown as Saved for the eye.
+      expect(screen.getByText("Saved")).toBeInTheDocument();
+      act(() => {
+        vi.advanceTimersByTime(RECONNECTED_MS);
+      });
+      expect(region).toBeEmptyDOMElement();
+      rerender(<SaveState state="saving" room />);
+      expect(region).toBeEmptyDOMElement();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

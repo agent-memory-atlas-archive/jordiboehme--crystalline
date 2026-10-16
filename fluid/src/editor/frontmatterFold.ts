@@ -193,7 +193,10 @@ const guard = EditorState.transactionFilter.of((tr) => {
   }
   // Every annotation the transaction carried (input type, history, a picked
   // completion and the rest). The list is not in the typed interface, so it
-  // is read with a fallback to the ones this guard knows by name.
+  // is read with a fallback to the ones this guard knows by name. The test
+  // "a transaction still carries its annotations as an array" in
+  // frontmatterFold.test.ts fails if a @codemirror/state release renames or
+  // removes this field.
   const carried = (tr as unknown as { annotations?: Annotation<unknown>[] })
     .annotations;
   const annotations: Annotation<unknown>[] =

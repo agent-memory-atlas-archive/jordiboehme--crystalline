@@ -568,4 +568,30 @@ describe("the frontmatter form", () => {
       expect(liveView().state.sliceDoc()).toContain('description: "かな"');
     });
   });
+
+  it("after Enter the field follows the room again, and the next keystroke builds on it", async () => {
+    render(<Live content={DOC} />, { wrapper: Tooltips });
+    const field = await screen.findByLabelText("Description");
+    field.focus();
+    await userEvent.type(field, "Mine");
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(liveView().state.sliceDoc()).toContain("description: Mine\n");
+    });
+    const view = liveView();
+    const at = view.state.sliceDoc().indexOf("description: Mine");
+    act(() => {
+      view.dispatch({
+        changes: {
+          from: at,
+          to: at + "description: Mine".length,
+          insert: "description: Agent",
+        },
+      });
+    });
+    expect(screen.getByLabelText("Description")).toHaveValue("Agent");
+    await userEvent.type(screen.getByLabelText("Description"), "s");
+    await userEvent.tab();
+    expect(liveView().state.sliceDoc()).toContain("description: Agents\n");
+  });
 });
