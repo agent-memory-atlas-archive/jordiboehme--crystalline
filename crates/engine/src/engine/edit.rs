@@ -6,13 +6,15 @@ use super::*;
 /// try and two more, each against the text stored at that moment. Three
 /// writers landing on one row inside the same few milliseconds three times in
 /// a row is not a race an agent can win by retrying faster either, so the
-/// last refusal comes back as the `Conflict` a guarded edit would get.
-const UNGUARDED_EDIT_ATTEMPTS: usize = 3;
+/// last refusal comes back as the `Conflict` a guarded edit would get. A
+/// move's rewrite of a virtual linker takes the same budget
+/// ([`Engine::relink_engram`]).
+pub(super) const UNGUARDED_EDIT_ATTEMPTS: usize = 3;
 
 /// Whether an error is the store's stale compare-and-swap rather than any
 /// other conflict (a permalink another engram owns, say), which applying the
 /// edit again could never resolve.
-fn is_stale_edit(e: &EngineError) -> bool {
+pub(super) fn is_stale_edit(e: &EngineError) -> bool {
     matches!(e, EngineError::Conflict(m) if m.starts_with("stale edit:"))
 }
 

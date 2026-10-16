@@ -995,6 +995,72 @@ async fn an_edit_of_a_page_no_room_is_open_over_still_writes_the_file() {
     );
 }
 
+/// A move rewrites a link in an engram somebody has open by composing into
+/// the room, the way an edit does, and keeps what the person typed.
+///
+/// The typed line sits right under the link on purpose: a rewrite written to
+/// the file and merged into the room three ways collides with it there, and
+/// the person would get a conflict from a move they never saw. Composed from
+/// the live text, it cannot collide. Nothing is written behind the room; its
+/// own save writes both.
+#[tokio::test]
+async fn a_move_relinks_a_linker_open_in_a_room_and_keeps_the_typing() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    std::fs::write(
+        tmp.path().join("eng/beta.md"),
+        "---\ntype: engram\ntitle: Beta\npermalink: beta\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Beta\n\nSee [[alpha]].\n",
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "beta", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed while alpha moved").await;
+
+    let receipt = engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".to_string(),
+                domain: "eng".to_string(),
+                destination: "gamma.md".to_string(),
+                destination_domain: None,
+                permalink: None,
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("the move lands");
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap();
+    assert!(
+        on_disk.contains("See [[alpha]]."),
+        "nothing was written behind the room's back: {on_disk:?}"
+    );
+    resync(&joined, &doc).await;
+    let live = client_text(&doc);
+    assert!(
+        live.contains("See [[gamma]]."),
+        "the rewrite is in the document the person is looking at: {live:?}"
+    );
+    assert!(
+        live.contains("typed while alpha moved"),
+        "and what the person typed is still there: {live:?}"
+    );
+
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap();
+    assert!(
+        on_disk.contains("See [[gamma]].") && on_disk.contains("typed while alpha moved"),
+        "the room's save writes both: {on_disk:?}"
+    );
+}
+
 /// Every verb that goes through the shared edit body meets the live document,
 /// not only `edit_engram`.
 ///

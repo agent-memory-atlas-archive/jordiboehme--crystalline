@@ -890,3 +890,99 @@ async fn a_cross_domain_move_writes_referencing_links_with_the_canonical_destina
         f.unresolved("notes").await
     );
 }
+
+// --- a move and the writers of a linking engram --------------------------------
+
+/// An edit of a linking engram that runs beside a move of the engram it links
+/// keeps both changes, whichever of the two reaches the file first.
+///
+/// The move rewrites the linker under the file's write lock, which the edit
+/// takes too, so the two serialize. Repeated, because the interleaving is up
+/// to the runtime; the deterministic proof is the engine's
+/// `a_relink_waits_for_the_linkers_write_lock`.
+#[tokio::test]
+async fn an_edit_during_a_move_is_not_overwritten() {
+    for round in 0..20 {
+        let f = Fixture::new().await;
+        seed(
+            f.notes(),
+            "target.md",
+            &engram("Target", "target", "the target body"),
+        );
+        seed(
+            f.notes(),
+            "linker.md",
+            &engram("Linker", "linker", "See [[target]] for details."),
+        );
+        f.sync().await;
+
+        let edit = EditParams {
+            identifier: "linker".to_string(),
+            domain: "notes".to_string(),
+            operation: "append".to_string(),
+            content: Some(format!("Edited in round {round}.\n")),
+            ..EditParams::default()
+        };
+        let (moved, edited) = tokio::join!(
+            f.mv("target", "notes", "moved.md", None, None),
+            f.engine.edit_engram(&edit),
+        );
+        moved.unwrap_or_else(|e| panic!("round {round}: the move lands: {e}"));
+        edited.unwrap_or_else(|e| panic!("round {round}: the edit lands: {e}"));
+
+        let linker = read(f.notes(), "linker.md");
+        assert!(
+            linker.contains("See [[moved]] for details."),
+            "round {round}: the link follows the move: {linker}"
+        );
+        assert!(
+            linker.contains(&format!("Edited in round {round}.")),
+            "round {round}: and the edit is still there: {linker}"
+        );
+    }
+}
+
+/// A virtual linker is rewritten by the store's compare and swap, the way an
+/// edit writes it, never last-write-wins over a row that changed under it.
+///
+/// The seam makes the compare fail once: the move still lands, and the
+/// linker keeps the text it had rather than taking a rewrite computed from a
+/// row that is gone.
+#[tokio::test]
+async fn a_virtual_linker_is_rewritten_by_compare_and_swap() {
+    let f = Fixture::new().await;
+    for (title, body) in [
+        ("Target", "the target body"),
+        ("Pointer", "points at [[target]]"),
+    ] {
+        f.engine
+            .write_engram(&WriteParams {
+                domain: "vault".to_string(),
+                title: title.to_string(),
+                content: body.to_string(),
+                folder: None,
+                engram_type: None,
+                tags: Vec::new(),
+                status: None,
+                metadata: None,
+                overwrite: false,
+                share_link: None,
+                model: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    f.engine.fail_next_source_edit();
+    let receipt = f
+        .mv("target", "vault", "kept/target.md", None, None)
+        .await
+        .expect("the move itself lands");
+    assert_eq!(receipt["to"]["permalink"], "kept/target", "{receipt}");
+    assert_eq!(receipt["links_rewritten"], 0, "{receipt}");
+    let pointer = f.content("vault", "pointer").await;
+    assert!(
+        pointer.contains("points at [[target]]"),
+        "a refused swap writes nothing: {pointer}"
+    );
+}

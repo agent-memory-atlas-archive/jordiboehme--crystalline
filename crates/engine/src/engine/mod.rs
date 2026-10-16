@@ -9586,6 +9586,78 @@ mod lock_tests {
         );
     }
 
+    /// A move rewrites a linking engram inside that file's lock, so an edit
+    /// that lands on the linker while the move runs is built on, not dropped.
+    ///
+    /// The lock on `beta` is held from outside, so the move has moved `alpha`
+    /// and now waits to rewrite the link in `beta`. Another writer changes
+    /// `beta` in that window. Both the rewritten link and that change have to
+    /// be in `beta` afterwards.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_relink_waits_for_the_linkers_write_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("alpha.md"),
+            engram("Alpha", "alpha", "The target."),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("beta.md"),
+            engram("Beta", "beta", "See [[alpha]]."),
+        )
+        .unwrap();
+        let engine = file_engine(&root).await;
+
+        let abs = root.join("beta.md");
+        let lock = engine.write_lock(&abs);
+        let held = lock.lock().await;
+
+        let mover = engine.clone();
+        let task = tokio::spawn(async move {
+            mover
+                .move_engram(
+                    &MoveParams {
+                        identifier: "alpha".to_string(),
+                        domain: "eng".to_string(),
+                        destination: "gamma.md".to_string(),
+                        destination_domain: None,
+                        permalink: None,
+                        update_links: None,
+                    },
+                    &crate::scope::Scope::Unrestricted,
+                )
+                .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !task.is_finished(),
+            "the move must be waiting on the linker's file lock, not already past its rewrite"
+        );
+
+        // The other writer's change lands while the move is blocked.
+        std::fs::write(
+            &abs,
+            engram("Beta", "beta", "See [[alpha]].\n\nFrom the browser."),
+        )
+        .unwrap();
+        drop(held);
+
+        let receipt = task.await.unwrap().expect("the move lands");
+        assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+        let final_text = std::fs::read_to_string(&abs).unwrap();
+        assert!(
+            final_text.contains("See [[gamma]]."),
+            "the link follows the move: {final_text}"
+        );
+        assert!(
+            final_text.contains("From the browser."),
+            "and the concurrent write is not dropped: {final_text}"
+        );
+    }
+
     /// A save reports where the engram answers *after* it landed, which is not
     /// always where it was addressed: the document is written verbatim, so an
     /// author may have edited the `permalink` line in it, and the index takes

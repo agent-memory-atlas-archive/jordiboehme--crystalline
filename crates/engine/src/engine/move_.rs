@@ -831,6 +831,27 @@ impl Engine {
     /// in its source of truth, then reindex it. Answers how many references
     /// changed and the engram's permalink, or `None` when its text held none
     /// after all - a content hit inside code, or a longer permalink.
+    ///
+    /// Written the way an edit writes, because an edit of the same engram may
+    /// run beside the move. A file is read, rewritten and reindexed under its
+    /// write lock, which every other writer of it takes too, so neither change
+    /// is lost. A virtual row is written by the store's compare and swap, and
+    /// a refused swap is applied again to the row stored now, as an unguarded
+    /// edit is.
+    ///
+    /// While a co-editing room is open over the linker, the room's text IS
+    /// the engram, so the rewrite composes into it, the way an edit's live
+    /// arm does: computed from the live text, it never collides with what a
+    /// person is typing, and the room's own save writes it down and announces
+    /// it. Neither the file nor the row is written behind the room. A room
+    /// that closed between the look and the compose saved its text on the
+    /// way out, so the rewrite then goes to the file or the row.
+    ///
+    /// Lock order: the room first, holding nothing else, then the file lock,
+    /// then the store lock, as `edit_engram` takes them and as a room's save
+    /// takes them. The move holds no other file lock and no store lock while
+    /// it waits here, so an edit of this engram and the move cannot wait on
+    /// each other.
     pub(super) async fn relink_engram(
         &self,
         linker: &MoveLinker,
@@ -838,65 +859,114 @@ impl Engine {
         actor: &str,
         hidden: &HashSet<String>,
     ) -> Result<Option<(usize, String)>> {
+        // The live arm. The room is keyed on the linker's permalink, which
+        // the index knows; asked before any lock is taken.
+        if let Some(rooms) = self.collab_rooms()
+            && let Some(desc) = self.descriptor_at(&linker.domain, &linker.path).await?
+            && let Some(live) = rooms.live_text(&linker.domain, &desc.permalink, None).await
+        {
+            let Some((edited, count)) = self
+                .relinked_text(&live.text, linker, spec, actor, hidden)
+                .await
+            else {
+                return Ok(None);
+            };
+            match rooms
+                .apply_text(&linker.domain, &desc.permalink, None, edited, actor, None)
+                .await
+            {
+                Ok(_) => return Ok(Some((count, desc.permalink))),
+                Err(e) => tracing::debug!(
+                    domain = linker.domain.as_str(),
+                    path = linker.path.as_str(),
+                    "the room over this linker closed before the move's rewrite \
+                     reached it, so the rewrite goes to its source: {e}"
+                ),
+            }
+        }
         let source = self.read_source(&linker.domain);
-        let text = match &source {
+        let (replaced, count, _lock) = match &source {
             ContentSource::File { root } => {
                 let abs = join_rel(root, &linker.path);
-                std::fs::read_to_string(&abs).map_err(|source| EngineError::Io {
+                let lock = self.lock_file(&abs).await;
+                let text = std::fs::read_to_string(&abs).map_err(|source| EngineError::Io {
                     path: abs.display().to_string(),
                     source,
-                })?
+                })?;
+                let Some((replaced, count)) =
+                    self.relinked_text(&text, linker, spec, actor, hidden).await
+                else {
+                    return Ok(None);
+                };
+                write_file(&abs, &replaced)?;
+                let store = self.store.lock().await;
+                self.reindex_file(&*store, linker.domain_id, root, &linker.path)
+                    .await?;
+                (replaced, count, Some(lock))
             }
             ContentSource::Virtual => {
-                let store = self.store.lock().await;
-                match store.engram_content(linker.domain_id, &linker.path).await? {
-                    Some(text) => text,
-                    None => return Ok(None),
+                let mut attempt = 0usize;
+                loop {
+                    attempt += 1;
+                    let stored = {
+                        let store = self.store.lock().await;
+                        match store.engram_content(linker.domain_id, &linker.path).await? {
+                            Some(text) => text,
+                            None => return Ok(None),
+                        }
+                    };
+                    // Compared against the bytes as stored, before the LF
+                    // pass below, as an edit compares them.
+                    let expected = sha256_hex(stored.as_bytes());
+                    let Some((replaced, count)) = self
+                        .relinked_text(&stored, linker, spec, actor, hidden)
+                        .await
+                    else {
+                        return Ok(None);
+                    };
+                    // The seam an edit's virtual arm has: a token nothing can
+                    // match, never retried. See `Engine::fail_next_source_edit`.
+                    let armed = self.take_armed_failure();
+                    let expected = if armed { "0".repeat(64) } else { expected };
+                    let store = self.store.lock().await;
+                    let indexed = self
+                        .index_markdown(
+                            &*store,
+                            linker.domain_id,
+                            &linker.path,
+                            &replaced,
+                            virtual_stamp(&replaced),
+                            Some(&expected),
+                            true,
+                        )
+                        .await;
+                    drop(store);
+                    match indexed {
+                        Ok(_) => break (replaced, count, None),
+                        Err(e)
+                            if !armed
+                                && attempt < super::edit::UNGUARDED_EDIT_ATTEMPTS
+                                && super::edit::is_stale_edit(&e) =>
+                        {
+                            tracing::debug!(
+                                domain = linker.domain.as_str(),
+                                path = linker.path.as_str(),
+                                attempt,
+                                "a move's rewrite lost a race with another writer; \
+                                 applying it again to the stored text"
+                            );
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
             }
         };
-        // Rewritten as LF, the whole file, like every write.
-        let text = crystalline_core::to_lf(&text).into_owned();
-        let (relinked, count) =
-            crystalline_core::relink::relink(&text, &linker.domain, &linker.domain, spec);
-        if count == 0 {
-            return Ok(None);
-        }
-        let replaced = touch_generated(&relinked, actor, None, now_offset());
-        // The rewritten reference passes through the same funnel every other
-        // write's final text does: `spec.to_domain` is the destination's
-        // local name (moves are localized before they reach here), so
-        // without this a linker would carry `[[<local-name>:...]]` even where
-        // that local name is only an alias or a non-canonical spelling of the
-        // domain's declared name. Called before the store lock below is
-        // taken, since it may itself need the store.
-        let (replaced, _) = self.normalize_domain_spellings(&replaced, hidden).await;
-        let store = self.store.lock().await;
-        match &source {
-            ContentSource::File { root } => {
-                write_file(&join_rel(root, &linker.path), &replaced)?;
-                self.reindex_file(&*store, linker.domain_id, root, &linker.path)
-                    .await?;
-            }
-            ContentSource::Virtual => {
-                self.index_markdown(
-                    &*store,
-                    linker.domain_id,
-                    &linker.path,
-                    &replaced,
-                    virtual_stamp(&replaced),
-                    None,
-                    true,
-                )
-                .await?;
-            }
-        }
+        drop(_lock);
         let permalink = parse_engram(&replaced)
             .ok()
             .and_then(|engram| engram.frontmatter.permalink)
             .filter(|permalink| !permalink.is_empty())
             .unwrap_or_else(|| crystalline_core::path_permalink(&linker.path));
-        drop(store);
         // The linker's own text changed, possibly in another domain, so its
         // page follows too.
         self.announce(Change::Engram(EngramChanged {
@@ -911,6 +981,36 @@ impl Engine {
             audience: None,
         }));
         Ok(Some((count, permalink)))
+    }
+
+    /// The linker's text with the moved engram's references rewritten,
+    /// stamped and normalized, and how many references changed; `None` when
+    /// none did.
+    async fn relinked_text(
+        &self,
+        text: &str,
+        linker: &MoveLinker,
+        spec: &Relink<'_>,
+        actor: &str,
+        hidden: &HashSet<String>,
+    ) -> Option<(String, usize)> {
+        // Rewritten as LF, the whole file, like every write.
+        let text = crystalline_core::to_lf(text);
+        let (relinked, count) =
+            crystalline_core::relink::relink(&text, &linker.domain, &linker.domain, spec);
+        if count == 0 {
+            return None;
+        }
+        let replaced = touch_generated(&relinked, actor, None, now_offset());
+        // The rewritten reference passes through the same funnel every other
+        // write's final text does: `spec.to_domain` is the destination's
+        // local name (moves are localized before they reach here), so
+        // without this a linker would carry `[[<local-name>:...]]` even where
+        // that local name is only an alias or a non-canonical spelling of the
+        // domain's declared name. Called before the store lock is taken,
+        // since it may itself need the store.
+        let (replaced, _) = self.normalize_domain_spellings(&replaced, hidden).await;
+        Some((replaced, count))
     }
 
     /// Rename a tag to `new`, or (with `merge`) fold it into an existing `new`,
