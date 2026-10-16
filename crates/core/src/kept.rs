@@ -116,27 +116,73 @@ pub fn write(
         base = base.join(DRAFT_DIR).join(owner);
     }
     let base = base.join(kind.as_str()).join(path);
-    if let Some(parent) = base.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let stamp = at.format(STAMP).to_string();
-    let name = base.file_name().unwrap_or_default().to_string_lossy();
+    let name = base
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let parent = base.parent().unwrap_or(root).to_path_buf();
+    // The text goes to a temporary name first, which `parse_name` never
+    // takes for a kept text, so a listing never shows a file half written.
+    // A `remove` of the folder's last text may prune the folder between its
+    // creation and the open: then the folder is made again, a few times.
+    let temp = parent.join(format!(".{name}.{stamp}.{}.keeping", std::process::id()));
+    let mut attempt = 0;
+    loop {
+        std::fs::create_dir_all(&parent)?;
+        #[cfg(test)]
+        tests::before_open(&parent);
+        match write_new(&temp, text) {
+            Ok(()) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && attempt < OPEN_TRIES => {
+                attempt += 1;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    let placed = place(&temp, &base, &name, &stamp, text);
+    let _ = std::fs::remove_file(&temp);
+    placed
+}
+
+/// How many times [`write`] makes a pruned folder again before it gives up.
+const OPEN_TRIES: u32 = 5;
+
+/// Write `text` to a new file at `file`; fails when something is there.
+fn write_new(file: &Path, text: &str) -> std::io::Result<()> {
+    let mut out = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(file)?;
+    out.write_all(text.as_bytes())?;
+    out.sync_all()
+}
+
+/// Give the complete file at `temp` its kept name next to `base`, never over
+/// another file: a hard link fails on a taken name, so the next `-N` is
+/// tried. A file system without hard links gets the text written straight
+/// to the free name instead.
+fn place(
+    temp: &Path,
+    base: &Path,
+    name: &str,
+    stamp: &str,
+    text: &str,
+) -> std::io::Result<PathBuf> {
     for n in 1u32.. {
         let file = base.with_file_name(match n {
             1 => format!("{name}.{stamp}.md"),
             n => format!("{name}.{stamp}-{n}.md"),
         });
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&file)
-        {
-            Ok(mut out) => {
-                out.write_all(text.as_bytes())?;
-                return Ok(file);
-            }
+        match std::fs::hard_link(temp, &file) {
+            Ok(()) => return Ok(file),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(err),
+            Err(_) => match write_new(&file, text) {
+                Ok(()) => return Ok(file),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err),
+            },
         }
     }
     unreachable!("a free name is found before the counter runs out")
@@ -341,6 +387,54 @@ fn dir_entries(dir: &Path) -> Vec<Entry> {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// How many more times [`before_open`] removes the folder it is given.
+        static PRUNES: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// The test seam in [`write`]: right after the folder is made, remove it
+    /// again while [`PRUNES`] says so, as a concurrent `remove` would.
+    pub(super) fn before_open(dir: &Path) {
+        PRUNES.with(|left| {
+            if left.get() > 0 {
+                left.set(left.get() - 1);
+                std::fs::remove_dir(dir).unwrap();
+            }
+        });
+    }
+
+    /// A drop that prunes the folder between its creation and the open does
+    /// not lose the text: the folder is made again and the text kept. One
+    /// prune more than the tries is an error, never a silent loss. No
+    /// temporary file stays behind.
+    #[test]
+    fn a_folder_pruned_under_a_keep_is_made_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        PRUNES.with(|left| left.set(2));
+        let file = write(root, "eng", None, KeptKind::Engram, "a.md", at(8), "kept").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "kept");
+        assert_eq!(
+            std::fs::read_dir(file.parent().unwrap()).unwrap().count(),
+            1
+        );
+        PRUNES.with(|left| left.set(OPEN_TRIES + 1));
+        let err = write(root, "ops", None, KeptKind::Engram, "a.md", at(8), "x").unwrap_err();
+        PRUNES.with(|left| left.set(0));
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    /// The temporary name a keep writes first is never listed.
+    #[test]
+    fn a_text_being_written_is_not_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("eng/engram");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(".a.md.20261015T080000Z.42.keeping"), "half").unwrap();
+        assert!(scan(dir.path()).is_empty());
+    }
 
     fn at(h: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 15, h, 0, 0).unwrap()
