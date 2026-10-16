@@ -2604,6 +2604,10 @@ export type CollabJoinErrors = {
      */
     404: ProblemDetail;
     /**
+     * On a shared database, another instance hosts this file domain and writes it; the detail names it.
+     */
+    409: ProblemDetail;
+    /**
      * `overlay` names somebody whose draft a live share-link shows this caller, and this session has not joined it: seeing a draft and editing it are two steps. The detail is the sentence that says how to take the second.
      */
     422: ProblemDetail;
