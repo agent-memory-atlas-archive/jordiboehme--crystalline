@@ -1069,6 +1069,69 @@ pub async fn review(
         .map_err(reflection_error)
 }
 
+/// `GET /domains/{domain}/reflection/summary`
+#[utoipa::path(
+    get,
+    path = "/api/v1/domains/{domain}/reflection/summary",
+    tag = "reflection",
+    operation_id = "get_reflection_summary",
+    summary = "The Reflection home: what waits for review, in counts and by page.",
+    description = "The cheap cut of the review the Reflection home draws: \
+                   how many open threads wait for the agent and for people, \
+                   `pages_to_update` (the review queue's `kinds.update`, \
+                   counted without rendering a diff or looking up a source) \
+                   and the open threads by page. A thread carries its id, its \
+                   first quote (`null` for a whole section), who it waits on, \
+                   when it was opened and the people who wrote in it, never \
+                   its entries. Pages and threads come oldest first. The same \
+                   rights as the review: a reader without engram rights is \
+                   not counted any update about engrams that no page cites.",
+    params(("domain" = String, Path, description = "The domain.")),
+    responses(
+        (
+            status = 200,
+            description = "ReflectionSummary.",
+            body = Object,
+            example = json!({ "domain": "eng",
+                "waiting_for_the_agent": 1,
+                "waiting_for_people": 0,
+                "pages_to_update": 2,
+                "open_by_page": [ { "path": "guides/deploying.md",
+                    "title": "Deploying",
+                    "threads": [ { "id": "t-0a1b2c3d",
+                        "quote": "at night",
+                        "waiting_on": "agent",
+                        "opened_at": "2026-10-14T09:12:00Z",
+                        "people": [ { "name": "ann", "agent": false } ] } ] } ] }),
+        ),
+        (
+            status = 404,
+            description = "No such domain, or none this caller may see (the \
+                           anonymous viewer included).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 409,
+            description = "The Reflection is not here (then possibly `home_url`).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+    ),
+)]
+pub async fn summary(
+    State(state): State<RestState>,
+    identity: Identity,
+    ApiPath(domain): ApiPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    state
+        .engine
+        .reflection_summary(&domain, &caller(&identity))
+        .await
+        .map(Json)
+        .map_err(reflection_error)
+}
+
 // A schema type only, never built: the route reads `search_type` as a
 // string, so an unknown value answers the engine's 422 (which names the
 // three) instead of the query extractor's 400. No doc comment: one would

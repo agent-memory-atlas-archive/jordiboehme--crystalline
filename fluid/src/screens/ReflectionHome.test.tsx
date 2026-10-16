@@ -121,6 +121,46 @@ const REVIEW = {
   },
 };
 
+/** The summary route's answer for the same threads as {@link REVIEW}. */
+const SUMMARY = {
+  domain: "eng",
+  waiting_for_the_agent: 2,
+  waiting_for_people: 1,
+  pages_to_update: 2,
+  open_by_page: [
+    {
+      path: "guides/deploying.md",
+      title: "Deploying",
+      threads: [
+        {
+          id: "t1",
+          quote: "between 01:30 and 04:00",
+          waiting_on: "people",
+          opened_at: "2026-10-01T10:00:00Z",
+          people: [{ name: "bot", agent: true }],
+        },
+        {
+          id: "t2",
+          quote: "between 01:30 and 04:00",
+          waiting_on: "agent",
+          opened_at: "2026-10-01T10:00:00Z",
+          people: [
+            { name: "ben", agent: false },
+            { name: "ana", agent: false },
+          ],
+        },
+        {
+          id: "t3",
+          quote: "between 01:30 and 04:00",
+          waiting_on: "agent",
+          opened_at: "2026-10-01T10:00:00Z",
+          people: [{ name: "ben", agent: false }],
+        },
+      ],
+    },
+  ],
+};
+
 /**
  * A person with knowledge `none` and Reflection `contributor` on `eng`: a
  * member of the private `eng`, so it may leave (`member: true`).
@@ -149,6 +189,7 @@ function asContributor(routes: Record<string, Answer> = {}) {
         status({ right: "edit", engrams_visible: false, member: true }),
       "/domains/eng/reflection/tree": () => TREE,
       "/domains/eng/reflection/review": () => REVIEW,
+      "/domains/eng/reflection/summary": () => SUMMARY,
       ...routes,
     }),
   );
@@ -190,6 +231,7 @@ function asEditor(routes: Record<string, Answer> = {}) {
       "/domains/eng/reflection": () => status(),
       "/domains/eng/reflection/tree": () => TREE,
       "/domains/eng/reflection/review": () => REVIEW,
+      "/domains/eng/reflection/summary": () => SUMMARY,
       ...routes,
     }),
   );
@@ -458,10 +500,12 @@ describe("the Reflection home", () => {
 
   it("says nothing waits when the review is empty", async () => {
     asEditor({
-      "/domains/eng/reflection/review": () => ({
-        waiting_for_people: [],
-        waiting_for_the_agent: [],
-        queue: { total: 0, kinds: {}, queue: [], guidance: null },
+      "/domains/eng/reflection/summary": () => ({
+        domain: "eng",
+        waiting_for_the_agent: 0,
+        waiting_for_people: 0,
+        pages_to_update: 0,
+        open_by_page: [],
       }),
     });
     renderApp("/d/eng/reflection");
@@ -487,9 +531,46 @@ describe("the Reflection home", () => {
     expect(screen.queryByText(/on 1 page/)).toBeNull();
   });
 
+  it("reads the summary route and never the full review", async () => {
+    asEditor();
+    renderApp("/d/eng/reflection");
+    await screen.findByRole("list", { name: "Pages with open threads" });
+    const paths = apiMock.mock.calls.map(([path]) => String(path));
+    expect(paths).toContain("/domains/eng/reflection/summary");
+    expect(paths.some((path) => path.includes("/reflection/review"))).toBe(
+      false,
+    );
+  });
+
+  it("falls back to the tree's count when an older server has no summary route", async () => {
+    asEditor({
+      "/domains/eng/reflection/summary": missing,
+    });
+    renderApp("/d/eng/reflection");
+    const card = await within(await screen.findByRole("main")).findByRole(
+      "region",
+      { name: "Review" },
+    );
+    await within(
+      await screen.findByRole("list", { name: "All pages" }),
+    ).findByText("Deploying");
+    await waitFor(() => {
+      expect(
+        apiMock.mock.calls.some(
+          ([path]) => String(path) === "/domains/eng/reflection/summary",
+        ),
+      ).toBe(true);
+    });
+    expect(card).toHaveTextContent("3 open threads");
+    expect(
+      screen.queryByRole("list", { name: "Pages with open threads" }),
+    ).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("falls back to the tree's count when the review is refused, with no groups and no alert", async () => {
     asEditor({
-      "/domains/eng/reflection/review": () => {
+      "/domains/eng/reflection/summary": () => {
         throw new ApiProblem(500, "failed", "the review broke");
       },
     });

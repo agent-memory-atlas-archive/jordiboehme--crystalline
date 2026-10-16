@@ -213,6 +213,7 @@ use crate::scope::{DomainAccess, DomainRight};
         reflections::step,
         reflections::queue,
         reflections::review,
+        reflections::summary,
         reflections::search,
         reflections::assets,
         reflections::asset_read,
@@ -963,6 +964,10 @@ fn routes(state: RestState) -> Router {
         .route(
             "/domains/{domain}/reflection/review",
             get(reflections::review),
+        )
+        .route(
+            "/domains/{domain}/reflection/summary",
+            get(reflections::summary),
         )
         .route(
             "/domains/{domain}/reflection/search",

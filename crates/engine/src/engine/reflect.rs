@@ -128,6 +128,13 @@ struct QueueScope {
     pending: Vec<String>,
 }
 
+/// Whether a queue item is shown to a caller at all. An unreflected item
+/// is about engrams (the folder they sit in and their names), so a caller
+/// who may not see engrams is not told of it, not even as a count.
+fn shown_to(item: &Item, engrams_visible: bool) -> bool {
+    engrams_visible || item.what != "unreflected"
+}
+
 /// How much of each item [`Engine::detect_reflection`] builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Detail {
@@ -139,12 +146,15 @@ enum Detail {
 }
 
 impl Engine {
-    /// Every open item of one domain's Reflection, unranked.
+    /// Every open item of one domain's Reflection, unranked. `threads` is
+    /// [`Engine::all_threads`] of the same domain, read once by a caller
+    /// that needs the threads too.
     async fn detect_reflection(
         &self,
         domain: &str,
         access: &ReflectionAccess,
         detail: Detail,
+        threads: &[(String, th::Thread, String)],
     ) -> Result<Vec<Item>> {
         let full = detail == Detail::Full;
         let (rows, host_move) = {
@@ -155,7 +165,6 @@ impl Engine {
             )
         };
         let facts = self.engram_facts(access.domain_id, domain).await?;
-        let threads = self.all_threads(access).await?;
         let open_thread = |id: &str| {
             threads
                 .iter()
@@ -423,7 +432,7 @@ impl Engine {
                 }),
             });
         }
-        for (path, thread, text) in &threads {
+        for (path, thread, text) in threads {
             if thread.status != ThreadStatus::Open || th::waiting_on(thread) != Waiting::Agent {
                 continue;
             }
@@ -465,10 +474,7 @@ impl Engine {
         let filtered: Vec<&Item> = items
             .iter()
             .filter(|i| kinds.is_empty() || kinds.iter().any(|k| k == i.kind))
-            // An unreflected item is about engrams (the folder they sit in
-            // and their names), so a caller who may not see engrams is not
-            // told of it at all.
-            .filter(|i| engrams_visible || i.what != "unreflected")
+            .filter(|i| shown_to(i, engrams_visible))
             .collect();
         let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
         let page = page.unwrap_or(1).max(1);
@@ -627,7 +633,14 @@ impl Engine {
             // One page answers every swept domain, so a domain that hides
             // engrams from the caller strips the sources, folders, engrams and targets of the whole page.
             visible_everywhere &= access.engrams_visible;
-            match self.detect_reflection(&domain, &access, Detail::Full).await {
+            let found = match self.all_threads(&access).await {
+                Ok(threads) => {
+                    self.detect_reflection(&domain, &access, Detail::Full, &threads)
+                        .await
+                }
+                Err(e) => Err(e),
+            };
+            match found {
                 Ok(found) => items.extend(found),
                 Err(e) if named => return Err(e),
                 // One domain that cannot be read never costs the whole
@@ -665,8 +678,9 @@ impl Engine {
         let access = self
             .require_reflection(domain, caller, ReflectionRight::Read)
             .await?;
+        let threads = self.all_threads(&access).await?;
         let items = rank(
-            self.detect_reflection(domain, &access, Detail::Full)
+            self.detect_reflection(domain, &access, Detail::Full, &threads)
                 .await?,
         );
         let mut value = Self::page_json(&items, &[], limit, page, access.engrams_visible);
@@ -687,14 +701,15 @@ impl Engine {
         let mut people: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         let mut agent: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         let mut titles: HashMap<String, String> = HashMap::new();
-        for (path, thread, text) in self.all_threads(&access).await? {
+        let threads = self.all_threads(&access).await?;
+        for (path, thread, text) in &threads {
             if thread.status != ThreadStatus::Open {
                 continue;
             }
             titles
                 .entry(path.clone())
-                .or_insert_with(|| r::title_of(&text, &path));
-            let bucket = match th::waiting_on(&thread) {
+                .or_insert_with(|| r::title_of(text, path));
+            let bucket = match th::waiting_on(thread) {
                 Waiting::People => &mut people,
                 Waiting::Agent => &mut agent,
             };
@@ -702,7 +717,7 @@ impl Engine {
             bucket
                 .entry(path.clone())
                 .or_default()
-                .push(thread_view(&path, &thread, &text));
+                .push(thread_view(path, thread, text));
         }
         // "Oldest" is the opening time, as in the thread list: threads
         // inside a group and the groups by their first thread.
@@ -724,7 +739,7 @@ impl Engine {
             out.into_iter().map(|(_, v)| v).collect()
         };
         let items = rank(
-            self.detect_reflection(domain, &access, Detail::Full)
+            self.detect_reflection(domain, &access, Detail::Full, &threads)
                 .await?,
         );
         let mut queue = Self::page_json(&items, &[], Some(50), Some(1), access.engrams_visible);
@@ -734,6 +749,88 @@ impl Engine {
             "waiting_for_people": groups(people),
             "waiting_for_the_agent": groups(agent),
             "queue": queue,
+        }))
+    }
+
+    /// The Reflection home's summary: what [`Engine::reflection_review`]
+    /// answers, cut to what the home draws. The open threads by who they
+    /// wait on, the queue's update count (the review's `kinds.update`,
+    /// counted with no diff rendered and no source looked up) and the open
+    /// threads by page, each thread with its first quote and the people in
+    /// it, never its entries. Pages and their threads come oldest first, by
+    /// when a thread was opened. The threads files are read once.
+    pub async fn reflection_summary(
+        &self,
+        domain: &str,
+        caller: &ReflectionCaller,
+    ) -> Result<Value> {
+        let access = self
+            .require_reflection(domain, caller, ReflectionRight::Read)
+            .await?;
+        let threads = self.all_threads(&access).await?;
+        let (mut for_people, mut for_agent) = (0usize, 0usize);
+        // Per page: its title and its open threads with their opening time.
+        let mut pages: BTreeMap<&str, (String, Vec<(&str, Value)>)> = BTreeMap::new();
+        for (path, thread, text) in &threads {
+            if thread.status != ThreadStatus::Open {
+                continue;
+            }
+            let waiting = th::waiting_on(thread);
+            match waiting {
+                Waiting::People => for_people += 1,
+                Waiting::Agent => for_agent += 1,
+            }
+            // Everyone who wrote in the thread, once, in the order they
+            // first wrote; an author's last entry says whether it is an agent.
+            let mut people: Vec<(&str, bool)> = Vec::new();
+            for entry in &thread.entries {
+                match people.iter_mut().find(|(n, _)| *n == entry.author.name) {
+                    Some(seen) => seen.1 = entry.author.agent,
+                    None => people.push((&entry.author.name, entry.author.agent)),
+                }
+            }
+            let view = json!({
+                "id": thread.id,
+                "quote": thread.anchor.quote,
+                "waiting_on": waiting.as_str(),
+                "opened_at": thread.opened_at(),
+                "people": people
+                    .iter()
+                    .map(|(name, agent)| json!({ "name": name, "agent": agent }))
+                    .collect::<Vec<_>>(),
+            });
+            pages
+                .entry(path.as_str())
+                .or_insert_with(|| (r::title_of(text, path), Vec::new()))
+                .1
+                .push((thread.opened_at(), view));
+        }
+        let mut open_by_page: Vec<(&str, Value)> = pages
+            .into_iter()
+            .map(|(path, (title, mut list))| {
+                list.sort_by(|a, b| a.0.cmp(b.0));
+                let oldest = list.first().map(|(at, _)| *at).unwrap_or_default();
+                let threads: Vec<Value> = list.into_iter().map(|(_, v)| v).collect();
+                (
+                    oldest,
+                    json!({ "path": path, "title": title, "threads": threads }),
+                )
+            })
+            .collect();
+        open_by_page.sort_by(|a, b| a.0.cmp(b.0));
+        let items = self
+            .detect_reflection(domain, &access, Detail::Count, &threads)
+            .await?;
+        let pages_to_update = items
+            .iter()
+            .filter(|i| i.kind == "update" && shown_to(i, access.engrams_visible))
+            .count();
+        Ok(json!({
+            "domain": domain,
+            "waiting_for_the_agent": for_agent,
+            "waiting_for_people": for_people,
+            "pages_to_update": pages_to_update,
+            "open_by_page": open_by_page.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
         }))
     }
 
@@ -753,10 +850,14 @@ impl Engine {
             else {
                 continue;
             };
-            let n = match self
-                .detect_reflection(&domain, &access, Detail::Count)
-                .await
-            {
+            let found = match self.all_threads(&access).await {
+                Ok(threads) => {
+                    self.detect_reflection(&domain, &access, Detail::Count, &threads)
+                        .await
+                }
+                Err(e) => Err(e),
+            };
+            let n = match found {
                 Ok(items) => items.len(),
                 Err(e) => {
                     tracing::warn!(

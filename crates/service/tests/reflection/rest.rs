@@ -1940,3 +1940,179 @@ async fn a_move_onto_a_taken_page_is_a_409_and_leaves_the_editor_open() {
     .await;
     assert!(quiet.is_err(), "the socket stays open");
 }
+
+/// What the Reflection home derives from the review, one reader at a time:
+/// the three counts and the open threads by page (path, title, thread ids,
+/// first quotes, who each waits on).
+fn home_from_review(review: &Value) -> Value {
+    let mut pages: std::collections::BTreeMap<String, (Value, Vec<Value>)> =
+        std::collections::BTreeMap::new();
+    let mut count = |side: &str| {
+        let mut n = 0;
+        for group in review[side].as_array().unwrap() {
+            let entry = pages
+                .entry(group["path"].as_str().unwrap().to_string())
+                .or_insert_with(|| (group["title"].clone(), Vec::new()));
+            for t in group["threads"].as_array().unwrap() {
+                n += 1;
+                entry
+                    .1
+                    .push(json!([t["id"], t["anchor"]["quote"], t["waiting_on"]]));
+            }
+        }
+        n
+    };
+    let (agent, people) = (count("waiting_for_the_agent"), count("waiting_for_people"));
+    json!({
+        "agent": agent,
+        "people": people,
+        "updates": review["queue"]["kinds"]["update"],
+        "pages": pages.into_iter().map(|(path, (title, mut threads))| {
+            threads.sort_by_key(|t| t[0].as_str().unwrap().to_string());
+            json!([path, title, threads])
+        }).collect::<Vec<_>>(),
+    })
+}
+
+/// The same, read off the summary route.
+fn home_from_summary(summary: &Value) -> Value {
+    let mut pages: Vec<Value> = summary["open_by_page"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| {
+            let mut threads: Vec<Value> = g["threads"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| json!([t["id"], t["quote"], t["waiting_on"]]))
+                .collect();
+            threads.sort_by_key(|t| t[0].as_str().unwrap().to_string());
+            json!([g["path"], g["title"], threads])
+        })
+        .collect();
+    pages.sort_by_key(|p| p[0].as_str().unwrap().to_string());
+    json!({
+        "agent": summary["waiting_for_the_agent"],
+        "people": summary["waiting_for_people"],
+        "updates": summary["pages_to_update"],
+        "pages": pages,
+    })
+}
+
+/// The home's summary says what the review says, for a reader of engrams and
+/// for a contributor who reads none (who is not counted the unreflected
+/// engram), reads the threads files once, carries no thread entries, and is
+/// refused to who may not read the Reflection.
+#[tokio::test]
+async fn the_reflection_summary_agrees_with_the_review_for_every_reader() {
+    let s = serve().await;
+    std::fs::create_dir_all(s.fx.root.join("notes")).unwrap();
+    std::fs::write(
+        s.fx.root.join("notes/loose.md"),
+        engram("Loose", "notes/loose", "- [fact] nobody cites this"),
+    )
+    .unwrap();
+    s.fx.engine.sync(None).await.unwrap();
+    let mut p = crate::docs::write("ops/second.md", "# Second\n\n## Pager\n\nWho holds it.\n");
+    p.sources = std::collections::BTreeMap::new();
+    s.fx.engine
+        .write_reflection(&p, &crystalline_service::ReflectionCaller::owner())
+        .await
+        .unwrap();
+    let ed = Session::login(s.addr, "ed").await;
+    let ann = Session::login(s.addr, "ann").await;
+    let mut ids = Vec::new();
+    for (who, path, section, quote) in [
+        (
+            &ed,
+            "guides/deploying.md",
+            "Night deploys",
+            Some("at night"),
+        ),
+        (&ann, "guides/deploying.md", "Night deploys", None),
+        (&ann, "ops/second.md", "Pager", Some("Who holds it")),
+    ] {
+        let (status, thread) = who
+            .send(
+                reqwest::Method::POST,
+                "/api/v1/domains/eng/reflection/threads",
+                Some(json!({ "path": path, "section": section, "quote": quote, "text": "Still true?" })),
+            )
+            .await;
+        assert_eq!(status, 201, "{thread}");
+        ids.push(thread["id"].as_str().unwrap().to_string());
+    }
+    // The agent answers the first: it now waits for people.
+    s.fx.engine
+        .discuss(
+            &crystalline_service::params::DiscussParams {
+                domain: "eng".into(),
+                action: Some("answer".into()),
+                path: Some("guides/deploying.md".into()),
+                thread: Some(ids[0].clone()),
+                text: Some("Yes.".into()),
+                ..Default::default()
+            },
+            &crate::docs::agent(),
+        )
+        .await
+        .unwrap();
+
+    let summary_path = "/api/v1/domains/eng/reflection/summary";
+    let (status, ed_summary) = ed.get(summary_path).await;
+    assert_eq!(status, 200, "{ed_summary}");
+    assert_eq!(ed_summary["domain"], "eng");
+    assert_eq!(ed_summary["waiting_for_people"], 1, "{ed_summary}");
+    assert_eq!(ed_summary["waiting_for_the_agent"], 2, "{ed_summary}");
+    let first = &ed_summary["open_by_page"][0];
+    assert_eq!(
+        first["path"], "guides/deploying.md",
+        "oldest page first: {ed_summary}"
+    );
+    assert_eq!(first["title"], "Deploying");
+    assert_eq!(
+        first["threads"][0]["id"],
+        ids[0].as_str(),
+        "oldest thread first"
+    );
+    assert_eq!(first["threads"][0]["quote"], "at night");
+    assert_eq!(first["threads"][0]["waiting_on"], "people");
+    assert_eq!(
+        first["threads"][0]["people"],
+        json!([{ "name": "ed", "agent": false }, { "name": "claude-code", "agent": true }]),
+        "{ed_summary}"
+    );
+    assert!(first["threads"][0].get("entries").is_none(), "no entries");
+
+    for (who, name) in [(&ed, "ed"), (&ann, "ann")] {
+        let (status, review) = who.get("/api/v1/domains/eng/reflection/review").await;
+        assert_eq!(status, 200, "{review}");
+        let before = s.fx.engine.reflection_text_loads();
+        let (status, summary) = who.get(summary_path).await;
+        assert_eq!(status, 200, "{summary}");
+        assert_eq!(
+            s.fx.engine.reflection_text_loads() - before,
+            1,
+            "the threads are read once for {name}"
+        );
+        assert_eq!(
+            home_from_summary(&summary),
+            home_from_review(&review),
+            "{name}: {summary} vs {review}"
+        );
+    }
+    let (_, ann_summary) = ann.get(summary_path).await;
+    assert_eq!(
+        ed_summary["pages_to_update"].as_u64().unwrap(),
+        ann_summary["pages_to_update"].as_u64().unwrap() + 1,
+        "the unreflected engram is counted for a reader of engrams only: {ed_summary} {ann_summary}"
+    );
+    assert!(!ann_summary.to_string().contains("notes"), "{ann_summary}");
+
+    let nora = Session::login(s.addr, "nora").await;
+    let (status, err) = nora.get(summary_path).await;
+    assert_eq!(status, 404, "{err}");
+    let (status, err) = ed.get("/api/v1/domains/nope/reflection/summary").await;
+    assert_eq!(status, 404, "{err}");
+}

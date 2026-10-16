@@ -902,11 +902,28 @@ export function openThreadCount(tree: ReflectionTree): number {
   return tree.pact.openThreads + walk(tree.nodes);
 }
 
+/** Someone who wrote in a thread. */
+export interface HomeThreadPerson {
+  name: string;
+  agent: boolean;
+}
+
+/** One open thread, as the Reflection home draws it: no entries. */
+export interface HomeThread {
+  id: string;
+  /** The quoted passage, or null for a whole section. */
+  quote: string | null;
+  waitingOn: "people" | "agent";
+  openedAt: string;
+  /** Everyone who wrote in it, once, in the order they first wrote. */
+  people: HomeThreadPerson[];
+}
+
 /** One page's open threads, as the Reflection home draws them. */
 export interface HomeThreadGroup {
   path: string;
   title: string;
-  threads: ThreadView[];
+  threads: HomeThread[];
 }
 
 /** Exactly what the Reflection home needs of the review. */
@@ -917,47 +934,77 @@ export interface ReflectionHomeSummary {
   openByPage: HomeThreadGroup[];
 }
 
-function countThreads(groups: ReviewGroup[]): number {
-  return groups.reduce((sum, group) => sum + group.threads.length, 0);
-}
-
-/** The home's summary from the full review: the one place that knows the shape. */
-export function summariseReview(
-  review: ReflectionReview,
-): ReflectionHomeSummary {
-  const pages = new Map<string, HomeThreadGroup>();
-  for (const group of [
-    ...review.waitingForPeople,
-    ...review.waitingForTheAgent,
-  ]) {
-    const seen = pages.get(group.path);
-    if (seen === undefined) {
-      pages.set(group.path, { ...group, threads: [...group.threads] });
-    } else {
-      seen.threads.push(...group.threads);
-    }
+function readHomeThread(value: unknown): HomeThread | null {
+  const t = asObject(value);
+  const id = asString(t?.id);
+  if (id === null) {
+    return null;
   }
   return {
-    waitingForAgent: countThreads(review.waitingForTheAgent),
-    waitingForPeople: countThreads(review.waitingForPeople),
-    pagesToUpdate: review.queue.kinds.update,
-    openByPage: [...pages.values()],
+    id,
+    quote: asString(t?.quote),
+    waitingOn: asString(t?.waiting_on) === "people" ? "people" : "agent",
+    openedAt: asString(t?.opened_at) ?? "",
+    people: asArray(t?.people).flatMap((p) => {
+      const person = asObject(p);
+      const name = asString(person?.name);
+      return name === null ? [] : [{ name, agent: person?.agent === true }];
+    }),
   };
 }
 
+/** Read `GET .../reflection/summary`. */
+export function readSummary(payload: unknown): ReflectionHomeSummary {
+  const r = asObject(payload);
+  return {
+    waitingForAgent: asNumber(r?.waiting_for_the_agent) ?? 0,
+    waitingForPeople: asNumber(r?.waiting_for_people) ?? 0,
+    pagesToUpdate: asNumber(r?.pages_to_update) ?? 0,
+    openByPage: asArray(r?.open_by_page).flatMap((g) => {
+      const group = asObject(g);
+      const path = asString(group?.path);
+      return path === null
+        ? []
+        : [
+            {
+              path,
+              title: asString(group?.title) ?? path,
+              threads: asArray(group?.threads)
+                .map(readHomeThread)
+                .filter((t): t is HomeThread => t !== null),
+            },
+          ];
+    }),
+  };
+}
+
+/** `GET .../reflection/summary`: the home's cut of the review. */
+export async function fetchSummary(
+  domain: string,
+): Promise<ReflectionHomeSummary> {
+  return readSummary(await api<unknown>(`${base(domain)}/reflection/summary`));
+}
+
 /**
- * What the Reflection home reads of the review. It still fetches the full
- * review; a cheaper summary route replaces `fetchReview` here and nowhere
- * else. A failure leaves `data` undefined, and the home falls back to the
- * tree's own count.
+ * The summary's cache key, under the review's: whatever refreshes the review
+ * (a thread step, a save) refreshes the home too.
+ */
+export function reflectionSummaryKey(domain: string): readonly unknown[] {
+  return [...reflectionReviewKey(domain), "summary"];
+}
+
+/**
+ * What the Reflection home reads of the review, from the summary route: the
+ * counts and the open threads by page, without the review's queue and thread
+ * entries. A failure (an older server answers 404) leaves `data` undefined,
+ * and the home falls back to the tree's own count.
  */
 export function useReflectionHomeSummary(domain: string): {
   data: ReflectionHomeSummary | undefined;
 } {
-  const review = useQuery({
-    queryKey: reflectionReviewKey(domain),
-    queryFn: () => fetchReview(domain),
-    select: summariseReview,
+  const summary = useQuery({
+    queryKey: reflectionSummaryKey(domain),
+    queryFn: () => fetchSummary(domain),
   });
-  return { data: review.data };
+  return { data: summary.data };
 }

@@ -297,11 +297,11 @@ function OpenThreads({
         {groups.map((group) => {
           const people = new Map<string, boolean>();
           for (const thread of group.threads) {
-            for (const entry of thread.entries) {
-              people.set(entry.author.name, entry.author.agent);
+            for (const person of thread.people) {
+              people.set(person.name, person.agent);
             }
           }
-          const quote = group.threads[0]?.anchor.quote ?? null;
+          const quote = group.threads[0]?.quote ?? null;
           const who = [...people]
             .map(([name, agent]) => (agent ? `${name} (agent)` : name))
             .join(", ");

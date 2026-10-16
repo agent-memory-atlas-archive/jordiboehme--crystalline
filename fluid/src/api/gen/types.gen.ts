@@ -4932,6 +4932,42 @@ export type SearchReflectionsResponses = {
 
 export type SearchReflectionsResponse = SearchReflectionsResponses[keyof SearchReflectionsResponses];
 
+export type GetReflectionSummaryData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflection/summary';
+};
+
+export type GetReflectionSummaryErrors = {
+    /**
+     * No such domain, or none this caller may see (the anonymous viewer included).
+     */
+    404: ProblemDetail;
+    /**
+     * The Reflection is not here (then possibly `home_url`).
+     */
+    409: ProblemDetail;
+};
+
+export type GetReflectionSummaryError = GetReflectionSummaryErrors[keyof GetReflectionSummaryErrors];
+
+export type GetReflectionSummaryResponses = {
+    /**
+     * ReflectionSummary.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetReflectionSummaryResponse = GetReflectionSummaryResponses[keyof GetReflectionSummaryResponses];
+
 export type ListReflectionThreadsData = {
     body?: never;
     path: {

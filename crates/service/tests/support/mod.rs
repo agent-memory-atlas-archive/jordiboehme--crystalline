@@ -180,6 +180,7 @@ pub const MOUNTED_OPERATIONS: &[&str] = &[
     "POST /api/v1/domains/{domain}/reflection/threads/{id}/{action}",
     "GET /api/v1/domains/{domain}/reflection/queue",
     "GET /api/v1/domains/{domain}/reflection/review",
+    "GET /api/v1/domains/{domain}/reflection/summary",
     "GET /api/v1/domains/{domain}/reflection/search",
     "GET /api/v1/domains/{domain}/reflection/assets",
     "GET /api/v1/domains/{domain}/reflection/assets/{path}",

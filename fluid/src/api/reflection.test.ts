@@ -16,7 +16,10 @@ import {
   openThread,
   readDoc,
   readQueue,
+  readSummary,
   readThread,
+  reflectionReviewKey,
+  reflectionSummaryKey,
   readTree,
   saveReflection,
   searchReflections,
@@ -575,5 +578,73 @@ describe("which Reflection files changed since this document first saw them", ()
     expect(
       changedVersions(new QueryClient(), "eng", [row("assets/a.png", "2")]),
     ).toEqual(new Map());
+  });
+});
+
+describe("readSummary", () => {
+  it("reads the counts and the threads by page, people included", () => {
+    const summary = readSummary({
+      domain: "eng",
+      waiting_for_the_agent: 2,
+      waiting_for_people: 1,
+      pages_to_update: 4,
+      open_by_page: [
+        {
+          path: "guides/deploying.md",
+          title: "Deploying",
+          threads: [
+            {
+              id: "t-1",
+              quote: null,
+              waiting_on: "people",
+              opened_at: "2026-10-01T10:00:00Z",
+              people: [
+                { name: "ann", agent: false },
+                { name: "claude-code", agent: true },
+              ],
+            },
+            { quote: "no id, dropped" },
+          ],
+        },
+        { title: "no path, dropped" },
+      ],
+    });
+    expect(summary).toEqual({
+      waitingForAgent: 2,
+      waitingForPeople: 1,
+      pagesToUpdate: 4,
+      openByPage: [
+        {
+          path: "guides/deploying.md",
+          title: "Deploying",
+          threads: [
+            {
+              id: "t-1",
+              quote: null,
+              waitingOn: "people",
+              openedAt: "2026-10-01T10:00:00Z",
+              people: [
+                { name: "ann", agent: false },
+                { name: "claude-code", agent: true },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("reads an empty answer as nothing waiting", () => {
+    expect(readSummary({})).toEqual({
+      waitingForAgent: 0,
+      waitingForPeople: 0,
+      pagesToUpdate: 0,
+      openByPage: [],
+    });
+  });
+
+  it("keys the summary under the review, so one invalidation refreshes both", () => {
+    const review = reflectionReviewKey("eng");
+    expect(reflectionSummaryKey("eng").slice(0, review.length)).toEqual(review);
   });
 });
