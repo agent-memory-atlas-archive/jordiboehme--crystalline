@@ -341,8 +341,9 @@ async fn the_summary_counts_the_updates_the_review_queues() {
         ] {
             assert!(whats.contains(&want), "{want} missing: {review}");
         }
-        assert!(
-            review["queue"]["total"].as_u64().unwrap() <= 50,
+        assert_eq!(
+            rows.len() as u64,
+            review["queue"]["total"].as_u64().unwrap(),
             "one page holds the whole queue"
         );
         let mut pages: Vec<&str> = rows
