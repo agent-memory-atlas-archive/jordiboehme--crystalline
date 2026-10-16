@@ -456,7 +456,8 @@ impl Engine {
     }
 
     /// Every thread of a domain's Reflection with its reflection's path and
-    /// current text.
+    /// current text, page by page in the listing's order. The threads files
+    /// are read on the blocking pool, with no store lock held.
     pub(crate) async fn all_threads(
         &self,
         access: &ReflectionAccess,
@@ -470,16 +471,30 @@ impl Engine {
             .await
             .list_reflections(access.domain_id)
             .await?;
-        let mut out = Vec::new();
-        for row in rows {
-            let Some(file) = read_opt(&access.abs(&r::threads_path(&row.path)))? else {
-                continue;
-            };
-            for thread in th::parse_threads(&file) {
-                out.push((row.path.clone(), thread, row.content.clone()));
+        let pages: Vec<(PathBuf, String, String)> = rows
+            .into_iter()
+            .map(|row| {
+                (
+                    access.abs(&r::threads_path(&row.path)),
+                    row.path,
+                    row.content,
+                )
+            })
+            .collect();
+        tokio::task::spawn_blocking(move || {
+            let mut out = Vec::new();
+            for (file, path, content) in pages {
+                let Some(text) = read_opt(&file)? else {
+                    continue;
+                };
+                for thread in th::parse_threads(&text) {
+                    out.push((path.clone(), thread, content.clone()));
+                }
             }
-        }
-        Ok(out)
+            Ok(out)
+        })
+        .await
+        .map_err(|e| EngineError::Internal(format!("the threads files could not be read: {e}")))?
     }
 }
 
@@ -592,5 +607,92 @@ mod tests {
             "no threads file is left at the old path"
         );
         assert!(!page_abs.exists());
+    }
+
+    /// Both walks over the threads files read them on the blocking pool:
+    /// every file read in `all_threads` and `open_thread_count` comes after
+    /// their `spawn_blocking`, never on a runtime worker (F2).
+    #[test]
+    fn the_threads_files_are_read_off_the_runtime() {
+        let src = include_str!("threads.rs");
+        for signature in [
+            "pub(crate) async fn all_threads(",
+            "pub(crate) async fn open_thread_count(",
+        ] {
+            let start = src.find(signature).expect("the function is in the file");
+            let end = start + src[start..].find("\n    }\n").expect("the function ends");
+            let body = &src[start..end];
+            let blocking = body
+                .find("spawn_blocking(")
+                .unwrap_or_else(|| panic!("{signature} reads on the blocking pool"));
+            let first_read = body.find("read_opt(").expect("it reads the threads files");
+            assert!(
+                first_read > blocking,
+                "{signature} reads a threads file before its spawn_blocking"
+            );
+        }
+    }
+
+    /// The threads of every page, page by page in the listing's order and
+    /// each with its own page's text, as the reflect queue reads them.
+    #[tokio::test]
+    async fn all_threads_keeps_the_page_order_and_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (engine, _) = reflecting(tmp.path()).await;
+        let caller = ReflectionCaller::person(crate::scope::Scope::Unrestricted, "jordi");
+        let second = "# E\n\n## Day deploys\n<!-- r:bbbb2222 -->\n\nDeploys run by day.\n";
+        engine
+            .write_reflection(
+                &crate::params::WriteReflectionParams {
+                    domain: "eng".into(),
+                    path: "e.md".into(),
+                    markdown: Some(second.into()),
+                    ..Default::default()
+                },
+                &caller,
+            )
+            .await
+            .unwrap();
+        for (path, section) in [
+            ("e.md", "bbbb2222"),
+            ("d.md", "aaaa1111"),
+            ("e.md", "bbbb2222"),
+        ] {
+            engine
+                .discuss(
+                    &DiscussParams {
+                        domain: "eng".into(),
+                        path: Some(path.into()),
+                        section: Some(section.into()),
+                        text: Some("Still true?".into()),
+                        ..Default::default()
+                    },
+                    &caller,
+                )
+                .await
+                .unwrap();
+        }
+        let access = engine
+            .require_reflection("eng", &caller, ReflectionRight::Read)
+            .await
+            .unwrap();
+        let got: Vec<(String, bool)> = engine
+            .all_threads(&access)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(path, _, text)| {
+                let own = if path == "d.md" { "night" } else { "by day" };
+                (path, text.contains(own))
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("d.md".to_string(), true),
+                ("e.md".to_string(), true),
+                ("e.md".to_string(), true),
+            ]
+        );
     }
 }
