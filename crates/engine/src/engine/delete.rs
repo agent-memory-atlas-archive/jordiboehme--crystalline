@@ -195,6 +195,17 @@ impl Engine {
 
         if let ContentSource::File { root } = &source {
             let abs = join_rel(root, &desc.path);
+            // The row of an engram only the previous host of a host move has
+            // is the only shared copy of it: say so and name the remedy,
+            // rather than fail on the missing file.
+            if !abs.exists() {
+                self.refuse_only_elsewhere(
+                    &desc.domain,
+                    desc.domain_id,
+                    ElsewhereRow::Engram(&desc.path),
+                )
+                .await?;
+            }
             std::fs::remove_file(&abs).map_err(|source| EngineError::Io {
                 path: abs.display().to_string(),
                 source,

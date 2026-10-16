@@ -3430,6 +3430,10 @@ export type DeleteEngramErrors = {
      */
     404: ProblemDetail;
     /**
+     * The engram is one only the previous host of a host move has, whose row a delete here would drop; the detail names the remedy.
+     */
+    409: ProblemDetail;
+    /**
      * The `If-Match` token is stale. The body carries the version the server holds now, so a client can decide whether losing it is really what it meant.
      */
     412: ConflictDetail;

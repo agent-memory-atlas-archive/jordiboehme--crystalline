@@ -1862,6 +1862,14 @@ impl ValidateFinding {
             content_type = "application/problem+json",
         ),
         (
+            status = 409,
+            description = "The engram is one only the previous host of a host \
+                           move has, whose row a delete here would drop; the \
+                           detail names the remedy.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
             status = 412,
             description = "The `If-Match` token is stale. The body carries the \
                            version the server holds now, so a client can \
