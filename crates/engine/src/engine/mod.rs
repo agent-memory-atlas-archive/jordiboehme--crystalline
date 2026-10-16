@@ -2481,18 +2481,22 @@ impl Engine {
         }
     }
 
-    /// Gate the next move or delete of a Reflection between its screen for
-    /// live rooms and its page lock, once, so a test can open a room inside
-    /// that window. Returns `(entered, release)`: the verb notifies `entered`
-    /// when it reaches the gate and then waits for `release`, so the test
-    /// awaits `entered`, opens its room, and notifies `release`. Both are
-    /// `Notify` permits, so either order is safe.
+    /// Gate the next move of a Reflection or an engram, or delete of a
+    /// Reflection, between its screen for live rooms and its file lock, once,
+    /// so a test can try to open a room inside that window. Returns
+    /// `(entered, release)`: the verb notifies `entered` when it reaches the
+    /// gate and then waits for `release`, so the test awaits `entered`, tries
+    /// its room, and notifies `release`. Both are `Notify` permits, so either
+    /// order is safe.
     ///
-    /// R81: the window is pinned, not closed. Closing it would mean screening
-    /// under the page lock, which takes the registry lock after the file lock
-    /// and reverses the order (registry, then session, then file). A room that
-    /// opens inside the window meets the deletion as a conflict and keeps its
-    /// text, and the tests built on this pin exactly that.
+    /// R81: the screen cannot run under the file lock, which would take the
+    /// registry lock after the file lock and reverse the order (registry, then
+    /// session, then file). For a move the window is closed instead by a
+    /// fence: the move closes the room and fences the document in one step
+    /// under the registry lock, and a join inside the window is refused
+    /// (`CollabSessions::close_for_move`). For a delete it is pinned, not
+    /// closed: a room that opens inside the window meets the deletion as a
+    /// conflict and keeps its text.
     ///
     /// Armed for ONE verb and consumed by it, and compiled out of a released
     /// binary like the seams above.

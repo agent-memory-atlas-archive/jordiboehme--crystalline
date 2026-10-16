@@ -751,7 +751,7 @@
           "reflection"
         ],
         "summary": "Upgrade to a real-time co-editing session on one reflection.",
-        "description": "WebSocket upgrade for the same y-sync + awareness protocol the engram room speaks, over a reflection page. The Reflection's edit right is required (curate for `PACT.md`), not engram access, plus a live session cookie and a same-host Origin header; a read-only instance or domain refuses. There is no draft overlay: every save lands in the file. The room text is the page without its `reflection:` frontmatter block, for every participant, and the checksum in `hello` and `save_state` is the file's. Section ids are added when the room closes. A save records as the author of a changed section the signed-in account of each connection that sent an edit since the save before; the names in awareness are for display only. Refusals are problem+json.",
+        "description": "WebSocket upgrade for the same y-sync + awareness protocol the engram room speaks, over a reflection page. The Reflection's edit right is required (curate for `PACT.md`), not engram access, plus a live session cookie and a same-host Origin header; a read-only instance or domain refuses. There is no draft overlay: every save lands in the file. The room text is the page without its `reflection:` frontmatter block, for every participant, and the checksum in `hello` and `save_state` is the file's. Section ids are added when the room closes. A save records as the author of a changed section the signed-in account of each connection that sent an edit since the save before; the names in awareness are for display only. Refusals are problem+json.\n\nThe room ends with the same `closed` control the engram room sends. A move of the page, or a rename of its domain, ends it with reason `moved` after the room saved its text (or the server kept it), and the control carries the new `path`, plus `domain` when the domain changed. While a move runs, a join over the old path is refused with 409.",
         "operationId": "join_reflection_room",
         "parameters": [
           {
@@ -808,7 +808,7 @@
             }
           },
           "409": {
-            "description": "The Reflection is not here.",
+            "description": "The Reflection is not here, or a move of this page is running.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -846,7 +846,7 @@
           "engrams"
         ],
         "summary": "Upgrade to a real-time co-editing session on one engram.",
-        "description": "WebSocket upgrade for the y-sync + awareness protocol over the engram's shared text. Editor role, a live session cookie and a same-host Origin header are all required and checked before the upgrade; a read-only instance refuses like every write. CSRF headers do not apply to the upgrade GET. Refusals are problem+json.\n\nA room is one document. In a domain that reviews changes that means one person's draft of the page: your own by default, and somebody else's when `overlay` names them - which needs both a live share-link of theirs and a live join this session opened on it, because seeing a draft and editing it are two steps. What is typed in such a room lands in that person's draft, to be folded or discarded with it.",
+        "description": "WebSocket upgrade for the y-sync + awareness protocol over the engram's shared text. Editor role, a live session cookie and a same-host Origin header are all required and checked before the upgrade; a read-only instance refuses like every write. CSRF headers do not apply to the upgrade GET. Refusals are problem+json.\n\nA room is one document. In a domain that reviews changes that means one person's draft of the page: your own by default, and somebody else's when `overlay` names them - which needs both a live share-link of theirs and a live join this session opened on it, because seeing a draft and editing it are two steps. What is typed in such a room lands in that person's draft, to be folded or discarded with it.\n\nBeside the y-sync messages the server sends JSON controls as y-protocols custom message 4. A room ends with `{\"kind\": \"closed\", \"reason\": ...}` followed by close code 4404; do not reconnect. The reasons are `deleted`, `moved`, `switched_off`, `left` and `internal`. `moved` means the engram got a new address (a move with a new permalink or domain, or a rename of its domain): the room saved its text first (or the server kept it), and the control carries the new `path` and `permalink`, plus `domain` when the domain changed. While a move runs, a join over the old address is refused with 409.",
         "operationId": "collab_join",
         "parameters": [
           {
@@ -912,7 +912,7 @@
             }
           },
           "409": {
-            "description": "On a shared database, another instance hosts this file domain and writes it; the detail names it.",
+            "description": "On a shared database, another instance hosts this file domain and writes it; the detail names it. Or a move of this engram is running.",
             "content": {
               "application/problem+json": {
                 "schema": {

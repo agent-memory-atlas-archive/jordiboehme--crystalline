@@ -1160,7 +1160,8 @@ async fn a_move_writes_the_file_of_a_linker_whose_room_is_in_conflict() {
 /// A move that keeps the engram's address (a new path, the same permalink) is
 /// allowed while the engram is open in the editor, and the room keeps saving
 /// to wherever the engram now lives: it saves by address, not by path. A move
-/// that changes the address is refused instead (`refuse_under_live_rooms`).
+/// that changes the address closes the room with `moved` instead
+/// (`an_agent_move_over_mcp_closes_the_persons_room_with_moved`).
 #[tokio::test]
 async fn a_path_only_move_of_an_open_engram_keeps_the_rooms_typing() {
     let (tmp, engine, _scratch) = engine_fixture(false).await;
@@ -3792,3 +3793,124 @@ async fn a_draft_never_starts_from_the_body_alone() {
     );
     assert!(draft.is_none(), "{draft:?}");
 }
+
+/// The `Closed` control the room's sockets were sent, skipping every other
+/// frame (the room's last save announces itself first).
+async fn closed_control(
+    rx: &mut broadcast::Receiver<Frame>,
+) -> crystalline_service::collab::control::Control {
+    use crystalline_service::collab::control::{self, Control};
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("a control frame arrives in time")
+            .expect("the broadcast channel stays open");
+        let mut decoder = DecoderV1::from(frame.bytes.as_ref());
+        for message in MessageReader::new(&mut decoder).flatten() {
+            if let Message::Custom(control::CONTROL_TAG, payload) = message
+                && let Some(found @ Control::Closed { .. }) = control::decode(&payload)
+            {
+                return found;
+            }
+        }
+    }
+}
+
+/// An agent's `move_engram` over MCP that gives an open engram a new
+/// permalink closes the person's room with `moved` and the new address,
+/// after the room saved what they typed. Before, the call was refused while
+/// the engram was open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_move_over_mcp_closes_the_persons_room_with_moved() {
+    use crystalline_service::collab::control::Control;
+    let (tmp, engine, _sessions, mut joined, _doc, _scratch) = a_person_typing_in_alpha().await;
+    let mut wire = Wire::to(engine.clone());
+    wire.open(modern(1, "server/discover", json!({}))).await;
+    let answer = wire
+        .call(modern(
+            2,
+            "tools/call",
+            json!({
+                "name": "move_engram",
+                "arguments": {
+                    "identifier": "alpha",
+                    "domain": "eng",
+                    "destination": "guides/alpha.md",
+                    "permalink": "path",
+                },
+            }),
+        ))
+        .await;
+    assert_ne!(answer["result"]["isError"], json!(true), "{answer}");
+    assert_eq!(
+        closed_control(&mut joined.rx).await,
+        Control::Closed {
+            reason: "moved".into(),
+            domain: None,
+            path: Some("guides/alpha.md".into()),
+            permalink: Some("guides/alpha".into()),
+        }
+    );
+    let moved = std::fs::read_to_string(tmp.path().join("eng/guides/alpha.md")).unwrap();
+    assert!(moved.contains("typed but never saved"), "{moved}");
+}
+
+/// A permalink move of an open engram on either backend: on Postgres the
+/// room's last save and the move's rows both pass the file domain's host-lock
+/// fence, and the room is closed with `moved` after its save landed.
+async fn a_move_closes_the_room_after_its_save_on_either_backend_body(
+    store: Arc<Mutex<dyn Store>>,
+) {
+    use crystalline_service::collab::control::Control;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("eng");
+    std::fs::create_dir_all(&dir).unwrap();
+    write_manifest(&dir, "eng");
+    std::fs::write(dir.join("alpha.md"), ALPHA).unwrap();
+    let mut cfg = GlobalConfig::default();
+    cfg.domains
+        .insert("eng".to_string(), DomainEntry::file(dir.clone()));
+    // An instance id, as a daemon has: on Postgres the walk then takes the
+    // file domain's host lock, and every write after it is fenced by it.
+    let engine = Arc::new(
+        Engine::new(store, cfg, None, None)
+            .with_state_dir(tmp.path().join("state"))
+            .with_instance_id("instance-a".to_string()),
+    );
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed on either backend").await;
+    engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".into(),
+                domain: "eng".into(),
+                destination: "moved/alpha.md".into(),
+                destination_domain: None,
+                permalink: Some("path".into()),
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        closed_control(&mut joined.rx).await,
+        Control::Closed {
+            reason: "moved".into(),
+            domain: None,
+            path: Some("moved/alpha.md".into()),
+            permalink: Some("moved/alpha".into()),
+        }
+    );
+    let moved = std::fs::read_to_string(dir.join("moved/alpha.md")).unwrap();
+    assert!(moved.contains("typed on either backend"), "{moved}");
+    assert!(!dir.join("alpha.md").exists());
+}
+both_backends!(
+    a_move_closes_the_room_after_its_save_on_either_backend,
+    a_move_closes_the_room_after_its_save_on_either_backend_body
+);

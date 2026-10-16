@@ -352,8 +352,109 @@ pub type RoomKey = (String, RoomDoc, Option<String>);
 pub struct CollabSessions {
     engine: Arc<Engine>,
     sessions: Mutex<HashMap<RoomKey, Arc<CollabSession>>>,
+    /// The documents a move is moving right now, each with how many moves
+    /// hold it: a join over one of them is refused until the move is done
+    /// (see [`CollabSessions::close_for_move`]). A std mutex, read and
+    /// written only under the registry lock or in a fence's drop, and never
+    /// held across an await.
+    moving: std::sync::Mutex<HashMap<RoomKey, usize>>,
     next_conn: AtomicU64,
     next_epoch: AtomicU64,
+}
+
+/// Where a moved document went, as the `moved` close names it to the room's
+/// sockets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovedTo {
+    /// The domain it lives in now, when the move changed it.
+    pub domain: Option<String>,
+    /// Its new path: inside `reflections/` for a page, inside the domain for
+    /// an engram.
+    pub path: String,
+    /// The permalink an engram answers to now; `None` for a page.
+    pub permalink: Option<String>,
+}
+
+impl MovedTo {
+    fn control(&self) -> Control {
+        Control::Closed {
+            reason: "moved".to_string(),
+            domain: self.domain.clone(),
+            path: Some(self.path.clone()),
+            permalink: self.permalink.clone(),
+        }
+    }
+}
+
+/// A move's hold on one document: while it stands, no room opens over the
+/// document (a join is refused with a conflict). Taken by
+/// [`CollabSessions::close_for_move`] and lifted on drop, which every way
+/// out of a move reaches, an error included.
+#[must_use = "the fence lifts when it is dropped"]
+pub struct MoveFence {
+    registry: Weak<CollabSessions>,
+    key: RoomKey,
+}
+
+impl Drop for MoveFence {
+    fn drop(&mut self) {
+        let Some(registry) = self.registry.upgrade() else {
+            return;
+        };
+        let mut moving = registry
+            .moving
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(count) = moving.get_mut(&self.key) {
+            *count -= 1;
+            if *count == 0 {
+                moving.remove(&self.key);
+            }
+        }
+    }
+}
+
+/// The rooms a domain rename swept: saved and ended, their sockets not told
+/// yet. The rename tells them where the domain went once it can no longer be
+/// refused ([`SweptRooms::moved_to_domain`]); dropped untold, which a refused
+/// rename does, they are told `internal`, as an unregistration tells them.
+#[must_use = "dropped untold, the rooms are told `internal`"]
+pub struct SweptRooms {
+    rooms: Vec<Arc<CollabSession>>,
+}
+
+impl SweptRooms {
+    /// How many rooms the sweep ended.
+    pub fn len(&self) -> usize {
+        self.rooms.len()
+    }
+
+    /// Whether the sweep ended no room.
+    pub fn is_empty(&self) -> bool {
+        self.rooms.is_empty()
+    }
+
+    /// Tell every swept room's sockets that the document moved with its
+    /// domain to `domain`: the same path, the same permalink, the new name.
+    pub async fn moved_to_domain(mut self, domain: &str) {
+        for session in std::mem::take(&mut self.rooms) {
+            let (path, permalink) = session.address().await;
+            let to = MovedTo {
+                domain: Some(domain.to_string()),
+                path,
+                permalink,
+            };
+            session.close_with(to.control());
+        }
+    }
+}
+
+impl Drop for SweptRooms {
+    fn drop(&mut self) {
+        for session in self.rooms.drain(..) {
+            session.close_with(Control::closed("internal"));
+        }
+    }
 }
 
 impl CollabSessions {
@@ -362,6 +463,7 @@ impl CollabSessions {
         Arc::new(CollabSessions {
             engine,
             sessions: Mutex::new(HashMap::new()),
+            moving: std::sync::Mutex::new(HashMap::new()),
             next_conn: AtomicU64::new(1),
             next_epoch: AtomicU64::new(1),
         })
@@ -437,6 +539,17 @@ impl CollabSessions {
         // stampede of joins can neither open the same document twice nor
         // overshoot MAX_PARTICIPANTS between the check and the add.
         let mut sessions = self.sessions.lock().await;
+        // A move of this document is under way: its room was saved and
+        // closed, and a room opened now would load the old text and save it
+        // to an address the move is taking away. Checked under the registry
+        // lock, the one the move's fence is set under, so a join is either
+        // in the map before the fence (and closed by the move) or refused.
+        if self.is_moving(&key) {
+            return Err(JoinError::Engine(EngineError::Conflict(format!(
+                "'{}' is being moved; open it again at its new place in a moment",
+                key.1.name()
+            ))));
+        }
         // A disposed session still sitting in the map is a corpse: its saver
         // loop has ended, so a join that adopted it would edit a room nothing
         // ever writes back. Treated as absent and replaced.
@@ -616,6 +729,21 @@ impl CollabSessions {
         discarded: &HashSet<String>,
         reason: &str,
     ) -> usize {
+        self.sweep_domain_rooms(domain, kind, discarded, Some(reason))
+            .await
+            .len()
+    }
+
+    /// The sweep itself: answers the rooms it ended. With a `reason` each is
+    /// told `Closed { reason }`; without one each is only disposed, and the
+    /// caller tells it.
+    async fn sweep_domain_rooms(
+        &self,
+        domain: &str,
+        kind: Option<crystalline_core::ContentKind>,
+        discarded: &HashSet<String>,
+        reason: Option<&str>,
+    ) -> Vec<Arc<CollabSession>> {
         let victims: Vec<Arc<CollabSession>> = {
             let mut sessions = self.sessions.lock().await;
             // The DOMAIN component alone, whatever document each room is a
@@ -632,8 +760,7 @@ impl CollabSessions {
                 .collect();
             keys.iter().filter_map(|key| sessions.remove(key)).collect()
         };
-        let closed = victims.len();
-        for session in victims {
+        for session in &victims {
             let discarding = session
                 .key()
                 .2
@@ -644,9 +771,87 @@ impl CollabSessions {
             if !discarding {
                 session.final_save().await;
             }
-            session.close(reason).await;
+            match reason {
+                Some(reason) => session.close(reason).await,
+                None => session.dispose(),
+            }
         }
-        closed
+        victims
+    }
+
+    /// Close the room over a document a move is about to move, and fence
+    /// the document so no room opens over it until the move is done.
+    ///
+    /// The room saves its text first by the rules every closing room follows
+    /// (`final_save`: a save that cannot land keeps the text in the kept
+    /// folder), then every socket is told `Closed { reason: "moved" }` with
+    /// the new address in `to`. A save already running finishes first: the
+    /// final save waits for the room's state, which a save holds.
+    ///
+    /// **Why a fence.** The close has to run before the move takes the
+    /// page's file lock, because the final save takes that lock under the
+    /// room's state and the registry (lock order: registry, then session,
+    /// then file). Without the fence a join between this close and the
+    /// move's commit would open a fresh room on the old text: the window R81
+    /// named. The fence is set under the registry lock in the same step that
+    /// takes the room out of the map, and `join_doc` checks it under that
+    /// lock, so a join is either closed here or refused until the fence
+    /// drops. The caller holds the fence until the move has committed, and
+    /// drops it on every way out.
+    ///
+    /// Only the document under `overlay` is closed: a draft of the same page
+    /// by somebody else is another document, and the move does not move it.
+    pub async fn close_for_move(
+        self: &Arc<Self>,
+        domain: &str,
+        doc: &RoomDoc,
+        overlay: Option<&str>,
+        to: &MovedTo,
+    ) -> MoveFence {
+        let key: RoomKey = (domain.to_string(), doc.clone(), overlay.map(str::to_string));
+        let victim = {
+            let mut sessions = self.sessions.lock().await;
+            *self
+                .moving
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(key.clone())
+                .or_insert(0) += 1;
+            sessions.remove(&key)
+        };
+        let fence = MoveFence {
+            registry: Arc::downgrade(self),
+            key,
+        };
+        if let Some(session) = victim {
+            // The save comes first, as in every sweep: a closed room's save
+            // paths are no-ops.
+            session.final_save().await;
+            session.close_with(to.control());
+        }
+        fence
+    }
+
+    /// Whether a move holds `key` right now.
+    fn is_moving(&self, key: &RoomKey) -> bool {
+        self.moving
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(key)
+    }
+
+    /// Save and end every room of `domain` for a domain rename, without
+    /// telling the sockets yet: the rename tells them where the domain went
+    /// once it cannot be refused any more, and a rename refused after the
+    /// sweep tells them `internal` instead (see [`SweptRooms`]). Until the
+    /// tell a room is disposed, so nothing typed into it is saved; the
+    /// client keeps that text as a draft when the close arrives.
+    pub async fn sweep_domain_for_rename(&self, domain: &str) -> SweptRooms {
+        SweptRooms {
+            rooms: self
+                .sweep_domain_rooms(domain, None, &HashSet::new(), None)
+                .await,
+        }
     }
 
     /// Move a session's registry entry after a frontmatter rename, so the room
@@ -1496,9 +1701,7 @@ impl CollabSession {
             let _ = self.tx.send(Frame {
                 from: None,
                 to: Some(conn),
-                bytes: Bytes::from(control::encode(&Control::Closed {
-                    reason: "left".to_string(),
-                })),
+                bytes: Bytes::from(control::encode(&Control::closed("left"))),
             });
         }
     }
@@ -2019,14 +2222,28 @@ impl CollabSession {
     /// which each socket closes with the permanent code and the room never
     /// saves again.
     pub async fn close(&self, reason: &str) {
+        self.close_with(Control::closed(reason));
+    }
+
+    /// [`CollabSession::close`] with the whole `Closed` control, for a close
+    /// that names more than its reason (`moved` names the new address).
+    fn close_with(&self, closed: Control) {
         self.dispose();
         let _ = self.tx.send(Frame {
             from: None,
             to: None,
-            bytes: Bytes::from(control::encode(&Control::Closed {
-                reason: reason.to_string(),
-            })),
+            bytes: Bytes::from(control::encode(&closed)),
         });
+    }
+
+    /// The room's document as its last save left it: its path, and for an
+    /// engram the permalink it answers to.
+    async fn address(&self) -> (String, Option<String>) {
+        let state = self.state.lock().await;
+        match self.doc() {
+            RoomDoc::Engram(_) => (state.path.clone(), Some(state.permalink.clone())),
+            RoomDoc::Reflection(path) => (path, None),
+        }
     }
 
     /// The save pass over the locked state: one attempt, and - when the file
@@ -2428,9 +2645,7 @@ impl CollabSession {
                 let _ = self.tx.send(Frame {
                     from: None,
                     to: None,
-                    bytes: Bytes::from(control::encode(&Control::Closed {
-                        reason: "deleted".to_string(),
-                    })),
+                    bytes: Bytes::from(control::encode(&Control::closed("deleted"))),
                 });
                 None
             }

@@ -58,7 +58,18 @@ pub struct JoinQuery {
                    share-link of theirs and a live join this session opened \
                    on it, because seeing a draft and editing it are two \
                    steps. What is typed in such a room lands in that person's \
-                   draft, to be folded or discarded with it.",
+                   draft, to be folded or discarded with it.\n\nBeside the \
+                   y-sync messages the server sends JSON controls as y-protocols \
+                   custom message 4. A room ends with `{\"kind\": \"closed\", \
+                   \"reason\": ...}` followed by close code 4404; do not \
+                   reconnect. The reasons are `deleted`, `moved`, \
+                   `switched_off`, `left` and `internal`. `moved` means the \
+                   engram got a new address (a move with a new permalink or \
+                   domain, or a rename of its domain): the room saved its text \
+                   first (or the server kept it), and the control carries the \
+                   new `path` and `permalink`, plus `domain` when the domain \
+                   changed. While a move runs, a join over the old address is \
+                   refused with 409.",
     params(
         ("domain" = String, Path, description = "The domain."),
         ("permalink" = String, Path, description = "The engram's permalink; may contain slashes."),
@@ -69,7 +80,7 @@ pub struct JoinQuery {
         (status = 401, description = "No identity.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 403, description = "Viewer role, read-only instance, or a missing/foreign Origin.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 404, description = "No such engram.", body = ProblemDetail, content_type = "application/problem+json"),
-        (status = 409, description = "On a shared database, another instance hosts this file domain and writes it; the detail names it.", body = ProblemDetail, content_type = "application/problem+json"),
+        (status = 409, description = "On a shared database, another instance hosts this file domain and writes it; the detail names it. Or a move of this engram is running.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 422, description = "`overlay` names somebody whose draft a live share-link shows this caller, and this session has not joined it: seeing a draft and editing it are two steps. The detail is the sentence that says how to take the second.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 503, description = "Session or participant capacity reached.", body = ProblemDetail, content_type = "application/problem+json"),
     ),
@@ -214,7 +225,13 @@ pub async fn join(
                    records as the author of a changed section the signed-in \
                    account of each connection that sent an edit since the \
                    save before; the names in awareness are for display \
-                   only. Refusals are problem+json.",
+                   only. Refusals are problem+json.\n\nThe room ends with \
+                   the same `closed` control the engram room sends. A move of \
+                   the page, or a rename of its domain, ends it with reason \
+                   `moved` after the room saved its text (or the server kept \
+                   it), and the control carries the new `path`, plus `domain` \
+                   when the domain changed. While a move runs, a join over the \
+                   old path is refused with 409.",
     params(
         ("domain" = String, Path, description = "The domain."),
         ("path" = String, Path, description = "The reflection's path inside reflections/; may contain slashes."),
@@ -224,7 +241,7 @@ pub async fn join(
         (status = 401, description = "The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 403, description = "Below edit access (curate for PACT.md), a read-only instance or domain, or a missing/foreign Origin.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 404, description = "No such reflection, or no such domain this caller may see.", body = ProblemDetail, content_type = "application/problem+json"),
-        (status = 409, description = "The Reflection is not here.", body = ProblemDetail, content_type = "application/problem+json"),
+        (status = 409, description = "The Reflection is not here, or a move of this page is running.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 422, description = "Not a reflection path.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 503, description = "Session or participant capacity reached.", body = ProblemDetail, content_type = "application/problem+json"),
     ),
@@ -667,12 +684,12 @@ mod tests {
     /// ordinary control or update must not tear a socket down.
     #[test]
     fn only_the_closed_control_ends_every_connection() {
-        assert!(is_session_closed(&control::encode(&Control::Closed {
-            reason: "deleted".to_string(),
-        })));
-        assert!(is_session_closed(&control::encode(&Control::Closed {
-            reason: "internal".to_string(),
-        })));
+        assert!(is_session_closed(&control::encode(&Control::closed(
+            "deleted"
+        ))));
+        assert!(is_session_closed(&control::encode(&Control::closed(
+            "internal"
+        ))));
         assert!(!is_session_closed(&control::encode(&Control::Merged)));
         assert!(!is_session_closed(&control::encode(&Control::Saved {
             checksum: "abc".to_string(),

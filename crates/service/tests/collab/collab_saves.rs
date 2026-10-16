@@ -271,6 +271,17 @@ async fn next_control(rx: &mut tokio::sync::broadcast::Receiver<Frame>) -> Contr
     }
 }
 
+/// The next `Closed` control on this receiver, skipping every other one (a
+/// room's last save announces itself before the close).
+async fn next_closed(rx: &mut tokio::sync::broadcast::Receiver<Frame>) -> Control {
+    loop {
+        let control = next_control(rx).await;
+        if matches!(control, Control::Closed { .. }) {
+            return control;
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_pause_lands_the_save_as_lf() {
     let (tmp, engine, _scratch) = engine_fixture().await;
@@ -696,14 +707,18 @@ async fn a_rename_moves_the_registry_key_so_the_new_permalink_finds_the_same_roo
     assert_eq!(sessions.session_count().await, 1, "one room, one file");
 }
 
-/// A permalink change under an open room is refused: the room saves back to
-/// the address it was opened under. A path-only move is not.
+/// A permalink change under an open room closes the room instead of being
+/// refused: the room saves its typing first, every socket is told `moved`
+/// with the new address, and the moved engram holds the typed line. A
+/// path-only move keeps the room (`a_path_only_move_of_an_open_engram_keeps_the_rooms_typing`).
 #[tokio::test]
-async fn a_permalink_move_waits_while_the_engram_is_open_in_a_room() {
-    let (_tmp, engine, _scratch) = engine_fixture_with_state().await;
+async fn a_permalink_move_saves_the_room_and_closes_it_with_moved() {
+    let (tmp, engine, _scratch) = engine_fixture_with_state().await;
     let sessions = CollabSessions::new(engine.clone());
     engine.set_collab_sessions(&sessions);
-    let _joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed just before the move").await;
 
     let p = crystalline_service::params::MoveParams {
         identifier: "alpha".into(),
@@ -713,26 +728,161 @@ async fn a_permalink_move_waits_while_the_engram_is_open_in_a_room() {
         permalink: Some("renamed".into()),
         update_links: None,
     };
-    let err = engine
+    engine
         .move_engram(&p, &crystalline_service::Scope::Unrestricted)
         .await
-        .unwrap_err()
-        .to_string();
-    assert!(
-        err.contains("open in the editor right now") && err.contains("alpha"),
-        "{err}"
+        .expect("an open room does not refuse the move");
+    assert_eq!(
+        next_closed(&mut joined.rx).await,
+        Control::Closed {
+            reason: "moved".into(),
+            domain: None,
+            path: Some("alpha.md".into()),
+            permalink: Some("renamed".into()),
+        }
     );
+    assert!(joined.session.is_disposed(), "the room is over");
+    assert_eq!(sessions.session_count().await, 0, "and out of the registry");
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();
+    assert!(
+        on_disk.contains("typed just before the move") && on_disk.contains("permalink: renamed"),
+        "the typing was saved first and moved with the engram: {on_disk}"
+    );
+    // The new address opens a fresh room on the moved text.
+    let rejoined = sessions.join("eng", "renamed", None).await.unwrap();
+    let (live, _) = rejoined.session.snapshot().await;
+    assert!(live.contains("typed just before the move"), "{live}");
+}
 
-    // A path-only move keeps the address the room saves to.
-    let path_only = crystalline_service::params::MoveParams {
-        destination: "moved/alpha.md".into(),
-        permalink: Some("keep".into()),
-        ..p
-    };
+/// A move into another domain names that domain in the close.
+#[tokio::test]
+async fn a_move_into_another_domain_names_it_in_the_close() {
+    let (tmp, engine, _scratch) = engine_fixture_with_state().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed before it left eng").await;
     engine
-        .move_engram(&path_only, &crystalline_service::Scope::Unrestricted)
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".into(),
+                domain: "eng".into(),
+                destination: "notes/alpha.md".into(),
+                destination_domain: Some("oak".into()),
+                permalink: None,
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
         .await
-        .expect("a path-only move is not refused under an open room");
+        .unwrap();
+    let Control::Closed {
+        reason,
+        domain,
+        path,
+        permalink,
+    } = next_closed(&mut joined.rx).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(reason, "moved");
+    assert_eq!(domain.as_deref(), Some("oak"));
+    assert_eq!(path.as_deref(), Some("notes/alpha.md"));
+    let permalink = permalink.expect("an engram's close names its permalink");
+    let moved = std::fs::read_to_string(tmp.path().join("oak/notes/alpha.md")).unwrap();
+    assert!(moved.contains("typed before it left eng"), "{moved}");
+    assert!(
+        moved.contains(&format!("permalink: {permalink}")),
+        "{moved}"
+    );
+}
+
+/// R81 for an engram: a room cannot open over the old address between the
+/// move's close and its commit. The join is refused while the move holds
+/// the address, and the moved engram opens at its new one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_room_cannot_open_over_an_engram_inside_its_move_window() {
+    let (tmp, engine, _scratch) = engine_fixture_with_state().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let (entered, release) = engine.hold_next_room_screen_until();
+    let moving = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .move_engram(
+                    &crystalline_service::params::MoveParams {
+                        identifier: "alpha".into(),
+                        domain: "eng".into(),
+                        destination: "alpha.md".into(),
+                        destination_domain: None,
+                        permalink: Some("renamed".into()),
+                        update_links: None,
+                    },
+                    &crystalline_service::Scope::Unrestricted,
+                )
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .expect("the move reaches the gate");
+    let refused = match sessions.join("eng", "alpha", None).await {
+        Err(refused) => refused.to_string(),
+        Ok(_) => panic!("a room opened inside the move window"),
+    };
+    assert!(refused.contains("is being moved"), "{refused}");
+    release.notify_one();
+    moving.await.unwrap().unwrap();
+    // The fence is gone with the move: the new address opens a room.
+    assert!(sessions.join("eng", "renamed", None).await.is_ok());
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();
+    assert!(on_disk.contains("permalink: renamed"), "{on_disk}");
+}
+
+/// A room whose last save cannot land (its text no longer parses) keeps that
+/// text on the server when a move closes it, and the move carries the text
+/// that was saved: nothing typed is lost.
+#[tokio::test]
+async fn a_move_over_a_room_that_cannot_save_keeps_its_text() {
+    let (tmp, engine, _scratch) = engine_fixture_with_state().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    replace_all(&joined, &doc, "no frontmatter, typed and never saved\n").await;
+    engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".into(),
+                domain: "eng".into(),
+                destination: "alpha.md".into(),
+                destination_domain: None,
+                permalink: Some("renamed".into()),
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let Control::Closed { reason, .. } = next_closed(&mut joined.rx).await else {
+        unreachable!()
+    };
+    assert_eq!(reason, "moved");
+    let kept_dir = tmp.path().join("state/kept/eng/engram");
+    let kept: Vec<_> = std::fs::read_dir(&kept_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    let held = std::fs::read_to_string(&kept[0]).unwrap();
+    assert!(held.contains("typed and never saved"), "{held}");
+    let moved = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();
+    assert!(
+        moved.contains("A rule about alpha.") && moved.contains("permalink: renamed"),
+        "the saved text moved: {moved}"
+    );
 }
 
 #[tokio::test]
@@ -882,7 +1032,7 @@ async fn a_poisoned_session_closes_the_room_and_never_saves_again() {
 
     joined.session.poison().await;
     let closed = next_control(&mut joined.rx).await;
-    let Control::Closed { reason } = closed else {
+    let Control::Closed { reason, .. } = closed else {
         panic!("the room is closed")
     };
     assert_eq!(reason, "internal");
@@ -936,7 +1086,7 @@ async fn dispose_domain_saves_then_closes_only_that_domains_rooms() {
         next_control(&mut joined_eng.rx).await,
         Control::Saved { .. }
     ));
-    let Control::Closed { reason } = next_control(&mut joined_eng.rx).await else {
+    let Control::Closed { reason, .. } = next_control(&mut joined_eng.rx).await else {
         panic!("the swept room is closed")
     };
     assert_eq!(reason, "internal");
@@ -1478,6 +1628,92 @@ async fn a_room_saved_by_a_rename_or_a_removal_carries_the_captured_audience() {
     assert_eq!(saved.audience(), Some(&readers(&["keeper"])));
 }
 
+/// A domain rename moves every document in it: each room saves first and is
+/// told `moved` with the new domain, the same path and the same permalink.
+#[tokio::test]
+async fn a_domain_rename_tells_its_rooms_the_new_name() {
+    let (tmp, engine, _scratch) = engine_fixture_with_state().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed before the rename").await;
+    engine
+        .rename_domain(
+            "eng",
+            "elm",
+            true,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        next_closed(&mut joined.rx).await,
+        Control::Closed {
+            reason: "moved".into(),
+            domain: Some("elm".into()),
+            path: Some("alpha.md".into()),
+            permalink: Some("alpha".into()),
+        }
+    );
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();
+    assert!(on_disk.contains("typed before the rename"), "{on_disk}");
+}
+
+/// A rename refused after it swept the rooms (a write in the domain did not
+/// finish in time) moved nothing, so its rooms are told `internal` and no
+/// new name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_rename_does_not_tell_its_rooms_a_new_name() {
+    let (_tmp, engine, _scratch) = engine_fixture_with_state().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let _doc = sync_client(&joined).await;
+    engine.set_rename_drain_wait(Some(Duration::from_millis(50)));
+    let write_hold = engine.hold_next_write();
+    let writer = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .write_engram(&crystalline_service::params::WriteParams {
+                    domain: "eng".into(),
+                    title: "Beta".into(),
+                    content: "written while the rename waits".into(),
+                    folder: None,
+                    engram_type: None,
+                    tags: Vec::new(),
+                    status: None,
+                    metadata: None,
+                    overwrite: false,
+                    share_link: None,
+                    model: None,
+                })
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(20), write_hold.reached())
+        .await
+        .expect("the write is counted and held");
+    let refused = engine
+        .rename_domain(
+            "eng",
+            "elm",
+            true,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("busy"), "{refused}");
+    assert_eq!(
+        next_closed(&mut joined.rx).await,
+        Control::closed("internal")
+    );
+    write_hold.release();
+    writer.await.unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn a_reflection_room_saves_straight_to_the_file_and_assigns_ids_on_close() {
     let (tmp, engine, _scratch) = reflection_fixture().await;
@@ -1629,7 +1865,7 @@ async fn two_people_in_one_reflection_room_merge_and_the_baseline_is_untouched()
 }
 
 #[tokio::test]
-async fn an_agent_write_composes_into_an_open_reflection_room_and_a_move_waits() {
+async fn an_agent_write_composes_into_an_open_reflection_room_and_a_move_closes_it() {
     let (_tmp, engine, _scratch) = reflection_fixture().await;
     let sessions = CollabSessions::new(engine.clone());
     engine.set_collab_sessions(&sessions);
@@ -1680,20 +1916,28 @@ async fn an_agent_write_composes_into_an_open_reflection_room_and_a_move_waits()
         "the room took the file in and holds its checksum"
     );
     let err = engine
-        .move_reflection("eng", "guides/a.md", "b.md", &caller)
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("somebody is editing"), "{err}");
-    let err = engine
         .delete_reflection("eng", "guides/a.md", &caller)
         .await
         .unwrap_err()
         .to_string();
-    assert!(
-        err.contains("somebody is editing"),
-        "a delete waits too: {err}"
+    assert!(err.contains("somebody is editing"), "a delete waits: {err}");
+    // A move does not wait: the room saves, is told where the page went and
+    // closes, and the moved page holds the agent's text.
+    engine
+        .move_reflection("eng", "guides/a.md", "b.md", &caller)
+        .await
+        .unwrap();
+    assert_eq!(
+        next_closed(&mut joined.rx).await,
+        Control::Closed {
+            reason: "moved".into(),
+            domain: None,
+            path: Some("b.md".into()),
+            permalink: None,
+        }
     );
+    let moved = engine.reflection_room_text("eng", "b.md").await.unwrap();
+    assert!(moved.content.contains("Second, revised by an agent."));
 }
 
 /// A rewrite never races a room: a file or a page cannot move while a page
@@ -2502,10 +2746,11 @@ async fn a_room_opened_inside_the_delete_window_meets_the_deletion() {
     assert!(live.contains("Typed inside the window."), "{live}");
 }
 
-/// The same window for a move: the room at the old path meets the deletion,
-/// and the moved page holds the text that moved, not the typed line.
+/// R81 for a move: the window between the move's close and its page lock is
+/// closed by the move's fence. A join inside it is refused, the moved page
+/// holds the text that moved, and the new path opens a room on it.
 #[tokio::test]
-async fn a_room_opened_inside_the_move_window_meets_the_deletion() {
+async fn a_room_cannot_open_inside_the_move_window() {
     let (tmp, engine, _scratch) = reflection_fixture().await;
     let old = tmp.path().join("eng/reflections/guides/a.md");
     let new = tmp.path().join("eng/reflections/guides/b.md");
@@ -2523,30 +2768,163 @@ async fn a_room_opened_inside_the_move_window_meets_the_deletion() {
     tokio::time::timeout(Duration::from_secs(10), entered.notified())
         .await
         .expect("the verb reaches the gate");
+    let refused = match sessions.join_reflection("eng", "guides/a.md", "ada").await {
+        Err(refused) => refused.to_string(),
+        Ok(_) => panic!("a room opened inside the move window"),
+    };
+    assert!(
+        refused.contains("'guides/a.md' is being moved"),
+        "{refused}"
+    );
+    release.notify_one();
+    moving.await.unwrap().unwrap();
+    assert!(!old.exists(), "the old path stays empty");
+    assert!(std::fs::read_to_string(&new).unwrap().contains("First."));
+    // The fence is gone: the old path answers its own miss, not the move.
+    let gone = match sessions.join_reflection("eng", "guides/a.md", "ada").await {
+        Err(gone) => gone.to_string(),
+        Ok(_) => panic!("the old path holds no page"),
+    };
+    assert!(!gone.contains("being moved"), "{gone}");
+    let joined = sessions
+        .join_reflection("eng", "guides/b.md", "ada")
+        .await
+        .unwrap();
+    let (live, _) = joined.session.snapshot().await;
+    assert!(live.contains("First."), "{live}");
+}
+
+/// A room open over a page when it moves saves its typing first and is told
+/// the new path; the old path is gone and nothing typed is lost.
+#[tokio::test]
+async fn a_moved_pages_room_saves_first_and_is_told_the_new_path() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let old = tmp.path().join("eng/reflections/guides/a.md");
+    let new = tmp.path().join("eng/reflections/guides/b.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
     let mut joined = sessions
         .join_reflection("eng", "guides/a.md", "ada")
         .await
         .unwrap();
     let doc = sync_client(&joined).await;
-    append_line(&joined, &doc, "Typed inside the window.").await;
-    release.notify_one();
+    append_line(&joined, &doc, "Typed just before the move.").await;
+    engine
+        .move_reflection("eng", "guides/a.md", "guides/b.md", &room_agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        next_closed(&mut joined.rx).await,
+        Control::Closed {
+            reason: "moved".into(),
+            domain: None,
+            path: Some("guides/b.md".into()),
+            permalink: None,
+        }
+    );
+    assert!(joined.session.is_disposed());
+    assert!(!old.exists());
+    let moved = std::fs::read_to_string(&new).unwrap();
+    assert!(moved.contains("Typed just before the move."), "{moved}");
+}
+
+/// A save that is running when the move comes is waited for: whichever of the
+/// two gets the page first, the typed line ends up in the moved page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_move_waits_for_a_save_that_is_running() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let old = tmp.path().join("eng/reflections/guides/a.md");
+    let new = tmp.path().join("eng/reflections/guides/b.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed while the page was saving.").await;
+    // The page's lock is held, so the room's save waits on it with the
+    // room's state taken, and the move's close waits on that state.
+    let lock = engine.file_write_lock(&old);
+    let held = lock.clone().lock_owned().await;
+    let saving = {
+        let session = joined.session.clone();
+        tokio::spawn(async move {
+            session
+                .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+                .await
+        })
+    };
+    let moving = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .move_reflection("eng", "guides/a.md", "guides/b.md", &room_agent())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!moving.is_finished(), "the move waits for the page");
+    drop(held);
+    saving.await.unwrap();
     moving.await.unwrap().unwrap();
-    joined
-        .session
-        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
-        .await;
-    match next_control(&mut joined.rx).await {
-        Control::Conflict { conflict_kind, .. } => assert_eq!(conflict_kind, "deleted"),
-        other => panic!("a deletion conflict, not {other:?}"),
-    }
-    assert!(!old.exists(), "the old path stays empty");
+    assert!(!old.exists(), "no save brought the old path back");
     let moved = std::fs::read_to_string(&new).unwrap();
     assert!(
-        moved.contains("First.") && !moved.contains("Typed inside the window."),
+        moved.contains("Typed while the page was saving."),
         "{moved}"
     );
-    let (live, _) = joined.session.snapshot().await;
-    assert!(live.contains("Typed inside the window."), "{live}");
+}
+
+/// A room in an edit conflict when its page moves cannot save, so its side of
+/// the conflict is kept on the server; the page moves with the text on disk.
+#[tokio::test]
+async fn a_moved_pages_room_in_conflict_keeps_its_text() {
+    let (tmp, engine, scratch) = reflection_fixture_keeping().await;
+    let new = tmp.path().join("eng/reflections/guides/b.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    let mine = doc
+        .get_or_insert_text("content")
+        .get_string(&doc.transact())
+        .replace("First.", "First, by a person.");
+    replace_all(&joined, &doc, &mine).await;
+    let p = crystalline_service::params::WriteReflectionParams {
+        domain: "eng".into(),
+        path: "guides/a.md".into(),
+        operation: Some("replace_section".into()),
+        section: Some("## One".into()),
+        content: Some("First, from the agent.\n".into()),
+        ..Default::default()
+    };
+    let receipt = engine.write_reflection(&p, &room_agent()).await.unwrap();
+    assert_eq!(receipt["room"], "conflict", "{receipt}");
+    engine
+        .move_reflection("eng", "guides/a.md", "guides/b.md", &room_agent())
+        .await
+        .unwrap();
+    let Control::Closed { reason, path, .. } = next_closed(&mut joined.rx).await else {
+        unreachable!()
+    };
+    assert_eq!(
+        (reason.as_str(), path.as_deref()),
+        ("moved", Some("guides/b.md"))
+    );
+    let moved = std::fs::read_to_string(&new).unwrap();
+    assert!(moved.contains("First, from the agent."), "{moved}");
+    let kept_dir = scratch.home().join("state/kept/eng/reflection/guides");
+    let kept: Vec<_> = std::fs::read_dir(&kept_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    let held = std::fs::read_to_string(&kept[0]).unwrap();
+    assert!(held.contains("First, by a person."), "{held}");
 }
 
 /// Publish a display name in awareness, as a browser's provider does.
@@ -2908,7 +3286,7 @@ async fn a_switch_off_saves_and_closes_the_reflection_rooms_first() {
     );
     let mut closed = None;
     while closed.is_none() {
-        if let Control::Closed { reason } = next_control(&mut joined.rx).await {
+        if let Control::Closed { reason, .. } = next_control(&mut joined.rx).await {
             closed = Some(reason);
         }
     }
@@ -2956,7 +3334,7 @@ async fn assert_saved_then_closed(
     assert!(page.contains("Typed just before the switch."), "{page}");
     let mut closed = None;
     while closed.is_none() {
-        if let Control::Closed { reason } = next_control(&mut joined.rx).await {
+        if let Control::Closed { reason, .. } = next_control(&mut joined.rx).await {
             closed = Some(reason);
         }
     }
@@ -3032,7 +3410,7 @@ async fn an_edit_that_switches_off_past_a_manifest_room_in_conflict_closes_the_r
     assert!(page.contains("Typed just before the switch."), "{page}");
     let mut closed = None;
     while closed.is_none() {
-        if let Control::Closed { reason } = next_control(&mut joined.rx).await {
+        if let Control::Closed { reason, .. } = next_control(&mut joined.rx).await {
             closed = Some(reason);
         }
     }
@@ -3334,7 +3712,7 @@ async fn a_join_racing_a_manifest_rooms_switch_off_save_does_not_deadlock() {
         );
         let mut closed = None;
         while closed.is_none() {
-            if let Control::Closed { reason } = next_control(&mut joined.rx).await {
+            if let Control::Closed { reason, .. } = next_control(&mut joined.rx).await {
                 closed = Some(reason);
             }
         }
@@ -3368,7 +3746,7 @@ async fn a_manifest_room_save_that_switches_off_saves_and_closes_the_rooms_first
     assert!(page.contains("Typed just before the switch."), "{page}");
     let mut closed = None;
     while closed.is_none() {
-        if let Control::Closed { reason } = next_control(&mut joined.rx).await {
+        if let Control::Closed { reason, .. } = next_control(&mut joined.rx).await {
             closed = Some(reason);
         }
     }

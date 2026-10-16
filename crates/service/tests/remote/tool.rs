@@ -424,3 +424,50 @@ async fn an_argument_error_carries_kind_invalid_in_the_envelope() {
         "a refusal has no kind: {reply}"
     );
 }
+
+/// `crystalline move` (the CLI's `tool` call of `move_engram`) onto a new
+/// permalink of an engram somebody has open: the move lands, and the room
+/// saved the person's line first and was told `moved` with the new address.
+#[tokio::test]
+async fn a_cli_move_of_an_open_engram_closes_its_room_with_moved() {
+    use yrs::updates::decoder::DecoderV1;
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let mut room = server
+        .person_typing("open", "open-note", "Ada", "a person typed this")
+        .await;
+    let keeper = server.token_for("keeper").await;
+    let (_, reply) = server
+        .ctl(
+            Some(&keeper),
+            tool(
+                "move_engram",
+                json!({ "identifier": "open-note", "domain": "open", "destination": "notes/open-note.md", "permalink": "path" }),
+            ),
+        )
+        .await;
+    assert_eq!(reply["ok"], true, "{reply}");
+    let closed = loop {
+        let frame = tokio::time::timeout(Duration::from_secs(10), room.joined.rx.recv())
+            .await
+            .expect("the room hears the close in time")
+            .expect("the channel stays open");
+        let mut decoder = DecoderV1::from(frame.bytes.as_ref());
+        let found = yrs::sync::MessageReader::new(&mut decoder)
+            .flatten()
+            .find_map(|message| match message {
+                yrs::sync::Message::Custom(4, payload) => serde_json::from_slice::<Value>(&payload)
+                    .ok()
+                    .filter(|control| control["kind"] == "closed"),
+                _ => None,
+            });
+        if let Some(found) = found {
+            break found;
+        }
+    };
+    assert_eq!(
+        closed,
+        json!({ "kind": "closed", "reason": "moved", "path": "notes/open-note.md", "permalink": "notes/open-note" })
+    );
+    let moved = std::fs::read_to_string(server.file("open", "notes/open-note.md")).unwrap();
+    assert!(moved.contains("a person typed this"), "{moved}");
+}

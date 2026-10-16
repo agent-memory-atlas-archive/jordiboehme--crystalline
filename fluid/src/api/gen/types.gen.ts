@@ -2552,7 +2552,7 @@ export type JoinReflectionRoomErrors = {
      */
     404: ProblemDetail;
     /**
-     * The Reflection is not here.
+     * The Reflection is not here, or a move of this page is running.
      */
     409: ProblemDetail;
     /**
@@ -2604,7 +2604,7 @@ export type CollabJoinErrors = {
      */
     404: ProblemDetail;
     /**
-     * On a shared database, another instance hosts this file domain and writes it; the detail names it.
+     * On a shared database, another instance hosts this file domain and writes it; the detail names it. Or a move of this engram is running.
      */
     409: ProblemDetail;
     /**

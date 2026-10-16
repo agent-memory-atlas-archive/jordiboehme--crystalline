@@ -1,5 +1,5 @@
 use super::*;
-use crate::collab::session::{ComposeRefused, RoomDoc};
+use crate::collab::session::{ComposeRefused, MoveFence, MovedTo, RoomDoc};
 
 /// What [`Engine::relink_engram`] rewrote in one linking engram.
 pub(super) struct Relinked {
@@ -327,8 +327,6 @@ impl Engine {
         if readdressed {
             self.refuse_permalink_held(&dest_domain, &new_permalink, &src, cross)
                 .await?;
-            self.refuse_under_live_rooms(&p.domain, &[RoomDoc::Engram(src.permalink.clone())])
-                .await?;
         }
 
         // Gather the referencing engrams before the move, while every bound
@@ -395,6 +393,31 @@ impl Engine {
             .chain(dest_abs.iter())
             .map(PathBuf::as_path)
             .collect();
+        // A move that changes the address the editor saves to closes the
+        // room over the engram: its text is saved first, its sockets are told
+        // where the engram went, and no room opens over the old address until
+        // the move is done (the fence, held to the end of the move). After
+        // every screen, so a refused move closes nothing; before the file
+        // locks, which a room's save takes. A path-only move keeps the room:
+        // it saves by address, and the address does not change.
+        let _fence = if readdressed {
+            self.close_room_for_move(
+                &p.domain,
+                RoomDoc::Engram(src.permalink.clone()),
+                None,
+                MovedTo {
+                    domain: cross.then(|| dest_domain.clone()),
+                    path: dest_rel.clone(),
+                    permalink: Some(new_permalink.clone()),
+                },
+            )
+            .await
+        } else {
+            None
+        };
+        // The window R81 named, between the close and the locks: the fence
+        // keeps a room from opening in it.
+        self.take_room_screen_hold().await;
         let _lock = self.lock_files(&held).await;
         // The destination was free when it was checked above; it is asked
         // again now that nobody else may write it.
@@ -996,6 +1019,25 @@ impl Engine {
     /// the person typing the engram as deleted, and a later engram taking the
     /// old name would receive the save. A path-only move keeps the permalink
     /// and needs no refusal, so the caller asks only on a permalink change.
+    /// Close the room over `doc` for a move to `to`, after its last save,
+    /// and fence the document until the returned fence drops (see
+    /// [`CollabSessions::close_for_move`]). `None` on an engine with no
+    /// rooms: nothing to close and nobody to fence out.
+    ///
+    /// [`CollabSessions::close_for_move`]: crate::collab::session::CollabSessions::close_for_move
+    pub(super) async fn close_room_for_move(
+        &self,
+        domain: &str,
+        doc: RoomDoc,
+        overlay: Option<&str>,
+        to: MovedTo,
+    ) -> Option<MoveFence> {
+        let rooms = self.collab_rooms()?;
+        // Boxed because the room's last save runs engine verbs, which keeps
+        // the future's type finite whatever those verbs come to call.
+        Some(Box::pin(rooms.close_for_move(domain, &doc, overlay, &to)).await)
+    }
+
     pub(super) async fn refuse_under_live_rooms(
         &self,
         domain: &str,

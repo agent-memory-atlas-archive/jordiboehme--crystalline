@@ -10,7 +10,7 @@ use crystalline_core::relink::BodyGate;
 use super::fence::{DiskUndo, KeepText, OnRefusal, RowOp};
 use super::*;
 use crate::changes::ReflectionChanged;
-use crate::collab::session::RoomDoc;
+use crate::collab::session::{MovedTo, RoomDoc};
 use crate::params::WriteReflectionParams;
 use crate::reflection_backup::BackupCause;
 use crate::scope::{ReflectionCaller, ReflectionRight, Scope, reflection_right_word};
@@ -2325,15 +2325,11 @@ impl Engine {
                 "PACT.md is the domain's agreement; edit it instead of moving it".into(),
             ));
         }
-        // After the gate and the path rules, so a caller without the right
-        // never learns that a page is open; before the page lock, which a
-        // room's save takes.
-        self.refuse_under_live_rooms(domain, &[RoomDoc::Reflection(from.to_string())])
-            .await?;
-        // Every other page whose links the move rewrites waits too: a
-        // rewrite under an open room would race its next save. Screened from
-        // the text on disk before anything moves, and relinked from this list
-        // below.
+        // Every other page whose links the move rewrites waits: a rewrite
+        // under an open room would race its next save. Screened from the
+        // text on disk before anything moves, and relinked from this list
+        // below. The moved page's own room is not a refusal: it is closed
+        // below, once every screen has passed.
         let rows = self
             .store
             .lock()
@@ -2348,8 +2344,27 @@ impl Engine {
             r::rewrite_links_to(text, inner, from, to).1
         });
         self.refuse_under_live_rooms(domain, &linking).await?;
-        // The test seam sits between the screen and the file lock because that
-        // window is the one R81 pins: a room may open in it.
+        // The room over the page saves its text, is told where the page went
+        // and closes; no room opens over the old path until the move is
+        // done (the fence). After the gate, the path rules and the screens,
+        // so a caller without the right never learns that a page is open and
+        // a refused move closes nothing; before the page lock, which a
+        // room's save takes.
+        let _fence = self
+            .close_room_for_move(
+                domain,
+                RoomDoc::Reflection(from.to_string()),
+                None,
+                MovedTo {
+                    domain: None,
+                    path: to.to_string(),
+                    permalink: None,
+                },
+            )
+            .await;
+        // The test seam sits between the close and the file lock because that
+        // window is the one R81 named: the fence keeps a room from opening in
+        // it.
         self.take_room_screen_hold().await;
         let src = access.abs(from);
         let dst = access.abs(to);

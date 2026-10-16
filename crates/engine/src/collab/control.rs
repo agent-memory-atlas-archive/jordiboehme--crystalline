@@ -65,10 +65,32 @@ pub enum Control {
         /// A human explanation of the conflict.
         detail: String,
     },
-    /// The session is closing; `reason` says why.
+    /// The session is closing; `reason` says why. After it the socket closes
+    /// with a permanent code (4404), and the client does not reconnect.
+    ///
+    /// The reasons a client meets: `deleted` (the room accepted an external
+    /// deletion), `moved` (the document was moved or its domain renamed; the
+    /// room's text was saved first, or kept on the server when it could not
+    /// be, and the fields below name the new address), `switched_off` (the
+    /// Reflection was switched off; the text was saved first), `left` (a
+    /// guest's join into somebody's draft ended) and `internal` (anything
+    /// else, such as an unregistered domain or a failed saver).
     Closed {
-        /// Why the session closed ("deleted", "shutdown", ...).
+        /// Why the session closed: `deleted`, `moved`, `switched_off`, `left`
+        /// or `internal`.
         reason: String,
+        /// For `moved`: the domain the document now lives in. Only sent when
+        /// it changed, so a move inside one domain leaves it out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        domain: Option<String>,
+        /// For `moved`: the document's new path. A reflection's path inside
+        /// `reflections/`, an engram's path inside its domain.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        /// For `moved` of an engram: the permalink it now answers to, which
+        /// is the address its editor opens.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permalink: Option<String>,
     },
     /// Client request: save now rather than on the debounce.
     Flush,
@@ -77,6 +99,19 @@ pub enum Control {
         /// The resolution the user picked ("mine", "theirs", ...).
         choice: String,
     },
+}
+
+impl Control {
+    /// A `Closed` control that names no new address: every reason but
+    /// `moved`.
+    pub fn closed(reason: &str) -> Control {
+        Control::Closed {
+            reason: reason.to_string(),
+            domain: None,
+            path: None,
+            permalink: None,
+        }
+    }
 }
 
 /// Frame a control message as `Message::Custom(CONTROL_TAG, json)`.
@@ -130,6 +165,15 @@ mod tests {
             },
             Control::Closed {
                 reason: "deleted".into(),
+                domain: None,
+                path: None,
+                permalink: None,
+            },
+            Control::Closed {
+                reason: "moved".into(),
+                domain: Some("ops".into()),
+                path: Some("guides/b.md".into()),
+                permalink: Some("guides/b".into()),
             },
             Control::Flush,
             Control::Resolve {
@@ -179,6 +223,31 @@ mod tests {
                 save_state: "failed".into(),
                 detail: None,
             })
+        );
+    }
+
+    #[test]
+    fn a_plain_close_carries_no_address_keys_and_one_without_them_still_parses() {
+        // The address fields came with `moved`: every other close sends what
+        // it always sent, and a close written before them still decodes.
+        let plain = Control::Closed {
+            reason: "deleted".into(),
+            domain: None,
+            path: None,
+            permalink: None,
+        };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert_eq!(json, r#"{"kind":"closed","reason":"deleted"}"#);
+        assert_eq!(decode(json.as_bytes()), Some(plain));
+        let moved = Control::Closed {
+            reason: "moved".into(),
+            domain: None,
+            path: Some("guides/b.md".into()),
+            permalink: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&moved).unwrap(),
+            r#"{"kind":"closed","reason":"moved","path":"guides/b.md"}"#
         );
     }
 

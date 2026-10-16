@@ -1850,9 +1850,10 @@ async fn folding_a_draft_that_switches_reflection_off_closes_its_rooms_as_switch
                     if tag == crystalline_service::collab::control::CONTROL_TAG =>
                 {
                     match crystalline_service::collab::control::decode(&payload) {
-                        Some(crystalline_service::collab::control::Control::Closed { reason }) => {
-                            Some(reason)
-                        }
+                        Some(crystalline_service::collab::control::Control::Closed {
+                            reason,
+                            ..
+                        }) => Some(reason),
                         _ => None,
                     }
                 }

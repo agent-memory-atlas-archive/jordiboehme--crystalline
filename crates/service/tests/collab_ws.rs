@@ -709,12 +709,12 @@ async fn unregistering_a_domain_closes_its_rooms_and_lands_their_text() {
     assert_eq!(refusal_status(&err), Some(404));
 }
 
-/// A room saves back to the permalink it was opened under, so a move that
-/// would change that address under an open editor is refused with a 409 that
-/// says why, and the file stays where it was. A move that keeps the permalink
-/// is not the room's business and goes through.
+/// A move that keeps the permalink leaves an open room alone: it saves by
+/// address. A move that changes the address is not refused: the room saves,
+/// its socket is told `closed` with reason `moved` and the new address, and
+/// the socket closes for good.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_move_that_readdresses_an_open_room_is_refused() {
+async fn a_move_that_readdresses_an_open_room_closes_it_with_moved() {
     let fx = serve(Options_::default()).await;
     let editor = login(fx.addr, "eddy", "eddypw").await;
     let mut room = connect(
@@ -736,24 +736,6 @@ async fn a_move_that_readdresses_an_open_room_is_refused() {
             .send()
     };
 
-    let refused = move_with(serde_json::json!({
-        "permalink": "alpha",
-        "destination": "alpha.md",
-        "new_permalink": "renamed-alpha",
-    }))
-    .await
-    .unwrap();
-    assert_eq!(refused.status(), 409);
-    let detail = refused.text().await.unwrap();
-    assert!(detail.contains("open in the editor"), "{detail}");
-    assert!(fx.domain_dir.join("alpha.md").exists());
-    assert!(
-        std::fs::read_to_string(fx.domain_dir.join("alpha.md"))
-            .unwrap()
-            .contains("permalink: alpha\n"),
-        "nothing was written"
-    );
-
     let kept = move_with(serde_json::json!({
         "permalink": "alpha",
         "destination": "guides/alpha.md",
@@ -763,29 +745,49 @@ async fn a_move_that_readdresses_an_open_room_is_refused() {
     .unwrap();
     assert_eq!(kept.status(), 200, "{:?}", kept.text().await);
 
-    // Closing the editor ends the room - its last socket's teardown saves and
-    // disposes it - so the ordinary flow (edit, close, then move) is never
-    // refused. The teardown runs after the close frame, hence the short wait.
-    room.close(None).await.unwrap();
-    let deadline = std::time::Instant::now() + FRAME_TIMEOUT;
-    loop {
-        let renamed = move_with(serde_json::json!({
-            "permalink": "alpha",
-            "destination": "guides/alpha.md",
-            "new_permalink": "guides/alpha",
-        }))
-        .await
-        .unwrap();
-        if renamed.status() == 200 {
-            break;
+    let renamed = move_with(serde_json::json!({
+        "permalink": "alpha",
+        "destination": "guides/alpha.md",
+        "new_permalink": "guides/alpha",
+    }))
+    .await
+    .unwrap();
+    assert_eq!(renamed.status(), 200, "{:?}", renamed.text().await);
+
+    // The path-only move sent nothing that closes; the readdressing one ends
+    // the room with `moved` and the permanent close code.
+    let mut closed = None;
+    let read = async {
+        while let Some(message) = room.next().await {
+            match message.expect("the socket reads") {
+                tungstenite::Message::Binary(bytes) => {
+                    for message in messages_of(&bytes) {
+                        if let Message::Custom(control::CONTROL_TAG, payload) = message
+                            && let Some(found @ Control::Closed { .. }) = control::decode(&payload)
+                        {
+                            closed = Some(found);
+                        }
+                    }
+                }
+                tungstenite::Message::Close(frame) => return frame.map(|f| u16::from(f.code)),
+                _ => {}
+            }
         }
-        assert_eq!(renamed.status(), 409, "{:?}", renamed.text().await);
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the room outlived its last editor"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+        None
+    };
+    let code = tokio::time::timeout(FRAME_TIMEOUT, read)
+        .await
+        .expect("the socket closes inside the window");
+    assert_eq!(
+        closed,
+        Some(Control::Closed {
+            reason: "moved".into(),
+            domain: None,
+            path: Some("guides/alpha.md".into()),
+            permalink: Some("guides/alpha".into()),
+        })
+    );
+    assert_eq!(code, Some(4404));
     assert!(
         std::fs::read_to_string(fx.domain_dir.join("guides/alpha.md"))
             .unwrap()

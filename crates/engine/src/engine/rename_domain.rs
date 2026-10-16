@@ -245,7 +245,9 @@ impl Engine {
                 // the old name.
                 let _captured =
                     self.capture_audience(old, DomainAudience::Accounts(HashSet::new()));
-                self.close_editors(old).await;
+                // The journal is there, so this rename finishes: the rooms
+                // are told where their domain went at once.
+                self.close_editors(old).await.renamed(new).await;
                 let mut report = self
                     .finish_rename(
                         journal,
@@ -406,7 +408,7 @@ impl Engine {
         // after its MANIFEST and relink steps, which write into the domain
         // like any other edit and would otherwise wait on its own pause.
         if local_only && !self.pause_and_drain(old, new).await {
-            let closed = if closed_editors {
+            let closed = if closed_editors.any() {
                 " Its open editors were closed and reopen on the next edit."
             } else {
                 ""
@@ -450,6 +452,9 @@ impl Engine {
             self.rename_pause.resume(&[old, new]);
             return Err(io_error(e));
         }
+        // From here the rename finishes, now or on the next start from its
+        // journal, so the swept rooms learn the new name.
+        closed_editors.renamed(new).await;
         let mut report = self
             .finish_rename(journal, &state_dir, true, old_audience)
             .await?;
@@ -1041,14 +1046,17 @@ impl Engine {
     }
 
     /// Close every co-editing room and end every join in `old`; each room
-    /// saves its last text first. Whether there was anything to close.
-    async fn close_editors(&self, old: &str) -> bool {
-        let rooms_closed = match self.collab.get().and_then(std::sync::Weak::upgrade) {
-            Some(sessions) => sessions.dispose_domain(old).await,
-            None => 0,
+    /// saves its last text first. The rooms are not told yet: the rename
+    /// tells them `moved` with the new name once it can no longer be refused
+    /// (`ClosedEditors::renamed`), and a rename refused before that tells
+    /// them `internal` when the answer drops.
+    async fn close_editors(&self, old: &str) -> ClosedEditors {
+        let rooms = match self.collab.get().and_then(std::sync::Weak::upgrade) {
+            Some(sessions) => Some(sessions.sweep_domain_for_rename(old).await),
+            None => None,
         };
         let joins_ended = self.joins.end_domain(old);
-        rooms_closed + joins_ended > 0
+        ClosedEditors { rooms, joins_ended }
     }
 
     /// The MANIFEST step: `domain_name: <new>` into the domain's MANIFEST,
@@ -1912,6 +1920,29 @@ const RECEIPT_FILE: &str = "provisions.json";
 
 /// The conflict a request answers when a rename kept a domain paused past the
 /// wait.
+/// What [`Engine::close_editors`] ended: the swept rooms, not told yet, and
+/// how many joins it ended. Dropped without [`ClosedEditors::renamed`], the
+/// rooms are told `internal` (see `SweptRooms`).
+struct ClosedEditors {
+    rooms: Option<crate::collab::session::SweptRooms>,
+    joins_ended: usize,
+}
+
+impl ClosedEditors {
+    /// Whether there was anything to close.
+    fn any(&self) -> bool {
+        self.rooms.as_ref().is_some_and(|rooms| !rooms.is_empty()) || self.joins_ended > 0
+    }
+
+    /// Tell every swept room that its document moved with the domain to
+    /// `new`.
+    async fn renamed(self, new: &str) {
+        if let Some(rooms) = self.rooms {
+            rooms.moved_to_domain(new).await;
+        }
+    }
+}
+
 fn renaming_conflict(name: String) -> EngineError {
     EngineError::Conflict(format!(
         "domain '{name}' is being renamed; try again in a moment"

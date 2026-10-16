@@ -543,7 +543,7 @@ async fn accepting_an_external_delete_closes_the_session() {
             }),
         )
         .await;
-    let Control::Closed { reason } = next_control(&mut joined.rx).await else {
+    let Control::Closed { reason, .. } = next_control(&mut joined.rx).await else {
         panic!("the room is told the session is over");
     };
     assert_eq!(reason, "deleted");

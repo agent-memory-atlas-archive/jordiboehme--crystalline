@@ -1725,3 +1725,67 @@ async fn an_if_none_match_other_than_star_is_422() {
     }
     assert!(!s.fx.root.join("reflections/assets/flow.png").exists());
 }
+
+/// A page moved over the JSON API while somebody has it open in the editor:
+/// the move is not refused, the open socket is told `closed` with reason
+/// `moved` and the new path, and the socket then closes for good (4404).
+#[tokio::test]
+async fn a_move_over_the_api_tells_the_open_editor_where_the_page_went() {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::updates::decoder::DecoderV1;
+    let s = serve().await;
+    let owner = crystalline_service::ReflectionCaller::owner();
+    s.fx.engine
+        .write_reflection(&crate::docs::write("open.md", "# Open\n\nBody.\n"), &owner)
+        .await
+        .unwrap();
+    let ed = Session::login(s.addr, "ed").await;
+    let mut room = open_room(s.addr, "/api/v1/collab-reflection/eng/open.md", &ed).await;
+    let (status, moved) = ed
+        .send(
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/reflection/move",
+            Some(json!({ "from": "open.md", "to": "guides/open.md" })),
+        )
+        .await;
+    assert_eq!(status, 200, "{moved}");
+    let mut closed = None;
+    let mut code = None;
+    while let Some(frame) = tokio::time::timeout(std::time::Duration::from_secs(10), room.next())
+        .await
+        .expect("the socket hears the close in time")
+    {
+        match frame.unwrap() {
+            WsMessage::Binary(bytes) => {
+                let mut decoder = DecoderV1::from(bytes.as_ref());
+                for message in yrs::sync::MessageReader::new(&mut decoder).flatten() {
+                    if let yrs::sync::Message::Custom(4, payload) = message {
+                        let control: Value = serde_json::from_slice(&payload).unwrap();
+                        if control["kind"] == "closed" {
+                            closed = Some(control);
+                        }
+                    }
+                }
+            }
+            WsMessage::Close(frame) => {
+                code = frame.map(|frame| u16::from(frame.code));
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        closed,
+        Some(json!({ "kind": "closed", "reason": "moved", "path": "guides/open.md" }))
+    );
+    assert_eq!(
+        code,
+        Some(4404),
+        "a close the editor does not reconnect after"
+    );
+    let (status, page) = ed
+        .get("/api/v1/domains/eng/reflections/guides/open.md")
+        .await;
+    assert_eq!(status, 200, "{page}");
+}
