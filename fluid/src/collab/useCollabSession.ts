@@ -88,6 +88,10 @@ export interface CollabParticipant {
   agent: boolean;
 }
 
+/** What a choice or a save that the room refused says: its connection was
+ *  not live yet. */
+export const NOT_LIVE = "Not connected yet. Try again in a moment.";
+
 export interface CollabSession {
   mode: CollabMode;
   /** Set while mode is "collab". */
@@ -108,7 +112,9 @@ export interface CollabSession {
   /** Whether the connection is live: its hello accepted and the room's sync
    *  answered, so what this tab typed is on its way. */
   live: boolean;
-  resolve: (choice: "mine" | "theirs") => void;
+  /** Resolve the standing conflict; only on a live connection (false, and
+   *  nothing sent, otherwise). */
+  resolve: (choice: "mine" | "theirs") => boolean;
   /** True once the room has closed for good (the `closed` control): an
    *  external deletion, a switched-off Reflection, a server shutting down. */
   closed: boolean;
@@ -591,9 +597,11 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
     () => docRef.current?.provider.flush() ?? false,
     [],
   );
-  const resolve = useCallback((choice: "mine" | "theirs") => {
-    docRef.current?.provider.resolve(choice);
-  }, []);
+  const resolve = useCallback(
+    (choice: "mine" | "theirs") =>
+      docRef.current?.provider.resolve(choice) ?? false,
+    [],
+  );
 
   // A session that is switched off is solo whatever the last generation left
   // behind, which is why this is derived rather than stored.

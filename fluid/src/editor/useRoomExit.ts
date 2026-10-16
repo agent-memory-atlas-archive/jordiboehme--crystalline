@@ -22,7 +22,10 @@ export const ROOM_EXIT_NOTICE_MS = 1500;
 export type RoomExitPhase = "idle" | "waiting" | "kept";
 
 export function useRoomExit(
-  collab: Pick<CollabSession, "saveState" | "status" | "flush" | "conflict">,
+  collab: Pick<
+    CollabSession,
+    "saveState" | "status" | "flush" | "conflict" | "live"
+  >,
   /** Keep this tab's text as a draft (each editor's own keeper). */
   keep: () => void,
   /** Go to the reading page. */
@@ -46,6 +49,18 @@ export function useRoomExit(
     keepRef.current = keep;
     leaveRef.current = leave;
   });
+  // A flush the room refused (the connection was not live yet) is asked
+  // again the moment it is, while Done still waits.
+  const flushOwed = useRef(false);
+  const { flush, live } = collab;
+  useEffect(() => {
+    if (phase !== "waiting" || !flushOwed.current || !live) {
+      return;
+    }
+    if (flush()) {
+      flushOwed.current = false;
+    }
+  }, [phase, live, flush]);
 
   useEffect(() => {
     if (phase !== "waiting") {
@@ -95,7 +110,7 @@ export function useRoomExit(
         setPhase("kept");
         return;
       }
-      collab.flush();
+      flushOwed.current = !collab.flush();
       setPhase("waiting");
     },
   };

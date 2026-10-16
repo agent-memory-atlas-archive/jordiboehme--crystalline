@@ -330,7 +330,7 @@ export function soloCollabSession(): CollabSession {
     permalink: "alpha",
     flush: () => false,
     live: false,
-    resolve: () => undefined,
+    resolve: () => false,
     closed: false,
     closedReason: null,
     movedTo: null,

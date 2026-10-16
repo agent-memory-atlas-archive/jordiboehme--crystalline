@@ -48,7 +48,11 @@ import { normalizePastedEndings } from "../collab/pastedEndings";
 import { cursorFlags } from "../collab/cursorFlags";
 import { PresenceChips } from "../collab/PresenceChips";
 import type { CollabConflict, CollabSession } from "../collab/useCollabSession";
-import { fileSpace, useCollabSession } from "../collab/useCollabSession";
+import {
+  NOT_LIVE,
+  fileSpace,
+  useCollabSession,
+} from "../collab/useCollabSession";
 import { Breadcrumbs, crumbsOf } from "../components/Breadcrumbs";
 import { CopyAddress } from "../components/DetailsPanel";
 import { DraftLinkDialog } from "../components/DraftLinkDialog";
@@ -561,6 +565,7 @@ function Surface({
    * conflict raised later never pops a dialog nobody asked for.
    */
   const [resolving, setResolving] = useState<CollabConflict | null>(null);
+  const [resolveProblem, setResolveProblem] = useState<string | null>(null);
   /**
    * Why the last attachment did not land, in the words of whoever refused it -
    * this tab for a file type or a size the server would bounce, the server for
@@ -777,6 +782,7 @@ function Surface({
     // `requestSave`, which the collab transport routes here. A forgotten
     // `flush` would be a Save button that silently does nothing.
     flush: collab.flush,
+    live: collab.live,
     draftContent,
   });
 
@@ -1461,6 +1467,7 @@ function Surface({
           // The live buffer, in the room's own LF space: what the panes show
           // side by side is what each side would end up with.
           mine={session.buffer}
+          problem={resolveProblem}
           onResolve={(choice) => {
             if (choice === "theirs") {
               // Their version is about to become the room's text (or, on a
@@ -1469,10 +1476,17 @@ function Surface({
               // this author had is recoverable afterwards.
               session.snapshotDraft();
             }
-            collab.resolve(choice);
+            // Refused while the connection is not live: the dialog stays,
+            // and the choice is the person's to make again.
+            if (!collab.resolve(choice)) {
+              setResolveProblem(NOT_LIVE);
+              return;
+            }
+            setResolveProblem(null);
             setResolving(null);
           }}
           onClose={() => {
+            setResolveProblem(null);
             setResolving(null);
           }}
         />

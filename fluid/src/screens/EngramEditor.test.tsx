@@ -2964,7 +2964,7 @@ describe("the engram editor with no session to join", () => {
 describe("the engram editor resolving a session conflict", () => {
   /** The room, mid-conflict, with the resolution the room picked recorded. */
   async function openConflict(conflict: CollabConflict) {
-    const resolve = vi.fn();
+    const resolve = vi.fn(() => true);
     const room = joinedSession({
       saveState: "conflict",
       saveDetail: conflict.detail,
@@ -2982,6 +2982,28 @@ describe("the engram editor resolving a session conflict", () => {
     theirs: CONTENT.replace("A rule.", "Their rule."),
     detail: "an agent rewrote this engram",
   };
+
+  it("keeps the dialog open and says so when the room is not connected yet", async () => {
+    const room = joinedSession({
+      saveState: "conflict",
+      saveDetail: EDIT_CONFLICT.detail,
+      conflict: EDIT_CONFLICT,
+      resolve: vi.fn(() => false),
+    });
+    serveEditor();
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    await userEvent.click(screen.getByRole("button", { name: "Resolve" }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Keep the session text" }),
+    );
+    expect(room.session.resolve).toHaveBeenCalledWith("mine");
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      "Not connected yet. Try again in a moment.",
+    );
+    expect(screen.getByRole("dialog")).toBeVisible();
+  });
 
   it("pauses saving behind a banner that opens both sides", async () => {
     await openConflict(EDIT_CONFLICT);
@@ -3023,6 +3045,7 @@ describe("the engram editor resolving a session conflict", () => {
     const seen: { draft: Draft | null } = { draft: null };
     const resolve = vi.fn(() => {
       seen.draft = readDraft("ada", "eng", "alpha");
+      return true;
     });
     joinedSession({
       saveState: "conflict",
@@ -3618,5 +3641,74 @@ describe("the engram editor's kept text notice", () => {
     expect(
       screen.queryByText("kept texts need write access"),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("the engram editor asking a room that is not live yet", () => {
+  /** A room whose `live` the test turns on; `flush` answers like the hook. */
+  function waitingRoom() {
+    const flush = vi.fn(() => current.live);
+    const first = joinedSession({ live: false, saveState: "pending", flush });
+    let current: CollabSession = first.session;
+    const listeners = new Set<() => void>();
+    collabMock.mockImplementation(() =>
+      useSyncExternalStore(
+        (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        () => current,
+      ),
+    );
+    return {
+      flush,
+      set: (next: Partial<CollabSession>) => {
+        act(() => {
+          current = { ...current, ...next };
+          for (const listener of listeners) {
+            listener();
+          }
+        });
+      },
+    };
+  }
+
+  it("asks again for a save pressed while not live, once it is", async () => {
+    const room = waitingRoom();
+    serveEditor();
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    screen.getByLabelText("Engram source").focus();
+    await userEvent.keyboard("{Control>}s{/Control}");
+    expect(room.flush).toHaveBeenCalledTimes(1);
+    expect(room.flush).toHaveLastReturnedWith(false);
+    room.set({ live: true });
+    await waitFor(() => {
+      expect(room.flush).toHaveBeenCalledTimes(2);
+    });
+    expect(room.flush).toHaveLastReturnedWith(true);
+    // Asked once, not on every later render.
+    room.set({ saveState: "ok" });
+    await settled();
+    expect(room.flush).toHaveBeenCalledTimes(2);
+  });
+
+  it("Done asks again once live, and leaves when the save lands without keeping a draft", async () => {
+    const room = waitingRoom();
+    serveEditor();
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    await userEvent.click(screen.getByRole("link", { name: "Done" }));
+    expect(await screen.findByText("Saving before you leave.")).toBeVisible();
+    expect(room.flush).toHaveLastReturnedWith(false);
+    room.set({ live: true, status: "connected" });
+    await waitFor(() => {
+      expect(room.flush).toHaveLastReturnedWith(true);
+    });
+    room.set({ saveState: "ok" });
+    expect(
+      await screen.findByRole("heading", { name: "Alpha", level: 1 }),
+    ).toBeInTheDocument();
+    expect(readDraft("ada", "eng", "alpha")).toBeNull();
   });
 });

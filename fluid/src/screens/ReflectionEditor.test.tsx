@@ -51,6 +51,7 @@ function room(text: string): CollabSession {
     // What the hook reports after the greeting: the inner path.
     permalink: "guides/a.md",
     live: true,
+    resolve: () => true,
   };
 }
 
@@ -560,6 +561,28 @@ describe("the reflection editor keeps what is owed", () => {
 });
 
 describe("the reflection editor taking the file version", () => {
+  it("keeps the dialog open and says so when the room is not connected yet", async () => {
+    serve("edit");
+    const resolve = vi.fn(() => false);
+    live({
+      ...room(`${PAGE}mine\n`),
+      saveState: "conflict",
+      conflict: { kind: "edit", theirs: PAGE, detail: "d" },
+      resolve,
+    });
+    await openEditor();
+    await userEvent.click(screen.getByRole("button", { name: "Resolve" }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Take the file version" }),
+    );
+    expect(resolve).toHaveBeenCalledWith("theirs");
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      "Not connected yet. Try again in a moment.",
+    );
+    expect(screen.getByRole("dialog")).toBeVisible();
+  });
+
   it("keeps this tab's text as an offer that the file version does not overwrite", async () => {
     serve("edit");
     const session = live({

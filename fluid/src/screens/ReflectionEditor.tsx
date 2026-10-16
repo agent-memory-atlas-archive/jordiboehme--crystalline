@@ -53,7 +53,7 @@ import {
   reflectionRoomKey,
 } from "../collab/provider";
 import type { CollabMovedTo, CollabSession } from "../collab/useCollabSession";
-import { useCollabSession } from "../collab/useCollabSession";
+import { NOT_LIVE, useCollabSession } from "../collab/useCollabSession";
 import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { Breadcrumbs, reflectionCrumbsOf } from "../components/Breadcrumbs";
@@ -511,6 +511,7 @@ function Surface({
   // Whether the copy under `key` is this mount's own.
   const wrote = useRef(false);
   const [resolving, setResolving] = useState(false);
+  const [resolveProblem, setResolveProblem] = useState<string | null>(null);
   const [mountText] = useState(() => ytext.toJSON());
   const [title] = useState(() => titleOf(mountText, path));
   const [mountEnded] = useState(ended);
@@ -1050,6 +1051,7 @@ function Surface({
         <CollabConflictDialog
           conflict={collab.conflict}
           mine={ytext.toJSON()}
+          problem={resolveProblem}
           onResolve={(choice) => {
             if (choice === "theirs") {
               // Taking their text drops this tab's: set it aside for the
@@ -1060,10 +1062,17 @@ function Surface({
                 savedAt: new Date().toISOString(),
               });
             }
-            collab.resolve(choice);
+            // Refused while the connection is not live: the dialog stays,
+            // and the choice is the person's to make again.
+            if (!collab.resolve(choice)) {
+              setResolveProblem(NOT_LIVE);
+              return;
+            }
+            setResolveProblem(null);
             setResolving(false);
           }}
           onClose={() => {
+            setResolveProblem(null);
             setResolving(false);
           }}
         />

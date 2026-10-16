@@ -99,8 +99,12 @@ export interface EditorSessionOptions {
    * spurious 412s at best and clobber session saves at worst.
    */
   transport?: "solo" | "collab";
-  /** Required when transport is "collab": the session flush request. */
-  flush?: () => void;
+  /** Required when transport is "collab": the session flush request, false
+   *  when the room refused it (its connection was not live yet). */
+  flush?: () => boolean;
+  /** Collab only: whether the room's connection is live; a Save pressed
+   *  while it was not is asked again once it is. */
+  live?: boolean;
   /** Collab only: maps the LF buffer to file space for draft snapshots so
    *  drafts stay interchangeable with the solo flow's. ONE writer: the
    *  hook's debounce is the only draft writer in either mode. */
@@ -221,6 +225,7 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
     ariaLabel,
     transport = "solo",
     flush,
+    live = false,
     draftContent,
   } = options;
   const viewRef = useRef<EditorView | null>(null);
@@ -374,13 +379,28 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
     },
   });
 
+  // A Save the room refused because its connection was not live yet: asked
+  // once more as soon as it is.
+  const saveOwed = useRef(false);
+  useEffect(() => {
+    if (!saveOwed.current || !live || flush === undefined) {
+      return;
+    }
+    if (flush()) {
+      saveOwed.current = false;
+    }
+  }, [live, flush]);
+
   const requestSave = () => {
     if (transport === "collab") {
       // The server owns saving in a session; Mod-S and the Save button both
       // land here and both ask it to flush. The PUT mutation, its checksum
       // and its 412 flow never run in this mode - a stale-If-Match PUT
       // against a debounce-saving server would fight the session.
-      flush?.();
+      if (flush !== undefined && !flush()) {
+        // Not live yet: asked again once it is (see below).
+        saveOwed.current = true;
+      }
       return;
     }
     const view = viewRef.current;
