@@ -66,6 +66,7 @@ import { assetRefsIn } from "../editor/imageFormat";
 import {
   addOffer,
   clearDraft,
+  newestFirst,
   OFFER_LIMIT,
   readDraft,
   readOffers,
@@ -362,6 +363,26 @@ function offerTime(offer: Draft): string {
     : formatInstant(offer.savedAt);
 }
 
+/** How long an offer's preview line may be. */
+const PREVIEW_CHARS = 60;
+
+/**
+ * One line of an offered text, so offers from close times can be told
+ * apart: the first line that differs from the room's text, or the text's
+ * start when no line does (lines were only taken out). Ids are left out.
+ */
+function offerPreview(offer: Draft, room: string): string {
+  const mine = stripIdLines(offer.content.replace(/\r\n/g, "\n")).split("\n");
+  const theirs = stripIdLines(room).split("\n");
+  const at = mine.findIndex(
+    (line, index) => line !== theirs[index] && line.trim() !== "",
+  );
+  const line = at === -1 ? mine.join(" ").trim() : (mine[at] ?? "").trim();
+  return line.length > PREVIEW_CHARS
+    ? `${line.slice(0, PREVIEW_CHARS)}...`
+    : line;
+}
+
 /** The editor's switch for a room that has ended: the text stays, typing stops. */
 function readOnly(ended: boolean): Extension {
   return ended ? [View.editable.of(false), EditorState.readOnly.of(true)] : [];
@@ -474,9 +495,14 @@ function Surface({
     const offered = readOffers(account, domain, offerKey);
     const copyDiffers = copy !== null && differsFromRoom(copy, room);
     const differing = offered.filter((offer) => differsFromRoom(offer, room));
+    // Newest first by when each was saved, the copy included: it is
+    // usually the newest, but a text set aside in another tab can be newer.
     const offers =
       copy !== null && copyDiffers
-        ? [copy, ...differing.filter((offer) => offer.content !== copy.content)]
+        ? newestFirst([
+            copy,
+            ...differing.filter((offer) => offer.content !== copy.content),
+          ])
         : differing;
     return {
       copy,
@@ -644,9 +670,9 @@ function Surface({
       ytext.delete(0, ytext.length);
       ytext.insert(0, text);
     });
-    dropOffers(kept);
+    dropOffers([offer]);
     setOwed(true);
-    setKept([]);
+    setKept((shown) => shown.filter((other) => other !== offer));
     view?.focus();
   };
 
@@ -885,23 +911,28 @@ function Surface({
             <>
               <span className="basis-full">{`Texts from ${String(kept.length)} earlier sessions are kept on this device. Newest first.`}</span>
               {/*
-                A short history (the last few per page), by time. Choosing
-                one answers the offer: the text goes back and the others on
-                screen go with the note, as Discard all would drop them.
+                A short history (the last few per page), by time, each with
+                a line of its text. Putting one back takes only that one off
+                the list; the others stay offered until Discard all, or
+                until newer texts push them out of the history.
               */}
               <ul className="flex basis-full flex-col gap-1">
                 {kept.map((offer, index) => {
                   const when = offerTime(offer);
+                  const preview = offerPreview(offer, mountText);
                   return (
                     <li
                       key={`${String(index)}-${offer.savedAt}`}
-                      className="flex flex-wrap items-baseline gap-3"
+                      className="flex min-w-0 flex-wrap items-baseline gap-3"
                     >
                       <span>{when}</span>
+                      <span className="min-w-0 truncate font-mono text-xs">
+                        {preview}
+                      </span>
                       {!ended && (
                         <button
                           type="button"
-                          aria-label={`Put it back: the text from ${when}`}
+                          aria-label={`Put it back: ${when}, ${preview}`}
                           className={BANNER_BUTTON}
                           onClick={() => {
                             putBack(offer);

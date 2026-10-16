@@ -147,7 +147,7 @@ function savedTime(draft: Draft): number {
  * tabs can add offers out of order. A sort is stable, so offers with the
  * same time (or none) keep the order they came in.
  */
-function newestFirst(offers: readonly Draft[]): Draft[] {
+export function newestFirst(offers: readonly Draft[]): Draft[] {
   return offers
     .map((draft, index) => ({ draft, index, at: savedTime(draft) }))
     .sort((a, b) => b.at - a.at || a.index - b.index)

@@ -663,15 +663,34 @@ describe("the reflection editor's offer history", () => {
       readOffers("ann", "eng", OFFER).map((offer) => offer.content),
     ).toEqual(["second try\n", "first try\n"]);
 
-    // The older one is chosen: it goes back, and the offer is answered.
+    // Each names a line of its own text, so two close times are told apart.
+    expect(items[0]).toHaveTextContent("second try");
+    expect(items[1]).toHaveTextContent("first try");
+
+    // The older one is chosen: it goes back, and only it leaves the list.
     await userEvent.click(
       within(items[1] as HTMLElement).getByRole("button", {
-        name: `Put it back: the text from ${formatInstant("2026-10-16T08:00:00Z")}`,
+        name: `Put it back: ${formatInstant("2026-10-16T08:00:00Z")}, first try`,
       }),
     );
     expect(session.get().ytext?.toJSON()).toBe("first try\n");
-    expect(screen.queryByRole("note")).toBeNull();
-    expect(readOffers("ann", "eng", OFFER)).toEqual([]);
+    expect(
+      readOffers("ann", "eng", OFFER).map((offer) => offer.content),
+    ).toEqual(["second try\n"]);
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "Text from an earlier session is kept on this device.",
+    );
+  });
+
+  it("lists a text set aside in another tab before an older copy", async () => {
+    serve("edit");
+    live(room(PAGE));
+    writeDraft("ann", "eng", KEY, at("07", "older copy\n"));
+    addOffer("ann", "eng", OFFER, at("09", "newer offer\n"));
+    await openEditor();
+    const items = within(screen.getByRole("note")).getAllByRole("listitem");
+    expect(items[0]).toHaveTextContent("newer offer");
+    expect(items[1]).toHaveTextContent("older copy");
   });
 
   it("keeps the last three and drops them all on Discard all", async () => {
