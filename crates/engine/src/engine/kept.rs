@@ -3,8 +3,8 @@
 //!
 //! A kept text holds what a person typed into a page or an engram, so it
 //! goes only to somebody who may write that source: a Reflection text needs
-//! `curate` on the domain's Reflection, an engram text needs the right to
-//! write engrams there. Each entry is decided by its own kind, and a text
+//! `edit` on the domain's Reflection (`curate` for PACT.md), the right its
+//! room needs, and an engram text needs the right to write engrams there. Each entry is decided by its own kind, and a text
 //! kept from a review draft goes to the draft's owner only. Neither right
 //! asks the Reflection's state: it is often off exactly because a switch-off
 //! is why the text was kept.
@@ -15,21 +15,32 @@ use super::*;
 use crate::scope::{DomainRight, ReflectionCaller, ReflectionRight, Scope};
 
 /// The refusal for a caller who may handle neither kind of kept text.
-const NO_KEPT_RIGHT: &str = "kept texts need write access to this domain's engrams or curate \
+const NO_KEPT_RIGHT: &str = "kept texts need write access to this domain's engrams or edit \
                              access to its Reflection";
 
 /// Which kinds of kept text a caller may handle on one domain.
 #[derive(Clone, Copy, Debug)]
 struct KeptRights {
     engram: bool,
-    reflection: bool,
+    reflection: ReflectionRight,
 }
 
 impl KeptRights {
-    fn allows(self, kind: KeptKind) -> bool {
-        match kind {
+    /// Whether these rights may handle `k`: an engram text needs write
+    /// access to the engrams; a Reflection text needs what saving its page
+    /// in a room needs, `edit`, and `curate` for PACT.md (as
+    /// `require_reflection_edit` decides for the room).
+    fn allows(self, k: &KeptText) -> bool {
+        match k.kind {
             KeptKind::Engram => self.engram,
-            KeptKind::Reflection => self.reflection,
+            KeptKind::Reflection => {
+                let need = if k.path == crystalline_core::reflection::PACT_FILE {
+                    ReflectionRight::Curate
+                } else {
+                    ReflectionRight::Edit
+                };
+                self.reflection >= need
+            }
         }
     }
 }
@@ -89,9 +100,9 @@ impl Engine {
         let (reflection, engrams_visible) = self.caller_reflection_right(domain, &caller).await?;
         let rights = KeptRights {
             engram: engrams_visible && self.write_right(scope, domain).await? >= DomainRight::Write,
-            reflection: reflection >= ReflectionRight::Curate,
+            reflection,
         };
-        if !rights.engram && !rights.reflection {
+        if !rights.engram && rights.reflection < ReflectionRight::Edit {
             return Err(EngineError::Forbidden(NO_KEPT_RIGHT.to_string()));
         }
         Ok(rights)
@@ -111,7 +122,7 @@ impl Engine {
             .filter(|k| {
                 k.domain == domain
                     && !k.removed
-                    && rights.allows(k.kind)
+                    && rights.allows(k)
                     && (k.owner.is_none() || k.owner == mine)
             })
             .collect()

@@ -1,6 +1,7 @@
 //! Kept texts over the JSON API: each entry goes only to a person who may
-//! write its source (a Reflection text: curate; an engram text: write access
-//! to the engrams), and a reader is refused.
+//! write its source (a Reflection text: edit, PACT.md: curate, as its room
+//! needs; an engram text: write access to the engrams), and a reader is
+//! refused.
 
 use chrono::TimeZone;
 use crystalline_core::kept::{self, KeptKind};
@@ -191,15 +192,14 @@ async fn each_entry_needs_the_right_to_write_its_own_source() {
     assert_eq!(left, vec![KeptKind::Engram], "the engram's text stays");
 }
 
-/// A reader of the domain (`vera`) and a contributor who edits the
-/// Reflection without curating it (`ann`) are refused on every route; a
-/// person who may not see the domain (`nora`) meets an unknown domain.
-/// Nothing is dropped.
+/// A reader of the domain (`vera`) is refused on every route; a person who
+/// may not see the domain (`nora`) meets an unknown domain. Nothing is
+/// dropped.
 #[tokio::test]
 async fn a_reader_is_refused_and_a_stranger_meets_an_unknown_domain() {
     let s = serve().await;
     let (page_id, engram_id) = keep(&s);
-    for (name, expected) in [("vera", 403), ("ann", 403), ("nora", 404)] {
+    for (name, expected) in [("vera", 403), ("nora", 404)] {
         let who = Session::login(s.addr, name).await;
         for (method, path) in [
             (Method::GET, "/api/v1/domains/eng/kept".to_string()),
@@ -224,6 +224,62 @@ async fn a_reader_is_refused_and_a_stranger_meets_an_unknown_domain() {
     }
     let root = s.fx.tmp.path().join("state/kept");
     assert_eq!(kept::scan(&root).len(), 3, "nothing is dropped");
+}
+
+/// A Reflection text needs what saving its page in a room needs: `ann`, a
+/// contributor who edits the Reflection and reads no engram, gets the
+/// page's text, but neither the engram's text nor the PACT's, which needs
+/// curate; both of those answer 404 and stay.
+#[tokio::test]
+async fn a_contributor_gets_a_pages_text_and_not_the_pacts() {
+    let s = serve().await;
+    let (page_id, engram_id) = keep(&s);
+    let root = s.fx.tmp.path().join("state").join(kept::KEPT_DIR);
+    let at = chrono::Utc.with_ymd_and_hms(2026, 10, 15, 9, 0, 0).unwrap();
+    kept::write(
+        &root,
+        "eng",
+        None,
+        KeptKind::Reflection,
+        "PACT.md",
+        at,
+        "Typed on the pact.\n",
+    )
+    .unwrap();
+    let pact_id = kept::scan(&root)
+        .into_iter()
+        .find(|k| k.path == "PACT.md")
+        .unwrap()
+        .id;
+    let ann = Session::login(s.addr, "ann").await;
+    let (status, body) = ann.get("/api/v1/domains/eng/kept").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        listed(&body),
+        vec![("reflection".to_string(), PAGE.to_string())]
+    );
+    let (status, one) = ann
+        .get(&format!("/api/v1/domains/eng/kept/{page_id}"))
+        .await;
+    assert_eq!(status, 200, "{one}");
+    for id in [&engram_id, &pact_id] {
+        for method in [Method::GET, Method::DELETE] {
+            let (status, body) = ann
+                .send(
+                    method.clone(),
+                    &format!("/api/v1/domains/eng/kept/{id}"),
+                    None,
+                )
+                .await;
+            assert_eq!(status, 404, "{method} {id}: {body}");
+        }
+    }
+    assert_eq!(kept::scan(&root).len(), 4, "nothing is dropped");
+    let keeper = Session::login(s.addr, "keeper").await;
+    let (status, _) = keeper
+        .get(&format!("/api/v1/domains/eng/kept/{pact_id}"))
+        .await;
+    assert_eq!(status, 200, "a curator gets the pact's text");
 }
 
 /// The anonymous viewer of a public domain is asked to sign in.

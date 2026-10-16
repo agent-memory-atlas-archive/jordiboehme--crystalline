@@ -1,9 +1,9 @@
 //! Kept texts: what a co-editing room held when its last save could not
 //! land, kept in the server's state folder (see
 //! [`crystalline_core::kept`]). A person finds their text here and copies it
-//! back. The rights are the engine's: a Reflection text needs `curate`, an
-//! engram text needs write access to the domain's engrams, each entry by its
-//! own kind.
+//! back. The rights are the engine's: a Reflection text needs `edit`
+//! (`curate` for PACT.md), the right its room needs, and an engram text
+//! needs write access to the domain's engrams, each entry by its own kind.
 
 use axum::Json;
 use axum::extract::State;
@@ -110,7 +110,8 @@ async fn refuse_anonymous(
     description = "When the last person leaves a co-editing room and its final \
                    save is refused or ends in a conflict, the server keeps the \
                    room's text in its state folder. This lists them. A \
-                   Reflection page's text needs `curate` on the Reflection, an \
+                   Reflection page's text needs `edit` on the Reflection \
+                   (`curate` for PACT.md), an \
                    engram's text needs write access to the engrams; each entry \
                    is listed only for a caller who holds its own right. A text \
                    kept from a review draft is listed for the draft's owner \
@@ -128,7 +129,7 @@ async fn refuse_anonymous(
         ),
         (
             status = 403,
-            description = "Neither write access to the engrams nor curate \
+            description = "Neither write access to the engrams nor edit \
                            access to the Reflection.",
             body = ProblemDetail,
             content_type = "application/problem+json",
@@ -178,7 +179,7 @@ pub async fn list(
         ),
         (
             status = 403,
-            description = "Neither write access to the engrams nor curate \
+            description = "Neither write access to the engrams nor edit \
                            access to the Reflection.",
             body = ProblemDetail,
             content_type = "application/problem+json",
@@ -232,7 +233,7 @@ pub async fn read(
         ),
         (
             status = 403,
-            description = "Neither write access to the engrams nor curate \
+            description = "Neither write access to the engrams nor edit \
                            access to the Reflection, or this instance is \
                            read-only.",
             body = ProblemDetail,

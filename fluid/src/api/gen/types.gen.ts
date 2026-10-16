@@ -3946,7 +3946,7 @@ export type ListKeptTextsErrors = {
      */
     401: ProblemDetail;
     /**
-     * Neither write access to the engrams nor curate access to the Reflection.
+     * Neither write access to the engrams nor edit access to the Reflection.
      */
     403: ProblemDetail;
     /**
@@ -3988,7 +3988,7 @@ export type DeleteKeptTextErrors = {
      */
     401: ProblemDetail;
     /**
-     * Neither write access to the engrams nor curate access to the Reflection, or this instance is read-only.
+     * Neither write access to the engrams nor edit access to the Reflection, or this instance is read-only.
      */
     403: ProblemDetail;
     /**
@@ -4030,7 +4030,7 @@ export type ReadKeptTextErrors = {
      */
     401: ProblemDetail;
     /**
-     * Neither write access to the engrams nor curate access to the Reflection.
+     * Neither write access to the engrams nor edit access to the Reflection.
      */
     403: ProblemDetail;
     /**
