@@ -16,7 +16,9 @@ use futures::{SinkExt, StreamExt};
 use tokio::sync::broadcast;
 
 use super::control::{self, Control};
-use super::session::{CollabSession, CollabSessions, ConnId, Frame, JoinError, Joined};
+use super::session::{
+    BEING_MOVED, CollabSession, CollabSessions, ConnId, Frame, JoinError, Joined, MovedTo, RoomDoc,
+};
 use crate::{ApiError, ApiPath, ApiQuery, Identity, ProblemDetail, RestState};
 
 /// One session frame can legitimately carry a whole document (SyncStep2), so
@@ -117,14 +119,27 @@ pub async fn join(
     // the reason every other refusal here is decided there: a socket that
     // opened and then told its holder they may not be in it would be a refusal
     // nobody can read.
-    let room = whose_document(
+    let room = match whose_document(
         &state,
         &identity,
         &domain,
         &permalink,
         query.overlay.as_deref(),
     )
-    .await?;
+    .await
+    {
+        Ok(room) => room,
+        // Nothing at this address: when a move took the engram away a short
+        // while ago, the editor is told where it went, as an open room was.
+        Err(err) if err.status == axum::http::StatusCode::NOT_FOUND => {
+            let key = (domain.clone(), RoomDoc::Engram(permalink.clone()), None);
+            return match state.collab.moved_from(&key) {
+                Some(to) => Ok(moved_upgrade(ws, to)),
+                None => Err(err),
+            };
+        }
+        Err(err) => return Err(err),
+    };
     // The join runs under the state's join pass, and the pass is what makes a
     // domain unregistration's room sweep final: an unregister holds the same
     // fence for write across its sweep and the engine's `domain_remove`, so a
@@ -139,8 +154,12 @@ pub async fn join(
             .collab
             .join(&domain, &permalink, room.overlay.as_deref())
             .await
-    }
-    .map_err(join_error)?;
+    };
+    let joined = match joined {
+        Ok(joined) => joined,
+        Err(JoinError::Moved(to)) => return Ok(moved_upgrade(ws, to)),
+        Err(err) => return Err(join_error(err)),
+    };
     // **The address the room opened is the path the link was for.** The two
     // are resolved by different ladders - a grant matches only the drafts the
     // link was for, by permalink or title, while a room resolves its address
@@ -292,8 +311,12 @@ pub async fn join_reflection(
             .collab
             .join_reflection(&domain, &path, &caller.author.name)
             .await
-    }
-    .map_err(join_error)?;
+    };
+    let joined = match joined {
+        Ok(joined) => joined,
+        Err(JoinError::Moved(to)) => return Ok(moved_upgrade(ws, to)),
+        Err(err) => return Err(join_error(err)),
+    };
     let sessions = state.collab.clone();
     // The failure twin of on_upgrade, as in `join`.
     let failed = {
@@ -451,9 +474,38 @@ fn require_same_host_origin(headers: &HeaderMap) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// The answer to a join over an address a move took the document away from:
+/// the upgrade goes through, the socket is sent the same `moved` close a room
+/// open at the time of the move got, and it closes for good. An editor that
+/// was still joining then shows where the document went, as an open one does.
+fn moved_upgrade(ws: WebSocketUpgrade, to: MovedTo) -> Response {
+    ws.on_upgrade(move |mut socket| async move {
+        let closed = Bytes::from(control::encode(&to.control()));
+        if socket.send(WsMessage::Binary(closed)).await.is_ok() {
+            let _ = socket
+                .send(WsMessage::Close(Some(CloseFrame {
+                    code: CLOSE_DELETED,
+                    reason: "closed".into(),
+                })))
+                .await;
+        }
+    })
+}
+
 fn join_error(err: JoinError) -> ApiError {
     match err {
+        // A move holds the document: the request is fine, the document is
+        // busy for a moment, and the editor's next try finds it moved.
+        JoinError::Engine(crate::engine::EngineError::Conflict(text))
+            if text.ends_with(BEING_MOVED) =>
+        {
+            ApiError::conflict(text)
+        }
         JoinError::Engine(engine) => engine.into(),
+        // Answered with an upgrade by both routes before they get here.
+        JoinError::Moved(to) => {
+            ApiError::not_found(format!("this document was moved to '{}'", to.path))
+        }
         JoinError::ServerFull => busy("this server is at its concurrent session limit"),
         JoinError::SessionFull => busy("this document's session is at its participant limit"),
     }
@@ -660,6 +712,24 @@ mod tests {
 
     /// Capacity is a 503 and an engram that cannot be read keeps its own
     /// status, so a client can tell "try again later" from "this file cannot".
+    /// A join refused because a move holds the document is a 409, the busy
+    /// answer; any other conflict keeps the shared mapping.
+    #[test]
+    fn a_join_during_a_move_is_a_409() {
+        use axum::http::StatusCode;
+        let moving = join_error(JoinError::Engine(crate::engine::EngineError::Conflict(
+            format!("'guides/a.md' {BEING_MOVED}"),
+        )));
+        assert_eq!(moving.status, StatusCode::CONFLICT);
+        assert_eq!(
+            join_error(JoinError::Engine(crate::engine::EngineError::Conflict(
+                "something else".into()
+            )))
+            .status,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
     #[test]
     fn every_join_refusal_maps_to_the_status_its_client_branches_on() {
         use axum::http::StatusCode;

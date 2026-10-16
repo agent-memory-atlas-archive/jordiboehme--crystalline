@@ -1252,6 +1252,40 @@ impl<'a> DomainView<'a> {
             .map(|entry| entry.permalink))
     }
 
+    /// Refuse a draft move onto a path that is taken in THIS actor's view,
+    /// which is the only view the move happens in: a path another actor is
+    /// drafting at is not taken for this one, and a base row at the
+    /// destination is, since the moved engram would shadow it rather than
+    /// land beside it. Asked by [`DomainView::move_within`], and before it
+    /// by the move's screen, so a refused move leaves an open room alone.
+    pub(crate) async fn refuse_taken_draft_destination(
+        &self,
+        p: &MoveParams,
+        src: &EngramDescriptor,
+        dest_rel: &str,
+    ) -> Result<()> {
+        let actor = self.writing_actor()?;
+        let store = self.engine.store();
+        let store = store.lock().await;
+        let taken = store
+            .overlay_entry(src.domain_id, actor, dest_rel)
+            .await?
+            .map(|entry| !entry.tombstone)
+            .unwrap_or(false)
+            || store
+                .list_engrams(&p.domain, Some(dest_rel), None)
+                .await?
+                .iter()
+                .any(|found| found.path == dest_rel);
+        if taken {
+            return Err(EngineError::Conflict(format!(
+                "'{dest_rel}' already holds an engram in domain '{}'",
+                p.domain
+            )));
+        }
+        Ok(())
+    }
+
     /// A move inside one actor's draft overlay: a tombstone at the source and
     /// an entry at the destination.
     ///
@@ -1304,30 +1338,9 @@ impl<'a> DomainView<'a> {
                 "the destination is where the engram already is".into(),
             ));
         }
-        // Free in THIS actor's view, which is the only view the move happens
-        // in: a path another actor is drafting at is not taken for this one,
-        // and a base row at the destination is, since the moved engram would
-        // shadow it rather than land beside it. An in-place rename is its own
-        // destination.
         if !in_place {
-            let store = self.engine.store();
-            let store = store.lock().await;
-            let taken = store
-                .overlay_entry(src.domain_id, actor, dest_rel)
-                .await?
-                .map(|entry| !entry.tombstone)
-                .unwrap_or(false)
-                || store
-                    .list_engrams(&p.domain, Some(dest_rel), None)
-                    .await?
-                    .iter()
-                    .any(|found| found.path == dest_rel);
-            if taken {
-                return Err(EngineError::Conflict(format!(
-                    "'{dest_rel}' already holds an engram in domain '{}'",
-                    p.domain
-                )));
-            }
+            self.refuse_taken_draft_destination(p, src, dest_rel)
+                .await?;
         }
         let text = self.text_for_draft(src_source, src).await?.ok_or_else(|| {
             EngineError::NotFound(format!(

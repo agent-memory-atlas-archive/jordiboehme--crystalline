@@ -1841,3 +1841,56 @@ async fn a_contributor_hears_nothing_of_unreflected_engrams_in_the_queue() {
     assert_eq!(unreflected(&review["queue"]), 0, "{review}");
     assert!(no_folder(&review["queue"]), "{review}");
 }
+
+/// An editor that opens the old path after the page moved (its first try was
+/// refused while the move ran) is upgraded and told where the page went, the
+/// same `moved` close an open editor got, then the socket closes for good.
+#[tokio::test]
+async fn an_editor_opening_the_old_path_after_a_move_is_told_where_it_went() {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::updates::decoder::DecoderV1;
+    let s = serve().await;
+    let owner = crystalline_service::ReflectionCaller::owner();
+    s.fx.engine
+        .write_reflection(&crate::docs::write("late.md", "# Late\n\nBody.\n"), &owner)
+        .await
+        .unwrap();
+    let ed = Session::login(s.addr, "ed").await;
+    let (status, moved) = ed
+        .send(
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/reflection/move",
+            Some(json!({ "from": "late.md", "to": "guides/late.md" })),
+        )
+        .await;
+    assert_eq!(status, 200, "{moved}");
+    let mut room = open_room(s.addr, "/api/v1/collab-reflection/eng/late.md", &ed).await;
+    let mut closed = None;
+    let mut code = None;
+    while let Some(frame) = tokio::time::timeout(std::time::Duration::from_secs(10), room.next())
+        .await
+        .expect("the socket answers in time")
+    {
+        match frame.unwrap() {
+            WsMessage::Binary(bytes) => {
+                let mut decoder = DecoderV1::from(bytes.as_ref());
+                for message in yrs::sync::MessageReader::new(&mut decoder).flatten() {
+                    if let yrs::sync::Message::Custom(4, payload) = message {
+                        closed = Some(serde_json::from_slice::<Value>(&payload).unwrap());
+                    }
+                }
+            }
+            WsMessage::Close(frame) => {
+                code = frame.map(|frame| u16::from(frame.code));
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        closed,
+        Some(json!({ "kind": "closed", "reason": "moved", "path": "guides/late.md" }))
+    );
+    assert_eq!(code, Some(4404));
+}

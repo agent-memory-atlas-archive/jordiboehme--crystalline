@@ -2344,13 +2344,26 @@ impl Engine {
             r::rewrite_links_to(text, inner, from, to).1
         });
         self.refuse_under_live_pages(domain, &linking).await?;
-        // The room over the page saves its text, is told where the page went
-        // and closes; no room opens over the old path until the move is
-        // done (the fence). After the gate, the path rules and the screens,
-        // so a caller without the right never learns that a page is open and
-        // a refused move closes nothing; before the page lock, which a
-        // room's save takes.
-        let _fence = self
+        let src = access.abs(from);
+        let dst = access.abs(to);
+        // Every check that can refuse the move runs here first, as a screen,
+        // so a refused move leaves an open room over the page alone; they
+        // run again under the locks below, where they decide.
+        if !src.exists() {
+            return Err(EngineError::NotFound(format!(
+                "no reflection '{from}' in domain '{domain}'"
+            )));
+        }
+        self.refuse_taken_page_target(domain, &access, from, to)
+            .await?;
+        // The room over the page saves its text and ends; no room opens over
+        // the old path until the move is done (the fence). Its sockets are
+        // told where the page went once the move has committed, and
+        // `internal` if it fails from here. After the gate, the path rules
+        // and the screens, so a caller without the right never learns that a
+        // page is open and a refused move leaves the room open; before the
+        // page lock, which a room's save takes.
+        let closing = self
             .close_room_for_move(
                 domain,
                 RoomDoc::Reflection(from.to_string()),
@@ -2366,8 +2379,6 @@ impl Engine {
         // window is the one R81 named: the fence keeps a room from opening in
         // it.
         self.take_room_screen_hold().await;
-        let src = access.abs(from);
-        let dst = access.abs(to);
         // Both pages' locks, in lock-key order, so two crossing moves cannot
         // wait on each other; two spellings of one file take its lock once.
         // Held until the moved page is indexed.
@@ -2375,26 +2386,8 @@ impl Engine {
         let text = read_opt(&src)?.ok_or_else(|| {
             EngineError::NotFound(format!("no reflection '{from}' in domain '{domain}'"))
         })?;
-        // A page, a threads file or a baseline left at the target would be
-        // adopted by the moved page: the move refuses.
-        for (old, leftover, what) in [
-            (from.to_string(), to.to_string(), "a reflection"),
-            (r::threads_path(from), r::threads_path(to), "a threads file"),
-            (r::baseline_path(from), r::baseline_path(to), "a baseline"),
-        ] {
-            // The page itself under another letter case is the same file.
-            let itself =
-                is_case_only_rename(&access.abs(&old), &access.abs(&leftover), &old, &leftover);
-            if access.abs(&leftover).exists() && !itself {
-                return Err(EngineError::Conflict(format!(
-                    "'{leftover}' already holds {what}; remove it or pick another path"
-                )));
-            }
-        }
-        if !dst.exists() {
-            self.refuse_only_elsewhere(domain, access.domain_id, ElsewhereRow::Page(to))
-                .await?;
-        }
+        self.refuse_taken_page_target(domain, &access, from, to)
+            .await?;
         // The page's own relative links follow the move, and its
         // baseline gets the same rewrite with the `reflected` hashes carried,
         // so a move owes no feedback.
@@ -2452,6 +2445,11 @@ impl Engine {
         )
         .await?;
         drop(_locks);
+        // The page has moved: the room's sockets learn its new path now, and
+        // the fence lifts.
+        if let Some(closing) = closing {
+            closing.moved();
+        }
         self.announce_reflection(
             domain,
             to,
@@ -2507,6 +2505,38 @@ impl Engine {
             receipt["links_failed"] = json!(failed);
         }
         Ok(receipt)
+    }
+
+    /// Refuse a page move whose target is taken: a page, a threads file or a
+    /// baseline left at `to` would be adopted by the moved page, and a page
+    /// only the previous host of a host move has is the only shared copy.
+    /// Asked once as the move's screen and again under its page locks.
+    async fn refuse_taken_page_target(
+        &self,
+        domain: &str,
+        access: &ReflectionAccess,
+        from: &str,
+        to: &str,
+    ) -> Result<()> {
+        for (old, leftover, what) in [
+            (from.to_string(), to.to_string(), "a reflection"),
+            (r::threads_path(from), r::threads_path(to), "a threads file"),
+            (r::baseline_path(from), r::baseline_path(to), "a baseline"),
+        ] {
+            // The page itself under another letter case is the same file.
+            let itself =
+                is_case_only_rename(&access.abs(&old), &access.abs(&leftover), &old, &leftover);
+            if access.abs(&leftover).exists() && !itself {
+                return Err(EngineError::Conflict(format!(
+                    "'{leftover}' already holds {what}; remove it or pick another path"
+                )));
+            }
+        }
+        if !access.abs(to).exists() {
+            self.refuse_only_elsewhere(domain, access.domain_id, ElsewhereRow::Page(to))
+                .await?;
+        }
+        Ok(())
     }
 
     /// Rewrite the links of one reflection and give its baseline the same

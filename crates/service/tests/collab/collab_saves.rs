@@ -2917,6 +2917,185 @@ async fn a_moved_pages_room_saves_first_and_is_told_the_new_path() {
     assert!(moved.contains("Typed just before the move."), "{moved}");
 }
 
+/// Whether a `Closed` control is waiting on this receiver right now, without
+/// waiting for one.
+fn closed_waiting(rx: &mut tokio::sync::broadcast::Receiver<Frame>) -> bool {
+    while let Ok(frame) = rx.try_recv() {
+        let mut decoder = DecoderV1::from(frame.bytes.as_ref());
+        for message in MessageReader::new(&mut decoder).flatten() {
+            if let Message::Custom(control::CONTROL_TAG, payload) = message
+                && matches!(control::decode(&payload), Some(Control::Closed { .. }))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// A page move onto a path that already holds a page is refused by the
+/// screen, before the room is touched: no close is sent and the room goes on
+/// saving.
+#[tokio::test]
+async fn a_page_move_onto_a_taken_path_leaves_the_room_open() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let taken = tmp.path().join("eng/reflections/guides/b.md");
+    std::fs::write(&taken, "# B\n\nSomebody else's page.\n").unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed before the refused move.").await;
+    let err = engine
+        .move_reflection("eng", "guides/a.md", "guides/b.md", &room_agent())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("already holds a reflection"), "{err}");
+    assert!(!closed_waiting(&mut joined.rx), "no close was sent");
+    assert!(!joined.session.is_disposed(), "the room stays open");
+    assert_eq!(
+        std::fs::read_to_string(&taken).unwrap(),
+        "# B\n\nSomebody else's page.\n"
+    );
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
+        .await;
+    assert!(matches!(
+        next_control(&mut joined.rx).await,
+        Control::Saved { .. }
+    ));
+    let saved = std::fs::read_to_string(tmp.path().join("eng/reflections/guides/a.md")).unwrap();
+    assert!(saved.contains("Typed before the refused move."), "{saved}");
+}
+
+/// A move that fails after it closed the room (here the target is taken
+/// between the screen and the page lock) did not move the page: the room is
+/// told `internal`, never `moved`, and its text was saved at the old path.
+#[tokio::test]
+async fn a_move_that_fails_after_the_close_tells_the_room_internal() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let old = tmp.path().join("eng/reflections/guides/a.md");
+    let taken = tmp.path().join("eng/reflections/guides/b.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed before the failed move.").await;
+    let (entered, release) = engine.hold_next_room_screen_until();
+    let moving = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .move_reflection("eng", "guides/a.md", "guides/b.md", &room_agent())
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .expect("the verb reaches the gate");
+    std::fs::write(&taken, "# B\n\nWritten in the window.\n").unwrap();
+    release.notify_one();
+    let err = moving.await.unwrap().unwrap_err().to_string();
+    assert!(err.contains("already holds a reflection"), "{err}");
+    assert_eq!(
+        next_closed(&mut joined.rx).await,
+        Control::closed("internal")
+    );
+    assert!(
+        std::fs::read_to_string(&old)
+            .unwrap()
+            .contains("Typed before the failed move."),
+        "the room saved at the old path"
+    );
+    // The fence is gone with the failed move: the page opens again.
+    assert!(
+        sessions
+            .join_reflection("eng", "guides/a.md", "ada")
+            .await
+            .is_ok()
+    );
+}
+
+/// A join that comes after the move, at the old address, is told where the
+/// page went, as an open room was; one at an address nothing moved from is
+/// the ordinary miss.
+#[tokio::test]
+async fn a_join_after_the_move_is_told_where_the_page_went() {
+    let (_tmp, engine, _scratch) = reflection_fixture().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    engine
+        .move_reflection("eng", "guides/a.md", "guides/b.md", &room_agent())
+        .await
+        .unwrap();
+    match sessions.join_reflection("eng", "guides/a.md", "ada").await {
+        Err(crystalline_service::collab::session::JoinError::Moved(to)) => {
+            assert_eq!(to.path, "guides/b.md");
+            assert_eq!(to.domain, None);
+        }
+        Err(other) => panic!("the move, not {other}"),
+        Ok(_) => panic!("no room opens at the old path"),
+    }
+    assert!(matches!(
+        sessions.join_reflection("eng", "guides/c.md", "ada").await,
+        Err(crystalline_service::collab::session::JoinError::Engine(_))
+    ));
+}
+
+/// A move whose future is dropped while the room's last save runs (a caller
+/// that went away) leaves no room half closed: the save lands, and the room
+/// is told `internal`, since the page did not move.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cancelled_move_still_saves_and_closes_the_room() {
+    let (tmp, engine, _scratch) = reflection_fixture().await;
+    let old = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "Typed before the cancelled move.").await;
+    // The page's lock is held, so the room's last save waits on it.
+    let lock = engine.file_write_lock(&old);
+    let held = lock.clone().lock_owned().await;
+    let moving = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .move_reflection("eng", "guides/a.md", "guides/b.md", &room_agent())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    moving.abort();
+    let _ = moving.await;
+    drop(held);
+    assert_eq!(
+        next_closed(&mut joined.rx).await,
+        Control::closed("internal")
+    );
+    assert!(
+        std::fs::read_to_string(&old)
+            .unwrap()
+            .contains("Typed before the cancelled move."),
+        "the save landed"
+    );
+    assert!(
+        !tmp.path().join("eng/reflections/guides/b.md").exists(),
+        "nothing moved"
+    );
+}
+
 /// A save that is running when the move comes is waited for: whichever of the
 /// two gets the page first, the typed line ends up in the moved page.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

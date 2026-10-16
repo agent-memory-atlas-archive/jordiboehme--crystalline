@@ -2205,8 +2205,8 @@ async fn a_read_heal_leaves_a_row_written_meanwhile_on_postgres() {
 /// and the host lock moves to beta in the window of the first fenced row
 /// commit, which is the room's last save before the move. That save is
 /// refused, so its text is kept on alpha; the move is refused as well, and
-/// the page stays at its old path. Nothing typed is lost. The room was
-/// already told `moved` (a known limit: the move then failed).
+/// the page stays at its old path. Nothing typed is lost, and the room is
+/// told `internal`, not `moved`, since the page did not move.
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn a_room_closed_by_a_move_the_fence_refuses_keeps_its_text_on_postgres() {
@@ -2301,5 +2301,8 @@ async fn a_room_closed_by_a_move_the_fence_refuses_keeps_its_text_on_postgres() 
             break found;
         }
     };
-    assert_eq!(closed["reason"], "moved", "{closed}");
+    assert_eq!(
+        closed,
+        serde_json::json!({ "kind": "closed", "reason": "internal" })
+    );
 }

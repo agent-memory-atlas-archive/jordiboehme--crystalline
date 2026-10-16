@@ -3914,3 +3914,50 @@ both_backends!(
     a_move_closes_the_room_after_its_save_on_either_backend,
     a_move_closes_the_room_after_its_save_on_either_backend_body
 );
+
+/// A review-mode move that names a new permalink readdresses the mover's own
+/// draft: their room over it is saved, closed with `moved` and the new
+/// address, and nobody else's draft room of the page is touched.
+#[tokio::test]
+async fn a_readdressing_draft_move_closes_the_movers_own_draft_room() {
+    use crystalline_service::collab::control::Control;
+    let (_tmp, engine, _scratch) = engine_fixture(true).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut mine = sessions.join("eng", "alpha", Some("owner")).await.unwrap();
+    let mine_doc = sync_client(&mine).await;
+    append_line(&mine, &mine_doc, "the owner typed this").await;
+    let hers = sessions.join("eng", "alpha", Some("alice")).await.unwrap();
+    let _hers_doc = sync_client(&hers).await;
+    let receipt = engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".into(),
+                domain: "eng".into(),
+                destination: "alpha.md".into(),
+                destination_domain: None,
+                permalink: Some("renamed".into()),
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt["draft"], json!(true), "{receipt}");
+    assert_eq!(
+        closed_control(&mut mine.rx).await,
+        Control::Closed {
+            reason: "moved".into(),
+            domain: None,
+            path: Some("alpha.md".into()),
+            permalink: Some("renamed".into()),
+        }
+    );
+    assert!(!hers.session.is_disposed(), "alice's draft room stays open");
+    let moved = sessions
+        .join("eng", "renamed", Some("owner"))
+        .await
+        .unwrap();
+    let (live, _) = moved.session.snapshot().await;
+    assert!(live.contains("the owner typed this"), "{live}");
+}

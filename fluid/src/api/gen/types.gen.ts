@@ -4722,7 +4722,7 @@ export type MoveReflectionErrors = {
      */
     404: ProblemDetail;
     /**
-     * Somebody is editing it, the new path is a page only the previous host of a host move has, or the Reflection is not here.
+     * Somebody is editing a page that links it (an editor open on the page itself does not refuse: it saves, closes and is told the new path), the new path is taken or is a page only the previous host of a host move has, or the Reflection is not here.
      */
     409: ProblemDetail;
     /**

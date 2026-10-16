@@ -1,5 +1,5 @@
 use super::*;
-use crate::collab::session::{ComposeRefused, MoveFence, MovedTo, RoomDoc};
+use crate::collab::session::{ComposeRefused, MoveClose, MovedTo, RoomDoc};
 
 /// What [`Engine::relink_engram`] rewrote in one linking engram.
 pub(super) struct Relinked {
@@ -288,7 +288,36 @@ impl Engine {
                 asked,
                 mover: &mover,
             };
-            return self.move_draft_locked(&view, p, draft).await;
+            // A draft move that names a new permalink changes the address
+            // the mover's own room over the draft saves to, so that room is
+            // ended and fenced like a base room (see below), once the
+            // screens a draft move can be refused by have passed. A draft
+            // moves only inside its domain (`move_within`).
+            let readdressing = !cross && asked.is_some_and(|asked| asked != src.permalink);
+            let closing = if readdressing {
+                if dest_rel != src.path {
+                    view.refuse_taken_draft_destination(p, &src, &dest_rel)
+                        .await?;
+                }
+                self.close_room_for_move(
+                    &p.domain,
+                    RoomDoc::Engram(src.permalink.clone()),
+                    Some(who),
+                    MovedTo {
+                        domain: None,
+                        path: dest_rel.clone(),
+                        permalink: Some(new_permalink.clone()),
+                    },
+                )
+                .await
+            } else {
+                None
+            };
+            let moved = self.move_draft_locked(&view, p, draft).await?;
+            if let Some(closing) = closing {
+                closing.moved();
+            }
+            return Ok(moved);
         }
 
         // A move onto the MANIFEST may move the destination's switch.
@@ -393,14 +422,15 @@ impl Engine {
             .chain(dest_abs.iter())
             .map(PathBuf::as_path)
             .collect();
-        // A move that changes the address the editor saves to closes the
-        // room over the engram: its text is saved first, its sockets are told
-        // where the engram went, and no room opens over the old address until
-        // the move is done (the fence, held to the end of the move). After
-        // every screen, so a refused move closes nothing; before the file
-        // locks, which a room's save takes. A path-only move keeps the room:
-        // it saves by address, and the address does not change.
-        let _fence = if readdressed {
+        // A move that changes the address the editor saves to ends the room
+        // over the engram: its text is saved first, and no room opens over
+        // the old address until the move is done (the fence). Its sockets
+        // are told where the engram went once the move has landed, and
+        // `internal` if it fails from here. After every screen, so a refused
+        // move leaves the room open; before the file locks, which a room's
+        // save takes. A path-only move keeps the room: it saves by address,
+        // and the address does not change.
+        let closing = if readdressed {
             self.close_room_for_move(
                 &p.domain,
                 RoomDoc::Engram(src.permalink.clone()),
@@ -715,6 +745,12 @@ impl Engine {
         }
 
         drop(_lock);
+        // The engram has moved: the room's sockets learn its new address now,
+        // and the fence lifts. A way out above dropped the guard instead,
+        // which told the room `internal`.
+        if let Some(closing) = closing {
+            closing.moved();
+        }
 
         // The attachments follow the engram, now that the engram itself has
         // landed and the branch above has released its store lock. A
@@ -1007,22 +1043,16 @@ impl Engine {
         }
     }
 
-    /// Refuse a move while somebody has one of `docs` open in the co-editing
-    /// editor: a room saves back to the document it was opened over, so a
-    /// change underneath it would turn the editor's next save into a write
-    /// to an address that no longer exists. Base rooms only: a move in review
-    /// mode never reaches this, since it moves a draft. Checked before
-    /// anything moves.
-    ///
-    /// An engram room is keyed on the permalink it was opened under and saves
-    /// back to that permalink, so a move that changed it underneath would show
-    /// the person typing the engram as deleted, and a later engram taking the
-    /// old name would receive the save. A path-only move keeps the permalink
-    /// and needs no refusal, so the caller asks only on a permalink change.
-    /// Close the room over `doc` for a move to `to`, after its last save,
-    /// and fence the document until the returned fence drops (see
-    /// [`CollabSessions::close_for_move`]). `None` on an engine with no
+    /// End the room over `doc` for a move to `to`, after its last save,
+    /// and fence the document while the returned guard stands (see
+    /// [`CollabSessions::close_for_move`]). The move calls
+    /// [`MoveClose::moved`] once it has committed; dropped on any other way
+    /// out, the guard tells the room `internal`. `None` on an engine with no
     /// rooms: nothing to close and nobody to fence out.
+    ///
+    /// Runs after every screen that can refuse the move, so a refused move
+    /// leaves the room open, and before the file locks, which a room's save
+    /// takes.
     ///
     /// [`CollabSessions::close_for_move`]: crate::collab::session::CollabSessions::close_for_move
     pub(super) async fn close_room_for_move(
@@ -1031,11 +1061,9 @@ impl Engine {
         doc: RoomDoc,
         overlay: Option<&str>,
         to: MovedTo,
-    ) -> Option<MoveFence> {
+    ) -> Option<MoveClose> {
         let rooms = self.collab_rooms()?;
-        // Boxed because the room's last save runs engine verbs, which keeps
-        // the future's type finite whatever those verbs come to call.
-        Some(Box::pin(rooms.close_for_move(domain, &doc, overlay, &to)).await)
+        Some(rooms.close_for_move(domain, &doc, overlay, to).await)
     }
 
     /// Refuse while a room is open over any of the reflection pages
