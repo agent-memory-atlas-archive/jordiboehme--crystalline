@@ -411,11 +411,9 @@ describe("the layout", () => {
 
     renderApp("/");
 
-    const alerts = await screen.findAllByRole("alert");
-    expect(alerts.length).toBeGreaterThan(0);
-    for (const alert of alerts) {
-      expect(alert).toHaveTextContent("this account is a viewer");
-    }
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "this account is a viewer",
+    );
     // The sidebar's list ends in the error state: no loader left spinning and
     // no claim that the instance is empty.
     const list = await sidebar();
@@ -423,12 +421,32 @@ describe("the layout", () => {
       "this account is a viewer",
     );
     expect(
+      within(await screen.findByRole("main")).queryByRole("alert"),
+    ).toBeNull();
+    expect(
       within(list).queryByRole("status", { name: "Loading domains" }),
     ).toBeNull();
     expect(screen.queryByText(/No domains are registered/)).toBeNull();
     // A refusal is rendered where it happened, never as a bounce to the login
     // screen the caller is already past.
     expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+  });
+
+  it("leaves the failed listing to the sidebar's alert on a screen other than Home", async () => {
+    serveSignedIn({
+      "/domains": () => {
+        throw new ApiProblem(403, "forbidden", "this account is a viewer");
+      },
+      "/graph": () => ({ nodes: [], edges: [], truncated: false }),
+    });
+
+    renderApp("/graph");
+
+    const list = await sidebar();
+    expect(await within(list).findByRole("alert")).toHaveTextContent(
+      "this account is a viewer",
+    );
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
   });
 
   it("routes the search box to the search screen", async () => {

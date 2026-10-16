@@ -34,8 +34,10 @@ import { formatDay, plural } from "../format";
 import { RETIRED_CLASS, isRetired } from "../lifecycle";
 import { domainRoute, engramRoute, reflectionRoute } from "../paths";
 import { ENGRAM_PREFETCH } from "../prefetch";
+import { useWide } from "../useWide";
 
 export default function Home() {
+  const wide = useWide();
   const { capabilities } = useAuth();
   // Its own, rather than the frame's: the dialog carries everything it needs,
   // so a second mount is one boolean, while threading the frame's state down
@@ -107,12 +109,15 @@ export default function Home() {
           <Loading label="Loading domains" subject="the domains" />
         )}
         {/*
-          The failure is said here too, and as an alert: the sidebar reads the
-          same query, but below the medium breakpoint it is a closed drawer, so
-          the screen cannot leave the news to it.
+          One failure, one announcement. From the medium breakpoint up the
+          sidebar beside this screen reads the same query and is the alert;
+          below it the sidebar is a closed drawer, so this line is.
         */}
         {listing.error && (
-          <p role="alert" className="text-sm text-red-800 dark:text-red-200">
+          <p
+            role={wide ? undefined : "alert"}
+            className="text-sm text-red-800 dark:text-red-200"
+          >
             {problemDetail(listing.error)}
           </p>
         )}

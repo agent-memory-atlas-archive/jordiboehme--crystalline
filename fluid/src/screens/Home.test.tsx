@@ -64,6 +64,7 @@ async function main() {
 
 beforeEach(() => {
   apiMock.mockReset();
+  Reflect.deleteProperty(window, "matchMedia");
 });
 
 describe("the home screen", () => {
@@ -186,7 +187,7 @@ describe("the home screen", () => {
     expect(screen.queryByRole("link", { name: /^Start in/ })).toBeNull();
   });
 
-  it("says a failed domain listing is an alert, with no loader and no empty list", async () => {
+  it("says a failed domain listing once, with no loader and no empty list", async () => {
     serve({
       "/domains": () => {
         throw new ApiProblem(500, "internal", "the listing broke");
@@ -196,8 +197,11 @@ describe("the home screen", () => {
     renderApp("/");
 
     const body = await main();
-    const alert = await body.findByRole("alert");
+    // Wide, the sidebar beside this screen is the one alert.
+    const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("the listing broke");
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(body.queryByRole("alert")).toBeNull();
     await waitFor(() => {
       expect(
         screen.queryByRole("status", { name: "Loading domains" }),
@@ -205,6 +209,31 @@ describe("the home screen", () => {
     });
     expect(body.queryByText(/No domains are registered/)).toBeNull();
     expect(body.queryByRole("link", { name: /^Start in/ })).toBeNull();
+  });
+
+  it("makes the screen's own line the alert when the sidebar is a closed drawer", async () => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        matches: false,
+        media: query,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }),
+    });
+    serve({
+      "/domains": () => {
+        throw new ApiProblem(500, "internal", "the listing broke");
+      },
+    });
+
+    renderApp("/");
+
+    const body = await main();
+    expect(await body.findByRole("alert")).toHaveTextContent(
+      "the listing broke",
+    );
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
   });
 
   it("lists the domains from connected servers with a link to each server", async () => {
