@@ -255,12 +255,16 @@ describe("creating, moving and deleting pages", () => {
         to: "howto/a.md",
       });
     });
-    // The trail follows the page to its new folder.
-    expect(
-      await within(
-        await screen.findByRole("navigation", { name: "Breadcrumb" }),
-      ).findByText("howto"),
-    ).toBeVisible();
+    // The trail follows the page to its new folder. Looked up afresh on every
+    // try: the page shows a skeleton while the new address loads, and the
+    // trail of the old page is gone by then.
+    await waitFor(() => {
+      expect(
+        within(
+          screen.getByRole("navigation", { name: "Breadcrumb" }),
+        ).getByText("howto"),
+      ).toBeVisible();
+    });
   });
 
   it("lists the pages a move could not relink", async () => {
