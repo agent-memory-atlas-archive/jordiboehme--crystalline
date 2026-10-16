@@ -1789,3 +1789,55 @@ async fn a_move_over_the_api_tells_the_open_editor_where_the_page_went() {
         .await;
     assert_eq!(status, 200, "{page}");
 }
+
+/// An engram no page cites is an `unreflected` item that names its folder and
+/// its engrams. Only a reader of engrams is told of it at all.
+#[tokio::test]
+async fn a_contributor_hears_nothing_of_unreflected_engrams_in_the_queue() {
+    let fx = fixture_with(
+        &[
+            ("MANIFEST.md", &manifest("reflection: on\n")),
+            (
+                "notes/loose.md",
+                &engram("Loose", "notes/loose", "- [fact] nobody cites this"),
+            ),
+        ],
+        |_, _| {},
+    )
+    .await;
+    let s = serve_fx(fx, true).await;
+    let queue_path = "/api/v1/domains/eng/reflection/queue";
+    let unreflected = |queue: &Value| {
+        queue["queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["what"] == "unreflected")
+            .count()
+    };
+    let no_folder = |queue: &Value| {
+        queue["queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r.get("folder").is_none() && r.get("engrams").is_none())
+    };
+    let ed = Session::login(s.addr, "ed").await;
+    let (status, queue) = ed.get(queue_path).await;
+    assert_eq!(status, 200, "{queue}");
+    assert_eq!(unreflected(&queue), 1, "{queue}");
+    assert_eq!(queue["queue"][0]["folder"], "notes", "{queue}");
+    let ann = Session::login(s.addr, "ann").await;
+    let (status, queue) = ann.get(queue_path).await;
+    assert_eq!(status, 200, "{queue}");
+    assert_eq!(unreflected(&queue), 0, "{queue}");
+    assert!(no_folder(&queue), "{queue}");
+    assert!(
+        !queue.to_string().contains("notes/loose"),
+        "no engram name: {queue}"
+    );
+    let (status, review) = ann.get("/api/v1/domains/eng/reflection/review").await;
+    assert_eq!(status, 200, "{review}");
+    assert_eq!(unreflected(&review["queue"]), 0, "{review}");
+    assert!(no_folder(&review["queue"]), "{review}");
+}

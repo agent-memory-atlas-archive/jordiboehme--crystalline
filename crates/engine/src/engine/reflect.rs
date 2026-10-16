@@ -465,6 +465,10 @@ impl Engine {
         let filtered: Vec<&Item> = items
             .iter()
             .filter(|i| kinds.is_empty() || kinds.iter().any(|k| k == i.kind))
+            // An unreflected item is about engrams (the folder they sit in
+            // and their names), so a caller who may not see engrams is not
+            // told of it at all.
+            .filter(|i| engrams_visible || i.what != "unreflected")
             .collect();
         let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
         let page = page.unwrap_or(1).max(1);
