@@ -10,7 +10,7 @@ import * as Y from "yjs";
 
 import { ApiProblem, api } from "../api/client";
 import { TEXT_NAME } from "../collab/provider";
-import type { CollabSession } from "../collab/useCollabSession";
+import type { CollabSession, MarkStatus } from "../collab/useCollabSession";
 import { useCollabSession } from "../collab/useCollabSession";
 import { addOffer, readDraft, readOffers, writeDraft } from "../editor/drafts";
 import { formatInstant } from "../format";
@@ -50,6 +50,8 @@ function room(text: string): CollabSession {
     epoch: "e1",
     // What the hook reports after the greeting: the inner path.
     permalink: "guides/a.md",
+    live: true,
+    marksSupported: true,
   };
 }
 
@@ -1752,8 +1754,18 @@ describe("the reflection editor's kept text notice", () => {
 
   it("Replace with it changes the room's text as one undoable change, and waits for the save that covers it", async () => {
     const dropped = serveKept(() => ({ domain: "eng", kept: [keptEntry()] }));
-    const flush = vi.fn();
-    const session = live({ ...room(PAGE), flush });
+    const marks = new Map<string, MarkStatus>();
+    const flush = vi.fn((mark?: string) => {
+      if (mark !== undefined) {
+        marks.set(mark, "waiting");
+      }
+      return true;
+    });
+    const session = live({
+      ...room(PAGE),
+      flush,
+      markStatus: (mark) => marks.get(mark) ?? "unknown",
+    });
     await openEditor();
     const notice = await screen.findByRole("note", { name: "Kept text" });
     await userEvent.click(
@@ -1770,10 +1782,11 @@ describe("the reflection editor's kept text notice", () => {
     expect(flush).toHaveBeenCalledTimes(1);
     const mark = flush.mock.calls[0]?.[0] as string;
     // A save that began earlier lands without the mark: the copy stays.
-    session.set({ saveState: "ok", covered: new Set(["earlier"]) });
+    session.set({ saveState: "ok", receipts: 1 });
     expect(dropped).toEqual([]);
     // Then the save that covers the replace.
-    session.set({ covered: new Set(["earlier", mark]) });
+    marks.set(mark, "saved");
+    session.set({ marksVersion: 1 });
     await waitFor(() => {
       expect(dropped).toEqual(["k1"]);
     });

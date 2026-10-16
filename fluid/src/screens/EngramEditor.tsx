@@ -72,6 +72,8 @@ import { FindingsPanel, jumpToLine } from "../editor/FindingsPanel";
 import { frontmatterFold } from "../editor/frontmatterFold";
 import { FrontmatterForm } from "../editor/FrontmatterForm";
 import { KeptTextNotice } from "../editor/KeptTextNotice";
+import type { SaveMark } from "../editor/KeptTextNotice";
+import { roomSaveMarks } from "../collab/saveMarks";
 import { livePreview } from "../editor/preview";
 import {
   RAW_MONO,
@@ -1340,25 +1342,19 @@ function Surface({
             kind="engram"
             path={engram.draftOwner ? null : engram.path}
             draft={reviewing}
-            ready={
-              inRoom ? collab.status === "connected" && !closed : view !== null
-            }
-            markSave={() => {
-              if (inRoom) {
-                // The room is asked to save now; the mark comes back on the
-                // first save that began after the text went in.
-                const mark = crypto.randomUUID();
-                collab.flush(mark);
-                return mark;
-              }
-              return session.savesStarted();
-            }}
-            saveCovers={(mark) =>
-              inRoom
-                ? typeof mark === "string" && collab.covered.has(mark)
-                : typeof mark === "number" && session.landedSave > mark
-            }
-            saveSignal={inRoom ? collab.covered : session.landedSave}
+            ready={inRoom ? collab.live && !closed : view !== null}
+            {...(inRoom
+              ? roomSaveMarks(collab)
+              : {
+                  markSave: () => ({
+                    mark: session.savesStarted(),
+                    auto: true,
+                  }),
+                  saveStatus: (mark: SaveMark) =>
+                    typeof mark === "number" && session.landedSave > mark
+                      ? "saved"
+                      : "waiting",
+                })}
             onReplace={(text) => {
               // One ordinary change on the buffer, so Undo takes it back: in
               // the mounted line endings, which in a room are LF. A

@@ -47,11 +47,23 @@ const ACTION = `rounded text-link underline decoration-(--link-line) underline-o
 /** What an editor hands back to tell its later saves apart. */
 export type SaveMark = string | number;
 
+/** Where the save after a replace stands, as the editor tells it. */
+export type SaveStatus = "waiting" | "saved" | "lost";
+
+/** What `markSave` answers: the mark, and whether a save that answers it
+ *  may drop the kept copy on its own (false: the person is asked). */
+export interface SaveMarked {
+  mark: SaveMark;
+  auto: boolean;
+}
+
 /** A text put in the editor, waiting for the save that holds it. */
 interface Placed {
   id: string;
   /** The editor's mark for "saves from here on". */
   mark: SaveMark;
+  /** Whether the save that answers the mark may drop the copy on its own. */
+  auto: boolean;
   /** A save held it, but the kept copy could not be dropped. */
   held?: boolean;
 }
@@ -64,8 +76,8 @@ export function KeptTextNotice({
   ready,
   onReplace,
   markSave,
-  saveCovers,
-  saveSignal,
+  saveStatus,
+  releaseMark,
   onDropped,
 }: {
   domain: string;
@@ -83,13 +95,15 @@ export function KeptTextNotice({
   /** Put `text` in the editor as one undoable change; true only when it
    *  really landed. */
   onReplace: (text: string) => boolean;
-  /** Called right after the text landed: returns a mark that a later save
-   *  covers once it began after this moment (a room is asked to save now). */
-  markSave: () => SaveMark;
-  /** Whether a landed save began after `mark` was taken. */
-  saveCovers: (mark: SaveMark) => boolean;
-  /** Any value that changes when a save lands, so the note asks again. */
-  saveSignal: unknown;
+  /** Called right after the text landed: a mark that the first save that
+   *  began after this moment answers (a room is asked to save now), or null
+   *  when no such mark could be taken; the note then keeps its offer. */
+  markSave: () => SaveMarked | null;
+  /** Where the save after `mark` stands: `lost` when none will come (the
+   *  room ended or threw the text away). Read on every render. */
+  saveStatus: (mark: SaveMark) => SaveStatus;
+  /** Forget a mark once the note is done with it. */
+  releaseMark?: (mark: SaveMark) => void;
   /** Told after a person's Drop went through, to hand the focus back. */
   onDropped?: () => void;
 }): ReactElement | null {
@@ -100,6 +114,7 @@ export function KeptTextNotice({
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [placed, setPlaced] = useState<Placed | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
   const questionId = useId();
   const dropButton = useRef<HTMLButtonElement>(null);
@@ -154,21 +169,38 @@ export function KeptTextNotice({
       },
     );
 
-  // The first save that began after the text went in lets the kept copy go.
+  // Where the save after the replace stands, read fresh on every render.
+  const status: SaveStatus | null =
+    placed === null || placed.held === true ? null : saveStatus(placed.mark);
+  if (placed !== null && status === "lost") {
+    // No save will answer it: stop waiting, drop nothing, offer it again.
+    setPlaced(null);
+    setNotice(
+      "The room changed before your text was saved. The kept copy stays.",
+    );
+  }
+  // The first save that began after the text went in lets the kept copy go,
+  // on its own where the editor can tell that save apart.
   const placedId = placed?.id ?? null;
   const placedMark = placed?.mark ?? null;
-  const placedHeld = placed?.held === true;
+  const autoDrop = placed?.auto === true && status === "saved";
   useEffect(() => {
-    if (placedId === null || placedMark === null || placedHeld) {
+    if (placedId === null || !autoDrop) {
       return;
     }
-    if (saveCovers(placedMark)) {
-      void drop(placedId, true);
-    }
-    // `drop` and `saveCovers` are rebuilt every render; `saveSignal` is what
-    // says a save landed.
+    void drop(placedId, true);
+    // `drop` is rebuilt every render; the save's answer is what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [saveSignal, placedId, placedMark, placedHeld]);
+  }, [autoDrop, placedId]);
+  // A mark is let go once the note is done with it.
+  useEffect(() => {
+    if (placedMark === null) {
+      return undefined;
+    }
+    return () => {
+      releaseMark?.(placedMark);
+    };
+  }, [placedMark, releaseMark]);
 
   const entry =
     path === null || draft === null
@@ -180,6 +212,8 @@ export function KeptTextNotice({
   // A read-only instance refuses the delete: the note then only shows.
   const writable = !capabilities.readOnly;
   const waiting = placed !== null && placed.id === entry.id;
+  // A room that cannot tell its saves apart: the person decides.
+  const confirm = waiting && !placed.auto && status === "saved";
 
   const replace = async () => {
     if (busy || !live.current) {
@@ -214,8 +248,14 @@ export function KeptTextNotice({
         setProblem("The text did not reach the editor. Nothing changed.");
         return;
       }
+      setNotice(null);
+      const marked = markSave();
+      if (marked === null) {
+        setProblem("The room could not be asked to save. The kept copy stays.");
+        return;
+      }
       setProblem(null);
-      setPlaced({ id: entry.id, mark: markSave() });
+      setPlaced({ id: entry.id, mark: marked.mark, auto: marked.auto });
     } finally {
       setBusy(false);
     }
@@ -224,9 +264,31 @@ export function KeptTextNotice({
   return (
     <aside role="note" aria-label="Kept text" className={NOTICE}>
       <span>{keptNoticeSentence(entry)}</span>
-      {waiting && placed?.held !== true && (
+      {waiting && placed.held !== true && !confirm && (
         <span role="status">Waiting for the save.</span>
       )}
+      {confirm && (
+        <span
+          role="status"
+          className="inline-flex flex-wrap items-center gap-3"
+        >
+          <span>Saved. Drop the kept copy now?</span>
+          <button
+            type="button"
+            className={DANGER}
+            onClick={() => {
+              void drop(entry.id, true).then((gone) => {
+                if (gone) {
+                  onDropped?.();
+                }
+              });
+            }}
+          >
+            Drop
+          </button>
+        </span>
+      )}
+      {notice !== null && <span role="status">{notice}</span>}
       <button
         type="button"
         className={ACTION}

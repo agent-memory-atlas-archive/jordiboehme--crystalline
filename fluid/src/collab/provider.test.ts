@@ -36,6 +36,7 @@ function makeProvider(
     onStatus: handlers.onStatus ?? (() => undefined),
     onSynced: handlers.onSynced ?? (() => undefined),
     onEpochGap: handlers.onEpochGap ?? (() => undefined),
+    onLive: handlers.onLive ?? (() => undefined),
   };
   FakeSocket.instances = [];
   const provider = new CollabProvider(
@@ -50,6 +51,21 @@ function makeProvider(
     throw new Error("the provider opened no socket");
   }
   return { doc, awareness, provider, socket };
+}
+
+/** The controls among `frames`, decoded, in order. */
+function decodeControls(frames: Uint8Array[]): object[] {
+  const out: object[] = [];
+  for (const frame of frames) {
+    const decoder = decoding.createDecoder(frame);
+    if (decoding.readVarUint(decoder) !== MESSAGE_CONTROL) continue;
+    out.push(
+      JSON.parse(
+        new TextDecoder().decode(decoding.readVarUint8Array(decoder)),
+      ) as object,
+    );
+  }
+  return out;
 }
 
 describe("collabUrl", () => {
@@ -193,7 +209,7 @@ describe("CollabProvider", () => {
     provider.destroy();
   });
 
-  it("hands control messages to the handler and sends flush/resolve", () => {
+  it("hands control messages to the handler and sends flush/resolve once live", () => {
     const controls: object[] = [];
     const { provider, socket } = makeProvider({
       onControl: (control) => controls.push(control),
@@ -207,21 +223,89 @@ describe("CollabProvider", () => {
       detail: "no frontmatter",
     });
 
+    // Before the connection is live they wait; a marked flush is refused.
     socket.sent = [];
-    provider.flush();
+    expect(provider.flush()).toBe(true);
     provider.resolve("mine");
-    const decoded = socket.sent.map((frame) => {
-      const decoder = decoding.createDecoder(frame);
-      expect(decoding.readVarUint(decoder)).toBe(MESSAGE_CONTROL);
-      return JSON.parse(
-        new TextDecoder().decode(decoding.readVarUint8Array(decoder)),
-      ) as object;
-    });
-    expect(decoded).toEqual([
+    expect(provider.flush("m1")).toBe(false);
+    expect(decodeControls(socket.sent)).toEqual([]);
+
+    // Live once the room's SyncStep1 is answered: the waiting controls go,
+    // after the sync answer.
+    const server = new Y.Doc();
+    socket.receive(concat(helloFrame("e1"), serverStep1(server)));
+    expect(provider.isLive).toBe(true);
+    expect(decodeControls(socket.sent)).toEqual([
       { kind: "flush" },
       { kind: "resolve", choice: "mine" },
     ]);
+    expect(provider.flush("m1")).toBe(true);
+    expect(decodeControls(socket.sent).at(-1)).toEqual({
+      kind: "flush",
+      mark: "m1",
+    });
     provider.destroy();
+  });
+
+  it("never sends a mark ahead of the text typed while reconnecting", () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    let lives = 0;
+    const { doc, provider, socket } = makeProvider({
+      onLive: () => {
+        lives += 1;
+      },
+    });
+    const server = new Y.Doc();
+    socket.open();
+    socket.receive(concat(helloFrame("e1"), serverStep1(server)));
+    expect(lives).toBe(1);
+
+    // The connection drops; the next socket opens ("connected") but its
+    // hello has not come yet.
+    socket.dropWith(1006);
+    vi.advanceTimersByTime(300);
+    const second = FakeSocket.instances[1];
+    if (!second) throw new Error("no second socket");
+    second.open();
+    // The replace lands in this window: local only, nothing on the wire.
+    doc.getText("content").insert(0, "the kept text\n");
+    expect(provider.flush("m1")).toBe(false);
+    expect(second.sent).toEqual([]);
+
+    // Hello and the room's SyncStep1: the answer carries the text, and only
+    // after it may a mark go.
+    second.receive(concat(helloFrame("e1"), serverStep1(server)));
+    expect(lives).toBe(2);
+    expect(provider.flush("m1")).toBe(true);
+    const kinds = second.sent.map((frame) => {
+      const decoder = decoding.createDecoder(frame);
+      const type = decoding.readVarUint(decoder);
+      if (type !== MESSAGE_SYNC) {
+        return type === MESSAGE_CONTROL ? "control" : "other";
+      }
+      return decoding.readVarUint(decoder) === syncProtocol.messageYjsSyncStep2
+        ? "step2"
+        : "sync";
+    });
+    expect(kinds.indexOf("step2")).toBeGreaterThanOrEqual(0);
+    expect(kinds.indexOf("step2")).toBeLessThan(kinds.indexOf("control"));
+    // And the text the mark stands for is in that answer.
+    const answered = new Y.Doc();
+    for (const frame of second.sent) {
+      const decoder = decoding.createDecoder(frame);
+      if (decoding.readVarUint(decoder) !== MESSAGE_SYNC) continue;
+      syncProtocol.readSyncMessage(
+        decoder,
+        encoding.createEncoder(),
+        answered,
+        "test",
+      );
+    }
+    expect(answered.getText("content").toJSON()).toContain("the kept text");
+    provider.destroy();
+    random.mockRestore();
+    vi.useRealTimers();
   });
 
   it("reconnects with backoff on ordinary closes but never on 44xx", () => {

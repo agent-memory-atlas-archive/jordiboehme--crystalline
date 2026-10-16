@@ -123,9 +123,10 @@ function mount(props: Props = {}, readOnly = false) {
           draft={false}
           ready
           onReplace={() => true}
-          markSave={() => saves.started}
-          saveCovers={(mark) => saves.landed > Number(mark)}
-          saveSignal={saves.landed}
+          markSave={() => ({ mark: saves.started, auto: true })}
+          saveStatus={(mark) =>
+            saves.landed > Number(mark) ? "saved" : "waiting"
+          }
           {...next}
         />
       </AuthContext>
@@ -207,7 +208,7 @@ describe("the kept text note", () => {
     // the save began after the replace, so the kept copy goes.
     const save = startSave();
     saves.landed = save;
-    rerender({ onReplace, saveSignal: saves.landed });
+    rerender({ onReplace });
     await waitFor(() => {
       expect(server.dropped).toEqual(["k1"]);
     });
@@ -227,7 +228,7 @@ describe("the kept text note", () => {
     );
     await within(note()).findByText("Waiting for the save.");
     saves.landed = inFlight;
-    rerender({ onReplace, saveSignal: saves.landed });
+    rerender({ onReplace });
     await act(async () => {
       await Promise.resolve();
     });
@@ -235,9 +236,107 @@ describe("the kept text note", () => {
     expect(within(note()).getByText("Waiting for the save.")).toBeVisible();
     // The next save began after it, and does.
     saves.landed = startSave();
-    rerender({ onReplace, saveSignal: saves.landed });
+    rerender({ onReplace });
     await waitFor(() => {
       expect(server.dropped).toEqual(["k1"]);
+    });
+  });
+
+  it("stops waiting and offers the text again when no save will come, dropping nothing", async () => {
+    const server = serve([entry()]);
+    const onReplace = vi.fn(() => true);
+    let status: "waiting" | "lost" = "waiting";
+    const { rerender } = mount({
+      onReplace,
+      markSave: () => ({ mark: "m1", auto: true }),
+      saveStatus: () => status,
+    });
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Replace with it" }),
+    );
+    await within(note()).findByText("Waiting for the save.");
+    status = "lost";
+    rerender({ onReplace, saveStatus: () => status });
+    expect(
+      await within(note()).findByText(
+        "The room changed before your text was saved. The kept copy stays.",
+      ),
+    ).toBeVisible();
+    expect(within(note()).queryByText("Waiting for the save.")).toBeNull();
+    expect(
+      within(note()).getByRole("button", { name: "Replace with it" }),
+    ).toBeVisible();
+    expect(
+      within(note()).getByRole("button", { name: "Drop the kept text" }),
+    ).toBeVisible();
+    expect(server.dropped).toEqual([]);
+  });
+
+  it("keeps its offer when no save can be asked for", async () => {
+    const server = serve([entry()]);
+    mount({ markSave: () => null });
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Replace with it" }),
+    );
+    expect(await within(note()).findByRole("alert")).toHaveTextContent(
+      "The room could not be asked to save. The kept copy stays.",
+    );
+    expect(within(note()).queryByText("Waiting for the save.")).toBeNull();
+    expect(
+      within(note()).getByRole("button", { name: "Replace with it" }),
+    ).toBeVisible();
+    expect(server.dropped).toEqual([]);
+  });
+
+  it("asks before dropping when the room cannot tell its saves apart", async () => {
+    const server = serve([entry()]);
+    const onReplace = vi.fn(() => true);
+    let landed = 0;
+    const props = {
+      onReplace,
+      markSave: () => ({ mark: 0, auto: false }),
+      saveStatus: (mark: string | number) =>
+        landed > Number(mark) ? ("saved" as const) : ("waiting" as const),
+    };
+    const { rerender } = mount(props);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Replace with it" }),
+    );
+    await within(note()).findByText("Waiting for the save.");
+    landed = 1;
+    rerender(props);
+    expect(
+      await within(note()).findByText("Saved. Drop the kept copy now?"),
+    ).toBeVisible();
+    // Never on its own.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(server.dropped).toEqual([]);
+    await userEvent.click(within(note()).getByRole("button", { name: "Drop" }));
+    await waitFor(() => {
+      expect(server.dropped).toEqual(["k1"]);
+    });
+  });
+
+  it("lets its mark go once it is done with it", async () => {
+    serve([entry()]);
+    const releaseMark = vi.fn();
+    let status: "waiting" | "lost" = "waiting";
+    const { rerender } = mount({
+      markSave: () => ({ mark: "m1", auto: true }),
+      saveStatus: () => status,
+      releaseMark,
+    });
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Replace with it" }),
+    );
+    await within(note()).findByText("Waiting for the save.");
+    expect(releaseMark).not.toHaveBeenCalled();
+    status = "lost";
+    rerender({ saveStatus: () => status, releaseMark });
+    await waitFor(() => {
+      expect(releaseMark).toHaveBeenCalledWith("m1");
     });
   });
 
@@ -344,7 +443,7 @@ describe("the kept text note", () => {
     );
     await within(note()).findByText("Waiting for the save.");
     saves.landed = startSave();
-    rerender({ onReplace, saveSignal: saves.landed });
+    rerender({ onReplace });
     expect(await within(note()).findByRole("alert")).toHaveTextContent(
       "Your text is saved, but the kept copy could not be dropped. the disk is gone",
     );

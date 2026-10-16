@@ -29,7 +29,7 @@ import type {
   ProviderHandlers,
   SocketFactory,
 } from "./provider";
-import { CollabProvider, TEXT_NAME, collabUrl } from "./provider";
+import { CollabProvider, FLUSH_MARKS, TEXT_NAME, collabUrl } from "./provider";
 
 /** How long the room's "an outside change was merged in" notice stays up. */
 export const MERGE_NOTICE_MS = 4000;
@@ -88,6 +88,9 @@ export interface CollabParticipant {
   agent: boolean;
 }
 
+/** Where one flush mark stands (see `CollabSession.markStatus`). */
+export type MarkStatus = "waiting" | "saved" | "lost" | "unknown";
+
 export interface CollabSession {
   mode: CollabMode;
   /** Set while mode is "collab". */
@@ -102,11 +105,30 @@ export interface CollabSession {
   participants: CollabParticipant[];
   /** The engram's current permalink per the last save receipt. */
   permalink: string;
-  /** Ask the room to save now. A `mark` comes back in `covered` once a save
-   *  that began after the request arrived has landed. */
-  flush: (mark?: string) => void;
-  /** The flush marks landed saves have covered, as this tab heard them. */
-  covered: ReadonlySet<string>;
+  /**
+   * Ask the room to save now. With a `mark`, only on a live connection
+   * (false when it is not, and nothing is sent); `markStatus` then follows
+   * the mark until a save that began after it lands.
+   */
+  flush: (mark?: string) => boolean;
+  /** Whether the connection is live: its hello accepted and the room's sync
+   *  answered. Only then may a text go in that a marked flush stands for. */
+  live: boolean;
+  /** Whether this room answers flush marks (its hello names the feature). */
+  marksSupported: boolean;
+  /**
+   * Where one of this tab's own marks stands: `waiting` for a save, `saved`
+   * once a save that began after it landed, `lost` when no save ever will
+   * (the room ended, a different session took over, or "theirs" threw the
+   * text away), `unknown` for a mark this tab does not hold.
+   */
+  markStatus: (mark: string) => MarkStatus;
+  /** Forget a mark once its answer was used. */
+  releaseMark: (mark: string) => void;
+  /** Changes whenever a mark's status does. */
+  marksVersion: number;
+  /** How many save receipts this tab has heard; for a room without marks. */
+  receipts: number;
   resolve: (choice: "mine" | "theirs") => void;
   /** True once the room has closed for good (the `closed` control): an
    *  external deletion, a switched-off Reflection, a server shutting down. */
@@ -198,9 +220,15 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
   const [hello, setHello] = useState<CollabHello | null>(null);
   const [saveState, setSaveState] = useState<CollabSession["saveState"]>("ok");
   const [saveDetail, setSaveDetail] = useState<string | null>(null);
-  const [covered, setCovered] = useState<ReadonlySet<string>>(
-    () => new Set<string>(),
-  );
+  const [live, setLive] = useState(false);
+  const [marksSupported, setMarksSupported] = useState(false);
+  const [marksVersion, setMarksVersion] = useState(0);
+  const [receipts, setReceipts] = useState(0);
+  /**
+   * This tab's own flush marks only, across generations: a mark is added
+   * when its flush was sent and removed once its answer was used.
+   */
+  const marks = useRef(new Map<string, MarkStatus>());
   const [conflict, setConflict] = useState<CollabConflict | null>(null);
   const [closed, setClosed] = useState(false);
   const [closedReason, setClosedReason] = useState<string | null>(null);
@@ -283,6 +311,23 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
     // The save verdict, kept in a ref beside the state: the conflict
     // derivation below settles asynchronously and has to judge the room as it
     // stands when its answer arrives, not as it stood when it asked.
+    /** Move this tab's waiting marks among `named` to `to`. */
+    const settleMarks = (named: readonly string[], to: MarkStatus) => {
+      let changed = false;
+      for (const mark of named) {
+        if (marks.current.get(mark) === "waiting") {
+          marks.current.set(mark, to);
+          changed = true;
+        }
+      }
+      if (changed) {
+        setMarksVersion((was) => was + 1);
+      }
+    };
+    /** No save will answer what this tab is waiting for. */
+    const loseWaitingMarks = () => {
+      settleMarks([...marks.current.keys()], "lost");
+    };
     const setSave = (next: CollabSession["saveState"]) => {
       saveStateRef.current = next;
       setSaveState(next);
@@ -311,6 +356,7 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
         switch (control.kind) {
           case "hello": {
             setHello(control);
+            setMarksSupported((control.features ?? []).includes(FLUSH_MARKS));
             separatorRef.current = control.separator;
             checksumRef.current = control.checksum;
             setPermalink(control.permalink);
@@ -357,16 +403,18 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
           }
           case "saved": {
             checksumRef.current = control.checksum;
-            const covers = control.covers ?? [];
-            if (covers.length > 0) {
-              setCovered((was) => new Set([...was, ...covers]));
-            }
+            settleMarks(control.covers ?? [], "saved");
+            setReceipts((was) => was + 1);
             setPermalink(control.permalink);
             setSave("ok");
             setSaveDetail(null);
             // A save landing IS the end of a conflict resolved as "mine":
             // the server re-armed the flush and this is its receipt.
             clearConflict();
+            break;
+          }
+          case "discarded": {
+            settleMarks(control.marks, "lost");
             break;
           }
           case "save-failed": {
@@ -405,6 +453,7 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
             break;
           }
           case "closed": {
+            loseWaitingMarks();
             setClosed(true);
             setClosedReason(control.reason);
             if (control.reason === "moved" && control.path !== undefined) {
@@ -420,6 +469,9 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
       },
       onStatus: (next) => {
         setStatus(next);
+        if (next !== "connected") {
+          setLive(false);
+        }
         if (next === "failed") {
           // A connect that never landed a session means there is no room to
           // join and the editor opens solo - including the rebuild after an
@@ -440,7 +492,20 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
         setBound({ ytext, awareness });
         setMode("collab");
       },
+      onLive: () => {
+        // Same session, a new connection: a mark whose flush or receipt the
+        // old one lost is asked again, after the text that rode the sync.
+        for (const [mark, state] of marks.current) {
+          if (state === "waiting") {
+            provider.flush(mark);
+          }
+        }
+        setLive(true);
+      },
       onEpochGap: () => {
+        // A different session: nothing this one was asked will be answered.
+        loseWaitingMarks();
+        setLive(false);
         // The provider is already permanently silent; nothing of the old doc
         // can leak. Snapshot what the author had - the hook is the one writer
         // with the doc still in hand - then rebuild around the new epoch.
@@ -503,6 +568,9 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
     readParticipants();
     docRef.current = { doc, awareness, provider };
     return () => {
+      // The room this generation was bound to is gone for this tab.
+      loseWaitingMarks();
+      setLive(false);
       awareness.off("change", readParticipants);
       doc.off("update", onUpdate);
       provider.destroy();
@@ -585,7 +653,26 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
   }, [hello, domain, generation]);
 
   const flush = useCallback((mark?: string) => {
-    docRef.current?.provider.flush(mark);
+    const provider = docRef.current?.provider;
+    if (provider === undefined) {
+      return false;
+    }
+    if (mark === undefined) {
+      return provider.flush();
+    }
+    if (!provider.flush(mark)) {
+      return false;
+    }
+    marks.current.set(mark, "waiting");
+    setMarksVersion((was) => was + 1);
+    return true;
+  }, []);
+  const markStatus = useCallback(
+    (mark: string): MarkStatus => marks.current.get(mark) ?? "unknown",
+    [],
+  );
+  const releaseMark = useCallback((mark: string) => {
+    marks.current.delete(mark);
   }, []);
   const resolve = useCallback((choice: "mine" | "theirs") => {
     docRef.current?.provider.resolve(choice);
@@ -610,7 +697,12 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
     participants,
     permalink,
     flush,
-    covered,
+    live: joined && live,
+    marksSupported,
+    markStatus,
+    releaseMark,
+    marksVersion,
+    receipts,
     resolve,
     closed,
     closedReason,

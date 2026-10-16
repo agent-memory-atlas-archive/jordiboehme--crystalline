@@ -130,7 +130,9 @@ function joinRoom(hello: Partial<CollabHello> = {}) {
   server.getText(TEXT_NAME).insert(0, SESSION_TEXT);
   act(() => {
     socket.open();
-    socket.receive(helloFrame("e1", hello));
+    // The greeting as a room sends it: hello, then the room's SyncStep1,
+    // whose answer makes the connection live.
+    socket.receive(concat(helloFrame("e1", hello), serverStep1(server)));
   });
   act(() => {
     answerStep1(socket, server);
@@ -257,20 +259,40 @@ describe("useCollabSession", () => {
     expect(sentControls(socket)).toContainEqual({ kind: "flush" });
   });
 
-  it("sends a flush mark and learns which marks a landed save covers", () => {
-    const { socket } = joinRoom();
-    expect(session().covered.size).toBe(0);
+  it("is live once the room's sync is answered, and says whether it answers marks", () => {
+    joinRoom({ features: ["flush-marks"] });
+    expect(session().live).toBe(true);
+    expect(session().marksSupported).toBe(true);
+  });
+
+  it("an older room names no features, and its marks are not relied on", () => {
+    joinRoom();
+    expect(session().marksSupported).toBe(false);
+  });
+
+  it("follows its own mark from the flush to the save that names it", () => {
+    const { socket } = joinRoom({ features: ["flush-marks"] });
+    expect(session().markStatus("m1")).toBe("unknown");
+    let sent = false;
     act(() => {
-      session().flush("m1");
+      sent = session().flush("m1");
     });
+    expect(sent).toBe(true);
     expect(sentControls(socket)).toContainEqual({ kind: "flush", mark: "m1" });
-    // A receipt without covers changes nothing about the marks.
+    expect(session().markStatus("m1")).toBe("waiting");
+    // A receipt that names other marks, or none, leaves it waiting.
     act(() => {
       socket.receive(
-        controlFrame({ kind: "saved", checksum: "c2", permalink: "alpha" }),
+        controlFrame({
+          kind: "saved",
+          checksum: "c2",
+          permalink: "alpha",
+          covers: ["somebody-else"],
+        }),
       );
     });
-    expect(session().covered.has("m1")).toBe(false);
+    expect(session().markStatus("m1")).toBe("waiting");
+    expect(session().markStatus("somebody-else")).toBe("unknown");
     act(() => {
       socket.receive(
         controlFrame({
@@ -281,7 +303,47 @@ describe("useCollabSession", () => {
         }),
       );
     });
-    expect(session().covered.has("m1")).toBe(true);
+    expect(session().markStatus("m1")).toBe("saved");
+    expect(session().receipts).toBe(2);
+    act(() => {
+      session().releaseMark("m1");
+    });
+    expect(session().markStatus("m1")).toBe("unknown");
+  });
+
+  it("a mark a 'theirs' choice gave up, or a closed room, is lost", () => {
+    const { socket } = joinRoom({ features: ["flush-marks"] });
+    act(() => {
+      session().flush("m1");
+      session().flush("m2");
+    });
+    act(() => {
+      socket.receive(controlFrame({ kind: "discarded", marks: ["m1"] }));
+    });
+    expect(session().markStatus("m1")).toBe("lost");
+    expect(session().markStatus("m2")).toBe("waiting");
+    act(() => {
+      socket.receive(controlFrame({ kind: "closed", reason: "deleted" }));
+    });
+    expect(session().markStatus("m2")).toBe("lost");
+  });
+
+  it("refuses a marked flush before the connection is live, and sends nothing", () => {
+    mount();
+    const socket = socketAt(0);
+    act(() => {
+      socket.open();
+      socket.receive(helloFrame("e1", { features: ["flush-marks"] }));
+    });
+    // Accepted, but the room's sync is not answered yet.
+    expect(session().live).toBe(false);
+    let sent = true;
+    act(() => {
+      sent = session().flush("m1");
+    });
+    expect(sent).toBe(false);
+    expect(sentControls(socket)).toEqual([]);
+    expect(session().markStatus("m1")).toBe("unknown");
   });
 
   it("follows a rename receipt to the engram's new permalink", () => {

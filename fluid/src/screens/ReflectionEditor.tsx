@@ -75,6 +75,7 @@ import {
 } from "../editor/drafts";
 import { hiddenIdLines } from "../editor/hiddenIdLines";
 import { KeptTextNotice } from "../editor/KeptTextNotice";
+import { roomSaveMarks } from "../collab/saveMarks";
 import { imagePreviews } from "../editor/imagePreviews";
 import { readScalar } from "../editor/frontmatterFields";
 import { livePreview } from "../editor/preview";
@@ -979,18 +980,8 @@ function Surface({
         kind="reflection"
         path={path}
         draft={false}
-        ready={!ended && collab.status === "connected"}
-        markSave={() => {
-          // The room is asked to save now; the mark comes back on the first
-          // save that began after the text went in.
-          const mark = crypto.randomUUID();
-          collab.flush(mark);
-          return mark;
-        }}
-        saveCovers={(mark) =>
-          typeof mark === "string" && collab.covered.has(mark)
-        }
-        saveSignal={collab.covered}
+        ready={!ended && collab.live}
+        {...roomSaveMarks(collab)}
         onReplace={(text) => {
           // One change on the shared text, as Put it back makes it, so the
           // room's Undo takes it back; owed until the room saves it.
