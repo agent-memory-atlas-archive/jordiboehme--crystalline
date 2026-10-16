@@ -192,10 +192,7 @@ async fn a_clean_external_edit_merges_into_the_room_and_the_file() {
 
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
 
@@ -265,10 +262,7 @@ async fn colliding_edits_suspend_saving_until_the_room_resolves_mine() {
 
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::Conflict {
@@ -318,10 +312,7 @@ async fn resolving_theirs_replaces_the_live_text_and_touches_nothing() {
     std::fs::write(&path, &theirs).unwrap();
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
     assert!(matches!(
@@ -362,10 +353,7 @@ async fn resolving_theirs_replaces_the_live_text_and_touches_nothing() {
     append_line(&joined, &doc, "after the storm").await;
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
     assert!(matches!(
@@ -390,10 +378,7 @@ async fn an_external_delete_is_its_own_conflict_and_mine_restores_the_file() {
 
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::Conflict {
@@ -452,10 +437,7 @@ async fn a_deleted_conflict_never_restores_over_a_file_that_came_back() {
 
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::Conflict { conflict_kind, .. } = next_control(&mut joined.rx).await else {
@@ -544,10 +526,7 @@ async fn accepting_an_external_delete_closes_the_session() {
     std::fs::remove_file(&path).unwrap();
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
     assert!(matches!(
@@ -607,10 +586,7 @@ async fn restoring_into_a_read_only_domain_is_refused_and_the_file_stays_gone() 
     std::fs::remove_file(tmp.path().join("eng/alpha.md")).unwrap();
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::Conflict { conflict_kind, .. } = next_control(&mut joined.rx).await else {
@@ -657,10 +633,7 @@ async fn a_room_does_not_switch_read_only_on() {
     .await;
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::SaveFailed { detail } = next_control(&mut joined.rx).await else {
@@ -690,10 +663,7 @@ async fn a_room_does_not_restore_a_switch_on() {
     std::fs::remove_file(&manifest).unwrap();
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::Conflict { conflict_kind, .. } = next_control(&mut joined.rx).await else {
@@ -721,188 +691,4 @@ async fn a_room_does_not_restore_a_switch_on() {
     };
     assert_eq!(detail, ROOM_SWITCH_ON);
     assert!(!manifest.exists(), "nothing was restored");
-}
-
-/// Send a flush carrying `mark`.
-async fn flush_marked(joined: &Joined, mark: &str) {
-    joined
-        .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush {
-                mark: Some(mark.to_string()),
-            }),
-        )
-        .await;
-}
-
-/// A clean external edit is merged and the save retried: the retry names
-/// the mark the first attempt took.
-#[tokio::test]
-async fn the_merge_and_retry_save_covers_the_mark() {
-    let (tmp, engine, _scratch) = engine_fixture().await;
-    let sessions = CollabSessions::new(engine);
-    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
-    let doc = sync_client(&joined).await;
-    replace_all(&joined, &doc, &ALPHA.replace("# Alpha", "# Alpha, refined")).await;
-    let path = tmp.path().join("eng/alpha.md");
-    let external = std::fs::read_to_string(&path).unwrap() + "\ntheirs: appended line\n";
-    std::fs::write(&path, &external).unwrap();
-    flush_marked(&joined, "m1").await;
-    joined.session.tick_save(Instant::now()).await;
-    assert!(matches!(
-        next_control(&mut joined.rx).await,
-        Control::Merged
-    ));
-    let Control::Saved { covers, .. } = next_control(&mut joined.rx).await else {
-        panic!("the retried save lands")
-    };
-    assert_eq!(covers, vec!["m1".to_string()]);
-}
-
-/// "Mine" over an edit conflict: the save after the choice names the mark
-/// that was waiting when the conflict came.
-#[tokio::test]
-async fn mine_then_a_save_covers_the_waiting_mark() {
-    let (tmp, engine, _scratch) = engine_fixture().await;
-    let sessions = CollabSessions::new(engine);
-    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
-    let doc = sync_client(&joined).await;
-    let path = tmp.path().join("eng/alpha.md");
-    replace_all(&joined, &doc, &ALPHA.replace("A rule about alpha.", "MINE")).await;
-    std::fs::write(&path, ALPHA.replace("A rule about alpha.", "THEIRS")).unwrap();
-    flush_marked(&joined, "m1").await;
-    joined.session.tick_save(Instant::now()).await;
-    assert!(matches!(
-        next_control(&mut joined.rx).await,
-        Control::Conflict { .. }
-    ));
-    joined
-        .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Resolve {
-                choice: "mine".into(),
-            }),
-        )
-        .await;
-    joined.session.tick_save(Instant::now()).await;
-    let Control::Saved { covers, .. } = next_control(&mut joined.rx).await else {
-        panic!("mine lands")
-    };
-    assert_eq!(covers, vec!["m1".to_string()]);
-}
-
-/// "Mine" over a deletion restores the room's text, and the restore names
-/// the waiting mark.
-#[tokio::test]
-async fn restoring_mine_covers_the_waiting_mark() {
-    let (tmp, engine, _scratch) = engine_fixture().await;
-    let sessions = CollabSessions::new(engine);
-    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
-    let doc = sync_client(&joined).await;
-    replace_all(&joined, &doc, &ALPHA.replace("A rule", "An unsaved rule")).await;
-    std::fs::remove_file(tmp.path().join("eng/alpha.md")).unwrap();
-    flush_marked(&joined, "m1").await;
-    joined.session.tick_save(Instant::now()).await;
-    assert!(matches!(
-        next_control(&mut joined.rx).await,
-        Control::Conflict { .. }
-    ));
-    joined
-        .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Resolve {
-                choice: "mine".into(),
-            }),
-        )
-        .await;
-    let covers = loop {
-        if let Control::Saved { covers, .. } = next_control(&mut joined.rx).await {
-            break covers;
-        }
-    };
-    assert_eq!(covers, vec!["m1".to_string()]);
-}
-
-/// "Theirs" throws the room's text away: the waiting marks are given up and
-/// the room is told, and no later save names them.
-#[tokio::test]
-async fn theirs_discards_the_waiting_marks() {
-    let (tmp, engine, _scratch) = engine_fixture().await;
-    let sessions = CollabSessions::new(engine);
-    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
-    let doc = sync_client(&joined).await;
-    let path = tmp.path().join("eng/alpha.md");
-    replace_all(&joined, &doc, &ALPHA.replace("A rule about alpha.", "MINE")).await;
-    std::fs::write(&path, ALPHA.replace("A rule about alpha.", "THEIRS")).unwrap();
-    flush_marked(&joined, "m1").await;
-    joined.session.tick_save(Instant::now()).await;
-    assert!(matches!(
-        next_control(&mut joined.rx).await,
-        Control::Conflict { .. }
-    ));
-    joined
-        .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Resolve {
-                choice: "theirs".into(),
-            }),
-        )
-        .await;
-    let discarded = loop {
-        if let Control::Discarded { marks } = next_control_syncing(&mut joined.rx, &doc).await {
-            break marks;
-        }
-    };
-    assert_eq!(discarded, vec!["m1".to_string()]);
-    append_line(&joined, &doc, "after theirs").await;
-    joined
-        .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
-        .await;
-    joined.session.tick_save(Instant::now()).await;
-    let Control::Saved { covers, .. } = next_control(&mut joined.rx).await else {
-        panic!("the next save lands")
-    };
-    assert!(covers.is_empty(), "{covers:?}");
-}
-
-/// "Theirs" over a deletion gives the marks up before the room closes.
-#[tokio::test]
-async fn theirs_over_a_deletion_discards_the_waiting_marks() {
-    let (tmp, engine, _scratch) = engine_fixture().await;
-    let sessions = CollabSessions::new(engine);
-    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
-    let doc = sync_client(&joined).await;
-    replace_all(&joined, &doc, &ALPHA.replace("A rule", "A doomed rule")).await;
-    std::fs::remove_file(tmp.path().join("eng/alpha.md")).unwrap();
-    flush_marked(&joined, "m1").await;
-    joined.session.tick_save(Instant::now()).await;
-    assert!(matches!(
-        next_control(&mut joined.rx).await,
-        Control::Conflict { .. }
-    ));
-    joined
-        .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Resolve {
-                choice: "theirs".into(),
-            }),
-        )
-        .await;
-    let Control::Discarded { marks } = next_control(&mut joined.rx).await else {
-        panic!("the marks are given up first")
-    };
-    assert_eq!(marks, vec!["m1".to_string()]);
-    assert!(matches!(
-        next_control(&mut joined.rx).await,
-        Control::Closed { .. }
-    ));
 }

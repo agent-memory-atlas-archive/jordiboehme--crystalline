@@ -14,6 +14,4 @@ pub mod control;
 pub mod merge;
 pub mod session;
 
-pub use session::{
-    IDLE_CHECK_MS, MARKS_PER_CONNECTION, MAX_MARK_LEN, SAVE_DEBOUNCE_MS, SAVE_MAX_LAG_MS, SaveHold,
-};
+pub use session::{IDLE_CHECK_MS, SAVE_DEBOUNCE_MS, SAVE_MAX_LAG_MS};

@@ -63,14 +63,6 @@ pub const MAX_PARTICIPANTS: usize = 16;
 const BROADCAST_CAPACITY: usize = 256;
 /// How long a pause in typing lands the save after.
 pub const SAVE_DEBOUNCE_MS: u64 = 2_000;
-
-/// The most flush marks a room keeps waiting for one connection; that
-/// connection's oldest goes first beyond it, so no client evicts another's.
-pub const MARKS_PER_CONNECTION: usize = 8;
-
-/// The longest flush mark a room keeps; a longer one is ignored.
-pub const MAX_MARK_LEN: usize = 64;
-
 /// The longest continuous typing goes without a save landing.
 pub const SAVE_MAX_LAG_MS: u64 = 15_000;
 /// How long a session sits idle before the external-change probe runs.
@@ -1486,22 +1478,7 @@ pub struct CollabSession {
     /// kept open by a late joiner does not assign section ids under the next
     /// cursor. Read by a reflection room, whose ids come with the close.
     final_pass: AtomicBool,
-    /// A test seam: when set, the next save stops after it took its marks,
-    /// until released. Never set outside tests.
-    save_hold: std::sync::Mutex<Option<SaveHold>>,
     state: Mutex<SessionState>,
-}
-
-/// What [`CollabSession::hold_next_save`] holds a save with: `entered` is
-/// notified once the save has taken its marks, and the save goes on when
-/// `release` is notified.
-#[doc(hidden)]
-#[derive(Clone)]
-pub struct SaveHold {
-    /// Notified when the held save has taken its marks.
-    pub entered: Arc<tokio::sync::Notify>,
-    /// Notify to let the held save go on.
-    pub release: Arc<tokio::sync::Notify>,
 }
 
 struct SessionState {
@@ -1576,11 +1553,6 @@ struct SessionState {
     oldest_unsaved: Option<Instant>,
     /// A client asked for a save now rather than on the debounce.
     flush_requested: bool,
-    /// The marks of flush requests no landed save has covered yet, with the
-    /// connection that sent each, oldest first. A save takes the ones present
-    /// when it begins and names them in its `Saved`; a save that does not
-    /// land leaves them for the next one.
-    flush_marks: Vec<(ConnId, String)>,
     /// When the engine was last asked to write. Only a save-blocked session
     /// reads it, to space its retries out instead of hammering the engine
     /// every tick for as long as the document stays unsaveable.
@@ -1717,7 +1689,6 @@ impl CollabSession {
             has_agents: AtomicBool::new(false),
             disposed: AtomicBool::new(false),
             final_pass: AtomicBool::new(false),
-            save_hold: std::sync::Mutex::new(None),
             state: Mutex::new(SessionState {
                 awareness: Awareness::new(doc),
                 path: loaded.path,
@@ -1736,7 +1707,6 @@ impl CollabSession {
                 last_edit: None,
                 oldest_unsaved: None,
                 flush_requested: false,
-                flush_marks: Vec::new(),
                 last_attempt: None,
                 // The probe window starts at open, so a room that sits idle
                 // from its first tick still checks one window later.
@@ -1790,7 +1760,6 @@ impl CollabSession {
             // announced, so without this a joiner would read "Saved" over a
             // room that has not written anything since the refusal.
             detail: state.failure_detail.clone(),
-            features: vec![control::FLUSH_MARKS.to_string()],
         });
         let sv = state.awareness.doc().transact().state_vector();
         greeting.extend(Message::Sync(SyncMessage::SyncStep1(sv)).encode_v1());
@@ -1888,23 +1857,8 @@ impl CollabSession {
                     }
                 }
                 Message::Custom(control::CONTROL_TAG, payload) => match control::decode(&payload) {
-                    Some(Control::Flush { mark }) => {
+                    Some(Control::Flush) => {
                         state.flush_requested = true;
-                        if let Some(mark) =
-                            mark.filter(|m| !m.is_empty() && m.len() <= MAX_MARK_LEN)
-                        {
-                            // Bounded per connection: a client that flushes
-                            // in a loop without ever seeing a save evicts its
-                            // own oldest mark, never somebody else's.
-                            let own = state.flush_marks.iter().filter(|(c, _)| *c == conn).count();
-                            if own >= MARKS_PER_CONNECTION
-                                && let Some(oldest) =
-                                    state.flush_marks.iter().position(|(c, _)| *c == conn)
-                            {
-                                state.flush_marks.remove(oldest);
-                            }
-                            state.flush_marks.push((conn, mark));
-                        }
                     }
                     Some(Control::Resolve { choice }) => {
                         // Kept rather than overwritten: a frame carrying two
@@ -2263,15 +2217,6 @@ impl CollabSession {
     /// Record the permalink the registry just re-filed this room under.
     fn adopt_key(&self, permalink: &str) {
         *self.key_doc.lock().expect("key mutex") = RoomDoc::Engram(permalink.to_string());
-    }
-
-    /// Test seam: hold the next save after it took its flush marks (see
-    /// [`SaveHold`]).
-    #[doc(hidden)]
-    pub fn hold_next_save(&self, hold: SaveHold) {
-        if let Ok(mut slot) = self.save_hold.lock() {
-            *slot = Some(hold);
-        }
     }
 
     /// One saver pass at `now`: decides whether a save is due and runs it.
@@ -2664,17 +2609,6 @@ impl CollabSession {
         }
         let file = Self::file_text_locked(state);
         state.flush_requested = false;
-        // The flushes this save answers: every one that arrived before it
-        // began. Taken off only when a Saved names them.
-        let covered = state.flush_marks.clone();
-        let covers: Vec<String> = covered.iter().map(|(_, mark)| mark.clone()).collect();
-        // The test seam: hold this save here, its marks taken, so a test can
-        // send a mark while the save is under way.
-        let hold = self.save_hold.lock().map(|mut h| h.take()).unwrap_or(None);
-        if let Some(hold) = hold {
-            hold.entered.notify_one();
-            hold.release.notified().await;
-        }
         // A reflection room's ids come with its last save, so that save runs
         // even when nothing new was typed since the one before it.
         let closing_reflection =
@@ -2685,21 +2619,17 @@ impl CollabSession {
             // The document is the saved text again: nobody's change is pending.
             state.editors.clear();
             state.oldest_unsaved = None;
-            // A flush that asked for a receipt gets one: what it covers is
-            // the saved text already.
-            if !matches!(state.save_state, SaveStateTag::Ok) || !covers.is_empty() {
+            if !matches!(state.save_state, SaveStateTag::Ok) {
                 // The document matches the file again, so the standing save
                 // failure is over; the room is told so its alert clears.
                 state.save_state = SaveStateTag::Ok;
                 state.failure_detail = None;
-                state.flush_marks.retain(|m| !covered.contains(m));
                 let _ = self.tx.send(Frame {
                     from: None,
                     to: None,
                     bytes: Bytes::from(control::encode(&Control::Saved {
                         checksum: state.checksum.clone(),
                         permalink: state.permalink.clone(),
-                        covers,
                     })),
                 });
             }
@@ -2766,14 +2696,12 @@ impl CollabSession {
                 state.oldest_unsaved = None;
                 state.save_state = SaveStateTag::Ok;
                 state.failure_detail = None;
-                state.flush_marks.retain(|m| !covered.contains(m));
                 let _ = self.tx.send(Frame {
                     from: None,
                     to: None,
                     bytes: Bytes::from(control::encode(&Control::Saved {
                         checksum,
                         permalink,
-                        covers,
                     })),
                 });
                 SaveOutcome::Done(renamed)
@@ -3011,13 +2939,11 @@ impl CollabSession {
                 state.flush_requested = false;
                 state.save_state = SaveStateTag::Ok;
                 state.failure_detail = None;
-                self.discard_marks(state);
                 None
             }
             ("theirs", PendingConflict::Deleted) => {
                 // The deletion stands: nothing is written back, the room is
                 // told, and the socket loop closes every connection.
-                self.discard_marks(state);
                 state.closed = true;
                 let _ = self.tx.send(Frame {
                     from: None,
@@ -3032,24 +2958,6 @@ impl CollabSession {
                 None
             }
         }
-    }
-
-    /// Give up every waiting flush mark: a "theirs" choice threw away the
-    /// text they asked to have saved, so no later save may name them. The
-    /// room is told which, so their senders stop waiting.
-    fn discard_marks(&self, state: &mut SessionState) {
-        if state.flush_marks.is_empty() {
-            return;
-        }
-        let marks = std::mem::take(&mut state.flush_marks)
-            .into_iter()
-            .map(|(_, mark)| mark)
-            .collect();
-        let _ = self.tx.send(Frame {
-            from: None,
-            to: None,
-            bytes: Bytes::from(control::encode(&Control::Discarded { marks })),
-        });
     }
 
     /// "Mine" over an external deletion: put this room's text back where the
@@ -3137,19 +3045,12 @@ impl CollabSession {
                 state.oldest_unsaved = None;
                 state.save_state = SaveStateTag::Ok;
                 state.failure_detail = None;
-                // "Mine" saved the room's text as it stood: every flush that
-                // arrived before is in it.
-                let covers = std::mem::take(&mut state.flush_marks)
-                    .into_iter()
-                    .map(|(_, mark)| mark)
-                    .collect();
                 let _ = self.tx.send(Frame {
                     from: None,
                     to: None,
                     bytes: Bytes::from(control::encode(&Control::Saved {
                         checksum,
                         permalink,
-                        covers,
                     })),
                 });
                 renamed

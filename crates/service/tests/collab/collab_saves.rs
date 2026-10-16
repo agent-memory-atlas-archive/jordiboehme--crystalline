@@ -9,9 +9,7 @@ use crystalline_core::config::{DomainEntry, GlobalConfig, ResponseFormat, Servic
 use crystalline_index::TursoStore;
 use crystalline_service::Engine;
 use crystalline_service::collab::control::{self, Control};
-use crystalline_service::collab::session::{
-    CollabSessions, Frame, Joined, MARKS_PER_CONNECTION, MAX_MARK_LEN, SAVE_DEBOUNCE_MS, SaveHold,
-};
+use crystalline_service::collab::session::{CollabSessions, Frame, Joined, SAVE_DEBOUNCE_MS};
 use tokio::sync::Mutex;
 use yrs::sync::{Message, MessageReader, SyncMessage};
 use yrs::updates::decoder::{Decode, DecoderV1};
@@ -501,282 +499,12 @@ async fn a_flush_request_saves_now_not_after_the_debounce() {
     append_line(&joined, &doc, "save this now").await;
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     // The very next tick, with NO debounce elapsed, lands it.
     joined.session.tick_save(Instant::now()).await;
     let on_disk = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();
     assert!(on_disk.ends_with("save this now\n"));
-}
-
-/// A flush may carry a mark; it comes back in the `covers` of the first
-/// save that began after it arrived, and of no save before it. A client
-/// learns from that its own edits are in the saved text.
-#[tokio::test]
-async fn a_marked_flush_comes_back_on_the_save_that_covers_it() {
-    let (tmp, engine, _scratch) = engine_fixture().await;
-    let sessions = CollabSessions::new(engine);
-    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
-    let doc = sync_client(&joined).await;
-
-    // A save that began before any mark names none.
-    append_line(&joined, &doc, "typed first").await;
-    joined
-        .session
-        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
-        .await;
-    let Control::Saved { covers, .. } = next_control(&mut joined.rx).await else {
-        panic!("a save receipt")
-    };
-    assert!(covers.is_empty(), "{covers:?}");
-
-    // The edit, then the marked flush: the save that follows covers it.
-    append_line(&joined, &doc, "typed after").await;
-    joined
-        .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush {
-                mark: Some("m1".to_string()),
-            }),
-        )
-        .await;
-    joined.session.tick_save(Instant::now()).await;
-    let Control::Saved { covers, .. } = next_control(&mut joined.rx).await else {
-        panic!("a save receipt")
-    };
-    assert_eq!(covers, vec!["m1".to_string()]);
-    let on_disk = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();
-    assert!(on_disk.ends_with("typed after\n"), "{on_disk:?}");
-
-    // Covered once: the next save does not name it again.
-    append_line(&joined, &doc, "typed later").await;
-    joined
-        .session
-        .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
-        .await;
-    let Control::Saved { covers, .. } = next_control(&mut joined.rx).await else {
-        panic!("a save receipt")
-    };
-    assert!(covers.is_empty(), "{covers:?}");
-}
-
-/// A marked flush over text that is saved already is answered at once: what
-/// it covers is in the file, and its sender is told so.
-#[tokio::test]
-async fn a_marked_flush_over_saved_text_is_answered_at_once() {
-    let (tmp, engine, _scratch) = engine_fixture().await;
-    let sessions = CollabSessions::new(engine);
-    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
-    let _doc = sync_client(&joined).await;
-    joined
-        .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush {
-                mark: Some("m1".to_string()),
-            }),
-        )
-        .await;
-    joined.session.tick_save(Instant::now()).await;
-    let Control::Saved { covers, .. } = next_control(&mut joined.rx).await else {
-        panic!("a save receipt")
-    };
-    assert_eq!(covers, vec!["m1".to_string()]);
-    assert_eq!(
-        std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap(),
-        ALPHA,
-        "nothing was written"
-    );
-}
-
-/// A save that does not land covers nothing: the mark waits for the save
-/// that does.
-#[tokio::test]
-async fn a_refused_save_keeps_the_mark_for_the_save_that_lands() {
-    let (_tmp, engine, _scratch) = engine_fixture().await;
-    let sessions = CollabSessions::new(engine);
-    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
-    let doc = sync_client(&joined).await;
-    replace_all(&joined, &doc, "no frontmatter at all").await;
-    joined
-        .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush {
-                mark: Some("m1".to_string()),
-            }),
-        )
-        .await;
-    joined.session.tick_save(Instant::now()).await;
-    assert!(matches!(
-        next_control(&mut joined.rx).await,
-        Control::SaveFailed { .. }
-    ));
-    replace_all(&joined, &doc, ALPHA).await;
-    append_line(&joined, &doc, "repaired").await;
-    joined
-        .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
-        .await;
-    joined.session.tick_save(Instant::now()).await;
-    let Control::Saved { covers, .. } = next_control(&mut joined.rx).await else {
-        panic!("a save receipt")
-    };
-    assert_eq!(covers, vec!["m1".to_string()]);
-}
-
-/// Send a flush carrying `mark` from `joined`'s connection.
-async fn flush_marked(joined: &Joined, mark: &str) {
-    joined
-        .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush {
-                mark: Some(mark.to_string()),
-            }),
-        )
-        .await;
-}
-
-/// The marks the next save receipt on `rx` covers.
-async fn next_covers(rx: &mut tokio::sync::broadcast::Receiver<Frame>) -> Vec<String> {
-    loop {
-        if let Control::Saved { covers, .. } = next_control(rx).await {
-            return covers;
-        }
-    }
-}
-
-/// Each connection keeps at most a few marks waiting, and a flood evicts
-/// only the flooding connection's own oldest mark, never another's.
-#[tokio::test]
-async fn a_connection_that_floods_marks_evicts_only_its_own() {
-    let (_tmp, engine, _scratch) = engine_fixture().await;
-    let sessions = CollabSessions::new(engine);
-    let mut ada = sessions.join("eng", "alpha", None).await.unwrap();
-    let bob = sessions.join("eng", "alpha", None).await.unwrap();
-    let doc = sync_client(&ada).await;
-    flush_marked(&bob, "bob").await;
-    for n in 0..=MARKS_PER_CONNECTION {
-        flush_marked(&ada, &format!("ada{n}")).await;
-    }
-    append_line(&ada, &doc, "flooded").await;
-    ada.session.tick_save(Instant::now()).await;
-    let covers = next_covers(&mut ada.rx).await;
-    let mut expected = vec!["bob".to_string()];
-    expected.extend((1..=MARKS_PER_CONNECTION).map(|n| format!("ada{n}")));
-    assert_eq!(covers, expected, "ada0 went, bob's stayed");
-}
-
-/// An empty mark and one longer than the limit ask for a save and are not
-/// kept; a mark at the limit is.
-#[tokio::test]
-async fn an_empty_or_overlong_mark_is_not_kept() {
-    let (_tmp, engine, _scratch) = engine_fixture().await;
-    let sessions = CollabSessions::new(engine);
-    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
-    let doc = sync_client(&joined).await;
-    let longest = "m".repeat(MAX_MARK_LEN);
-    flush_marked(&joined, "").await;
-    flush_marked(&joined, &"m".repeat(MAX_MARK_LEN + 1)).await;
-    flush_marked(&joined, &longest).await;
-    append_line(&joined, &doc, "marked").await;
-    joined.session.tick_save(Instant::now()).await;
-    assert_eq!(next_covers(&mut joined.rx).await, vec![longest]);
-}
-
-/// Two people's marks in one room: each save names only the marks that
-/// arrived before it began.
-#[tokio::test]
-async fn two_peoples_marks_come_back_on_the_saves_that_cover_them() {
-    let (_tmp, engine, _scratch) = engine_fixture().await;
-    let sessions = CollabSessions::new(engine);
-    let mut ada = sessions.join("eng", "alpha", None).await.unwrap();
-    let mut bob = sessions.join("eng", "alpha", None).await.unwrap();
-    let doc = sync_client(&ada).await;
-    append_line(&ada, &doc, "ada typed").await;
-    flush_marked(&ada, "ada").await;
-    ada.session.tick_save(Instant::now()).await;
-    assert_eq!(next_covers(&mut ada.rx).await, vec!["ada".to_string()]);
-    assert_eq!(next_covers(&mut bob.rx).await, vec!["ada".to_string()]);
-
-    append_line(&ada, &doc, "bob's turn").await;
-    flush_marked(&bob, "bob").await;
-    ada.session.tick_save(Instant::now()).await;
-    assert_eq!(next_covers(&mut bob.rx).await, vec!["bob".to_string()]);
-    assert_eq!(next_covers(&mut ada.rx).await, vec!["bob".to_string()]);
-}
-
-/// The room's last save, when the last person leaves, names the marks
-/// waiting for it.
-#[tokio::test]
-async fn the_final_save_covers_the_waiting_marks() {
-    let (tmp, engine, _scratch) = engine_fixture().await;
-    let sessions = CollabSessions::new(engine);
-    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
-    let doc = sync_client(&joined).await;
-    append_line(&joined, &doc, "typed before leaving").await;
-    flush_marked(&joined, "last").await;
-    assert!(joined.session.remove_conn(joined.conn).await);
-    joined.session.final_save().await;
-    assert_eq!(next_covers(&mut joined.rx).await, vec!["last".to_string()]);
-    let on_disk = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();
-    assert!(on_disk.ends_with("typed before leaving\n"), "{on_disk:?}");
-}
-
-/// A mark that arrives while a save is under way is not named by that save:
-/// the save took its marks before the mark came, and the next save names it.
-#[tokio::test]
-async fn a_mark_sent_during_a_save_waits_for_the_next_one() {
-    let (_tmp, engine, _scratch) = engine_fixture().await;
-    let sessions = CollabSessions::new(engine);
-    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
-    let doc = sync_client(&joined).await;
-    append_line(&joined, &doc, "before the save").await;
-    let hold = SaveHold {
-        entered: Arc::new(tokio::sync::Notify::new()),
-        release: Arc::new(tokio::sync::Notify::new()),
-    };
-    joined.session.hold_next_save(hold.clone());
-    let saver = {
-        let session = joined.session.clone();
-        tokio::spawn(async move {
-            session
-                .tick_save(Instant::now() + Duration::from_millis(SAVE_DEBOUNCE_MS + 100))
-                .await;
-        })
-    };
-    hold.entered.notified().await;
-    let flusher = {
-        let session = joined.session.clone();
-        let conn = joined.conn;
-        tokio::spawn(async move {
-            session
-                .handle_frame(
-                    conn,
-                    &control::encode(&Control::Flush {
-                        mark: Some("late".to_string()),
-                    }),
-                )
-                .await;
-        })
-    };
-    // The flush waits on the room the save holds.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(!flusher.is_finished(), "the flush waits for the save");
-    hold.release.notify_one();
-    saver.await.unwrap();
-    flusher.await.unwrap();
-    assert!(next_covers(&mut joined.rx).await.is_empty());
-    joined.session.tick_save(Instant::now()).await;
-    assert_eq!(next_covers(&mut joined.rx).await, vec!["late".to_string()]);
 }
 
 #[tokio::test]
@@ -830,10 +558,7 @@ async fn a_refused_save_blocks_saving_not_editing_and_recovers() {
         .await;
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
 
@@ -862,10 +587,7 @@ async fn a_refused_save_blocks_saving_not_editing_and_recovers() {
         .await;
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
     let saved = next_control(&mut joined.rx).await;
@@ -885,7 +607,7 @@ async fn a_joiner_into_a_blocked_room_is_greeted_with_the_standing_refusal() {
     replace_all(&first, &doc, "no frontmatter at all").await;
     first
         .session
-        .handle_frame(first.conn, &control::encode(&Control::Flush { mark: None }))
+        .handle_frame(first.conn, &control::encode(&Control::Flush))
         .await;
     first.session.tick_save(Instant::now()).await;
     let Control::SaveFailed { detail } = next_control(&mut first.rx).await else {
@@ -928,10 +650,7 @@ async fn a_frontmatter_rename_moves_the_session_and_the_receipt_says_so() {
     .await;
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::Saved { permalink, .. } = next_control(&mut joined.rx).await else {
@@ -942,10 +661,7 @@ async fn a_frontmatter_rename_moves_the_session_and_the_receipt_says_so() {
     append_line(&joined, &doc, "again").await;
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::Saved { permalink, .. } = next_control(&mut joined.rx).await else {
@@ -967,10 +683,7 @@ async fn rename_to_beta(joined: &Joined, doc: &Doc) {
     replace_all(joined, doc, &renamed_alpha()).await;
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
 }
@@ -1385,10 +1098,7 @@ async fn a_blocked_session_backs_off_instead_of_hammering_the_engine() {
     replace_all(&joined, &doc, "no frontmatter at all").await;
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(failed_at).await;
     assert!(matches!(
@@ -1436,10 +1146,7 @@ async fn a_flush_retries_a_blocked_save_immediately() {
     replace_all(&joined, &doc, "no frontmatter at all").await;
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(failed_at).await;
     assert!(matches!(
@@ -1452,10 +1159,7 @@ async fn a_flush_retries_a_blocked_save_immediately() {
     replace_all(&joined, &doc, &repaired).await;
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined
         .session
@@ -1492,10 +1196,7 @@ async fn a_poisoned_session_closes_the_room_and_never_saves_again() {
     // Every save path is a no-op afterwards, the explicit flush included.
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
     joined.session.final_save().await;
@@ -1564,10 +1265,7 @@ async fn a_second_refusal_with_a_new_reason_reaches_the_room() {
     replace_all(&joined, &doc, "no frontmatter at all").await;
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined.session.tick_save(Instant::now()).await;
     let Control::SaveFailed { detail: first } = next_control(&mut joined.rx).await else {
@@ -1580,10 +1278,7 @@ async fn a_second_refusal_with_a_new_reason_reaches_the_room() {
     replace_all(&joined, &doc, "---\ntitle: [unclosed\n---\n\n# Alpha\n").await;
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined
         .session
@@ -1598,10 +1293,7 @@ async fn a_second_refusal_with_a_new_reason_reaches_the_room() {
     // control the room hears is the save that finally lands.
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined
         .session
@@ -1610,10 +1302,7 @@ async fn a_second_refusal_with_a_new_reason_reaches_the_room() {
     replace_all(&joined, &doc, ALPHA).await;
     joined
         .session
-        .handle_frame(
-            joined.conn,
-            &control::encode(&Control::Flush { mark: None }),
-        )
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
         .await;
     joined
         .session
@@ -4676,7 +4365,7 @@ async fn undone_edit_names_nobody(flush: bool) {
     replace_all(&ada, &doc_a, &original).await;
     if flush {
         ada.session
-            .handle_frame(ada.conn, &control::encode(&Control::Flush { mark: None }))
+            .handle_frame(ada.conn, &control::encode(&Control::Flush))
             .await;
     }
     let before = std::fs::read(&path).unwrap();

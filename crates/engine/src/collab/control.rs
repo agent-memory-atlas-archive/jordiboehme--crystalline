@@ -12,9 +12,6 @@ use yrs::updates::encoder::Encode;
 /// encodings only agree under 128.
 pub const CONTROL_TAG: u8 = 4;
 
-/// The feature a room names in its hello when it answers flush marks.
-pub const FLUSH_MARKS: &str = "flush-marks";
-
 /// One session control message. Server-to-client kinds carry state changes the
 /// y-protocols messages have no room for; client-to-server kinds ask the
 /// session for something outside the CRDT.
@@ -43,13 +40,6 @@ pub enum Control {
         /// greeting it has always seen; decoding is lenient the same way.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
-        /// What this room can do beyond the messages every room speaks, so a
-        /// client knows what it may rely on: `flush-marks` says a `Flush`
-        /// mark comes back in a `Saved` and `Discarded` names marks a choice
-        /// threw away. Skipped when empty; an older room sends none, and a
-        /// client then relies on none of them.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        features: Vec<String>,
     },
     /// A save landed; the checksum is the new CAS token.
     Saved {
@@ -57,15 +47,6 @@ pub enum Control {
         checksum: String,
         /// The engram's permalink after the save.
         permalink: String,
-        /// The marks of the `Flush` requests this save covers: each arrived
-        /// before the save began, so everything its sender had sent before
-        /// it is in the saved text. A client that flushed with a mark knows
-        /// its own edits landed when the mark comes back here.
-        ///
-        /// Skipped when empty, so a client from before this field sees the
-        /// receipt it has always seen; decoding is lenient the same way.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        covers: Vec<String>,
     },
     /// A save was refused or failed; `detail` is shown to the user.
     SaveFailed {
@@ -74,12 +55,6 @@ pub enum Control {
     },
     /// An external change was merged into the live session.
     Merged,
-    /// Flush marks no save will ever cover: a "theirs" choice threw away the
-    /// text they were asked for. A client stops waiting for them.
-    Discarded {
-        /// The marks given up.
-        marks: Vec<String>,
-    },
     /// An external change could not be merged; the client must resolve.
     Conflict {
         /// What kind of conflict this is ("edit" for colliding edits,
@@ -118,14 +93,7 @@ pub enum Control {
         permalink: Option<String>,
     },
     /// Client request: save now rather than on the debounce.
-    Flush {
-        /// An id the client picks, echoed in the `covers` of the first
-        /// `Saved` whose save began after this request arrived. Optional:
-        /// a plain `{"kind":"flush"}` still decodes and asks for nothing
-        /// back.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        mark: Option<String>,
-    },
+    Flush,
     /// Client request: resolve a standing conflict with this choice.
     Resolve {
         /// The resolution the user picked ("mine", "theirs", ...).
@@ -173,7 +141,6 @@ mod tests {
                 permalink: "notes/alpha".into(),
                 save_state: "ok".into(),
                 detail: None,
-                features: vec![FLUSH_MARKS.to_string()],
             },
             Control::Hello {
                 epoch: "1a2b.1".into(),
@@ -182,25 +149,15 @@ mod tests {
                 permalink: "notes/alpha".into(),
                 save_state: "failed".into(),
                 detail: Some("the document carries no frontmatter".into()),
-                features: Vec::new(),
             },
             Control::Saved {
                 checksum: "def".into(),
                 permalink: "alpha".into(),
-                covers: Vec::new(),
-            },
-            Control::Saved {
-                checksum: "def".into(),
-                permalink: "alpha".into(),
-                covers: vec!["m1".into(), "m2".into()],
             },
             Control::SaveFailed {
                 detail: "the document carries no frontmatter".into(),
             },
             Control::Merged,
-            Control::Discarded {
-                marks: vec!["m1".into()],
-            },
             Control::Conflict {
                 conflict_kind: "edit".into(),
                 theirs: Some("---\ntitle: B\n---\n".into()),
@@ -218,10 +175,7 @@ mod tests {
                 path: Some("guides/b.md".into()),
                 permalink: Some("guides/b".into()),
             },
-            Control::Flush { mark: None },
-            Control::Flush {
-                mark: Some("m1".into()),
-            },
+            Control::Flush,
             Control::Resolve {
                 choice: "mine".into(),
             },
@@ -250,7 +204,6 @@ mod tests {
             permalink: "alpha".into(),
             save_state: "ok".into(),
             detail: None,
-            features: Vec::new(),
         };
         let json = serde_json::to_string(&healthy).unwrap();
         assert!(
@@ -269,7 +222,6 @@ mod tests {
                 permalink: "alpha".into(),
                 save_state: "failed".into(),
                 detail: None,
-                features: Vec::new(),
             })
         );
     }
@@ -303,32 +255,5 @@ mod tests {
     fn unknown_or_broken_control_json_is_none_not_a_panic() {
         assert_eq!(decode(b"{not json"), None);
         assert_eq!(decode(br#"{"kind":"from-the-future"}"#), None);
-    }
-
-    /// A mark rides a flush and comes back on the save that covers it; a
-    /// flush and a receipt without one keep the shapes older ends know.
-    #[test]
-    fn flush_marks_are_optional_both_ways() {
-        assert_eq!(
-            decode(br#"{"kind":"flush"}"#),
-            Some(Control::Flush { mark: None })
-        );
-        assert_eq!(
-            decode(br#"{"kind":"saved","checksum":"c","permalink":"p"}"#),
-            Some(Control::Saved {
-                checksum: "c".into(),
-                permalink: "p".into(),
-                covers: Vec::new(),
-            })
-        );
-        let plain = serde_json::to_string(&Control::Saved {
-            checksum: "c".into(),
-            permalink: "p".into(),
-            covers: Vec::new(),
-        })
-        .unwrap();
-        assert!(!plain.contains("covers"), "{plain}");
-        let flush = serde_json::to_string(&Control::Flush { mark: None }).unwrap();
-        assert_eq!(flush, r#"{"kind":"flush"}"#);
     }
 }
