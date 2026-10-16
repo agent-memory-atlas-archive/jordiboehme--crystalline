@@ -1241,6 +1241,77 @@ async fn a_path_only_move_of_an_open_engram_keeps_the_rooms_typing() {
     assert!(live.saving, "and raised no conflict");
 }
 
+/// **Task 41c.** A room's save that found the engram at its old path and
+/// then waited for that path's lock while a path-only move held it finds the
+/// file gone. The engram still answers to the room's address at its new
+/// path, so the save is made there instead of raising a deletion conflict.
+///
+/// Lined up on alpha's lock, which is first come, first served: the test
+/// holds it, the move queues on it, then the room's save does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_room_save_queued_behind_a_path_only_move_lands_at_the_new_path() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed while it moved").await;
+
+    let lock = engine.file_write_lock(&tmp.path().join("eng/alpha.md"));
+    let held = lock.clone().lock_owned().await;
+    let mover = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .move_engram(
+                    &crystalline_service::params::MoveParams {
+                        identifier: "alpha".to_string(),
+                        domain: "eng".to_string(),
+                        destination: "guides/alpha.md".to_string(),
+                        destination_domain: None,
+                        permalink: Some("keep".to_string()),
+                        update_links: None,
+                    },
+                    &crystalline_service::Scope::Unrestricted,
+                )
+                .await
+        })
+    };
+    let waiting_for = |count: usize| {
+        let lock = lock.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(20), async {
+                // The map's handle, the test's, the guard's and this
+                // future's own make four; each queued writer adds one.
+                while Arc::strong_count(&lock) < count {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the writer queues on alpha's lock");
+        }
+    };
+    waiting_for(5).await;
+    let saver = {
+        let session = joined.session.clone();
+        tokio::spawn(async move {
+            session
+                .tick_save(Instant::now() + Duration::from_secs(60))
+                .await
+        })
+    };
+    waiting_for(6).await;
+    drop(held);
+    mover.await.unwrap().expect("the move lands");
+    saver.await.unwrap();
+
+    let moved = std::fs::read_to_string(tmp.path().join("eng/guides/alpha.md")).unwrap();
+    assert!(moved.contains("typed while it moved"), "{moved:?}");
+    assert!(!tmp.path().join("eng/alpha.md").exists());
+    let live = sessions.live_text("eng", "alpha", None).await.unwrap();
+    assert!(live.saving, "the room raised no conflict");
+}
+
 /// The files under `<state>/kept/eng/engram/` a closing room's text was kept
 /// in, for `beta.md`.
 fn kept_beta(tmp: &tempfile::TempDir) -> Vec<String> {

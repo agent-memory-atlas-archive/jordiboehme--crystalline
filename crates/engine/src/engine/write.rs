@@ -990,9 +990,24 @@ impl Engine {
     /// is never taken under a room's guard (lock order: registry, then
     /// session), so this save does not close the reflection rooms itself:
     /// the room closes them before it takes its guard for the save.
+    ///
+    /// A save that resolved the room's address to a path and then waited for
+    /// that path's lock while a path-only move held it finds the file gone,
+    /// though the engram is still there under the same address. So a miss is
+    /// asked once more: when the address now answers with a file that is
+    /// there, the save is made again, once, at that path, instead of the room
+    /// raising a deletion nobody made.
     pub(crate) async fn save_engram_from_room(&self, p: &SaveParams) -> Result<Value> {
-        self.save_engram_closing(p, &crate::scope::Scope::Unrestricted, None, false)
-            .await
+        let scope = &crate::scope::Scope::Unrestricted;
+        match self.save_engram_closing(p, scope, None, false).await {
+            Err(EngineError::NotFound(missing)) => {
+                if self.engram_text(&p.domain, &p.identifier).await.is_ok() {
+                    return self.save_engram_closing(p, scope, None, false).await;
+                }
+                Err(EngineError::NotFound(missing))
+            }
+            other => other,
+        }
     }
 
     /// The body of [`Engine::save_engram_joined`]. `close_rooms` says whether a

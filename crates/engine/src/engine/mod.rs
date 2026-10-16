@@ -2492,6 +2492,15 @@ impl Engine {
         handles
     }
 
+    /// The per-path write lock of `abs`, the one every file write takes, so
+    /// an integration test can hold it from outside and line writers up
+    /// behind it in a known order (the lock is fair: first come, first
+    /// served). Compiled out of a released binary like the seams below.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn file_write_lock(&self, abs: &Path) -> Arc<tokio::sync::Mutex<()>> {
+        self.write_lock(abs)
+    }
+
     /// Hold the next try of an edit's live arm, or of an overwrite's,
     /// between its look at the room and its compose: it signals `entered` there and waits for `release`.
     /// Lets a test type into the room inside that window, which a real
