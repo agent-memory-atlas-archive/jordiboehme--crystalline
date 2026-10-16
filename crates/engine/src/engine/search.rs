@@ -95,14 +95,16 @@ impl Engine {
         // mode decision and the search, an accepted race of the same class as
         // already exists across two separate search calls.
         let provider = self.provider();
-        // The domains the caller named, after visibility: the mode is decided on
-        // their vectors alone. A sweep (none named) decides on the whole index,
-        // and so does a caller who may see none of the named ones, whose answer
-        // is empty anyway and still reports the mode a visible domain would.
+        // The domains the mode is decided on: the ones the caller named, after
+        // visibility, or, with none named, the ones the caller may see. When
+        // they may see every domain this is the whole index, and the cached
+        // table-wide count answers. A caller who may see none of the named
+        // ones gets an empty answer anyway and still reports the mode a
+        // visible domain would.
         let named: Option<&[String]> = match &scoped {
-            ScopedDomains::Only(domains) if !p.domains.is_empty() => Some(domains),
+            ScopedDomains::Only(domains) => Some(domains),
             ScopedDomains::AsAsked if !p.domains.is_empty() => Some(&p.domains),
-            _ => None,
+            ScopedDomains::AsAsked | ScopedDomains::Nothing => None,
         };
         let effective = {
             let store = self.store.lock().await;
@@ -430,18 +432,7 @@ impl Engine {
         }
         let coverage = match domains {
             None => store.embedding_coverage().await?,
-            Some(names) => {
-                // A name that is not registered counts nothing.
-                let mut ids = Vec::with_capacity(names.len());
-                for name in names {
-                    if let Some(id) = store.domain_id(name).await? {
-                        ids.push(id);
-                    }
-                }
-                store
-                    .embedding_coverage_in(crystalline_index::ChunkTable::Engram, Some(&ids))
-                    .await?
-            }
+            Some(names) => store.embedding_coverage_of_names(names).await?,
         };
         if coverage.has_active_embeddings(&self.model_id) {
             Ok(requested)

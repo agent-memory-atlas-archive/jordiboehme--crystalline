@@ -595,6 +595,39 @@ pub fn registry() -> Vec<HotStatement> {
             scan_expected: &[],
             scan_expected_pg: None,
             turso_must_seek: &["idx_engram_domain", "idx_chunk_engram"],
+            postgres_must_seek: &["idx_engram_domain"],
+        },
+        HotStatement {
+            issued_by: "Store::embedding_coverage_in (engram, whole table)",
+            // The cached table-wide count behind a search that names no domain,
+            // `status` and the backlog. Every chunk is grouped by model and
+            // width, so a full pass is the plan on purpose; the cache and the
+            // mutators' invalidation keep it to one pass per change.
+            turso: || crystalline_index::turso::ENGRAM_COVERAGE_ALL_SQL.to_string(),
+            postgres: || crystalline_index::postgres::ENGRAM_COVERAGE_ALL_SQL.to_string(),
+            literals: &[],
+            literals_pg: None,
+            scan_expected: &[(
+                "chunk",
+                "the whole-table count, cached until a chunk changes",
+            )],
+            scan_expected_pg: None,
+            turso_must_seek: &[],
+            postgres_must_seek: &[],
+        },
+        HotStatement {
+            issued_by: "Store::embedding_coverage_in (reflection, whole table)",
+            // The same for the reflection chunks.
+            turso: || crystalline_index::turso::REFLECTION_COVERAGE_ALL_SQL.to_string(),
+            postgres: || crystalline_index::postgres::REFLECTION_COVERAGE_ALL_SQL.to_string(),
+            literals: &[],
+            literals_pg: None,
+            scan_expected: &[(
+                "reflection_chunk",
+                "the whole-table count, cached until a chunk changes",
+            )],
+            scan_expected_pg: None,
+            turso_must_seek: &[],
             postgres_must_seek: &[],
         },
         HotStatement {

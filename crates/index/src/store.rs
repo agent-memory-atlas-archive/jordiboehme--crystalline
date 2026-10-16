@@ -3268,6 +3268,21 @@ pub trait Store: Send + Sync {
         domains: Option<&[DomainId]>,
     ) -> Result<EmbeddingCoverage>;
 
+    /// [`Store::embedding_coverage_in`] on the engram chunks of the domains
+    /// called `names`. A name that is not a registered domain counts nothing.
+    /// The one place names become ids for a search: the engine's mode decision
+    /// and the store's staleness gate both read it, so they cannot disagree.
+    async fn embedding_coverage_of_names(&self, names: &[String]) -> Result<EmbeddingCoverage> {
+        let mut ids = Vec::with_capacity(names.len());
+        for name in names {
+            if let Some(id) = self.domain_id(name).await? {
+                ids.push(id);
+            }
+        }
+        self.embedding_coverage_in(ChunkTable::Engram, Some(&ids))
+            .await
+    }
+
     /// [`Store::embedding_coverage_in`] over the whole table.
     async fn embedding_coverage_of(&self, table: ChunkTable) -> Result<EmbeddingCoverage> {
         self.embedding_coverage_in(table, None).await

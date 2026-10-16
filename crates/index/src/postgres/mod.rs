@@ -376,14 +376,7 @@ impl PostgresStore {
         let Some(names) = query.domains.as_deref() else {
             return self.embedding_coverage().await;
         };
-        let mut ids = Vec::with_capacity(names.len());
-        for name in names {
-            if let Some(id) = Store::domain_id(self, name).await? {
-                ids.push(id);
-            }
-        }
-        self.embedding_coverage_in(ChunkTable::Engram, Some(&ids))
-            .await
+        self.embedding_coverage_of_names(names).await
     }
 
     /// The same fold over the named domains, one grouped read each. A name
@@ -927,6 +920,17 @@ fn coverage_group(r: &PgRow) -> CoverageGroup {
     }
 }
 
+/// The table-wide coverage groups of the engram chunks, behind the cached
+/// `embedding_coverage_in(Engram, None)`. A full pass over `chunk` by design.
+#[doc(hidden)]
+pub const ENGRAM_COVERAGE_ALL_SQL: &str =
+    "SELECT model, dims, count(*), count(embedding) FROM chunk GROUP BY model, dims";
+
+/// The same for the reflection chunks.
+#[doc(hidden)]
+pub const REFLECTION_COVERAGE_ALL_SQL: &str =
+    "SELECT model, dims, count(*), count(embedding) FROM reflection_chunk GROUP BY model, dims";
+
 const CHUNK_SQL: ChunkSql = ChunkSql {
     needing: "SELECT id, engram_id, seq, text, text_hash FROM chunk \
               WHERE (embedding IS NULL OR model IS NULL OR model != $1)",
@@ -939,7 +943,7 @@ const CHUNK_SQL: ChunkSql = ChunkSql {
     store: "UPDATE chunk SET embedding=$1, dims=$2, model=$3 WHERE id=$4",
     prune: "UPDATE chunk SET embedding=NULL, dims=NULL, model=NULL \
             WHERE embedding IS NOT NULL AND (model IS NULL OR model <> $1)",
-    coverage_all: "SELECT model, dims, count(*), count(embedding) FROM chunk GROUP BY model, dims",
+    coverage_all: ENGRAM_COVERAGE_ALL_SQL,
     coverage_domain: ENGRAM_COVERAGE_SQL,
 };
 
@@ -963,8 +967,7 @@ const REFLECTION_CHUNK_SQL: ChunkSql = ChunkSql {
     store: "UPDATE reflection_chunk SET embedding=$1, dims=$2, model=$3 WHERE id=$4",
     prune: "UPDATE reflection_chunk SET embedding=NULL, dims=NULL, model=NULL \
             WHERE embedding IS NOT NULL AND (model IS NULL OR model <> $1)",
-    coverage_all: "SELECT model, dims, count(*), count(embedding) FROM reflection_chunk \
-                   GROUP BY model, dims",
+    coverage_all: REFLECTION_COVERAGE_ALL_SQL,
     coverage_domain: REFLECTION_COVERAGE_SQL,
 };
 
