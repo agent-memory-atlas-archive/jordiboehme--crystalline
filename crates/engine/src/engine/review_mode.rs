@@ -798,6 +798,7 @@ impl Engine {
             if file.tombstone {
                 let lock = self.write_lock(&abs);
                 let guard = lock.lock().await;
+                let before = std::fs::read(&abs).ok();
                 match std::fs::remove_file(&abs) {
                     Ok(()) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -808,9 +809,16 @@ impl Engine {
                         });
                     }
                 }
-                let store = self.store.lock().await;
-                store.delete_attachment(domain_id, &file.path).await?;
-                drop(store);
+                let fenced = self
+                    .fenced_attachment_row(
+                        domain_id,
+                        root,
+                        super::fence::AttachmentRowOp::Delete(&file.path),
+                    )
+                    .await;
+                if let Err(e) = fenced {
+                    return Err(self.refuse_file_change(e, domain, vec![(abs, before, None)]));
+                }
                 drop(guard);
                 deleted += 1;
                 continue;
@@ -831,10 +839,15 @@ impl Engine {
             // here. See `Engine::write_lock`.
             let lock = self.write_lock(&abs);
             let _guard = lock.lock().await;
+            let before = std::fs::read(&abs).ok();
             write_bytes(&abs, &bytes)?;
             let row = attachment_row(&file.path, &bytes, asset_modified(&abs))?;
-            let store = self.store.lock().await;
-            store.upsert_attachment(domain_id, &row).await?;
+            let fenced = self
+                .fenced_attachment_row(domain_id, root, super::fence::AttachmentRowOp::Upsert(&row))
+                .await;
+            if let Err(e) = fenced {
+                return Err(self.refuse_file_change(e, domain, vec![(abs, before, Some(bytes))]));
+            }
             written += 1;
         }
         Ok((written, deleted))

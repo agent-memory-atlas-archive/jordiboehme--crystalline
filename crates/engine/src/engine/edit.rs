@@ -835,10 +835,32 @@ impl Engine {
                         "reindex failed (test seam)".to_string(),
                     )));
                 }
-                let store = self.store.lock().await;
-                self.reindex_file(&*store, desc.domain_id, root, &desc.path)
-                    .await
-                    .map_err(SourceEditFailure::after)?;
+                let indexed = {
+                    let store = self.store.lock().await;
+                    self.reindex_file(&*store, desc.domain_id, root, &desc.path)
+                        .await
+                };
+                if let Err(e) = indexed {
+                    // The host lock moved while the file was written: the
+                    // edited text is kept and the file put back, so nothing
+                    // of this edit landed.
+                    if super::fence::is_file_host_refusal(&e) {
+                        return Err(SourceEditFailure::before(self.refuse_file_write(
+                            e,
+                            &desc.domain,
+                            &abs,
+                            Some(current.as_bytes()),
+                            crystalline_core::to_lf(&edited).as_bytes(),
+                            Some(super::fence::EngramKeep {
+                                rel: &desc.path,
+                                text: &edited,
+                                account: crate::scope::overlay_actor(scope),
+                                actor,
+                            }),
+                        )));
+                    }
+                    return Err(SourceEditFailure::after(e));
+                }
                 (
                     count,
                     sha256_hex(edited.as_bytes()),

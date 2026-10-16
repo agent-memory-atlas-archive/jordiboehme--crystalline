@@ -482,15 +482,31 @@ impl Engine {
                 ContentSource::File { root } => {
                     let dest_abs = join_rel(root, &dest_rel);
                     write_file(&dest_abs, &content)?;
-                    let store = self.store.lock().await;
-                    let dest_id = store
-                        .upsert_domain(
+                    let indexed = async {
+                        let store = self.store.lock().await;
+                        let dest_id = store
+                            .upsert_domain(
+                                &dest_domain,
+                                Some(&root.to_string_lossy()),
+                                DomainKind::File,
+                            )
+                            .await?;
+                        self.reindex_file(&*store, dest_id, root, &dest_rel).await
+                    }
+                    .await;
+                    // The destination's host lock moved meanwhile: the file
+                    // written there goes again, and the source stays.
+                    if let Err(e) = indexed {
+                        return Err(self.refuse_file_change(
+                            e,
                             &dest_domain,
-                            Some(&root.to_string_lossy()),
-                            DomainKind::File,
-                        )
-                        .await?;
-                    self.reindex_file(&*store, dest_id, root, &dest_rel).await?;
+                            vec![(
+                                dest_abs.clone(),
+                                None,
+                                Some(crystalline_core::to_lf(&content).into_owned().into_bytes()),
+                            )],
+                        ));
+                    }
                 }
                 ContentSource::Virtual => {
                     let store = self.store.lock().await;
@@ -514,8 +530,27 @@ impl Engine {
             let store = self.store.lock().await;
             // One transaction for the source row, as the index half of a
             // delete has: the row, its children and the unbinding of every
-            // reference that named it land together.
+            // reference that named it land together, behind the source's
+            // host-lock fence.
             store.begin().await?;
+            if let ContentSource::File { root } = &src_source
+                && let Err(e) = self.file_row_fence(&*store, src.domain_id, root).await
+            {
+                let _ = store.rollback().await;
+                drop(store);
+                // The source's lock moved after the destination landed: the
+                // source file comes back, and the engram is in both places
+                // until one of them is removed.
+                return Err(self.refuse_file_change(
+                    e,
+                    &src.domain,
+                    vec![(
+                        join_rel(root, &src.path),
+                        Some(original.clone().into_bytes()),
+                        None,
+                    )],
+                ));
+            }
             if let Err(e) = store.delete_engram(src.domain_id, &src.path).await {
                 let _ = store.rollback().await;
                 return Err(e.into());
@@ -573,14 +608,66 @@ impl Engine {
                 }
             }
             let store = self.store.lock().await;
-            store
-                .readdress_engram(src.domain_id, &src.path, &dest_rel, &new_permalink)
-                .await?;
+            // The readdress and the reindex of a file domain commit behind
+            // its host-lock fence; a refusal puts both files back.
+            let put_back_files = |root: &Path| {
+                let written = moved_text
+                    .as_deref()
+                    .map_or(original.as_bytes().to_vec(), |t| {
+                        crystalline_core::to_lf(t).into_owned().into_bytes()
+                    });
+                let (src_abs, dest_abs) = (join_rel(root, &src.path), join_rel(root, &dest_rel));
+                if src_abs == dest_abs {
+                    vec![(src_abs, Some(original.clone().into_bytes()), Some(written))]
+                } else {
+                    vec![
+                        (dest_abs, None, Some(written)),
+                        (src_abs, Some(original.clone().into_bytes()), None),
+                    ]
+                }
+            };
+            let readdressed_row = async {
+                store.begin().await?;
+                let done = async {
+                    if let ContentSource::File { root } = &src_source {
+                        self.file_row_fence(&*store, src.domain_id, root).await?;
+                    }
+                    store
+                        .readdress_engram(src.domain_id, &src.path, &dest_rel, &new_permalink)
+                        .await?;
+                    Ok::<(), EngineError>(())
+                }
+                .await;
+                match done {
+                    Ok(()) => Ok(store.commit().await?),
+                    Err(e) => {
+                        let _ = store.rollback().await;
+                        Err(e)
+                    }
+                }
+            }
+            .await;
+            if let Err(e) = readdressed_row {
+                return Err(match &src_source {
+                    ContentSource::File { root } => {
+                        self.refuse_file_change(e, &src.domain, put_back_files(root))
+                    }
+                    ContentSource::Virtual => e,
+                });
+            }
             if let Some(text) = &moved_text {
                 match &src_source {
                     ContentSource::File { root } => {
-                        self.reindex_file(&*store, src.domain_id, root, &dest_rel)
-                            .await?;
+                        if let Err(e) = self
+                            .reindex_file(&*store, src.domain_id, root, &dest_rel)
+                            .await
+                        {
+                            return Err(self.refuse_file_change(
+                                e,
+                                &src.domain,
+                                put_back_files(root),
+                            ));
+                        }
                     }
                     ContentSource::Virtual => {
                         self.index_markdown(

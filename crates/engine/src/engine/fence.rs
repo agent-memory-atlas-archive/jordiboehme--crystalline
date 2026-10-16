@@ -464,3 +464,241 @@ impl Engine {
         answer
     }
 }
+
+/// One file a refused write changed: its path, what it held before, and
+/// what the write left there (`None`: no file).
+pub(crate) type FileChange = (PathBuf, Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// Whether `e` is the refusal of a write into a file domain on an instance
+/// that does not host it (the gate's or the fence's).
+pub(crate) fn is_file_host_refusal(e: &EngineError) -> bool {
+    matches!(e, EngineError::Conflict(text) if text.contains(super::FILE_HOSTED_MARK))
+}
+
+/// What a refused engram write sent, to keep: its path in the domain, the
+/// text, and who sent it.
+pub(crate) struct EngramKeep<'a> {
+    /// The engram's file path in its domain.
+    pub rel: &'a str,
+    /// The text the write would have landed.
+    pub text: &'a str,
+    /// The sender's account (an agent's is the account it acts for), or
+    /// `None` when nobody signed in sent it.
+    pub account: Option<String>,
+    /// The name the write was made under.
+    pub actor: &'a str,
+}
+
+impl Engine {
+    /// The host-lock fence of a file domain's rows: read inside the row
+    /// write's transaction, as the Reflection fence and a walk's apply read
+    /// it, so a take-over waits for the commit on Postgres. Passes while this
+    /// instance holds the lock (any process of this machine under its id),
+    /// off a shared database and without an instance id. A refusal names the
+    /// holder, and drops a domain another instance took from this
+    /// instance's hosts.
+    pub(crate) async fn file_row_fence(
+        &self,
+        store: &dyn Store,
+        domain_id: DomainId,
+        root: &Path,
+    ) -> Result<()> {
+        if self.instance_id.is_empty() || !store.shares_database() {
+            return Ok(());
+        }
+        self.take_row_fence_hold().await;
+        let holder = store.domain_host_held(domain_id).await?;
+        if holder
+            .as_ref()
+            .is_some_and(|h| h.instance_id == self.instance_id)
+        {
+            return Ok(());
+        }
+        let name = self
+            .domain_at_root(root)
+            .unwrap_or_else(|| "<domain>".to_string());
+        let label = match &holder {
+            Some(host) => host.label.clone(),
+            None => "no instance now".to_string(),
+        };
+        if holder.is_some() && self.hosted.write().unwrap().remove(&name).is_some() {
+            tracing::warn!("lost the host lock for domain '{name}'; another instance took over");
+            self.announce_host_moved(&name);
+        }
+        Err(super::file_host_refusal(&name, &label))
+    }
+
+    /// The registered file domain whose folder is `root`.
+    fn domain_at_root(&self, root: &Path) -> Option<String> {
+        self.config()
+            .domains
+            .iter()
+            .find(|(_, entry)| entry.file_path().as_deref() == Some(root))
+            .map(|(name, _)| name.clone())
+    }
+
+    /// A file-domain write refused after its file was written (the fence
+    /// found the lock gone): keep the text sent in the kept folder with its
+    /// sender, then put the file back to `before` while it still holds
+    /// `written`, and answer the refusal, saying the text was kept. A text
+    /// that cannot be kept leaves the file as written. Any other error is
+    /// answered as it is.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn refuse_file_write(
+        &self,
+        e: EngineError,
+        domain: &str,
+        abs: &Path,
+        before: Option<&[u8]>,
+        written: &[u8],
+        keep: Option<EngramKeep<'_>>,
+    ) -> EngineError {
+        if !is_file_host_refusal(&e) {
+            return e;
+        }
+        let mut answer = e;
+        let mut kept_ok = true;
+        if let Some(keep) = keep.filter(|k| !k.text.trim().is_empty()) {
+            let kept = self
+                .kept_dir()
+                .ok_or_else(|| "this process knows no state folder".to_string())
+                .and_then(|root| {
+                    crystalline_core::kept::write(
+                        &root,
+                        domain,
+                        None,
+                        crystalline_core::kept::KeptKind::Engram,
+                        keep.rel,
+                        chrono::Utc::now(),
+                        keep.text,
+                    )
+                    .map_err(|e| e.to_string())
+                });
+            match kept {
+                Ok(file) => {
+                    if let Some(account) = keep.account.clone() {
+                        let sender = crystalline_core::kept::Sender {
+                            account,
+                            name: keep.actor.to_string(),
+                        };
+                        if let Err(e) = crystalline_core::kept::record_sender(&file, &sender) {
+                            tracing::error!(
+                                domain,
+                                kept = %file.display(),
+                                "the sender of this kept text could not be recorded: {e}"
+                            );
+                        }
+                    }
+                    tracing::warn!(
+                        domain,
+                        path = keep.rel,
+                        actor = keep.actor,
+                        kept = %file.display(),
+                        "an engram write was refused because this instance no longer holds the domain's host lock ({answer}); the text sent is kept here; crystalline kept list shows it"
+                    );
+                    answer = EngineError::Conflict(format!("{answer}{KEPT_HERE}"));
+                }
+                Err(err) => {
+                    kept_ok = false;
+                    tracing::error!(
+                        domain,
+                        path = keep.rel,
+                        "an engram write was refused because this instance no longer holds the domain's host lock ({answer}), keeping the text sent failed ({err}), so the file stays as written"
+                    );
+                }
+            }
+        }
+        if kept_ok {
+            DiskUndo {
+                files: vec![Undone {
+                    abs: abs.to_path_buf(),
+                    before: before.map(<[u8]>::to_vec),
+                    after: Some(Some(written.to_vec())),
+                }],
+                renamed: Vec::new(),
+            }
+            .put_back(domain, None);
+        }
+        answer
+    }
+
+    /// A file-domain delete or move refused by the fence after its files
+    /// changed: put each file back to what it held while it still holds what
+    /// the write left there (`after`, `None` for removed), and answer the
+    /// refusal.
+    pub(crate) fn refuse_file_change(
+        &self,
+        e: EngineError,
+        domain: &str,
+        files: Vec<FileChange>,
+    ) -> EngineError {
+        if is_file_host_refusal(&e) {
+            DiskUndo {
+                files: files
+                    .into_iter()
+                    .map(|(abs, before, after)| Undone {
+                        abs,
+                        before,
+                        after: Some(after),
+                    })
+                    .collect(),
+                renamed: Vec::new(),
+            }
+            .put_back(domain, None);
+        }
+        e
+    }
+
+    /// [`Engine::refuse_file_change`] for one removed file.
+    pub(crate) fn refuse_file_delete(
+        &self,
+        e: EngineError,
+        domain: &str,
+        abs: &Path,
+        before: Option<&[u8]>,
+    ) -> EngineError {
+        self.refuse_file_change(
+            e,
+            domain,
+            vec![(abs.to_path_buf(), before.map(<[u8]>::to_vec), None)],
+        )
+    }
+
+    /// One engram attachment row write of a file domain, behind its
+    /// host-lock fence, in a transaction of its own.
+    pub(crate) async fn fenced_attachment_row(
+        &self,
+        domain_id: DomainId,
+        root: &Path,
+        op: AttachmentRowOp<'_>,
+    ) -> Result<()> {
+        let store = self.store.lock().await;
+        store.begin().await?;
+        let done = async {
+            self.file_row_fence(&*store, domain_id, root).await?;
+            match op {
+                AttachmentRowOp::Upsert(row) => store.upsert_attachment(domain_id, row).await?,
+                AttachmentRowOp::Delete(path) => {
+                    store.delete_attachment(domain_id, path).await?;
+                }
+            }
+            Ok::<(), EngineError>(())
+        }
+        .await;
+        match done {
+            Ok(()) => Ok(store.commit().await?),
+            Err(e) => {
+                let _ = store.rollback().await;
+                Err(e)
+            }
+        }
+    }
+}
+
+/// An engram attachment row change for [`Engine::fenced_attachment_row`].
+pub(crate) enum AttachmentRowOp<'a> {
+    /// The row as written.
+    Upsert(&'a crystalline_index::AttachmentRow),
+    /// The row at this path goes.
+    Delete(&'a str),
+}

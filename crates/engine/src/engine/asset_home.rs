@@ -255,8 +255,15 @@ impl Engine {
                             other => other?,
                         }
                     }
+                    // Only the domain's host heals an attachment's row; any
+                    // other instance serves the bytes and leaves the row.
                     AssetHome::Engram => {
-                        store.upsert_asset(home.table(), domain_id, &row).await?;
+                        if self.instance_id.is_empty()
+                            || self.hosted.read().unwrap().contains_key(domain)
+                            || !store.shares_database()
+                        {
+                            store.upsert_asset(home.table(), domain_id, &row).await?;
+                        }
                     }
                 }
                 Ok((bytes, row))
@@ -366,9 +373,29 @@ impl Engine {
                         )
                         .await?;
                     }
+                    // An attachment's row commits behind the file domain's
+                    // host-lock fence; a refusal puts the file back.
                     AssetHome::Engram => {
                         let store = self.store.lock().await;
-                        store.upsert_asset(home.table(), domain_id, &row).await?;
+                        store.begin().await?;
+                        let upserted = async {
+                            self.file_row_fence(&*store, domain_id, root).await?;
+                            store.upsert_asset(home.table(), domain_id, &row).await?;
+                            Ok::<(), EngineError>(())
+                        }
+                        .await;
+                        match upserted {
+                            Ok(()) => store.commit().await?,
+                            Err(e) => {
+                                let _ = store.rollback().await;
+                                drop(store);
+                                if super::fence::is_file_host_refusal(&e) {
+                                    undo.seal();
+                                    undo.put_back(domain, None);
+                                }
+                                return Err(e);
+                            }
+                        }
                     }
                 }
                 WrittenAsset {
@@ -460,9 +487,7 @@ impl Engine {
             (AssetHome::Engram | AssetHome::Reflection, ContentSource::File { root }) => {
                 let abs = contained_asset_path(root, &home.on_disk_rel(root, path))?;
                 _held = Some(self.write_lock(&abs).lock_owned().await);
-                if home == AssetHome::Reflection {
-                    undo.record(&abs)?;
-                }
+                undo.record(&abs)?;
                 match std::fs::remove_file(&abs) {
                     Ok(()) => file_removed = true,
                     // The row of a file only the previous host of a host
@@ -505,10 +530,40 @@ impl Engine {
                 .await?;
                 had_row
             }
-            AssetHome::Engram => {
-                let store = self.store.lock().await;
-                store.delete_asset(home.table(), domain_id, path).await?
-            }
+            // Behind the file domain's host-lock fence; a refusal puts the
+            // file back. A virtual domain's blob has no lock.
+            AssetHome::Engram => match &source {
+                ContentSource::File { root } => {
+                    let store = self.store.lock().await;
+                    store.begin().await?;
+                    let removed = async {
+                        self.file_row_fence(&*store, domain_id, root).await?;
+                        Ok::<bool, EngineError>(
+                            store.delete_asset(home.table(), domain_id, path).await?,
+                        )
+                    }
+                    .await;
+                    match removed {
+                        Ok(removed) => {
+                            store.commit().await?;
+                            removed
+                        }
+                        Err(e) => {
+                            let _ = store.rollback().await;
+                            drop(store);
+                            if super::fence::is_file_host_refusal(&e) {
+                                undo.seal();
+                                undo.put_back(domain, None);
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
+                ContentSource::Virtual => {
+                    let store = self.store.lock().await;
+                    store.delete_asset(home.table(), domain_id, path).await?
+                }
+            },
         };
         drop(_held);
         if !file_removed && !row_removed {
@@ -635,7 +690,8 @@ impl Engine {
         // The rows of a move commit in one transaction or not at all, so a
         // failed one wrote no row at `to`, and a row there (the new host's,
         // after a fence refusal) stays.
-        let fenced = home == AssetHome::Reflection && is_fence_refusal(&e);
+        let fenced = (home == AssetHome::Reflection && is_fence_refusal(&e))
+            || super::fence::is_file_host_refusal(&e);
         match self.undo_asset_rename(&dst, &src, case_only) {
             Ok(()) => Err(e),
             Err(undo) if fenced => {
@@ -692,19 +748,27 @@ impl Engine {
                 )
                 .await;
         }
+        let root = match self.content_source(domain)? {
+            ContentSource::File { root } => Some(root),
+            ContentSource::Virtual => None,
+        };
         let store = self.store.lock().await;
         store.begin().await?;
         let moved = async {
+            // Behind the file domain's host-lock fence.
+            if let Some(root) = &root {
+                self.file_row_fence(&*store, domain_id, root).await?;
+            }
             store.upsert_asset(home.table(), domain_id, row).await?;
             store.delete_asset(home.table(), domain_id, from).await?;
-            Ok::<(), crystalline_index::IndexError>(())
+            Ok::<(), EngineError>(())
         }
         .await;
         match moved {
             Ok(()) => Ok(store.commit().await?),
             Err(e) => {
                 let _ = store.rollback().await;
-                Err(e.into())
+                Err(e)
             }
         }
     }

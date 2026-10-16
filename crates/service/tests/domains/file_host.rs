@@ -283,3 +283,162 @@ async fn the_write_tools_refuse_on_an_instance_that_does_not_host_on_postgres() 
         refused(format!("{tool}: {err:#}"));
     }
 }
+
+/// Run `write` on alpha, and let beta take `eng` over while the write sits
+/// between its files and its rows (a host that paused there).
+async fn while_beta_takes_over<T>(
+    p: &Pair,
+    write: impl std::future::Future<Output = Result<T, crystalline_service::engine::EngineError>>,
+) -> Result<T, crystalline_service::engine::EngineError> {
+    let (entered, release) = p.alpha.hold_next_row_fence_until();
+    tokio::pin!(write);
+    tokio::select! {
+        written = &mut write => panic!("the write never reached its rows: {:?}", written.err()),
+        () = entered.notified() => {}
+    }
+    p.beta.sync_take_over(Some("eng"), true).await.unwrap();
+    release.notify_one();
+    write.await
+}
+
+/// The refusal of a write whose text the fence kept, naming inst-b.
+fn kept_refusal(err: impl std::fmt::Display) {
+    let text = err.to_string();
+    assert!(
+        text.contains("domain 'eng' is written by inst-b, the instance that hosts it")
+            && text.ends_with(crystalline_service::engine::KEPT_HERE),
+        "{text}"
+    );
+}
+
+/// What alpha keeps for `eng`, as (kind, path, text, sender account).
+async fn kept_on(engine: &Engine) -> Vec<(String, String, String, Option<String>)> {
+    engine
+        .kept_texts("eng", &Scope::Unrestricted)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|k| {
+            (
+                k.kind.as_str().to_string(),
+                k.path.clone(),
+                std::fs::read_to_string(&k.file).unwrap(),
+                k.sender.as_ref().map(|s| s.account.clone()),
+            )
+        })
+        .collect()
+}
+
+impl Pair {
+    fn a_root(&self) -> std::path::PathBuf {
+        self._tmp.path().join("inst-a").join("eng")
+    }
+
+    /// The shared row of `rel`, through beta's store.
+    async fn row_of(&self, rel: &str) -> Option<String> {
+        let store = store_on(&self.scratch).await;
+        let store = store.lock().await;
+        let id = store.domain_id("eng").await.unwrap().unwrap();
+        store
+            .file_stamps(id)
+            .await
+            .unwrap()
+            .get(rel)
+            .map(|s| s.sha256.clone())
+    }
+}
+
+/// A host that lost its lock between its gate and its rows writes no row:
+/// a new engram, an edit, a delete, a move and an attachment upload are
+/// each refused naming the new host; a text sent is kept with its sender;
+/// the old host's disk is back; the shared rows are as they were.
+#[tokio::test]
+async fn writes_after_the_lock_moved_land_nothing_on_postgres() {
+    let Some(p) = pair().await else { return };
+    let a_root = p.a_root();
+    let alpha_md = std::fs::read(a_root.join("alpha.md")).unwrap();
+    let alpha_row = p.row_of("alpha.md").await.expect("alpha's row");
+
+    // A new engram.
+    let err = while_beta_takes_over(
+        &p,
+        p.alpha.write_engram(&params(json!({
+            "domain": "eng", "title": "Paused", "content": "Typed while the laptop slept."
+        }))),
+    )
+    .await
+    .unwrap_err();
+    kept_refusal(&err);
+    assert!(!a_root.join("paused.md").exists(), "the new file is gone");
+    assert!(p.row_of("paused.md").await.is_none(), "no row");
+    let kept = kept_on(&p.alpha).await;
+    assert!(
+        kept.iter()
+            .any(|(kind, path, text, sender)| kind == "engram"
+                && path == "paused.md"
+                && text.contains("Typed while the laptop slept.")
+                && sender.as_deref() == Some("owner")),
+        "{kept:?}"
+    );
+
+    // An edit.
+    p.alpha.sync_take_over(Some("eng"), true).await.unwrap();
+    let err = while_beta_takes_over(
+        &p,
+        p.alpha.edit_engram(&params(json!({
+            "identifier": "alpha", "domain": "eng", "operation": "append",
+            "content": "An edit that waited."
+        }))),
+    )
+    .await
+    .unwrap_err();
+    kept_refusal(&err);
+    assert_eq!(std::fs::read(a_root.join("alpha.md")).unwrap(), alpha_md);
+    assert_eq!(
+        p.row_of("alpha.md").await.as_deref(),
+        Some(alpha_row.as_str())
+    );
+
+    // A delete.
+    p.alpha.sync_take_over(Some("eng"), true).await.unwrap();
+    let err = while_beta_takes_over(
+        &p,
+        p.alpha
+            .delete_engram(&params(json!({ "identifier": "alpha", "domain": "eng" }))),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("is written by inst-b"), "{err}");
+    assert_eq!(std::fs::read(a_root.join("alpha.md")).unwrap(), alpha_md);
+    assert!(p.row_of("alpha.md").await.is_some(), "the row stays");
+
+    // A move.
+    p.alpha.sync_take_over(Some("eng"), true).await.unwrap();
+    let err = while_beta_takes_over(
+        &p,
+        p.alpha.move_engram(
+            &params(json!({
+                "identifier": "alpha", "domain": "eng", "destination": "moved/alpha"
+            })),
+            &Scope::Unrestricted,
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("is written by inst-b"), "{err}");
+    assert_eq!(std::fs::read(a_root.join("alpha.md")).unwrap(), alpha_md);
+    assert!(!a_root.join("moved/alpha.md").exists());
+    assert!(p.row_of("alpha.md").await.is_some() && p.row_of("moved/alpha.md").await.is_none());
+
+    // An attachment upload.
+    p.alpha.sync_take_over(Some("eng"), true).await.unwrap();
+    let err = while_beta_takes_over(
+        &p,
+        p.alpha
+            .attachment_write("eng", "assets/flow.png", b"\x89PNG".to_vec()),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("is written by inst-b"), "{err}");
+    assert!(!a_root.join("assets/flow.png").exists());
+}

@@ -509,12 +509,31 @@ impl Engine {
                     )));
                 }
                 write_file(&path, markdown)?;
-                let store = self.store.lock().await;
-                let domain_id = store
-                    .upsert_domain(domain, Some(&root.to_string_lossy()), DomainKind::File)
-                    .await?;
-                self.reindex_file(&*store, domain_id, &root, "MANIFEST.md")
-                    .await?;
+                let indexed = async {
+                    let store = self.store.lock().await;
+                    let domain_id = store
+                        .upsert_domain(domain, Some(&root.to_string_lossy()), DomainKind::File)
+                        .await?;
+                    self.reindex_file(&*store, domain_id, &root, "MANIFEST.md")
+                        .await
+                }
+                .await;
+                if let Err(e) = indexed {
+                    let actor = crate::scope::overlay_actor(scope).unwrap_or_default();
+                    return Err(self.refuse_file_write(
+                        e,
+                        domain,
+                        &path,
+                        current.as_deref().map(str::as_bytes),
+                        markdown.as_bytes(),
+                        Some(super::fence::EngramKeep {
+                            rel: "MANIFEST.md",
+                            text: markdown,
+                            account: crate::scope::overlay_actor(scope),
+                            actor: &actor,
+                        }),
+                    ));
+                }
                 ("MANIFEST.md".to_string(), current.is_none())
             }
             ContentSource::Virtual => {

@@ -6642,6 +6642,34 @@ impl Engine {
         expected_sha: Option<&str>,
         store_full: bool,
     ) -> Result<EngramId> {
+        self.index_markdown_in(
+            store,
+            domain_id,
+            rel,
+            text,
+            stamp,
+            expected_sha,
+            store_full,
+            None,
+        )
+        .await
+    }
+
+    /// [`Engine::index_markdown`], behind the host-lock fence of the file
+    /// domain whose folder is `fenced` ([`Engine::file_row_fence`]): the
+    /// rows commit only while this instance still holds its lock.
+    #[allow(clippy::too_many_arguments)]
+    async fn index_markdown_in(
+        &self,
+        store: &dyn Store,
+        domain_id: DomainId,
+        rel: &str,
+        text: &str,
+        stamp: FileStamp,
+        expected_sha: Option<&str>,
+        store_full: bool,
+        fenced: Option<&Path>,
+    ) -> Result<EngramId> {
         // The index holds LF only, whatever line endings the text came with: a
         // file domain's CRLF file is indexed as LF (its stamp stays the one of
         // the bytes on disk, which a read never rewrites), and a virtual row
@@ -6661,6 +6689,9 @@ impl Engine {
 
         store.begin().await?;
         let result = async {
+            if let Some(root) = fenced {
+                self.file_row_fence(store, domain_id, root).await?;
+            }
             let id = store
                 .upsert_engram_checked(domain_id, &record, expected_sha)
                 .await?;
@@ -6712,7 +6743,8 @@ impl Engine {
         let text =
             String::from_utf8(bytes).map_err(|_| EngineError::Invalid(not_utf8_message(&abs)))?;
         // A file domain stores the body only; its source of truth is the file.
-        self.index_markdown(store, domain_id, rel, &text, stamp, None, false)
+        // Its rows are written only by the domain's host.
+        self.index_markdown_in(store, domain_id, rel, &text, stamp, None, false, Some(root))
             .await
     }
 

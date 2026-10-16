@@ -193,6 +193,7 @@ impl Engine {
             return Ok(receipt);
         }
 
+        let mut before: Option<Vec<u8>> = None;
         if let ContentSource::File { root } = &source {
             let abs = join_rel(root, &desc.path);
             // The row of an engram only the previous host of a host move has
@@ -206,6 +207,7 @@ impl Engine {
                 )
                 .await?;
             }
+            before = std::fs::read(&abs).ok();
             std::fs::remove_file(&abs).map_err(|source| EngineError::Io {
                 path: abs.display().to_string(),
                 source,
@@ -214,9 +216,13 @@ impl Engine {
         let store = self.store.lock().await;
         // One transaction for the index half of a delete: the rows, the
         // unbinding of every reference that named them and, for a MANIFEST,
-        // its alias rows land together or not at all.
+        // its alias rows land together or not at all. Behind the host-lock
+        // fence for a file domain.
         store.begin().await?;
         let removed = async {
+            if let ContentSource::File { root } = &source {
+                self.file_row_fence(&*store, desc.domain_id, root).await?;
+            }
             store.delete_engram(desc.domain_id, &desc.path).await?;
             // Deleting a MANIFEST removes its `## Tag Aliases` declarations, so
             // clear the domain's derived alias rows: the content is already
@@ -232,6 +238,19 @@ impl Engine {
             Ok(()) => store.commit().await?,
             Err(e) => {
                 let _ = store.rollback().await;
+                drop(store);
+                // The host lock moved while the file was removed: the file
+                // comes back, so nothing of this delete landed.
+                if let ContentSource::File { root } = &source
+                    && super::fence::is_file_host_refusal(&e)
+                {
+                    return Err(self.refuse_file_delete(
+                        e,
+                        &desc.domain,
+                        &join_rel(root, &desc.path),
+                        before.as_deref(),
+                    ));
+                }
                 return Err(e);
             }
         }

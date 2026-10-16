@@ -773,6 +773,24 @@ impl Engine {
                 }
                 .await;
                 if let Err(e) = indexed {
+                    // The host lock moved while the file was written: the
+                    // text is kept and the path put back, as long as it still
+                    // holds what this write left there.
+                    if super::fence::is_file_host_refusal(&e) {
+                        return Err(self.refuse_file_write(
+                            e,
+                            &p.domain,
+                            &abs,
+                            previous.as_deref(),
+                            crystalline_core::to_lf(&markdown).as_bytes(),
+                            Some(super::fence::EngramKeep {
+                                rel: &path,
+                                text: &markdown,
+                                account: crate::scope::overlay_actor(scope),
+                                actor: &actor,
+                            }),
+                        ));
+                    }
                     put_back(&abs, previous.as_deref());
                     return Err(e);
                 }
@@ -1130,6 +1148,9 @@ impl Engine {
                     self.close_reflection_rooms_if_switching_off(&desc.domain, Some(&content))
                         .await;
                 }
+                // What the save replaces, kept so a save the host-lock fence
+                // refuses puts the file back.
+                let before = std::fs::read(&abs).ok();
                 // Held across the comparison, the write and the reindex. See
                 // `Engine::write_lock`.
                 let _lock = match self
@@ -1159,9 +1180,27 @@ impl Engine {
                         )));
                     }
                 };
-                let store = self.store.lock().await;
-                self.reindex_file(&*store, desc.domain_id, root, &desc.path)
-                    .await?;
+                let indexed = {
+                    let store = self.store.lock().await;
+                    self.reindex_file(&*store, desc.domain_id, root, &desc.path)
+                        .await
+                };
+                if let Err(e) = indexed {
+                    let actor = crate::scope::overlay_actor(scope).unwrap_or_default();
+                    return Err(self.refuse_file_write(
+                        e,
+                        &desc.domain,
+                        &abs,
+                        before.as_deref(),
+                        crystalline_core::to_lf(&content).as_bytes(),
+                        Some(super::fence::EngramKeep {
+                            rel: &desc.path,
+                            text: &content,
+                            account: crate::scope::overlay_actor(scope),
+                            actor: &actor,
+                        }),
+                    ));
+                }
             }
             ContentSource::Virtual => {
                 let stamp = virtual_stamp(&content);
@@ -1577,9 +1616,31 @@ impl Engine {
                 // file write. See `Engine::write_lock`.
                 let lock = self.write_lock(&abs);
                 let _guard = lock.lock().await;
+                let before = std::fs::read(&abs).ok();
                 write_file(&abs, content)?;
-                let store = self.store.lock().await;
-                self.reindex_file(&*store, domain_id, root, path).await?;
+                let indexed = {
+                    let store = self.store.lock().await;
+                    self.reindex_file(&*store, domain_id, root, path).await
+                };
+                if let Err(e) = indexed {
+                    // A room's restore keeps nothing itself: the room holds the
+                    // text and keeps it when it closes unsaved. A verb's
+                    // restore keeps what it sent.
+                    let keep = actor.as_ref().map(|account| super::fence::EngramKeep {
+                        rel: path,
+                        text: content,
+                        account: Some(account.clone()),
+                        actor: account,
+                    });
+                    return Err(self.refuse_file_write(
+                        e,
+                        domain,
+                        &abs,
+                        before.as_deref(),
+                        crystalline_core::to_lf(content).as_bytes(),
+                        keep,
+                    ));
+                }
             }
             ContentSource::Virtual => {
                 let stamp = virtual_stamp(content);
