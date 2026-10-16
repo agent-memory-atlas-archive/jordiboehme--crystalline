@@ -43,6 +43,7 @@ mod github_identity;
 mod github_settings;
 mod graph;
 mod identity_links;
+mod kept;
 mod login_throttle;
 mod mcp_tokens;
 mod members;
@@ -156,6 +157,9 @@ use crate::scope::{DomainAccess, DomainRight};
         members::set_member,
         members::remove_member,
         members::set_owner,
+        kept::list,
+        kept::read,
+        kept::remove,
         domains_admin::sync_status,
         domains_admin::sync_now,
         domains_admin::sync_summary,
@@ -338,6 +342,9 @@ use crate::scope::{DomainAccess, DomainRight};
         reflections::OpenThreadBody,
         reflections::ThreadStepBody,
         reflections::ReflectionAssetsResponse,
+        kept::KeptTextEntry,
+        kept::KeptTextsResponse,
+        kept::KeptTextResponse,
         reflections::UploadedReflectionAsset,
         reflections::MoveReflectionAssetBody,
         schemas::EngramChanged,
@@ -770,6 +777,13 @@ fn routes(state: RestState) -> Router {
             put(members::set_member).delete(members::remove_member),
         )
         .route("/domains/{domain}/owner", put(members::set_owner))
+        // The texts the server kept when a room could not save. Rights are
+        // decided per entry in the engine; see [`kept`].
+        .route("/domains/{domain}/kept", get(kept::list))
+        .route(
+            "/domains/{domain}/kept/{id}",
+            get(kept::read).delete(kept::remove),
+        )
         // Admin only as well. The GET is a pure read and stays served on a
         // read-only instance; the POST is a pull that writes, and does not.
         .route(

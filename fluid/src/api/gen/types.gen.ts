@@ -668,6 +668,61 @@ export type IssuedTokenResponse = {
 };
 
 /**
+ * One kept text, without its text.
+ */
+export type KeptTextEntry = {
+    /**
+     * Its size in bytes.
+     */
+    bytes: number;
+    /**
+     * A short, stable id for the routes below.
+     */
+    id: string;
+    /**
+     * When it was kept.
+     */
+    kept_at: string;
+    /**
+     * `engram` or `reflection`: the kind of room it was kept from.
+     */
+    kind: string;
+    /**
+     * The engram's file path in its domain, or the page's path inside
+     * `reflections/`.
+     */
+    path: string;
+};
+
+/**
+ * What `GET /domains/{domain}/kept/{id}` answers.
+ */
+export type KeptTextResponse = KeptTextEntry & {
+    /**
+     * The domain.
+     */
+    domain: string;
+    /**
+     * The text the room held, as it was kept.
+     */
+    text: string;
+};
+
+/**
+ * What `GET /domains/{domain}/kept` answers.
+ */
+export type KeptTextsResponse = {
+    /**
+     * The domain.
+     */
+    domain: string;
+    /**
+     * The kept texts this caller may handle, oldest first.
+     */
+    kept: Array<KeptTextEntry>;
+};
+
+/**
  * The key the join was opened under.
  */
 export type LeaveBody = {
@@ -3862,6 +3917,128 @@ export type GetInboundReferencesResponses = {
 };
 
 export type GetInboundReferencesResponse = GetInboundReferencesResponses[keyof GetInboundReferencesResponses];
+
+export type ListKeptTextsData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/kept';
+};
+
+export type ListKeptTextsErrors = {
+    /**
+     * The anonymous viewer of a domain it reads.
+     */
+    401: ProblemDetail;
+    /**
+     * Neither write access to the engrams nor curate access to the Reflection.
+     */
+    403: ProblemDetail;
+    /**
+     * No such domain, or none this caller may see.
+     */
+    404: ProblemDetail;
+};
+
+export type ListKeptTextsError = ListKeptTextsErrors[keyof ListKeptTextsErrors];
+
+export type ListKeptTextsResponses = {
+    /**
+     * The kept texts this caller may handle.
+     */
+    200: KeptTextsResponse;
+};
+
+export type ListKeptTextsResponse = ListKeptTextsResponses[keyof ListKeptTextsResponses];
+
+export type DeleteKeptTextData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+        /**
+         * The id from the listing.
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/kept/{id}';
+};
+
+export type DeleteKeptTextErrors = {
+    /**
+     * The anonymous viewer of a domain it reads.
+     */
+    401: ProblemDetail;
+    /**
+     * Neither write access to the engrams nor curate access to the Reflection, or this instance is read-only.
+     */
+    403: ProblemDetail;
+    /**
+     * No such domain or kept text for this caller.
+     */
+    404: ProblemDetail;
+};
+
+export type DeleteKeptTextError = DeleteKeptTextErrors[keyof DeleteKeptTextErrors];
+
+export type DeleteKeptTextResponses = {
+    /**
+     * Deleted.
+     */
+    204: void;
+};
+
+export type DeleteKeptTextResponse = DeleteKeptTextResponses[keyof DeleteKeptTextResponses];
+
+export type ReadKeptTextData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+        /**
+         * The id from the listing.
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/kept/{id}';
+};
+
+export type ReadKeptTextErrors = {
+    /**
+     * The anonymous viewer of a domain it reads.
+     */
+    401: ProblemDetail;
+    /**
+     * Neither write access to the engrams nor curate access to the Reflection.
+     */
+    403: ProblemDetail;
+    /**
+     * No such domain or kept text for this caller.
+     */
+    404: ProblemDetail;
+};
+
+export type ReadKeptTextError = ReadKeptTextErrors[keyof ReadKeptTextErrors];
+
+export type ReadKeptTextResponses = {
+    /**
+     * The entry and its text.
+     */
+    200: KeptTextResponse;
+};
+
+export type ReadKeptTextResponse = ReadKeptTextResponses[keyof ReadKeptTextResponses];
 
 export type GetDomainManifestData = {
     body?: never;

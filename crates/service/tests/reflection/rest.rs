@@ -880,7 +880,7 @@ const ANONYMOUS_EDIT: &str =
     "anonymous visitors read this Reflection and cannot change it; sign in to edit";
 
 /// A request with no session at all: the anonymous viewer, where it is on.
-async fn anonymous(
+pub async fn anonymous(
     addr: std::net::SocketAddr,
     method: reqwest::Method,
     path: &str,

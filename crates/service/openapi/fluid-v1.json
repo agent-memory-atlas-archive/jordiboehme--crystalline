@@ -3605,6 +3605,204 @@
         }
       }
     },
+    "/api/v1/domains/{domain}/kept": {
+      "get": {
+        "tags": [
+          "domains"
+        ],
+        "summary": "The texts the server kept for this domain when a room could not save.",
+        "description": "When the last person leaves a co-editing room and its final save is refused or ends in a conflict, the server keeps the room's text in its state folder. This lists them. A Reflection page's text needs `curate` on the Reflection, an engram's text needs write access to the engrams; each entry is listed only for a caller who holds its own right. The Reflection's state plays no part: a text kept because the Reflection was switched off is listed too.",
+        "operationId": "list_kept_texts",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The kept texts this caller may handle.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeptTextsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The anonymous viewer of a domain it reads.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Neither write access to the engrams nor curate access to the Reflection.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/kept/{id}": {
+      "get": {
+        "tags": [
+          "domains"
+        ],
+        "summary": "One kept text with its text.",
+        "description": "The same rights as the listing, decided for this entry's kind. An entry this caller may not handle answers 404, like an id that names none.",
+        "operationId": "read_kept_text",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id from the listing.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The entry and its text.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeptTextResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The anonymous viewer of a domain it reads.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Neither write access to the engrams nor curate access to the Reflection.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain or kept text for this caller.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "domains"
+        ],
+        "summary": "Delete one kept text, once its text is back where it belongs.",
+        "description": "The same rights as reading it. The server never deletes a kept text on its own; this is the only way one goes, besides removing the file by hand.",
+        "operationId": "delete_kept_text",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id from the listing.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "The anonymous viewer of a domain it reads.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Neither write access to the engrams nor curate access to the Reflection, or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain or kept text for this caller.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/domains/{domain}/manifest": {
       "get": {
         "tags": [
@@ -11703,6 +11901,97 @@
             "type": "string",
             "description": "The token itself, this once.",
             "example": "cmt_1f3c..."
+          }
+        }
+      },
+      "KeptTextEntry": {
+        "type": "object",
+        "description": "One kept text, without its text.",
+        "required": [
+          "id",
+          "kind",
+          "path",
+          "kept_at",
+          "bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its size in bytes.",
+            "example": 1204,
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "description": "A short, stable id for the routes below.",
+            "example": "3f9a1c2b7d4e"
+          },
+          "kept_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was kept.",
+            "example": "2026-10-15T08:00:00Z"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`engram` or `reflection`: the kind of room it was kept from.",
+            "example": "reflection"
+          },
+          "path": {
+            "type": "string",
+            "description": "The engram's file path in its domain, or the page's path inside\n`reflections/`.",
+            "example": "guides/deploying.md"
+          }
+        }
+      },
+      "KeptTextResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/KeptTextEntry",
+            "description": "The entry, as the listing shows it."
+          },
+          {
+            "type": "object",
+            "required": [
+              "domain",
+              "text"
+            ],
+            "properties": {
+              "domain": {
+                "type": "string",
+                "description": "The domain.",
+                "example": "eng"
+              },
+              "text": {
+                "type": "string",
+                "description": "The text the room held, as it was kept.",
+                "example": "# Deploying\n\nTyped while it was switched off.\n"
+              }
+            }
+          }
+        ],
+        "description": "What `GET /domains/{domain}/kept/{id}` answers."
+      },
+      "KeptTextsResponse": {
+        "type": "object",
+        "description": "What `GET /domains/{domain}/kept` answers.",
+        "required": [
+          "domain",
+          "kept"
+        ],
+        "properties": {
+          "domain": {
+            "type": "string",
+            "description": "The domain.",
+            "example": "eng"
+          },
+          "kept": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeptTextEntry"
+            },
+            "description": "The kept texts this caller may handle, oldest first."
           }
         }
       },
