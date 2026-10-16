@@ -228,6 +228,63 @@ describe("the move dialog", () => {
     expect(screen.queryByRole("dialog", { name: /move/i })).toBeNull();
   });
 
+  it("holds the dialog open on links it could not rewrite and names them", async () => {
+    const moved = vi.fn(() => ({
+      from: { domain: "eng", permalink: "alpha", path: "alpha.md" },
+      to: { domain: "eng", path: "guides/alpha.md" },
+      cross_domain: false,
+      links_rewritten: 1,
+      attachment_warnings: [],
+      links_failed: [
+        { domain: "eng", path: "beta.md", reason: "the file is locked" },
+        { domain: "ops", path: "runbook.md", reason: "" },
+      ],
+    }));
+    serve({
+      "/domains/eng/move": (_path, init) =>
+        init?.method === "POST" ? moved() : null,
+      "/domains/eng/engrams/guides/alpha": () =>
+        detailResponse({ permalink: "guides/alpha" }),
+    });
+    renderApp("/d/eng/e/alpha");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Move" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: /move/i });
+    await userEvent.clear(within(dialog).getByLabelText("Destination path"));
+    await userEvent.type(
+      within(dialog).getByLabelText("Destination path"),
+      "guides/alpha",
+    );
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Move engram" }),
+    );
+
+    // The move landed and says so; the engrams that still link the old
+    // address are listed plainly, the other domain named with its path.
+    const listed = await within(dialog).findByRole("status");
+    expect(listed).toHaveTextContent(
+      "These engrams still link the old address:",
+    );
+    expect(listed).toHaveTextContent("beta.md (the file is locked)");
+    expect(listed).toHaveTextContent("ops / runbook.md");
+    expect(within(dialog).getByText("The engram moved.")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    expect(reads("/domains/eng/engrams/guides/alpha")).toBe(0);
+
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Continue to the engram" }),
+    );
+    await waitFor(() => {
+      const landed = screen.getByRole("navigation", { name: "Breadcrumb" });
+      expect(within(landed).getByText("guides")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("dialog", { name: /move/i })).toBeNull();
+  });
+
   it("repairs a permalink that drifted off its folder in place and says what followed", async () => {
     const moved = vi.fn((init?: RequestInit) => {
       expect(JSON.parse(init?.body as string)).toEqual({

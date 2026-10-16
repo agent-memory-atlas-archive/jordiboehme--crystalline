@@ -20,6 +20,11 @@
  * error to raise. This dialog is the only surface still mounted at that
  * moment - the navigation unmounts it - so the notice is held here and the
  * author leaves it themselves.
+ *
+ * The same holds for links the move could not rewrite: the receipt's
+ * `links_failed` names every engram that still links the old address, and
+ * the list stays on screen until the author goes on, as the page move dialog
+ * keeps its own list.
  */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -142,9 +147,13 @@ export default function MoveDialogBody({
         ...(updatePermalink ? { new_permalink: "path" } : {}),
       }),
     onSuccess: (receipt) => {
-      if (receipt.attachmentWarnings.length > 0) {
-        // The move landed; what it could not carry is the whole message, and
-        // travelling now would take it off the screen before it was read.
+      if (
+        receipt.attachmentWarnings.length > 0 ||
+        receipt.linksFailed.length > 0
+      ) {
+        // The move landed; what it could not carry or relink is the whole
+        // message, and travelling now would take it off the screen before it
+        // was read.
         setWarned(receipt);
         return;
       }
@@ -183,34 +192,58 @@ export default function MoveDialogBody({
           <Dialog.Description className="mt-1 text-sm text-slate-500 dark:text-slate-400">
             {warned === null
               ? "Every link to it follows it to the new address."
-              : "The engram moved. These attachments did not come with it."}
+              : warned.attachmentWarnings.length > 0
+                ? "The engram moved. These attachments did not come with it."
+                : "The engram moved."}
           </Dialog.Description>
           {warned !== null ? (
             <div className="mt-3 flex flex-col gap-3">
-              {/*
+              {warned.attachmentWarnings.length > 0 && (
+                /*
                 Amber on purpose, not the red the form branch gives a refusal:
                 the move landed, and this names what it could not carry rather
                 than something that failed. The two tones are the difference
                 between "go and look at this" and "this did not happen", and
                 borrowing the error red would make a move that succeeded read
                 as a move that broke.
-              */}
-              <div
-                role="alert"
-                className="rounded bg-amber-50 px-2 py-1 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100"
-              >
-                <ul className="list-disc pl-4">
-                  {/* Keyed by position as well as text: a warning is a
+                */
+                <div
+                  role="alert"
+                  className="rounded bg-amber-50 px-2 py-1 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100"
+                >
+                  <ul className="list-disc pl-4">
+                    {/* Keyed by position as well as text: a warning is a
                       sentence the server composed, not an identity this side
                       can lean on, and two identical sentences would collide as
                       one key. The list arrives whole and is never reordered or
                       filtered, so the position is stable for as long as it is
                       on screen. */}
-                  {warned.attachmentWarnings.map((warning, index) => (
-                    <li key={`${index}-${warning}`}>{warning}</li>
-                  ))}
-                </ul>
-              </div>
+                    {warned.attachmentWarnings.map((warning, index) => (
+                      <li key={`${index}-${warning}`}>{warning}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {warned.linksFailed.length > 0 && (
+                // A status, as on the page move dialog: the move landed, and
+                // this names where a link still points at the old address.
+                <div role="status" className="text-sm">
+                  <p>These engrams still link the old address:</p>
+                  <ul className="list-disc pl-5">
+                    {warned.linksFailed.map((linker, index) => (
+                      <li key={`${index}-${linker.domain}-${linker.path}`}>
+                        <span className="font-mono">
+                          {linker.domain !== "" &&
+                          linker.domain !== engram.domain
+                            ? `${linker.domain} / ${linker.path}`
+                            : linker.path}
+                        </span>
+                        {linker.reason !== "" ? ` (${linker.reason})` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <div className="flex justify-end">
                 <button
                   type="button"

@@ -93,6 +93,7 @@ describe("the engram writes module", () => {
       linksRewritten: 2,
       referencesRewritten: 0,
       attachmentWarnings: [],
+      linksFailed: [],
     });
 
     // The address the engine chose wins over the path: a custom permalink
@@ -178,6 +179,24 @@ describe("the engram writes module", () => {
       destination: "guides/alpha",
     });
     expect(quiet.attachmentWarnings).toEqual([]);
+    expect(quiet.linksFailed).toEqual([]);
+
+    // The engrams a move could not relink, each with its reason; a row
+    // without a path names nothing and is left out.
+    apiMock.mockResolvedValueOnce({
+      to: { domain: "eng", path: "guides/alpha.md" },
+      links_failed: [
+        { domain: "ops", path: "runbook.md", reason: "locked" },
+        { domain: "ops" },
+      ],
+    });
+    const unlinked = await moveEngram("eng", {
+      permalink: "alpha",
+      destination: "guides/alpha",
+    });
+    expect(unlinked.linksFailed).toEqual([
+      { domain: "ops", path: "runbook.md", reason: "locked" },
+    ]);
   });
 
   it("reads a 412 into a SaveConflict and nothing else into one", () => {
