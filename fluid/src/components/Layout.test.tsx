@@ -229,6 +229,17 @@ beforeEach(() => {
   localStorage.clear();
 });
 
+/** Open the avatar menu, signed in as the fixture's person. */
+async function openAvatar(
+  user: ReturnType<typeof userEvent.setup>,
+  name = "Ada Lovelace",
+): Promise<HTMLElement> {
+  await user.click(await screen.findByRole("button", { name }));
+  // The body is a lazy part, so the first row is the sign it has arrived.
+  await screen.findByRole("menuitem", { name: "Maintenance" });
+  return screen.getByRole("menu");
+}
+
 describe("the layout", () => {
   it("moves focus to the main region on navigation", async () => {
     // /auth/me + /domains + a domain tree/engrams, the way the sidebar and
@@ -425,7 +436,18 @@ describe("the layout", () => {
     expect(screen.queryByRole("link", { name: "GitHub" })).toBeNull();
     // And nothing to share on an instance with no origins to share to.
     expect(screen.queryByRole("button", { name: "Share changes" })).toBeNull();
-    expect(screen.getByRole("button", { name: /^Theme:/ })).toBeVisible();
+    // The old strip of Maintenance, width, text size, theme and help controls
+    // is gone: all of it lives in the avatar menu now.
+    for (const gone of [
+      /^Theme:/,
+      "Help",
+      "Use full width",
+      "Use large text",
+    ]) {
+      expect(screen.queryByRole("button", { name: gone })).toBeNull();
+    }
+    expect(screen.queryByRole("link", { name: "Maintenance" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Ada Lovelace" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Fluid" })).toHaveAttribute(
       "href",
       "/",
@@ -435,11 +457,11 @@ describe("the layout", () => {
     expect(screen.queryByRole("link", { name: "Users" })).toBeNull();
 
     // And the pointer is told the same names the screen reader is, by the
-    // app's own tooltip rather than the browser's - so none of these three
+    // app's own tooltip rather than the browser's - so none of these
     // carries a `title` for a second label to be drawn from.
     for (const control of [
       screen.getByRole("button", { name: "Domains" }),
-      screen.getByRole("button", { name: /^Theme:/ }),
+      screen.getByRole("button", { name: "Ada Lovelace" }),
     ]) {
       expect(control).not.toHaveAttribute("title");
     }
@@ -461,12 +483,23 @@ describe("the layout", () => {
     await screen.findByRole("heading", { name: "Home" });
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Ada Lovelace" }));
+    await openAvatar(user);
 
-    // The header line says who, in the account's own name and its role, and is
-    // not something to press - it is what the rest of the menu is about.
-    expect(await screen.findByText("ada (admin)")).toBeVisible();
-    expect(screen.queryByRole("menuitem", { name: "ada (admin)" })).toBeNull();
+    // The header says who, in the account's own name and its role in words,
+    // and is not something to press - it is what the rest of the menu is about.
+    expect(
+      await screen.findByText("Admin on this instance", { exact: false }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("menuitem", { name: /Admin on this instance/ }),
+    ).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Profile" })).toHaveAttribute(
+      "href",
+      "/profile",
+    );
+    expect(
+      screen.getByRole("menuitem", { name: "Maintenance" }),
+    ).toHaveAttribute("href", "/maintenance");
     // Then the two screens this session may reach, then the way out.
     expect(
       await screen.findByRole("menuitem", { name: "Users" }),
@@ -485,12 +518,15 @@ describe("the layout", () => {
     await screen.findByRole("heading", { name: "Home" });
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Ada Lovelace" }));
+    await openAvatar(user);
 
     // The editor's own identity, and the way out. The screens behind Users and
     // Settings both refuse anyone but an admin, and the frame offers no door
     // that will not open.
-    expect(await screen.findByText("ada (editor)")).toBeVisible();
+    expect(
+      await screen.findByText("Editor on this instance", { exact: false }),
+    ).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: "Maintenance" })).toBeVisible();
     expect(screen.getByRole("menuitem", { name: "Log out" })).toBeVisible();
     expect(screen.queryByRole("menuitem", { name: "Users" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Settings" })).toBeNull();
@@ -503,10 +539,8 @@ describe("the layout", () => {
     await screen.findByRole("heading", { name: "Home" });
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /^Theme:/ }));
-    await user.click(
-      await screen.findByRole("menuitemradio", { name: "Dark" }),
-    );
+    await openAvatar(user);
+    await user.click(screen.getByRole("menuitemradio", { name: "Dark" }));
 
     await waitFor(() => {
       expect(document.documentElement.dataset.theme).toBe("dark");
@@ -1164,24 +1198,31 @@ describe("the content's own width", () => {
 
     renderApp("/");
     const user = userEvent.setup();
-    const widen = await screen.findByRole("button", { name: "Use full width" });
-    // In the frame's own top bar rather than on the screen inside it: this is
-    // a choice about every screen, and it is drawn where the theme control is.
-    expect(widen.closest("header")).not.toBeNull();
-    expect(widen.closest("main")).toBeNull();
-    // The name says which way it will switch rather than which way it is, so
-    // a reader who hears it knows what pressing it does.
     expect(await screen.findByRole("main")).not.toHaveAttribute("data-width");
+    // In the frame's own avatar menu rather than on the screen inside it: this
+    // is a choice about every screen, and it is drawn with the theme.
+    const menu = await openAvatar(user);
+    const group = within(menu).getByRole("group", { name: "Width" });
+    expect(
+      within(group).getByRole("menuitemradio", { name: "Reading" }),
+    ).toBeChecked();
 
-    await user.click(widen);
+    await user.click(
+      within(group).getByRole("menuitemradio", { name: "Full" }),
+    );
 
     // One attribute on the frame is the whole of what the stylesheet reads:
     // the measure is lifted under it, everywhere, with no screen saying so.
-    expect(screen.getByRole("main")).toHaveAttribute("data-width", "full");
+    expect(screen.getByRole("main", { hidden: true })).toHaveAttribute(
+      "data-width",
+      "full",
+    );
     expect(
-      screen.getByRole("button", { name: "Use reading width" }),
-    ).toBeVisible();
+      within(group).getByRole("menuitemradio", { name: "Full" }),
+    ).toBeChecked();
     expect(localStorage.getItem("fluid.layout.width")).toBe("full");
+    // A choice in the Display group does not close the menu.
+    expect(screen.getByRole("menu")).toBeVisible();
   });
 
   it("reads a stored full width at mount", async () => {
@@ -1189,11 +1230,16 @@ describe("the content's own width", () => {
     serveSignedIn();
 
     renderApp("/");
+    const user = userEvent.setup();
+    const menu = await openAvatar(user);
 
     expect(
-      await screen.findByRole("button", { name: "Use reading width" }),
-    ).toBeVisible();
-    expect(screen.getByRole("main")).toHaveAttribute("data-width", "full");
+      within(menu).getByRole("menuitemradio", { name: "Full" }),
+    ).toBeChecked();
+    expect(screen.getByRole("main", { hidden: true })).toHaveAttribute(
+      "data-width",
+      "full",
+    );
   });
 
   it("lifts the frame's own cap at full width, header and body alike", async () => {
@@ -1206,7 +1252,8 @@ describe("the content's own width", () => {
     const headerRow = document.querySelector("header > div");
     expect(headerRow?.className).toContain("max-w-350");
 
-    await user.click(screen.getByRole("button", { name: "Use full width" }));
+    await openAvatar(user);
+    await user.click(screen.getByRole("menuitemradio", { name: "Full" }));
 
     // Full width means the window: dropping the details column and lifting
     // the measure while the frame keeps its cap would hand back the room and
@@ -1214,7 +1261,7 @@ describe("the content's own width", () => {
     expect(main.parentElement?.className).not.toContain("max-w-350");
     expect(headerRow?.className).not.toContain("max-w-350");
 
-    await user.click(screen.getByRole("button", { name: "Use reading width" }));
+    await user.click(screen.getByRole("menuitemradio", { name: "Reading" }));
     expect(main.parentElement?.className).toContain("max-w-350");
     expect(headerRow?.className).toContain("max-w-350");
   });
@@ -1225,11 +1272,12 @@ describe("the content's own width", () => {
 
     renderApp("/");
     const user = userEvent.setup();
-    await user.click(
-      await screen.findByRole("button", { name: "Use reading width" }),
-    );
+    await openAvatar(user);
+    await user.click(screen.getByRole("menuitemradio", { name: "Reading" }));
 
-    expect(screen.getByRole("main")).not.toHaveAttribute("data-width");
+    expect(screen.getByRole("main", { hidden: true })).not.toHaveAttribute(
+      "data-width",
+    );
     expect(localStorage.getItem("fluid.layout.width")).toBe("reading");
   });
 
@@ -1338,15 +1386,15 @@ describe("the text size", () => {
     const main = await screen.findByRole("main");
     expect(main).not.toHaveAttribute("data-text");
 
-    await user.click(screen.getByRole("button", { name: "Use large text" }));
+    await openAvatar(user);
+    await user.click(screen.getByRole("menuitemradio", { name: "Large" }));
 
     // One attribute on the frame is the whole of what the stylesheet reads,
     // for the rendered document and the editor alike.
     expect(main).toHaveAttribute("data-text", "large");
-    expect(
-      screen.getByRole("button", { name: "Use regular text" }),
-    ).toBeVisible();
+    expect(screen.getByRole("menuitemradio", { name: "Large" })).toBeChecked();
     expect(localStorage.getItem("fluid.layout.text")).toBe("large");
+    expect(screen.getByRole("menu")).toBeVisible();
   });
 
   it("reads a stored large text at mount, and goes back", async () => {
@@ -1359,8 +1407,11 @@ describe("the text size", () => {
       "data-text",
       "large",
     );
-    await user.click(screen.getByRole("button", { name: "Use regular text" }));
-    expect(screen.getByRole("main")).not.toHaveAttribute("data-text");
+    await openAvatar(user);
+    await user.click(screen.getByRole("menuitemradio", { name: "Regular" }));
+    expect(screen.getByRole("main", { hidden: true })).not.toHaveAttribute(
+      "data-text",
+    );
     expect(localStorage.getItem("fluid.layout.text")).toBe("regular");
   });
 
@@ -1379,7 +1430,7 @@ describe("the text size", () => {
   });
 });
 
-describe("the help menu", () => {
+describe("the Handbook and the shortcut map in the avatar menu", () => {
   it("leads to the Handbook in a new tab and to the shortcut map", async () => {
     serveSignedIn();
 
@@ -1387,7 +1438,7 @@ describe("the help menu", () => {
     await screen.findByRole("main");
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole("button", { name: "Help" }));
+    await openAvatar(user);
     const handbook = await screen.findByRole("menuitem", {
       name: "Handbook (opens in a new tab)",
     });
@@ -1412,34 +1463,40 @@ describe("the help menu", () => {
     expect(more).toHaveAttribute("target", "_blank");
   });
 
-  it("works from the keyboard alone", async () => {
+  it("opens the map from the keyboard and gives focus back to the avatar", async () => {
     serveSignedIn();
 
     renderApp("/");
     await screen.findByRole("main");
     const user = userEvent.setup();
 
-    screen.getByRole("button", { name: "Help" }).focus();
+    const avatar = await screen.findByRole("button", { name: "Ada Lovelace" });
+    avatar.focus();
     await user.keyboard("{Enter}");
-    await screen.findByRole("menu");
-    // Radix focuses the first item on open; one step down is the shortcuts row.
-    await user.keyboard("{ArrowDown}{Enter}");
+    await screen.findByRole("menuitem", { name: "Maintenance" });
+    await user.click(
+      screen.getByRole("menuitem", { name: /^Keyboard shortcuts/ }),
+    );
+    expect(
+      await screen.findByRole("dialog", { name: /keyboard shortcuts/i }),
+    ).toBeVisible();
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(avatar).toHaveFocus();
+    });
+  });
+
+  it("still opens the map with the question mark", async () => {
+    serveSignedIn();
+
+    renderApp("/");
+    await screen.findByRole("main");
+    const user = userEvent.setup();
+    await user.keyboard("?");
 
     expect(
       await screen.findByRole("dialog", { name: /keyboard shortcuts/i }),
     ).toBeVisible();
-  });
-
-  it("is there for an anonymous reader too", async () => {
-    serve({
-      "/auth/me": () => meResponse({ anonymous: true }),
-      "/domains": domainsResponse,
-    });
-
-    renderApp("/");
-    await screen.findByRole("main");
-
-    expect(screen.getByRole("button", { name: "Help" })).toBeVisible();
   });
 
   it("opens the Handbook from the palette", async () => {
@@ -1460,6 +1517,129 @@ describe("the help menu", () => {
       "noopener,noreferrer",
     );
     open.mockRestore();
+  });
+});
+
+/**
+ * The avatar menu (spec 4.3): one menu for who you are, Maintenance and the
+ * Display choices, as the avatar in the bar opens it.
+ */
+describe("the avatar menu", () => {
+  it("shows the initial, and names the person", async () => {
+    serveSignedIn();
+
+    renderApp("/");
+    const avatar = await screen.findByRole("button", { name: "Ada Lovelace" });
+
+    expect(avatar).toHaveTextContent("A");
+  });
+
+  it("changes the theme and keeps the menu open", async () => {
+    serveSignedIn();
+
+    renderApp("/");
+    const user = userEvent.setup();
+    const menu = await openAvatar(user);
+    const theme = within(menu).getByRole("group", { name: "Theme" });
+
+    await user.click(
+      within(theme).getByRole("menuitemradio", { name: "Dark" }),
+    );
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe("dark");
+    });
+    expect(screen.getByRole("menu")).toBeVisible();
+    expect(
+      within(theme).getByRole("menuitemradio", { name: "Dark" }),
+    ).toBeChecked();
+    // And a second choice in the same visit, without opening it again.
+    await user.click(
+      within(theme).getByRole("menuitemradio", { name: "Light" }),
+    );
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe("light");
+    });
+    expect(screen.getByRole("menu")).toBeVisible();
+  });
+
+  it("moves within a radio group with the left and right arrows", async () => {
+    serveSignedIn();
+
+    renderApp("/");
+    const user = userEvent.setup();
+    const menu = await openAvatar(user);
+    const theme = within(menu).getByRole("group", { name: "Theme" });
+    const system = within(theme).getByRole("menuitemradio", { name: "System" });
+    const light = within(theme).getByRole("menuitemradio", { name: "Light" });
+    const dark = within(theme).getByRole("menuitemradio", { name: "Dark" });
+
+    system.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(light).toHaveFocus();
+    await user.keyboard("{ArrowRight}");
+    expect(dark).toHaveFocus();
+    await user.keyboard("{ArrowRight}");
+    expect(system).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(dark).toHaveFocus();
+    // Space or Enter chooses it, and the menu stays.
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe("dark");
+    });
+    expect(screen.getByRole("menu")).toBeVisible();
+  });
+
+  it("closes on Escape and returns focus to the avatar", async () => {
+    serveSignedIn();
+
+    renderApp("/");
+    const user = userEvent.setup();
+    const avatar = await screen.findByRole("button", { name: "Ada Lovelace" });
+    await openAvatar(user);
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+    expect(avatar).toHaveFocus();
+  });
+
+  it("is a neutral circle with a way to log in for an anonymous reader", async () => {
+    serve({
+      "/auth/me": () => meResponse({ anonymous: true }),
+      "/domains": domainsResponse,
+    });
+
+    renderApp("/");
+    const user = userEvent.setup();
+    const menu = await openAvatar(user, "Viewing anonymously");
+
+    expect(within(menu).getByText("No account on this session")).toBeVisible();
+    expect(
+      within(menu).getByRole("menuitem", { name: "Log in" }),
+    ).toHaveAttribute("href", "/login");
+    // What works without an account stays.
+    expect(
+      within(menu).getByRole("menuitem", { name: "Maintenance" }),
+    ).toBeVisible();
+    expect(within(menu).getByRole("group", { name: "Theme" })).toBeVisible();
+    expect(
+      within(menu).getByRole("group", { name: "Text size" }),
+    ).toBeVisible();
+    expect(within(menu).getByRole("group", { name: "Width" })).toBeVisible();
+    expect(
+      within(menu).getByRole("menuitem", { name: /^Keyboard shortcuts/ }),
+    ).toBeVisible();
+    expect(
+      within(menu).getByRole("menuitem", { name: /^Handbook/ }),
+    ).toBeVisible();
+    // And nothing that needs an account.
+    for (const gone of ["Profile", "Users", "Settings", "Log out"]) {
+      expect(within(menu).queryByRole("menuitem", { name: gone })).toBeNull();
+    }
   });
 });
 

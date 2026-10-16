@@ -214,6 +214,25 @@
   .switcher-menu {
     @apply z-50 w-80 max-w-[calc(100vw-1rem)] rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] shadow-pop;
   }
+  /* The avatar in the top bar and in its menu (AvatarMenu): the initial in a circle. */
+  .avatar {
+    @apply inline-grid size-8 shrink-0 place-items-center rounded-full border border-accent-300/45 bg-accent-tint text-[13px] font-semibold text-accent-800 dark:text-accent-200;
+  }
+  .avatar[data-state="open"] {
+    @apply shadow-[0_0_0_3px_var(--accent-tint)];
+  }
+  .avatar-anon {
+    @apply border-hair-strong bg-sunken text-muted;
+  }
+  .avatar-lg {
+    @apply size-10 text-[15px];
+  }
+  .avatar-menu {
+    @apply z-50 w-[19.5rem] max-w-[calc(100vw-1rem)] rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] shadow-pop;
+  }
+  .avatar-grab {
+    @apply mx-auto mt-1 mb-2.5 h-1 w-9.5 rounded-sm bg-hair-strong md:hidden;
+  }
   .mode-half[aria-current] {
     @apply bg-seg-on font-semibold text-ink shadow-[0_1px_2px_rgb(15_23_42/0.08),0_0_0_1px_rgb(15_23_42/0.04)];
   }
@@ -668,5 +687,39 @@
   .section-flash {
     animation: none;
     background-color: var(--section-flash-wash);
+  }
+}
+
+/*
+ * Below the medium breakpoint the avatar menu is a bottom sheet (spec 4.5):
+ * the same popper, pinned to the foot of the window over a scrim. Radix sets
+ * its placement inline on a wrapper, so the sheet has to out-rank inline
+ * styles; `will-change` goes too, because it would make the wrapper the
+ * containing block of the scrim.
+ */
+@media (max-width: 47.99rem) {
+  [data-radix-popper-content-wrapper]:has(> .avatar-menu) {
+    position: fixed !important;
+    inset: auto 0 0 0 !important;
+    transform: none !important;
+    min-width: 0 !important;
+    will-change: auto !important;
+  }
+  [data-radix-popper-content-wrapper]:has(> .avatar-menu)::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background: rgb(15 23 42 / 0.4);
+  }
+  .avatar-menu {
+    width: 100%;
+    max-width: none;
+    max-height: 85vh;
+    overflow-y: auto;
+    border-width: 1px 0 0;
+    border-radius: 16px 16px 0 0;
+    padding: 8px 10px calc(14px + env(safe-area-inset-bottom));
+    font-size: 15px;
   }
 }

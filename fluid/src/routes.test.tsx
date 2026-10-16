@@ -207,7 +207,12 @@ describe("the screens behind a lazy boundary", () => {
     renderApp("/graph");
     await screen.findByRole("heading", { name: "Graph", level: 1 });
 
-    await userEvent.click(screen.getByRole("link", { name: "Maintenance" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Ada Lovelace" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Maintenance" }),
+    );
 
     // The screen arrives after its chunk, inside the same main region, and
     // nothing it draws takes the focus the route change put there.

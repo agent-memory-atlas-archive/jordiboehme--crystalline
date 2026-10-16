@@ -162,12 +162,12 @@ test("the sidebar collapse control is desktop only", async ({ page }) => {
   ).toBeVisible();
 });
 
-test("the Help menu reaches the Handbook and the shortcut map and gives focus back", async ({
+test("the avatar menu reaches the Handbook and the shortcut map and gives focus back", async ({
   page,
 }) => {
   await page.goto("./");
-  const help = page.getByRole("button", { name: "Help", exact: true });
-  await help.click();
+  const avatar = page.locator("header button.avatar");
+  await avatar.click();
   const handbook = page.getByRole("menuitem", {
     name: "Handbook (opens in a new tab)",
   });
@@ -176,22 +176,46 @@ test("the Help menu reaches the Handbook and the shortcut map and gives focus ba
     "https://jordiboehme.github.io/crystalline/",
   );
   await page.keyboard.press("Escape");
+  await expect(avatar).toBeFocused();
 
   // A menu item opens a dialog: twice, so the second open is served from the
-  // cached chunk. Escape must hand focus back to the Help button and leave the
+  // cached chunk. Escape must hand focus back to the avatar and leave the
   // page clickable (Radix sets pointer-events: none on the body while a menu
   // and a dialog overlap, and a mishandled close can leave it there).
   for (let round = 0; round < 2; round += 1) {
-    await help.click();
+    await avatar.click();
     await page.getByRole("menuitem", { name: /^Keyboard shortcuts/ }).click();
     await expect(
       page.getByRole("dialog", { name: /keyboard shortcuts/i }),
     ).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toBeHidden();
-    await expect(help).toBeFocused();
+    await expect(avatar).toBeFocused();
     await expect(page.locator("body")).not.toHaveCSS("pointer-events", "none");
   }
+});
+
+test("the Display choices change the page and keep the avatar menu open", async ({
+  page,
+}) => {
+  await page.goto("./");
+  await page.locator("header button.avatar").click();
+  const menu = page.getByRole("menu");
+  await menu
+    .getByRole("group", { name: "Theme" })
+    .getByRole("menuitemradio", { name: "Dark" })
+    .click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(menu).toBeVisible();
+  await menu
+    .getByRole("group", { name: "Text size" })
+    .getByRole("menuitemradio", { name: "Large" })
+    .click();
+  await expect(menu).toBeVisible();
+  await menu
+    .getByRole("group", { name: "Theme" })
+    .getByRole("menuitemradio", { name: "System" })
+    .click();
 });
 
 /**
@@ -200,9 +224,7 @@ test("the Help menu reaches the Handbook and the shortcut map and gives focus ba
  */
 async function topBarBoxes(page: Page, width: number) {
   await page.setViewportSize({ width, height: 780 });
-  await expect(
-    page.getByRole("button", { name: "Help", exact: true }),
-  ).toBeVisible();
+  await expect(page.locator("header button.avatar")).toBeVisible();
   // Wait for the new width to be the page's own and for two frames to lay
   // out under it, so the boxes below are read after the resize rather than
   // just before it (a failure here that does not repeat is a read that came

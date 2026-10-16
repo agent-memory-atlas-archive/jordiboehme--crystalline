@@ -1503,7 +1503,10 @@ describe("the way to the maintenance screen", () => {
     renderApp("/");
     await screen.findByRole("heading", { name: "Home" });
 
-    const link = screen.getByRole("link", { name: "Maintenance" });
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Ada Lovelace" }),
+    );
+    const link = await screen.findByRole("menuitem", { name: "Maintenance" });
     expect(link).toHaveAttribute("href", "/maintenance");
 
     await userEvent.click(link);

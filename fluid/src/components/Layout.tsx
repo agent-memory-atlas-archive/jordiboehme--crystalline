@@ -22,35 +22,16 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  AArrowDown,
-  AArrowUp,
-  CircleHelp,
-  CircleUserRound,
-  ExternalLink,
-  FoldHorizontal,
   House,
-  Moon,
   PanelLeft,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
   Search,
   Share2,
-  Stethoscope,
-  Sun,
-  UnfoldHorizontal,
-  UserRoundX,
 } from "lucide-react";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
-import { DropdownMenu } from "radix-ui";
 import {
   Link,
   NavLink,
@@ -86,7 +67,6 @@ import {
   LAYOUT_TEXT_KEY,
   LayoutTextContext,
   storedLargeText,
-  useLargeText,
 } from "../layoutText";
 import { lazyChunk } from "../lazyChunk";
 import type { LayoutText } from "../layoutText";
@@ -107,18 +87,15 @@ import { HANDBOOK_URL } from "../handbook";
 import {
   domainRoute,
   githubSettingsRoute,
-  maintenanceRoute,
-  profileRoute,
   reflectionPathOf,
   searchRoute,
-  usersRoute,
 } from "../paths";
-import { useTheme } from "../theme/context";
-import type { ThemePreference } from "../theme/context";
+import { useWide } from "../useWide";
 import { CommandPalette, openPalette } from "./CommandPalette";
 import { CreateDomainDialog } from "./CreateDomainDialog";
 import { CreateEngramDialog } from "./CreateEngramDialog";
 import { DomainNav } from "./DomainNav";
+import { AvatarMenu } from "./AvatarMenu";
 import { DomainSwitcher } from "./DomainSwitcher";
 import { HelpOverlay } from "./HelpOverlay";
 import { JoinedDraftBar } from "./JoinedDraftBar";
@@ -132,7 +109,6 @@ import { ShareDialog } from "./ShareDialog";
 import { SharePickerDialog } from "./SharePickerDialog";
 import { ShatterGem } from "./ShatterGem";
 import { ownedPhrase, shareBadgeCount } from "./changes";
-import { ITEM_CLASSES, MENU_CLASSES } from "./menu";
 import { Chip, FOCUS_RING, IconButton, Tooltip } from "./primitives";
 
 const ReflectionNav = lazyChunk(() => import("./ReflectionNav"));
@@ -166,52 +142,6 @@ function storedRail(): boolean {
   } catch {
     return false;
   }
-}
-
-/** Tailwind's `md`, which is where the sidebar stops being a drawer. */
-const WIDE_QUERY = "(min-width: 48rem)";
-
-/** Whether there is a column beside the reading surface at all. */
-function wideNow(): boolean {
-  // An environment with no media queries to ask - jsdom, an old embedded view -
-  // is answered the way the stylesheet's own default answers it, which is the
-  // desktop frame; below `md` the sheet takes the sidebar over anyway.
-  return (
-    typeof window.matchMedia !== "function" ||
-    window.matchMedia(WIDE_QUERY).matches
-  );
-}
-
-/**
- * Whether the frame is wide enough to have a sidebar rather than a drawer.
- *
- * The rail is a choice about a column that only exists from `md` up. Below it
- * the sidebar is a drawer the top bar opens over the screen, and a stored rail
- * applied there would be three faults at once: a three-rem strip of icons
- * where a full-width drawer belongs, a way out of it that the stylesheet hides
- * (`hidden md:inline-flex`) so the keyboard handoff lands on nothing, and two
- * disclosures of one sidebar disagreeing about whether it is open. Gating the
- * rail on the same breakpoint the stylesheet uses closes all three, because
- * below it there is only ever the expanded drawer.
- */
-function useWide(): boolean {
-  // Subscribed rather than held in state: the width of the window is somebody
-  // else's value, and React reads it on every render it does, so a window
-  // resized between a render and the effect that would have caught it cannot
-  // leave a stale answer behind.
-  return useSyncExternalStore(subscribeWide, wideNow);
-}
-
-/** Watch the breakpoint, where there is anything to watch it with. */
-function subscribeWide(onChange: () => void): () => void {
-  if (typeof window.matchMedia !== "function") {
-    return () => undefined;
-  }
-  const query = window.matchMedia(WIDE_QUERY);
-  query.addEventListener("change", onChange);
-  return () => {
-    query.removeEventListener("change", onChange);
-  };
 }
 
 /**
@@ -1089,21 +1019,13 @@ function TopBar({
 
         <ShareChanges onShare={onShare} />
 
-        <MaintenanceLink />
-
         {capabilities.readOnly && (
           <span className="hidden md:inline">
             <Chip variant="caution">Read only</Chip>
           </span>
         )}
 
-        <span className="hidden md:inline-flex">
-          <WidthToggle />
-        </span>
-        <TextSizeToggle />
-        <ThemeMenu />
-        <HelpMenu onShortcuts={onHelp} />
-        <UserMenu />
+        <AvatarMenu onShortcuts={onHelp} />
       </div>
     </header>
   );
@@ -1231,45 +1153,6 @@ function ShareChanges({
 }
 
 /**
- * The way to the maintenance report.
- *
- * In the top bar rather than in the sidebar, because it is a question about the
- * whole instance rather than about one domain, and the sidebar hands itself
- * over to a domain's own navigation as soon as somebody opens one. It stands
- * beside the search box for the same reason search stands there: those are the
- * two screens that are about everything at once.
- *
- * Offered to every role, including a read-only session and an anonymous one:
- * the screen behind it reads and writes nothing, so there is no door here that
- * will not open - which is the rule the settings and accounts links follow from
- * the other side.
- *
- * The name is drawn where there is room for it and spoken either way: below the
- * medium breakpoint the top bar is a hamburger, a wordmark and a search field
- * already, so the word folds away and the glyph carries it, with the
- * `aria-label` making the two widths the same control to anything that reads
- * the page.
- */
-function MaintenanceLink() {
-  return (
-    <NavLink
-      to={maintenanceRoute()}
-      aria-label="Maintenance"
-      className={({ isActive }) =>
-        `inline-flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-800 ${FOCUS_RING} ${
-          isActive
-            ? "bg-slate-100 font-medium dark:bg-slate-800"
-            : "text-slate-600 dark:text-slate-300"
-        }`
-      }
-    >
-      <Stethoscope aria-hidden="true" size={16} strokeWidth={1.75} />
-      <span className="hidden md:inline">Maintenance</span>
-    </NavLink>
-  );
-}
-
-/**
  * The search box. It only routes; the search screen owns the query itself.
  *
  * It searches every domain, inside a domain too (the search screen narrows
@@ -1328,288 +1211,6 @@ function SearchBox() {
         </kbd>
       </div>
     </form>
-  );
-}
-
-/**
- * How wide the content is allowed to be.
- *
- * Beside the theme control rather than beside the one that folds the sidebar:
- * both of these are choices about how the app is drawn for this reader on
- * every screen, where the fold is a control on the column it folds. It is also
- * the only place the sidebar's own toggle is not - below the medium breakpoint
- * that one is hidden, because there is no rail down there to fold into, and
- * this choice holds at every width.
- *
- * The name says which way it will switch rather than which way it is, the way
- * the sidebar's pair of names does: a control that announces its own state
- * leaves a reader to work out what pressing it would do.
- *
- * Below the medium breakpoint it steps aside (the top bar wraps it in a span
- * that is hidden there): on a phone the content is always full width, and the
- * top bar needs the room.
- */
-function WidthToggle() {
-  const { fullWidth, toggleFullWidth } = useFullWidth();
-  return (
-    <IconButton
-      label={fullWidth ? "Use reading width" : "Use full width"}
-      icon={fullWidth ? FoldHorizontal : UnfoldHorizontal}
-      onClick={toggleFullWidth}
-    />
-  );
-}
-
-/**
- * The other frame-level choice about the content, named the way the width
- * toggle is: for the act, not the state.
- */
-function TextSizeToggle() {
-  const { largeText, toggleLargeText } = useLargeText();
-  return (
-    <IconButton
-      label={largeText ? "Use regular text" : "Use large text"}
-      icon={largeText ? AArrowDown : AArrowUp}
-      onClick={toggleLargeText}
-    />
-  );
-}
-
-/** Light, dark, or whatever the system says. */
-function ThemeMenu() {
-  const { preference, resolved, choose } = useTheme();
-  const options: { value: ThemePreference; label: string }[] = [
-    { value: "system", label: "System" },
-    { value: "light", label: "Light" },
-    { value: "dark", label: "Dark" },
-  ];
-
-  return (
-    <DropdownMenu.Root>
-      {/*
-        The tooltip wraps the trigger rather than the menu: what a reader wants
-        named is the glyph, and the panel it opens names itself in three rows.
-      */}
-      <Tooltip label={`Theme: ${preference}`}>
-        <DropdownMenu.Trigger
-          aria-label={`Theme: ${preference}`}
-          className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 ${FOCUS_RING}`}
-        >
-          {resolved === "dark" ? (
-            <Moon aria-hidden="true" size={16} strokeWidth={1.75} />
-          ) : (
-            <Sun aria-hidden="true" size={16} strokeWidth={1.75} />
-          )}
-        </DropdownMenu.Trigger>
-      </Tooltip>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          align="end"
-          sideOffset={6}
-          className={MENU_CLASSES}
-        >
-          <DropdownMenu.RadioGroup
-            value={preference}
-            onValueChange={(value) => {
-              choose(value as ThemePreference);
-            }}
-          >
-            {options.map((option) => (
-              <DropdownMenu.RadioItem
-                key={option.value}
-                value={option.value}
-                className={ITEM_CLASSES}
-              >
-                <DropdownMenu.ItemIndicator>
-                  <span aria-hidden="true">*</span>
-                </DropdownMenu.ItemIndicator>
-                {option.label}
-              </DropdownMenu.RadioItem>
-            ))}
-          </DropdownMenu.RadioGroup>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  );
-}
-
-/**
- * Where to learn more: the Handbook, and the shortcut map `?` opens.
- *
- * Beside the account menu, where people look for help, and icon-only like the
- * other frame-level controls beside it: it matters less than Share and
- * Maintenance, so it does not carry a word. A menu rather than a plain link
- * because the shortcut map had no visible way in at all; this is it.
- */
-function HelpMenu({
-  onShortcuts,
-}: {
-  onShortcuts: (opener: HTMLElement | null) => void;
-}) {
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  return (
-    <DropdownMenu.Root>
-      <Tooltip label="Help">
-        <DropdownMenu.Trigger
-          ref={triggerRef}
-          aria-label="Help"
-          className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 ${FOCUS_RING}`}
-        >
-          <CircleHelp aria-hidden="true" size={16} strokeWidth={1.75} />
-        </DropdownMenu.Trigger>
-      </Tooltip>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          align="end"
-          sideOffset={6}
-          className={MENU_CLASSES}
-        >
-          <DropdownMenu.Item className={ITEM_CLASSES} asChild>
-            <a href={HANDBOOK_URL} target="_blank" rel="noreferrer">
-              Handbook <span className="sr-only">(opens in a new tab)</span>
-              <ExternalLink
-                aria-hidden="true"
-                size={12}
-                strokeWidth={1.75}
-                className="ml-auto text-slate-400"
-              />
-            </a>
-          </DropdownMenu.Item>
-          <DropdownMenu.Item
-            className={ITEM_CLASSES}
-            onSelect={() => {
-              onShortcuts(triggerRef.current);
-            }}
-          >
-            Keyboard shortcuts
-            <kbd
-              aria-hidden="true"
-              className="text-caption ml-auto rounded border border-slate-300 px-1 text-slate-500 dark:border-slate-700 dark:text-slate-400"
-            >
-              ?
-            </kbd>
-          </DropdownMenu.Item>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  );
-}
-
-/**
- * Who you are, what only you can reach, and how to stop being them.
- *
- * The one identity item in the frame. The accounts screen used to sit beside
- * this as an icon of its own, which made two controls out of one subject: an
- * administrator is a person, and the screens only an administrator opens are
- * things about that person's session rather than things about the page. So they
- * are rows in here, under the line that says who is signed in - and the two of
- * them are gated exactly as the screens behind them are, because a frame that
- * offers a door which will not open is worse than one that offers nothing.
- *
- * The anonymous viewer is named on the trigger itself rather than only inside
- * the menu: browsing without an account changes what the app will let you do,
- * so it is a fact that belongs on screen, not one you have to go looking for.
- * Below the medium breakpoint there is no room for the words, so the anonymous
- * state keeps its own glyph (a crossed-out person rather than the signed-in
- * one) and the tooltip says the name or "Viewing anonymously" on hover and
- * focus.
- */
-function UserMenu() {
-  const { user, capabilities, logout } = useAuth();
-  const label = user ? user.display : "Viewing anonymously";
-
-  return (
-    <DropdownMenu.Root>
-      {/*
-        Below the medium breakpoint the name gives way to an icon so the top bar
-        fits a phone; the name stays the accessible name either way. The
-        classes are written out rather than layered on BUTTON.ghost: a phone
-        padding of 0 would lose to ghost's own px-2, since same-specificity
-        utilities are decided by stylesheet order, not by the class list.
-      */}
-      <Tooltip label={label}>
-        <DropdownMenu.Trigger
-          aria-label={label}
-          className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded border border-slate-300 text-sm text-slate-600 hover:bg-slate-100 md:block md:h-auto md:w-auto md:max-w-28 md:truncate lg:max-w-40 md:px-2 md:py-1 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800 ${FOCUS_RING}`}
-        >
-          <span className="flex items-center justify-center md:hidden">
-            {user ? (
-              <CircleUserRound
-                aria-hidden="true"
-                size={16}
-                strokeWidth={1.75}
-              />
-            ) : (
-              <UserRoundX aria-hidden="true" size={16} strokeWidth={1.75} />
-            )}
-          </span>
-          <span className="hidden md:inline">{label}</span>
-        </DropdownMenu.Trigger>
-      </Tooltip>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          align="end"
-          sideOffset={6}
-          className={MENU_CLASSES}
-        >
-          {user ? (
-            <>
-              <DropdownMenu.Label className="px-2 py-1.5 text-xs text-slate-500 dark:text-slate-400">
-                {user.name} ({capabilities.role})
-              </DropdownMenu.Label>
-              <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
-              {/*
-                Ungated, unlike the two rows under it: this one is about the
-                account in the line above rather than about the instance, so
-                every signed-in session has one to open. A viewer's says why
-                there is no identity to connect there, which is an answer
-                rather than a door that will not open.
-              */}
-              <DropdownMenu.Item className={ITEM_CLASSES} asChild>
-                <Link to={profileRoute()}>Profile</Link>
-              </DropdownMenu.Item>
-              {capabilities.canAdminister && (
-                <>
-                  <DropdownMenu.Item className={ITEM_CLASSES} asChild>
-                    <Link to={usersRoute()}>Users</Link>
-                  </DropdownMenu.Item>
-                  {/*
-                    Named for what the screen is rather than for the service it
-                    talks to: from in here it is where this instance's settings
-                    are kept, and the one page of them today happens to be the
-                    repository connection team domains are tracked with. This is
-                    the only door to it - the branch icon that used to stand in
-                    the top bar came in here with the accounts one.
-                  */}
-                  <DropdownMenu.Item className={ITEM_CLASSES} asChild>
-                    <Link to={githubSettingsRoute()}>Settings</Link>
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
-                </>
-              )}
-              <DropdownMenu.Item
-                className={ITEM_CLASSES}
-                onSelect={() => {
-                  void logout();
-                }}
-              >
-                Log out
-              </DropdownMenu.Item>
-            </>
-          ) : (
-            <>
-              <DropdownMenu.Label className="px-2 py-1.5 text-xs text-slate-500 dark:text-slate-400">
-                No account on this session
-              </DropdownMenu.Label>
-              <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
-              <DropdownMenu.Item className={ITEM_CLASSES} asChild>
-                <Link to="/login">Log in</Link>
-              </DropdownMenu.Item>
-            </>
-          )}
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
   );
 }
 
