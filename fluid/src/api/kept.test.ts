@@ -16,8 +16,10 @@ import {
   keptFrom,
   keptKey,
   keptKindLabel,
+  keptNoticeSentence,
   keptQuery,
   keptTextKey,
+  savedHolds,
 } from "./kept";
 import type { KeptTextEntry } from "./model";
 
@@ -114,9 +116,28 @@ describe("the kept texts api module", () => {
     expect(keptKindLabel("engram")).toBe("Engram text");
     expect(keptKindLabel("reflection")).toBe("Page text");
     expect(keptKindLabel("comment")).toBe("Comment");
+    expect(keptKindLabel("something new")).toBe("Kept text");
     expect(keptFrom(entry({ sender: "ben" }))).toBe("From ben");
     expect(keptFrom(entry({ draft: true }))).toBe("From your draft");
     // A room's text records nobody, and nobody is invented for it.
     expect(keptFrom(entry())).toBeNull();
+  });
+
+  it("words the editors' note by sender and draft", () => {
+    expect(keptNoticeSentence(entry())).toBe(
+      "The server kept unsaved text for this page.",
+    );
+    expect(keptNoticeSentence(entry({ sender: "ben" }))).toBe(
+      "The server kept unsaved text for this page. From ben.",
+    );
+    expect(keptNoticeSentence(entry({ draft: true }))).toBe(
+      "The server kept unsaved text from your draft.",
+    );
+  });
+
+  it("finds a kept text in a saved one whatever the line endings", () => {
+    expect(savedHolds("a\r\nb\r\n", "a\nb\n")).toBe(true);
+    expect(savedHolds("x\na\nb\ny", "a\nb\n")).toBe(true);
+    expect(savedHolds("a\nc\n", "a\nb\n")).toBe(false);
   });
 });

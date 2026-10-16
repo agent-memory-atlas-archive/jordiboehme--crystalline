@@ -263,7 +263,9 @@ describe("the reflection editor", () => {
     });
     renderApp("/d/eng/reflection-edit/guides/a.md");
     expect(
-      await screen.findByText("Text from an earlier session was kept."),
+      await screen.findByText(
+        "Text from an earlier session is kept on this device.",
+      ),
     ).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Put it back" }));
     expect(session.ytext?.toJSON()).toBe("typed offline\n");
@@ -272,7 +274,9 @@ describe("the reflection editor", () => {
       "typed offline\n",
     );
     expect(
-      screen.queryByText("Text from an earlier session was kept."),
+      screen.queryByText(
+        "Text from an earlier session is kept on this device.",
+      ),
     ).toBeNull();
   });
 
@@ -287,7 +291,9 @@ describe("the reflection editor", () => {
     renderApp("/d/eng/reflection-edit/guides/a.md");
     await screen.findByRole("textbox", { name: "Page source" });
     expect(
-      screen.queryByText("Text from an earlier session was kept."),
+      screen.queryByText(
+        "Text from an earlier session is kept on this device.",
+      ),
     ).toBeNull();
   });
 
@@ -302,7 +308,9 @@ describe("the reflection editor", () => {
     renderApp("/d/eng/reflection-edit/guides/a.md");
     await screen.findByRole("textbox", { name: "Page source" });
     expect(
-      screen.queryByText("Text from an earlier session was kept."),
+      screen.queryByText(
+        "Text from an earlier session is kept on this device.",
+      ),
     ).toBeNull();
   });
 
@@ -644,7 +652,7 @@ describe("the reflection editor's offer history", () => {
     await openEditor();
     const note = screen.getByRole("note");
     expect(note).toHaveTextContent(
-      "Texts from 2 earlier sessions were kept. Newest first.",
+      "Texts from 2 earlier sessions are kept on this device. Newest first.",
     );
     const items = within(note).getAllByRole("listitem");
     expect(items).toHaveLength(2);
@@ -696,7 +704,7 @@ describe("the reflection editor's offer history", () => {
     addOffer("ann", "eng", OFFER, at("08", "other\n"));
     await openEditor();
     expect(
-      screen.getByText("Text from an earlier session was kept."),
+      screen.getByText("Text from an earlier session is kept on this device."),
     ).toBeVisible();
     expect(
       readOffers("ann", "eng", OFFER).map((offer) => offer.content),
@@ -840,7 +848,9 @@ describe("the reflection editor when its page was moved", () => {
     expect(readDraft("ann", "eng", KEY)).toBeNull();
     expect(readDraft("ann", "eng", OFFER)).toBeNull();
     expect(
-      await screen.findByText("Text from an earlier session was kept."),
+      await screen.findByText(
+        "Text from an earlier session is kept on this device.",
+      ),
     ).toBeVisible();
     expect(
       readDraft("ann", "eng", "reflection-offer:guides/b.md")?.content,
@@ -957,7 +967,7 @@ describe("the reflection editor's kept text", () => {
     expect(readDraft("ann", "eng", OFFER)?.content).toBe("older\n");
     expect(readDraft("ann", "eng", KEY)?.content).toBe(`${PAGE}more\n`);
     expect(
-      screen.getByText("Text from an earlier session was kept."),
+      screen.getByText("Text from an earlier session is kept on this device."),
     ).toBeVisible();
   });
 
@@ -1591,7 +1601,7 @@ describe("the reflection editor's kept text notice", () => {
     return dropped;
   }
 
-  it("offers the server's kept text beside this browser's own copy", async () => {
+  it("offers the server's kept text beside this device's own copy, in words that tell them apart", async () => {
     serveKept(() => ({ domain: "eng", kept: [keptEntry()] }));
     sessionMock.mockReturnValue(room(PAGE));
     writeDraft("ann", "eng", "reflection:guides/a.md", {
@@ -1601,10 +1611,10 @@ describe("the reflection editor's kept text notice", () => {
     });
     await openEditor();
     expect(
-      await screen.findByText("You have a kept text for this page."),
+      await screen.findByText("The server kept unsaved text for this page."),
     ).toBeVisible();
     expect(
-      screen.getByText("Text from an earlier session was kept."),
+      screen.getByText("Text from an earlier session is kept on this device."),
     ).toBeVisible();
     const notice = screen.getByRole("note", { name: "Kept text" });
     await userEvent.click(within(notice).getByRole("button", { name: "Show" }));
@@ -1614,24 +1624,30 @@ describe("the reflection editor's kept text notice", () => {
     ).toHaveTextContent("First, as the room kept it.");
   });
 
-  it("Use it puts the kept text into the room as one undoable change, then drops it", async () => {
+  it("Replace with it changes the room's text as one undoable change, and waits for the room's save", async () => {
     const dropped = serveKept(() => ({ domain: "eng", kept: [keptEntry()] }));
-    const session = room(PAGE);
-    sessionMock.mockReturnValue(session);
+    const session = live(room(PAGE));
     await openEditor();
     const notice = await screen.findByRole("note", { name: "Kept text" });
     await userEvent.click(
-      within(notice).getByRole("button", { name: "Use it" }),
+      within(notice).getByRole("button", { name: "Replace with it" }),
     );
+    const ytext = session.get().ytext;
     await waitFor(() => {
-      expect(session.ytext?.toJSON()).toBe(KEPT_PAGE);
+      expect(ytext?.toJSON()).toBe(KEPT_PAGE);
     });
+    expect(
+      await within(notice).findByText("Waiting for the save."),
+    ).toBeVisible();
+    session.set({ saveState: "pending" });
+    expect(dropped).toEqual([]);
+    session.set({ saveState: "ok" });
     await waitFor(() => {
       expect(dropped).toEqual(["k1"]);
     });
     await waitFor(() => {
       expect(
-        screen.queryByText("You have a kept text for this page."),
+        screen.queryByText("The server kept unsaved text for this page."),
       ).toBeNull();
     });
     // The room's own undo takes the whole change back.
@@ -1644,7 +1660,21 @@ describe("the reflection editor's kept text notice", () => {
     act(() => {
       undo?.run?.(view as EditorView);
     });
-    expect(session.ytext?.toJSON()).toBe(PAGE);
+    expect(ytext?.toJSON()).toBe(PAGE);
+  });
+
+  it("offers no replace once the room has ended", async () => {
+    serveKept(() => ({ domain: "eng", kept: [keptEntry()] }));
+    const session = live(room(PAGE));
+    await openEditor();
+    const notice = await screen.findByRole("note", { name: "Kept text" });
+    expect(
+      within(notice).getByRole("button", { name: "Replace with it" }),
+    ).toBeVisible();
+    session.set({ closed: true, closedReason: "off" });
+    expect(
+      within(notice).queryByRole("button", { name: "Replace with it" }),
+    ).toBeNull();
   });
 
   it("Drop asks first, then drops the kept text", async () => {
@@ -1663,21 +1693,17 @@ describe("the reflection editor's kept text notice", () => {
     await waitFor(() => {
       expect(dropped).toEqual(["k1"]);
     });
-    await waitFor(() => {
-      expect(
-        screen.queryByText("You have a kept text for this page."),
-      ).toBeNull();
-    });
     expect(session.ytext?.toJSON()).toBe(PAGE);
   });
 
-  it("is not there for another page, a comment or a draft", async () => {
+  it("is not there for another page, a comment, an engram or a draft", async () => {
     serveKept(() => ({
       domain: "eng",
       kept: [
         keptEntry({ path: "guides/b.md" }),
         keptEntry({ id: "k2", kind: "comment", sender: "ben" }),
         keptEntry({ id: "k3", kind: "engram" }),
+        keptEntry({ id: "k4", draft: true }),
       ],
     }));
     sessionMock.mockReturnValue(room(PAGE));
@@ -1687,9 +1713,7 @@ describe("the reflection editor's kept text notice", () => {
         apiMock.mock.calls.some(([path]) => path === "/domains/eng/kept"),
       ).toBe(true);
     });
-    expect(
-      screen.queryByText("You have a kept text for this page."),
-    ).toBeNull();
+    expect(screen.queryByRole("note", { name: "Kept text" })).toBeNull();
   });
 
   it("is not there, and says nothing, without a right to kept texts", async () => {
@@ -1703,9 +1727,7 @@ describe("the reflection editor's kept text notice", () => {
         apiMock.mock.calls.some(([path]) => path === "/domains/eng/kept"),
       ).toBe(true);
     });
-    expect(
-      screen.queryByText("You have a kept text for this page."),
-    ).toBeNull();
+    expect(screen.queryByRole("note", { name: "Kept text" })).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });

@@ -9,15 +9,17 @@
  * texts (or none kept) never sees it: every refusal of the listing reads as
  * "nothing kept here".
  *
- * Use it reads the text first and changes nothing when that fails. The
- * editor then puts it in as one change the person can undo, and only after
- * that is the kept copy dropped. A drop that fails then leaves the notice up
- * and says the text is in the editor already.
+ * The server copy is the last copy until the text is saved again, so
+ * Replace with it never deletes it on its own. It reads the text, checks the
+ * editor can still take it, puts it in as one change the person can undo,
+ * and asks the editor whether it really landed. Only the next save that
+ * holds the text drops the kept copy; until then the note says it waits for
+ * that save. Nothing is ever dropped for a text that went nowhere.
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactElement } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { problemDetail } from "../api/client";
 import {
@@ -26,8 +28,10 @@ import {
   isNoKeptRight,
   keptForPage,
   keptKey,
+  keptNoticeSentence,
   keptQuery,
   keptTextKey,
+  savedHolds,
 } from "../api/kept";
 import type { KeptTextEntry } from "../api/kept";
 import { useAuth } from "../auth/AuthContext";
@@ -39,13 +43,23 @@ const NOTICE =
 const DANGER = `rounded font-medium text-red-700 underline underline-offset-[3px] hover:no-underline dark:text-red-300 ${FOCUS_RING}`;
 const ACTION = `rounded text-link underline decoration-(--link-line) underline-offset-[3px] hover:no-underline aria-disabled:cursor-default aria-disabled:opacity-50 ${FOCUS_RING}`;
 
+/** A text put in the editor, waiting for the save that holds it. */
+interface Placed {
+  id: string;
+  text: string;
+  /** A save held it, but the kept copy could not be dropped. */
+  held?: boolean;
+}
+
 export function KeptTextNotice({
   domain,
   kind,
   path,
   draft,
-  canUse,
-  onUse,
+  ready,
+  onReplace,
+  saved,
+  onDropped,
 }: {
   domain: string;
   /** The kind of room this editor is. */
@@ -53,12 +67,20 @@ export function KeptTextNotice({
   /** The page's path in its domain (inside `reflections/` for a page); null
    *  when this editor has no page of its own to offer a text for. */
   path: string | null;
-  /** Whether the editor holds the caller's own review draft. */
-  draft: boolean;
-  /** Whether the editor can take a text now: false once a room has ended. */
-  canUse: boolean;
-  /** Put `text` in the editor as one change the person can undo. */
-  onUse: (text: string) => void;
+  /** Whether the editor is over the caller's own review draft; null while
+   *  that is not known yet, which offers nothing. */
+  draft: boolean | null;
+  /** Whether the editor can take a text now: a connected room, or a solo
+   *  buffer that is mounted. Read again after the text arrives. */
+  ready: boolean;
+  /** Put `text` in the editor as one undoable change; true only when it
+   *  really landed. */
+  onReplace: (text: string) => boolean;
+  /** The text the editor's last successful save stored; a new value after
+   *  each save. The kept copy is dropped once a save holds its text. */
+  saved?: string | null;
+  /** Told after a person's Drop went through, to hand the focus back. */
+  onDropped?: () => void;
 }): ReactElement | null {
   const { user, capabilities } = useAuth();
   const queryClient = useQueryClient();
@@ -66,52 +88,88 @@ export function KeptTextNotice({
   const [showing, setShowing] = useState<KeptTextEntry | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  // Drop asks once, in the note itself: a short confirm, and the focus goes
-  // back to Drop when the person keeps the text.
+  const [placed, setPlaced] = useState<Placed | null>(null);
   const [asking, setAsking] = useState(false);
+  const questionId = useId();
   const dropButton = useRef<HTMLButtonElement>(null);
-  const kept = useRef(false);
+  // Set when the focus belongs on Drop once it is drawn again: after Keep,
+  // Escape or a drop that failed.
+  const focusDrop = useRef(false);
+  // The editor's readiness as it is now, for the check after the read.
+  const live = useRef(false);
+  const can = ready;
   useEffect(() => {
-    if (!asking && kept.current) {
-      kept.current = false;
+    live.current = can;
+  });
+
+  useEffect(() => {
+    if (!asking && focusDrop.current) {
+      focusDrop.current = false;
       dropButton.current?.focus();
     }
-  }, [asking]);
-  const entry =
-    path === null ? null : keptForPage(listing.data, kind, path, draft);
-  if (entry === null) {
-    return null;
-  }
-  // A read-only instance refuses the delete, and Use it ends with one: the
-  // note then only shows the text.
-  const writable = !capabilities.readOnly;
+  });
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: keptKey(domain) });
   };
 
-  const drop = async (used: boolean) => {
-    try {
-      await dropKeptText(domain, entry.id);
-      setProblem(null);
-      queryClient.removeQueries({ queryKey: keptTextKey(domain, entry.id) });
-    } catch (error) {
-      // A text somebody else dropped meanwhile is gone either way.
-      if (!(error instanceof Error && isNoKeptRight(error))) {
+  /** Delete the kept copy. `used`: its text was saved from the editor. */
+  const drop = (id: string, used: boolean): Promise<boolean> =>
+    dropKeptText(domain, id).then(
+      () => {
+        setProblem(null);
+        setPlaced(null);
+        queryClient.removeQueries({ queryKey: keptTextKey(domain, id) });
+        refresh();
+        return true;
+      },
+      (error: unknown) => {
+        refresh();
+        if (error instanceof Error && isNoKeptRight(error)) {
+          // Somebody else dropped it meanwhile: it is gone either way.
+          setPlaced(null);
+          return true;
+        }
         const why = error instanceof Error ? problemDetail(error) : "";
+        if (used) {
+          setPlaced((was) => (was === null ? null : { ...was, held: true }));
+        }
         setProblem(
           used
-            ? `The kept text is in the editor now, but its copy on the server could not be dropped. ${why}`
+            ? `Your text is saved, but the kept copy could not be dropped. ${why}`
             : why,
         );
-      }
-    } finally {
-      refresh();
-    }
-  };
+        return false;
+      },
+    );
 
-  const use = async () => {
-    if (busy) {
+  // The save that holds the placed text is what lets the kept copy go.
+  const placedId = placed?.id ?? null;
+  const placedText = placed?.text ?? null;
+  useEffect(() => {
+    if (placedId === null || placedText === null || saved == null) {
+      return;
+    }
+    if (savedHolds(saved, placedText)) {
+      void drop(placedId, true);
+    }
+    // `drop` is rebuilt every render and reads nothing that matters here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saved, placedId, placedText]);
+
+  const entry =
+    path === null || draft === null
+      ? null
+      : keptForPage(listing.data, kind, path, draft);
+  if (entry === null) {
+    return null;
+  }
+  // A read-only instance refuses the delete: the note then only shows.
+  const writable = !capabilities.readOnly;
+  const waiting = placed !== null && placed.id === entry.id;
+
+  const replace = async () => {
+    if (busy || !live.current) {
       return;
     }
     setBusy(true);
@@ -125,11 +183,26 @@ export function KeptTextNotice({
         });
         text = read.text;
       } catch (error) {
-        setProblem(error instanceof Error ? problemDetail(error) : null);
+        if (error instanceof Error && isNoKeptRight(error)) {
+          // Already gone: the listing catches up and the note goes.
+          setProblem(null);
+          refresh();
+        } else {
+          setProblem(error instanceof Error ? problemDetail(error) : null);
+        }
         return;
       }
-      onUse(text);
-      await drop(true);
+      // The room may have ended or gone away while the text was on its way.
+      if (!live.current) {
+        setProblem("The editor cannot take the text now. Nothing changed.");
+        return;
+      }
+      if (!onReplace(text)) {
+        setProblem("The text did not reach the editor. Nothing changed.");
+        return;
+      }
+      setProblem(null);
+      setPlaced({ id: entry.id, text });
     } finally {
       setBusy(false);
     }
@@ -137,7 +210,10 @@ export function KeptTextNotice({
 
   return (
     <aside role="note" aria-label="Kept text" className={NOTICE}>
-      <span>You have a kept text for this page.</span>
+      <span>{keptNoticeSentence(entry)}</span>
+      {waiting && placed?.held !== true && (
+        <span role="status">Waiting for the save.</span>
+      )}
       <button
         type="button"
         className={ACTION}
@@ -147,38 +223,49 @@ export function KeptTextNotice({
       >
         Show
       </button>
-      {canUse && writable && !asking && (
+      {can && writable && !waiting && !asking && (
         <button
           type="button"
           className={ACTION}
           aria-disabled={busy}
           onClick={() => {
-            void use();
+            void replace();
           }}
         >
-          Use it
+          Replace with it
         </button>
       )}
       {writable &&
         (asking ? (
           <span
+            role="group"
+            aria-labelledby={questionId}
             className="inline-flex flex-wrap items-center gap-3"
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.stopPropagation();
-                kept.current = true;
+                focusDrop.current = true;
                 setAsking(false);
               }
             }}
           >
-            <span>Drop it for good?</span>
+            <span id={questionId}>Drop it for good?</span>
             <button
               type="button"
               autoFocus
               className={DANGER}
               onClick={() => {
                 setAsking(false);
-                void drop(false);
+                void drop(entry.id, false).then((gone) => {
+                  if (gone) {
+                    onDropped?.();
+                  } else {
+                    focusDrop.current = true;
+                    // Draw again so the focus effect runs.
+                    setAsking(false);
+                    dropButton.current?.focus();
+                  }
+                });
               }}
             >
               Drop it
@@ -187,7 +274,7 @@ export function KeptTextNotice({
               type="button"
               className={ACTION}
               onClick={() => {
-                kept.current = true;
+                focusDrop.current = true;
                 setAsking(false);
               }}
             >

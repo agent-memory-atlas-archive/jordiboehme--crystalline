@@ -108,8 +108,10 @@ export function keptKindLabel(kind: string): string {
       return "Comment";
     case "reflection":
       return "Page text";
-    default:
+    case "engram":
       return "Engram text";
+    default:
+      return "Kept text";
   }
 }
 
@@ -119,4 +121,20 @@ export function keptFrom(entry: KeptTextEntry): string | null {
     return `From ${entry.sender}`;
   }
   return entry.draft ? "From your draft" : null;
+}
+
+/** What the editors' note says about one entry. */
+export function keptNoticeSentence(entry: KeptTextEntry): string {
+  if (entry.sender != null && entry.sender !== "") {
+    return `The server kept unsaved text for this page. From ${entry.sender}.`;
+  }
+  return entry.draft
+    ? "The server kept unsaved text from your draft."
+    : "The server kept unsaved text for this page.";
+}
+
+/** Whether a saved text holds a kept one, line endings aside. */
+export function savedHolds(saved: string, text: string): boolean {
+  const lf = (value: string) => value.replace(/\r\n/g, "\n");
+  return lf(saved).includes(lf(text).trim());
 }

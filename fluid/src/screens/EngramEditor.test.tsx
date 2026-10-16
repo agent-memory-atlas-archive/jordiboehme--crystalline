@@ -13,6 +13,7 @@ import { undo } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useSyncExternalStore } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
@@ -3260,10 +3261,18 @@ describe("the engram editor's kept text notice", () => {
   }
 
   /** Serve the editor with `entries` kept, and record every drop. */
-  function serveKept(entries: unknown[]) {
+  function serveKept(
+    entries: unknown[],
+    routes: Record<string, (path: string, init?: RequestInit) => unknown> = {},
+    text = KEPT,
+  ) {
     let listed = entries;
     const dropped: string[] = [];
     serveEditor({
+      "/domains/eng/engrams/alpha": (_path, init) =>
+        init?.method === "PUT"
+          ? stored(init, { checksum: "after99" })
+          : detailResponse(),
       "/domains/eng/kept": () => ({ domain: "eng", kept: listed }),
       "/domains/eng/kept/k1": (_path, init) => {
         if (init?.method === "DELETE") {
@@ -3271,41 +3280,72 @@ describe("the engram editor's kept text notice", () => {
           listed = [];
           return undefined;
         }
-        return { domain: "eng", ...keptEntry(), text: KEPT };
+        return { domain: "eng", ...keptEntry(), text };
       },
+      ...routes,
     });
     return dropped;
   }
 
-  it("says a kept text is there and shows it read only", async () => {
+  /** A room session the test can change while the editor is mounted. */
+  function liveRoom() {
+    const first = joinedSession();
+    let current: CollabSession = first.session;
+    const listeners = new Set<() => void>();
+    collabMock.mockImplementation(() =>
+      useSyncExternalStore(
+        (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        () => current,
+      ),
+    );
+    return {
+      ytext: first.ytext,
+      set: (next: Partial<CollabSession>) => {
+        act(() => {
+          current = { ...current, ...next };
+          for (const listener of listeners) {
+            listener();
+          }
+        });
+      },
+    };
+  }
+
+  async function replace(): Promise<HTMLElement> {
+    const notice = await screen.findByRole("note", { name: "Kept text" });
+    await userEvent.click(
+      within(notice).getByRole("button", { name: "Replace with it" }),
+    );
+    return notice;
+  }
+
+  it("says a kept text is there", async () => {
     serveKept([keptEntry()]);
     renderApp("/d/eng/edit/alpha");
     await openBuffer();
     const notice = await screen.findByRole("note", { name: "Kept text" });
-    expect(notice).toHaveTextContent("You have a kept text for this page.");
-    await userEvent.click(within(notice).getByRole("button", { name: "Show" }));
-    const dialog = await screen.findByRole("dialog", { name: "Kept text" });
-    expect(
-      await within(dialog).findByLabelText("The kept text"),
-    ).toHaveTextContent("A rule the room kept.");
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: "Close" }),
+    expect(notice).toHaveTextContent(
+      "The server kept unsaved text for this page.",
     );
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("Use it puts the kept text in as one undoable change, then drops it", async () => {
+  it("Replace with it is one undoable change, and the kept copy goes with the save that holds it", async () => {
     const dropped = serveKept([keptEntry()]);
     renderApp("/d/eng/edit/alpha");
     const editor = await openBuffer();
-    const notice = await screen.findByRole("note", { name: "Kept text" });
-    await userEvent.click(
-      within(notice).getByRole("button", { name: "Use it" }),
-    );
+    const notice = await replace();
     const view = mountedView(editor);
     await waitFor(() => {
       expect(docText(view.state)).toBe(KEPT);
     });
+    expect(
+      await within(notice).findByText("Waiting for the save."),
+    ).toBeVisible();
+    expect(dropped).toEqual([]);
+    await saveNow("button");
     await waitFor(() => {
       expect(dropped).toEqual(["k1"]);
     });
@@ -3320,24 +3360,96 @@ describe("the engram editor's kept text notice", () => {
     expect(docText(view.state)).toBe(CONTENT);
   });
 
-  it("Use it in a room is an edit of the shared text", async () => {
-    const { ytext } = joinedSession();
+  it("keeps a one-line text's undo and the file's CRLF endings", async () => {
+    const crlf = CONTENT.replace(/\n/g, "\r\n");
+    serveKept(
+      [keptEntry()],
+      {
+        "/domains/eng/engrams/alpha": (_path, init) =>
+          init?.method === "PUT"
+            ? stored(init, { checksum: "after99" })
+            : detailResponse({ content: crlf }),
+      },
+      "just one line",
+    );
+    renderApp("/d/eng/edit/alpha");
+    const editor = await openBuffer();
+    await replace();
+    const view = mountedView(editor);
+    await waitFor(() => {
+      expect(docText(view.state)).toBe("just one line");
+    });
+    // Still the file's own endings: no rebuild swapped the separator.
+    expect(view.state.lineBreak).toBe("\r\n");
+    act(() => {
+      undo(view);
+    });
+    expect(docText(view.state)).toBe(crlf);
+  });
+
+  it("in a room, replaces the shared text and drops the kept copy only after the room saved it", async () => {
     const dropped = serveKept([keptEntry()]);
+    const room = liveRoom();
     renderApp("/d/eng/edit/alpha");
     await openBuffer();
-    const notice = await screen.findByRole("note", { name: "Kept text" });
-    await userEvent.click(
-      within(notice).getByRole("button", { name: "Use it" }),
-    );
+    await replace();
     await waitFor(() => {
-      expect(ytext.toJSON()).toBe(KEPT);
+      expect(room.ytext.toJSON()).toBe(KEPT);
     });
+    room.set({ saveState: "pending" });
+    expect(dropped).toEqual([]);
+    room.set({ saveState: "ok" });
     await waitFor(() => {
       expect(dropped).toEqual(["k1"]);
     });
   });
 
-  it("Drop asks first, then drops the kept text and leaves the editor alone", async () => {
+  it("offers no replace while the room is away", async () => {
+    serveKept([keptEntry()]);
+    const room = liveRoom();
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    const notice = await screen.findByRole("note", { name: "Kept text" });
+    expect(
+      within(notice).getByRole("button", { name: "Replace with it" }),
+    ).toBeVisible();
+    room.set({ status: "reconnecting" });
+    expect(
+      within(notice).queryByRole("button", { name: "Replace with it" }),
+    ).toBeNull();
+  });
+
+  it("changes and drops nothing when the room ends while the text is read", async () => {
+    let answer: (value: unknown) => void = () => undefined;
+    const dropped = serveKept([keptEntry()], {
+      "/domains/eng/kept/k1": (_path, init) => {
+        if (init?.method === "DELETE") {
+          dropped.push("k1");
+          return undefined;
+        }
+        return new Promise((resolve) => {
+          answer = resolve;
+        });
+      },
+    });
+    const room = liveRoom();
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    const notice = await replace();
+    room.set({ closed: true, closedReason: "deleted" });
+    await act(async () => {
+      answer({ domain: "eng", ...keptEntry(), text: KEPT });
+      await Promise.resolve();
+    });
+    expect(await within(notice).findByRole("alert")).toHaveTextContent(
+      "The editor cannot take the text now. Nothing changed.",
+    );
+    expect(room.ytext.toJSON()).toBe(CONTENT);
+    expect(dropped).toEqual([]);
+    expect(screen.getByRole("note", { name: "Kept text" })).toBeVisible();
+  });
+
+  it("Drop asks first, drops, and gives the focus to the text", async () => {
     const dropped = serveKept([keptEntry()]);
     renderApp("/d/eng/edit/alpha");
     const editor = await openBuffer();
@@ -3353,35 +3465,33 @@ describe("the engram editor's kept text notice", () => {
       expect(dropped).toEqual(["k1"]);
     });
     await waitFor(() => {
-      expect(
-        screen.queryByRole("note", { name: "Kept text" }),
-      ).not.toBeInTheDocument();
+      expect(mountedView(editor).hasFocus).toBe(true);
     });
     expect(docText(mountedView(editor).state)).toBe(CONTENT);
   });
 
-  it("Keep takes the question back and drops nothing", async () => {
-    const dropped = serveKept([keptEntry()]);
+  it("offers the reader's own draft text in a domain that reviews changes, even before a draft exists", async () => {
+    serveKept([keptEntry({ id: "k0" }), keptEntry({ draft: true })], {
+      "/domains": () => {
+        const listing = domainsResponse();
+        return {
+          ...listing,
+          domains: listing.domains.map((entry) => ({
+            ...entry,
+            review: "overlay",
+          })),
+        };
+      },
+    });
     renderApp("/d/eng/edit/alpha");
     await openBuffer();
     const notice = await screen.findByRole("note", { name: "Kept text" });
-    await userEvent.click(
-      within(notice).getByRole("button", { name: "Drop the kept text" }),
+    expect(notice).toHaveTextContent(
+      "The server kept unsaved text from your draft.",
     );
-    expect(notice).toHaveTextContent("Drop it for good?");
-    await userEvent.click(within(notice).getByRole("button", { name: "Keep" }));
-    expect(
-      within(notice).getByRole("button", { name: "Drop the kept text" }),
-    ).toHaveFocus();
-    await userEvent.click(
-      within(notice).getByRole("button", { name: "Drop the kept text" }),
-    );
-    await userEvent.keyboard("{Escape}");
-    expect(within(notice).queryByText("Drop it for good?")).toBeNull();
-    expect(dropped).toEqual([]);
   });
 
-  it("is not there when nothing is kept for this engram", async () => {
+  it("is not there for another engram, a comment or a draft text", async () => {
     serveKept([
       keptEntry({ path: "beta.md" }),
       keptEntry({ id: "k2", kind: "comment" }),
@@ -3399,7 +3509,7 @@ describe("the engram editor's kept text notice", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("is not there, and says nothing, when the person has no right to kept texts", async () => {
+  it("is not there, and says nothing, without a right to kept texts", async () => {
     serveEditor({
       "/domains/eng/kept": () => {
         throw new ApiProblem(403, "forbidden", "kept texts need write access");

@@ -111,6 +111,8 @@ export interface EditorSession {
   buffer: string;
   setBuffer: (next: string) => void;
   dirty: boolean;
+  /** The text the last successful save stored (the mounted text before any). */
+  savedText: string;
   checksum: string;
   viewRef: RefObject<EditorView | null>;
   onReady: (view: EditorView) => void;
@@ -446,6 +448,7 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
     buffer,
     setBuffer,
     dirty,
+    savedText,
     checksum,
     viewRef,
     onReady: (view) => {

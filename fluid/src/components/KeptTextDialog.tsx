@@ -12,12 +12,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { Dialog } from "radix-ui";
 import type { ReactElement } from "react";
+import { useState } from "react";
 
 import { problemDetail } from "../api/client";
 import type { KeptTextEntry } from "../api/kept";
 import { fetchKeptText, keptFrom, keptTextKey } from "../api/kept";
 import { formatInstant } from "../format";
 import { Loading } from "./Loading";
+import { useSaid } from "./useSaid";
 import { BUTTON } from "./primitives";
 
 export function KeptTextDialog({
@@ -35,6 +37,14 @@ export function KeptTextDialog({
     retry: false,
   });
   const comment = entry.kind === "comment";
+  const [said, say] = useSaid();
+  // The control that opened this: there is no dialog trigger to go back to,
+  // so the focus is handed back to it by hand when the dialog closes.
+  const [opener] = useState(() =>
+    document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null,
+  );
   const from = keptFrom(entry);
   return (
     <Dialog.Root
@@ -45,7 +55,13 @@ export function KeptTextDialog({
     >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-slate-900/40" />
-        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100vh-4rem)] w-[min(44rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col gap-3 rounded border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+        <Dialog.Content
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            opener?.focus();
+          }}
+          className="fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100vh-4rem)] w-[min(44rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col gap-3 rounded border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900"
+        >
           <Dialog.Title className="text-lg font-semibold">
             {comment ? "Kept comment" : "Kept text"}
           </Dialog.Title>
@@ -66,13 +82,41 @@ export function KeptTextDialog({
             </p>
           ) : (
             <pre
+              // Reachable by keyboard, so a long text scrolls without a mouse.
+              tabIndex={0}
               aria-label={comment ? "The kept comment" : "The kept text"}
               className="min-h-0 flex-1 overflow-auto rounded border border-hair bg-sunken p-3 font-mono text-sm break-words whitespace-pre-wrap text-ink"
             >
               {text.data.text}
             </pre>
           )}
-          <div className="flex justify-end">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span
+              role="status"
+              aria-live="polite"
+              className="mr-auto text-caption text-ink-3"
+            >
+              {said ?? ""}
+            </span>
+            {text.data !== undefined && (
+              <button
+                type="button"
+                onClick={() => {
+                  const copied = text.data.text;
+                  void (async () => {
+                    try {
+                      await navigator.clipboard.writeText(copied);
+                      say("Copied");
+                    } catch {
+                      say("Copy refused");
+                    }
+                  })();
+                }}
+                className={BUTTON.secondary}
+              >
+                Copy
+              </button>
+            )}
             <button
               type="button"
               onClick={onClose}

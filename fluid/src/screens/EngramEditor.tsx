@@ -816,6 +816,29 @@ function Surface({
   const closed = inRoom && collab.closed;
   /** The room's standing conflict, if this surface is in a room at all. */
   const conflict = inRoom ? collab.conflict : null;
+  /*
+   * What the room's last save stored, as far as this tab can tell: the
+   * shared text when the verdict turns to "ok" again. The kept text note
+   * drops the server's copy only once a save holds its text.
+   */
+  const [roomSaved, setRoomSaved] = useState<string | null>(null);
+  const [lastVerdict, setLastVerdict] = useState(collab.saveState);
+  if (collab.saveState !== lastVerdict) {
+    setLastVerdict(collab.saveState);
+    if (collab.saveState === "ok" && room !== null) {
+      setRoomSaved(room.ytext.toJSON());
+    }
+  }
+  /*
+   * Whose document this editor is, as the room decides it: in a domain
+   * that reviews changes it is the reader's own draft unless it is
+   * somebody else's granted one. Unknown until the listing answers.
+   */
+  const reviewing =
+    domains.data === undefined
+      ? null
+      : (domains.data.domains.find((entry) => entry.name === engram.domain)
+          ?.review ?? null) !== null;
   const walkedOut = useRef(false);
   useEffect(() => {
     if (!closed || walkedOut.current) {
@@ -1320,19 +1343,37 @@ function Surface({
             domain={engram.domain}
             kind="engram"
             path={engram.draftOwner ? null : engram.path}
-            draft={engram.draft}
-            canUse={!closed}
-            onUse={(text) => {
+            draft={reviewing}
+            ready={
+              inRoom ? collab.status === "connected" && !closed : view !== null
+            }
+            saved={inRoom ? roomSaved : session.savedText}
+            onReplace={(text) => {
               // One ordinary change on the buffer, so Undo takes it back: in
-              // the mounted line endings, which in a room are LF.
+              // the mounted line endings, which in a room are LF. A
+              // dispatch, never a rebuild, so even a one-line text in a CRLF
+              // buffer keeps the history and the file's endings.
               const current = session.viewRef.current;
+              if (current === null) {
+                return false;
+              }
               const separator =
-                current?.state.facet(EditorState.lineSeparator) ?? "\n";
+                current.state.facet(EditorState.lineSeparator) ?? "\n";
               const lf = text.replace(/\r\n/g, "\n");
-              session.replaceWith(
-                separator === "\n" ? lf : lf.replace(/\n/g, separator),
-              );
-              current?.focus();
+              const target =
+                separator === "\n" ? lf : lf.replace(/\n/g, separator);
+              current.dispatch({
+                changes: {
+                  from: 0,
+                  to: current.state.doc.length,
+                  insert: target,
+                },
+              });
+              current.focus();
+              return docText(current.state) === target;
+            }}
+            onDropped={() => {
+              session.viewRef.current?.focus();
             }}
           />
         </div>

@@ -442,6 +442,20 @@ function Surface({
   }
 
   /*
+   * What the room's last save stored, as this tab can tell: the shared text
+   * when the verdict turns to "ok" again. The kept text note lets the
+   * server's copy go only once a save holds its text.
+   */
+  const [roomSaved, setRoomSaved] = useState<string | null>(null);
+  const [lastVerdict, setLastVerdict] = useState(collab.saveState);
+  if (collab.saveState !== lastVerdict) {
+    setLastVerdict(collab.saveState);
+    if (collab.saveState === "ok") {
+      setRoomSaved(ytext.toJSON());
+    }
+  }
+
+  /*
    * What this mount finds: a copy left under `key` by an earlier mount (a
    * refusal, a lost connection, an epoch gap) and the short history of
    * offers under `offerKey` (`readOffers`, newest first). Each is offered
@@ -834,10 +848,10 @@ function Surface({
       {kept.length > 0 && (
         <aside role="note" className={AMBER_BANNER}>
           {kept.length === 1 ? (
-            <span>Text from an earlier session was kept.</span>
+            <span>Text from an earlier session is kept on this device.</span>
           ) : (
             <>
-              <span className="basis-full">{`Texts from ${String(kept.length)} earlier sessions were kept. Newest first.`}</span>
+              <span className="basis-full">{`Texts from ${String(kept.length)} earlier sessions are kept on this device. Newest first.`}</span>
               {/*
                 A short history (the last few per page), by time. Choosing
                 one answers the offer: the text goes back and the others on
@@ -903,8 +917,9 @@ function Surface({
         kind="reflection"
         path={path}
         draft={false}
-        canUse={!ended}
-        onUse={(text) => {
+        ready={!ended && collab.status === "connected"}
+        saved={roomSaved}
+        onReplace={(text) => {
           // One change on the shared text, as Put it back makes it, so the
           // room's Undo takes it back; owed until the room saves it.
           const lf = text.replace(/\r\n/g, "\n");
@@ -912,7 +927,14 @@ function Surface({
             ytext.delete(0, ytext.length);
             ytext.insert(0, lf);
           });
+          if (ytext.toJSON() !== lf) {
+            return false;
+          }
           setOwed(true);
+          view?.focus();
+          return true;
+        }}
+        onDropped={() => {
           view?.focus();
         }}
       />
