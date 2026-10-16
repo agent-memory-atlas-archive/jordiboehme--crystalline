@@ -1,6 +1,12 @@
 use super::*;
 use crate::collab::session::{ComposeRefused, RoomDoc};
 
+/// The first pause before a move tries again to compose its rewrite into a
+/// room whose text moved under it; each further try waits twice as long. With
+/// [`super::edit::UNGUARDED_EDIT_ATTEMPTS`] tries that is 120 ms of waiting
+/// at most before the rewrite goes to the source instead.
+const LIVE_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(40);
+
 /// What [`Engine::relink_engram`] rewrote in one linking engram.
 pub(super) struct Relinked {
     /// How many references changed.
@@ -134,6 +140,13 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        // One engram move at a time in this process. A move gathers the
+        // engrams that link it before it writes and rewrites them after it
+        // moved; two moves running at once could each find a linker the
+        // other has just moved away, and leave a link to the old address.
+        // Taken first, before any write ticket, so a move waiting here holds
+        // nothing a rename or another move waits for.
+        let _one_move = self.lock_moves().await;
         // Resolved once, before anything is written, and used twice below: to
         // look the destination up, and to bound the inbound rewrite.
         let hidden = self.hidden_for(scope).await?;
@@ -355,8 +368,37 @@ impl Engine {
             to_permalink: &new_permalink,
         };
 
-        // Read here for the write, by the strict reader the MANIFEST check
-        // above uses too (see [`Engine::move_source_text`]).
+        // The source's and the destination's write locks, from the read of
+        // the source through the write, the removal and the reindex, as every
+        // other writer of either file takes them: an edit of the source
+        // cannot land between the read and the removal and be lost, nor after
+        // the removal and bring the source back. Both in lock key order; an
+        // in-place move takes one. A virtual end takes none, since the store
+        // writes it in one statement. Released before the attachments and the
+        // linkers, so the rewrite below never holds two file locks.
+        let src_abs = match &src_source {
+            ContentSource::File { root } => Some(join_rel(root, &src.path)),
+            ContentSource::Virtual => None,
+        };
+        let dest_abs = match &dest_source {
+            ContentSource::File { root } => Some(join_rel(root, &dest_rel)),
+            ContentSource::Virtual => None,
+        };
+        let held: Vec<&Path> = src_abs
+            .iter()
+            .chain(dest_abs.iter())
+            .map(PathBuf::as_path)
+            .collect();
+        let _lock = self.lock_files(&held).await;
+        // The destination was free when it was checked above; it is asked
+        // again now that nobody else may write it.
+        if !in_place {
+            self.ensure_dest_free(&dest_source, &dest_domain, &dest_rel)
+                .await?;
+        }
+
+        // Read here for the write, inside the locks, by the strict reader the
+        // MANIFEST check above uses too (see [`Engine::move_source_text`]).
         let original = self.move_source_text(&src_source, &src, &p.domain).await?;
         // A move writes the engram anew, so it lands as LF whatever line
         // endings it was read with, a plain rename included.
@@ -524,6 +566,8 @@ impl Engine {
                 store.resolve_pending_links(src.domain_id).await?;
             }
         }
+
+        drop(_lock);
 
         // The attachments follow the engram, now that the engram itself has
         // landed and the branch above has released its store lock. A
@@ -948,7 +992,7 @@ impl Engine {
             && rooms.has_engram_rooms_in(&linker.domain).await
             && let Some(desc) = self.descriptor_at(&linker.domain, &linker.path).await?
         {
-            for _ in 0..super::edit::UNGUARDED_EDIT_ATTEMPTS {
+            for attempt in 0..super::edit::UNGUARDED_EDIT_ATTEMPTS {
                 let Some(live) = rooms.live_text(&linker.domain, &desc.permalink, None).await
                 else {
                     break;
@@ -984,7 +1028,15 @@ impl Engine {
                             live: true,
                         }));
                     }
-                    Err(ComposeRefused::Moved) => continue,
+                    // Somebody is typing. Wait a moment before the next try,
+                    // a little longer each time, so a person typing steadily
+                    // still leaves a gap the rewrite can compose into.
+                    Err(ComposeRefused::Moved) => {
+                        if attempt + 1 < super::edit::UNGUARDED_EDIT_ATTEMPTS {
+                            tokio::time::sleep(LIVE_RETRY_PAUSE * (1 << attempt)).await;
+                        }
+                        continue;
+                    }
                     Err(ComposeRefused::NotSaving) => break,
                 }
             }

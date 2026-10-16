@@ -1044,6 +1044,15 @@ pub struct Engine {
     // two browser tabs can reach. Created lazily, one `tokio::sync::Mutex` per
     // file ever written through those verbs.
     write_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    // One engram move at a time in this process. A move gathers the engrams
+    // that link it before it writes and rewrites them after, so two moves
+    // that link each other could each rewrite a file the other one had just
+    // moved away. See `Engine::move_engram_as`.
+    move_lock: tokio::sync::Mutex<()>,
+    // How many moves wait for `move_lock` right now, for a test to see that
+    // a move is queued there rather than sleep and hope.
+    #[cfg(any(test, feature = "testing"))]
+    moves_waiting: std::sync::atomic::AtomicUsize,
     // A fixed provider used by every origin operation instead of the
     // production per-operation `GitHubProvider` build, for tests: an engine
     // built this way never reads config or the token store to decide who to
@@ -2295,6 +2304,9 @@ impl Engine {
             stale_secs: crystalline_index::stale_secs(),
             origin_locks: std::sync::Mutex::new(HashMap::new()),
             write_locks: std::sync::Mutex::new(HashMap::new()),
+            move_lock: tokio::sync::Mutex::new(()),
+            #[cfg(any(test, feature = "testing"))]
+            moves_waiting: std::sync::atomic::AtomicUsize::new(0),
             origin_provider_override: None,
             origin_provider_override_login: None,
             backup_marks: Default::default(),
@@ -2511,6 +2523,34 @@ impl Engine {
         #[cfg(not(any(test, feature = "testing")))]
         {
             false
+        }
+    }
+
+    /// How many engram moves wait for the one running in this process.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn moves_waiting(&self) -> usize {
+        self.moves_waiting
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Take the process's move lock; see `move_lock`.
+    async fn lock_moves(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            struct Waiting<'a>(&'a std::sync::atomic::AtomicUsize);
+            impl Drop for Waiting<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            self.moves_waiting
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let _waiting = Waiting(&self.moves_waiting);
+            self.move_lock.lock().await
+        }
+        #[cfg(not(any(test, feature = "testing")))]
+        {
+            self.move_lock.lock().await
         }
     }
 
@@ -9431,6 +9471,24 @@ mod lock_tests {
         assert_eq!(engine.origin_locks.lock().unwrap().len(), 1);
     }
 
+    /// A write into a name that is not registered any more is refused with
+    /// the reason, whether or not it waited for a rename's pause: a rename
+    /// that finished just before the write was counted leaves the name the
+    /// write holds gone just the same.
+    #[tokio::test]
+    async fn a_write_into_a_name_renamed_meanwhile_is_refused_without_a_wait() {
+        let engine = engine_with_domains(&["known"]).await;
+        assert!(engine.enter_write("known").await.is_ok());
+        match engine.enter_write("gone").await {
+            Err(EngineError::Conflict(message)) => assert!(
+                message.contains("'gone'") && message.contains("send it again"),
+                "{message}"
+            ),
+            Err(other) => panic!("expected a conflict, got {other}"),
+            Ok(_) => panic!("a write into a name nobody registers was counted"),
+        }
+    }
+
     /// One lock per file, whoever asks for it.
     #[tokio::test]
     async fn one_file_has_one_write_lock() {
@@ -9706,6 +9764,140 @@ mod lock_tests {
         assert!(
             final_text.contains("From the browser."),
             "and the concurrent write is not dropped: {final_text}"
+        );
+    }
+
+    /// A move reads, writes and removes the moved engram inside its file's
+    /// lock, so an edit of the source that lands while the move runs moves
+    /// with it rather than being lost or bringing the source back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_move_reads_and_removes_its_source_inside_the_file_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("alpha.md"),
+            engram("Alpha", "alpha", "The target."),
+        )
+        .unwrap();
+        let engine = file_engine(&root).await;
+
+        let abs = root.join("alpha.md");
+        let lock = engine.write_lock(&abs);
+        let held = lock.lock().await;
+        let mover = engine.clone();
+        let task = tokio::spawn(async move {
+            mover
+                .move_engram(
+                    &MoveParams {
+                        identifier: "alpha".to_string(),
+                        domain: "eng".to_string(),
+                        destination: "gamma.md".to_string(),
+                        destination_domain: None,
+                        permalink: None,
+                        update_links: None,
+                    },
+                    &crate::scope::Scope::Unrestricted,
+                )
+                .await
+        });
+        // The move holds a clone of the lock's `Arc` while it waits for it.
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while Arc::strong_count(&lock) < 3 && !task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the move reaches alpha's lock or finishes");
+        assert!(!task.is_finished(), "the move waits for alpha's lock");
+
+        // An edit lands in alpha while the move waits.
+        std::fs::write(
+            &abs,
+            engram("Alpha", "alpha", "The target.\n\nEdited meanwhile."),
+        )
+        .unwrap();
+        drop(held);
+
+        task.await.unwrap().expect("the move lands");
+        assert!(!abs.exists(), "the source is gone");
+        let moved = std::fs::read_to_string(root.join("gamma.md")).unwrap();
+        assert!(
+            moved.contains("Edited meanwhile."),
+            "the edit moved with the engram: {moved}"
+        );
+    }
+
+    /// Two moves of engrams that link each other's address, run at once, leave
+    /// no link to an old address behind and no old file in place.
+    ///
+    /// alpha links beta. With alpha's lock held from outside, move A (alpha to
+    /// gamma) queues on it. Move B (beta to delta) then either queues behind A
+    /// on the process's move lock, or, without that lock, gathers `alpha.md`
+    /// as its linker, moves beta and queues on alpha's lock too, to find the
+    /// file gone once A has moved it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn crossing_moves_leave_no_link_to_an_old_address() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("alpha.md"),
+            engram("Alpha", "alpha", "See [[beta]]."),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("beta.md"),
+            engram("Beta", "beta", "The other one."),
+        )
+        .unwrap();
+        let engine = file_engine(&root).await;
+        let mv = |engine: Arc<Engine>, from: &'static str, to: &'static str| {
+            tokio::spawn(async move {
+                engine
+                    .move_engram(
+                        &MoveParams {
+                            identifier: from.to_string(),
+                            domain: "eng".to_string(),
+                            destination: to.to_string(),
+                            destination_domain: None,
+                            permalink: None,
+                            update_links: None,
+                        },
+                        &crate::scope::Scope::Unrestricted,
+                    )
+                    .await
+            })
+        };
+
+        let lock = engine.write_lock(&root.join("alpha.md"));
+        let held = lock.lock().await;
+        let a = mv(engine.clone(), "alpha", "gamma.md");
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while Arc::strong_count(&lock) < 3 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("move A queues on alpha's lock");
+        let b = mv(engine.clone(), "beta", "delta.md");
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while Arc::strong_count(&lock) < 4 && engine.moves_waiting() < 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("move B queues behind move A");
+        drop(held);
+
+        a.await.unwrap().expect("move A lands");
+        b.await.unwrap().expect("move B lands");
+        assert!(!root.join("alpha.md").exists(), "alpha.md is gone");
+        assert!(!root.join("beta.md").exists(), "beta.md is gone");
+        let gamma = std::fs::read_to_string(root.join("gamma.md")).unwrap();
+        assert!(
+            gamma.contains("See [[delta]]."),
+            "the link follows beta to its new address: {gamma}"
         );
     }
 

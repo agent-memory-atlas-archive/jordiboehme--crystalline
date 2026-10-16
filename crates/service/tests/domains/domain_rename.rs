@@ -2683,7 +2683,15 @@ async fn a_move_waits_for_the_rename_of_a_linkers_domain_body(store: Arc<Mutex<d
                 .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Waited for, not slept on: the move's ticket into ops waits on the
+    // pause, which the engine counts.
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while engine.writes_waiting_for_rename() < 1 && !mover.is_finished() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the move waits on the pause or finishes");
     assert!(
         !mover.is_finished(),
         "the move waits for the rename of the domain it writes into"

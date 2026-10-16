@@ -119,10 +119,9 @@ pub struct LiveText {
     /// or after it closes still holds even when the file is CRLF; the
     /// checksum of `text` once anything was typed.
     pub checksum: String,
-    /// Whether the room will save what it holds: its save state is ok and
-    /// somebody is still connected. A room in conflict, with a failed save,
-    /// or whose last connection left and whose final save ran, holds text
-    /// that may never reach the file. Read at the moment of the look;
+    /// Whether the room will save what it holds: its save state is ok and its
+    /// final save has not run yet. A room in conflict, with a failed save, or
+    /// whose final save ran, holds text that may never reach the file. Read at the moment of the look;
     /// [`CollabSessions::compose_while_saving`] decides it again under the
     /// compose's own lock.
     pub saving: bool,
@@ -220,9 +219,9 @@ pub struct AbsorbOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposeRefused {
     /// No room is open over the document any more, it closed, or it will
-    /// not save what it is given: its save is in conflict or failed, or
-    /// its last connection has left and its final save has run or is
-    /// running. Text composed into it now could be lost without a trace.
+    /// not save what it is given: its save is in conflict or failed, or its
+    /// final save has run. Text composed into it now could be lost without a
+    /// trace.
     NotSaving,
     /// The room's text is no longer the text the target was computed from:
     /// somebody typed in between. Composing would undo their typing.
@@ -773,8 +772,9 @@ impl CollabSessions {
     /// Both are decided under the room's state lock, the one the compose
     /// itself holds, so neither can change between the check and the
     /// compose. A room saves what it holds while its save state is ok and
-    /// somebody is connected; once the last connection left, the final save
-    /// runs, and a compose after it would sit in a room nobody saves again.
+    /// its final save has not run; a compose after that final save would sit
+    /// in a room nobody saves again. Between the last connection leaving and
+    /// the final save it is still taken, and the final save writes it.
     /// A room in conflict or with a failed save may never write it either.
     /// `base` is the live text `target` was computed from: when it moved,
     /// composing the diff to `target` would take back what was typed since.
@@ -1041,6 +1041,12 @@ struct SessionState {
     last_saved_text: String,
     /// Awareness client ids seen per connection, nulled on its disconnect.
     conns: HashMap<ConnId, HashSet<ClientID>>,
+    /// Whether the room's final save has run (whatever it ended in) since the
+    /// last connection joined. Text composed in after it is saved by nobody,
+    /// so an engine write that has a source to fall back on is refused from
+    /// here on. Between the last connection leaving and the final save the
+    /// room still saves what it holds, which an empty `conns` cannot tell.
+    final_saved: bool,
     /// The signed-in account each connection of a reflection room belongs
     /// to, as the surface that opened it authenticated it. Never read from
     /// awareness, which is whatever a client sends.
@@ -1227,6 +1233,7 @@ impl CollabSession {
                 checksum: loaded.checksum,
                 last_saved_text: lf_content,
                 conns: HashMap::new(),
+                final_saved: false,
                 authors: HashMap::new(),
                 editors: std::collections::BTreeSet::new(),
                 new_heading_authors: std::collections::BTreeMap::new(),
@@ -1264,6 +1271,9 @@ impl CollabSession {
             return Err(JoinError::SessionFull);
         }
         state.conns.insert(conn, HashSet::new());
+        // A join before the room was disposed revives it: its saver runs and
+        // a final save comes again when this connection leaves.
+        state.final_saved = false;
         if let Some(author) = author {
             state.authors.insert(conn, author.to_string());
         }
@@ -1670,9 +1680,8 @@ impl CollabSession {
         } else {
             crate::engine::sha256_hex(text.as_bytes())
         };
-        let saving = !state.closed
-            && !state.conns.is_empty()
-            && matches!(state.save_state, SaveStateTag::Ok);
+        let saving =
+            !state.closed && !state.final_saved && matches!(state.save_state, SaveStateTag::Ok);
         LiveText {
             text,
             checksum,
@@ -1870,31 +1879,56 @@ impl CollabSession {
             return None; // a disposed or poisoned room never writes again
         }
         let mut state = self.state.lock().await;
+        // Marked on every way out below, under the lock a compose takes too:
+        // whatever lands after this is saved by nobody.
+        state.final_saved = true;
         if state.closed {
             // The room accepted an external deletion: a final save here would
             // resurrect the file the author agreed to let go.
             return None;
         }
         if matches!(state.save_state, SaveStateTag::Conflict) {
-            return None; // an unresolved conflict never saves; drafts hold the text
+            // An unresolved conflict never saves, and nobody is left to
+            // resolve it, so the server keeps the room's side of it.
+            self.keep_unsaved_text(&state);
+            return None;
         }
         if self.switches_reflection_off_locked(&state) {
-            state = self.close_reflection_rooms_unlocked(state).await?;
+            state = match self.close_reflection_rooms_unlocked(state).await {
+                Some(state) => state,
+                None => {
+                    let state = self.state.lock().await;
+                    if matches!(state.save_state, SaveStateTag::Conflict) {
+                        self.keep_unsaved_text(&state);
+                    }
+                    return None;
+                }
+            };
         }
         // The last chance to land this text, so no retry backoff applies.
         self.final_pass.store(true, Ordering::Relaxed);
         let renamed = self.save_locked(&mut state, Instant::now()).await;
         self.final_pass.store(false, Ordering::Relaxed);
-        // The last chance was refused: nothing will ever save this text
-        // again, so the server keeps it rather than drop it. A reflection
-        // room's last pass runs even with nothing typed (for its ids), and
-        // a refusal of THAT loses nothing, so it keeps nothing.
-        if matches!(state.save_state, SaveStateTag::Failed)
-            && Self::file_text_locked(&state) != state.last_saved_text
-        {
-            self.keep_refused_text(&state);
+        // The last chance was refused or ran into a conflict: nothing will
+        // ever save this text again, so the server keeps it rather than drop
+        // it.
+        if matches!(
+            state.save_state,
+            SaveStateTag::Failed | SaveStateTag::Conflict
+        ) {
+            self.keep_unsaved_text(&state);
         }
         renamed
+    }
+
+    /// [`CollabSession::keep_refused_text`] when the room holds text its
+    /// last save did not write. A reflection room's last pass runs even with
+    /// nothing typed (for its ids), and a refusal of THAT loses nothing, so
+    /// it keeps nothing.
+    fn keep_unsaved_text(&self, state: &SessionState) {
+        if Self::file_text_locked(state) != state.last_saved_text {
+            self.keep_refused_text(state);
+        }
     }
 
     /// Write a closing room's text that could not be saved to
@@ -2641,7 +2675,7 @@ impl CollabSession {
             return Err(ComposeRefused::NotSaving);
         }
         let mut state = self.state.lock().await;
-        if state.closed || state.conns.is_empty() || !matches!(state.save_state, SaveStateTag::Ok) {
+        if state.closed || state.final_saved || !matches!(state.save_state, SaveStateTag::Ok) {
             return Err(ComposeRefused::NotSaving);
         }
         if Self::file_text_locked(&state) != base {

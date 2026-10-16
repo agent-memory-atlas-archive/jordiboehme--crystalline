@@ -1107,3 +1107,63 @@ async fn a_lost_swap_of_a_virtual_linker_is_applied_again() {
         "the second try wrote the rewrite: {pointer}"
     );
 }
+
+/// Two moves of engrams that link each other, run at once on two workers,
+/// leave neither old file in place and no link to an old address. The
+/// deterministic proof is the engine's
+/// `crossing_moves_leave_no_link_to_an_old_address`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn crossing_moves_leave_no_dangling_link() {
+    for round in 0..10usize {
+        let f = Arc::new(Fixture::new().await);
+        seed(
+            f.notes(),
+            "alpha.md",
+            &engram("Alpha", "alpha", "See [[beta]]."),
+        );
+        seed(
+            f.notes(),
+            "beta.md",
+            &engram("Beta", "beta", "Back to [[alpha]]."),
+        );
+        f.sync().await;
+        let first = {
+            let f = f.clone();
+            tokio::spawn(async move {
+                for _ in 0..round % 3 {
+                    tokio::task::yield_now().await;
+                }
+                f.mv("alpha", "notes", "gamma.md", None, None).await
+            })
+        };
+        let second = {
+            let f = f.clone();
+            tokio::spawn(async move { f.mv("beta", "notes", "delta.md", None, None).await })
+        };
+        let (first, second) = tokio::join!(first, second);
+        first
+            .unwrap()
+            .unwrap_or_else(|e| panic!("round {round}: {e}"));
+        second
+            .unwrap()
+            .unwrap_or_else(|e| panic!("round {round}: {e}"));
+
+        assert!(!f.notes().join("alpha.md").exists(), "round {round}");
+        assert!(!f.notes().join("beta.md").exists(), "round {round}");
+        assert!(
+            read(f.notes(), "gamma.md").contains("See [[delta]]."),
+            "round {round}: {}",
+            read(f.notes(), "gamma.md")
+        );
+        assert!(
+            read(f.notes(), "delta.md").contains("Back to [[gamma]]."),
+            "round {round}: {}",
+            read(f.notes(), "delta.md")
+        );
+        assert!(
+            f.unresolved("notes").await.is_empty(),
+            "round {round}: {:?}",
+            f.unresolved("notes").await
+        );
+    }
+}

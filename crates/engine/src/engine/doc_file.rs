@@ -103,6 +103,24 @@ impl Engine {
         }
     }
 
+    /// Take the write locks of several files at once, in the order of their
+    /// lock keys, so two callers that each want two of the same files take
+    /// them in one order and cannot wait on each other. Two paths that name
+    /// one file take its lock once. Held until the value drops.
+    pub(super) async fn lock_files(&self, paths: &[&Path]) -> Vec<FileLock> {
+        let mut keyed: Vec<(String, &Path)> = paths
+            .iter()
+            .map(|abs| (super::lock_key(abs), *abs))
+            .collect();
+        keyed.sort_by(|a, b| a.0.cmp(&b.0));
+        keyed.dedup_by(|a, b| a.0 == b.0);
+        let mut locks = Vec::with_capacity(keyed.len());
+        for (_, abs) in keyed {
+            locks.push(self.lock_file(abs).await);
+        }
+        locks
+    }
+
     /// Lock, read, compare and write `text` (as LF). On success the lock
     /// comes back, so the caller reindexes under it; on a refusal nothing
     /// was written.

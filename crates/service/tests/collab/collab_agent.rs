@@ -1120,6 +1120,39 @@ async fn a_move_writes_the_file_of_a_linker_whose_room_already_said_goodbye() {
     );
 }
 
+/// Between the last connection leaving and the room's final save, the room
+/// still saves what it holds: that final save is still to come. A move in
+/// that moment composes into the room, so the final save writes the typing
+/// and the rewrite together, instead of writing the file behind the room and
+/// leaving the final save to collide with it.
+#[tokio::test]
+async fn a_move_between_the_last_leave_and_the_final_save_lands_with_the_typing() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    std::fs::write(tmp.path().join("eng/beta.md"), BETA).unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "beta", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    // Right under the link, where a three-way merge of a file rewrite
+    // would collide with it.
+    append_line(&joined, &doc, "typed before leaving").await;
+    assert!(
+        joined.session.remove_conn(joined.conn).await,
+        "the last one left"
+    );
+
+    let receipt = move_alpha_to_gamma(&engine).await;
+    assert_eq!(receipt["rewritten"][0]["landed"], "live", "{receipt}");
+    joined.session.final_save().await;
+
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap();
+    assert!(
+        on_disk.contains("See [[gamma]].") && on_disk.contains("typed before leaving"),
+        "the final save wrote both: {on_disk:?}"
+    );
+}
+
 /// A room in conflict saves nothing until a person resolves it, and may then
 /// keep the other side. A move writes the linker's file instead of composing
 /// into such a room, so the rewrite does not hang on how the conflict ends.
@@ -1157,6 +1190,138 @@ async fn a_move_writes_the_file_of_a_linker_whose_room_is_in_conflict() {
     assert!(
         on_disk.contains("See [[gamma]].") && on_disk.contains("written on disk"),
         "the rewrite is in the file: {on_disk:?}"
+    );
+}
+
+/// A move that keeps the engram's address (a new path, the same permalink) is
+/// allowed while the engram is open in the editor, and the room keeps saving
+/// to wherever the engram now lives: it saves by address, not by path. A move
+/// that changes the address is refused instead (`refuse_under_live_rooms`).
+#[tokio::test]
+async fn a_path_only_move_of_an_open_engram_keeps_the_rooms_typing() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed before the move").await;
+
+    engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".to_string(),
+                domain: "eng".to_string(),
+                destination: "guides/alpha.md".to_string(),
+                destination_domain: None,
+                permalink: Some("keep".to_string()),
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("a path-only move is not refused by the open room");
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+
+    assert!(
+        !tmp.path().join("eng/alpha.md").exists(),
+        "the old path is gone"
+    );
+    let moved = std::fs::read_to_string(tmp.path().join("eng/guides/alpha.md")).unwrap();
+    assert!(
+        moved.contains("typed before the move"),
+        "the room saved its typing at the new path: {moved:?}"
+    );
+    let live = sessions
+        .live_text("eng", "alpha", None)
+        .await
+        .expect("the room stands");
+    assert!(live.saving, "and raised no conflict");
+}
+
+/// The files under `<state>/kept/eng/engram/` a closing room's text was kept
+/// in, for `beta.md`.
+fn kept_beta(tmp: &tempfile::TempDir) -> Vec<String> {
+    let dir = tmp.path().join("state/kept/eng/engram");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    entries
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("beta.md.")
+        })
+        .map(|path| std::fs::read_to_string(path).unwrap())
+        .collect()
+}
+
+/// Open `beta` in a room, type a line, and write a different line at the
+/// same place on disk, so the room's next save collides with the file.
+async fn beta_room_colliding_with_the_file(
+    tmp: &tempfile::TempDir,
+    engine: &Arc<Engine>,
+    sessions: &Arc<CollabSessions>,
+) -> Joined {
+    let beta = tmp.path().join("eng/beta.md");
+    std::fs::write(&beta, BETA).unwrap();
+    engine.sync(None).await.unwrap();
+    let joined = sessions.join("eng", "beta", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed in the room").await;
+    std::fs::write(&beta, format!("{BETA}written on disk\n")).unwrap();
+    engine.sync(None).await.unwrap();
+    joined
+}
+
+/// A room still in conflict when its last connection leaves saves nothing,
+/// so the server keeps its text, as it does for a refused last save.
+#[tokio::test]
+async fn a_room_still_in_conflict_at_its_close_keeps_its_text() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = beta_room_colliding_with_the_file(&tmp, &engine, &sessions).await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+    assert!(
+        !sessions
+            .live_text("eng", "beta", None)
+            .await
+            .unwrap()
+            .saving
+    );
+
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    let kept = kept_beta(&tmp);
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert!(kept[0].contains("typed in the room"), "{kept:?}");
+}
+
+/// A room whose final pass itself runs into a conflict keeps its text too.
+#[tokio::test]
+async fn a_final_pass_that_ends_in_conflict_keeps_the_rooms_text() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = beta_room_colliding_with_the_file(&tmp, &engine, &sessions).await;
+
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    let kept = kept_beta(&tmp);
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert!(kept[0].contains("typed in the room"), "{kept:?}");
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap();
+    assert!(
+        on_disk.contains("written on disk") && !on_disk.contains("typed in the room"),
+        "the file keeps the other writer's text: {on_disk:?}"
     );
 }
 
@@ -2260,12 +2425,14 @@ fn no_engine_function_composes_into_a_room_under_a_file_write_lock() {
     /// read-modify-write, so both close the same cycle against the room's
     /// saver; watching only the spelling that says `write_lock` would leave
     /// every overlay arm unwatched. `lock_file` is the reflection pages'
-    /// spelling of the same lock, and `write_checked` takes a file's lock and
-    /// hands it back for its caller to hold across the reindex.
-    const LOCK_NEEDLES: [&str; 4] = [
+    /// spelling of the same lock, `lock_files` takes several of them, and
+    /// `write_checked` takes a file's lock and hands it back for its caller
+    /// to hold across the reindex.
+    const LOCK_NEEDLES: [&str; 5] = [
         ".write_lock(",
         ".draft_lock(",
         ".lock_file(",
+        ".lock_files(",
         ".write_checked(",
     ];
 

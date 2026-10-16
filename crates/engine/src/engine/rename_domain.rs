@@ -721,6 +721,20 @@ impl Engine {
         *self.rename_drain_wait.lock().unwrap() = limit;
     }
 
+    /// Whether this process's configuration snapshot or its discovered
+    /// domains hold `name`, with no file read. A rename updates both before
+    /// it lifts its pause.
+    fn holds_domain_in_memory(&self, name: &str) -> bool {
+        self.config.read().unwrap().domains.contains_key(name)
+            || self.discovered_domains.read().unwrap().contains_key(name)
+    }
+
+    /// How many writes wait right now for a rename's pause to lift.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn writes_waiting_for_rename(&self) -> usize {
+        self.rename_pause.waiting()
+    }
+
     /// Hold the next rename right after `step` until the answered hold is
     /// released.
     #[cfg(any(test, feature = "testing"))]
@@ -772,10 +786,21 @@ impl Engine {
                 .wait_clear(&[name.to_string()], RENAME_WAIT)
                 .await
                 .map_err(renaming_conflict)?;
-            if waited && !self.registered_domain_names().contains(name) {
-                return Err(EngineError::Conflict(format!(
-                    "domain '{name}' was renamed while this request waited; send it again"
-                )));
+            // The name is asked for whatever the wait did: a rename that
+            // finished just before this write got here leaves the name gone
+            // just the same. The in-memory registration answers nearly every
+            // write without reading the configuration file; only a name it
+            // does not hold is asked of every tier.
+            if !self.holds_domain_in_memory(name) && !self.registered_domain_names().contains(name)
+            {
+                return Err(EngineError::Conflict(if waited {
+                    format!("domain '{name}' was renamed while this request waited; send it again")
+                } else {
+                    format!(
+                        "domain '{name}' is not registered here any more (renamed or removed \
+                         while this request ran); send it again"
+                    )
+                }));
             }
             if let Some(ticket) = self.rename_pause.try_enter(name) {
                 #[cfg(any(test, feature = "testing"))]
