@@ -1607,6 +1607,51 @@ describe("the avatar menu", () => {
     expect(avatar).toHaveFocus();
   });
 
+  it("keeps the shortcut map on a phone and leaves the width choice to the desktop", async () => {
+    stubNarrowWindow();
+    serveSignedIn();
+
+    renderApp("/");
+    const user = userEvent.setup();
+    const menu = await openAvatar(user);
+
+    expect(
+      within(menu).getByRole("menuitem", { name: /^Keyboard shortcuts/ }),
+    ).toBeVisible();
+    expect(within(menu).queryByRole("group", { name: "Width" })).toBeNull();
+    expect(within(menu).getByRole("group", { name: "Theme" })).toBeVisible();
+  });
+
+  it("marks Maintenance as the current screen while you are on it", async () => {
+    serveSignedIn();
+
+    renderApp("/maintenance");
+    const user = userEvent.setup();
+    const menu = await openAvatar(user);
+
+    const item = within(menu).getByRole("menuitem", { name: "Maintenance" });
+    expect(item).toHaveAttribute("aria-current", "page");
+    expect(item.className).toContain("font-medium");
+    expect(
+      within(menu).getByRole("menuitem", { name: "Profile" }),
+    ).not.toHaveAttribute("aria-current");
+  });
+
+  it("puts the keyboard on the first row when the menu is opened with Enter", async () => {
+    serveSignedIn();
+
+    renderApp("/");
+    const avatar = await screen.findByRole("button", { name: "Ada Lovelace" });
+    avatar.focus();
+    const user = userEvent.setup();
+    await user.keyboard("{Enter}");
+    await screen.findByRole("menuitem", { name: "Maintenance" });
+
+    await waitFor(() => {
+      expect(screen.getByRole("menuitem", { name: "Profile" })).toHaveFocus();
+    });
+  });
+
   it("is a neutral circle with a way to log in for an anonymous reader", async () => {
     serve({
       "/auth/me": () => meResponse({ anonymous: true }),

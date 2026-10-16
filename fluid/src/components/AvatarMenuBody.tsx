@@ -220,8 +220,18 @@ export default function AvatarMenuBody({
           </Link>
         </DropdownMenu.Item>
       )}
-      <DropdownMenu.Item className={ROW} asChild>
-        <NavLink to={maintenanceRoute()}>
+      {/*
+        No className on the item: the slot would join it with the link's
+        class function as text, so the link carries the row's classes itself
+        and draws the active state.
+      */}
+      <DropdownMenu.Item asChild>
+        <NavLink
+          to={maintenanceRoute()}
+          className={({ isActive }) =>
+            isActive ? `${ROW} bg-accent-tint font-medium text-ink` : ROW
+          }
+        >
           <Stethoscope {...glyph} className={ICON} />
           Maintenance
         </NavLink>
@@ -279,19 +289,17 @@ export default function AvatarMenuBody({
       </DropdownMenu.Group>
 
       <DropdownMenu.Separator className={SEP} />
-      {/* The map is keyboard-only: a phone has no keys to press, so the sheet leaves it out. */}
-      {wide && (
-        <DropdownMenu.Item className={ROW} onSelect={onShortcuts}>
-          <Keyboard {...glyph} className={ICON} />
-          Keyboard shortcuts
-          <kbd
-            aria-hidden="true"
-            className="text-caption ml-auto rounded border border-hair-strong px-1.5 text-faint"
-          >
-            ?
-          </kbd>
-        </DropdownMenu.Item>
-      )}
+      {/* Kept on a phone too: a tablet in split view and a phone with a hardware keyboard have the keys. */}
+      <DropdownMenu.Item className={ROW} onSelect={onShortcuts}>
+        <Keyboard {...glyph} className={ICON} />
+        Keyboard shortcuts
+        <kbd
+          aria-hidden="true"
+          className="text-caption ml-auto rounded border border-hair-strong px-1.5 text-faint"
+        >
+          ?
+        </kbd>
+      </DropdownMenu.Item>
       <DropdownMenu.Item className={ROW} asChild>
         <a href={HANDBOOK_URL} target="_blank" rel="noreferrer">
           <BookOpen {...glyph} className={ICON} />

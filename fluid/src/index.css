@@ -212,7 +212,7 @@
     @apply inline-flex h-8 min-w-0 shrink items-center gap-1.5 rounded-lg pr-2 pl-2.5 text-sm font-medium text-ink hover:bg-sunken data-[state=open]:bg-sunken;
   }
   .switcher-menu {
-    @apply z-50 w-80 max-w-[calc(100vw-1rem)] rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] shadow-pop;
+    @apply z-50 max-h-(--radix-dropdown-menu-content-available-height) w-80 overflow-y-auto max-w-[calc(100vw-1rem)] rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] shadow-pop;
   }
   /* The avatar in the top bar and in its menu (AvatarMenu): the initial in a circle. */
   .avatar {
@@ -228,7 +228,7 @@
     @apply size-10 text-[15px];
   }
   .avatar-menu {
-    @apply z-50 w-[19.5rem] max-w-[calc(100vw-1rem)] rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] shadow-pop;
+    @apply z-50 w-[19.5rem] max-w-[calc(100vw-1rem)] max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] shadow-pop;
   }
   .avatar-grab {
     @apply mx-auto mt-1 mb-2.5 h-1 w-9.5 rounded-sm bg-hair-strong md:hidden;
@@ -716,6 +716,7 @@
     width: 100%;
     max-width: none;
     max-height: 85vh;
+    max-height: 85dvh;
     overflow-y: auto;
     border-width: 1px 0 0;
     border-radius: 16px 16px 0 0;

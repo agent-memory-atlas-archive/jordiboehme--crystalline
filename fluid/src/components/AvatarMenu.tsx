@@ -112,7 +112,27 @@ function Body({
   onShortcuts: (opener: HTMLElement | null) => void;
 }): ReactElement {
   const [failed, setFailed] = useState(false);
-  const [, setReady] = useState(false);
+  const [ready, setReady] = useState(Menu !== undefined);
+  // A body that arrives after the menu has opened lands while the focus is on
+  // the menu's own container (Radix looked for a first item and found none),
+  // so a keyboard that opened the menu would start on nothing. Once it has
+  // arrived, the first row takes the focus, unless it has already moved.
+  const late = useRef(Menu === undefined);
+  useEffect(() => {
+    if (!ready || !late.current) {
+      return;
+    }
+    late.current = false;
+    const timer = setTimeout(() => {
+      const active = document.activeElement;
+      if (active?.getAttribute("role") === "menu") {
+        active.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+      }
+    });
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [ready]);
   useEffect(() => {
     if (Menu === undefined) {
       load().then(

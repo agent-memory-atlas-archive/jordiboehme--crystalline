@@ -212,10 +212,15 @@ test("the Display choices change the page and keep the avatar menu open", async 
     .getByRole("menuitemradio", { name: "Large" })
     .click();
   await expect(menu).toBeVisible();
-  await menu
-    .getByRole("group", { name: "Theme" })
-    .getByRole("menuitemradio", { name: "System" })
-    .click();
+  await expect(page.getByRole("main", { includeHidden: true })).toHaveAttribute(
+    "data-text",
+    "large",
+  );
+
+  // Both are remembered: a reload comes back dark and large.
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.getByRole("main")).toHaveAttribute("data-text", "large");
 });
 
 /**
