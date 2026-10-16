@@ -314,8 +314,14 @@ impl Engine {
         // address, which the unique index would otherwise refuse only at the
         // reindex - after the file had already landed.
         if !in_place {
-            self.ensure_dest_free(&dest_source, &dest_domain, &dest_rel)
-                .await?;
+            self.ensure_dest_free(
+                &dest_source,
+                &dest_domain,
+                &dest_rel,
+                &src_source,
+                &src.path,
+            )
+            .await?;
         }
         if readdressed {
             self.refuse_permalink_held(&dest_domain, &new_permalink, &src, cross)
@@ -392,8 +398,14 @@ impl Engine {
         // The destination was free when it was checked above; it is asked
         // again now that nobody else may write it.
         if !in_place {
-            self.ensure_dest_free(&dest_source, &dest_domain, &dest_rel)
-                .await?;
+            self.ensure_dest_free(
+                &dest_source,
+                &dest_domain,
+                &dest_rel,
+                &src_source,
+                &src.path,
+            )
+            .await?;
         }
 
         // Read here for the write, inside the locks, by the strict reader the
@@ -535,11 +547,21 @@ impl Engine {
             if let ContentSource::File { root } = &src_source {
                 let src_abs = join_rel(root, &src.path);
                 let dest_abs = join_rel(root, &dest_rel);
+                // A letter-case rename on a case-insensitive disk: the file
+                // goes first, or the write would keep the old spelling and
+                // the removal after it would take the new file away.
+                let case_only = !in_place && is_the_source_file(&src_source, &src.path, &dest_abs);
+                if case_only {
+                    std::fs::remove_file(&src_abs).map_err(|source| EngineError::Io {
+                        path: src_abs.display().to_string(),
+                        source,
+                    })?;
+                }
                 match &moved_text {
                     Some(text) => write_file(&dest_abs, text)?,
                     None => write_bytes(&dest_abs, original.as_bytes())?,
                 }
-                if !in_place {
+                if !in_place && !case_only {
                     std::fs::remove_file(&src_abs).map_err(|source| EngineError::Io {
                         path: src_abs.display().to_string(),
                         source,
@@ -1522,9 +1544,16 @@ impl Engine {
         dest_source: &ContentSource,
         dest_domain: &str,
         dest_rel: &str,
+        src_source: &ContentSource,
+        src_rel: &str,
     ) -> Result<()> {
         let taken = match dest_source {
-            ContentSource::File { root } => join_rel(root, dest_rel).exists(),
+            // The source file itself at the destination (a letter-case rename
+            // on a case-insensitive disk) is not a collision.
+            ContentSource::File { root } => {
+                let dest_abs = join_rel(root, dest_rel);
+                dest_abs.exists() && !is_the_source_file(src_source, src_rel, &dest_abs)
+            }
             ContentSource::Virtual => {
                 let store = self.store.lock().await;
                 let dest_id = store
@@ -1540,6 +1569,16 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+/// Whether `dest_abs` is the very file the source engram sits in (one file
+/// under two spellings of its name).
+fn is_the_source_file(src_source: &ContentSource, src_rel: &str, dest_abs: &Path) -> bool {
+    let ContentSource::File { root } = src_source else {
+        return false;
+    };
+    let src_abs = join_rel(root, src_rel);
+    matches!((src_abs.canonicalize(), dest_abs.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
 /// A MANIFEST rewrite as a path change: its permalink is left to the

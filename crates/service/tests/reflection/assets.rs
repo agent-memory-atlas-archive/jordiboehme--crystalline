@@ -853,6 +853,29 @@ async fn a_move_onto_a_file_or_of_a_missing_file_changes_nothing() {
     );
 }
 
+/// A page renamed only by letter case keeps its text and ends up with the new
+/// spelling on a case-sensitive and a case-insensitive disk alike.
+#[tokio::test]
+async fn a_page_renamed_only_by_letter_case_keeps_its_text() {
+    let fx = reflecting().await;
+    fx.engine
+        .write_reflection(&curated("deploying.md", "# Deploying\n"), &agent())
+        .await
+        .unwrap();
+    fx.engine
+        .move_reflection("eng", "deploying.md", "Deploying.md", &agent())
+        .await
+        .unwrap();
+    let names: Vec<String> = std::fs::read_dir(fx.root.join("reflections"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.to_lowercase().starts_with("deploying"))
+        .collect();
+    assert_eq!(names, ["Deploying.md"]);
+    let text = std::fs::read_to_string(fx.root.join("reflections/Deploying.md")).unwrap();
+    assert!(text.contains("# Deploying"), "{text}");
+}
+
 /// A move keeps the extension, in any letter case, and a refusal changes
 /// nothing: no page is rewritten and no file moves.
 #[tokio::test]
@@ -878,6 +901,13 @@ async fn a_move_keeps_the_extension_and_a_refusal_changes_nothing() {
         .move_reflection_asset("eng", "assets/a.png", "assets/a.PNG", &agent())
         .await
         .unwrap();
+    // The listing shows the new spelling on a case-sensitive and a
+    // case-insensitive disk alike.
+    let names: Vec<String> = std::fs::read_dir(fx.root.join("reflections/assets"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["a.PNG"]);
     assert_eq!(
         std::fs::read(fx.root.join("reflections/assets/a.PNG")).unwrap(),
         PNG

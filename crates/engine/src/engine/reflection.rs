@@ -2234,30 +2234,23 @@ impl Engine {
         self.take_room_screen_hold().await;
         let src = access.abs(from);
         let dst = access.abs(to);
-        // Both pages' locks, in byte order, so two crossing moves cannot wait
-        // on each other. Held until the moved page is indexed.
-        let (first, second) = if src <= dst {
-            (&src, &dst)
-        } else {
-            (&dst, &src)
-        };
-        let _first = self.lock_file(first).await;
-        let _second = if first == second {
-            None
-        } else {
-            Some(self.lock_file(second).await)
-        };
+        // Both pages' locks, in lock-key order, so two crossing moves cannot
+        // wait on each other; two spellings of one file take its lock once.
+        // Held until the moved page is indexed.
+        let _locks = self.lock_files(&[&src, &dst]).await;
         let text = read_opt(&src)?.ok_or_else(|| {
             EngineError::NotFound(format!("no reflection '{from}' in domain '{domain}'"))
         })?;
         // A page, a threads file or a baseline left at the target would be
         // adopted by the moved page: the move refuses.
-        for (leftover, what) in [
-            (to.to_string(), "a reflection"),
-            (r::threads_path(to), "a threads file"),
-            (r::baseline_path(to), "a baseline"),
+        for (old, leftover, what) in [
+            (from.to_string(), to.to_string(), "a reflection"),
+            (r::threads_path(from), r::threads_path(to), "a threads file"),
+            (r::baseline_path(from), r::baseline_path(to), "a baseline"),
         ] {
-            if access.abs(&leftover).exists() {
+            // The page itself under another letter case is the same file.
+            let itself = is_same_file(&access.abs(&old), &access.abs(&leftover));
+            if access.abs(&leftover).exists() && !itself {
                 return Err(EngineError::Conflict(format!(
                     "'{leftover}' already holds {what}; remove it or pick another path"
                 )));
@@ -2273,16 +2266,21 @@ impl Engine {
         .map_err(EngineError::Invalid)?;
         // The row is built from the text as written, so it matches the file.
         let page = crystalline_core::to_lf(&moved.page).into_owned();
-        write_file(&dst, &page)?;
-        remove_if_there(&src)?;
+        replace_file(&src, &dst, &page)?;
         if old_baseline.is_some() {
-            write_file(&access.abs(&r::baseline_path(to)), &moved.baseline)?;
-            remove_if_there(&access.abs(&r::baseline_path(from)))?;
+            replace_file(
+                &access.abs(&r::baseline_path(from)),
+                &access.abs(&r::baseline_path(to)),
+                &moved.baseline,
+            )?;
         }
         let mut threads_moved = false;
         if let Some(body) = read_opt(&access.abs(&r::threads_path(from)))? {
-            write_file(&access.abs(&r::threads_path(to)), &body)?;
-            remove_if_there(&access.abs(&r::threads_path(from)))?;
+            replace_file(
+                &access.abs(&r::threads_path(from)),
+                &access.abs(&r::threads_path(to)),
+                &body,
+            )?;
             threads_moved = true;
         }
         self.store
@@ -2292,7 +2290,7 @@ impl Engine {
             .await?;
         self.index_reflection(access.domain_id, to, &page, &dst)
             .await?;
-        drop((_first, _second));
+        drop(_locks);
         self.announce_reflection(
             domain,
             to,
@@ -2535,6 +2533,26 @@ impl Engine {
             change_label(&caller.scope),
         );
         Ok(json!({ "domain": domain, "path": inner, "settled": ids, "outcome": outcome }))
+    }
+}
+
+/// Whether two paths are one file on disk, as canonical paths (a letter-case
+/// rename on a case-insensitive disk).
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    a != b && matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
+}
+
+/// Write `text` at `new` and remove `old`. When both name one file (a
+/// letter-case rename on a case-insensitive disk) the old one goes first, or
+/// the write would keep the old spelling and the removal would take the new
+/// file away.
+fn replace_file(old: &Path, new: &Path, text: &str) -> Result<()> {
+    if is_same_file(old, new) {
+        remove_if_there(old)?;
+        write_file(new, text)
+    } else {
+        write_file(new, text)?;
+        remove_if_there(old).map(|_| ())
     }
 }
 

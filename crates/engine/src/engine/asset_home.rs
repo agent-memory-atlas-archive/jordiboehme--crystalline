@@ -503,7 +503,10 @@ impl Engine {
                 });
             }
         };
-        if dst.exists() {
+        // A letter-case rename on a case-insensitive disk finds the file
+        // itself at `to`: the same file, not another one to move onto.
+        let case_only = dst.exists() && same_file(&src, &dst);
+        if dst.exists() && !case_only {
             return Err(EngineError::Conflict(format!("'{to}' {MOVE_ONTO_A_FILE}")));
         }
         // A rename keeps the modification instant, so a stored row that
@@ -536,7 +539,12 @@ impl Engine {
                 source,
             })?;
         }
-        std::fs::rename(&src, &dst).map_err(|source| EngineError::Io {
+        let renamed = if case_only {
+            rename_through_a_temporary_name(&src, &dst)
+        } else {
+            std::fs::rename(&src, &dst)
+        };
+        renamed.map_err(|source| EngineError::Io {
             path: dst.display().to_string(),
             source,
         })?;
@@ -661,6 +669,24 @@ impl Engine {
     }
 }
 
+/// Whether two paths are one file on disk (compared as canonical paths).
+fn same_file(a: &Path, b: &Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
+}
+
+/// Rename `src` to `dst` through a temporary name beside it, so a rename that
+/// differs only by letter case lands on a case-insensitive disk too. A failed
+/// second step puts the file back.
+fn rename_through_a_temporary_name(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let mut tmp = src.as_os_str().to_owned();
+    tmp.push(format!(".case-rename-{}", std::process::id()));
+    let tmp = std::path::PathBuf::from(tmp);
+    std::fs::rename(src, &tmp)?;
+    std::fs::rename(&tmp, dst).inspect_err(|_| {
+        let _ = std::fs::rename(&tmp, src);
+    })
+}
+
 /// A move keeps the file's extension, in any letter case: the bytes of a PNG
 /// renamed to `.jpg` would be served as `image/jpeg`. `flow.png` to
 /// `flow.PNG` is fine.
@@ -737,11 +763,32 @@ mod tests {
                 assert!(!tmp.path().join(rel("flow.jpg")).exists());
             }
 
+            // A letter-case rename, in place: works on either kind of disk.
             engine
-                .asset_move_in(home, "eng", "assets/flow.png", "assets/sub/flow.PNG")
+                .asset_move_in(home, "eng", "assets/flow.png", "assets/flow.PNG")
                 .await
                 .unwrap();
-            assert!(!src.exists());
+            let names: Vec<String> = std::fs::read_dir(src.parent().unwrap())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                names,
+                ["flow.PNG"],
+                "{home:?}: the file carries the new case"
+            );
+            engine
+                .asset_move_in(home, "eng", "assets/flow.PNG", "assets/sub/flow.PNG")
+                .await
+                .unwrap();
+            assert!(
+                !std::fs::read_dir(src.parent().unwrap()).unwrap().any(|e| e
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("flow")),
+                "{home:?}: nothing is left behind"
+            );
             assert_eq!(
                 std::fs::read(tmp.path().join(rel("sub/flow.PNG"))).unwrap(),
                 PNG
