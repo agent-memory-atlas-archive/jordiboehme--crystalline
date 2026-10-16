@@ -798,6 +798,108 @@ async fn a_move_into_another_domain_names_it_in_the_close() {
     );
 }
 
+/// The `Closed` control addressed to `conn` (or to everybody) on this
+/// receiver, skipping every other frame.
+async fn closed_for(rx: &mut tokio::sync::broadcast::Receiver<Frame>, conn: u64) -> Control {
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("a frame arrives in time")
+            .expect("the broadcast channel stays open");
+        if frame.to.is_some_and(|only| only != conn) {
+            continue;
+        }
+        let mut decoder = DecoderV1::from(frame.bytes.as_ref());
+        for message in MessageReader::new(&mut decoder).flatten() {
+            if let Message::Custom(control::CONTROL_TAG, payload) = message
+                && let Some(found @ Control::Closed { .. }) = control::decode(&payload)
+            {
+                return found;
+            }
+        }
+    }
+}
+
+/// A move into a private domain names that domain only to the people who
+/// may see it. Bob, who is not a member of `hr`, is told the engram moved
+/// and nothing else, in the room and on a later join; Ann, a member, gets
+/// the whole address.
+#[tokio::test]
+async fn a_move_into_a_private_domain_names_it_only_to_its_members() {
+    use crystalline_service::rest::{AuthStore, MemberLevel, Role};
+    let (tmp, engine, _scratch) = engine_fixture_with_state().await;
+    let auth = Arc::new(
+        AuthStore::open(&tmp.path().join("web-auth.db"))
+            .await
+            .unwrap(),
+    );
+    for name in ["keeper", "bob", "ann"] {
+        auth.add_user(name, name, None, Role::Editor, "pw12345678")
+            .await
+            .unwrap();
+    }
+    // `oak` plays hr: private, owned by keeper, with ann as a member.
+    auth.set_domain_visibility("oak", true, "keeper")
+        .await
+        .unwrap();
+    auth.upsert_domain_member("oak", "ann", MemberLevel::Editor, None, "keeper")
+        .await
+        .unwrap();
+    engine.set_domain_access(Arc::new(crystalline_service::DomainAccess::new(auth)));
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let user = |account: &str| crystalline_service::Scope::User {
+        account: account.into(),
+        admin: false,
+    };
+    let mut bob = sessions.join("eng", "alpha", None).await.unwrap();
+    bob.session.set_viewer(bob.conn, user("bob")).await;
+    let mut ann = sessions.join("eng", "alpha", None).await.unwrap();
+    ann.session.set_viewer(ann.conn, user("ann")).await;
+    engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".into(),
+                domain: "eng".into(),
+                destination: "alpha.md".into(),
+                destination_domain: Some("oak".into()),
+                permalink: Some("salaries".into()),
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        closed_for(&mut bob.rx, bob.conn).await,
+        Control::Closed {
+            reason: "moved".into(),
+            domain: None,
+            path: None,
+            permalink: None,
+        },
+        "bob learns nothing about where it went"
+    );
+    assert_eq!(
+        closed_for(&mut ann.rx, ann.conn).await,
+        Control::Closed {
+            reason: "moved".into(),
+            domain: Some("oak".into()),
+            path: Some("alpha.md".into()),
+            permalink: Some("salaries".into()),
+        }
+    );
+    // A later join at the old address: the registry knows where it went,
+    // and only a caller who may see `oak` is told.
+    let to = match sessions.join("eng", "alpha", None).await {
+        Err(crystalline_service::collab::session::JoinError::Moved(to)) => to,
+        Err(other) => panic!("the move, not {other}"),
+        Ok(_) => panic!("no room opens at the old address"),
+    };
+    assert!(!sessions.may_see_move(&to, &user("bob")).await);
+    assert!(sessions.may_see_move(&to, &user("ann")).await);
+}
+
 /// R81 for an engram: a room cannot open over the old address between the
 /// move's close and its commit. The join is refused while the move holds
 /// the address, and the moved engram opens at its new one.
@@ -3079,6 +3181,12 @@ async fn a_cancelled_move_still_saves_and_closes_the_room() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     moving.abort();
     let _ = moving.await;
+    // The fence stays while the save the cancelled move started runs.
+    let refused = match sessions.join_reflection("eng", "guides/a.md", "ada").await {
+        Err(refused) => refused.to_string(),
+        Ok(_) => panic!("a room opened while the save was still running"),
+    };
+    assert!(refused.contains("is being moved"), "{refused}");
     drop(held);
     assert_eq!(
         next_closed(&mut joined.rx).await,

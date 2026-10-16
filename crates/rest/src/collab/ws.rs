@@ -134,7 +134,7 @@ pub async fn join(
         Err(err) if err.status == axum::http::StatusCode::NOT_FOUND => {
             let key = (domain.clone(), RoomDoc::Engram(permalink.clone()), None);
             return match state.collab.moved_from(&key) {
-                Some(to) => Ok(moved_upgrade(ws, to)),
+                Some(to) => moved_answer(&state, &identity, ws, to, err).await,
                 None => Err(err),
             };
         }
@@ -157,9 +157,18 @@ pub async fn join(
     };
     let joined = match joined {
         Ok(joined) => joined,
-        Err(JoinError::Moved(to)) => return Ok(moved_upgrade(ws, to)),
+        Err(JoinError::Moved(to)) => {
+            let miss = ApiError::not_found(format!("no engram '{permalink}' in domain '{domain}'"));
+            return moved_answer(&state, &identity, ws, to, miss).await;
+        }
         Err(err) => return Err(join_error(err)),
     };
+    // Who this connection is, so a `moved` close names to it only a domain
+    // it may see.
+    joined
+        .session
+        .set_viewer(joined.conn, identity.scope())
+        .await;
     // **The address the room opened is the path the link was for.** The two
     // are resolved by different ladders - a grant matches only the drafts the
     // link was for, by permalink or title, while a room resolves its address
@@ -314,9 +323,16 @@ pub async fn join_reflection(
     };
     let joined = match joined {
         Ok(joined) => joined,
-        Err(JoinError::Moved(to)) => return Ok(moved_upgrade(ws, to)),
+        Err(JoinError::Moved(to)) => {
+            let miss = ApiError::not_found(format!("no reflection '{path}' in domain '{domain}'"));
+            return moved_answer(&state, &identity, ws, to, miss).await;
+        }
         Err(err) => return Err(join_error(err)),
     };
+    joined
+        .session
+        .set_viewer(joined.conn, identity.scope())
+        .await;
     let sessions = state.collab.clone();
     // The failure twin of on_upgrade, as in `join`.
     let failed = {
@@ -472,6 +488,22 @@ fn require_same_host_origin(headers: &HeaderMap) -> Result<(), ApiError> {
         ));
     }
     Ok(())
+}
+
+/// [`moved_upgrade`] for a caller who may see where the document went; a
+/// move into a domain this caller may not see answers `miss`, the plain 404,
+/// so the domain's name never reaches them.
+async fn moved_answer(
+    state: &RestState,
+    identity: &Identity,
+    ws: WebSocketUpgrade,
+    to: MovedTo,
+    miss: ApiError,
+) -> Result<Response, ApiError> {
+    if !state.collab.may_see_move(&to, &identity.scope()).await {
+        return Err(miss);
+    }
+    Ok(moved_upgrade(ws, to))
 }
 
 /// The answer to a join over an address a move took the document away from:

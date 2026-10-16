@@ -465,7 +465,7 @@ impl SweptRooms {
                 path,
                 permalink,
             };
-            session.close_with(to.control());
+            session.close_moved(&to).await;
         }
     }
 }
@@ -497,6 +497,19 @@ pub struct MoveClose {
 /// a sweep again (a MANIFEST that switches the Reflection off closes the
 /// reflection rooms), and an unnamed type would make that cycle one the
 /// compiler cannot prove `Send` through.
+/// Whether `scope` may see where `to` points: a move inside one domain names
+/// nothing new; a move into another domain names that domain, which `scope`
+/// must be able to see. A failed lookup answers no (fail closed).
+async fn sees_destination(engine: &Engine, to: &MovedTo, scope: &crate::scope::Scope) -> bool {
+    match to.domain.as_deref() {
+        None => true,
+        Some(domain) => engine
+            .hidden_for(scope)
+            .await
+            .is_ok_and(|hidden| !hidden.contains(domain)),
+    }
+}
+
 fn sweep_task(
     victims: Vec<Arc<CollabSession>>,
     discarded: HashSet<String>,
@@ -504,7 +517,16 @@ fn sweep_task(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SweptRooms> + Send>> {
     Box::pin(async move {
         let mut untold = SweptRooms { rooms: Vec::new() };
-        for session in victims {
+        // Every victim not reached yet waits in a `SweptRooms` of its own,
+        // so a panic below (a yrs bug in a save) still disposes and tells
+        // each of them `internal` as the unwind drops it.
+        let mut waiting = SweptRooms { rooms: victims };
+        waiting.rooms.reverse();
+        while let Some(session) = waiting.rooms.pop() {
+            // The one in hand is guarded the same way until it is done.
+            let mut current = SweptRooms {
+                rooms: vec![session.clone()],
+            };
             let discarding = session
                 .key()
                 .2
@@ -515,6 +537,8 @@ fn sweep_task(
             if !discarding {
                 session.final_save().await;
             }
+            // Done without a panic: disarm the guard, the close below tells.
+            current.rooms.clear();
             match &reason {
                 Some(reason) => session.close(reason).await,
                 None => {
@@ -530,9 +554,9 @@ fn sweep_task(
 impl MoveClose {
     /// The move committed: tell the room's sockets the new address, then
     /// lift the fence.
-    pub fn moved(mut self) {
+    pub async fn moved(mut self) {
         for session in std::mem::take(&mut self.room.rooms) {
-            session.close_with(self.to.control());
+            session.close_moved(&self.to).await;
         }
         if let Some(registry) = self._fence.registry.upgrade() {
             registry.note_moved(self._fence.key.clone(), self.to.clone());
@@ -927,27 +951,40 @@ impl CollabSessions {
             registry: Arc::downgrade(self),
             key,
         };
-        let room = match victim {
-            Some(session) => {
-                let kept = session.clone();
-                // The save comes first, as in every sweep: a disposed room's
-                // save paths are no-ops.
-                let saving = tokio::spawn(sweep_task(vec![session], HashSet::new(), None));
-                match saving.await {
-                    Ok(room) => room,
-                    // A panic below the save: the room still has to be told.
-                    Err(err) => {
-                        tracing::warn!(%err, "a moved room's last save did not finish");
-                        SweptRooms { rooms: vec![kept] }
-                    }
+        let Some(session) = victim else {
+            return MoveClose {
+                room: SweptRooms { rooms: Vec::new() },
+                to,
+                _fence: fence,
+            };
+        };
+        // The save comes first, as in every sweep: a disposed room's save
+        // paths are no-ops. The fence travels with the task, so a move
+        // cancelled while the save runs still keeps the document fenced until
+        // the save is done.
+        let saving = tokio::spawn(async move {
+            let room = sweep_task(vec![session], HashSet::new(), None).await;
+            (room, fence)
+        });
+        match saving.await {
+            Ok((room, fence)) => MoveClose {
+                room,
+                to,
+                _fence: fence,
+            },
+            // A panic below the save: the task's guards told the room
+            // `internal` and lifted the fence as it unwound.
+            Err(err) => {
+                tracing::warn!(%err, "a moved room's last save did not finish");
+                MoveClose {
+                    room: SweptRooms { rooms: Vec::new() },
+                    to,
+                    _fence: MoveFence {
+                        registry: Weak::new(),
+                        key: (String::new(), RoomDoc::Engram(String::new()), None),
+                    },
                 }
             }
-            None => SweptRooms { rooms: Vec::new() },
-        };
-        MoveClose {
-            room,
-            to,
-            _fence: fence,
         }
     }
 
@@ -975,6 +1012,15 @@ impl CollabSessions {
             .get(key)
             .filter(|(_, at)| at.elapsed() < MOVED_MEMORY)
             .map(|(to, _)| to.clone())
+    }
+
+    /// Whether `scope` may be told where a move took a document: always for
+    /// a move inside one domain, and for a move into another domain only
+    /// when `scope` may see that domain. A join that comes after the move
+    /// asks this before it is told [`JoinError::Moved`]'s address, so the
+    /// name of a domain somebody may not see never reaches them.
+    pub async fn may_see_move(&self, to: &MovedTo, scope: &crate::scope::Scope) -> bool {
+        sees_destination(&self.engine, to, scope).await
     }
 
     /// Whether a move holds `key` right now.
@@ -1417,6 +1463,12 @@ struct SessionState {
     /// to, as the surface that opened it authenticated it. Never read from
     /// awareness, which is whatever a client sends.
     authors: HashMap<ConnId, String>,
+    /// Who each connection is, as the surface that opened it authenticated
+    /// it: what a `moved` close may name to that connection is screened
+    /// against it, so a move into a domain somebody may not see does not tell
+    /// them its name ([`CollabSession::close_moved`]). A connection with no
+    /// entry is an in-process caller (the machine owner) and sees all.
+    viewers: HashMap<ConnId, crate::scope::Scope>,
     /// The accounts whose connections sent an edit since the last save
     /// landed: the names that save records. Kept past a disconnect, so the
     /// last person to leave is still named by the final save, and cleared
@@ -1601,6 +1653,7 @@ impl CollabSession {
                 conns: HashMap::new(),
                 final_saved: false,
                 authors: HashMap::new(),
+                viewers: HashMap::new(),
                 editors: std::collections::BTreeSet::new(),
                 new_heading_authors: std::collections::BTreeMap::new(),
                 agents: HashMap::new(),
@@ -1783,6 +1836,12 @@ impl CollabSession {
     ///
     /// Called by the upgrade route once it has decided the connection may be
     /// here at all; a room over nobody's draft never has one.
+    /// Record who connection `conn` is, so a `moved` close names to it only
+    /// what it may see. Called by the upgrade route right after the join.
+    pub async fn set_viewer(&self, conn: ConnId, scope: crate::scope::Scope) {
+        self.state.lock().await.viewers.insert(conn, scope);
+    }
+
     pub async fn watch_guest(&self, conn: ConnId, account: &str, holder: &crate::join::Holder) {
         let mut state = self.state.lock().await;
         state
@@ -1991,6 +2050,7 @@ impl CollabSession {
         let mut state = self.state.lock().await;
         state.guests.remove(&conn);
         state.authors.remove(&conn);
+        state.viewers.remove(&conn);
         self.has_guests
             .store(!state.guests.is_empty(), Ordering::Relaxed);
         let ids = state.conns.remove(&conn).unwrap_or_default();
@@ -2377,6 +2437,57 @@ impl CollabSession {
             to: None,
             bytes: Bytes::from(control::encode(&closed)),
         });
+    }
+
+    /// Tell every connection that the document moved to `to`, each in what
+    /// it may see: a connection whose account cannot see the destination
+    /// domain is told only that the document moved (`Closed { reason:
+    /// "moved" }` with no address), so the name of a domain it may not see
+    /// never reaches it. A move inside one domain names nothing new, so
+    /// everybody is told the whole address.
+    pub async fn close_moved(&self, to: &MovedTo) {
+        let full = to.control();
+        if to.domain.is_none() {
+            self.close_with(full);
+            return;
+        }
+        let viewers: Vec<(ConnId, crate::scope::Scope)> = {
+            let state = self.state.lock().await;
+            state
+                .viewers
+                .iter()
+                .map(|(conn, scope)| (*conn, scope.clone()))
+                .collect()
+        };
+        let mut blind = HashSet::new();
+        for (conn, scope) in viewers {
+            if !sees_destination(&self.engine, to, &scope).await {
+                blind.insert(conn);
+            }
+        }
+        if blind.is_empty() {
+            self.close_with(full);
+            return;
+        }
+        self.dispose();
+        let conns: Vec<ConnId> = self.state.lock().await.conns.keys().copied().collect();
+        for conn in conns {
+            let control = if blind.contains(&conn) {
+                Control::Closed {
+                    reason: "moved".to_string(),
+                    domain: None,
+                    path: None,
+                    permalink: None,
+                }
+            } else {
+                full.clone()
+            };
+            let _ = self.tx.send(Frame {
+                from: None,
+                to: Some(conn),
+                bytes: Bytes::from(control::encode(&control)),
+            });
+        }
     }
 
     /// The room's document as its last save left it: its path, and for an

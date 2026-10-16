@@ -163,11 +163,11 @@ pub(crate) struct SwitchFacts {
     pub team_copy_unreadable: Option<String>,
 }
 
-/// Whether a MANIFEST's text declares `reflection: on`.
 /// How a page move onto a taken target ends its refusal, so a surface can
 /// answer it as the conflict it is (409).
 pub const TARGET_TAKEN: &str = "; remove it or pick another path";
 
+/// Whether a MANIFEST's text declares `reflection: on`.
 pub(crate) fn declares_on(source: &str) -> bool {
     crystalline_core::parse_engram(source)
         .map(|e| crystalline_core::Manifest::from_engram(&e, source).reflection())
@@ -2452,7 +2452,7 @@ impl Engine {
         // The page has moved: the room's sockets learn its new path now, and
         // the fence lifts.
         if let Some(closing) = closing {
-            closing.moved();
+            closing.moved().await;
         }
         self.announce_reflection(
             domain,

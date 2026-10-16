@@ -315,7 +315,7 @@ impl Engine {
             };
             let moved = self.move_draft_locked(&view, p, draft).await?;
             if let Some(closing) = closing {
-                closing.moved();
+                closing.moved().await;
             }
             return Ok(moved);
         }
@@ -430,7 +430,7 @@ impl Engine {
         // move leaves the room open; before the file locks, which a room's
         // save takes. A path-only move keeps the room: it saves by address,
         // and the address does not change.
-        let closing = if readdressed {
+        let mut closing = if readdressed {
             self.close_room_for_move(
                 &p.domain,
                 RoomDoc::Engram(src.permalink.clone()),
@@ -504,6 +504,8 @@ impl Engine {
         // change this move announces at its tail.
         let moved_checksum: String;
 
+        // Set once the move has committed (see [`TellMoved`]).
+        let mut told: TellMoved;
         if cross {
             // Index the content into the destination source, then remove the
             // source.
@@ -609,6 +611,9 @@ impl Engine {
                 return Err(e.into());
             }
             store.commit().await?;
+            // The engram has left the source: whatever fails from here, the
+            // room and later joins are told where it went.
+            told = TellMoved(closing.take());
         } else {
             // Same-domain rename: move the file when file-backed, then give the
             // row its new path and permalink in place, keeping its id. A move
@@ -708,6 +713,9 @@ impl Engine {
                     ContentSource::Virtual => e,
                 });
             }
+            // The row answers to its new address now: whatever fails from
+            // here, the room and later joins are told where it went.
+            told = TellMoved(closing.take());
             if let Some(text) = &moved_text {
                 match &src_source {
                     ContentSource::File { root } => {
@@ -746,10 +754,11 @@ impl Engine {
 
         drop(_lock);
         // The engram has moved: the room's sockets learn its new address now,
-        // and the fence lifts. A way out above dropped the guard instead,
-        // which told the room `internal`.
-        if let Some(closing) = closing {
-            closing.moved();
+        // and the fence lifts. A way out before the commit dropped the guard
+        // instead, which told the room `internal`; one after it leaves the
+        // telling to `told`'s drop.
+        if let Some(closing) = told.0.take() {
+            closing.moved().await;
         }
 
         // The attachments follow the engram, now that the engram itself has
@@ -1852,4 +1861,20 @@ struct DraftMove<'a> {
     cross: bool,
     asked: Option<&'a str>,
     mover: &'a str,
+}
+
+/// A move's room guard once the move has committed: from then on the
+/// document is at its new address whatever a later step answers, so a way
+/// out that drops this tells the room `moved` (in a task, since a drop
+/// cannot wait) instead of the `internal` an uncommitted move's guard sends.
+struct TellMoved(Option<MoveClose>);
+
+impl Drop for TellMoved {
+    fn drop(&mut self) {
+        if let Some(closing) = self.0.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(closing.moved());
+        }
+    }
 }
