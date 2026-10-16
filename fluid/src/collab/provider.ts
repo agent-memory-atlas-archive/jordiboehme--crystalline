@@ -80,7 +80,17 @@ export type CollabControl =
       theirs: string | null;
       detail: string;
     }
-  | { kind: "closed"; reason: string };
+  | {
+      kind: "closed";
+      /** `deleted`, `moved`, `switched_off`, `left` or `internal`. */
+      reason: string;
+      /** For `moved`: the new domain, sent only when it changed. */
+      domain?: string;
+      /** For `moved`: the new path (inside `reflections/` for a page). */
+      path?: string;
+      /** For `moved` of an engram: the permalink it answers to now. */
+      permalink?: string;
+    };
 
 export type CollabStatus =
   "connecting" | "connected" | "reconnecting" | "failed";

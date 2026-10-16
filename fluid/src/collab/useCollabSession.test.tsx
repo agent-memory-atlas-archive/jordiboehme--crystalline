@@ -826,6 +826,22 @@ describe("a room over a reflection", () => {
     expect(session().closedReason).toBe("switched_off");
   });
 
+  it("keeps where a moved room's document went, in its own domain when none is named", () => {
+    const { socket } = joinReflection(() => Promise.resolve(""));
+    expect(session().movedTo).toBeNull();
+    act(() => {
+      socket.receive(
+        controlFrame({ kind: "closed", reason: "moved", path: "guides/b.md" }),
+      );
+    });
+    expect(session().closedReason).toBe("moved");
+    expect(session().movedTo).toEqual({
+      domain: "eng",
+      path: "guides/b.md",
+      permalink: null,
+    });
+  });
+
   it("an epoch gap keeps the reflection text under its own draft key", () => {
     const { socket } = joinReflection(() => Promise.resolve(""));
     act(() => {

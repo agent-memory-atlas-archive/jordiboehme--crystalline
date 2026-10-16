@@ -92,3 +92,24 @@ export function clearDraft(
     // Nothing to do: an unremovable draft re-offers itself, harmlessly.
   }
 }
+
+/**
+ * Carry one draft to the address its document moved to. Unsaved text is
+ * never dropped: a draft already standing at the new address stays as it is,
+ * and then the old one stays where it was too.
+ */
+export function moveDraft(
+  user: string,
+  from: { domain: string; slot: string },
+  to: { domain: string; slot: string },
+): void {
+  if (from.domain === to.domain && from.slot === to.slot) {
+    return;
+  }
+  const draft = readDraft(user, from.domain, from.slot);
+  if (draft === null || readDraft(user, to.domain, to.slot) !== null) {
+    return;
+  }
+  writeDraft(user, to.domain, to.slot, draft);
+  clearDraft(user, from.domain, from.slot);
+}

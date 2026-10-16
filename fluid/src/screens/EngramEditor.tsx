@@ -81,6 +81,7 @@ import {
 } from "../editor/wikilinkChips";
 import { useIgnoredEngram } from "../events/ignored";
 import { useFullWidth } from "../layoutWidth";
+import { moveDraft } from "../editor/drafts";
 import { domainRoute, editRoute, engramRoute } from "../paths";
 import { ENGRAM_PREFETCH } from "../prefetch";
 import { useTheme } from "../theme/context";
@@ -785,8 +786,14 @@ function Surface({
     walkedOut.current = true;
     session.snapshotDraft();
   }, [closed, session]);
+  /**
+   * The room closed because the engram moved: nothing is gone, so the author
+   * is not walked away. The banner offers the new address instead, and the
+   * draft the snapshot above wrote goes along.
+   */
+  const movedTo = inRoom ? collab.movedTo : null;
   useEffect(() => {
-    if (!closed) {
+    if (!closed || movedTo !== null) {
       return;
     }
     const timer = setTimeout(() => {
@@ -795,7 +802,7 @@ function Surface({
     return () => {
       clearTimeout(timer);
     };
-  }, [closed, engram.domain, navigate]);
+  }, [closed, movedTo, engram.domain, navigate]);
 
   /**
    * The unload prompt in a room, keyed on the SESSION's verdict.
@@ -1190,12 +1197,45 @@ function Surface({
           Editing solo - live collaboration is not available here
         </p>
       )}
-      {closed && (
+      {closed && movedTo !== null && (
+        <p
+          role="status"
+          className="flex flex-wrap items-baseline gap-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
+        >
+          <span>
+            {`This engram was moved to ${
+              movedTo.domain === engram.domain
+                ? movedTo.path
+                : `${movedTo.domain} / ${movedTo.path}`
+            }.`}
+          </span>
+          <button
+            type="button"
+            className="underline underline-offset-2 hover:no-underline"
+            onClick={() => {
+              const permalink = movedTo.permalink ?? engram.permalink;
+              // The snapshot taken when the room closed goes to the new
+              // address, where the editor offers it when it differs.
+              moveDraft(
+                account,
+                { domain: engram.domain, slot: engram.permalink },
+                { domain: movedTo.domain, slot: permalink },
+              );
+              void navigate(editRoute(movedTo.domain, permalink));
+            }}
+          >
+            Open it there
+          </button>
+        </p>
+      )}
+      {closed && movedTo === null && (
         <p
           role="status"
           className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
         >
-          This engram was deleted; your text is kept as a draft
+          {collab.closedReason === "deleted"
+            ? "This engram was deleted; your text is kept as a draft"
+            : "The session ended; your text is kept as a draft"}
         </p>
       )}
       {/*

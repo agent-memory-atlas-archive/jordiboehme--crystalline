@@ -27,7 +27,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check } from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import * as Y from "yjs";
 
@@ -51,7 +51,7 @@ import {
   reflectionOfferKey,
   reflectionRoomKey,
 } from "../collab/provider";
-import type { CollabSession } from "../collab/useCollabSession";
+import type { CollabMovedTo, CollabSession } from "../collab/useCollabSession";
 import { useCollabSession } from "../collab/useCollabSession";
 import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
@@ -68,7 +68,8 @@ import { imagePreviews } from "../editor/imagePreviews";
 import { livePreview } from "../editor/preview";
 import { baseExtensions } from "../editor/setup";
 import { useAttachmentUploads } from "../editor/useAttachmentUploads";
-import { reflectionPageRoute } from "../paths";
+import { reflectionEditRoute, reflectionPageRoute } from "../paths";
+import { movePageDrafts } from "../reflectionPageDrafts";
 import { stripIdLines, stripProvenance } from "../reflectionText";
 import { useTheme } from "../theme/context";
 
@@ -90,6 +91,18 @@ function linksAFile(text: string, home: AssetHome): boolean {
 
 export default function ReflectionEditor(): ReactElement {
   const { domain = "", "*": path = "" } = useParams();
+  // Keyed by address: a page opened at its new place after a move is a new
+  // editing session, which reads its drafts afresh.
+  return <PageEditor key={`${domain}\n${path}`} domain={domain} path={path} />;
+}
+
+function PageEditor({
+  domain,
+  path,
+}: {
+  domain: string;
+  path: string;
+}): ReactElement {
   const status = useReflectionStatus(domain);
   const [attempt, setAttempt] = useState(0);
   const [admitted, setAdmitted] = useState(false);
@@ -255,6 +268,12 @@ function endedSentence(
     : "The session ended. Your text was saved.";
 }
 
+/** Where a moved page went, as the banner names it: its path, and its
+ *  domain too when that changed. */
+function movedPlace(domain: string, to: CollabMovedTo): string {
+  return to.domain === domain ? to.path : `${to.domain} / ${to.path}`;
+}
+
 /**
  * Whether a kept draft says something the room does not. Id lines are left
  * out on both sides: a save adds an id under a new `##`, and a draft written
@@ -285,6 +304,7 @@ function Surface({
 }): ReactElement {
   const { resolved } = useTheme();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const ytext = collab.ytext as Y.Text;
   const awareness = collab.awareness as NonNullable<CollabSession["awareness"]>;
   // Two keys, two jobs: `key` is the copy that follows the live text (the
@@ -307,7 +327,8 @@ function Surface({
    * "pending" and the server does not repeat the same refusal; only the next
    * landed save (or a healthy connection with nothing pending) releases it.
    * An ended room whose last verdict is "ok" owes nothing, unless the page
-   * was deleted: then the text in this tab is the only copy left.
+   * was deleted: then the text in this tab is the only copy left. A moved
+   * page's text goes with the person when they open it at its new path.
    */
   const healthy =
     !ended && collab.saveState === "ok" && collab.status === "connected";
@@ -563,9 +584,12 @@ function Surface({
   useEffect(() => {
     leaving.current = owed;
   }, [owed]);
+  // Set once "Open it there" carried the drafts to the new path: the copy
+  // left here would only be offered to a later page at this old path.
+  const carried = useRef(false);
   useEffect(
     () => () => {
-      if (leaving.current) {
+      if (leaving.current && !carried.current) {
         keep();
       }
     },
@@ -649,7 +673,31 @@ function Surface({
         arrived with its text already in it.
       */}
       <div role="status">
-        {ended && (
+        {ended && collab.movedTo !== null && (
+          <p className={AMBER_BANNER}>
+            <span>{`This page was moved to ${movedPlace(domain, collab.movedTo)}.`}</span>
+            <button
+              type="button"
+              className={BANNER_BUTTON}
+              onClick={() => {
+                const to = collab.movedTo;
+                if (to === null) {
+                  return;
+                }
+                // The text in this tab goes with the person: kept under this
+                // path first, then both drafts carried to the new one, where
+                // the next mount offers what the page does not hold.
+                keep();
+                movePageDrafts(account, domain, path, to.path, to.domain);
+                carried.current = true;
+                void navigate(reflectionEditRoute(to.domain, to.path));
+              }}
+            >
+              Open it there
+            </button>
+          </p>
+        )}
+        {ended && collab.movedTo === null && (
           <p className={AMBER_BANNER}>
             {endedSentence(collab.closedReason, collab.saveState)}
           </p>

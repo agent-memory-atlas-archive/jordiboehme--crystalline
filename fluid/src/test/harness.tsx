@@ -332,6 +332,7 @@ export function soloCollabSession(): CollabSession {
     resolve: () => undefined,
     closed: false,
     closedReason: null,
+    movedTo: null,
     mergeNotice: false,
   };
 }

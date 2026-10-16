@@ -2898,7 +2898,7 @@ describe("the engram editor resolving a session conflict", () => {
   });
 
   it("an accepted deletion keeps the text as a draft and walks the author out", async () => {
-    joinedSession({ closed: true });
+    joinedSession({ closed: true, closedReason: "deleted" });
     serveEditor({
       "/domains/eng/manifest": () => ({ content: "# eng\n" }),
       "/domains/eng/tree": () => ({ folders: [], engrams: [] }),
@@ -2919,5 +2919,93 @@ describe("the engram editor resolving a session conflict", () => {
     expect(
       await screen.findByRole("heading", { name: "eng" }, { timeout: 3000 }),
     ).toBeInTheDocument();
+  });
+  it("a moved engram says where it went and opens there with the text carried", async () => {
+    const { session } = joinedSession({
+      closed: true,
+      closedReason: "moved",
+      movedTo: {
+        domain: "eng",
+        path: "guides/alpha.md",
+        permalink: "guides/alpha",
+      },
+    });
+    // At the new address the room holds the text the move saved, without
+    // the line this tab typed after it.
+    const moved = new Y.Doc();
+    moved
+      .getText(TEXT_NAME)
+      .insert(
+        0,
+        CONTENT.replace("permalink: alpha", "permalink: guides/alpha"),
+      );
+    const there: CollabSession = {
+      ...session,
+      closed: false,
+      closedReason: null,
+      movedTo: null,
+      ytext: moved.getText(TEXT_NAME),
+      awareness: new Awareness(moved),
+      epoch: "e2",
+      permalink: "guides/alpha",
+    };
+    collabMock.mockImplementation((options) =>
+      options.permalink === "guides/alpha" ? there : session,
+    );
+    serveEditor({
+      "/domains/eng/engrams/guides/alpha": () =>
+        detailResponse({
+          permalink: "guides/alpha",
+          path: "guides/alpha.md",
+          content: CONTENT.replace(
+            "permalink: alpha",
+            "permalink: guides/alpha",
+          ),
+        }),
+    });
+    renderApp("/d/eng/edit/alpha");
+    expect(
+      await screen.findByText("This engram was moved to guides/alpha.md."),
+    ).toBeInTheDocument();
+    // Nothing is gone, so the author is not walked out.
+    await new Promise((settle) => setTimeout(settle, 1500));
+    expect(
+      screen.getByText("This engram was moved to guides/alpha.md."),
+    ).toBeInTheDocument();
+    expect(readDraft("ada", "eng", "alpha")?.content).toContain("A rule.");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Open it there" }),
+    );
+    // The draft moved with the engram, and the editor at the new address
+    // offers it because it differs from what is there.
+    expect(readDraft("ada", "eng", "alpha")).toBeNull();
+    expect(readDraft("ada", "eng", "guides/alpha")?.content).toContain(
+      "permalink: alpha",
+    );
+    expect(
+      await screen.findByRole("button", { name: "Restore draft" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("This engram was moved to guides/alpha.md."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("a session that ended for another reason does not claim a deletion", async () => {
+    joinedSession({ closed: true, closedReason: "internal" });
+    serveEditor({
+      "/domains/eng/manifest": () => ({ content: "# eng\n" }),
+      "/domains/eng/tree": () => ({ folders: [], engrams: [] }),
+      "/domains/eng/tags": () => ({ tags: [] }),
+      "/domains/eng/engrams": () => ({ engrams: [], total: 0 }),
+    });
+    renderApp("/d/eng/edit/alpha");
+    expect(
+      await screen.findByText(
+        "The session ended; your text is kept as a draft",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Open it there" }),
+    ).not.toBeInTheDocument();
   });
 });

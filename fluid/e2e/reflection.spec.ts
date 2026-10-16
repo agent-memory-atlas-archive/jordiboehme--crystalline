@@ -574,6 +574,59 @@ test.describe.serial("the Reflection journeys", () => {
     }
   });
 
+  test("a page moved while somebody edits it opens at its new path", async ({
+    page,
+    browser,
+  }) => {
+    // One tab writes a new page and keeps its editor open.
+    await signIn(page, USER, PASSWORD);
+    await page.goto(HOME);
+    await tree(page).getByRole("button", { name: "New page" }).click();
+    const create = page.getByRole("dialog", { name: "New page" });
+    await create.getByRole("textbox", { name: "Folder" }).fill("scratch");
+    await create.getByRole("textbox", { name: "Title" }).fill("Live");
+    await create.getByRole("button", { name: "Create page" }).click();
+    await at(page, `d/${DOMAIN}/reflection-edit/scratch/live.md`);
+    const editor = page.getByRole("textbox", { name: "Page source" });
+    await editor.click();
+    await page.keyboard.press("ControlOrMeta+End");
+    await page.keyboard.type("\nTyped while it moved.");
+    await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+
+    // A second browser moves the page from its reading view.
+    const other = await browser.newContext();
+    const mover = await other.newPage();
+    await signIn(mover, USER, PASSWORD);
+    await mover.goto(`${HOME}/scratch/live.md`);
+    await mover.getByRole("button", { name: "More actions" }).click();
+    await mover.getByRole("menuitem", { name: "Move", exact: true }).click();
+    const move = mover.getByRole("dialog", { name: "Move Live" });
+    await move
+      .getByRole("textbox", { name: "New path" })
+      .fill("archive/live.md");
+    await move.getByRole("button", { name: "Move page" }).click();
+    await expect(move).toHaveCount(0);
+
+    // The editor says where the page went and opens it there.
+    await expect(
+      page.getByText("This page was moved to archive/live.md."),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Open it there" }).click();
+    await at(page, `d/${DOMAIN}/reflection-edit/archive/live.md`);
+    await expect(
+      page.getByRole("textbox", { name: "Page source" }),
+    ).toContainText("Typed while it moved.");
+    await page.getByRole("link", { name: "Done", exact: true }).click();
+    await at(page, `${HOME}/archive/live.md`);
+
+    // The story leaves no page behind.
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+    await page.getByRole("button", { name: "Confirm delete" }).click();
+    await at(page, HOME);
+    await other.close();
+  });
+
   test("the Reflection search finds a page by its words", async ({ page }) => {
     await signIn(page, USER, PASSWORD);
     await page.goto(HOME);

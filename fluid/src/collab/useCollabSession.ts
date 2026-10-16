@@ -108,11 +108,24 @@ export interface CollabSession {
    *  external deletion, a switched-off Reflection, a server shutting down. */
   closed: boolean;
   /** Why the room closed, from the `closed` control: `deleted` means the
-   *  document is gone; null while open. */
+   *  document is gone, `moved` that it has a new address; null while open. */
   closedReason: string | null;
+  /** Where the document went, when the room closed with `moved`; null
+   *  otherwise. */
+  movedTo: CollabMovedTo | null;
   /** True briefly after a merged control: an outside change was folded into
    *  the session (the spec's room toast). Auto-clears after a few seconds. */
   mergeNotice: boolean;
+}
+
+/** The new address a `moved` close names. */
+export interface CollabMovedTo {
+  /** The domain the document lives in now (the old one when it stayed). */
+  domain: string;
+  /** Its new path: inside `reflections/` for a page. */
+  path: string;
+  /** The permalink an engram answers to now; null for a page. */
+  permalink: string | null;
 }
 
 export interface CollabSessionOptions {
@@ -184,6 +197,7 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
   const [conflict, setConflict] = useState<CollabConflict | null>(null);
   const [closed, setClosed] = useState(false);
   const [closedReason, setClosedReason] = useState<string | null>(null);
+  const [movedTo, setMovedTo] = useState<CollabMovedTo | null>(null);
   const [mergeNotice, setMergeNotice] = useState(false);
   const [permalink, setPermalink] = useState(address);
   const [participants, setParticipants] = useState<CollabParticipant[]>([]);
@@ -382,6 +396,13 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
           case "closed": {
             setClosed(true);
             setClosedReason(control.reason);
+            if (control.reason === "moved" && control.path !== undefined) {
+              setMovedTo({
+                domain: control.domain ?? domain,
+                path: control.path,
+                permalink: control.permalink ?? null,
+              });
+            }
             break;
           }
         }
@@ -581,6 +602,7 @@ export function useCollabSession(options: CollabSessionOptions): CollabSession {
     resolve,
     closed,
     closedReason,
+    movedTo,
     mergeNotice,
   };
 }

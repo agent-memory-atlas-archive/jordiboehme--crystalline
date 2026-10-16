@@ -10,7 +10,7 @@ import {
   reflectionOfferKey,
   reflectionRoomKey,
 } from "./collab/reflectionDraftKeys";
-import { clearDraft, readDraft, writeDraft } from "./editor/drafts";
+import { clearDraft, moveDraft } from "./editor/drafts";
 
 const KEYS = [reflectionRoomKey, reflectionOfferKey];
 
@@ -26,7 +26,8 @@ export function discardPageDrafts(
 }
 
 /**
- * Carry both drafts to the new path of a moved page. Unsaved text is never
+ * Carry both drafts to the new path of a moved page, in `toDomain` when the
+ * page left its domain (a rename of the domain). Unsaved text is never
  * dropped: a draft already sitting at the new path stays as it is and the old
  * one stays where it was.
  */
@@ -35,13 +36,13 @@ export function movePageDrafts(
   domain: string,
   from: string,
   to: string,
+  toDomain: string = domain,
 ): void {
   for (const keyOf of KEYS) {
-    const draft = readDraft(account, domain, keyOf(from));
-    if (draft === null || readDraft(account, domain, keyOf(to)) !== null) {
-      continue;
-    }
-    writeDraft(account, domain, keyOf(to), draft);
-    clearDraft(account, domain, keyOf(from));
+    moveDraft(
+      account,
+      { domain, slot: keyOf(from) },
+      { domain: toDomain, slot: keyOf(to) },
+    );
   }
 }

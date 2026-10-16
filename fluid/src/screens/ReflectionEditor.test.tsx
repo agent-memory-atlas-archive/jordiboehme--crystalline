@@ -585,6 +585,76 @@ describe("the reflection editor once the room has ended", () => {
   });
 });
 
+describe("the reflection editor when its page was moved", () => {
+  it("says where the page went and opens it there with the typing carried", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    // The page at its new path holds what the move saved, without the line
+    // typed after that save.
+    const there = room(PAGE);
+    const fallback = sessionMock.getMockImplementation();
+    sessionMock.mockImplementation((options) => {
+      const found = fallback?.(options) as CollabSession;
+      return options.permalink === "reflection:guides/b.md" ? there : found;
+    });
+    await openEditor();
+    type(session.get(), "typed after the last save\n");
+    session.set({ saveState: "pending" });
+    session.set({
+      closed: true,
+      closedReason: "moved",
+      movedTo: { domain: "eng", path: "guides/b.md", permalink: null },
+    });
+    expect(
+      screen.getByText("This page was moved to guides/b.md."),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("The session ended; your text is kept as a draft"),
+    ).toBeNull();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Open it there" }),
+    );
+    // Both keys followed the page, and the editor at the new path offers
+    // the text because the page there does not hold it.
+    expect(readDraft("ann", "eng", KEY)).toBeNull();
+    expect(readDraft("ann", "eng", OFFER)).toBeNull();
+    expect(
+      await screen.findByText("Text from an earlier session was kept."),
+    ).toBeVisible();
+    expect(
+      readDraft("ann", "eng", "reflection-offer:guides/b.md")?.content,
+    ).toBe(`${PAGE}typed after the last save\n`);
+    expect(screen.getByRole("button", { name: "Put it back" })).toBeVisible();
+    expect(screen.queryByText(/This page was moved/)).toBeNull();
+  });
+
+  it("names the new domain and carries the drafts into it after a rename", async () => {
+    serve("edit");
+    live({
+      ...room(PAGE),
+      closed: true,
+      closedReason: "moved",
+      movedTo: { domain: "ops", path: "guides/a.md", permalink: null },
+    });
+    writeDraft("ann", "eng", OFFER, {
+      content: "set aside earlier\n",
+      baseChecksum: "",
+      savedAt: "",
+    });
+    await openEditor();
+    expect(
+      screen.getByText("This page was moved to ops / guides/a.md."),
+    ).toBeVisible();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Open it there" }),
+    );
+    expect(readDraft("ann", "eng", KEY)).toBeNull();
+    expect(readDraft("ann", "eng", OFFER)).toBeNull();
+    expect(readDraft("ann", "ops", KEY)?.content).toBe(PAGE);
+    expect(readDraft("ann", "ops", OFFER)?.content).toBe("set aside earlier\n");
+  });
+});
+
 describe("the reflection editor's kept text", () => {
   it("keeps a put-back text as a draft until the room saves it", async () => {
     serve("edit");
