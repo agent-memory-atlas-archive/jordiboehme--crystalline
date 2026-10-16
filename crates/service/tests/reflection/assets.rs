@@ -862,18 +862,36 @@ async fn a_page_renamed_only_by_letter_case_keeps_its_text() {
         .write_reflection(&curated("deploying.md", "# Deploying\n"), &agent())
         .await
         .unwrap();
+    let home = fx.root.join("reflections");
+    std::fs::create_dir_all(home.join(".reflected")).unwrap();
+    std::fs::write(home.join(".reflected/deploying.md"), "# Deploying\n").unwrap();
+    std::fs::write(home.join("deploying.threads.md"), "threads").unwrap();
     fx.engine
         .move_reflection("eng", "deploying.md", "Deploying.md", &agent())
         .await
         .unwrap();
-    let names: Vec<String> = std::fs::read_dir(fx.root.join("reflections"))
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n.to_lowercase().starts_with("deploying"))
-        .collect();
-    assert_eq!(names, ["Deploying.md"]);
-    let text = std::fs::read_to_string(fx.root.join("reflections/Deploying.md")).unwrap();
+    let listed = |dir: &std::path::Path| -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.to_lowercase().starts_with("deploying"))
+            .collect()
+    };
+    let mut names = listed(&home);
+    names.sort();
+    assert_eq!(names, ["Deploying.md", "Deploying.threads.md"]);
+    assert_eq!(listed(&home.join(".reflected")), ["Deploying.md"]);
+    assert_eq!(
+        std::fs::read_to_string(home.join("Deploying.threads.md")).unwrap(),
+        "threads"
+    );
+    let text = std::fs::read_to_string(home.join("Deploying.md")).unwrap();
     assert!(text.contains("# Deploying"), "{text}");
+    // The store row follows: the page reads under the new name.
+    fx.engine
+        .read_reflection("eng", "Deploying.md", &agent())
+        .await
+        .unwrap();
 }
 
 /// A move keeps the extension, in any letter case, and a refusal changes

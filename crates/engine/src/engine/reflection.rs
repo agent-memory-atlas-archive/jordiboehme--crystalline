@@ -2249,7 +2249,8 @@ impl Engine {
             (r::baseline_path(from), r::baseline_path(to), "a baseline"),
         ] {
             // The page itself under another letter case is the same file.
-            let itself = is_same_file(&access.abs(&old), &access.abs(&leftover));
+            let itself =
+                is_case_only_rename(&access.abs(&old), &access.abs(&leftover), &old, &leftover);
             if access.abs(&leftover).exists() && !itself {
                 return Err(EngineError::Conflict(format!(
                     "'{leftover}' already holds {what}; remove it or pick another path"
@@ -2266,21 +2267,22 @@ impl Engine {
         .map_err(EngineError::Invalid)?;
         // The row is built from the text as written, so it matches the file.
         let page = crystalline_core::to_lf(&moved.page).into_owned();
-        replace_file(&src, &dst, &page)?;
+        let replace = |old_rel: &str, new_rel: &str, text: &str| {
+            let (old, new) = (access.abs(old_rel), access.abs(new_rel));
+            let case_only = is_case_only_rename(&old, &new, old_rel, new_rel);
+            replace_file_with(&old, &new, case_only, |p| write_file(p, text))
+        };
+        replace(from, to, &page)?;
         if old_baseline.is_some() {
-            replace_file(
-                &access.abs(&r::baseline_path(from)),
-                &access.abs(&r::baseline_path(to)),
+            replace(
+                &r::baseline_path(from),
+                &r::baseline_path(to),
                 &moved.baseline,
             )?;
         }
         let mut threads_moved = false;
         if let Some(body) = read_opt(&access.abs(&r::threads_path(from)))? {
-            replace_file(
-                &access.abs(&r::threads_path(from)),
-                &access.abs(&r::threads_path(to)),
-                &body,
-            )?;
+            replace(&r::threads_path(from), &r::threads_path(to), &body)?;
             threads_moved = true;
         }
         self.store
@@ -2536,22 +2538,24 @@ impl Engine {
     }
 }
 
-/// Whether two paths are one file on disk, as canonical paths (a letter-case
-/// rename on a case-insensitive disk).
-fn is_same_file(a: &Path, b: &Path) -> bool {
-    a != b && matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
-}
-
-/// Write `text` at `new` and remove `old`. When both name one file (a
-/// letter-case rename on a case-insensitive disk) the old one goes first, or
-/// the write would keep the old spelling and the removal would take the new
-/// file away.
-fn replace_file(old: &Path, new: &Path, text: &str) -> Result<()> {
-    if is_same_file(old, new) {
-        remove_if_there(old)?;
-        write_file(new, text)
+/// Write `text` at `new` and remove `old`. For a case-only rename (see
+/// `is_case_only_rename`) the file is renamed first, which changes its
+/// spelling atomically and keeps it on disk under one name or the other if the
+/// write then fails; `write` is the write, a seam for the failing-write test.
+fn replace_file_with(
+    old: &Path,
+    new: &Path,
+    case_only: bool,
+    write: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
+    if case_only {
+        std::fs::rename(old, new).map_err(|source| EngineError::Io {
+            path: new.display().to_string(),
+            source,
+        })?;
+        write(new)
     } else {
-        write_file(new, text)?;
+        write(new)?;
         remove_if_there(old).map(|_| ())
     }
 }
@@ -2559,6 +2563,25 @@ fn replace_file(old: &Path, new: &Path, text: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A write that fails after a case-only rename leaves the file on disk,
+    /// under the new name, with its old text.
+    #[test]
+    fn a_failed_write_after_a_case_only_rename_loses_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (old, new) = (tmp.path().join("a.md"), tmp.path().join("A.md"));
+        std::fs::write(&old, "the only copy").unwrap();
+        let failed = replace_file_with(&old, &new, true, |_| {
+            Err(EngineError::Internal("disk full".into()))
+        });
+        assert!(failed.is_err());
+        let names: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["A.md"]);
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "the only copy");
+    }
 
     const OFF: &str = "---\ntype: manifest\ntitle: eng\nstatus: stable\n---\n\n# eng\n";
     const ON: &str =

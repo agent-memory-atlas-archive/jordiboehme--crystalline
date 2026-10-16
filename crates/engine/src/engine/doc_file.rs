@@ -83,6 +83,23 @@ pub(super) fn read_stamped(abs: &Path) -> Result<(Vec<u8>, FileStamp)> {
     Ok((bytes, stamp))
 }
 
+/// Whether moving `src` to `dst` only changes the letter case of one regular
+/// file: the same domain-relative path under case folding, the same canonical
+/// file on disk, and neither end a symlink. True only on a disk that folds
+/// case; a symlink to the file, or another file, is never the same one. Both
+/// paths must be inside one domain (a cross-domain move is never case-only).
+/// A change only in Unicode normal form (NFC to NFD) is not case-only: it
+/// answers a conflict.
+pub(super) fn is_case_only_rename(src: &Path, dst: &Path, from_rel: &str, to_rel: &str) -> bool {
+    let plain_file = |p: &Path| p.symlink_metadata().is_ok_and(|m| m.file_type().is_file());
+    src != dst
+        && crystalline_core::path::fold_path_case(from_rel)
+            == crystalline_core::path::fold_path_case(to_rel)
+        && plain_file(src)
+        && plain_file(dst)
+        && matches!((src.canonicalize(), dst.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
 /// Remove the file; `false` when it was not there.
 pub(super) fn remove_if_there(abs: &Path) -> Result<bool> {
     match std::fs::remove_file(abs) {

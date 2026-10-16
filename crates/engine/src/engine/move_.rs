@@ -320,6 +320,7 @@ impl Engine {
                 &dest_rel,
                 &src_source,
                 &src.path,
+                cross,
             )
             .await?;
         }
@@ -404,6 +405,7 @@ impl Engine {
                 &dest_rel,
                 &src_source,
                 &src.path,
+                cross,
             )
             .await?;
         }
@@ -547,13 +549,15 @@ impl Engine {
             if let ContentSource::File { root } = &src_source {
                 let src_abs = join_rel(root, &src.path);
                 let dest_abs = join_rel(root, &dest_rel);
-                // A letter-case rename on a case-insensitive disk: the file
-                // goes first, or the write would keep the old spelling and
-                // the removal after it would take the new file away.
-                let case_only = !in_place && is_the_source_file(&src_source, &src.path, &dest_abs);
+                // A letter-case rename on a case-insensitive disk renames the
+                // file first (atomic, and it stays on disk under one name or
+                // the other if the write fails), then writes the new text.
+                let case_only = !cross
+                    && !in_place
+                    && is_case_only_rename(&src_abs, &dest_abs, &src.path, &dest_rel);
                 if case_only {
-                    std::fs::remove_file(&src_abs).map_err(|source| EngineError::Io {
-                        path: src_abs.display().to_string(),
+                    std::fs::rename(&src_abs, &dest_abs).map_err(|source| EngineError::Io {
+                        path: dest_abs.display().to_string(),
                         source,
                     })?;
                 }
@@ -1546,13 +1550,18 @@ impl Engine {
         dest_rel: &str,
         src_source: &ContentSource,
         src_rel: &str,
+        cross: bool,
     ) -> Result<()> {
         let taken = match dest_source {
             // The source file itself at the destination (a letter-case rename
             // on a case-insensitive disk) is not a collision.
             ContentSource::File { root } => {
                 let dest_abs = join_rel(root, dest_rel);
-                dest_abs.exists() && !is_the_source_file(src_source, src_rel, &dest_abs)
+                // Never across domains: overlapping roots are not one domain.
+                let itself = !cross
+                    && matches!(src_source, ContentSource::File { root: r }
+                        if is_case_only_rename(&join_rel(r, src_rel), &dest_abs, src_rel, dest_rel));
+                dest_abs.exists() && !itself
             }
             ContentSource::Virtual => {
                 let store = self.store.lock().await;
@@ -1569,16 +1578,6 @@ impl Engine {
         }
         Ok(())
     }
-}
-
-/// Whether `dest_abs` is the very file the source engram sits in (one file
-/// under two spellings of its name).
-fn is_the_source_file(src_source: &ContentSource, src_rel: &str, dest_abs: &Path) -> bool {
-    let ContentSource::File { root } = src_source else {
-        return false;
-    };
-    let src_abs = join_rel(root, src_rel);
-    matches!((src_abs.canonicalize(), dest_abs.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
 /// A MANIFEST rewrite as a path change: its permalink is left to the

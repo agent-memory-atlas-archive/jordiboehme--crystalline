@@ -6498,7 +6498,10 @@ pub use contradictions::run_contradiction_worker;
 mod delete;
 mod doc_file;
 #[allow(unused_imports)] // the Reflection verbs (Task 12) use the rest
-use doc_file::{FileLock, Swap, SwapRefused, check_swap, read_opt, read_stamped, remove_if_there};
+use doc_file::{
+    FileLock, Swap, SwapRefused, check_swap, is_case_only_rename, read_opt, read_stamped,
+    remove_if_there,
+};
 mod domain_add;
 mod domain_settings;
 mod domains;
@@ -9651,6 +9654,40 @@ mod lock_tests {
         let engine = Arc::new(Engine::new(Arc::new(Mutex::new(store)), config, None, None));
         engine.sync(None).await.unwrap();
         engine
+    }
+
+    /// An engram renamed only by letter case keeps its text and ends up with
+    /// the new spelling, on a case-sensitive and a case-insensitive disk alike.
+    #[tokio::test]
+    async fn an_engram_moved_only_by_letter_case_keeps_its_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        let text = engram("Gamma", "notes/gamma", "The body.");
+        std::fs::write(root.join("notes/gamma.md"), &text).unwrap();
+        let engine = file_engine(&root).await;
+        engine
+            .move_engram(
+                &MoveParams {
+                    identifier: "notes/gamma".to_string(),
+                    domain: "eng".to_string(),
+                    destination: "notes/Gamma".to_string(),
+                    destination_domain: None,
+                    permalink: Some("keep".to_string()),
+                    update_links: None,
+                },
+                &crate::scope::Scope::Unrestricted,
+            )
+            .await
+            .unwrap();
+        let names: Vec<String> = std::fs::read_dir(root.join("notes"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.to_lowercase().starts_with("gamma"))
+            .collect();
+        assert_eq!(names, ["Gamma.md"]);
+        let kept = std::fs::read_to_string(root.join("notes/Gamma.md")).unwrap();
+        assert!(kept.contains("The body."), "{kept}");
     }
 
     /// The markdown of a minimal engram, for the tests below.

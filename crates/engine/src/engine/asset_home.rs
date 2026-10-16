@@ -475,21 +475,9 @@ impl Engine {
                 "'{from}' already is at '{to}'"
             )));
         }
-        let (first, second) = if src < dst {
-            (&src, &dst)
-        } else {
-            (&dst, &src)
-        };
-        let first = self.write_lock(first);
-        let second = self.write_lock(second);
-        let _first = first.lock().await;
-        // Two spellings of one file (a letter-case rename on a
-        // case-insensitive disk) share one lock: taken once, never twice.
-        let _second = if Arc::ptr_eq(&first, &second) {
-            None
-        } else {
-            Some(second.lock().await)
-        };
+        // Both locks in lock-key order; two spellings of one file (a
+        // letter-case rename on a case-insensitive disk) take its lock once.
+        let _locks = self.lock_files(&[&src, &dst]).await;
         let meta = match std::fs::metadata(&src) {
             Ok(meta) if meta.is_file() => meta,
             Ok(_) => return Err(EngineError::NotFound(home.missing(domain, from))),
@@ -505,7 +493,7 @@ impl Engine {
         };
         // A letter-case rename on a case-insensitive disk finds the file
         // itself at `to`: the same file, not another one to move onto.
-        let case_only = dst.exists() && same_file(&src, &dst);
+        let case_only = is_case_only_rename(&src, &dst, from, to);
         if dst.exists() && !case_only {
             return Err(EngineError::Conflict(format!("'{to}' {MOVE_ONTO_A_FILE}")));
         }
@@ -539,12 +527,9 @@ impl Engine {
                 source,
             })?;
         }
-        let renamed = if case_only {
-            rename_through_a_temporary_name(&src, &dst)
-        } else {
-            std::fs::rename(&src, &dst)
-        };
-        renamed.map_err(|source| EngineError::Io {
+        // On a case-insensitive disk this one rename also changes the spelling
+        // of a case-only move, atomically.
+        std::fs::rename(&src, &dst).map_err(|source| EngineError::Io {
             path: dst.display().to_string(),
             source,
         })?;
@@ -553,7 +538,7 @@ impl Engine {
             self.after_asset_change(home, domain);
             return Ok(None);
         };
-        match self.undo_asset_rename(&dst, &src) {
+        match self.undo_asset_rename(&dst, &src, case_only) {
             Ok(()) => {
                 // The file is back; a row this move wrote for `to` goes, so
                 // the domain is as the move found it.
@@ -614,7 +599,7 @@ impl Engine {
     /// the path's lock, others do not): that answers `AlreadyExists` and
     /// leaves the moved file where it is. A narrow window between the check
     /// and the rename stays, as no portable rename refuses to replace.
-    fn undo_asset_rename(&self, dst: &Path, src: &Path) -> std::io::Result<()> {
+    fn undo_asset_rename(&self, dst: &Path, src: &Path, case_only: bool) -> std::io::Result<()> {
         #[cfg(any(test, feature = "testing"))]
         match self.asset_move_fault.lock().unwrap().take() {
             Some(AssetMoveFault::UndoFails) => {
@@ -626,7 +611,8 @@ impl Engine {
             Some(AssetMoveFault::FileAppears) => std::fs::write(src, b"new")?,
             _ => {}
         }
-        if src.symlink_metadata().is_ok() {
+        // After a case-only move the old spelling names the moved file itself.
+        if !case_only && src.symlink_metadata().is_ok() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
                 format!("'{}' holds a new file", src.display()),
@@ -667,24 +653,6 @@ impl Engine {
             }
         }
     }
-}
-
-/// Whether two paths are one file on disk (compared as canonical paths).
-fn same_file(a: &Path, b: &Path) -> bool {
-    matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
-}
-
-/// Rename `src` to `dst` through a temporary name beside it, so a rename that
-/// differs only by letter case lands on a case-insensitive disk too. A failed
-/// second step puts the file back.
-fn rename_through_a_temporary_name(src: &Path, dst: &Path) -> std::io::Result<()> {
-    let mut tmp = src.as_os_str().to_owned();
-    tmp.push(format!(".case-rename-{}", std::process::id()));
-    let tmp = std::path::PathBuf::from(tmp);
-    std::fs::rename(src, &tmp)?;
-    std::fs::rename(&tmp, dst).inspect_err(|_| {
-        let _ = std::fs::rename(&tmp, src);
-    })
 }
 
 /// A move keeps the file's extension, in any letter case: the bytes of a PNG
@@ -737,6 +705,107 @@ mod tests {
         let engine = Engine::new(Arc::new(Mutex::new(store)), config, None, None);
         engine.sync(None).await.unwrap();
         engine
+    }
+
+    fn folds_case(dir: &Path) -> bool {
+        let probe = dir.join("Probe");
+        std::fs::create_dir(&probe).unwrap();
+        let folds = dir.join("probe").exists();
+        std::fs::remove_dir(&probe).unwrap();
+        folds
+    }
+
+    /// A symlink is another entry, never the same file: moving it onto its
+    /// target, or the target onto a symlink spelled in another case, is a
+    /// conflict that leaves every byte where it was.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlink_is_never_the_same_file_as_its_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = engine_over(tmp.path()).await;
+        let dir = tmp.path().join("assets");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("real.png"), PNG).unwrap();
+        std::os::unix::fs::symlink(dir.join("real.png"), dir.join("link.png")).unwrap();
+        std::fs::write(dir.join("b.png"), PNG).unwrap();
+        std::os::unix::fs::symlink(dir.join("b.png"), dir.join("B.png")).unwrap_or(());
+        let err = engine
+            .asset_move_in(
+                AssetHome::Engram,
+                "eng",
+                "assets/link.png",
+                "assets/real.png",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, EngineError::Conflict(_)), "{err}");
+        assert_eq!(std::fs::read(dir.join("real.png")).unwrap(), PNG);
+        assert!(
+            dir.join("link.png")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        if dir
+            .join("B.png")
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+        {
+            let err = engine
+                .asset_move_in(AssetHome::Engram, "eng", "assets/b.png", "assets/B.png")
+                .await
+                .unwrap_err();
+            assert!(matches!(err, EngineError::Conflict(_)), "{err}");
+            assert_eq!(std::fs::read(dir.join("b.png")).unwrap(), PNG);
+        }
+    }
+
+    /// Two files that differ in case on a case-sensitive disk are two files.
+    #[tokio::test]
+    async fn a_move_onto_a_file_of_another_case_is_a_conflict_where_the_disk_tells_them_apart() {
+        let tmp = tempfile::tempdir().unwrap();
+        if folds_case(tmp.path()) {
+            return;
+        }
+        let engine = engine_over(tmp.path()).await;
+        let dir = tmp.path().join("assets");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.png"), PNG).unwrap();
+        std::fs::write(dir.join("a.PNG"), b"other").unwrap();
+        let err = engine
+            .asset_move_in(AssetHome::Engram, "eng", "assets/a.png", "assets/a.PNG")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, EngineError::Conflict(_)), "{err}");
+        assert_eq!(std::fs::read(dir.join("a.PNG")).unwrap(), b"other");
+    }
+
+    /// Rows that cannot follow a case-only move undo it, whatever the disk.
+    #[tokio::test]
+    async fn a_case_only_move_whose_rows_fail_is_undone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = engine_over(tmp.path()).await;
+        let dir = tmp.path().join("assets");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("flow.png"), PNG).unwrap();
+        engine.sync(None).await.unwrap();
+        engine.fail_next_asset_move(false);
+        let err = engine
+            .asset_move_in(
+                AssetHome::Engram,
+                "eng",
+                "assets/flow.png",
+                "assets/flow.PNG",
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("test failpoint"), "{err}");
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["flow.png"]);
     }
 
     #[tokio::test]
