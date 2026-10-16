@@ -11,6 +11,7 @@
  */
 
 import type { QueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 
 import { API_BASE, api, encodePermalink, encodeSegment } from "./client";
 import {
@@ -899,4 +900,64 @@ export function openThreadCount(tree: ReflectionTree): number {
       0,
     );
   return tree.pact.openThreads + walk(tree.nodes);
+}
+
+/** One page's open threads, as the Reflection home draws them. */
+export interface HomeThreadGroup {
+  path: string;
+  title: string;
+  threads: ThreadView[];
+}
+
+/** Exactly what the Reflection home needs of the review. */
+export interface ReflectionHomeSummary {
+  waitingForAgent: number;
+  waitingForPeople: number;
+  pagesToUpdate: number;
+  openByPage: HomeThreadGroup[];
+}
+
+function countThreads(groups: ReviewGroup[]): number {
+  return groups.reduce((sum, group) => sum + group.threads.length, 0);
+}
+
+/** The home's summary from the full review: the one place that knows the shape. */
+export function summariseReview(
+  review: ReflectionReview,
+): ReflectionHomeSummary {
+  const pages = new Map<string, HomeThreadGroup>();
+  for (const group of [
+    ...review.waitingForPeople,
+    ...review.waitingForTheAgent,
+  ]) {
+    const seen = pages.get(group.path);
+    if (seen === undefined) {
+      pages.set(group.path, { ...group, threads: [...group.threads] });
+    } else {
+      seen.threads.push(...group.threads);
+    }
+  }
+  return {
+    waitingForAgent: countThreads(review.waitingForTheAgent),
+    waitingForPeople: countThreads(review.waitingForPeople),
+    pagesToUpdate: review.queue.kinds.update,
+    openByPage: [...pages.values()],
+  };
+}
+
+/**
+ * What the Reflection home reads of the review. It still fetches the full
+ * review; a cheaper summary route replaces `fetchReview` here and nowhere
+ * else. A failure leaves `data` undefined, and the home falls back to the
+ * tree's own count.
+ */
+export function useReflectionHomeSummary(domain: string): {
+  data: ReflectionHomeSummary | undefined;
+} {
+  const review = useQuery({
+    queryKey: reflectionReviewKey(domain),
+    queryFn: () => fetchReview(domain),
+    select: summariseReview,
+  });
+  return { data: review.data };
 }

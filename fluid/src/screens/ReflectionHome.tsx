@@ -18,22 +18,20 @@ import { ApiProblem, problemDetail } from "../api/client";
 import { DOMAINS_QUERY_KEY } from "../api/domains";
 import { removeMember } from "../api/members";
 import type {
-  ReflectionReview,
+  ReflectionHomeSummary,
   ReflectionSearchMode,
   ReflectionTree,
-  ReviewGroup,
   TreeNode,
 } from "../api/reflection";
 import {
   REFLECTION_SEARCH_MODES,
   fetchReflectionTree,
-  fetchReview,
   openThreadCount,
   readReflectionSearchMode,
-  reflectionReviewKey,
   reflectionSearchKey,
   reflectionTreeKey,
   searchReflections,
+  useReflectionHomeSummary,
 } from "../api/reflection";
 import { REFLECTION_DOMAINS_KEY, atLeast } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
@@ -119,12 +117,7 @@ function OnHome({
     queryKey: reflectionTreeKey(domain),
     queryFn: () => fetchReflectionTree(domain),
   });
-  // The review is read on this lazy screen only: the Review card and the
-  // grouped threads draw from it, and a refusal leaves the rest standing.
-  const review = useQuery({
-    queryKey: reflectionReviewKey(domain),
-    queryFn: () => fetchReview(domain),
-  });
+  const summary = useReflectionHomeSummary(domain).data ?? null;
   return (
     <>
       <SearchSection domain={domain} />
@@ -143,11 +136,11 @@ function OnHome({
           <ReviewCard
             domain={domain}
             threads={openThreadCount(tree.data)}
-            review={review.data ?? null}
+            summary={summary}
           />
         </div>
       )}
-      {review.data && <OpenThreads domain={domain} review={review.data} />}
+      {summary && <OpenThreads domain={domain} summary={summary} />}
       {tree.data && <PagesList domain={domain} tree={tree.data} />}
     </>
   );
@@ -216,12 +209,10 @@ function PactCard({
 }
 
 /** What waits, in one sentence: threads by who must answer, pages to update. */
-function reviewSentence(review: ReflectionReview): string {
-  const count = (groups: ReviewGroup[]) =>
-    groups.reduce((sum, group) => sum + group.threads.length, 0);
-  const agent = count(review.waitingForTheAgent);
-  const people = count(review.waitingForPeople);
-  const updates = review.queue.kinds.update;
+function reviewSentence(summary: ReflectionHomeSummary): string {
+  const agent = summary.waitingForAgent;
+  const people = summary.waitingForPeople;
+  const updates = summary.pagesToUpdate;
   const parts = [
     agent > 0 &&
       `${plural(agent, "thread waits", "threads wait")} for the agent.`,
@@ -236,11 +227,11 @@ function reviewSentence(review: ReflectionReview): string {
 function ReviewCard({
   domain,
   threads,
-  review,
+  summary,
 }: {
   domain: string;
   threads: number;
-  review: ReflectionReview | null;
+  summary: ReflectionHomeSummary | null;
 }): ReactElement {
   return (
     <section className={CARD} aria-label="Review">
@@ -264,9 +255,9 @@ function ReviewCard({
         )}
       </h2>
       <p className={CARD_TEXT}>
-        {review === null
+        {summary === null
           ? plural(threads, "open thread", "open threads")
-          : reviewSentence(review)}
+          : reviewSentence(summary)}
       </p>
     </section>
   );
@@ -279,44 +270,23 @@ const ROW =
 const ROW_SIDE =
   "col-start-2 row-span-2 row-start-1 flex items-center gap-2.5 text-[12.5px] text-muted";
 
-/** The threads of both waiting lists, merged by page, in the server's order. */
-function groupByPage(review: ReflectionReview): ReviewGroup[] {
-  const pages = new Map<string, ReviewGroup>();
-  for (const group of [
-    ...review.waitingForPeople,
-    ...review.waitingForTheAgent,
-  ]) {
-    const seen = pages.get(group.path);
-    if (seen === undefined) {
-      pages.set(group.path, { ...group, threads: [...group.threads] });
-    } else {
-      seen.threads.push(...group.threads);
-    }
-  }
-  return [...pages.values()];
-}
-
 function OpenThreads({
   domain,
-  review,
+  summary,
 }: {
   domain: string;
-  review: ReflectionReview;
+  summary: ReflectionHomeSummary;
 }): ReactElement | null {
-  const groups = groupByPage(review);
+  const groups = summary.openByPage;
   if (groups.length === 0) {
     return null;
   }
-  const total = groups.reduce((sum, group) => sum + group.threads.length, 0);
   return (
     <section aria-labelledby="home-threads">
       <div className={SECTION_HEAD}>
         <h2 id="home-threads" className="text-[21px] font-semibold">
           Open threads
         </h2>
-        <span className="text-[13px] text-muted">
-          {`${String(total)} on ${plural(groups.length, "page", "pages")}`}
-        </span>
       </div>
       <ul aria-label="Pages with open threads" className={ROWS}>
         {groups.map((group) => {
@@ -493,7 +463,7 @@ function SearchSection({ domain }: { domain: string }): ReactElement {
       ? searchStatus(answer.mode, mode, answer.total)
       : null;
   return (
-    <section aria-label="Search the pages" className="mt-5 flex flex-col gap-3">
+    <div className="mt-5 flex flex-col gap-3">
       <form
         role="search"
         aria-label="Search the Reflection"
@@ -623,7 +593,7 @@ function SearchSection({ domain }: { domain: string }): ReactElement {
           )}
         </div>
       )}
-    </section>
+    </div>
   );
 }
 

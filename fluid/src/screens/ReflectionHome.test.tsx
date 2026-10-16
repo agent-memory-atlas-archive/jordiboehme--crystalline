@@ -484,7 +484,30 @@ describe("the Reflection home", () => {
     ).toHaveAttribute("href", "/d/eng/reflection/guides/deploying.md");
     expect(rows[0]).toHaveTextContent("bot (agent), ben, ana");
     expect(rows[0]).toHaveTextContent("3 open");
-    expect(screen.getByText("3 on 1 page")).toBeVisible();
+    expect(screen.queryByText(/on 1 page/)).toBeNull();
+  });
+
+  it("falls back to the tree's count when the review is refused, with no groups and no alert", async () => {
+    asEditor({
+      "/domains/eng/reflection/review": () => {
+        throw new ApiProblem(500, "failed", "the review broke");
+      },
+    });
+    renderApp("/d/eng/reflection");
+    const card = await within(await screen.findByRole("main")).findByRole(
+      "region",
+      { name: "Review" },
+    );
+    await within(
+      await screen.findByRole("list", { name: "All pages" }),
+    ).findByText("Deploying");
+    expect(card).toHaveTextContent("3 open threads");
+    expect(
+      screen.queryByRole("list", { name: "Pages with open threads" }),
+    ).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Open threads" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/the review broke/)).toBeNull();
   });
 
   it("lists every page with its folder, sections and open threads", async () => {
