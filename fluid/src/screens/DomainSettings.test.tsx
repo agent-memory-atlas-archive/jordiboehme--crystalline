@@ -135,7 +135,7 @@ describe("the domain settings screen", () => {
     expect(links.map((link) => link.textContent)).toEqual([
       "Members",
       "Review mode",
-      "Policies",
+      "Domain policies",
       "Provisioning",
       "Tag aliases",
       "Backup",
@@ -210,10 +210,170 @@ describe("the domain settings screen", () => {
         );
       });
       expect(
-        within(nav).getByRole("link", { name: "Policies" }),
+        within(nav).getByRole("link", { name: "Domain policies" }),
       ).toHaveAttribute("aria-current", "location");
     } finally {
       vi.unstubAllGlobals();
+    }
+  });
+
+  it("scrolls to the section on every press, the one in the hash too, and focuses its heading", async () => {
+    const spy = vi.fn();
+    Element.prototype.scrollIntoView = spy;
+    try {
+      serve();
+      renderApp("/d/eng/settings#backup");
+      const nav = await screen.findByRole("navigation", {
+        name: "Settings sections",
+      });
+      const backup = within(nav).getByRole("link", { name: "Backup" });
+      // The hash already names it: the hash effect has nothing to react to.
+      expect(backup).toHaveAttribute("aria-current", "location");
+      spy.mockClear();
+      await userEvent.click(backup);
+      await userEvent.click(backup);
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(spy.mock.contexts[1]).toBe(document.getElementById("backup"));
+      expect(
+        within(document.getElementById("backup") as HTMLElement).getByRole(
+          "heading",
+          { name: "Backup" },
+        ),
+      ).toHaveFocus();
+    } finally {
+      Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+    }
+  });
+
+  it("keeps a pressed section current until the reader scrolls on their own", async () => {
+    let callback: IntersectionObserverCallback = () => {};
+    class FakeObserver {
+      constructor(cb: IntersectionObserverCallback) {
+        callback = cb;
+      }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+      takeRecords() {
+        return [];
+      }
+    }
+    vi.stubGlobal("IntersectionObserver", FakeObserver);
+    try {
+      serve();
+      renderApp("/d/eng/settings");
+      const nav = await screen.findByRole("navigation", {
+        name: "Settings sections",
+      });
+      await userEvent.click(within(nav).getByRole("link", { name: "Backup" }));
+      // The scroll the press causes reports another section in view.
+      act(() => {
+        callback(
+          [
+            {
+              isIntersecting: true,
+              target: document.getElementById("members"),
+            } as unknown as IntersectionObserverEntry,
+          ],
+          {} as IntersectionObserver,
+        );
+      });
+      expect(within(nav).getByRole("link", { name: "Backup" })).toHaveAttribute(
+        "aria-current",
+        "location",
+      );
+      // The reader's own wheel hands the highlight back to the scroll.
+      act(() => {
+        window.dispatchEvent(new Event("wheel"));
+      });
+      expect(
+        within(nav).getByRole("link", { name: "Members" }),
+      ).toHaveAttribute("aria-current", "location");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("makes the last section current when the page is scrolled to the bottom", async () => {
+    serve();
+    renderApp("/d/eng/settings");
+    const nav = await screen.findByRole("navigation", {
+      name: "Settings sections",
+    });
+    const root = document.documentElement;
+    const props = { scrollTop: 400, clientHeight: 800, scrollHeight: 1200 };
+    for (const [key, value] of Object.entries(props)) {
+      Object.defineProperty(root, key, { configurable: true, value });
+    }
+    try {
+      act(() => {
+        window.dispatchEvent(new Event("scroll"));
+      });
+      expect(
+        within(nav).getByRole("link", { name: "Danger zone" }),
+      ).toHaveAttribute("aria-current", "location");
+    } finally {
+      for (const key of Object.keys(props)) {
+        Reflect.deleteProperty(root, key);
+      }
+    }
+  });
+
+  it("leaves Backup and the Danger zone out of a non-admin's index", async () => {
+    serve({}, "editor");
+    renderApp("/d/eng/settings");
+    const nav = await screen.findByRole("navigation", {
+      name: "Settings sections",
+    });
+    const labels = within(nav)
+      .getAllByRole("link")
+      .map((link) => link.textContent);
+    expect(labels).not.toContain("Backup");
+    expect(labels).not.toContain("Danger zone");
+    expect(labels).toContain("Members");
+  });
+
+  it("works without an IntersectionObserver: the first section is current", async () => {
+    vi.stubGlobal("IntersectionObserver", undefined);
+    try {
+      serve();
+      renderApp("/d/eng/settings");
+      const nav = await screen.findByRole("navigation", {
+        name: "Settings sections",
+      });
+      expect(
+        within(nav).getByRole("link", { name: "Members" }),
+      ).toHaveAttribute("aria-current", "location");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("scrolls from the phone select and sets the hash", async () => {
+    const spy = vi.fn();
+    Element.prototype.scrollIntoView = spy;
+    let hash = "";
+    function Probe() {
+      hash = useLocation().hash;
+      return null;
+    }
+    try {
+      serve();
+      render(
+        <MemoryRouter initialEntries={["/d/eng/settings"]}>
+          <App />
+          <Probe />
+        </MemoryRouter>,
+      );
+      const jump = await screen.findByRole("combobox", {
+        name: "Jump to a section",
+      });
+      spy.mockClear();
+      await userEvent.selectOptions(jump, "backup");
+      expect(hash).toBe("#backup");
+      expect(spy.mock.contexts).toContain(document.getElementById("backup"));
+    } finally {
+      Reflect.deleteProperty(Element.prototype, "scrollIntoView");
     }
   });
 
@@ -232,7 +392,7 @@ describe("the domain settings screen", () => {
     ).toEqual([
       "Members",
       "Review mode",
-      "Policies",
+      "Domain policies",
       "Provisioning",
       "Tag aliases",
       "Backup",

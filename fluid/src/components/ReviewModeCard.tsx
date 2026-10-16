@@ -125,7 +125,7 @@ export function ReviewModeCard({
         {!reviewing && (
           <button
             type="button"
-            className={`${BUTTON.primary} mt-3`}
+            className={`${BUTTON.secondary} mt-3`}
             disabled={readOnly || enable.isPending}
             aria-describedby={readOnly ? `${headingId}-read-only` : undefined}
             onClick={() => enable.mutate()}

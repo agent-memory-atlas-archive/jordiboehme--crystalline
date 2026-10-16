@@ -179,7 +179,10 @@ export function DangerZoneCard({
       aria-labelledby={headingId}
       className="flex flex-col gap-4"
     >
-      <h2 id={headingId} className="text-section">
+      <h2
+        id={headingId}
+        className="text-section text-red-700 dark:text-red-300"
+      >
         Danger zone
       </h2>
       <p className="text-sm text-ink-3">

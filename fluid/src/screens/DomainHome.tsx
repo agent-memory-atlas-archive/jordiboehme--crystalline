@@ -718,8 +718,8 @@ function DomainPage({
  * MANIFEST is still the first thing on the screen; from `md` up they are
  * always open. Anything to warn about - a refused or failed check, no
  * connection, conflicts, declined proposals, a failed Sync now - keeps them
- * open on a phone too, with the warning in the line, because a fold must
- * never hide a problem. The status read is the sync card's own, under its
+ * open on a phone too, where the cards announce the warning themselves
+ * (alerts and statuses), because a fold must never hide a problem. The status read is the sync card's own, under its
  * key, so the line costs no request; a domain with no origin draws nothing.
  */
 function TeamBanners({ domain }: { domain: string }) {
@@ -735,12 +735,12 @@ function TeamBanners({ domain }: { domain: string }) {
     select: (mutation) => mutation.state.status,
   });
   const sync = status.data ?? null;
-  const warnings = teamWarnings(
+  const warned = hasTeamWarning(
     sync,
     status.error !== null && !isMissing(status.error),
     pulls[pulls.length - 1] === "error",
   );
-  const unfolded = open || sync === null || warnings.length > 0;
+  const unfolded = open || sync === null || warned;
   // Siblings in the page's column rather than a box of their own, so an
   // origin-less domain (both cards draw nothing) leaves no gap behind.
   return (
@@ -750,7 +750,7 @@ function TeamBanners({ domain }: { domain: string }) {
         so no amber summary line repeats it above; the line is only for a
         folded panel, and a folded panel has no warning to repeat.
       */}
-      {sync !== null && warnings.length === 0 && (
+      {sync !== null && !warned && (
         <button
           type="button"
           aria-expanded={open}
@@ -784,31 +784,25 @@ function TeamBanners({ domain }: { domain: string }) {
   );
 }
 
-/** What the team banners must not fold away, in a few words each. */
-function teamWarnings(
+/**
+ * Whether anything is wrong that the team banners must not fold away: a
+ * refused or failed check, no connection, conflicts, declined proposals or a
+ * failed Sync now.
+ */
+function hasTeamWarning(
   sync: SyncStatus | null,
   refused: boolean,
   pullFailed: boolean,
-): string[] {
-  const warnings: string[] = [];
-  if (refused || sync?.probeError != null) {
-    warnings.push("the last check failed");
-  }
-  if (sync?.connected === false) {
-    warnings.push("not connected");
-  }
-  if (sync !== null && sync.conflicts > 0) {
-    warnings.push(plural(sync.conflicts, "conflict", "conflicts"));
-  }
-  if (sync !== null && sync.declinedProposals > 0) {
-    warnings.push(
-      plural(sync.declinedProposals, "declined proposal", "declined proposals"),
-    );
-  }
-  if (pullFailed) {
-    warnings.push("Sync now failed");
-  }
-  return warnings;
+): boolean {
+  return (
+    refused ||
+    pullFailed ||
+    (sync !== null &&
+      (sync.probeError !== null ||
+        sync.connected === false ||
+        sync.conflicts > 0 ||
+        sync.declinedProposals > 0))
+  );
 }
 
 /** How many pages a Reflection tree holds, folders walked. */

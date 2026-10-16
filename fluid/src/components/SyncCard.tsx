@@ -179,7 +179,10 @@ export function SyncCard({ domain }: { domain: string }): ReactElement | null {
             nothing, which is not the same as saying no.
           */}
           {sync.connected === false && (
-            <p className="text-sm text-slate-500 dark:text-slate-400">
+            <p
+              role="status"
+              className="text-sm text-slate-500 dark:text-slate-400"
+            >
               Not connected - connect GitHub under Settings to sync.
             </p>
           )}
@@ -220,7 +223,7 @@ export function SyncCard({ domain }: { domain: string }): ReactElement | null {
                 something. Declined work is informational, a conflict is
                 somebody's next task, and the wording is what says which. */}
             {sync.declinedProposals > 0 && (
-              <span>
+              <span role="status">
                 {plural(
                   sync.declinedProposals,
                   "declined proposal",
@@ -229,7 +232,7 @@ export function SyncCard({ domain }: { domain: string }): ReactElement | null {
               </span>
             )}
             {sync.conflicts > 0 && (
-              <span className="flex flex-wrap items-center gap-2">
+              <span role="status" className="flex flex-wrap items-center gap-2">
                 {/* The count is the sentence; the paths are what turns it
                     into somewhere to go. A report that carried a bare count,
                     or paths with no id to address a conflict by, still says

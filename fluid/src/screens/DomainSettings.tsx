@@ -210,7 +210,7 @@ function Settings({
     },
     {
       id: "policies",
-      label: "Policies",
+      label: "Domain policies",
       shown: sections !== null && sections.policies.length > 0,
     },
     { id: "provisioning", label: "Provisioning", shown: sections !== null },
@@ -273,12 +273,14 @@ function Settings({
             declared".
           */}
           {manifest.error !== null && !isMissing(manifest.error) && (
-            <p
-              role="alert"
-              className="rounded bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
-            >
-              {problemDetail(manifest.error)}
-            </p>
+            <div className="py-8 first:pt-0 last:pb-0">
+              <p
+                role="alert"
+                className="rounded bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
+              >
+                {problemDetail(manifest.error)}
+              </p>
+            </div>
           )}
           {sections !== null && (
             <ConfigSections sections={sections} onStart={onStart} />
@@ -435,49 +437,94 @@ function SectionIndex({ links, hash }: { links: SectionLink[]; hash: string }) {
   const navigate = useNavigate();
   const ids = links.map((link) => link.id).join(" ");
   const [seen, setSeen] = useState<string | null>(null);
-  const [picked, setPicked] = useState<string | null>(null);
+  // A pressed or hashed section stays current until the reader scrolls on
+  // their own: a short last section never reaches the observer's band, and
+  // the scroll a press causes must not move the highlight off it.
+  const [picked, setPicked] = useState<string | null>(
+    () => links.find((link) => `#${link.id}` === hash)?.id ?? null,
+  );
   useEffect(() => {
-    if (typeof IntersectionObserver === "undefined") {
-      return;
-    }
     const order = ids.split(" ");
-    const inView = new Set<string>();
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            inView.add(entry.target.id);
-          } else {
-            inView.delete(entry.target.id);
+    const release = () => {
+      setPicked(null);
+    };
+    const scrollKeys = new Set([
+      "ArrowUp",
+      "ArrowDown",
+      "PageUp",
+      "PageDown",
+      "Home",
+      "End",
+      " ",
+    ]);
+    const onKey = (event: KeyboardEvent) => {
+      if (scrollKeys.has(event.key)) {
+        release();
+      }
+    };
+    const onScroll = () => {
+      const root = document.scrollingElement ?? document.documentElement;
+      const last = order[order.length - 1];
+      if (
+        last !== undefined &&
+        root.scrollTop > 0 &&
+        root.scrollTop + root.clientHeight >= root.scrollHeight - 2
+      ) {
+        setSeen(last);
+      }
+    };
+    window.addEventListener("wheel", release, { passive: true });
+    window.addEventListener("touchmove", release, { passive: true });
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    let observer: IntersectionObserver | null = null;
+    if (typeof IntersectionObserver !== "undefined") {
+      const inView = new Set<string>();
+      observer = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (entry.isIntersecting) {
+              inView.add(entry.target.id);
+            } else {
+              inView.delete(entry.target.id);
+            }
           }
+          const first = order.find((id) => inView.has(id));
+          if (first !== undefined) {
+            setSeen(first);
+          }
+        },
+        { rootMargin: "-80px 0px -60% 0px" },
+      );
+      for (const id of order) {
+        const el = document.getElementById(id);
+        if (el !== null) {
+          observer.observe(el);
         }
-        const first = order.find((id) => inView.has(id));
-        if (first !== undefined) {
-          setSeen(first);
-          setPicked(null);
-        }
-      },
-      { rootMargin: "-80px 0px -60% 0px" },
-    );
-    for (const id of order) {
-      const el = document.getElementById(id);
-      if (el !== null) {
-        observer.observe(el);
       }
     }
     return () => {
-      observer.disconnect();
+      observer?.disconnect();
+      window.removeEventListener("wheel", release);
+      window.removeEventListener("touchmove", release);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll);
     };
   }, [ids]);
-  const current =
-    picked ??
-    seen ??
-    links.find((link) => `#${link.id}` === hash)?.id ??
-    links[0]?.id ??
-    null;
+  const current = picked ?? seen ?? links[0]?.id ?? null;
+  // Scrolls to the section itself, because pressing the section the hash
+  // already names changes nothing the screen's hash effect could see, and
+  // hands the focus to its heading so a keyboard reader lands there too.
   function go(id: string) {
     setPicked(id);
     void navigate({ hash: `#${id}` }, { replace: true });
+    const el = document.getElementById(id);
+    el?.scrollIntoView?.({ block: "start" });
+    const heading = el?.querySelector<HTMLElement>("h2") ?? null;
+    if (heading !== null) {
+      heading.tabIndex = -1;
+      heading.focus({ preventScroll: true });
+    }
   }
   if (links.length === 0) {
     return null;
@@ -515,8 +562,9 @@ function SectionIndex({ links, hash }: { links: SectionLink[]; hash: string }) {
                 to={{ hash: `#${link.id}` }}
                 replace
                 aria-current={link.id === current ? "location" : undefined}
-                onClick={() => {
-                  setPicked(link.id);
+                onClick={(event) => {
+                  event.preventDefault();
+                  go(link.id);
                 }}
                 className={`${SIDE.row} ${link.id === current ? SIDE.current : ""}`}
               >
