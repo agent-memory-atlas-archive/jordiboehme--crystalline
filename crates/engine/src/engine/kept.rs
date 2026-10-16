@@ -239,6 +239,16 @@ impl Engine {
         if !root.join(name).is_dir() {
             return;
         }
+        // Another registered domain whose name differs only in letter case
+        // answers to the same folder on a disk that ignores case: those
+        // texts are its own.
+        let folded = crystalline_core::config::registration::fold_domain_name(name);
+        if self.registered_domain_entries().keys().any(|other| {
+            other != name
+                && crystalline_core::config::registration::fold_domain_name(other) == folded
+        }) {
+            return;
+        }
         match kept::set_aside(&root, name, chrono::Utc::now()) {
             Ok(Some(to)) => tracing::info!(
                 domain = name,

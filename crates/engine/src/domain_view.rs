@@ -1857,9 +1857,13 @@ impl<'a> DomainView<'a> {
     ///
     /// Deliberately thin - [`Engine::read_engram`] resolves references and
     /// builds hints this caller never reads. **Whose text** is the view's to
-    /// say, and every caller today builds a [`DomainView::base`], so a room in
-    /// a domain that reviews changes opens on the text the team reviewed,
-    /// whoever else is drafting.
+    /// say: a room over the folder's text loads through the base view, and a
+    /// room over somebody's review draft loads through that owner's actor
+    /// view. Both read with [`DomainView::text_at`], so a draft room whose
+    /// engram file is gone from this disk (and no draft held yet) opens on
+    /// the body the index row holds; its save goes through
+    /// [`DomainView::text_for_draft`], which refuses it, and the room's text
+    /// is kept in `kept/` when it closes.
     pub(crate) async fn engram_text(&self, identifier: &str) -> Result<EngramText> {
         let (desc, source) = self.resolve(identifier).await?;
         let content = self.text_at(&source, &desc).await?.ok_or_else(|| {

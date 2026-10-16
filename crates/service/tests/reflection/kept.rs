@@ -590,3 +590,48 @@ async fn start_and_a_hand_added_domain_set_left_over_texts_aside() {
             .any(|k| k.domain == "fresh" && k.removed)
     );
 }
+
+/// A domain added to the configuration by hand under a name that differs
+/// only in letter case from a registered one never sets that domain's kept
+/// texts aside: on a disk that ignores case they share one folder.
+#[tokio::test]
+async fn a_hand_added_case_twin_leaves_the_registered_domains_texts() {
+    let s = serve_opts(Opts {
+        anonymous: false,
+        private: false,
+        origin: false,
+    })
+    .await;
+    let root = s.fx.tmp.path().join("state").join(kept::KEPT_DIR);
+    let at = chrono::Utc.with_ymd_and_hms(2026, 10, 15, 8, 0, 0).unwrap();
+    kept::write(&root, "eng", None, KeptKind::Engram, "a.md", at, "eng's\\n").unwrap();
+    // The twin's own folder name, so the check runs on a disk that tells
+    // case apart too.
+    kept::write(
+        &root,
+        "ENG",
+        None,
+        KeptKind::Engram,
+        "b.md",
+        at,
+        "eng's too\\n",
+    )
+    .unwrap();
+    let config = s.fx.tmp.path().join("config.yaml");
+    let mut cfg: crystalline_core::config::GlobalConfig =
+        crystalline_core::config::load_yaml(&config).unwrap();
+    cfg.domains.insert(
+        "ENG".to_string(),
+        crystalline_core::config::DomainEntry::virtual_domain(),
+    );
+    crystalline_core::config::save_yaml(&config, &cfg).unwrap();
+    let _ =
+        s.fx.engine
+            .kept_texts("ENG", &crystalline_service::Scope::Unrestricted)
+            .await;
+    assert!(
+        kept::scan(&root).iter().all(|k| !k.removed),
+        "{:?}",
+        kept::scan(&root)
+    );
+}

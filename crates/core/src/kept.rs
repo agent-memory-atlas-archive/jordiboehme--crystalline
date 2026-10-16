@@ -510,11 +510,13 @@ fn dir_entries(dir: &Path) -> Vec<Entry> {
                 is_dir: meta.is_dir(),
                 is_file: meta.is_file(),
                 len: meta.len(),
-                idle_for: meta
-                    .modified()
-                    .ok()
-                    .and_then(|m| m.elapsed().ok())
-                    .unwrap_or_default(),
+                // A modified time in the future (a clock that moved) counts
+                // as long idle, so an interrupted keep is never hidden.
+                idle_for: match meta.modified().map(|m| m.elapsed()) {
+                    Ok(Ok(idle)) => idle,
+                    Ok(Err(_)) => std::time::Duration::MAX,
+                    Err(_) => std::time::Duration::ZERO,
+                },
             })
         })
         .collect();
@@ -566,6 +568,26 @@ mod tests {
             .unwrap()
             .set_modified(old)
             .unwrap();
+    }
+
+    /// A temporary keep whose modified time lies in the future (a clock
+    /// that moved) is listed: an interrupted keep is never hidden.
+    #[test]
+    fn a_temporary_keep_from_the_future_is_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("eng/engram");
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join(".a.md.20261015T080000Z.42-0.keeping");
+        std::fs::write(&file, "left behind").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
+            .unwrap();
+        let found = scan(dir.path());
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].unfinished);
     }
 
     /// A keep in progress holds its temporary name for a moment and is not
