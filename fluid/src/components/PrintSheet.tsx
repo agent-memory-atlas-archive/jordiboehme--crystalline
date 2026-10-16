@@ -1,12 +1,14 @@
 /**
- * The parts of a printed page that the screen never shows: the title block
- * at the top of the first page, the running header and footer, the Related
- * section of an engram and the Notes of a Reflection page.
+ * The parts of a printed page that the screen never shows and every reading
+ * page shares: the title block at the top of the first page and the running
+ * header and footer. The Related section of an engram and the Notes of a
+ * Reflection page are modules of their own (`PrintRelated`, `PrintNotes`).
  *
  * Each block carries the `hidden` attribute and `data-print`: hidden on
  * screen and from assistive technology there, and shown by the print sheet
- * in `index.css`. Only the reading screens import this module, so none of it
- * reaches the eager bundle.
+ * in `index.css`. The reading pages reach it through `PageActions`, beside
+ * the Print view row, so it rides in the chunk they already share and none
+ * of it reaches the eager bundle.
  *
  * The running header and footer are `@page` margin boxes. A margin box
  * cannot read the document, so the words go into a small style element
@@ -15,16 +17,9 @@
  * date on its own.
  */
 
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import type { ReactElement } from "react";
-import { useEffect, useMemo, useState } from "react";
-import { flushSync } from "react-dom";
+import type { ReactElement, RefObject } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import type { AttachmentRow } from "../api/files";
-import { inboundTitlesQuery } from "../api/inboundTitles";
-import { assetRefsIn, engramAssetHome } from "../editor/imageFormat";
-import { formatBytes, formatDayLong, plural } from "../format";
-import type { PrintNote } from "../printNotes";
 import type { PrintFact } from "../printSheet";
 import { cssString } from "../printSheet";
 
@@ -38,16 +33,25 @@ function today(): string {
 }
 
 /**
- * The day the page is printed, read again as printing starts: a tab left
- * open overnight prints today's date, not the day it was opened.
+ * Words with the day the page is printed in them. The day is read again as
+ * printing starts and written straight into the element that shows it: a
+ * re-render would land after the browser has laid out the printed page. So
+ * a tab left open overnight prints today's date, not the day it was opened.
  */
-function usePrintDate(): string {
-  const [date, setDate] = useState(today);
+function usePrintDate<T extends HTMLElement>(
+  words: (date: string) => string,
+): { ref: RefObject<T | null>; text: string } {
+  const [date] = useState(today);
+  const ref = useRef<T>(null);
+  const latest = useRef(words);
+  useEffect(() => {
+    latest.current = words;
+  });
   useEffect(() => {
     const refresh = () => {
-      flushSync(() => {
-        setDate(today());
-      });
+      if (ref.current !== null) {
+        ref.current.textContent = latest.current(today());
+      }
     };
     const media =
       typeof window.matchMedia === "function"
@@ -65,7 +69,7 @@ function usePrintDate(): string {
       media?.removeEventListener("change", onChange);
     };
   }, []);
-  return date;
+  return { ref, text: words(date) };
 }
 
 /**
@@ -84,11 +88,11 @@ export function PrintPageStyle({
   title: string;
   address: string;
 }): ReactElement {
-  const date = usePrintDate();
   // The first page opens with the title block, which says all of this once:
   // only its page number stays. Here rather than in `index.css`, where a
   // first-page rule loses to these later ones.
-  const css = `@media print {
+  const { ref, text } = usePrintDate<HTMLStyleElement>(
+    (date) => `@media print {
 @page {
   @top-left { content: ${cssString(source)}; }
   @top-right { content: ${cssString(title)}; }
@@ -101,8 +105,13 @@ export function PrintPageStyle({
   @bottom-left { content: ""; }
   @bottom-right { content: counter(page) " of " counter(pages); }
 }
-}`;
-  return <style data-print-page="">{css}</style>;
+}`,
+  );
+  return (
+    <style ref={ref} data-print-page="">
+      {text}
+    </style>
+  );
 }
 
 /**
@@ -124,7 +133,9 @@ export function PrintTitleBlock({
   facts?: PrintFact[];
   address: string;
 }): ReactElement {
-  const date = usePrintDate();
+  const { ref: printedRef, text: printed } = usePrintDate<HTMLSpanElement>(
+    (date) => `Printed ${date}`,
+  );
   return (
     <header
       hidden
@@ -150,226 +161,8 @@ export function PrintTitleBlock({
       )}
       <p className="mt-2 flex flex-wrap justify-between gap-x-4 text-caption text-muted">
         <span className="font-mono">{address}</span>
-        <span>{`Printed ${date}`}</span>
+        <span ref={printedRef}>{printed}</span>
       </p>
     </header>
-  );
-}
-
-/** A printed list's small heading. */
-const LIST_LABEL =
-  "mb-1.5 text-caption font-semibold tracking-[0.08em] text-muted uppercase";
-
-/**
- * The end of a printed engram: what links here, by title and relation, and
- * the files its text references, by name and size. The first page of links
- * prints; a longer list says how many more there are. Nothing prints when
- * there is neither.
- */
-export function PrintRelated({
-  domain,
-  permalink,
-  inboundCount,
-  body,
-}: {
-  domain: string;
-  permalink: string;
-  inboundCount: number;
-  body: string;
-}): ReactElement | null {
-  // The Linked from block's own query: on the reading column the rows are
-  // already in the cache, and at full width this asks for them itself.
-  const inbound = useInfiniteQuery(
-    inboundTitlesQuery(domain, permalink, "", inboundCount > 0),
-  );
-  const home = useMemo(() => engramAssetHome(domain), [domain]);
-  const referenced = useMemo(
-    () => assetRefsIn(body, home.resolve),
-    [body, home],
-  );
-  const listing = useQuery({
-    queryKey: home.key,
-    queryFn: () => home.list(),
-    enabled: referenced.length > 0,
-  });
-  const first = inbound.data?.pages[0];
-  const seen = new Set<string>();
-  const links = (first?.hits ?? []).filter((hit) => {
-    const key = `${hit.rel}\u0000${hit.domain}\u0000${hit.permalink}`;
-    if (seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
-  });
-  const more = Math.max(0, (first?.total ?? 0) - (first?.hits.length ?? 0));
-  const held = new Map<string, AttachmentRow>(
-    (listing.data ?? []).map((row) => [row.path, row]),
-  );
-  if (links.length === 0 && referenced.length === 0) {
-    return null;
-  }
-  const both = links.length > 0 && referenced.length > 0;
-  return (
-    <section
-      hidden
-      data-print=""
-      aria-label="Related"
-      className="print-related mt-10 border-t border-hair-strong pt-3"
-    >
-      <h2 className="mb-3 text-prose-h3">Related</h2>
-      <div className={both ? "grid grid-cols-2 gap-8" : ""}>
-        {links.length > 0 && (
-          <div>
-            <h3 className={LIST_LABEL}>Linked from</h3>
-            <ul className="text-sm">
-              {links.map((hit) => (
-                <li
-                  key={`${hit.rel}:${hit.domain}/${hit.permalink}`}
-                  className="flex items-baseline justify-between gap-3 border-b border-hair py-1"
-                >
-                  <span className="min-w-0">
-                    {hit.title}
-                    {hit.domain !== domain && (
-                      <span className="text-muted">{` (${hit.domain})`}</span>
-                    )}
-                  </span>
-                  <span className="shrink-0 font-mono text-caption text-muted">
-                    {hit.rel}
-                  </span>
-                </li>
-              ))}
-            </ul>
-            {more > 0 && (
-              <p className="mt-1 text-caption text-muted">
-                {`And ${plural(more, "more engram", "more engrams")}.`}
-              </p>
-            )}
-          </div>
-        )}
-        {referenced.length > 0 && (
-          <div>
-            <h3 className={LIST_LABEL}>Attachments</h3>
-            <ul className="text-sm">
-              {referenced.map((path) => {
-                const row = held.get(path);
-                return (
-                  <li
-                    key={path}
-                    className="flex items-baseline justify-between gap-3 border-b border-hair py-1"
-                  >
-                    <span className="min-w-0 break-all">
-                      {path.slice(path.lastIndexOf("/") + 1)}
-                    </span>
-                    <span className="shrink-0 text-caption text-muted">
-                      {row !== undefined
-                        ? formatBytes(row.size)
-                        : listing.isSuccess
-                          ? "missing"
-                          : ""}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-/** What a thread entry says, as the thread card words it. */
-function entryText(entry: PrintNote["thread"]["entries"][number]): string {
-  if (entry.kind === "resolve") {
-    return `Resolved: ${entry.text}`;
-  }
-  if (entry.kind === "reopen") {
-    return entry.text === "" ? "Reopened" : `Reopened: ${entry.text}`;
-  }
-  return entry.text;
-}
-
-/** Where a note sits, in a few words. */
-function placeOf(note: PrintNote): string | null {
-  if (note.state === "section_gone") {
-    return "Its section is gone.";
-  }
-  if (note.state === "text_changed") {
-    return note.heading === null
-      ? "The text changed."
-      : `${note.heading}. The text changed.`;
-  }
-  if (note.quote === null) {
-    return note.heading === null
-      ? "On the whole intro."
-      : `On the whole section ${note.heading}.`;
-  }
-  return note.heading;
-}
-
-/**
- * The open threads of a Reflection page, as numbered notes at its end. The
- * same numbers stand at the end of each quote in the printed text.
- */
-export function PrintNotes({
-  notes,
-}: {
-  notes: readonly PrintNote[];
-}): ReactElement | null {
-  if (notes.length === 0) {
-    return null;
-  }
-  return (
-    <section
-      hidden
-      data-print=""
-      aria-label="Notes"
-      className="print-notes mt-10 border-t border-hair-strong pt-3"
-    >
-      <h2 className="text-prose-h3">Notes</h2>
-      <p className="mb-3 text-caption text-muted">
-        The open threads on this page. The numbers match the marks in the text.
-      </p>
-      <ol className="flex flex-col gap-4">
-        {notes.map((note) => {
-          const place = placeOf(note);
-          return (
-            <li
-              key={note.thread.id}
-              className="print-note grid grid-cols-[1.75rem_minmax(0,1fr)] text-sm"
-            >
-              <span className="font-semibold text-ink tabular-nums">
-                {note.n}
-              </span>
-              <div className="flex flex-col gap-1.5">
-                {note.quote !== null && (
-                  <blockquote className="border-l-2 border-(--mark-rule) pl-2.5 text-ink-3 italic">
-                    {note.quote}
-                  </blockquote>
-                )}
-                {place !== null && (
-                  <p className="text-caption text-muted">{place}</p>
-                )}
-                {note.thread.entries.map((entry, index) => (
-                  <div key={`${entry.at}-${String(index)}`}>
-                    <p className="text-caption">
-                      <span className="font-semibold text-ink">
-                        {entry.author.name}
-                        {entry.author.agent ? " (agent)" : ""}
-                      </span>
-                      <span className="text-muted">{` · ${formatDayLong(entry.at)}`}</span>
-                    </p>
-                    <p className="whitespace-pre-wrap text-ink-2">
-                      {entryText(entry)}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </li>
-          );
-        })}
-      </ol>
-    </section>
   );
 }

@@ -8,12 +8,17 @@
  */
 
 import type { LucideIcon } from "lucide-react";
-import { MoreHorizontal, Pencil } from "lucide-react";
+import { MoreHorizontal, Pencil, Printer } from "lucide-react";
 import type { ReactElement, ReactNode, Ref } from "react";
 import { DropdownMenu } from "radix-ui";
 import { Link } from "react-router";
 
 import { ITEM_CLASSES, MENU_CLASSES } from "./menu";
+
+// What Print view prints, beside the menu that offers it. Handed out from
+// here so the reading pages load it with their actions rather than as a
+// chunk of its own.
+export { PrintPageStyle, PrintTitleBlock } from "./PrintSheet";
 import { FOCUS_RING, IconButton } from "./primitives";
 
 /** The red face of a destructive row. */
@@ -120,4 +125,16 @@ export function ActionSeparator(): ReactElement {
   return (
     <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
   );
+}
+
+/**
+ * The Print view row, the same on every reading page: it opens the
+ * browser's print dialog, and the print sheet lays the page out.
+ */
+export function PrintViewItem({
+  onSelect,
+}: {
+  onSelect: () => void;
+}): ReactElement {
+  return <ActionItem label="Print view" icon={Printer} onSelect={onSelect} />;
 }

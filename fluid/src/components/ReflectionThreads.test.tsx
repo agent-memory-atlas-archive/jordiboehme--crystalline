@@ -1839,8 +1839,11 @@ describe("threads on paper", () => {
     await waitFor(() => {
       expect(registry.get(QUOTE_HIGHLIGHT)?.ranges).toHaveLength(2);
     });
-    // On screen the text holds no number.
+    // On screen the text holds no number, and the column stays off paper.
     expect(document.querySelector(".print-marker")).toBeNull();
+    expect(
+      screen.getByRole("complementary", { name: "Threads" }).className,
+    ).toContain("print:hidden");
     const before = pageText("Deploys run at night, after").node;
     const words = before.data;
 

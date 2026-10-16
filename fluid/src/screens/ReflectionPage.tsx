@@ -17,7 +17,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { KeyboardEvent, ReactElement } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { FolderInput, Layers, Printer, Trash2 } from "lucide-react";
+import { FolderInput, Layers, Trash2 } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 
 import { ApiProblem, problemDetail } from "../api/client";
@@ -53,15 +53,14 @@ import {
   ActionSeparator,
   EditLink,
   MoreActions,
-} from "../components/PageActions";
-import {
-  PrintNotes,
   PrintPageStyle,
   PrintTitleBlock,
-} from "../components/PrintSheet";
+  PrintViewItem,
+} from "../components/PageActions";
 import { FOCUS_RING } from "../components/primitives";
 import { Breadcrumbs, reflectionCrumbsOf } from "../components/Breadcrumbs";
 import { plural } from "../format";
+import { PrintNotes } from "../components/PrintNotes";
 import { Skeleton } from "../components/Skeleton";
 import { engramRoute, reflectionEditRoute, reflectionRoute } from "../paths";
 import { assetRefsIn } from "../editor/imageFormat";
@@ -424,9 +423,7 @@ function PageBody({
                   }
                 }}
               >
-                <ActionItem
-                  label="Print view"
-                  icon={Printer}
+                <PrintViewItem
                   onSelect={() => {
                     window.print();
                   }}

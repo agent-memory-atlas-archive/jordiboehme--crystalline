@@ -568,6 +568,10 @@
   .gem-cycle {
     display: none !important;
   }
+  /* A task list's boxes are content: they say what is done. */
+  .measured input[type="checkbox"] {
+    display: inline-block !important;
+  }
 
   /* The text: a calm leading, the light fills kept on paper. */
   .measured {
@@ -660,7 +664,7 @@
    */
   [data-print-fold]
     > section:first-child
-    :is(h1[data-first-title], h1[data-first-title] + [data-anchor-skip]) {
+    :is(h1[data-first-title], h1[data-first-title] ~ p[data-anchor-skip]) {
     display: none;
   }
 }

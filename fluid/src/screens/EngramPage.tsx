@@ -40,7 +40,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, Download, FolderInput, Link2, Printer } from "lucide-react";
+import { Archive, Download, FolderInput, Link2 } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
@@ -93,14 +93,13 @@ import {
   ActionSeparator,
   EditLink,
   MoreActions,
+  PrintPageStyle,
+  PrintTitleBlock,
+  PrintViewItem,
 } from "../components/PageActions";
 import { RetireDialog } from "../components/RetireDialog";
 import { ShareDialog } from "../components/ShareDialog";
-import {
-  PrintPageStyle,
-  PrintRelated,
-  PrintTitleBlock,
-} from "../components/PrintSheet";
+import { PrintRelated } from "../components/PrintRelated";
 import { Skeleton } from "../components/Skeleton";
 import { useRememberedDisclosure } from "../disclosure";
 import { domainSpellings } from "../domainNames";
@@ -572,9 +571,7 @@ export default function EngramPage() {
                   utilities.current?.download();
                 }}
               />
-              <ActionItem
-                label="Print view"
-                icon={Printer}
+              <PrintViewItem
                 onSelect={() => {
                   utilities.current?.print();
                 }}
