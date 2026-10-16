@@ -11,7 +11,7 @@ import {
   REFLECTION_DOMAINS_KEY,
   fetchReflectionDomains,
 } from "../api/reflectionDomains";
-import { Skeleton } from "../components/Skeleton";
+import { Loading } from "../components/Loading";
 import { CHROME_LINK } from "../components/primitives";
 import { reflectionRoute } from "../paths";
 
@@ -28,7 +28,7 @@ export function MissingOrReflection({ domain }: { domain: string }) {
     queryFn: fetchReflectionDomains,
   });
   if (listing.isPending) {
-    return <Skeleton label="Loading the domain" rows={3} />;
+    return <Loading label="Loading the domain" subject={domain} />;
   }
   // A pending, homeless or hosted_elsewhere Reflection still goes to its
   // home, which shows the notice. One that lives elsewhere stays here: this

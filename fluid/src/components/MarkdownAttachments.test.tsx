@@ -52,7 +52,9 @@ async function renderMarkdown(source: string, domain?: string) {
     </MemoryRouter>,
   );
   await waitFor(() => {
-    expect(screen.queryByText("crystallizing")).toBeNull();
+    expect(
+      screen.queryByRole("status", { name: "Loading the text" }),
+    ).toBeNull();
   });
   return result;
 }
@@ -308,7 +310,9 @@ describe("attachments a resolver refuses", () => {
       </MemoryRouter>,
     );
     await waitFor(() => {
-      expect(screen.queryByText("crystallizing")).toBeNull();
+      expect(
+        screen.queryByRole("status", { name: "Loading the text" }),
+      ).toBeNull();
     });
 
     expect(container.querySelector("img")).toBeNull();

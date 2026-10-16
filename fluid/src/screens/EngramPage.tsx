@@ -100,7 +100,7 @@ import {
 import { RetireDialog } from "../components/RetireDialog";
 import { ShareDialog } from "../components/ShareDialog";
 import { PrintRelated } from "../components/PrintRelated";
-import { Skeleton } from "../components/Skeleton";
+import { Loading } from "../components/Loading";
 import { useRememberedDisclosure } from "../disclosure";
 import { domainSpellings } from "../domainNames";
 import type { RecentChange } from "../events/recent";
@@ -449,7 +449,7 @@ export default function EngramPage() {
     );
   }
   if (!detail.data || !wikilinks) {
-    return <Skeleton label="Loading the engram" rows={6} />;
+    return <Loading label="Loading the engram" subject={permalink} />;
   }
 
   const engram = detail.data;

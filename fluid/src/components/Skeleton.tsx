@@ -1,21 +1,15 @@
-/** The loading shape every screen shows: rows where content will land. */
-export function Skeleton({
-  label,
-  rows = 3,
-}: {
-  label: string;
-  rows?: number;
-}) {
+import { Loading } from "./Loading";
+
+/**
+ * The old name of the loading state, kept for the two editors until they
+ * switch to {@link Loading} themselves (then this file goes). The first line
+ * is made from the label: "Loading the editor" searches for "the editor".
+ */
+export function Skeleton({ label }: { label: string; rows?: number }) {
   return (
-    <div role="status" aria-busy="true" aria-label={label}>
-      <div aria-hidden="true" className="flex animate-pulse flex-col gap-2">
-        {Array.from({ length: rows }, (_, row) => (
-          <div
-            key={row}
-            className="h-6 rounded bg-slate-100 dark:bg-slate-800"
-          />
-        ))}
-      </div>
-    </div>
+    <Loading
+      label={label}
+      subject={label.replace(/^(Loading|Connecting|Sweeping)\s+/, "")}
+    />
   );
 }

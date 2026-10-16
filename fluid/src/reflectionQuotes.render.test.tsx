@@ -51,7 +51,9 @@ async function renderSections(
   );
   await waitFor(
     () => {
-      expect(screen.queryByText("crystallizing")).toBeNull();
+      expect(
+        screen.queryByRole("status", { name: "Loading the text" }),
+      ).toBeNull();
     },
     { timeout: 30_000 },
   );
@@ -389,7 +391,9 @@ describe("a note under the title", () => {
     );
     const result = render(view("1 section"));
     await waitFor(() => {
-      expect(screen.queryByText("crystallizing")).toBeNull();
+      expect(
+        screen.queryByRole("status", { name: "Loading the text" }),
+      ).toBeNull();
     });
     const h1 = result.container.querySelector("h1");
     const link = result.container.querySelector("a");

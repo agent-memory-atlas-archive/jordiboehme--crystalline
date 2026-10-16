@@ -85,7 +85,7 @@ import {
 } from "../api/evolve";
 import { deleteAttachment } from "../api/files";
 import { useAuth } from "../auth/AuthContext";
-import { Skeleton } from "../components/Skeleton";
+import { Loading } from "../components/Loading";
 import {
   BUTTON,
   CHROME_LINK,
@@ -292,7 +292,9 @@ export default function Maintenance() {
         </p>
       )}
 
-      {sweep.isPending && <Skeleton label="Sweeping the domains" rows={6} />}
+      {sweep.isPending && (
+        <Loading label="Sweeping the domains" subject="the domains" />
+      )}
 
       {sweep.error && (
         <p

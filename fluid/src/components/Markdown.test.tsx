@@ -84,7 +84,9 @@ async function renderMarkdown(
     </MemoryRouter>,
   );
   await waitFor(() => {
-    expect(screen.queryByText("crystallizing")).toBeNull();
+    expect(
+      screen.queryByRole("status", { name: "Loading the text" }),
+    ).toBeNull();
   });
   return result;
 }
@@ -102,7 +104,9 @@ async function renderSpans(source: string) {
     </MemoryRouter>,
   );
   await waitFor(() => {
-    expect(screen.queryByText("crystallizing")).toBeNull();
+    expect(
+      screen.queryByRole("status", { name: "Loading the text" }),
+    ).toBeNull();
   });
   return result;
 }
@@ -869,7 +873,9 @@ describe("section anchors", () => {
       </MemoryRouter>,
     );
     await waitFor(() => {
-      expect(screen.queryByText("crystallizing")).toBeNull();
+      expect(
+        screen.queryByRole("status", { name: "Loading the text" }),
+      ).toBeNull();
     });
 
     await userEvent.click(

@@ -56,6 +56,7 @@ import { frontmatterFilters } from "../filters";
 import { isRetired } from "../lifecycle";
 import { domainRoute, engramRoute, folderRoute } from "../paths";
 import { ENGRAM_PREFETCH } from "../prefetch";
+import { Loading } from "./Loading";
 import { FOCUS_RING, SIDE } from "./primitives";
 import { useFolderOpen, useSidebarState } from "./sidebarState";
 
@@ -177,7 +178,9 @@ function TreeBranch({
   const tree = useQuery(treeQuery(domain, path));
 
   if (tree.isPending) {
-    return <p className="px-2.5 py-1.5 text-sm text-muted">Loading engrams</p>;
+    return (
+      <Loading compact label="Loading engrams" className="px-2.5 py-1.5" />
+    );
   }
   if (tree.error) {
     return (

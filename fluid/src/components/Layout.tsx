@@ -111,6 +111,7 @@ import { ShareDialog } from "./ShareDialog";
 import { SharePickerDialog } from "./SharePickerDialog";
 import { ShatterGem } from "./ShatterGem";
 import { ownedPhrase, shareBadgeCount } from "./changes";
+import { Loading, ReadyFlash } from "./Loading";
 import { Chip, FOCUS_RING, IconButton, SIDE, Tooltip } from "./primitives";
 import { SidebarStateContext, useSidebarState } from "./sidebarState";
 import type { SidebarCreate, SidebarState } from "./sidebarState";
@@ -891,9 +892,10 @@ export function Layout() {
                     tabIndex={-1}
                     data-width={fullWidth ? "full" : undefined}
                     data-text={largeText ? "large" : undefined}
-                    className="min-w-0 flex-1 py-6 focus:outline-none"
+                    className="relative min-w-0 flex-1 py-6 focus:outline-none"
                   >
                     <Outlet />
+                    <ReadyFlash />
                   </main>
                 </div>
                 <RouteFocus target={mainRef} />
@@ -1603,7 +1605,7 @@ function DomainList({
       {/* The first label of the column, so it does not need the gap above it. */}
       <h2 className={SIDE.label.replace("pt-[18px]", "pt-0")}>Domains</h2>
       {pending && (
-        <p className="px-2.5 py-1.5 text-sm text-muted">Loading domains</p>
+        <Loading compact label="Loading domains" className="px-2.5 py-1.5" />
       )}
       {error && <SidebarProblem error={error} />}
       <ul className="flex flex-col gap-0.5">

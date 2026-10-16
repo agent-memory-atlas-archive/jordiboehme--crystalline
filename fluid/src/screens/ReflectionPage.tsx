@@ -61,7 +61,7 @@ import { FOCUS_RING } from "../components/primitives";
 import { Breadcrumbs, reflectionCrumbsOf } from "../components/Breadcrumbs";
 import { plural } from "../format";
 import { PrintNotes } from "../components/PrintNotes";
-import { Skeleton } from "../components/Skeleton";
+import { Loading } from "../components/Loading";
 import { absoluteUrl } from "../base";
 import {
   engramRoute,
@@ -187,7 +187,7 @@ export default function ReflectionPage(): ReactElement {
   }
   const account = useAuth().user?.name ?? "anonymous";
   if (status.isPending) {
-    return <Skeleton label="Loading the page" rows={6} />;
+    return <Loading label="Loading the page" subject={path} />;
   }
   if (status.error) {
     return (
@@ -372,7 +372,7 @@ function PageBody({
     );
   }
   if (!doc.data) {
-    return <Skeleton label="Loading the page" rows={6} />;
+    return <Loading label="Loading the page" subject={path} />;
   }
   const page = doc.data;
   // The page's own `# Title` is its heading when it has one; otherwise the
@@ -407,6 +407,7 @@ function PageBody({
           title={page.title}
           facts={reflectionFacts(page, engramsVisible)}
           address={address}
+          webAddress={address}
         />
         <header
           className={`flex flex-col gap-2 print:hidden ${ownTitle ? "-mb-2" : ""}`}

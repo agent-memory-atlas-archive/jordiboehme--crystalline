@@ -32,7 +32,7 @@ import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { ThreadCard, sourceChip } from "../components/ReflectionThreads";
 import { ReviewDiff } from "../components/ReviewDiff";
-import { Skeleton } from "../components/Skeleton";
+import { Loading } from "../components/Loading";
 import { Chip, RAIL_LABEL } from "../components/primitives";
 import { plural } from "../format";
 import { engramRoute, reflectionPageRoute } from "../paths";
@@ -113,7 +113,7 @@ export default function ReflectionReview(): ReactElement {
       {status.data && <ReflectionStateNotice status={status.data} />}
       {(status.isPending ||
         (status.data?.state === "on" && review.isPending)) && (
-        <Skeleton label="Loading the review" rows={5} />
+        <Loading label="Loading the review" subject={`${domain} review`} />
       )}
       {review.error && (
         <p

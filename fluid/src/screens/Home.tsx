@@ -27,6 +27,7 @@ import {
 import type { ReflectionDomain } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { CreateDomainDialog } from "../components/CreateDomainDialog";
+import { Loading } from "../components/Loading";
 import { HomeElsewhere } from "../components/ReflectionModeSwitch";
 import { BUTTON, Chip, FOCUS_RING } from "../components/primitives";
 import { formatDay, plural } from "../format";
@@ -102,11 +103,7 @@ export default function Home() {
             }}
           />
         )}
-        {listing.isPending && (
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            Loading domains
-          </p>
-        )}
+        {listing.isPending && <Loading compact label="Loading domains" />}
         {/*
           A failed listing is announced once, by the sidebar, which reads the
           same query. Saying it twice would have a screen reader hear the same
@@ -337,11 +334,7 @@ function ActivityFeed({
   firstDomain: string | null;
 }) {
   if (pending) {
-    return (
-      <p className="text-sm text-slate-500 dark:text-slate-400">
-        Loading recent activity
-      </p>
-    );
+    return <Loading compact label="Loading recent activity" />;
   }
   if (error) {
     return (

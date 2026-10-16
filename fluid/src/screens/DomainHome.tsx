@@ -106,7 +106,7 @@ import {
 } from "../components/PageActions";
 import { ProposalsCard } from "../components/ProposalsCard";
 import { RenameDomainDialog } from "../components/RenameDomainDialog";
-import { Skeleton } from "../components/Skeleton";
+import { Loading } from "../components/Loading";
 import { SyncCard } from "../components/SyncCard";
 import { ITEM_CLASSES } from "../components/menu";
 import { BUTTON, Chip, FOCUS_RING } from "../components/primitives";
@@ -972,7 +972,9 @@ function ManifestProsePanel({
   onStart: ((section: string) => void) | null;
 }) {
   if (pending) {
-    return <Skeleton label="Loading the manifest" />;
+    return (
+      <Loading label="Loading the manifest" subject={`${domain} manifest`} />
+    );
   }
   // A refusal is announced before the gap below is, because an errored read
   // carries no markdown either and would otherwise read as a domain that

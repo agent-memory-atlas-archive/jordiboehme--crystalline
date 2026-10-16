@@ -30,6 +30,7 @@ import { engramRoute } from "../paths";
 import { ENGRAM_PREFETCH } from "../prefetch";
 import { snippetParts, stripSnippetMarkup } from "../snippet";
 import EndOfLine from "./EndOfLine";
+import { Loading } from "./Loading";
 import { Chip, statusVariant } from "./primitives";
 
 /** How tall one row is, in pixels. The tests scroll by it, so it is exported. */
@@ -178,11 +179,7 @@ export function EngramList({
   }, [drawn, rows.length, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   if (query.isPending) {
-    return (
-      <p className="py-6 text-sm text-slate-500 dark:text-slate-400">
-        Loading engrams
-      </p>
-    );
+    return <Loading compact label="Loading engrams" className="py-6" />;
   }
 
   if (query.error) {

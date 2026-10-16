@@ -40,8 +40,8 @@ describe("the print sheet", () => {
       '[role="menu"],',
       "[data-radix-popper-content-wrapper],",
       ".fixed,",
-      ".crystal-line,",
-      ".gem-cycle",
+      "[data-loading],",
+      "[data-ready-flash]",
     ]) {
       expect(print).toContain(chrome);
     }
@@ -75,5 +75,14 @@ describe("the print sheet", () => {
     ]) {
       expect(page).toContain(box);
     }
+  });
+
+  it("keeps the loading cursor and READY. still under reduced motion", () => {
+    const reduced = block(
+      "@media (prefers-reduced-motion: reduce) {\n  /* The cursor stays still",
+    );
+    expect(reduced).toContain(".loading-cursor");
+    expect(reduced).toContain(".ready-flash");
+    expect(reduced).toContain("animation: none;");
   });
 });

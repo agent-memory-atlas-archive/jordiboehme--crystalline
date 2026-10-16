@@ -27,6 +27,7 @@ import type { ReactElement, RefObject } from "react";
 import { useAuth } from "../auth/AuthContext";
 import type AvatarMenuBodyType from "./AvatarMenuBody";
 import { ITEM_CLASSES } from "./menu";
+import { Loading } from "./Loading";
 import { FOCUS_RING, Tooltip } from "./primitives";
 
 let Menu: typeof AvatarMenuBodyType | undefined;
@@ -164,6 +165,6 @@ function Body({
       Could not load the menu. Reload
     </DropdownMenu.Item>
   ) : (
-    <p className="px-2.5 py-2 text-muted">Loading menu</p>
+    <Loading compact label="Loading menu" className="px-2.5 py-2" />
   );
 }

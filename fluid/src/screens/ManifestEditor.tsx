@@ -35,7 +35,7 @@ import {
 import { useAuth } from "../auth/AuthContext";
 import { Breadcrumbs, crumbsOf } from "../components/Breadcrumbs";
 import { BUTTON, Tooltip } from "../components/primitives";
-import { Skeleton } from "../components/Skeleton";
+import { Loading } from "../components/Loading";
 import CmEditor from "../editor/CmEditor";
 import { ConfirmLeaveDialog } from "../editor/ConfirmLeaveDialog";
 import { ConflictDialog } from "../editor/ConflictDialog";
@@ -179,7 +179,9 @@ export default function ManifestEditor() {
     );
   }
   if (!detail.data) {
-    return <Skeleton label="Loading the editor" rows={4} />;
+    return (
+      <Loading label="Loading the editor" subject={`${domain} manifest`} />
+    );
   }
   // Keyed by domain: a different domain's MANIFEST is a different session.
   return <EditorSurface key={domain} domain={domain} manifest={detail.data} />;

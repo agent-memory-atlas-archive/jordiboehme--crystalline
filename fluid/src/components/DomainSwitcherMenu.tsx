@@ -28,6 +28,7 @@ import {
 } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { domainRoute, reflectionRoute } from "../paths";
+import { Loading } from "./Loading";
 import { Chip, FOCUS_RING } from "./primitives";
 
 /** One row of the menu, whichever listing it came from. */
@@ -169,11 +170,12 @@ export default function DomainSwitcherMenu({
       <DropdownMenu.Label className="px-2.5 pt-2 pb-1.5 text-[11.5px] font-semibold tracking-[0.04em] text-faint uppercase">
         Domains
       </DropdownMenu.Label>
-      {shown.length === 0 && (
-        <p className="px-2.5 py-2 text-muted">
-          {listing.isPending ? "Loading domains" : "No domain matches."}
-        </p>
-      )}
+      {shown.length === 0 &&
+        (listing.isPending ? (
+          <Loading compact label="Loading domains" className="px-2.5 py-2" />
+        ) : (
+          <p className="px-2.5 py-2 text-muted">No domain matches.</p>
+        ))}
       {shown.map((row) => (
         <DropdownMenu.Item key={row.name} asChild className={ROW}>
           <Link

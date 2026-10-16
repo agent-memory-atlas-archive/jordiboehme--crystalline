@@ -14,13 +14,19 @@
  */
 
 import { Suspense, lazy } from "react";
-import { Navigate, Route, Routes, useParams } from "react-router";
+import {
+  Navigate,
+  Route,
+  Routes,
+  useParams,
+  useSearchParams,
+} from "react-router";
 
 import LoginPage from "./auth/LoginPage";
 import { RequireAuth } from "./auth/RequireAuth";
 import { Layout } from "./components/Layout";
 import { LazyBoundary } from "./components/LazyBoundary";
-import { Skeleton } from "./components/Skeleton";
+import { Loading } from "./components/Loading";
 import { lazyChunk } from "./lazyChunk";
 import { domainRoute } from "./paths";
 import Home from "./screens/Home";
@@ -180,47 +186,72 @@ function ManifestRedirect() {
  * a deploy). The station's routes keep their plain `Suspense`.
  */
 const EDITOR_FALLBACK = (
-  <p className="text-sm text-slate-500 dark:text-slate-400">
-    Loading the editor
-  </p>
+  <Loading label="Loading the editor" subject="the editor" />
 );
 
 const SETTINGS_FALLBACK = (
-  <p className="text-sm text-slate-500 dark:text-slate-400">Loading settings</p>
+  <Loading label="Loading settings" subject="the settings" />
 );
 
 const USERS_FALLBACK = (
-  <p className="text-sm text-slate-500 dark:text-slate-400">Loading accounts</p>
+  <Loading label="Loading accounts" subject="the accounts" />
 );
 
 const PROFILE_FALLBACK = (
-  <p className="text-sm text-slate-500 dark:text-slate-400">
-    Loading your profile
-  </p>
+  <Loading label="Loading your profile" subject="your profile" />
 );
 
 /**
- * The engram screen's own skeleton, spelled the same way it spells it: the
+ * The engram screen's own loader, spelled the same way it spells it: the
  * chunk arriving and the detail request landing are one wait to a reader, and
- * two different loading shapes in a row would say otherwise.
+ * two different loading shapes in a row would say otherwise. The first line
+ * names the address, which is all the route knows before the data lands.
  */
-const ENGRAM_FALLBACK = <Skeleton label="Loading the engram" rows={6} />;
+function EngramFallback() {
+  const { "*": permalink = "" } = useParams();
+  return <Loading label="Loading the engram" subject={permalink} />;
+}
+const ENGRAM_FALLBACK = <EngramFallback />;
 
-const REFLECTION_FALLBACK = (
-  <Skeleton label="Loading the Reflection" rows={4} />
+function ReflectionFallback() {
+  const { domain = "", "*": path = "" } = useParams();
+  return (
+    <Loading
+      label="Loading the Reflection"
+      subject={path === "" ? `${domain} reflection` : path}
+    />
+  );
+}
+const REFLECTION_FALLBACK = <ReflectionFallback />;
+
+function DomainFallback() {
+  const { domain = "" } = useParams();
+  return <Loading label="Loading the domain" subject={domain} />;
+}
+const DOMAIN_FALLBACK = <DomainFallback />;
+
+function SearchFallback() {
+  const [params] = useSearchParams();
+  return (
+    <Loading
+      label="Loading search"
+      subject={params.get("q") ?? "your search"}
+    />
+  );
+}
+const SEARCH_FALLBACK = <SearchFallback />;
+
+const GRAPH_FALLBACK = (
+  <Loading label="Loading the graph" subject="the graph" />
 );
 
-const DOMAIN_FALLBACK = <Skeleton label="Loading the domain" rows={4} />;
-
-const SEARCH_FALLBACK = <Skeleton label="Loading search" rows={4} />;
-
-const GRAPH_FALLBACK = <Skeleton label="Loading the graph" rows={6} />;
-
 /**
- * The skeleton the maintenance screen draws itself while its sweep is in
+ * The loader the maintenance screen draws itself while its sweep is in
  * flight, so the chunk and the sweep read as one wait.
  */
-const MAINTENANCE_FALLBACK = <Skeleton label="Sweeping the domains" rows={6} />;
+const MAINTENANCE_FALLBACK = (
+  <Loading label="Sweeping the domains" subject="the domains" />
+);
 
 const GRANTED_DRAFT_FALLBACK = (
   <p className="text-sm text-slate-500 dark:text-slate-400">

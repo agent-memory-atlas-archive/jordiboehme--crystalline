@@ -20,6 +20,7 @@ import type { ReactElement } from "react";
 
 import type DomainSwitcherMenuType from "./DomainSwitcherMenu";
 import { ITEM_CLASSES } from "./menu";
+import { Loading } from "./Loading";
 import { FOCUS_RING } from "./primitives";
 
 let Menu: typeof DomainSwitcherMenuType | undefined;
@@ -130,6 +131,6 @@ function Body({
       Could not load the domains. Reload
     </DropdownMenu.Item>
   ) : (
-    <p className="px-2.5 py-2 text-muted">Loading domains</p>
+    <Loading compact label="Loading domains" className="px-2.5 py-2" />
   );
 }

@@ -39,7 +39,7 @@ import {
 import { MembersCard } from "../components/MembersCard";
 import { RenameDomainDialog } from "../components/RenameDomainDialog";
 import { ReviewModeCard } from "../components/ReviewModeCard";
-import { Skeleton } from "../components/Skeleton";
+import { Loading } from "../components/Loading";
 import { CHROME_LINK, FIELD, RAIL_LABEL, SIDE } from "../components/primitives";
 import { useDomainWritable } from "../domainWritable";
 import { isMissing, useDomainRights } from "../domainRights";
@@ -196,7 +196,7 @@ function Settings({
     return (
       <div className="flex max-w-[720px] flex-col gap-8">
         {header}
-        <Skeleton label="Loading the settings" rows={6} />
+        <Loading label="Loading the settings" subject={`${domain} settings`} />
       </div>
     );
   }

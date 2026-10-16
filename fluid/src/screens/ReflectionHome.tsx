@@ -44,7 +44,7 @@ import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { Avatar } from "../components/ReflectionThreads";
 import { BUTTON, Chip, FOCUS_RING, RAIL_LABEL } from "../components/primitives";
 import { WritePact } from "../components/WritePact";
-import { Skeleton } from "../components/Skeleton";
+import { Loading } from "../components/Loading";
 import { plural } from "../format";
 import {
   reflectionPageRoute,
@@ -66,7 +66,12 @@ export default function ReflectionHome(): ReactElement {
   const status = useReflectionStatus(domain);
   useHeadingFocusRequest(!status.isPending);
   if (status.isPending) {
-    return <Skeleton label="Loading the Reflection" rows={4} />;
+    return (
+      <Loading
+        label="Loading the Reflection"
+        subject={`${domain} reflection`}
+      />
+    );
   }
   if (status.error) {
     // Only a 404 is a wrong address; any other failure is the server's own

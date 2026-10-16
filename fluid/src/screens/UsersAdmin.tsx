@@ -26,6 +26,7 @@ import {
   resetPassword,
 } from "../api/users";
 import { useAuth } from "../auth/AuthContext";
+import { Loading } from "../components/Loading";
 import { BUTTON, CONTROL_HEIGHT, FIELD } from "../components/primitives";
 import { ReflectionLevelSelect } from "../components/ReflectionLevelSelect";
 import { raiseForNone, reflectionAfter } from "../components/reflectionLevels";
@@ -709,27 +710,9 @@ function CreateForm({
   );
 }
 
-/**
- * The shape of the table, while the table is on its way.
- *
- * A skeleton rather than a spinner: the listing is the screen, so what it
- * costs nothing to promise is where the rows will be. It is hidden from the
- * accessibility tree and named by the live region beside it instead, because
- * six grey bars are not something to read out.
- */
+/** The accounts listing's loading block, in the app's one loading look. */
 function AccountsSkeleton() {
-  return (
-    <div role="status" aria-busy="true" aria-label="Loading accounts">
-      <div aria-hidden="true" className="flex animate-pulse flex-col gap-2">
-        {[0, 1, 2].map((row) => (
-          <div
-            key={row}
-            className="h-8 rounded bg-slate-100 dark:bg-slate-800"
-          />
-        ))}
-      </div>
-    </div>
-  );
+  return <Loading label="Loading accounts" subject="the accounts" />;
 }
 
 /**
