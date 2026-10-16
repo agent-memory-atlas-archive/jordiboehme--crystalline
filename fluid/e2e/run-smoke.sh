@@ -245,10 +245,31 @@ echo "smoke: registering the fixture domains"
 # land: a plain file in the state folder, which the server lists on every
 # request. kept.spec.ts shows it on the domain settings and in the editor of
 # its engram, and drops it there. The engram is one no other journey edits.
+#
+# It must be written AFTER the `domain add` lines above: a registration sets
+# aside a kept folder no registered domain owns, so a text written first
+# would be moved out of reach before the journey ever looks for it.
 kept_dir="$run_dir/state/crystalline/kept/$FLUID_E2E_DOMAIN/engram"
 mkdir -p "$kept_dir"
 printf '%s\n' '---' 'title: Harbor Signal Log' '---' '' 'Typed in a room that could not save.' \
     > "$kept_dir/harbor-signal-log.md.20261015T080000Z.md"
+
+# The server reads the same folder the CLI does, so the CLI's listing is the
+# server's: a layout the scan does not take, or a text set aside, fails the
+# setup here with its reason instead of a journey timing out on a missing row.
+kept_is_listed() {
+    local listing
+    listing="$("${isolated[@]}" "$bin" kept list --domain "$FLUID_E2E_DOMAIN" --json)" || {
+        echo "smoke: crystalline kept list failed ($1)" >&2
+        exit 1
+    }
+    if ! printf '%s' "$listing" | grep -q '"path":"harbor-signal-log.md","removed":false'; then
+        echo "smoke: the kept text fixture is not listed for $FLUID_E2E_DOMAIN ($1)" >&2
+        echo "smoke: kept list answered: $listing" >&2
+        exit 1
+    fi
+}
+kept_is_listed "after writing it"
 
 # The daemon comes up before any account exists, which is the state a real
 # first run is in: the admin below is created through the daemon's own setup
@@ -299,6 +320,9 @@ if [ "$ready" -ne 1 ]; then
     echo "smoke: the daemon never became healthy on $DAEMON_ADDR" >&2
     exit 1
 fi
+# Again once the daemon is up: its start sets aside kept folders no domain
+# owns, and the fixture must survive that too.
+kept_is_listed "after the daemon started"
 
 # The first admin, created the way a person creates one: through the endpoint
 # behind the browser's first-run wizard, over loopback, where no setup token is

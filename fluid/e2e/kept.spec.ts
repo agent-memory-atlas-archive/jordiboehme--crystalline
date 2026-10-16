@@ -49,7 +49,9 @@ test("a kept text is listed, shown, offered in its editor and dropped", async ({
 
   await page.goto(`d/${DOMAIN}/edit/harbor-signal-log`);
   const notice = page.getByRole("note", { name: "Kept text" });
-  await expect(notice).toContainText("You have a kept text for this page.");
+  await expect(notice).toContainText(
+    "The server kept unsaved text for this page.",
+  );
   await notice.getByRole("button", { name: "Drop the kept text" }).click();
   await notice.getByRole("button", { name: "Drop it" }).click();
   await expect(notice).toBeHidden();
