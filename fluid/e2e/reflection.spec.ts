@@ -371,6 +371,39 @@ test.describe.serial("the Reflection journeys", () => {
     await expect(card).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(sheet).toHaveCount(0);
+
+    // A comment on a phone: select on the page, then Comment in the sheet.
+    await passage.evaluate((el) => {
+      const text = el.firstChild?.firstChild ?? el.firstChild;
+      if (text === null || text === undefined) {
+        throw new Error("no text node");
+      }
+      const start = (text.textContent ?? "").indexOf("after the batch window");
+      const range = document.createRange();
+      range.setStart(text, start);
+      range.setEnd(text, start + "after the batch window".length);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    });
+    await pill.click();
+    await sheet.getByRole("button", { name: "Comment", exact: true }).click();
+    await sheet
+      .getByRole("textbox", { name: "Your comment" })
+      .fill("Which batch window?");
+    await sheet
+      .getByRole("form", { name: "New comment" })
+      .getByRole("button", { name: "Comment", exact: true })
+      .click();
+    const added = sheet
+      .getByRole("article", { name: "Thread on Night deploys" })
+      .filter({ hasText: "Which batch window?" });
+    await expect(added).toContainText("after the batch window");
+    // Resolved again, so the journeys after this one see one open thread.
+    await added.getByRole("button", { name: "Resolve", exact: true }).click();
+    await added.getByRole("textbox", { name: "Outcome" }).fill("Answered.");
+    await added.getByRole("button", { name: "Resolve", exact: true }).click();
+    await expect(added).toHaveCount(0);
   });
 
   test("a contributor attaches a file in the live editor", async ({ page }) => {

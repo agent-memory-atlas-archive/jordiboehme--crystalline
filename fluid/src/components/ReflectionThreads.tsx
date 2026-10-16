@@ -685,7 +685,9 @@ export function ReflectionThreads({
           <span
             aria-hidden
             className={`relative h-[15px] w-[26px] shrink-0 rounded-full transition-colors motion-reduce:transition-none ${
-              showResolved ? "bg-accent-600 dark:bg-accent-400" : "bg-faint"
+              showResolved
+                ? "bg-accent-600 dark:bg-accent-400"
+                : "bg-slate-500 dark:bg-faint"
             }`}
           >
             <span

@@ -1248,6 +1248,46 @@ describe("threads on a narrow screen", () => {
     ).toHaveValue("Half a th");
   });
 
+  it("comments on a passage selected on the page from inside the sheet", async () => {
+    const opened = vi.fn((_path: string, _init?: RequestInit) =>
+      thread("t-00000001"),
+    );
+    serve([], {
+      "/domains/eng/reflection/threads": (path, init) => opened(path, init),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await screen.findByText("at");
+    select(textNode("Deploys run "), textNode(" night."), 6);
+    await userEvent.click(screen.getByRole("button", { name: "Show threads" }));
+    const sheet = await screen.findByRole("dialog", { name: "Threads" });
+    expect(
+      within(sheet).queryByText("Select text in the page to comment on it."),
+    ).toBeNull();
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: "Comment" }),
+    );
+    expect(within(sheet).getByText("Deploys run **at** night")).toBeVisible();
+    await userEvent.type(
+      within(sheet).getByRole("textbox", { name: "Your comment" }),
+      "Still true?",
+    );
+    await userEvent.click(
+      within(
+        within(sheet).getByRole("form", { name: "New comment" }),
+      ).getByRole("button", { name: "Comment" }),
+    );
+    await waitFor(() => {
+      expect(opened).toHaveBeenCalledTimes(1);
+    });
+    expect(bodyOf(opened.mock.calls[0]?.[1])).toEqual({
+      path: "guides/deploying.md",
+      section: "7f3a9c2e",
+      quote: "Deploys run **at** night",
+      occurrence: 1,
+      text: "Still true?",
+    });
+  });
+
   it("opens the sheet at a thread a link names", async () => {
     serve([thread("t-00000001")]);
     renderApp("/d/eng/reflection/guides/deploying.md#t-00000001");
