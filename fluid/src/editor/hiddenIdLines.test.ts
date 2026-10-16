@@ -149,6 +149,76 @@ describe("hiddenIdLines keeps an id with its heading", () => {
     expect(text.slice(from, to)).toBe("code");
   });
 
+  describe("a selection from inside a heading into the body", () => {
+    const from = "## O".length;
+    const to = PAGE.indexOf("First.") + "Fi".length;
+
+    function selected(doc = PAGE, end = to): EditorView {
+      const v = mount(doc);
+      v.dispatch({ selection: EditorSelection.range(from, end) });
+      return v;
+    }
+
+    it("keeps the heading's id when it is deleted", () => {
+      const v = selected();
+      deleteCharBackward(v);
+      expect(v.state.doc.toString()).toBe("## Orst.\n<!-- r:aaaa1111 -->\n");
+      expect(v.state.selection.main.head).toBe(from);
+    });
+
+    it("keeps the heading's id when it is cut", () => {
+      const v = selected();
+      v.dispatch({
+        changes: { from, to },
+        userEvent: "delete.cut",
+      });
+      expect(v.state.doc.toString()).toBe("## Orst.\n<!-- r:aaaa1111 -->\n");
+    });
+
+    it("keeps the heading's id when typing replaces it", () => {
+      const v = selected();
+      v.dispatch(v.state.replaceSelection("X"), { userEvent: "input.type" });
+      expect(v.state.doc.toString()).toBe("## OXrst.\n<!-- r:aaaa1111 -->\n");
+      expect(v.state.selection.main.head).toBe(from + 1);
+    });
+
+    it("puts the id below the heading line a pasted text leaves", () => {
+      const v = selected();
+      v.dispatch(v.state.replaceSelection("A\nB"), {
+        userEvent: "input.paste",
+      });
+      expect(v.state.doc.toString()).toBe(
+        "## OA\n<!-- r:aaaa1111 -->\nBrst.\n",
+      );
+      expect(v.state.selection.main.head).toBe(
+        "## OA\n<!-- r:aaaa1111 -->\nB".length,
+      );
+    });
+
+    it("keeps the id of a heading selected from its end", () => {
+      const v = mount(PAGE);
+      v.dispatch({ selection: EditorSelection.range("## One".length, to) });
+      deleteCharBackward(v);
+      expect(v.state.doc.toString()).toBe("## Onerst.\n<!-- r:aaaa1111 -->\n");
+    });
+
+    it("keeps one id, the first heading's, when the selection ends in a later heading", () => {
+      const two = `${PAGE}## Two\n<!-- r:bbbb2222 -->\nSecond.\n`;
+      const v = selected(two, two.indexOf("## Two") + "## T".length);
+      deleteCharBackward(v);
+      expect(v.state.doc.toString()).toBe(
+        "## Owo\n<!-- r:aaaa1111 -->\nSecond.\n",
+      );
+    });
+
+    it("lets the ids of headings inside the selection go with them", () => {
+      const two = `${PAGE}## Two\n<!-- r:bbbb2222 -->\nSecond.\n`;
+      const v = selected(two, two.indexOf("Second.") + "Se".length);
+      deleteCharBackward(v);
+      expect(v.state.doc.toString()).toBe("## Ocond.\n<!-- r:aaaa1111 -->\n");
+    });
+  });
+
   it("never rewrites an edit that is not this person's typing", () => {
     const v = mount(PAGE);
     v.dispatch({ changes: { from: "## One".length, insert: "\nRemote." } });

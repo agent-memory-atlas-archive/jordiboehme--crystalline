@@ -15,8 +15,9 @@
  * the next save mints a new id, and every thread on the section is orphaned.
  * So the person's own typing is kept off the id line: a new line typed at a
  * heading's end goes below the id, a single-character delete never touches
- * the id line or its line breaks (it goes only with its whole heading), and
- * copied text leaves the ids out, so a pasted copy cannot take a section's id
+ * the id line or its line breaks (it goes only with its whole heading), a
+ * selection from inside a heading into the body leaves the heading its id,
+ * and copied text leaves the ids out, so a pasted copy cannot take a section's id
  * and its threads. Only this person's typing is steered: a change from the
  * room carries no user event and is applied as it came.
  */
@@ -169,11 +170,64 @@ const keepIdLines = EditorState.transactionFilter.of((tr) => {
   return [tr, after];
 });
 
+/**
+ * A selection that starts inside a heading (or at its end) and runs past its
+ * id line, deleted, cut, typed over or pasted over. The edit happens as the
+ * person sees it, since the id line is invisible to them, and the heading's
+ * id is then put back on the line right below what is left of the heading:
+ * below the first line of a pasted text that holds line breaks. The heading
+ * still starts where it started, so its section keeps its id and its threads.
+ * A selection that starts at the heading's first character takes the whole
+ * heading and its id with it, and so does every heading the selection holds
+ * whole. When the line below already holds an id (the selection ended inside
+ * a later heading, whose id stayed), the surviving heading's own id takes
+ * that place, as the heading text that is left is this heading's.
+ */
+const keepHeadingIds = EditorState.transactionFilter.of((tr) => {
+  if (
+    !tr.docChanged ||
+    !(
+      tr.isUserEvent("input") ||
+      tr.isUserEvent("delete") ||
+      tr.isUserEvent("move")
+    )
+  ) {
+    return tr;
+  }
+  const doc = tr.startState.doc;
+  const restore: { from: number; to: number; insert: string }[] = [];
+  tr.changes.iterChanges((fromA, toA, fromB) => {
+    if (fromA === toA) {
+      return;
+    }
+    const heading = doc.lineAt(fromA);
+    if (fromA === heading.from || heading.number >= doc.lines) {
+      return;
+    }
+    const id = doc.line(heading.number + 1);
+    if (!isIdLine(id.text) || toA < id.to) {
+      return;
+    }
+    const left = tr.newDoc.lineAt(fromB);
+    const below =
+      left.number < tr.newDoc.lines ? tr.newDoc.line(left.number + 1) : null;
+    if (below !== null && isIdLine(below.text)) {
+      restore.push({ from: below.from, to: below.to, insert: id.text });
+    } else {
+      restore.push({ from: left.to, to: left.to, insert: `\n${id.text}` });
+    }
+  });
+  if (restore.length === 0) {
+    return tr;
+  }
+  return [tr, { changes: restore, sequential: true }];
+});
+
 /** Copied text without the ids: a pasted copy must not take a section's id. */
 const copyWithoutIds = EditorView.clipboardOutputFilter.of((text) =>
   stripIdLines(text),
 );
 
 export function hiddenIdLines(): Extension {
-  return [field, newLineBelowId, keepIdLines, copyWithoutIds];
+  return [field, newLineBelowId, keepIdLines, keepHeadingIds, copyWithoutIds];
 }
