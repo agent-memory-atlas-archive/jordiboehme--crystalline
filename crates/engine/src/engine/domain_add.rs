@@ -711,9 +711,10 @@ impl Engine {
     }
 
     /// Refuse `name` for a new domain, or as `own`'s new name, when it
-    /// differs only in letter case from another registered domain's name
-    /// or alias: the two would share one state folder on a disk that
-    /// ignores case. A twin `scope` may not see is not named.
+    /// differs only in letter case from another registered domain's local
+    /// name: the two would share one state folder on a disk that ignores
+    /// case. Aliases name no folder and are not compared. A twin `scope` may
+    /// not see is not named.
     pub(super) async fn refuse_case_twin(
         &self,
         name: &str,

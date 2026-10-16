@@ -2861,6 +2861,9 @@ impl Engine {
         let free = |name: &str| {
             !held.contains(name)
                 && !registered.contains_key(name)
+                // Nor one that differs from a domain's name only in letter
+                // case: the two would share one state folder.
+                && case_twin(name, None, registered.iter()).is_none()
                 && !registered
                     .values()
                     .any(|entry| entry.aliases.iter().any(|alias| alias == name))
@@ -7674,8 +7677,8 @@ fn existing_file_domain_at<'a>(canonical: &Path, cfg: &'a GlobalConfig) -> Optio
 /// domain already using `name` counts as taken, since it has no path to
 /// compare. Drives [`unique_domain_name`]'s collision search.
 fn name_taken_by_other(name: &str, canonical: &Path, cfg: &GlobalConfig) -> bool {
-    // A name that folds onto another domain's name or alias is taken too:
-    // the two would share one state folder on a disk that ignores case.
+    // A name that folds onto another domain's local name is taken too: the
+    // two would share one state folder on a disk that ignores case.
     if case_twin(name, None, cfg.domains.iter()).is_some() {
         return true;
     }

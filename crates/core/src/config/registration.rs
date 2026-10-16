@@ -153,6 +153,10 @@ pub fn decide_registration(
 /// Unicode lowercase. Two names that fold equal would share one state folder
 /// (`kept/`, `overlays/`, `origins/`) on such a disk, so they never name two
 /// domains on one machine, on any platform.
+///
+/// Lowercasing is not quite the folding a file system does: `ß` and `SS`,
+/// or the Turkish dotted and dotless I, fold together on some disks and not
+/// here. Domain names that differ only that way are an accepted gap.
 pub fn fold_domain_name(name: &str) -> String {
     name.to_lowercase()
 }

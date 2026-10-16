@@ -541,6 +541,24 @@ async fn the_owners_routing_text_appends_mounts_after_the_local_domains() {
     assert!(local < mounted, "mounts after the local rows: {text}");
 }
 
+/// The suffix a mounted name hands a late local domain steps on past a
+/// registered domain whose name differs from it only in letter case: the
+/// two would share one state folder on a disk that ignores case.
+#[tokio::test]
+async fn the_local_suffix_steps_past_a_name_that_differs_only_in_case() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let machine = LocalMachine::start(false).await;
+    machine.connect(&server, "acme", "keeper").await;
+    machine.mount();
+    machine
+        .engine
+        .domain_add_virtual("Open-Local")
+        .await
+        .unwrap();
+    let report = machine.engine.domain_add_virtual("open").await.unwrap();
+    assert_eq!(report["domain"], "open-local-2", "{report}");
+}
+
 /// Review focus 2, the folder path: a named folder domain and one named
 /// after its folder both step aside for a mounted name.
 #[tokio::test]
