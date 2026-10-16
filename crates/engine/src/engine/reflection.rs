@@ -164,6 +164,10 @@ pub(crate) struct SwitchFacts {
 }
 
 /// Whether a MANIFEST's text declares `reflection: on`.
+/// How a page move onto a taken target ends its refusal, so a surface can
+/// answer it as the conflict it is (409).
+pub const TARGET_TAKEN: &str = "; remove it or pick another path";
+
 pub(crate) fn declares_on(source: &str) -> bool {
     crystalline_core::parse_engram(source)
         .map(|e| crystalline_core::Manifest::from_engram(&e, source).reflection())
@@ -2507,7 +2511,8 @@ impl Engine {
         Ok(receipt)
     }
 
-    /// Refuse a page move whose target is taken: a page, a threads file or a
+    /// Refuse a page move whose target is taken (the error ends with
+    /// [`TARGET_TAKEN`]): a page, a threads file or a
     /// baseline left at `to` would be adopted by the moved page, and a page
     /// only the previous host of a host move has is the only shared copy.
     /// Asked once as the move's screen and again under its page locks.
@@ -2528,7 +2533,7 @@ impl Engine {
                 is_case_only_rename(&access.abs(&old), &access.abs(&leftover), &old, &leftover);
             if access.abs(&leftover).exists() && !itself {
                 return Err(EngineError::Conflict(format!(
-                    "'{leftover}' already holds {what}; remove it or pick another path"
+                    "'{leftover}' already holds {what}{TARGET_TAKEN}"
                 )));
             }
         }

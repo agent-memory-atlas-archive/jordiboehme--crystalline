@@ -1894,3 +1894,49 @@ async fn an_editor_opening_the_old_path_after_a_move_is_told_where_it_went() {
     );
     assert_eq!(code, Some(4404));
 }
+
+/// A page move onto a path that holds a page is refused with 409 before the
+/// open editor is touched: the socket hears no close and stays open.
+#[tokio::test]
+async fn a_move_onto_a_taken_page_is_a_409_and_leaves_the_editor_open() {
+    use futures::StreamExt;
+    let s = serve().await;
+    let owner = crystalline_service::ReflectionCaller::owner();
+    for (path, body) in [
+        ("open.md", "# Open\n\nBody.\n"),
+        ("taken.md", "# Taken\n\nTheirs.\n"),
+    ] {
+        s.fx.engine
+            .write_reflection(&crate::docs::write(path, body), &owner)
+            .await
+            .unwrap();
+    }
+    let ed = Session::login(s.addr, "ed").await;
+    let mut room = open_room(s.addr, "/api/v1/collab-reflection/eng/open.md", &ed).await;
+    let (status, refused) = ed
+        .send(
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/reflection/move",
+            Some(json!({ "from": "open.md", "to": "taken.md" })),
+        )
+        .await;
+    assert_eq!(status, 409, "{refused}");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("'taken.md' already holds a reflection"),
+        "{refused}"
+    );
+    // Nothing that closes arrives: only the greeting and the sync.
+    let quiet = tokio::time::timeout(std::time::Duration::from_millis(300), async {
+        while let Some(frame) = room.next().await {
+            if let tokio_tungstenite::tungstenite::Message::Close(_) = frame.unwrap() {
+                return true;
+            }
+        }
+        true
+    })
+    .await;
+    assert!(quiet.is_err(), "the socket stays open");
+}

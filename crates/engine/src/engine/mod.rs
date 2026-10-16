@@ -6950,7 +6950,7 @@ pub use reflection::{
     REFUSED_HOSTED_START, REFUSED_NOT_BY_A_COMMAND, REFUSED_OFF_START, REFUSED_PENDING,
     REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED,
     REFUSED_PENDING_UNREADABLE, ROOM_READ_NOTE, ROOM_WAITING_NOTE, ReflectionSearch,
-    SectionAuthors,
+    SectionAuthors, TARGET_TAKEN,
 };
 pub use reflection_assets::WrittenReflectionAsset;
 mod rename_domain;

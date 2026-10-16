@@ -18,7 +18,7 @@ use crate::engine::{
     ANONYMOUS_COMMENT, ASSET_EXISTS, EngineError, MOVE_ONTO_A_FILE, REFUSED_ELSEWHERE_START,
     REFUSED_HOMELESS, REFUSED_HOSTED_START, REFUSED_OFF_START, REFUSED_PENDING,
     REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED,
-    REFUSED_PENDING_UNREADABLE, ReflectionSearch,
+    REFUSED_PENDING_UNREADABLE, ReflectionSearch, TARGET_TAKEN,
 };
 use crate::files::{AttachmentView, attachment_response};
 use crate::params::{DiscussParams, WriteReflectionParams};
@@ -66,8 +66,8 @@ pub(crate) async fn refuse_anonymous(
 /// verb refuses on are 409 (the request is fine, the Reflection is not where
 /// it could serve it), with `home_url` when it lives elsewhere; a stale
 /// checksum, a create over an existing page, a move or delete of a page
-/// somebody is editing and a file move onto a path that already holds a
-/// file are 409 (the shared mapping answers a write onto a path only the
+/// somebody is editing, a page move onto a taken target and a file move
+/// onto a path that already holds a file are 409 (the shared mapping answers a write onto a path only the
 /// previous host of a host move has 409 too, and every other `Conflict`
 /// 422);
 /// everything else keeps the shared mapping.
@@ -103,7 +103,8 @@ pub(crate) fn reflection_error(e: EngineError) -> ApiError {
             if text.starts_with("stale edit")
                 || text.starts_with("a reflection already lives at")
                 || text.starts_with("somebody is editing")
-                || text.ends_with(MOVE_ONTO_A_FILE) =>
+                || text.ends_with(MOVE_ONTO_A_FILE)
+                || text.ends_with(TARGET_TAKEN) =>
         {
             ApiError::conflict(text.clone())
         }
