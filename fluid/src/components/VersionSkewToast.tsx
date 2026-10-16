@@ -61,7 +61,8 @@ export function VersionSkewToast() {
           <span aria-hidden="true">x</span>
         </Toast.Close>
       </Toast.Root>
-      <Toast.Viewport className="fixed bottom-4 left-1/2 z-50 flex w-full max-w-md -translate-x-1/2 flex-col gap-2 px-4 outline-none" />
+      {/* Placed by the notice corner in `App.tsx`, below the upload notices. */}
+      <Toast.Viewport className="pointer-events-auto flex w-full max-w-md flex-col gap-2 outline-none" />
     </Toast.Provider>
   );
 }

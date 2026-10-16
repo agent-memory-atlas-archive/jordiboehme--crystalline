@@ -101,7 +101,7 @@ interface UploadBatch {
   files: readonly File[];
   view: EditorView;
   /** A refusal in words an author can act on; null clears a standing one. */
-  onError: (message: string | null) => void;
+  onError: (message: string | null, kind?: UploadProblemKind) => void;
   /** The instant the dated folder is derived from. Tests pin it. */
   now?: Date;
   /**
@@ -207,6 +207,15 @@ async function uploadOnce(
  *
  * Resolves with how many references were inserted.
  */
+/**
+ * What an upload's sentence is about, beyond its words: "unlinked" when the
+ * only thing it reports is files that were stored but whose link could not
+ * be added because the buffer had gone. A screen that is still there shows
+ * the sentence either way; a report made after the screen went needs to
+ * know whether the upload finished at all.
+ */
+export type UploadProblemKind = "unlinked";
+
 export async function uploadAttachments(
   request: UploadRequest,
 ): Promise<number> {
@@ -280,9 +289,12 @@ export async function uploadAttachments(
   // dispatch and show nothing; it gets a sentence of its own that does not
   // say "here", since the screen that started the upload may be gone and the
   // sentence is then shown elsewhere (`useAttachmentUploads`).
+  // Set when the only problem is the stored files' missing link.
+  let unlinked = false;
   if (lines.length > 0) {
     if (view.state.readOnly) {
       inserted = 0;
+      unlinked = problems.length === 0;
       problems.push(
         `Uploaded to ${stored.join(", ")}. The session ended, so no link was added. Add it when you edit the page again.`,
       );
@@ -298,6 +310,7 @@ export async function uploadAttachments(
       }
       if (!live) {
         inserted = 0;
+        unlinked = problems.length === 0;
         problems.push(
           `Uploaded to ${stored.join(", ")}, but the screen was closed before the link was added. Add the link when you edit again.`,
         );
@@ -312,7 +325,7 @@ export async function uploadAttachments(
     }
   }
   if (problems.length > 0) {
-    onError(problems.join(" "));
+    onError(problems.join(" "), unlinked ? "unlinked" : undefined);
   }
   return inserted;
 }

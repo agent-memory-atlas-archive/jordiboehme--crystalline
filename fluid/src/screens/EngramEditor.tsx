@@ -84,7 +84,11 @@ import { readingTheme } from "../editor/readingTheme";
 import type { SaveStateKind } from "../editor/SaveState";
 import { SaveState } from "../editor/SaveState";
 import { formattingKeymap } from "../editor/toolbar";
-import { useAttachmentUploads } from "../editor/useAttachmentUploads";
+import {
+  UploadScreenContext,
+  useAttachmentUploads,
+  useUploadScreen,
+} from "../editor/useAttachmentUploads";
 import { useCloseFlow, useExitRequest } from "../editor/useCloseFlow";
 import { useRoomExit } from "../editor/useRoomExit";
 import { saveKeymap, useEditorSession } from "../editor/useEditorSession";
@@ -414,6 +418,9 @@ function EditorSurface({ engram }: { engram: EngramDetail }) {
   // or graph under it. The tree, listing and switcher rows still fire, which
   // a rename receipt wants anyway.
   useIgnoredEngram(engram.domain, engram.permalink);
+  // The screen an upload belongs to: this editor, whatever room or buffer
+  // it shows (see `useAttachmentUploads`).
+  const uploadScreen = useUploadScreen();
   const { user } = useAuth();
   // Anonymous can never reach this screen (`canWrite` gates it above); the
   // fallback only satisfies the types.
@@ -463,12 +470,14 @@ function EditorSurface({ engram }: { engram: EngramDetail }) {
     return <Loading label="Connecting the session" subject={engram.title} />;
   }
   return (
-    <Surface
-      key={`${collab.mode}:${collab.epoch ?? ""}`}
-      engram={engram}
-      collab={collab}
-      account={account}
-    />
+    <UploadScreenContext.Provider value={uploadScreen}>
+      <Surface
+        key={`${collab.mode}:${collab.epoch ?? ""}`}
+        engram={engram}
+        collab={collab}
+        account={account}
+      />
+    </UploadScreenContext.Provider>
   );
 }
 

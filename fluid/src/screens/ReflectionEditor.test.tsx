@@ -1176,10 +1176,82 @@ describe("the reflection editor takes files", () => {
       await screen.findByText("The upload of flow.png to A did not finish."),
     ).toBeInTheDocument();
     expect(screen.getByText("the disk is full")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Dismiss: flow.png" }),
+    );
     expect(
       screen.queryByText("The upload of flow.png to A did not finish."),
     ).toBeNull();
+  });
+
+  it("says an upload that fails across a reconnect in the editor, not as a notice", async () => {
+    let fail: (cause: unknown) => void = () => undefined;
+    serveFiles(
+      [[]],
+      [
+        () =>
+          new Promise((_resolve, reject) => {
+            fail = reject;
+          }),
+      ],
+    );
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    editor.dispatchEvent(carrying("paste", [png("flow.png")]));
+    await waitFor(() => {
+      expect(puts()).toHaveLength(1);
+    });
+    // The room reconnects: a new buffer under the same editor.
+    session.set({ epoch: "e2" });
+    act(() => {
+      fail(new ApiProblem(507, "Insufficient Storage", "the disk is full"));
+    });
+    expect(await screen.findByText("the disk is full")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Upload notices" })).toBeNull();
+    expect(screen.getByRole("textbox", { name: "Page source" })).toBeVisible();
+  });
+
+  it("reports a file stored after its screen has gone as uploaded without its link", async () => {
+    let land: (value: unknown) => void = () => undefined;
+    serveFiles(
+      [[]],
+      [
+        (stored) =>
+          new Promise((resolve) => {
+            land = () => {
+              resolve({
+                path: stored,
+                mime: "image/png",
+                size: 8,
+                sha256: "b",
+              });
+            };
+          }),
+      ],
+    );
+    live(room(PAGE));
+    const editor = await openEditor();
+    editor.dispatchEvent(carrying("paste", [png("flow.png")]));
+    await waitFor(() => {
+      expect(puts()).toHaveLength(1);
+    });
+    await userEvent.click(screen.getByRole("link", { name: "Done" }));
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("textbox", { name: "Page source" }),
+      ).not.toBeInTheDocument();
+    });
+    act(() => {
+      land(undefined);
+    });
+    expect(
+      await screen.findByText(
+        "flow.png was uploaded to A, but the link was not added.",
+      ),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Dismiss: flow.png" }),
+    );
   });
 
   it("a contributor's paste uploads under a free name and inserts a relative link", async () => {

@@ -82,7 +82,11 @@ import { readingTheme } from "../editor/readingTheme";
 import type { SaveStateKind } from "../editor/SaveState";
 import { SaveState } from "../editor/SaveState";
 import { baseExtensions } from "../editor/setup";
-import { useAttachmentUploads } from "../editor/useAttachmentUploads";
+import {
+  UploadScreenContext,
+  useAttachmentUploads,
+  useUploadScreen,
+} from "../editor/useAttachmentUploads";
 import { useRoomExit } from "../editor/useRoomExit";
 import { formatInstant } from "../format";
 import {
@@ -145,6 +149,9 @@ function PageEditor({
   path: string;
 }): ReactElement {
   const status = useReflectionStatus(domain);
+  // The screen an upload belongs to: this editor, whatever room or buffer
+  // it shows (see `useAttachmentUploads`).
+  const uploadScreen = useUploadScreen();
   const [attempt, setAttempt] = useState(0);
   const [admitted, setAdmitted] = useState(false);
   const data = status.data;
@@ -183,25 +190,27 @@ function PageEditor({
     );
   }
   return (
-    <div className="flex flex-col gap-4">
-      {status.error !== null ? (
-        <p role="alert" className={ALERT}>
-          {problemDetail(status.error)}
-        </p>
-      ) : (
-        data !== undefined &&
-        data.state !== "on" && <ReflectionStateNotice status={data} />
-      )}
-      <Room
-        key={attempt}
-        domain={domain}
-        path={path}
-        retried={attempt > 0}
-        onRetry={() => {
-          setAttempt(attempt + 1);
-        }}
-      />
-    </div>
+    <UploadScreenContext.Provider value={uploadScreen}>
+      <div className="flex flex-col gap-4">
+        {status.error !== null ? (
+          <p role="alert" className={ALERT}>
+            {problemDetail(status.error)}
+          </p>
+        ) : (
+          data !== undefined &&
+          data.state !== "on" && <ReflectionStateNotice status={data} />
+        )}
+        <Room
+          key={attempt}
+          domain={domain}
+          path={path}
+          retried={attempt > 0}
+          onRetry={() => {
+            setAttempt(attempt + 1);
+          }}
+        />
+      </div>
+    </UploadScreenContext.Provider>
   );
 }
 

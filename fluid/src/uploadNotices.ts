@@ -10,8 +10,12 @@
  * its component unmounted, so it can no longer reach anything React holds.
  */
 
+import type { UploadProblemKind } from "./editor/attachments";
+
 export interface UploadNotice {
   id: number;
+  /** The names of the files the person picked. */
+  files: readonly string[];
   /** One sentence naming the files and the page. */
   title: string;
   /** What went wrong, in the upload flow's own words. */
@@ -28,24 +32,36 @@ function emit(): void {
   }
 }
 
+/** The title of a notice: whether the upload finished decides the words. */
+function titleOf(
+  files: readonly string[],
+  page: string,
+  kind: UploadProblemKind | undefined,
+): string {
+  const named = files.length === 0 ? "a file" : files.join(", ");
+  if (kind === "unlinked") {
+    const verb = files.length > 1 ? "were" : "was";
+    const onto = page === "" ? "" : ` to ${page}`;
+    return `${named} ${verb} uploaded${onto}, but the link was not added.`;
+  }
+  const onto = page === "" ? "" : ` to ${page}`;
+  return `The upload of ${named}${onto} did not finish.`;
+}
+
 /**
  * Report an upload whose screen has gone. `files` are the names the person
- * picked, `page` what the editor was editing (a title or a path).
+ * picked, `page` what the editor was editing (a title or a path), `kind`
+ * says when the files were stored and only their link is missing.
  */
 export function reportOrphanUpload(
   files: readonly string[],
   page: string,
   detail: string,
+  kind?: UploadProblemKind,
 ): void {
-  const named = files.length === 0 ? "a file" : files.join(", ");
-  const onto = page === "" ? "" : ` to ${page}`;
   notices = [
     ...notices,
-    {
-      id: next,
-      title: `The upload of ${named}${onto} did not finish.`,
-      detail,
-    },
+    { id: next, files, title: titleOf(files, page, kind), detail },
   ];
   next += 1;
   emit();

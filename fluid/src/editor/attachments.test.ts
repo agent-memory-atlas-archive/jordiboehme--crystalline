@@ -973,12 +973,16 @@ describe("a buffer that is gone when the upload ends", () => {
       return Promise.resolve({ path, mime: "image/png", size: 8, sha256: "a" });
     });
     const errors: (string | null)[] = [];
+    const kinds: (string | undefined)[] = [];
 
     const inserted = await uploadAttachments({
       domain: "eng",
       files: [fileOf("shot.png")],
       view: target,
-      onError: (message) => errors.push(message),
+      onError: (message, kind) => {
+        errors.push(message);
+        kinds.push(kind);
+      },
       now: new Date(2026, 7, 3),
     });
 
@@ -986,5 +990,7 @@ describe("a buffer that is gone when the upload ends", () => {
     expect(errors.at(-1)).toBe(
       "Uploaded to assets/2026/08/shot.png, but the screen was closed before the link was added. Add the link when you edit again.",
     );
+    // The file arrived; only its link is missing.
+    expect(kinds.at(-1)).toBe("unlinked");
   });
 });
