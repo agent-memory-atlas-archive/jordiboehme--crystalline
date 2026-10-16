@@ -105,6 +105,7 @@ describe("api", () => {
     expect(failure).toBeInstanceOf(ApiProblem);
     expect((failure as ApiProblem).status).toBe(403);
     expect((failure as ApiProblem).detail).toBe("this account is disabled");
+    expect((failure as ApiProblem).described).toBe(true);
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
@@ -132,6 +133,8 @@ describe("api", () => {
     expect(failure).toBeInstanceOf(ApiProblem);
     expect((failure as ApiProblem).status).toBe(502);
     expect((failure as ApiProblem).detail).not.toBe("");
+    // Only the status is known: nothing described the problem.
+    expect((failure as ApiProblem).described).toBe(false);
   });
 
   it("wraps a transport failure as an ApiProblem too", async () => {

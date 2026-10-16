@@ -17,7 +17,12 @@
  *   path; drafts at the old path of a page moved elsewhere go the same way,
  *   unless "Open it there" carried them first.
  *
- * Only a 404 counts. A refusal (401, 403) or a failed connection says
+ * Only a 404 that means "gone" counts, and the server also answers 404 for
+ * a page this reader may not see. So the drafts go only when the 404 came
+ * with the server's own problem body (not from a proxy or a static file
+ * server) and the domain's Reflection, asked afresh, still answers this
+ * reader with a right to read it. A refusal (401, 403), a failed
+ * connection, a bare 404 or a Reflection that no longer answers them says
  * nothing about the page, and its drafts stay. That is also why the editor
  * of a page deleted or moved out of reach asks the person to copy their
  * text rather than promising a draft: the draft lasts only until the next

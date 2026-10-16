@@ -14,6 +14,7 @@
  * contributor: the server leaves the field out, and so does this page.
  */
 
+import type { QueryClient } from "@tanstack/react-query";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { KeyboardEvent, ReactElement } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -36,8 +37,10 @@ import type { ReflectionRight } from "../api/reflectionDomains";
 import {
   PACT_PATH,
   atLeast,
+  fetchReflectionStatus,
   invalidateReflection,
   mayEditPage,
+  reflectionStatusKey,
 } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { AttachmentsSection } from "../components/AttachmentsSection";
@@ -216,6 +219,37 @@ export default function ReflectionPage(): ReactElement {
   );
 }
 
+/**
+ * Whether a failed read says the page itself is gone: a 404 the server
+ * described in a problem body. A bare 404 came from something in front of
+ * the server and says nothing about the page.
+ */
+function pageIsGone(error: ApiProblem): boolean {
+  return error.status === 404 && error.described;
+}
+
+/**
+ * Whether this reader may still read the domain's Reflection, asked afresh:
+ * the server answers 404 for a page a reader may not see, so a 404 for the
+ * page means "gone" only while the Reflection itself still answers them.
+ * Any failure here keeps the drafts.
+ */
+async function stillReadable(
+  queryClient: QueryClient,
+  domain: string,
+): Promise<boolean> {
+  try {
+    const status = await queryClient.fetchQuery({
+      queryKey: reflectionStatusKey(domain),
+      queryFn: () => fetchReflectionStatus(domain),
+      staleTime: 0,
+    });
+    return status.state === "on" && status.right !== "none";
+  } catch {
+    return false;
+  }
+}
+
 function PageBody({
   domain,
   path,
@@ -315,13 +349,24 @@ function PageBody({
   }, [doc.data, hash]);
 
   const missing = doc.error instanceof ApiProblem && doc.error.status === 404;
-  // The server says the page is not there: its drafts on this device go
-  // (the rule is written down in `reflectionPageDrafts.ts`).
+  // The server says the page is not there: its drafts on this device go,
+  // but only when the page is really gone (the rule is written down in
+  // `reflectionPageDrafts.ts`).
+  const gone = doc.error instanceof ApiProblem && pageIsGone(doc.error);
   useEffect(() => {
-    if (missing) {
-      discardPageDrafts(account, domain, path);
+    if (!gone) {
+      return;
     }
-  }, [missing, account, domain, path]);
+    let current = true;
+    void stillReadable(queryClient, domain).then((readable) => {
+      if (current && readable) {
+        discardPageDrafts(account, domain, path);
+      }
+    });
+    return () => {
+      current = false;
+    };
+  }, [gone, queryClient, account, domain, path]);
 
   if (doc.error) {
     return (

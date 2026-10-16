@@ -317,6 +317,77 @@ describe("the reflection page", () => {
     clearDraft("ann", "eng", reflectionRoomKey("guides/here.md"));
   });
 
+  describe("keeps the drafts when a 404 may not mean gone", () => {
+    const draft = {
+      content: "Mine.\n",
+      baseChecksum: "",
+      savedAt: "2026-10-16T10:00:00Z",
+    };
+
+    /** Open the missing page and give the drafts check time to settle. */
+    async function open(routes: Record<string, Answer>) {
+      writeDraft("ann", "eng", reflectionRoomKey("guides/gone.md"), draft);
+      serve("edit", false, routes);
+      renderApp("/d/eng/reflection/guides/gone.md");
+      await waitFor(() => {
+        expect(
+          apiMock.mock.calls.filter(
+            ([path]) => path === "/domains/eng/reflection",
+          ).length,
+        ).toBeGreaterThan(0);
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+    }
+
+    it("when something in front of the server answered without a problem body", async () => {
+      await open({
+        "/domains/eng/reflections/guides/gone.md": () => {
+          throw new ApiProblem(404, "Not Found", "Not Found", {}, false);
+        },
+      });
+      expect(
+        readDraft("ann", "eng", reflectionRoomKey("guides/gone.md")),
+      ).toEqual(draft);
+    });
+
+    it("when the domain's Reflection no longer answers this reader", async () => {
+      // Readable when the page opened, gone by the time it is asked afresh.
+      let asked = 0;
+      await open({
+        "/domains/eng/reflections/guides/gone.md": () => {
+          throw new ApiProblem(404, "not found", "no reflection");
+        },
+        "/domains/eng/reflection": () => {
+          asked += 1;
+          if (asked > 1) {
+            throw new ApiProblem(404, "not found", "no domain 'eng'");
+          }
+          return status("edit", false);
+        },
+      });
+      await waitFor(() => {
+        expect(asked).toBeGreaterThan(1);
+      });
+      expect(
+        readDraft("ann", "eng", reflectionRoomKey("guides/gone.md")),
+      ).toEqual(draft);
+    });
+
+    it("when the Reflection answers with no right to read it", async () => {
+      await open({
+        "/domains/eng/reflections/guides/gone.md": () => {
+          throw new ApiProblem(404, "not found", "no reflection");
+        },
+        "/domains/eng/reflection": () => status("none", false),
+      });
+      expect(
+        readDraft("ann", "eng", reflectionRoomKey("guides/gone.md")),
+      ).toEqual(draft);
+    });
+  });
+
   it("keeps the drafts of a page it may not read", async () => {
     const draft = {
       content: "Mine.\n",
