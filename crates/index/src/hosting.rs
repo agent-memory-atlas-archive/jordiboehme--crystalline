@@ -543,6 +543,72 @@ mod tests {
         a.drop_schema().await.unwrap();
     }
 
+    /// Two instances that claim a stale lock at the same moment without
+    /// `--take-over` never both get it. Each claim is one upsert whose
+    /// condition (`heartbeat_at < stale_before`) Postgres checks under the
+    /// row lock: the second waits for the first to commit, then reads the
+    /// winner's fresh heartbeat and leaves the row alone. Run many times so
+    /// both orders happen.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn two_claims_of_a_stale_lock_give_it_to_exactly_one() {
+        let Some((url, schema)) = shared_schema() else {
+            return;
+        };
+        let open = || async {
+            std::sync::Arc::new(
+                crate::PostgresStore::open_in_schema(&url, &schema)
+                    .await
+                    .unwrap(),
+            )
+        };
+        let (a, b) = (open().await, open().await);
+        let domain = a
+            .upsert_domain("eng", Some("/tmp/eng"), crate::DomainKind::File)
+            .await
+            .unwrap();
+        let mut winners = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let gone = claim_window(91).1;
+            a.claim_domain_host(domain, "crashed", "crashed", &gone, &gone, true)
+                .await
+                .unwrap();
+            let claim = |store: std::sync::Arc<crate::PostgresStore>, id: &'static str| async move {
+                let (now, stale_before) = claim_window(90);
+                claim_host_marking_moves(&*store, domain, id, id, &now, &stale_before, false)
+                    .await
+                    .unwrap()
+            };
+            let (x, y) = tokio::join!(
+                tokio::spawn(claim(a.clone(), "beta-s")),
+                tokio::spawn(claim(b.clone(), "gamma-s"))
+            );
+            let (x, y) = (x.unwrap(), y.unwrap());
+            let winner = match (&x.claim, &y.claim) {
+                (HostClaim::Acquired { .. }, HostClaim::HeldByOther(h)) => {
+                    assert_eq!(h.instance_id, "beta-s");
+                    assert_eq!(x.took_from.as_ref().unwrap().instance_id, "crashed");
+                    "beta-s"
+                }
+                (HostClaim::HeldByOther(h), HostClaim::Acquired { .. }) => {
+                    assert_eq!(h.instance_id, "gamma-s");
+                    assert_eq!(y.took_from.as_ref().unwrap().instance_id, "crashed");
+                    "gamma-s"
+                }
+                other => panic!("exactly one claim wins: {other:?}"),
+            };
+            assert_eq!(
+                a.domain_host(domain).await.unwrap().unwrap().instance_id,
+                winner
+            );
+            let mark = a.host_move(domain).await.unwrap().expect("marked");
+            assert_eq!(mark.claimant.as_deref(), Some(winner));
+            winners.insert(winner);
+        }
+        assert!(!winners.is_empty());
+        a.drop_schema().await.unwrap();
+    }
+
     /// A claim whose mark write fails leaves no claim behind: the lock still
     /// names the previous holder, and the next claim marks the move.
     #[cfg(feature = "postgres")]

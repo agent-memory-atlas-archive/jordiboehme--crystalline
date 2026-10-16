@@ -4531,6 +4531,25 @@ impl Engine {
                 }
             }
         }
+        // A take-over is logged with both names: with --take-over, or on
+        // its own once the holder sent no heartbeat for the stale threshold
+        // (a sync, a Reflection request or a daemon start here).
+        if let Some(old) = &claimed.took_from {
+            if old.heartbeat_at.as_str() < stale_before.as_str() {
+                tracing::warn!(
+                    "{} took over the host lock of domain '{name}' from {}, which sent no heartbeat since {}",
+                    claimed.label,
+                    old.label,
+                    old.heartbeat_at
+                );
+            } else {
+                tracing::warn!(
+                    "{} took over the host lock of domain '{name}' from {} with --take-over",
+                    claimed.label,
+                    old.label
+                );
+            }
+        }
         let claim = claimed.claim;
         if self.is_one_shot() && claim.is_acquired() {
             self.taken.lock().unwrap().insert(name.to_string());
@@ -4546,6 +4565,15 @@ impl Engine {
         };
         if moved {
             self.announce_host_moved(name);
+            // A daemon that gains a domain watches it from now on, whatever
+            // claimed it: a sync, a Reflection request or the watcher
+            // itself, which ignores a domain it already watches.
+            if claim.is_acquired()
+                && !self.is_one_shot()
+                && let Some(tx) = &self.watch_tx
+            {
+                let _ = tx.send(WatchEvent::Add(name.to_string(), root.to_path_buf()));
+            }
         }
         Ok(claim)
     }

@@ -221,23 +221,39 @@ async fn a_reflection_on_a_shared_database_is_served_by_its_host_only_on_postgre
     assert_eq!(body["state"], "hosted_elsewhere", "{body}");
     assert_eq!(body["host_label"], "alpha", "{body}");
 
-    // A holder that stopped heartbeating still holds the lock: nothing claims
-    // it until an instance syncs the domain or starts with --take-over, so a
-    // non-host keeps refusing and names it.
-    {
+    // A holder whose last heartbeat is a minute old is alive: the non-host
+    // keeps refusing and names it.
+    let gamma_beat = |beat: String| {
         let store = s.fx.engine.store();
-        let store = store.lock().await;
-        let id = store.domain_id("eng").await.unwrap().unwrap();
-        let long_ago = "2000-01-01T00:00:00+00:00";
-        store
-            .claim_domain_host(id, "gamma", "gamma", long_ago, long_ago, true)
-            .await
-            .unwrap();
-    }
+        async move {
+            let store = store.lock().await;
+            let id = store.domain_id("eng").await.unwrap().unwrap();
+            store
+                .claim_domain_host(id, "gamma", "gamma", &beat, &beat, true)
+                .await
+                .unwrap();
+        }
+    };
+    gamma_beat(crystalline_index::claim_window(60).1).await;
     assert_eq!(
         s.fx.engine.reflection_state("eng").await.unwrap(),
         hosted_by("gamma")
     );
+    // A holder that sent no heartbeat for 90 seconds is taken over by the
+    // next Reflection request, as a plain sync takes it, and the take-over
+    // marks a host move from it.
+    gamma_beat(crystalline_index::claim_window(91).1).await;
+    assert_eq!(s.fx.engine.reflection_state("eng").await.unwrap(), LOCAL);
+    let store = s.fx.engine.store();
+    let store = store.lock().await;
+    let id = store.domain_id("eng").await.unwrap().unwrap();
+    assert_eq!(
+        store.domain_host(id).await.unwrap().unwrap().instance_id,
+        "beta"
+    );
+    let mark = store.host_move(id).await.unwrap().expect("a host move");
+    assert_eq!(mark.claimant.as_deref(), Some("beta"));
+    assert_eq!(mark.only_elsewhere.previous_host.as_deref(), Some("gamma"));
 }
 
 /// A host that shuts down gracefully releases its lock. The instances left
@@ -321,6 +337,96 @@ async fn a_released_host_lock_goes_to_exactly_one_instance_on_postgres() {
         hosted_by(winner_name),
         "the released host does not take it back by asking"
     );
+}
+
+/// A host that crashed (or slept) keeps its lock until its heartbeat is 90
+/// seconds old. Then two running daemons that want the domain at the same
+/// moment, one through a sync and one through a Reflection request, do not
+/// both get it: the claim is one conditional upsert, and the second waits
+/// on the row the first wrote and finds a live heartbeat there. The winner
+/// watches the domain and marks the host move from the old host; the old
+/// host refuses from its next request and names the winner.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_stale_host_lock_goes_to_exactly_one_running_daemon_on_postgres() {
+    let Some(db) = Shared::new() else {
+        return;
+    };
+    let files = files();
+    let files: Vec<(&str, &str)> = files.iter().map(|(p, b)| (*p, b.as_str())).collect();
+    let alpha = instance(db.open().await, "alpha").await;
+    let (beta, mut beta_watch) = instance_watched(db.open().await, "beta", &files).await;
+    let (gamma, mut gamma_watch) = instance_watched(db.open().await, "gamma", &files).await;
+    assert_eq!(
+        gamma.engine.reflection_state("eng").await.unwrap(),
+        hosted_by("alpha")
+    );
+    // Alpha stops: its last heartbeat is 91 seconds old.
+    {
+        let store = db.open().await;
+        let store = store.lock().await;
+        let id = store.domain_id("eng").await.unwrap().unwrap();
+        let beat = crystalline_index::claim_window(91).1;
+        store
+            .claim_domain_host(id, "alpha", "alpha", &beat, &beat, true)
+            .await
+            .unwrap();
+    }
+
+    let (synced, asked) = tokio::join!(
+        beta.engine.sync(Some("eng")),
+        gamma.engine.reflection_state("eng")
+    );
+    let asked = asked.unwrap();
+    let (winner, winner_name, winner_watch, loser_watch) = match (&synced, &asked) {
+        (Ok(_), ReflectionState::HostedElsewhere { label }) => {
+            assert_eq!(label.as_deref(), Some("beta"), "gamma names the winner");
+            (&beta, "beta", &mut beta_watch, &mut gamma_watch)
+        }
+        (Err(e), ReflectionState::On { .. }) => {
+            assert!(e.to_string().contains("is hosted by gamma"), "{e}");
+            (&gamma, "gamma", &mut gamma_watch, &mut beta_watch)
+        }
+        other => panic!("exactly one takes the lock over: {other:?}"),
+    };
+    {
+        let store = db.open().await;
+        let store = store.lock().await;
+        let id = store.domain_id("eng").await.unwrap().unwrap();
+        assert_eq!(
+            store.domain_host(id).await.unwrap().unwrap().instance_id,
+            winner_name
+        );
+        // A Reflection request marks the move and leaves the walk to the
+        // watcher; a sync marks it and its walk, which found every file the
+        // old host wrote on this disk too, ends it at once.
+        match store.host_move(id).await.unwrap() {
+            Some(mark) => {
+                assert_eq!(winner_name, "gamma", "{mark:?}");
+                assert_eq!(mark.claimant.as_deref(), Some("gamma"));
+                assert_eq!(mark.only_elsewhere.previous_host.as_deref(), Some("alpha"));
+            }
+            None => assert_eq!(winner_name, "beta"),
+        }
+    }
+    match winner_watch.try_recv() {
+        Ok(crystalline_service::engine::WatchEvent::Add(name, root)) => {
+            assert_eq!((name.as_str(), root), ("eng", winner.root.clone()));
+        }
+        other => panic!("the winner hands eng to its watcher: {other:?}"),
+    }
+    assert!(loser_watch.try_recv().is_err(), "the loser arms nothing");
+
+    // The old host comes back: it refuses from its next request.
+    let err = alpha
+        .engine
+        .write_reflection(
+            &crate::docs::write("guides/late.md", "# Late\n"),
+            &ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), refusal(winner_name));
 }
 
 /// Instances name themselves by their `service.public_url` host: the

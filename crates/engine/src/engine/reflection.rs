@@ -588,14 +588,17 @@ impl Engine {
     /// instance's own, so its Reflection is always served here, and saying
     /// so takes no store lock ([`Engine::store_is_shared`]).
     ///
-    /// Another instance's holder counts live or stale: nothing claims a lock
-    /// until an instance syncs the domain or starts with `--take-over`, and
-    /// the refusal names that way out. A lock nobody holds (none yet, or the
-    /// host released it on a graceful shutdown) or one recorded under this
-    /// instance's own id (a restart before its first claim) is claimed here
-    /// and now, under the store lock, the way a sync claims it: two
-    /// instances that ask at once resolve to one holder, since the claim is
-    /// one conditional upsert. An acquired domain is handed to the daemon's
+    /// Another instance's live holder keeps the lock, and the refusal names
+    /// it and the way out (`--take-over`). A lock nobody holds (none yet, or
+    /// the host released it on a graceful shutdown), one recorded under this
+    /// instance's own id (a restart before its first claim) and one whose
+    /// holder sent no heartbeat for the stale threshold (a host that
+    /// crashed, or slept) are claimed here and now, under the store lock,
+    /// the way a plain sync claims them: two instances that ask at once
+    /// resolve to one holder, since the claim is one conditional upsert
+    /// whose condition the store checks again against the row the winner
+    /// wrote. A claim from another instance marks a host move as any
+    /// take-over does. An acquired domain is handed to the daemon's
     /// watcher, which arms it and syncs it like any domain this instance
     /// hosts. The claim touches the store, the hosts map and the event bus,
     /// never a room or a file lock, so a room's save may ask it.
@@ -619,7 +622,20 @@ impl Engine {
             Some(id) => store.domain_host(id).await?,
             None => None,
         };
-        if let Some(host) = host.as_ref().filter(|host| self.foreign_holder(host)) {
+        // Another instance's live claim stands. One that sent no heartbeat
+        // for the stale threshold is taken over below, by the claim a plain
+        // sync makes, which decides in the store whether it is stale. A
+        // command never claims for a Reflection, and a rename claims when
+        // it ends, so both keep naming the old holder.
+        if let Some(host) = host.as_ref().filter(|host| self.foreign_holder(host))
+            && (self.is_one_shot()
+                || self.is_renaming(domain)
+                || self.held_elsewhere(
+                    Some(&host.instance_id),
+                    Some(&host.heartbeat_at),
+                    chrono::Utc::now(),
+                ))
+        {
             return Ok(Some(Some(host.label.clone())));
         }
         // A one-shot command never claims a domain to serve its Reflection:
@@ -647,12 +663,10 @@ impl Engine {
         match self.claim_file_host(&*store, domain, root, false).await? {
             HostClaim::Acquired { .. } => {
                 drop(store);
-                // The watcher's catch-up sync walks this disk; a page only the
-                // previous host's disk has keeps its row and is reported, it
-                // is never written here (Task 50).
-                if let Some(tx) = &self.watch_tx {
-                    let _ = tx.send(WatchEvent::Add(domain.to_string(), root.to_path_buf()));
-                }
+                // The claim handed the domain to the watcher, whose
+                // catch-up sync walks this disk; a page only the previous
+                // host's disk has keeps its row and is reported, it is never
+                // written here (Task 50).
                 Ok(None)
             }
             HostClaim::HeldByOther(host) => Ok(Some(Some(host.label))),
