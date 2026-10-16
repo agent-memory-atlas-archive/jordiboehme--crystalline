@@ -6,10 +6,11 @@
  * readers rather than a second announcement of the same word.
  */
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { CollabParticipant } from "./useCollabSession";
+import { inkOn } from "./colors";
 import { PresenceChips } from "./PresenceChips";
 
 const PARTICIPANTS: CollabParticipant[] = [
@@ -26,5 +27,31 @@ describe("PresenceChips", () => {
     expect(glyph).not.toHaveAttribute("role");
     expect(glyph).not.toHaveAttribute("aria-label");
     expect(screen.getByText("Ada (agent)")).toBeInTheDocument();
+  });
+
+  it("draws each person as an avatar in their own color, the list naming everyone", () => {
+    render(<PresenceChips participants={PARTICIPANTS} />);
+    const list = screen.getByRole("list", {
+      name: "In this session: Ada (agent), Jordi (you)",
+    });
+    const [agent, self] = within(list).getAllByRole("listitem");
+    expect(self).toHaveStyle({ backgroundColor: "#22c55e" });
+    // The initial is drawn for the eye; the name is the text.
+    expect(self).toHaveTextContent("JJordi");
+    expect(within(self as HTMLElement).getByText("J")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
+    // No dot of any color marks the local author: "(you)" is in the name.
+    expect(self?.querySelector(".rounded-full.size-2")).toBeNull();
+    expect(agent).toHaveStyle({ backgroundColor: "#0ea5e9" });
+  });
+
+  it("picks an ink that reads on the presence color", () => {
+    // Bright palette colors take near-black, a dark color takes white.
+    expect(inkOn("#f59e0b")).toBe("#0b0d13");
+    expect(inkOn("#8b5cf6")).toBe("#0b0d13");
+    expect(inkOn("#1e293b")).toBe("#ffffff");
+    expect(inkOn("not a color")).toBe("#0b0d13");
   });
 });

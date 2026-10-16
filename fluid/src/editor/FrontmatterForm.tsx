@@ -41,8 +41,10 @@ import {
   hasFrontmatterBlock,
   readScalar,
   readTagList,
+  scalarIsOneLine,
   writeScalar,
   writeTagList,
+  writeText,
 } from "./frontmatterFields";
 import { docText } from "./setup";
 
@@ -108,6 +110,7 @@ export function FrontmatterForm({
   const typeField = useId();
   const statusField = useId();
   const guidance = useId();
+  const descriptionField = useId();
 
   const apply = (compute: (base: string) => FieldEdit | null) => {
     if (!view) {
@@ -151,6 +154,10 @@ export function FrontmatterForm({
   const type = readScalar(doc, "type") ?? "";
   const status = readScalar(doc, "status") ?? "";
   const salience = readScalar(doc, "salience") ?? "";
+  const description = readScalar(doc, "description") ?? "";
+  // A description written over several lines is shown, not edited: the form
+  // rewrites one line, and the rest of the old text would stay behind.
+  const descriptionEditable = scalarIsOneLine(doc, "description");
 
   if (!hasFrontmatterBlock(doc)) {
     return (
@@ -162,8 +169,9 @@ export function FrontmatterForm({
   }
 
   return (
-    <section aria-label="Frontmatter form" className="flex flex-col gap-3">
-      {/*
+    <section aria-label="Frontmatter form" className="flex flex-col gap-4">
+      <div className="grid grid-cols-2 gap-3">
+        {/*
         Not a `Row`: a `label` element wrapping the control would also wrap the
         list it opens, and a click on a suggestion would be a click on the
         label. The name is tied on with `htmlFor` instead, which is the same
@@ -173,39 +181,40 @@ export function FrontmatterForm({
         what the document currently says and reports back what settled, so a
         hand edit in the text arrives here a render later.
       */}
-      <div className="flex flex-col gap-1 text-sm">
-        <label htmlFor={typeField} className={LABEL_CLASSES}>
-          Type
-        </label>
-        <SuggestInput
-          id={typeField}
-          label="Type"
-          className={`w-full ${FIELD_CLASSES}`}
-          value={type}
-          suggestions={withHouseCounts(
-            TYPE_SUGGESTIONS,
-            vocabulary?.types ?? [],
-          )}
-          onCommit={scalar("type")}
-          describedBy={guidance}
-        />
-      </div>
-      <div className="flex flex-col gap-1 text-sm">
-        <label htmlFor={statusField} className={LABEL_CLASSES}>
-          Status
-        </label>
-        <SuggestInput
-          id={statusField}
-          label="Status"
-          className={`w-full ${FIELD_CLASSES}`}
-          value={status}
-          suggestions={withHouseCounts(
-            STATUS_SUGGESTIONS,
-            vocabulary?.statuses ?? [],
-          )}
-          onCommit={scalar("status")}
-          describedBy={guidance}
-        />
+        <div className="flex flex-col gap-1 text-sm">
+          <label htmlFor={typeField} className={LABEL_CLASSES}>
+            Type
+          </label>
+          <SuggestInput
+            id={typeField}
+            label="Type"
+            className={`w-full ${FIELD_CLASSES}`}
+            value={type}
+            suggestions={withHouseCounts(
+              TYPE_SUGGESTIONS,
+              vocabulary?.types ?? [],
+            )}
+            onCommit={scalar("type")}
+            describedBy={guidance}
+          />
+        </div>
+        <div className="flex flex-col gap-1 text-sm">
+          <label htmlFor={statusField} className={LABEL_CLASSES}>
+            Status
+          </label>
+          <SuggestInput
+            id={statusField}
+            label="Status"
+            className={`w-full ${FIELD_CLASSES}`}
+            value={status}
+            suggestions={withHouseCounts(
+              STATUS_SUGGESTIONS,
+              vocabulary?.statuses ?? [],
+            )}
+            onCommit={scalar("status")}
+            describedBy={guidance}
+          />
+        </div>
       </div>
       {/*
         Beside the two fields it is about, rather than at the foot of the rail
@@ -215,7 +224,7 @@ export function FrontmatterForm({
         say on its own is that anything else is allowed too. Both fields point
         at it, so it is read out with either name.
       */}
-      <p id={guidance} className={NOTE_CLASSES}>
+      <p id={guidance} className={`-mt-2 ${NOTE_CLASSES}`}>
         Recommended types and statuses are suggestions; any value is allowed.
       </p>
       {/*
@@ -225,56 +234,118 @@ export function FrontmatterForm({
       */}
       <div className="flex flex-col gap-1 text-sm">
         <span className={LABEL_CLASSES}>Tags</span>
-        {tags.length > 0 && (
-          <span className="flex flex-wrap gap-1">
-            {tags.map((tag) => (
-              <button
-                key={tag}
-                type="button"
-                aria-label={`Remove tag ${tag}`}
-                className={`rounded bg-slate-100 px-1.5 py-0.5 text-caption hover:line-through dark:bg-slate-800 ${FOCUS_RING}`}
-                onClick={() => {
-                  // The list is re-read from the base too, not closed over
-                  // from the render: the tag to drop is the fact this button
-                  // carries, and everything else about the block is whatever
-                  // the document says at the moment of the dispatch.
-                  apply((base) =>
-                    writeTagList(
-                      base,
-                      readTagList(base).filter((existing) => existing !== tag),
-                    ),
-                  );
-                }}
-              >
-                #{tag}
-              </button>
-            ))}
-          </span>
-        )}
-        <input
-          className={`w-full ${FIELD_CLASSES}`}
-          aria-label="Add tag"
-          list="fm-tags"
-          value={draftTag}
-          onChange={(event) => {
-            setDraftTag(event.target.value);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && draftTag.trim() !== "") {
-              event.preventDefault();
-              apply((base) =>
-                writeTagList(base, [...readTagList(base), draftTag.trim()]),
-              );
-              setDraftTag("");
-            }
-          }}
-          placeholder="add a tag, then Enter"
-        />
+        <div className="flex min-h-9 flex-wrap items-center gap-1 rounded-md border border-hair-strong bg-raised px-1.5 py-1 focus-within:border-accent-500">
+          {tags.length > 0 && (
+            <span className="contents">
+              {tags.map((tag) => (
+                <button
+                  key={tag}
+                  type="button"
+                  aria-label={`Remove tag ${tag}`}
+                  className={`rounded bg-accent-tint px-1.5 py-0.5 text-caption text-accent-800 hover:line-through dark:text-accent-200 ${FOCUS_RING}`}
+                  onClick={() => {
+                    // The list is re-read from the base too, not closed over
+                    // from the render: the tag to drop is the fact this button
+                    // carries, and everything else about the block is whatever
+                    // the document says at the moment of the dispatch.
+                    apply((base) =>
+                      writeTagList(
+                        base,
+                        readTagList(base).filter(
+                          (existing) => existing !== tag,
+                        ),
+                      ),
+                    );
+                  }}
+                >
+                  #{tag}
+                </button>
+              ))}
+            </span>
+          )}
+          <input
+            className="min-w-24 flex-1 bg-transparent px-1 py-0.5 text-sm outline-none placeholder:text-faint"
+            aria-label="Add tag"
+            list="fm-tags"
+            value={draftTag}
+            onChange={(event) => {
+              setDraftTag(event.target.value);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && draftTag.trim() !== "") {
+                event.preventDefault();
+                apply((base) =>
+                  writeTagList(base, [...readTagList(base), draftTag.trim()]),
+                );
+                setDraftTag("");
+              }
+            }}
+            placeholder="Add tag"
+          />
+        </div>
         <datalist id="fm-tags">
           {(vocabulary?.tags ?? []).map((tag) => (
             <option key={tag.name} value={tag.name} />
           ))}
         </datalist>
+      </div>
+      <div className="flex flex-col gap-1 text-sm">
+        <label htmlFor={descriptionField} className={LABEL_CLASSES}>
+          Description
+        </label>
+        {descriptionEditable ? (
+          <textarea
+            id={descriptionField}
+            rows={3}
+            className="w-full resize-y rounded border border-slate-300 bg-white px-2 py-1.5 text-sm leading-snug text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+            key={`description:${description}`}
+            defaultValue={description}
+            placeholder="One or two sentences"
+            onKeyDown={(event) => {
+              // One line in the file, so Enter commits rather than breaking it.
+              if (event.key === "Enter") {
+                event.preventDefault();
+                event.currentTarget.blur();
+              }
+            }}
+            onBlur={(event) => {
+              const next = event.target.value;
+              if (next.replace(/\s+/g, " ").trim() !== description) {
+                apply((base) => writeText(base, "description", next));
+              }
+            }}
+          />
+        ) : (
+          <p
+            id={descriptionField}
+            className="rounded-md border border-dashed border-hair-strong px-2 py-1.5 text-ink-2"
+          >
+            {multiLineText(doc, "description")}
+            <span className={`mt-1 block ${NOTE_CLASSES}`}>
+              Written over several lines. Change it in Raw.
+            </span>
+          </p>
+        )}
+      </div>
+      {/*
+        One under the other: a date picker and its clear control need the
+        rail's whole width to show a date without cutting it.
+      */}
+      <div className="flex flex-col gap-4">
+        <DateRow
+          label="Valid from"
+          keyName="valid_from"
+          unbounded="Always"
+          doc={doc}
+          onEdit={apply}
+        />
+        <DateRow
+          label="Valid to"
+          keyName="valid_to"
+          unbounded="Forever"
+          doc={doc}
+          onEdit={apply}
+        />
       </div>
       <Row label="Salience">
         <input
@@ -283,27 +354,38 @@ export function FrontmatterForm({
           className={`w-full ${FIELD_CLASSES}`}
           key={`salience:${salience}`}
           defaultValue={salience}
+          placeholder="Not set"
           onBlur={(event) => {
             scalar("salience")(event.target.value);
           }}
         />
       </Row>
-      <DateRow
-        label="Valid from"
-        keyName="valid_from"
-        unbounded="Always"
-        doc={doc}
-        onEdit={apply}
-      />
-      <DateRow
-        label="Valid to"
-        keyName="valid_to"
-        unbounded="Forever"
-        doc={doc}
-        onEdit={apply}
-      />
     </section>
   );
+}
+
+/**
+ * A value written over several lines, as one line of text to read: the key
+ * line's own text (unless it is only a block indicator) and the indented
+ * lines under it, joined by spaces.
+ */
+function multiLineText(doc: string, key: string): string {
+  const lines = doc.split(/\r?\n/);
+  const at = lines.findIndex((line) => new RegExp(`^${key}\\s*:`).test(line));
+  if (at === -1) {
+    return "";
+  }
+  const head = (lines[at] ?? "")
+    .slice((lines[at] ?? "").indexOf(":") + 1)
+    .trim();
+  const parts = /^[|>]/.test(head) ? [] : [head];
+  for (const line of lines.slice(at + 1)) {
+    if (!/^\s/.test(line) || line.trim() === "") {
+      break;
+    }
+    parts.push(line.trim());
+  }
+  return parts.join(" ");
 }
 
 /**
@@ -402,21 +484,23 @@ function DateRow({
   }
 
   return (
-    <div className="flex items-end gap-2">
-      <Row label={label}>
-        <input
-          ref={field}
-          type="date"
-          className={`w-full ${FIELD_CLASSES}`}
-          value={value}
-          onChange={(event) => {
-            if (event.target.value !== "") {
-              const picked = event.target.value;
-              onEdit((base) => writeScalar(base, keyName, picked));
-            }
-          }}
-        />
-      </Row>
+    <div className="flex min-w-0 items-end gap-1">
+      <div className="min-w-0 flex-1">
+        <Row label={label}>
+          <input
+            ref={field}
+            type="date"
+            className={`w-full min-w-0 ${FIELD_CLASSES}`}
+            value={value}
+            onChange={(event) => {
+              if (event.target.value !== "") {
+                const picked = event.target.value;
+                onEdit((base) => writeScalar(base, keyName, picked));
+              }
+            }}
+          />
+        </Row>
+      </div>
       <IconButton
         label={`Clear to ${unbounded.toLowerCase()}`}
         icon={X}

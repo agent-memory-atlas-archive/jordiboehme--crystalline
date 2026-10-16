@@ -37,7 +37,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
-import type { MouseEvent, ReactElement } from "react";
+import type { MouseEvent, ReactElement, ReactNode } from "react";
 import { useId } from "react";
 
 import { ITEM_CLASSES, MENU_CLASSES } from "../components/menu";
@@ -179,6 +179,8 @@ export function EditorToolbar({
   tableActive = false,
   imageActive = false,
   onAttach,
+  bare = false,
+  trailing,
 }: {
   view: EditorView | null;
   /** Whether the caret is in a table right now; the screen watches for it. */
@@ -195,6 +197,14 @@ export function EditorToolbar({
    * is simply not drawn rather than drawn and refusing.
    */
   onAttach?: (files: File[]) => void;
+  /**
+   * The reading-column face: a sticky row with a hairline under it and no box
+   * around it, one line that scrolls sideways on a narrow screen rather than
+   * wrapping. The default is the boxed bar the MANIFEST editor still wears.
+   */
+  bare?: boolean;
+  /** Drawn at the row's right end, past the verbs: the engram editor's Raw. */
+  trailing?: ReactNode;
 }): ReactElement {
   const off = view === null;
   /** The stem the diagram menu's group headings hang their ids off. */
@@ -212,7 +222,11 @@ export function EditorToolbar({
       role="toolbar"
       aria-label="Formatting"
       onMouseDown={keepSelection}
-      className="sticky top-14 z-10 flex flex-wrap items-center gap-0.5 rounded-t border-b border-slate-200 bg-white/95 px-1.5 py-1 backdrop-blur print:hidden dark:border-slate-800 dark:bg-slate-950/95"
+      className={
+        bare
+          ? "sticky top-14 z-10 flex flex-nowrap items-center gap-0.5 overflow-x-auto border-b border-hair bg-canvas/95 py-1.5 backdrop-blur print:hidden"
+          : "sticky top-14 z-10 flex flex-wrap items-center gap-0.5 rounded-t border-b border-slate-200 bg-white/95 px-1.5 py-1 backdrop-blur print:hidden dark:border-slate-800 dark:bg-slate-950/95"
+      }
     >
       <IconButton
         label="Bold"
@@ -539,6 +553,11 @@ export function EditorToolbar({
             onClick={act(tablePrettify)}
           />
         </>
+      )}
+      {trailing !== undefined && (
+        <div className="ml-auto flex shrink-0 items-center pl-2">
+          {trailing}
+        </div>
       )}
     </div>
   );

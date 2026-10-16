@@ -191,6 +191,72 @@ export function writeScalar(
   return { from: at, to: at, insert: `${line}${newline}` };
 }
 
+/**
+ * Whether a key's value stands on its own line, which is the one shape the
+ * form may rewrite. A block scalar (`key: >-` or `key: |` with the text on
+ * indented lines below) and a plain scalar folded onto continuation lines both
+ * reach past the key line, and `writeScalar` replaces that line alone: it
+ * would leave the rest of the old text behind as broken yaml. A caller shows
+ * such a value read-only and points at Raw instead. True for an absent key.
+ */
+export function scalarIsOneLine(doc: string, key: string): boolean {
+  const lines = blockLines(doc);
+  const span = findKey(doc, key);
+  if (!lines || !span) {
+    return true;
+  }
+  const text = lineText(doc, span);
+  const value = text.slice(text.indexOf(":") + 1).trim();
+  if (/^[|>]/.test(value)) {
+    return false;
+  }
+  const next = lines.find((line) => line.lineStart === span.lineEnd);
+  return next === undefined || !/^\s/.test(lineText(doc, next));
+}
+
+/** The words yaml reads as something other than a string when unquoted. */
+const YAML_WORDS = /^(?:true|false|yes|no|on|off|null|~)$/i;
+
+/**
+ * Free text as one yaml line: plain where it is plainly a string, otherwise
+ * double-quoted with its backslashes and quotes escaped. Line breaks become
+ * spaces first, so the value can never leave its own line.
+ */
+function textScalar(value: string): string {
+  const flat = value.replace(/\s*[\r\n]+\s*/g, " ").trim();
+  const plain =
+    /^[A-Za-z][^:#[\]{}&*!|>'"%@`\\]*$/.test(flat) &&
+    !/\s$/.test(flat) &&
+    !YAML_WORDS.test(flat);
+  return plain ? flat : `"${flat.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * `writeScalar` for free text such as a description: the value is flattened
+ * to one line and quoted whenever yaml could read it as anything but a string.
+ */
+export function writeText(
+  doc: string,
+  key: string,
+  value: string | null,
+): FieldEdit | null {
+  const flat = value === null ? "" : value.replace(/\s+/g, " ").trim();
+  if (flat === "") {
+    return writeScalar(doc, key, null);
+  }
+  const edit = writeScalar(doc, key, flat);
+  if (edit === null) {
+    return null;
+  }
+  return {
+    ...edit,
+    insert: edit.insert.replace(
+      /^([^:]+: ).*/,
+      (_m, head: string) => `${head}${textScalar(flat)}`,
+    ),
+  };
+}
+
 /** The tags entry's whole span (key line plus any block items), or null. */
 function tagsSpan(
   doc: string,

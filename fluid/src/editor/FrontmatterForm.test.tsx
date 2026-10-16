@@ -412,4 +412,77 @@ describe("the frontmatter form", () => {
     expect(screen.getByText(/no frontmatter block/i)).toBeInTheDocument();
     expect(screen.queryByLabelText("Status")).not.toBeInTheDocument();
   });
+
+  it("lists the Details fields in the rail's order", () => {
+    mounted();
+    const names = Array.from(
+      document.querySelectorAll(
+        "section[aria-label='Frontmatter form'] label, section[aria-label='Frontmatter form'] span",
+      ),
+    )
+      .map((node) => node.textContent?.trim() ?? "")
+      .filter((text) =>
+        [
+          "Type",
+          "Status",
+          "Tags",
+          "Description",
+          "Valid from",
+          "Valid to",
+          "Salience",
+        ].includes(text),
+      );
+    expect([...new Set(names)]).toEqual([
+      "Type",
+      "Status",
+      "Tags",
+      "Description",
+      "Valid from",
+      "Valid to",
+      "Salience",
+    ]);
+  });
+
+  it("writes a description as one quoted line, line breaks and all", async () => {
+    render(<Live content={DOC} />, { wrapper: Tooltips });
+    const field = await screen.findByLabelText("Description");
+    expect(field).toHaveValue("");
+    fireEvent.change(field, {
+      target: { value: 'Why we deploy: at night\nafter the "batch"' },
+    });
+    fireEvent.blur(field);
+    await waitFor(() => {
+      expect(liveView().state.sliceDoc()).toContain(
+        'description: "Why we deploy: at night after the \\"batch\\""\n---',
+      );
+    });
+  });
+
+  it("writes a plain description plainly, and an empty one removes the key", async () => {
+    render(<Live content={DOC} />, { wrapper: Tooltips });
+    const field = await screen.findByLabelText("Description");
+    fireEvent.change(field, { target: { value: "Runs after the batch" } });
+    fireEvent.blur(field);
+    await waitFor(() => {
+      expect(liveView().state.sliceDoc()).toContain(
+        "description: Runs after the batch\n",
+      );
+    });
+    const again = await screen.findByLabelText("Description");
+    fireEvent.change(again, { target: { value: "" } });
+    fireEvent.blur(again);
+    await waitFor(() => {
+      expect(liveView().state.sliceDoc()).not.toContain("description:");
+    });
+  });
+
+  it("shows a description written over several lines without editing it", () => {
+    const doc =
+      "---\ntitle: Alpha\ndescription: >-\n  First half,\n  second half.\nstatus: stable\n---\n\nBody.\n";
+    render(<FrontmatterForm doc={doc} view={null} vocabulary={null} />);
+    // A field would rewrite the key line alone and strand the rest.
+    expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull();
+    expect(screen.getByText(/First half, second half\./)).toBeInTheDocument();
+    expect(screen.getByText(/Change it in Raw/)).toBeInTheDocument();
+  });
 });

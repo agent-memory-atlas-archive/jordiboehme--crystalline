@@ -4,8 +4,9 @@
  * The editor is the room and only the room: people and agents edit the same
  * text at once, saves land in the file without a draft, and there is no
  * second, solo save path. A room that cannot be joined says so and offers to
- * try again. The section id lines stay in the text, hidden; the frontmatter
- * folds to its chip, as it does in the engram editor.
+ * try again. The section id lines stay in the text, hidden. The frontmatter,
+ * if the page has one, stays as quiet text at the top: this editor has no
+ * Details rail, and a page's own `title:` must stay in reach.
  *
  * A daemon that restarted while this tab was away (a laptop that slept)
  * greets the reconnect with a new session; the hook keeps what this tab had
@@ -24,7 +25,6 @@ import { Compartment, EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { EditorView as View, keymap } from "@codemirror/view";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check } from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
@@ -45,6 +45,7 @@ import { mayEditPage } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { CollabConflictDialog } from "../collab/CollabConflictDialog";
 import { normalizePastedEndings } from "../collab/pastedEndings";
+import { cursorFlags } from "../collab/cursorFlags";
 import { PresenceChips } from "../collab/PresenceChips";
 import {
   reflectionCollabUrl,
@@ -55,17 +56,21 @@ import type { CollabMovedTo, CollabSession } from "../collab/useCollabSession";
 import { useCollabSession } from "../collab/useCollabSession";
 import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
+import { Breadcrumbs, reflectionCrumbsOf } from "../components/Breadcrumbs";
+import { Loading } from "../components/Loading";
 import { BUTTON } from "../components/primitives";
-import { Skeleton } from "../components/Skeleton";
 import { AttachButton } from "../editor/AttachButton";
 import CmEditor from "../editor/CmEditor";
 import type { Draft } from "../editor/drafts";
 import { assetRefsIn } from "../editor/imageFormat";
 import { clearDraft, readDraft, writeDraft } from "../editor/drafts";
-import { frontmatterFold } from "../editor/frontmatterFold";
 import { hiddenIdLines } from "../editor/hiddenIdLines";
 import { imagePreviews } from "../editor/imagePreviews";
+import { readScalar } from "../editor/frontmatterFields";
 import { livePreview } from "../editor/preview";
+import { readingTheme } from "../editor/readingTheme";
+import type { SaveStateKind } from "../editor/SaveState";
+import { SaveState } from "../editor/SaveState";
 import { baseExtensions } from "../editor/setup";
 import { useAttachmentUploads } from "../editor/useAttachmentUploads";
 import { reflectionEditRoute, reflectionPageRoute } from "../paths";
@@ -83,6 +88,23 @@ const AMBER_BANNER =
 const RED_BANNER =
   "flex flex-wrap items-baseline gap-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-100";
 const BANNER_BUTTON = "underline underline-offset-2 hover:no-underline";
+
+/**
+ * The page's title as the trail names it: the frontmatter `title`, else the
+ * first `# ` heading, else the file name. Read once from the room's text when
+ * the editor opens, the way the server reads it.
+ */
+function titleOf(text: string, path: string): string {
+  const fromFrontmatter = readScalar(text, "title");
+  if (fromFrontmatter !== null) {
+    return fromFrontmatter;
+  }
+  const heading = /^# +(.+?)\s*#*\s*$/m.exec(text)?.[1];
+  if (heading !== undefined && heading !== "") {
+    return heading;
+  }
+  return (path.split("/").at(-1) ?? path).replace(/\.md$/, "");
+}
 
 /** Whether a text links one of the Reflection's files; cheap when it cannot. */
 function linksAFile(text: string, home: AssetHome): boolean {
@@ -116,7 +138,7 @@ function PageEditor({
   if (!admitted && !opens) {
     if (data === undefined) {
       return status.isPending ? (
-        <Skeleton label="Loading the page" rows={6} />
+        <Loading label="Loading the page" subject={path} />
       ) : (
         <p role="alert" className={ALERT}>
           {problemDetail(status.error)}
@@ -216,7 +238,7 @@ function Room({
     }
   }, [retried, failed]);
   if (connecting) {
-    return <Skeleton label="Connecting the session" rows={8} />;
+    return <Loading label="Connecting the session" subject={path} />;
   }
   if (failed && collab.movedTo !== null) {
     // The page moved while this editor was still joining: its join was
@@ -422,6 +444,7 @@ function Surface({
   const wrote = useRef(false);
   const [resolving, setResolving] = useState(false);
   const [mountText] = useState(() => ytext.toJSON());
+  const [title] = useState(() => titleOf(mountText, path));
   const [mountEnded] = useState(ended);
   const [view, setView] = useState<EditorView | null>(null);
   /*
@@ -512,8 +535,9 @@ function Surface({
       yCollab(ytext, awareness, { undoManager: new Y.UndoManager(ytext) }),
       keymap.of(yUndoManagerKeymap),
       normalizePastedEndings,
+      cursorFlags,
+      readingTheme,
       livePreview(),
-      frontmatterFold(),
       hiddenIdLines(),
       uploads.extension,
       previews.of(imagePreviews(home)),
@@ -643,25 +667,38 @@ function Surface({
     };
   }, [owedSave]);
 
+  /*
+   * The one save state the header shows. A refusal is not a state but the
+   * server's sentence, shown as an alert under the header; an ended room says
+   * what happened in its own banner.
+   */
+  const saveState: SaveStateKind | null =
+    collab.status === "reconnecting"
+      ? "offline"
+      : ended
+        ? null
+        : collab.saveState === "pending" && refusal === null
+          ? "saving"
+          : collab.saveState === "ok"
+            ? "saved"
+            : null;
+
   return (
-    <div className="flex flex-col gap-4">
-      <header className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-caption text-slate-500 dark:text-slate-400">{`${domain} / ${path}`}</p>
-        <div className="flex items-center gap-2">
+    <div className="edit-column flex min-w-0 flex-col gap-3">
+      <h1 className="sr-only">Editing {title}</h1>
+      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <Breadcrumbs crumbs={reflectionCrumbsOf(domain, path, title)} />
+          <span className="rounded-full bg-accent-tint px-2 py-0.5 text-caption font-medium text-accent-800 dark:text-accent-200">
+            Editing
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
           <PresenceChips
             participants={collab.participants}
             offline={collab.status !== "connected"}
           />
-          {/*
-            Off while the room is away or over: the bytes would not wait for
-            it, but a person should not start what the page cannot take now.
-            A paste while reconnecting still uploads, and the room merges the
-            link on its return.
-          */}
-          <AttachButton
-            onAttach={uploads.attach}
-            disabled={view === null || ended || collab.status !== "connected"}
-          />
+          <SaveState state={saveState} />
           <Link
             to={reflectionPageRoute(domain, path)}
             onClick={() => {
@@ -676,20 +713,6 @@ function Surface({
           </Link>
         </div>
       </header>
-      {collab.status === "reconnecting" && (
-        <p role="status" className="text-sm text-amber-700 dark:text-amber-300">
-          Reconnecting - edits are kept locally
-        </p>
-      )}
-      {collab.saveState === "pending" && refusal === null && !ended && (
-        <p className="text-sm text-slate-500 dark:text-slate-400">Saving...</p>
-      )}
-      {collab.saveState === "ok" && !ended && (
-        <p className="inline-flex items-center gap-1 text-sm text-slate-500 dark:text-slate-400">
-          <Check aria-hidden="true" size={14} strokeWidth={2} />
-          Saved
-        </p>
-      )}
       {refusal !== null && (
         <p role="alert" className={ALERT}>
           {refusal}
@@ -791,7 +814,26 @@ function Surface({
           </button>
         </aside>
       )}
-      <div className="rounded border border-slate-200 dark:border-slate-800">
+      <div>
+        {/*
+          The reading column's sticky row, as the engram editor's format bar
+          stands. This editor's only verb is a file: its text is a room's,
+          and the block verbs would have to learn the hidden section ids.
+          Off while the room is away or over: the bytes would not wait for
+          it, but a person should not start what the page cannot take now.
+          A paste while reconnecting still uploads, and the room merges the
+          link on its return.
+        */}
+        <div
+          role="toolbar"
+          aria-label="Insert"
+          className="sticky top-14 z-10 flex items-center gap-0.5 border-b border-hair bg-canvas/95 py-1.5 backdrop-blur print:hidden"
+        >
+          <AttachButton
+            onAttach={uploads.attach}
+            disabled={view === null || ended || collab.status !== "connected"}
+          />
+        </div>
         <CmEditor
           initialDoc={mountText}
           extensions={extensions}

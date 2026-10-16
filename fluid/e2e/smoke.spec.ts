@@ -754,13 +754,20 @@ test("an engram is created, edited, saved and retired", async ({ page }) => {
   await addTag.fill("smoke");
   await addTag.press("Enter");
 
-  // Save waits for the validation gate to clear, then lands.
+  // Save waits for the validation gate to clear, then lands. The Save
+  // button stands only on a solo buffer with unsaved text; in a room the
+  // server saves on its own and Mod-S flushes it, so the keyboard is the one
+  // way that reaches both surfaces.
   const saveButton = page.getByRole("button", { name: "Save" });
-  await expect(saveButton).toBeEnabled();
-  await saveButton.click();
-  await expect(page.getByText("Saved")).toBeVisible();
+  if ((await saveButton.count()) > 0) {
+    await expect(saveButton).toBeEnabled();
+    await saveButton.click();
+  } else {
+    await source.press("ControlOrMeta+s");
+  }
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible();
 
-  // The read view shows what was written. Close wears whichever shape the
+  // The read view shows what was written. Done wears whichever shape the
   // surface earns: a link in a room, where the server owns the write and
   // leaving is all this control can promise, and a button on the solo
   // surface, where it asks about unsaved text before it goes. The save above
@@ -768,8 +775,8 @@ test("an engram is created, edited, saved and retired", async ({ page }) => {
   // leaves at once - and this journey reaches whichever shape the daemon
   // gives it a room for.
   await page
-    .getByRole("link", { name: "Close" })
-    .or(page.getByRole("button", { name: "Close" }))
+    .getByRole("link", { name: "Done", exact: true })
+    .or(page.getByRole("button", { name: "Done", exact: true }))
     .click();
   await expect(engramTitle(page)).toHaveText("Smoke Journey");
   await expect(page.locator("article")).toContainText("A smoke-written line.");
@@ -811,8 +818,11 @@ test("two browsers co-edit one engram and the save lands once", async ({
   // Presence: each side lists the other by display name, and BOTH remote
   // cursors are visible - the spec's own wording. A cursor renders on the
   // OTHER browser once its owner focuses the buffer.
-  await expect(presence(pageA).getByText(PEER, { exact: true })).toBeVisible();
-  await expect(presence(pageB).getByText(USER, { exact: true })).toBeVisible();
+  // The avatars show initials; the list's own name carries every name, one
+  // entry each, the local author marked "(you)".
+  const listed = (name: string) => new RegExp(`(?:: |, )${name}(?:,|$)`);
+  await expect(presence(pageA)).toHaveAccessibleName(listed(PEER));
+  await expect(presence(pageB)).toHaveAccessibleName(listed(USER));
   await editorA.click();
   await expect(pageB.locator(".cm-ySelectionCaret")).toBeVisible();
   await editorB.click();
@@ -847,7 +857,10 @@ test("two browsers co-edit one engram and the save lands once", async ({
   // typed line exactly once - two copies would be the shared document applied
   // twice - and then everything holds steady while the room idles past its
   // debounce.
-  await pageA.getByRole("button", { name: "Save" }).click();
+  // No Save button in a room: the server saves on its own, and Mod-S asks
+  // it to now.
+  await expect(pageA.getByRole("button", { name: "Save" })).toHaveCount(0);
+  await editorA.press("ControlOrMeta+s");
   await expect
     .poll(async () => (await detail()).content)
     .toContain("smoke-collab line");

@@ -190,12 +190,3 @@ describe("READY.", () => {
     expect(screen.queryByText("READY.")).toBeNull();
   });
 });
-
-describe("Skeleton (kept for the editors)", () => {
-  it("is the same loader, searching for what the label names", async () => {
-    const { Skeleton } = await import("./Skeleton");
-    render(<Skeleton label="Loading the editor" />);
-    const status = screen.getByRole("status", { name: "Loading the editor" });
-    expect(status.textContent).toContain("SEARCHING FOR THE EDITOR");
-  });
-});

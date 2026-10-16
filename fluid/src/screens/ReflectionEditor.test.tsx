@@ -106,6 +106,53 @@ describe("the reflection editor", () => {
     });
   });
 
+  it("heads the column with the page's trail, an Editing chip, the people and the save state", async () => {
+    serve("edit");
+    sessionMock.mockReturnValue({
+      ...room("---\ntitle: Deploying\n---\n\n# A\n\nFirst.\n"),
+      participants: [
+        { name: "ann", color: "#0ea5e9", self: true, agent: false },
+        { name: "ben", color: "#10b981", self: false, agent: false },
+      ],
+    });
+    renderApp("/d/eng/reflection-edit/guides/a.md");
+    const editor = await screen.findByRole("textbox", { name: "Page source" });
+    const header = screen
+      .getByRole("navigation", { name: "Breadcrumb" })
+      .closest("header") as HTMLElement;
+    // The trail names the page by its title, as the reading page does.
+    expect(header).toHaveTextContent("Deploying");
+    expect(header).toHaveTextContent("Editing");
+    expect(
+      screen.getByRole("list", { name: "In this session: ann (you), ben" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Saved")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Editing Deploying" }),
+    ).toHaveClass("sr-only");
+    // The frontmatter stays as text a person can change: no chip stands in
+    // for it, and the page's own title line is there.
+    expect(editor.textContent).toContain("title: Deploying");
+    expect(editor.textContent).not.toContain("Frontmatter");
+    // The one verb of the sticky row.
+    expect(screen.getByRole("toolbar", { name: "Insert" })).toContainElement(
+      screen.getByRole("button", { name: "Attach a file" }),
+    );
+  });
+
+  it("says Saving while the room writes and Offline while the socket is down, one at a time", async () => {
+    serve("edit");
+    const session = live({ ...room(PAGE), saveState: "pending" });
+    await openEditor();
+    expect(screen.getByText("Saving")).toBeInTheDocument();
+    expect(screen.queryByText("Saved")).toBeNull();
+    session.set({ status: "reconnecting" });
+    expect(
+      await screen.findByText("Offline, kept on this device"),
+    ).toHaveAttribute("role", "status");
+    expect(screen.queryByText("Saving")).toBeNull();
+  });
+
   it("kept text from an earlier session is offered back", async () => {
     serve("edit");
     const session = room(PAGE);
@@ -340,7 +387,7 @@ describe("the reflection editor keeps what is owed", () => {
     type(session.get(), "more\n");
     expect(readDraft("ann", "eng", KEY)?.content).toBe(`${PAGE}more\n`);
     expect(screen.getByRole("alert")).toHaveTextContent(REFUSAL);
-    expect(screen.queryByText("Saving...")).toBeNull();
+    expect(screen.queryByText("Saving")).toBeNull();
   });
 
   it("drops its own copy once the room saves again", async () => {

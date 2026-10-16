@@ -144,6 +144,37 @@ function putIfMatch(index: number): string | undefined {
   return headers?.["If-Match"];
 }
 
+/**
+ * Save the way an author would. The Save button stands only while the buffer
+ * holds unsaved text; a clean buffer saves from the keyboard (Mod-S), which
+ * goes through the same `requestSave`.
+ */
+async function saveNow(): Promise<void> {
+  const button = screen.queryByRole("button", { name: "Save" });
+  if (button !== null) {
+    await waitFor(() => {
+      expect(button).toBeEnabled();
+    });
+    await userEvent.click(button);
+    return;
+  }
+  screen.getByLabelText("Engram source").focus();
+  await userEvent.keyboard("{Control>}s{/Control}");
+}
+
+/** Type at the end of the buffer, as an author adding a line would. */
+function typeAtEnd(editor: HTMLElement, text: string): void {
+  const view = mountedView(editor);
+  act(() => {
+    const end = view.state.doc.length;
+    view.dispatch({
+      changes: { from: end, insert: text },
+      selection: { anchor: end + text.length },
+      userEvent: "input.type",
+    });
+  });
+}
+
 /** A validate route that refuses the buffer with one hard error. */
 function refusedByFindings() {
   return {
@@ -343,12 +374,11 @@ describe("the engram editor", () => {
     renderApp("/d/eng/edit/alpha");
     const editor = await openBuffer();
     // Frontmatter is in the buffer too: the whole file is the document. In
-    // preview mode the block is behind its summary chip - the form beside the
-    // buffer is the metadata surface there - so the plain text of it is what
-    // Raw shows, which is the mode that shows the file as written.
-    expect(editor.querySelector(".cm-frontmatter-chip")?.textContent).toContain(
-      "engram",
-    );
+    // preview mode the block is hidden - the Details rail is the metadata
+    // surface there, and no chip stands in its place - so the plain text of
+    // it is what Raw shows, which is the mode that shows the file as written.
+    expect(editor.textContent).not.toContain("permalink: alpha");
+    expect(editor.textContent).not.toContain("Frontmatter");
     await userEvent.click(screen.getByRole("button", { name: "Raw" }));
     await waitFor(() => {
       expect(screen.getByLabelText("Engram source").textContent).toContain(
@@ -390,36 +420,41 @@ describe("the engram editor", () => {
     ).toBeNull();
   });
 
-  it("wears the Raw switch as a glyph, named rather than lettered", async () => {
+  it("wears Raw as a word at the end of the toolbar, with a hint on what it shows", async () => {
     serveEditor();
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
 
-    // A mode switch is not a verb, and the two verbs on this row - Save and
-    // Close - are the only things on it that should be read as words. Raw
-    // keeps its name where a name is what a control is known by, in the
-    // accessible name and the tooltip, and shows a source-view glyph instead.
+    // Raw is the way to the frontmatter as text now that the preview hides
+    // the block, so it says its name: the visible word is the accessible
+    // name, and it stands in the format bar's row, past the verbs.
     const raw = screen.getByRole("button", { name: "Raw" });
-    expect(raw).toHaveTextContent("");
-    expect(raw.querySelector("svg")).not.toBeNull();
-    expect(raw).toHaveAttribute("aria-label", "Raw");
-    // The name the pointer gets is the app's own tooltip now rather than the
-    // browser's, so there is no `title` for a second label to be drawn from.
+    expect(raw).toHaveTextContent("Raw");
+    expect(
+      within(screen.getByRole("toolbar", { name: "Formatting" })).getByRole(
+        "button",
+        { name: "Raw" },
+      ),
+    ).toBe(raw);
     expect(raw).not.toHaveAttribute("title");
     raw.focus();
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Raw");
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "frontmatter included",
+    );
   });
 
-  it("says what Save and Close promise in the app's tooltip, not the browser's", async () => {
+  it("says what Save and Done promise in the app's tooltip, not the browser's", async () => {
     serveEditor();
     renderApp("/d/eng/edit/alpha");
-    await screen.findByLabelText("Engram source");
+    const editor = await openBuffer();
+    // Save stands only while there is unsaved text.
+    typeAtEnd(editor, "x");
 
     // One row, one tooltip idiom. Raw's hint is the app's own surface after
     // the app's own delay; a native `title` on the two controls beside it drew
     // a second surface, a beat later, in a font this page does not choose.
     const save = screen.getByRole("button", { name: "Save" });
-    const close = screen.getByRole("button", { name: "Close" });
+    const close = screen.getByRole("button", { name: "Done" });
     expect(save).not.toHaveAttribute("title");
     expect(close).not.toHaveAttribute("title");
 
@@ -464,7 +499,7 @@ describe("the engram editor", () => {
     });
     // Nothing the toggle did was an edit: the file is unchanged either way.
     expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByText("Saved");
     expect(putBody(0)).toEqual({ content: CONTENT });
   });
@@ -751,7 +786,7 @@ describe("the engram editor", () => {
       );
     });
     // And nothing the chips did was an edit.
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByText("Saved");
     expect(putBody(0)).toEqual({ content: linked });
   });
@@ -821,28 +856,26 @@ describe("the engram editor", () => {
     });
   });
 
-  it("keeps the findings under the buffer at full width, form and all", async () => {
+  it("keeps the Details rail at full width, so the hidden frontmatter stays in reach", async () => {
     // The frame's own preference, read by the screen through the context the
-    // frame provides. The column beside the buffer goes, and what goes with
-    // it is decided by where else a reader could get at the same thing: every
-    // field the form writes is a line of the frontmatter block in the text
-    // right there, and the findings are named by the notice above the buffer
-    // and are the only way to jump to the line one is about.
+    // frame provides. Full width widens the text column; it does not drop the
+    // rail, because the preview hides the frontmatter block and the rail is
+    // where its fields are edited outside Raw.
     localStorage.setItem("fluid.layout.width", "full");
     serveEditor();
 
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
 
-    // The mode is on: one column, at every viewport.
-    const main = await screen.findByRole("main");
-    expect(main.querySelector('[class*="lg:grid-cols-"]')).toBeNull();
+    const details = screen.getByRole("complementary", { name: "Details" });
     expect(
-      await screen.findByRole("region", { name: "Validation findings" }),
-    ).toBeVisible();
+      within(details).getByRole("region", { name: "Frontmatter form" }),
+    ).toBeInTheDocument();
     expect(
-      screen.queryByRole("region", { name: "Frontmatter form" }),
-    ).toBeNull();
+      await within(details).findByRole("region", {
+        name: "Validation findings",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("assists the frontmatter beside the buffer, writing single lines into it", async () => {
@@ -861,17 +894,16 @@ describe("the engram editor", () => {
     await userEvent.clear(status);
     await userEvent.type(status, "draft");
     await userEvent.tab();
-    // The edit lands inside the folded block, so what the buffer shows is the
-    // chip - and it has to be a CURRENT chip: a fold that mapped its old
-    // decoration through the change instead of recomputing would leave the
-    // summary saying "stable" over a document that says draft.
+    // The edit lands inside the hidden block: in the document, and not on
+    // screen, where the rail is what shows it.
     await waitFor(() => {
       expect(
-        screen
-          .getByLabelText("Engram source")
-          .querySelector(".cm-frontmatter-chip")?.textContent,
-      ).toContain("draft");
+        mountedView(screen.getByLabelText("Engram source")).state.sliceDoc(),
+      ).toContain("status: draft");
     });
+    expect(screen.getByLabelText("Engram source").textContent).not.toContain(
+      "status: draft",
+    );
     // And the line itself is in the document, which Raw shows unconditionally.
     await userEvent.click(screen.getByRole("button", { name: "Raw" }));
     await waitFor(() => {
@@ -880,7 +912,7 @@ describe("the engram editor", () => {
       );
     });
 
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByText("Saved");
     // One line changed; every other byte of the file is what it was.
     expect(putBody(0)).toEqual({
@@ -909,10 +941,7 @@ describe("the engram editor", () => {
     });
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-    });
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await waitFor(() => {
       expect(put).toHaveBeenCalled();
     });
@@ -943,10 +972,7 @@ describe("the engram editor", () => {
     });
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-    });
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
 
     const panel = await screen.findByRole("status", {
       name: "Similar engrams",
@@ -975,10 +1001,7 @@ describe("the engram editor", () => {
     });
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-    });
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByText("Saved");
     expect(
       screen.queryByRole("status", { name: "Similar engrams" }),
@@ -1013,10 +1036,7 @@ describe("the engram editor", () => {
     });
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-    });
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     // The header echoes the address the engram now answers at.
     expect(await screen.findByText("sharper-alpha")).toBeInTheDocument();
   });
@@ -1047,14 +1067,11 @@ describe("the engram editor", () => {
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
     await screen.findByRole("link", { name: "Alpha" });
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-    });
     // The tree is fresh for a minute, so nothing but an invalidation can make
     // it be asked for again while this editor sits still.
     const before = trees().length;
 
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
 
     // A save can rename the engram, retitle it or retire it, and all three are
     // what a tree row is drawn from. Without this the sidebar keeps a row
@@ -1148,21 +1165,99 @@ describe("the engram editor", () => {
 
     // The reading page puts the trail on the left of a row and the controls at
     // its right end (`EngramPage.test.tsx` pins that). Editing the same engram
-    // must not move that row: entering the editor used to draw its buttons one
-    // row lower, beside the title, so every toggle between the two modes shunted
-    // the controls up and down the screen.
+    // keeps that row: the trail with an Editing chip, and Done at the right.
     const trail = await screen.findByRole("navigation", { name: "Breadcrumb" });
-    const row = trail.parentElement;
+    const row = trail.closest("header");
     expect(row).not.toBeNull();
-    expect(
-      within(row as HTMLElement).getByRole("button", { name: "Save" }),
-    ).toBeInTheDocument();
     expect(row).toHaveClass("justify-between");
+    expect(within(row as HTMLElement).getByText("Editing")).toBeVisible();
+    expect(
+      within(row as HTMLElement).getByRole("button", { name: "Done" }),
+    ).toBeInTheDocument();
 
-    // And the title keeps its own line under it, with the permalink beside it.
+    // The page's heading names what is being edited for assistive tech; on
+    // screen the trail and the chip say it.
     const title = screen.getByRole("heading", { level: 1 });
     expect(title).toHaveTextContent("Editing Alpha");
+    expect(title).toHaveClass("sr-only");
     expect(row).not.toContainElement(title);
+  });
+
+  it("shows one save state at a time, and Save only while there is unsaved text", async () => {
+    serveEditor({
+      // The server answers with what it stored: the text that was sent.
+      "/domains/eng/engrams/alpha": (_path, init) =>
+        init?.method === "PUT"
+          ? detailResponse({
+              checksum: "next111",
+              content: (JSON.parse(init.body as string) as { content: string })
+                .content,
+            })
+          : detailResponse(),
+    });
+    renderApp("/d/eng/edit/alpha");
+    const editor = await openBuffer();
+    // Clean: nothing to save, so no Save and no state yet.
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(document.querySelectorAll("[data-save-state]")).toHaveLength(0);
+
+    typeAtEnd(editor, "More.");
+    expect(await screen.findByText("Unsaved changes")).toBeInTheDocument();
+    const save = await screen.findByRole("button", { name: "Save" });
+    save.focus();
+    await waitFor(() => {
+      expect(save).toBeEnabled();
+    });
+    await userEvent.click(save);
+
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
+    expect(document.querySelectorAll("[data-save-state]")).toHaveLength(1);
+    // Save went away with the unsaved text, and the keyboard is back in the
+    // buffer rather than on the page.
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.getByLabelText("Engram source")).toHaveFocus();
+  });
+
+  it("Done with unsaved text asks before it leaves, and Keep editing stays", async () => {
+    serveEditor();
+    renderApp("/d/eng/edit/alpha");
+    const editor = await openBuffer();
+    typeAtEnd(editor, "More.");
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(await screen.findByText("Close the editor?")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(screen.getByLabelText("Engram source")).toBeInTheDocument();
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+  });
+
+  it("puts the frontmatter fields, the findings and the address in a Details rail", async () => {
+    serveEditor();
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    const details = screen.getByRole("complementary", { name: "Details" });
+    for (const label of ["Type", "Status", "Description", "Salience"]) {
+      expect(within(details).getByLabelText(label)).toBeInTheDocument();
+    }
+    expect(within(details).getByLabelText("Add tag")).toBeInTheDocument();
+    expect(
+      within(details).getByRole("button", { name: "Valid to: Forever" }),
+    ).toBeInTheDocument();
+    expect(
+      await within(details).findByRole("region", {
+        name: "Validation findings",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(details).getByRole("button", {
+        name: "Copy crystalline:// address",
+      }),
+    ).toBeInTheDocument();
+    // On a narrow screen the rail is one press away, above the text.
+    const disclosure = within(details).getByRole("button", { name: "Details" });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(disclosure);
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
   });
 
   it("Close leaves a clean buffer at once, with nothing to ask about", async () => {
@@ -1173,11 +1268,10 @@ describe("the engram editor", () => {
     });
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-    });
+    // Nothing typed, so no Save stands: it is there only for unsaved text.
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
 
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
 
     // Nothing was typed, so there is nothing to keep and nothing to lose:
     // asking would be a question with one answer, and writing the file again
@@ -1209,7 +1303,7 @@ describe("the engram editor", () => {
 
     // Close no longer saves on its own: it asks what should happen to the text
     // it is about to walk away from, and this is the answer that keeps it.
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(await screen.findByText("Close the editor?")).toBeVisible();
     await userEvent.click(
       screen.getByRole("button", { name: "Save and close" }),
@@ -1250,11 +1344,9 @@ describe("the engram editor", () => {
     });
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    });
+    await screen.findByText(/block saving/i);
 
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
 
     // The findings are about the file, not about this session: nothing was
     // typed, so there is still nothing at risk and the exit is still free.
@@ -1271,7 +1363,7 @@ describe("the engram editor", () => {
     await screen.findByLabelText("Engram source");
     await typeUnsavableStatus();
 
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(await screen.findByText("Close the editor?")).toBeVisible();
     // The question says why the save may not land, in the same count the
     // screen behind it carries.
@@ -1303,7 +1395,7 @@ describe("the engram editor", () => {
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
     await typeUnsavableStatus();
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     await screen.findByText("Close the editor?");
 
     await userEvent.click(screen.getByRole("button", { name: "Keep editing" }));
@@ -1361,7 +1453,7 @@ describe("the engram editor", () => {
 
     // Close #1 lands inside that window: the gate is still open, so Save and
     // close starts an ordinary PUT and arms the exit that rides it.
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     await userEvent.click(
       screen.getByRole("button", { name: "Save and close" }),
     );
@@ -1374,7 +1466,7 @@ describe("the engram editor", () => {
     expect(await screen.findByText(/block saving/)).toBeVisible();
 
     // Close #2 asks again, and this time the author turns the exit down.
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     await screen.findByText("Close the editor?");
     await userEvent.click(screen.getByRole("button", { name: "Keep editing" }));
 
@@ -1406,7 +1498,7 @@ describe("the engram editor", () => {
       { timeout: 4000 },
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     await screen.findByText("Close the editor?");
     await userEvent.click(
       screen.getByRole("button", { name: "Discard changes" }),
@@ -1428,10 +1520,7 @@ describe("the engram editor", () => {
     await userEvent.clear(status);
     await userEvent.type(status, "draft");
     await userEvent.tab();
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-    });
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await waitFor(() => {
       expect(put).toHaveBeenCalledTimes(1);
     });
@@ -1450,7 +1539,7 @@ describe("the engram editor", () => {
       { timeout: 4000 },
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     await screen.findByText("Close the editor?");
     await userEvent.click(
       screen.getByRole("button", { name: "Discard changes" }),
@@ -1485,7 +1574,7 @@ describe("the engram editor", () => {
     });
 
     // Answered once: the PUT is out and the exit is riding it.
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     await userEvent.click(
       screen.getByRole("button", { name: "Save and close" }),
     );
@@ -1496,7 +1585,7 @@ describe("the engram editor", () => {
     // Asked again while it is still in the air. Every press decides afresh, so
     // the standing exit is dropped here rather than left to fire out from
     // under a question the author has not answered yet.
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(await screen.findByText("Close the editor?")).toBeVisible();
 
     land();
@@ -1537,7 +1626,7 @@ describe("the engram editor", () => {
     await screen.findByLabelText("Engram source");
     await typeUnsavableStatus();
 
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     await screen.findByText("Close the editor?");
     await userEvent.click(
       screen.getByRole("button", { name: "Save and close" }),
@@ -1554,10 +1643,7 @@ describe("the engram editor", () => {
     await userEvent.clear(await screen.findByLabelText("Status"));
     await userEvent.type(screen.getByLabelText("Status"), "draft");
     await userEvent.tab();
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-    });
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
 
     expect(await screen.findByText("Saved")).toBeInTheDocument();
     await settled();
@@ -1583,13 +1669,13 @@ describe("the engram editor", () => {
       expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
     });
 
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await waitFor(() => {
       expect(put).toHaveBeenCalledTimes(1);
     });
     // Answered while the round trip is still out: a second save cannot start,
     // so the answer rides the one that is already carrying this text.
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     await userEvent.click(
       screen.getByRole("button", { name: "Save and close" }),
     );
@@ -1617,7 +1703,7 @@ describe("the engram editor", () => {
       expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
     });
 
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await waitFor(() => {
       expect(put).toHaveBeenCalledTimes(1);
     });
@@ -1628,11 +1714,11 @@ describe("the engram editor", () => {
     await userEvent.type(screen.getByLabelText("Status"), "legacy");
     await userEvent.tab();
     await waitFor(() => {
-      expect(screen.getByLabelText("Engram source").textContent).toContain(
-        "legacy",
-      );
+      expect(
+        mountedView(screen.getByLabelText("Engram source")).state.sliceDoc(),
+      ).toContain("legacy");
     });
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     await userEvent.click(
       screen.getByRole("button", { name: "Save and close" }),
     );
@@ -1672,7 +1758,7 @@ describe("the engram editor", () => {
       expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
     });
 
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     await userEvent.click(
       screen.getByRole("button", { name: "Save and close" }),
     );
@@ -1693,15 +1779,12 @@ describe("the engram editor", () => {
     });
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-    });
     // Save, then Close - the order the smoke journey presses them in. The
     // save left the buffer clean, so the second press has nothing to ask
     // about and nothing left to write: it only leaves.
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByText("Saved");
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(
       await screen.findByRole("heading", { name: "Alpha", level: 1 }),
     ).toBeInTheDocument();
@@ -1768,7 +1851,7 @@ describe("the engram editor", () => {
     expect(
       screen.getByLabelText("Engram source").querySelectorAll(".cm-line"),
     ).toHaveLength(expectedLines);
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByText("Saved");
     // What went on the wire is the draft's exact bytes, not a corrupted
     // round trip through the wrong separator.
@@ -1811,7 +1894,7 @@ describe("the engram editor", () => {
     expect(
       screen.getByLabelText("Engram source").querySelectorAll(".cm-line"),
     ).toHaveLength(expectedLines);
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByText("Saved");
     expect(putBody(0)).toEqual({ content: crlfDraftContent });
   });
@@ -1854,7 +1937,7 @@ describe("the engram editor", () => {
         savedAt: "",
       }),
     );
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByText("Saved");
     expect(localStorage.getItem("fluid.draft.ada.eng/alpha")).toBeNull();
   });
@@ -1882,7 +1965,7 @@ describe("the engram editor", () => {
     });
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     expect(
       await screen.findByRole("dialog", { name: /someone else saved/i }),
     ).toBeInTheDocument();
@@ -1911,7 +1994,7 @@ describe("the engram editor", () => {
     });
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByRole("dialog", { name: /someone else saved/i });
     await userEvent.click(
       screen.getByRole("button", { name: "Save mine over it" }),
@@ -1931,7 +2014,7 @@ describe("the engram editor", () => {
     });
     renderApp("/d/eng/edit/alpha");
     await screen.findByLabelText("Engram source");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByRole("dialog", { name: /someone else saved/i });
     await userEvent.click(
       screen.getByRole("button", { name: "Take the server version" }),
@@ -1966,7 +2049,7 @@ describe("the engram editor", () => {
     });
     renderApp("/d/eng/edit/alpha");
     await openBuffer();
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByRole("dialog", { name: /someone else saved/i });
     await userEvent.click(
       screen.getByRole("button", { name: "Take the server version" }),
@@ -2014,7 +2097,7 @@ describe("the engram editor", () => {
     });
     // The separator differs, so this swap rebuilds the whole state rather
     // than dispatching into it - the path that would drop the compartment.
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByRole("dialog", { name: /someone else saved/i });
     await userEvent.click(
       screen.getByRole("button", { name: "Take the server version" }),
@@ -2053,7 +2136,7 @@ describe("the engram editor", () => {
     renderApp("/d/eng/edit/alpha");
     const editor = await screen.findByLabelText("Engram source");
     const beforeText = editor.textContent;
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByRole("dialog", { name: /someone else saved/i });
     expect(localStorage.getItem("fluid.draft.ada.eng/alpha")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Keep editing" }));
@@ -2066,7 +2149,7 @@ describe("the engram editor", () => {
     expect(localStorage.getItem("fluid.draft.ada.eng/alpha")).toBeNull();
     // The token never moved: the next save meets the same stale checksum and
     // the same refusal, rather than a fresh If-Match it was never granted.
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByRole("dialog", { name: /someone else saved/i });
     expect(putIfMatch(0)).toBe('"3f8a1c05e2"');
     expect(putIfMatch(1)).toBe('"3f8a1c05e2"');
@@ -2090,11 +2173,13 @@ describe("the engram editor", () => {
       }),
     });
     renderApp("/d/eng/edit/alpha");
-    await screen.findByLabelText("Engram source");
+    const editor = await openBuffer();
+    expect(await screen.findByText(/block saving/i)).toBeInTheDocument();
+    // Save stands once there is unsaved text, and the findings hold it back.
+    typeAtEnd(editor, "x");
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     });
-    expect(screen.getByText(/block saving/i)).toBeInTheDocument();
   });
 
   it("hard errors block the keyboard save too, not only the button", async () => {
@@ -2117,9 +2202,7 @@ describe("the engram editor", () => {
     });
     renderApp("/d/eng/edit/alpha");
     const editor = await screen.findByLabelText("Engram source");
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    });
+    await screen.findByText(/block saving/i);
     editor.focus();
     // Mod-S dispatches the same `requestSave` the button's `onClick` calls;
     // the hard-error check lives there, not only in the button's `disabled`
@@ -2154,8 +2237,9 @@ describe("the engram editor", () => {
       ).toBeInTheDocument();
     });
     // The finding is visible, but it never touched the gate.
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    typeAtEnd(await openBuffer(), "x");
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+    await saveNow();
     await waitFor(() => {
       expect(put).toHaveBeenCalled();
     });
@@ -2174,7 +2258,8 @@ describe("the engram editor", () => {
     });
     // No verdict landed at all, hard or otherwise: a dry run that cannot
     // even be asked never blocks a save.
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    typeAtEnd(await openBuffer(), "x");
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
   });
 
   it("the hard-error gate holds through an in-flight revalidation and lifts only when a clean report lands", async () => {
@@ -2212,9 +2297,7 @@ describe("the engram editor", () => {
         },
       ],
     });
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    });
+    await screen.findByText(/block saving/i);
 
     // A further edit changes the buffer, which - once the debounce settles
     // - changes the validate query's key and starts a second request that
@@ -2374,7 +2457,12 @@ describe("the engram editor in a session", () => {
     expect(chips).toHaveAccessibleName(/Grace Hopper/);
     expect(chips.textContent).toContain("Grace Hopper");
     // The local author is marked rather than listed as a stranger.
-    expect(chips.textContent).toContain("you");
+    expect(chips).toHaveAccessibleName(/Ada Lovelace \(you\)/);
+    // Overlapping avatars in each person's own color, initial on top.
+    const avatars = within(chips).getAllByRole("listitem");
+    expect(avatars).toHaveLength(2);
+    expect(avatars[1]).toHaveStyle({ backgroundColor: "#f59e0b" });
+    expect(avatars[1]?.textContent).toContain("G");
   });
 
   /**
@@ -2411,11 +2499,11 @@ describe("the engram editor in a session", () => {
           },
         ],
       });
-      if (fullWidth) {
-        expect(screen.queryByLabelText("Status")).not.toBeInTheDocument();
-      } else {
-        expect(screen.getByLabelText("Status")).toBeInTheDocument();
-      }
+      // The Details rail stands at both widths now; the leg is told apart
+      // by the frame's own attribute.
+      expect(screen.getByRole("main").getAttribute("data-width")).toBe(
+        fullWidth ? "full" : null,
+      );
       const chips = screen.getByRole("list", { name: /in this session/i });
       expect(chips.textContent).toContain("ada (agent: claude-code/2.0)");
       expect(chips).toHaveAccessibleName(/ada \(agent: claude-code\/2.0\)/);
@@ -2426,9 +2514,11 @@ describe("the engram editor in a session", () => {
     });
   });
 
-  it("the Save button asks the session to flush and never PUTs", async () => {
+  it("has no Save button in a room, and Mod-S asks the session to flush and never PUTs", async () => {
     const { flush } = await openRoom();
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    // The server saves the room on its own: Save is for a solo buffer only.
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    await saveNow();
     expect(flush).toHaveBeenCalled();
     expect(puts()).toHaveLength(0);
   });
@@ -2450,7 +2540,7 @@ describe("the engram editor in a session", () => {
     const { flush } = await openRoom();
     // The server owns the write in a session, so the promise this control can
     // keep is leaving - and it keeps it as a link, the way it always has.
-    const done = screen.getByRole("link", { name: "Close" });
+    const done = screen.getByRole("link", { name: "Done" });
     expect(done).toHaveAttribute("href", "/d/eng/e/alpha");
     await userEvent.click(done);
     expect(
@@ -2536,7 +2626,8 @@ describe("the engram editor in a session", () => {
 
   it("says so while the session is writing", async () => {
     await openRoom({ saveState: "pending" });
-    expect(screen.getByText("Saving...")).toBeInTheDocument();
+    expect(screen.getByText("Saving")).toBeInTheDocument();
+    expect(screen.queryByText("Saved")).toBeNull();
   });
 
   it("raises the room's notice when an outside change was folded in", async () => {
@@ -2600,14 +2691,9 @@ describe("the engram editor in a session", () => {
       }, "a remote author");
     });
     // The binding put it in the buffer, and the form reads the buffer: the
-    // panel beside the text is a view over what the room agreed on. In the
-    // buffer the block is folded, so the remote edit shows up there as a
-    // refreshed summary chip - derived from the document, so a stale chip
-    // would mean a stale buffer.
+    // rail beside the text is a view over what the room agreed on.
     await waitFor(() => {
-      expect(
-        editor.querySelector(".cm-frontmatter-chip")?.textContent,
-      ).toContain("draft");
+      expect(mountedView(editor).state.sliceDoc()).toContain("status: draft");
     });
     expect(await screen.findByLabelText("Status")).toHaveValue("draft");
   });
@@ -2631,11 +2717,11 @@ describe("the engram editor in a session", () => {
 
   it("says it is reconnecting and grays the room out while the socket is down", async () => {
     await openRoom({ status: "reconnecting" });
-    const notice = await screen.findByText(/reconnecting/i);
+    const notice = await screen.findByText("Offline, kept on this device");
     // Announced: the socket dropped without anybody asking, and what the
     // author needs to know is that their typing is not being lost.
     expect(notice).toHaveAttribute("role", "status");
-    expect(notice.textContent).toMatch(/kept locally/i);
+    expect(screen.queryByText("Saved")).toBeNull();
     // The chips are still there - those people are still in the room - but
     // dimmed, because who is where stopped being current the moment the
     // awareness channel went quiet.
@@ -2645,7 +2731,7 @@ describe("the engram editor in a session", () => {
 
   it("says nothing about the connection while the room is connected", async () => {
     await openRoom();
-    expect(screen.queryByText(/reconnecting/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/offline/i)).not.toBeInTheDocument();
     const chips = screen.getByRole("list", { name: /in this session/i });
     expect(chips.className).not.toContain("opacity");
   });
@@ -2694,9 +2780,8 @@ describe("the engram editor in a session", () => {
     await waitFor(() => {
       expect(screen.getByText(/hard error/i)).toBeInTheDocument();
     });
-    const save = screen.getByRole("button", { name: "Save" });
-    expect(save).toBeEnabled();
-    await userEvent.click(save);
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    await saveNow();
     expect(flush).toHaveBeenCalled();
     expect(puts()).toHaveLength(0);
     // And the wording does not claim a block that is not happening.
@@ -2760,7 +2845,7 @@ describe("the engram editor with no session to join", () => {
     const notice = await screen.findByText(/editing solo/i);
     expect(notice).toHaveAttribute("role", "status");
     // And it is the solo surface in full: this tab saves for itself again.
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await saveNow();
     await screen.findByText("Saved");
     expect(putBody(0)).toEqual({ content: CONTENT });
   });

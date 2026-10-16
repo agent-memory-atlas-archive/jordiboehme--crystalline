@@ -394,6 +394,7 @@
 
     /* A white diagram should not glare on the dark canvas. */
     [data-theme="dark"] .measured img,
+    [data-theme="dark"] .edit-column .cm-content img,
     [data-theme="dark"] .content-img {
       filter: brightness(0.86);
     }
@@ -423,6 +424,23 @@
    */
   @media screen {
     main[data-width="full"] .measured > :not(.breakout) {
+      max-width: none;
+    }
+  }
+
+  /*
+   * The editors' column: the same measure as the page it edits, so switching
+   * to Edit changes the controls and not the page. Full width lifts it and
+   * large text widens it, as they do for reading.
+   */
+  .edit-column {
+    max-width: var(--measure, 720px);
+  }
+  main[data-text="large"] .edit-column {
+    max-width: 1080px;
+  }
+  @media screen {
+    main[data-width="full"] .edit-column {
       max-width: none;
     }
   }
