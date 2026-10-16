@@ -628,6 +628,35 @@ describe("the reflection editor when its page was moved", () => {
     expect(screen.queryByText(/This page was moved/)).toBeNull();
   });
 
+  it("tells an editor that was still joining where the page went", async () => {
+    serve("edit");
+    sessionMock.mockReturnValue({
+      ...soloCollabSession(),
+      closed: true,
+      closedReason: "moved",
+      movedTo: { domain: "eng", path: "guides/b.md", permalink: null },
+    });
+    writeDraft("ann", "eng", KEY, {
+      content: "kept from an earlier session\n",
+      baseChecksum: "",
+      savedAt: "",
+    });
+    renderApp("/d/eng/reflection-edit/guides/a.md");
+    expect(
+      await screen.findByText("This page was moved to guides/b.md."),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("Live editing is not available right now."),
+    ).toBeNull();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Open it there" }),
+    );
+    expect(readDraft("ann", "eng", KEY)).toBeNull();
+    expect(readDraft("ann", "eng", "reflection:guides/b.md")?.content).toBe(
+      "kept from an earlier session\n",
+    );
+  });
+
   it("names the new domain and carries the drafts into it after a rename", async () => {
     serve("edit");
     live({

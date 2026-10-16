@@ -2990,6 +2990,37 @@ describe("the engram editor resolving a session conflict", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("tells an editor that never joined the room where the engram went", async () => {
+    collabMock.mockReturnValue({
+      ...soloCollabSession(),
+      closed: true,
+      closedReason: "moved",
+      movedTo: {
+        domain: "eng",
+        path: "guides/alpha.md",
+        permalink: "guides/alpha",
+      },
+    });
+    serveEditor({
+      "/domains/eng/engrams/guides/alpha": () =>
+        detailResponse({ permalink: "guides/alpha", path: "guides/alpha.md" }),
+    });
+    renderApp("/d/eng/edit/alpha");
+    expect(
+      await screen.findByText("This engram was moved to guides/alpha.md."),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Open it there" }),
+    );
+    await waitFor(() => {
+      expect(
+        apiMock.mock.calls.some(([path]) =>
+          String(path).includes("/engrams/guides/alpha"),
+        ),
+      ).toBe(true);
+    });
+  });
+
   it("a session that ended for another reason does not claim a deletion", async () => {
     joinedSession({ closed: true, closedReason: "internal" });
     serveEditor({

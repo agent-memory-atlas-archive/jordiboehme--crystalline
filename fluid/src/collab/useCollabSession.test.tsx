@@ -842,6 +842,33 @@ describe("a room over a reflection", () => {
     });
   });
 
+  it("a join refused while the page moves tries again and is told where it went", () => {
+    mountRoom(() => Promise.resolve(""));
+    // The upgrade is refused (409 while the move holds the page): the
+    // browser sees an abnormal close and the provider dials again soon.
+    act(() => {
+      socketAt(0).dropWith(1006);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    const second = socketAt(1);
+    act(() => {
+      second.open();
+      second.receive(
+        controlFrame({ kind: "closed", reason: "moved", path: "guides/b.md" }),
+      );
+      second.dropWith(4404);
+    });
+    expect(session().closed).toBe(true);
+    expect(session().movedTo).toEqual({
+      domain: "eng",
+      path: "guides/b.md",
+      permalink: null,
+    });
+    expect(session().mode).toBe("solo");
+  });
+
   it("an epoch gap keeps the reflection text under its own draft key", () => {
     const { socket } = joinReflection(() => Promise.resolve(""));
     act(() => {

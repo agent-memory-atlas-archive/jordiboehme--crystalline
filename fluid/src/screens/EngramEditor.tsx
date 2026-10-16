@@ -789,9 +789,12 @@ function Surface({
   /**
    * The room closed because the engram moved: nothing is gone, so the author
    * is not walked away. The banner offers the new address instead, and the
-   * draft the snapshot above wrote goes along.
+   * draft the snapshot above wrote goes along. An editor that was still
+   * joining when the move came (its join is refused while the move runs, and
+   * the provider tries again) is told the same on its next try, with no room
+   * ever opened, so this is read on the solo surface too.
    */
-  const movedTo = inRoom ? collab.movedTo : null;
+  const movedTo = collab.movedTo;
   useEffect(() => {
     if (!closed || movedTo !== null) {
       return;
@@ -1197,7 +1200,7 @@ function Surface({
           Editing solo - live collaboration is not available here
         </p>
       )}
-      {closed && movedTo !== null && (
+      {movedTo !== null && (
         <p
           role="status"
           className="flex flex-wrap items-baseline gap-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"

@@ -178,6 +178,7 @@ function Room({
 }): ReactElement {
   const { user } = useAuth();
   const account = user?.name ?? "anonymous";
+  const navigate = useNavigate();
   const target = useMemo(
     () => ({
       url: reflectionCollabUrl(domain, path),
@@ -216,6 +217,29 @@ function Room({
   }, [retried, failed]);
   if (connecting) {
     return <Skeleton label="Connecting the session" rows={8} />;
+  }
+  if (failed && collab.movedTo !== null) {
+    // The page moved while this editor was still joining: its join was
+    // refused while the move ran, and the next try was told where it went.
+    // Nothing was typed here, so only drafts kept earlier go along.
+    const to = collab.movedTo;
+    return (
+      <div role="status">
+        <p className={AMBER_BANNER}>
+          <span>{`This page was moved to ${movedPlace(domain, to)}.`}</span>
+          <button
+            type="button"
+            className={BANNER_BUTTON}
+            onClick={() => {
+              movePageDrafts(account, domain, path, to.path, to.domain);
+              void navigate(reflectionEditRoute(to.domain, to.path));
+            }}
+          >
+            Open it there
+          </button>
+        </p>
+      </div>
+    );
   }
   if (failed) {
     return (
