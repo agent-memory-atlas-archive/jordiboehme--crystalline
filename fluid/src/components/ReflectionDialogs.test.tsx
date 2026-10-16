@@ -2,7 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect } from "react";
-import { MemoryRouter, useNavigate } from "react-router";
+import { MemoryRouter, useLocation, useNavigate } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App";
@@ -543,7 +543,7 @@ describe("after a create, move or delete", () => {
       useEffect(() => {
         go = (to) => void navigate(to);
       }, [navigate]);
-      return null;
+      return <output data-testid="at">{useLocation().pathname}</output>;
     }
     serve("edit", {
       "/domains/eng/reflection/move": () => ({
@@ -564,6 +564,14 @@ describe("after a create, move or delete", () => {
     );
     await move("howto/a.md");
     await screen.findByRole("button", { name: "Close" });
+    // The move's own navigation commits as a transition, so it can land after
+    // the dialog shows its receipt. Going back before it has would leave the
+    // page at the address it never left, and nothing would close.
+    await waitFor(() => {
+      expect(screen.getByTestId("at")).toHaveTextContent(
+        "/d/eng/reflection/howto/a.md",
+      );
+    });
     act(() => {
       go("/d/eng/reflection/guides/a.md");
     });

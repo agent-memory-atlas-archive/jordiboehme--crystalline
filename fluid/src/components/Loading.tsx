@@ -14,8 +14,9 @@
  * a loader, so it shows neither.
  */
 
-import { useContext, useEffect, useRef, useState } from "react";
-import { UNSAFE_LocationContext as LocationContext } from "react-router";
+import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { useInRouterContext, useLocation } from "react-router";
 
 import { loaderShown, onLoadingEvent } from "../loadingSignal";
 
@@ -32,12 +33,24 @@ function Cursor() {
   );
 }
 
-export function Loading({
-  label,
-  subject,
-  compact = false,
-  className = "",
-}: {
+/**
+ * Hands its child the key of the router location, or "" outside a router (the
+ * boot screen, a bare test). Hooks cannot be called conditionally, so the key
+ * is read by a tiny component that exists only inside a router.
+ */
+function LocationKey({ children }: { children: (key: string) => ReactNode }) {
+  return useInRouterContext() ? (
+    <InRouter>{children}</InRouter>
+  ) : (
+    <>{children("")}</>
+  );
+}
+
+function InRouter({ children }: { children: (key: string) => ReactNode }) {
+  return <>{children(useLocation().key)}</>;
+}
+
+interface LoadingProps {
   /** The plain sentence a screen reader hears, e.g. "Loading the engram". */
   label: string;
   /** What the first line searches for: a title, a query, a path. */
@@ -45,9 +58,23 @@ export function Loading({
   /** One line, `LOADING█`, for a menu or a list. Never flashes READY. */
   compact?: boolean;
   className?: string;
-}) {
-  // Outside a router (before the shell) there is no key, and no navigation.
-  const key = useContext(LocationContext)?.location.key ?? "";
+}
+
+export function Loading(props: LoadingProps) {
+  return (
+    <LocationKey>
+      {(key) => <LoadingBlock {...props} locationKey={key} />}
+    </LocationKey>
+  );
+}
+
+function LoadingBlock({
+  locationKey: key,
+  label,
+  subject,
+  compact = false,
+  className = "",
+}: LoadingProps & { locationKey: string }) {
   useEffect(() => (compact ? undefined : loaderShown(key)), [compact, key]);
   if (compact) {
     return (
@@ -95,8 +122,11 @@ export function Loading({
  * positioned container.
  */
 export function ReadyFlash() {
+  return <LocationKey>{(key) => <ReadyFlashAt here={key} />}</LocationKey>;
+}
+
+function ReadyFlashAt({ here }: { here: string }) {
   const [visible, setVisible] = useState(false);
-  const here = useContext(LocationContext)?.location.key ?? "";
   const hereRef = useRef(here);
   useEffect(() => {
     hereRef.current = here;
