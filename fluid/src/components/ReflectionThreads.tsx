@@ -61,6 +61,7 @@ import type { ReflectionRight } from "../api/reflectionDomains";
 import { atLeast } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { plural, relativeTime } from "../format";
+import { KeptComments } from "./KeptComments";
 import { useSaid } from "./useSaid";
 import { onlyMarkers, placeMarkers, printNotes } from "../printNotes";
 import type { SelectionAnchor } from "../reflectionQuotes";
@@ -878,6 +879,7 @@ export function ReflectionThreads({
           />
         )}
       </div>
+      <KeptComments domain={domain} path={path} />
       {mayComment &&
         drafting === null &&
         (captured === null ? (
