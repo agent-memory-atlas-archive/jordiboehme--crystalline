@@ -415,9 +415,10 @@ impl Drop for MoveFence {
 }
 
 /// The rooms a domain rename swept: saved and ended, their sockets not told
-/// yet. The rename tells them where the domain went once it can no longer be
-/// refused ([`SweptRooms::moved_to_domain`]); dropped untold, which a refused
-/// rename does, they are told `internal`, as an unregistration tells them.
+/// yet. The rename tells them where the domain went once it is done
+/// ([`SweptRooms::moved_to_domain`]); dropped untold, which a refused or
+/// stopped rename does, they are told `internal`, as an unregistration tells
+/// them.
 #[must_use = "dropped untold, the rooms are told `internal`"]
 pub struct SweptRooms {
     rooms: Vec<Arc<CollabSession>>,
@@ -842,8 +843,8 @@ impl CollabSessions {
 
     /// Save and end every room of `domain` for a domain rename, without
     /// telling the sockets yet: the rename tells them where the domain went
-    /// once it cannot be refused any more, and a rename refused after the
-    /// sweep tells them `internal` instead (see [`SweptRooms`]). Until the
+    /// once it is done, and a rename refused or stopped after the sweep
+    /// tells them `internal` instead (see [`SweptRooms`]). Until the
     /// tell a room is disposed, so nothing typed into it is saved; the
     /// client keeps that text as a draft when the close arrives.
     pub async fn sweep_domain_for_rename(&self, domain: &str) -> SweptRooms {

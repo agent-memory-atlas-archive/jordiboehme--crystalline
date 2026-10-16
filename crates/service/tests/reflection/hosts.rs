@@ -2200,3 +2200,106 @@ async fn a_read_heal_leaves_a_row_written_meanwhile_on_postgres() {
         "the row written meanwhile stays"
     );
 }
+
+/// F6 on a shared database: a page with unsaved typing in a room is moved,
+/// and the host lock moves to beta in the window of the first fenced row
+/// commit, which is the room's last save before the move. That save is
+/// refused, so its text is kept on alpha; the move is refused as well, and
+/// the page stays at its old path. Nothing typed is lost. The room was
+/// already told `moved` (a known limit: the move then failed).
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_room_closed_by_a_move_the_fence_refuses_keeps_its_text_on_postgres() {
+    use crystalline_service::collab::session::CollabSessions;
+    use yrs::updates::decoder::{Decode, DecoderV1};
+    use yrs::updates::encoder::Encode;
+    use yrs::{GetString, ReadTxn, Text, Transact};
+    let Some(db) = Shared::new() else { return };
+    let (alpha, beta) = fenced_pair(&db).await;
+    const TO: &str = "guides/moved.md";
+    let sessions = CollabSessions::new(alpha.engine.clone());
+    alpha.engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", PAGE, "jordi")
+        .await
+        .unwrap();
+    // A person's client: synced with the room, then one line typed.
+    let doc = yrs::Doc::with_options(yrs::Options {
+        offset_kind: yrs::OffsetKind::Utf16,
+        ..yrs::Options::default()
+    });
+    let sv = doc.transact().state_vector();
+    let replies = joined
+        .session
+        .handle_frame(
+            joined.conn,
+            &yrs::sync::Message::Sync(yrs::sync::SyncMessage::SyncStep1(sv)).encode_v1(),
+        )
+        .await;
+    let mut decoder = DecoderV1::from(replies[0].as_ref());
+    let Some(Ok(yrs::sync::Message::Sync(yrs::sync::SyncMessage::SyncStep2(update)))) =
+        yrs::sync::MessageReader::new(&mut decoder).next()
+    else {
+        panic!("step1 is answered with step2");
+    };
+    doc.transact_mut()
+        .apply_update(yrs::Update::decode_v1(&update).unwrap())
+        .unwrap();
+    let text = doc.get_or_insert_text("content");
+    let typed = {
+        let mut txn = doc.transact_mut();
+        let end = text.get_string(&txn).encode_utf16().count() as u32;
+        text.insert(&mut txn, end, "Typed and not saved yet.\n");
+        txn.encode_update_v1()
+    };
+    joined
+        .session
+        .handle_frame(
+            joined.conn,
+            &yrs::sync::Message::Sync(yrs::sync::SyncMessage::Update(typed)).encode_v1(),
+        )
+        .await;
+    let page = alpha.root.join("reflections").join(PAGE);
+    assert!(
+        !std::fs::read_to_string(&page)
+            .unwrap()
+            .contains("Typed and not saved yet.")
+    );
+    let err = written_while_beta_takes_over(
+        &alpha,
+        &beta,
+        alpha
+            .engine
+            .move_reflection("eng", PAGE, TO, &ReflectionCaller::owner()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.to_string(), refusal("beta"));
+    assert!(page.is_file(), "the page stays at its old path");
+    assert!(!alpha.root.join("reflections").join(TO).exists());
+    let kept = kept_on(&alpha).await;
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].1, PAGE);
+    assert!(kept[0].2.contains("Typed and not saved yet."), "{kept:?}");
+    let closed = loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), joined.rx.recv())
+            .await
+            .expect("the room hears the close in time")
+            .expect("the channel stays open");
+        let mut decoder = DecoderV1::from(frame.bytes.as_ref());
+        let found = yrs::sync::MessageReader::new(&mut decoder)
+            .flatten()
+            .find_map(|message| match message {
+                yrs::sync::Message::Custom(4, payload) => {
+                    serde_json::from_slice::<serde_json::Value>(&payload)
+                        .ok()
+                        .filter(|control| control["kind"] == "closed")
+                }
+                _ => None,
+            });
+        if let Some(found) = found {
+            break found;
+        }
+    };
+    assert_eq!(closed["reason"], "moved", "{closed}");
+}

@@ -1660,6 +1660,95 @@ async fn a_domain_rename_tells_its_rooms_the_new_name() {
     assert!(on_disk.contains("typed before the rename"), "{on_disk}");
 }
 
+/// A full rename (the MANIFEST takes the new name too) tells its rooms the
+/// new name the same way, once it is done.
+#[tokio::test]
+async fn a_full_domain_rename_tells_its_rooms_the_new_name() {
+    let (tmp, engine, _scratch) = engine_fixture_with_state().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed before the full rename").await;
+    engine
+        .rename_domain(
+            "eng",
+            "elm",
+            false,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        next_closed(&mut joined.rx).await,
+        Control::Closed {
+            reason: "moved".into(),
+            domain: Some("elm".into()),
+            path: Some("alpha.md".into()),
+            permalink: Some("alpha".into()),
+        }
+    );
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();
+    assert!(
+        on_disk.contains("typed before the full rename"),
+        "{on_disk}"
+    );
+}
+
+/// A full rename that stops after its MANIFEST and link steps (a write in
+/// the domain did not finish in time) is not done: the old name still
+/// serves, so its rooms are told `internal` and no new name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_rename_that_stops_does_not_tell_its_rooms_a_new_name() {
+    let (_tmp, engine, _scratch) = engine_fixture_with_state().await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let _doc = sync_client(&joined).await;
+    engine.set_rename_drain_wait(Some(Duration::from_millis(50)));
+    let write_hold = engine.hold_next_write();
+    let writer = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .write_engram(&crystalline_service::params::WriteParams {
+                    domain: "eng".into(),
+                    title: "Beta".into(),
+                    content: "written while the rename waits".into(),
+                    folder: None,
+                    engram_type: None,
+                    tags: Vec::new(),
+                    status: None,
+                    metadata: None,
+                    overwrite: false,
+                    share_link: None,
+                    model: None,
+                })
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(20), write_hold.reached())
+        .await
+        .expect("the write is counted and held");
+    let stopped = engine
+        .rename_domain(
+            "eng",
+            "elm",
+            false,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(stopped.contains("busy"), "{stopped}");
+    assert_eq!(
+        next_closed(&mut joined.rx).await,
+        Control::closed("internal")
+    );
+    write_hold.release();
+    writer.await.unwrap().unwrap();
+}
+
 /// A rename refused after it swept the rooms (a write in the domain did not
 /// finish in time) moved nothing, so its rooms are told `internal` and no
 /// new name.

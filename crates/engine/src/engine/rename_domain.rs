@@ -245,9 +245,10 @@ impl Engine {
                 // the old name.
                 let _captured =
                     self.capture_audience(old, DomainAudience::Accounts(HashSet::new()));
-                // The journal is there, so this rename finishes: the rooms
-                // are told where their domain went at once.
-                self.close_editors(old).await.renamed(new).await;
+                // The rooms learn the new name once the rename is done; a
+                // finish that stops again tells them `internal` (the old
+                // name still serves until it is finished).
+                let closed_editors = self.close_editors(old).await;
                 let mut report = self
                     .finish_rename(
                         journal,
@@ -256,6 +257,7 @@ impl Engine {
                         DomainAudience::Accounts(HashSet::new()),
                     )
                     .await?;
+                closed_editors.renamed(new).await;
                 if let Value::Object(map) = &mut report {
                     map.entry("shadows").or_insert_with(|| json!([]));
                 }
@@ -452,12 +454,15 @@ impl Engine {
             self.rename_pause.resume(&[old, new]);
             return Err(io_error(e));
         }
-        // From here the rename finishes, now or on the next start from its
-        // journal, so the swept rooms learn the new name.
-        closed_editors.renamed(new).await;
+        // The swept rooms learn the new name once the rename is done. A
+        // full rename can still stop inside `finish_rename` (a busy domain
+        // after its MANIFEST and link steps); its journal finishes it later,
+        // and until then the old name serves, so the rooms are told
+        // `internal` when the answer drops.
         let mut report = self
             .finish_rename(journal, &state_dir, true, old_audience)
             .await?;
+        closed_editors.renamed(new).await;
         if let Value::Object(map) = &mut report {
             if !shadows.is_empty() {
                 let shadow_note = format!(
@@ -1047,9 +1052,9 @@ impl Engine {
 
     /// Close every co-editing room and end every join in `old`; each room
     /// saves its last text first. The rooms are not told yet: the rename
-    /// tells them `moved` with the new name once it can no longer be refused
-    /// (`ClosedEditors::renamed`), and a rename refused before that tells
-    /// them `internal` when the answer drops.
+    /// tells them `moved` with the new name once it is done
+    /// (`ClosedEditors::renamed`), and a rename refused or stopped before
+    /// that tells them `internal` when the answer drops.
     async fn close_editors(&self, old: &str) -> ClosedEditors {
         let rooms = match self.collab.get().and_then(std::sync::Weak::upgrade) {
             Some(sessions) => Some(sessions.sweep_domain_for_rename(old).await),
