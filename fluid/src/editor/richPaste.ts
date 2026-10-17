@@ -24,7 +24,7 @@ import { Prec, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 
 import { transferFiles } from "./attachments";
-import { carriesText } from "./clipboardHtml";
+import { carriesText, textOf } from "./clipboardHtml";
 
 type Converter = typeof import("./htmlToMarkdown");
 
@@ -155,8 +155,10 @@ export function richPaste(): Extension {
           }
           // Plain text is wanted, and the picture of it beside must not
           // reach the uploads.
+          // A clipboard with no plain text gives the HTML's own text, so the
+          // paste is never lost.
           event.preventDefault();
-          insert(view, plain);
+          insert(view, plain === "" ? textOf(html) : plain);
           return true;
         }
         event.preventDefault();

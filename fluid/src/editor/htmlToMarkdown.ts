@@ -142,11 +142,15 @@ function isSafeUrl(raw: string, schemes: string[]): boolean {
 
 /**
  * A URL as a Markdown link destination that reads back as the same URL: a
- * backslash and an `&` are escaped, so no character reference in it is
- * decoded (turndown escapes the parentheses).
+ * backslash is escaped, and so is an `&` that would start a character
+ * reference (`&#106;`, `&amp;`), which a renderer would decode. A plain `&`
+ * between query parameters stays as it is. Turndown escapes the parentheses.
  */
 function destination(url: string): string {
-  return url.trim().replace(/[\\&]/g, "\\$&");
+  return url
+    .trim()
+    .replace(/\\/g, "\\\\")
+    .replace(/&(?=#?[A-Za-z0-9]+;)/g, "\\&");
 }
 
 function unwrap(el: Element): void {

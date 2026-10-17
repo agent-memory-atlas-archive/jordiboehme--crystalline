@@ -150,13 +150,20 @@ describe("htmlToMarkdown", () => {
     ).toBe("i1");
   });
 
-  it("writes an & in a link so it reads back as the same URL", () => {
-    expect(
-      htmlToMarkdown(
-        '<p><a href="https://x.y/?a=1&amp;copy=2&amp;b=\\3">a</a></p>',
-      ).trim(),
-    ).toBe("[a](https://x.y/?a=1\\&copy=2\\&b=\\\\3)");
-  });
+  it.each([
+    ["https://x.y/?a=1&amp;b=2", "https://x.y/?a=1&b=2"],
+    ["https://x.y/?a=1&amp;copy=2", "https://x.y/?a=1&copy=2"],
+    ["https://x.y/?x=&amp;#106;", "https://x.y/?x=\\&#106;"],
+    ["https://x.y/?x=&amp;amp;", "https://x.y/?x=\\&amp;"],
+    ["https://x.y/a\\b", "https://x.y/a\\\\b"],
+  ])(
+    "writes the link %j so its Markdown destination reads back as the DOM href",
+    (href, destination) => {
+      expect(htmlToMarkdown(`<p><a href="${href}">a</a></p>`).trim()).toBe(
+        `[a](${destination})`,
+      );
+    },
+  );
 
   it.each([
     ["&lt;script&gt;alert(1)&lt;/script&gt;", "\\<script>alert(1)\\</script>"],

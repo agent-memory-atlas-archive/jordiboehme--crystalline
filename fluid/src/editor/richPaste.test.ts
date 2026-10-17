@@ -188,6 +188,20 @@ describe("richPaste", () => {
     expect(onFiles).not.toHaveBeenCalled();
   });
 
+  it("keeps the HTML's text when a plain paste brings no plain text", () => {
+    const onFiles = vi.fn();
+    const v = mount("", [attachmentUploads(onFiles)]);
+    const picture = new File(["png"], "image.png", { type: "image/png" });
+    keydown(v, { key: "V", code: "KeyV", shiftKey: true, ctrlKey: true });
+    paste(v, {
+      html: "<p>Only <b>here</b><script>x()</script></p>",
+      plain: "",
+      files: [picture],
+    });
+    expect(v.state.doc.toString()).toBe("Only here");
+    expect(onFiles).not.toHaveBeenCalled();
+  });
+
   it("uploads a file that is no image even when text came with it", () => {
     const onFiles = vi.fn();
     const v = mount("", [attachmentUploads(onFiles)]);

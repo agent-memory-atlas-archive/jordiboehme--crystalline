@@ -49,7 +49,15 @@ export function cleanClipboardHtml(html: string): Document {
  * text (with a picture of it beside) from a copy of an image.
  */
 export function carriesText(html: string): boolean {
-  return (cleanClipboardHtml(html).body.textContent ?? "").trim() !== "";
+  return textOf(html) !== "";
+}
+
+/**
+ * The text of the cleaned HTML, trimmed: what a plain paste falls back to
+ * when the clipboard brought HTML but no plain text.
+ */
+export function textOf(html: string): string {
+  return (cleanClipboardHtml(html).body.textContent ?? "").trim();
 }
 
 /**

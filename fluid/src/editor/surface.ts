@@ -148,8 +148,10 @@ export function surfaceExtensions(options: SurfaceOptions): Extension[] {
     // so these sit outside the compartment beside it.
     options.uploads,
     // Rich text from another app arrives as Markdown, in Raw mode too: the
-    // buffer is Markdown either way. It leaves a paste of files to the
-    // uploads above whatever order the two run in.
+    // buffer is Markdown either way. It runs before the uploads above
+    // (`Prec.high`): HTML with text and only images beside it (a word
+    // processor's picture of the copy) is converted and nothing is uploaded;
+    // any other file, or images with no text, goes to the uploads.
     richPaste(),
     // The toolbar's own shortcuts. Outside the preview compartment: Mod-b and
     // Mod-i are typing help like the completions below, and raw mode is
