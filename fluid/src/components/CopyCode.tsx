@@ -35,7 +35,7 @@ export default function CopyCode({ text }: { text: string }) {
         type="button"
         aria-label="Copy code"
         onClick={copy}
-        className={`rounded px-1 text-ink-3 opacity-0 group-hover:opacity-100 hover:text-ink focus-visible:opacity-100 ${FOCUS_RING}`}
+        className={`rounded px-1 text-ink-3 opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 hover:text-ink focus-visible:opacity-100 ${FOCUS_RING}`}
       >
         Copy
       </button>

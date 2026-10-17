@@ -658,7 +658,12 @@ const components: Components = {
   ol: ({ children }) => (
     <ol className="my-3 list-decimal pl-6 leading-relaxed">{children}</ol>
   ),
-  li: ({ children }) => <li className="my-1">{structuredBullet(children)}</li>,
+  // The id is what a footnote reference jumps to.
+  li: ({ children, id }) => (
+    <li id={id} className="my-1">
+      {structuredBullet(children)}
+    </li>
+  ),
   span: ({ children, className, node, ...props }) => {
     // Four sources make spans in this tree, all plugin-generated rather than
     // raw HTML an engram could write: the wikilink rewrite's own markers,
@@ -898,8 +903,11 @@ function MarkdownAnchor({
   href,
   node,
   assets,
+  id,
 }: {
   children?: ReactNode;
+  /** A footnote reference carries the id its note links back to. */
+  id?: string | undefined;
   /** Undefined is spelled out: react-markdown hands a link with no target on. */
   href?: string | undefined;
   node?: unknown;
@@ -934,6 +942,7 @@ function MarkdownAnchor({
   // `#heading` and `../other` go where the author meant (`documentHref`).
   return (
     <a
+      id={id}
       href={documentHref(href)}
       className={LINK_CLASSES}
       {...(outward ? { target: "_blank", rel: "noreferrer" } : {})}
@@ -1286,10 +1295,7 @@ function heading(
     // only: shown here in the section-label style, with no link symbol.
     if (level === 2 && id === "footnote-label") {
       return (
-        <h2
-          id={id}
-          className="mb-1 text-caption font-semibold tracking-wide text-ink-3 uppercase"
-        >
+        <h2 className="mb-1 text-caption font-semibold tracking-wide text-ink-3 uppercase">
           {children}
         </h2>
       );
@@ -1401,9 +1407,10 @@ function componentsFor(
     h5: heading(5, HEADING_SIZES[4], anchored),
     h6: heading(6, HEADING_SIZES[5], anchored),
     pre: preFor(documentName),
-    a: ({ children, href, node }) => (
+    a: ({ children, href, node, id }) => (
       <MarkdownAnchor
         href={href}
+        id={id}
         node={node}
         {...(assets === undefined ? {} : { assets })}
       >
@@ -1499,6 +1506,9 @@ export default function MarkdownBody({
   sourceSpans?: boolean;
 }) {
   const anchored = anchors !== undefined;
+  // Footnote ids are unique per document on the page: a reflection page draws
+  // one document per section, and each may use `[^1]`.
+  const noteScope = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   // What the parser is handed, and so what every stamped offset counts into.
   const shown = foldLeadingTitle(source.replace(FRONTMATTER, ""), foldTitle);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -1659,6 +1669,7 @@ export default function MarkdownBody({
       rehypePlugins={rehypePlugins}
       components={componentMap}
       urlTransform={urlTransform}
+      remarkRehypeOptions={{ clobberPrefix: `user-content-${noteScope}-` }}
     >
       {shown}
     </ReactMarkdown>

@@ -1222,7 +1222,7 @@ describe("footnotes and code copy", () => {
   it("styles footnotes at the end with links both ways", async () => {
     const { container } = await renderMarkdown("Claim.[^1]\n\n[^1]: Source.\n");
     const ref = container.querySelector("sup a");
-    expect(ref?.getAttribute("href")).toMatch(/#user-content-fn-1$/);
+    expect(ref?.getAttribute("href")).toMatch(/#user-content-.*fn-1$/);
     const notes = container.querySelector("section[data-footnotes]");
     expect(notes).toHaveTextContent("Source.");
     expect(notes).toHaveClass("border-t", "border-hair", "text-[13px]");
@@ -1230,8 +1230,39 @@ describe("footnotes and code copy", () => {
     const label = notes?.querySelector("h2");
     expect(label).toHaveTextContent("Footnotes");
     expect(label).not.toHaveClass("text-prose-h2");
-    const back = notes?.querySelector('a[href$="#user-content-fnref-1"]');
-    expect(back?.getAttribute("href")).toMatch(/#user-content-fnref-1$/);
+    const back = notes?.querySelector('a[href*="fnref-1"]');
+    expect(back?.getAttribute("href")).toMatch(/#user-content-.*fnref-1$/);
+    for (const link of [ref, back]) {
+      const id = link?.getAttribute("href")?.split("#")[1] ?? "";
+      expect(container.querySelector(`[id="${id}"]`)).not.toBeNull();
+    }
+  });
+
+  it("keeps footnote ids unique across documents on one page", async () => {
+    const { container } = render(
+      <MemoryRouter>
+        <ThemeProvider>
+          <Markdown source={"One.[^1]\n\n[^1]: First.\n"} />
+          <Markdown source={"Two.[^1]\n\n[^1]: Second.\n"} />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(
+        container.querySelectorAll("section[data-footnotes]"),
+      ).toHaveLength(2);
+    });
+    const ids = Array.from(container.querySelectorAll("[id]")).map((e) => e.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    const refs = Array.from(container.querySelectorAll("sup a"));
+    const notes = Array.from(
+      container.querySelectorAll("section[data-footnotes]"),
+    );
+    expect(refs).toHaveLength(2);
+    refs.forEach((ref, i) => {
+      const id = ref.getAttribute("href")?.split("#")[1] ?? "";
+      expect(notes[i]?.querySelector(`[id="${id}"]`)).not.toBeNull();
+    });
   });
 
   it("copies a code block", async () => {
