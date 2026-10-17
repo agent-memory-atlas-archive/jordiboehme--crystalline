@@ -151,6 +151,34 @@ fn heading_of(text: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Whether two section texts differ only in task boxes: `[ ]`, `[x]`, `[X]`
+/// and `[~]` at the head of a list item count as one mark. Ticking a box on
+/// the reading page is not something the agent has to weigh.
+pub fn same_but_task_boxes(before: &str, after: &str) -> bool {
+    fn norm(text: &str) -> String {
+        let normalized = crate::reflection::normalize_section_text(text);
+        normalized
+            .lines()
+            .map(|line| {
+                let indent = line.len() - line.trim_start().len();
+                let (head, rest) = line.split_at(indent);
+                for marker in ["- ", "* ", "+ "] {
+                    if let Some(item) = rest.strip_prefix(marker)
+                        && let Some(tail) = ["[ ]", "[x]", "[X]", "[~]"]
+                            .iter()
+                            .find_map(|b| item.strip_prefix(b))
+                    {
+                        return format!("{head}{marker}[ ]{tail}");
+                    }
+                }
+                line.to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    norm(before) == norm(after)
+}
+
 /// The feedback changes of `current` against `baseline`, in page order, the
 /// removed sections last in baseline order. A top that is empty and was
 /// never reflected is no change.
@@ -169,7 +197,10 @@ pub fn feedback_changes(current: &str, baseline: &str) -> Vec<SectionChange> {
         let kind = match (section.id.as_deref(), before) {
             (Some(TOP_SECTION), None) if section.text.trim().is_empty() => continue,
             (_, None) => ChangeKind::New,
-            (_, Some(before)) if section_hash(before) != section_hash(&section.text) => {
+            (_, Some(before))
+                if section_hash(before) != section_hash(&section.text)
+                    && !same_but_task_boxes(before, &section.text) =>
+            {
                 ChangeKind::Changed
             }
             _ => continue,
@@ -364,6 +395,16 @@ mod tests {
         let edited = &changes[0];
         assert!(edited.before.contains("Old wording.") && edited.after.contains("New wording."));
         assert!(changes[3].after.is_empty() && changes[3].before.contains("Removed later."));
+    }
+
+    #[test]
+    fn ticking_task_boxes_is_not_a_change() {
+        let baseline_text = "## Steps\n<!-- r:aaaa0001 -->\n\n- [ ] stop the job\n- [ ] restore\n";
+        let ticked = "## Steps\n<!-- r:aaaa0001 -->\n\n- [x] stop the job\n- [~] restore\n";
+        let edited = "## Steps\n<!-- r:aaaa0001 -->\n\n- [x] stop the job now\n- [ ] restore\n";
+        let base = advance_baseline("", baseline_text, &["aaaa0001".to_string()]);
+        assert!(feedback_changes(ticked, &base).is_empty());
+        assert_eq!(feedback_changes(edited, &base).len(), 1);
     }
 
     #[test]

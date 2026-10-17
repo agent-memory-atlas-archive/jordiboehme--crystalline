@@ -2106,16 +2106,25 @@ impl Engine {
         } else {
             without_provenance(&text)
         };
+        // A section whose only difference from what was last reflected is a
+        // task box is not changed: ticking a box is not something to weigh.
+        let reflected = r::parse_baseline(
+            &read_opt(&access.abs(&r::baseline_path(inner)))?.unwrap_or_default(),
+        );
         let sections: Vec<Value> = r::split_sections(&markdown)
             .iter()
             .filter(|s| s.id.as_deref() != Some(r::TOP_SECTION))
             .map(|s| {
                 let record = s.id.as_deref().and_then(|id| prov.get(id));
+                let only_boxes = reflected
+                    .iter()
+                    .find(|(id, _)| Some(id.as_str()) == s.id.as_deref())
+                    .is_some_and(|(_, before)| r::same_but_task_boxes(before, &s.text));
                 let mut row = json!({
                     "id": s.id,
                     "heading": s.heading,
                     "line": s.line,
-                    "changed": r::text_changed(record, s),
+                    "changed": r::text_changed(record, s) && !only_boxes,
                 });
                 if access.engrams_visible {
                     row["sources"] = json!(

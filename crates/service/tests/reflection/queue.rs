@@ -159,6 +159,64 @@ async fn feedback_comes_before_update_within_a_section_and_the_oldest_group_firs
 }
 
 #[tokio::test]
+async fn a_change_that_only_ticks_task_boxes_is_not_feedback() {
+    let fx = curated(&[]).await;
+    // The curator turns the rollback into a task list.
+    let steps = "- [ ] stop the job\n- [ ] restore";
+    let page = edit_page(&fx, "Roll back with the script.", steps);
+    let mut curated_page = write("guides/deploying.md", &page);
+    curated_page.sources = BTreeMap::from([(
+        "Rollback".to_string(),
+        vec!["runbooks/rollback".to_string()],
+    )]);
+    fx.engine
+        .write_reflection(&curated_page, &agent())
+        .await
+        .unwrap();
+    let settled = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert!(
+        !rows(&settled).iter().any(|r| r.0 == "feedback"),
+        "{settled}"
+    );
+
+    // A person ticks one box.
+    let ticked = edit_page(&fx, "- [ ] stop the job", "- [x] stop the job");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &ticked), &person())
+        .await
+        .unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert!(
+        !rows(&queue).iter().any(|r| r.0 == "feedback"),
+        "a tick is not feedback: {queue}"
+    );
+
+    // A second write that also changes a word is.
+    let worded = edit_page(&fx, "- [ ] restore", "- [x] restore the data");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &worded), &person())
+        .await
+        .unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert!(
+        rows(&queue).contains(&("feedback".into(), "changed".into(), "Rollback".into())),
+        "{queue}"
+    );
+}
+
+#[tokio::test]
 async fn every_update_trigger() {
     let pact = "# Pact\n\n## Structure\n\n- guides/*.md\n";
     let fx = curated(&[(

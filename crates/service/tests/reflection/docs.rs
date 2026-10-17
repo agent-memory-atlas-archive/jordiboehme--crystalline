@@ -283,6 +283,42 @@ async fn every_section_line_points_at_its_heading_in_the_markdown_answered() {
 }
 
 #[tokio::test]
+async fn ticking_a_task_box_does_not_mark_a_section_changed() {
+    let fx = reflecting().await;
+    let page =
+        "# Steps\n\nFor new people.\n\n## Night deploys\n\n- [ ] stop the job\n- [ ] restore\n";
+    let mut p = write("a.md", page);
+    p.sources = BTreeMap::from([(
+        "Night deploys".to_string(),
+        vec!["runbooks/deploy".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let stored = file(&fx, "a.md");
+    let ticked = stored.replace("- [ ] stop the job", "- [x] stop the job");
+    fx.engine
+        .write_reflection(&write("a.md", &ticked), &person())
+        .await
+        .unwrap();
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(doc["sections"][0]["changed"], false, "{doc}");
+    let worded = ticked.replace("- [ ] restore", "- [ ] restore the data");
+    fx.engine
+        .write_reflection(&write("a.md", &worded), &person())
+        .await
+        .unwrap();
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(doc["sections"][0]["changed"], true, "{doc}");
+}
+
+#[tokio::test]
 async fn the_baseline_survives_an_index_rebuild() {
     let fx = reflecting().await;
     let mut p = write("a.md", PAGE);
